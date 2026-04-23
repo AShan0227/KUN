@@ -33,18 +33,25 @@
 - [x] Prometheus metrics (ADR-016)
 - [x] Next.js 前端 scaffold (主对话框 + 傩面板)
 - [x] GitHub Actions CI (lint / typecheck / unit / integration / license-scan)
-- [x] 72 unit + integration tests passing
+- [x] Skill loader (Anthropic 兼容 SKILL.md) + SkillSelector (§2.1)
+- [x] Orchestrator 完整 pipeline: intent → plan → route → skill-select → execute → validate → writeback
+- [x] Capability card writeback (运行时) + surprise_score EMA
+- [x] Context storage: InMemoryAssetStore + RedisAssetStore
+- [x] idle-batch scheduler + 7 个 step 类型 (placeholder + real health_report)
+- [x] Dockerfile (multi-stage + healthcheck) + Makefile (dev 目标) + .dockerignore
+- [x] 90 unit + integration tests passing
 
 ### ⏳ 进行中 / 待完善
 
-- [ ] 跑起真的 docker compose 基础设施, 验证 Orchestrator 端到端 (需要 .env 里的 API key)
-- [ ] 接入真实 Anthropic / OpenAI / MiniMax (用户在本地提供 API key)
+- [ ] 跑起真的 docker compose, 验证 Orchestrator 端到端 (需要 .env 里的 API key)
+- [ ] 接入真实 Anthropic / OpenAI / MiniMax (用户本地提供 API key)
 - [ ] 冷启动 Starter Pack 填充到 50-80 个 skill (ADR-014)
 - [ ] Grafana dashboard JSON 定义
 - [ ] 前端装 node_modules + 验证 npm run dev
-- [ ] 完善 skill 加载与调度 (当前 Orchestrator 只直接调 LLM)
+- [ ] idle-batch 的 task_replay / methodology_distill 实装 (当前 placeholder)
 - [ ] Qdrant 向量检索接入 (Context 子系统的真实后端)
 - [ ] 接入 MCP / A2A 协议
+- [ ] testcontainers 集成测试 (需 Docker 运行)
 
 ### 🔬 当前可验证的能力
 

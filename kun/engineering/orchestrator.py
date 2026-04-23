@@ -49,6 +49,7 @@ from kun.interface.llm import (
     LLMRouter,
     get_router,
 )
+from kun.skills.selector import get_selector as get_skill_selector
 from kun.watchtower.engine import RuleEngine
 
 log = get_logger("kun.engineering.orchestrator")
@@ -100,6 +101,7 @@ class Orchestrator:
         self.task_router = TaskRouter()
         self.rule_engine = rule_engine or RuleEngine()
         self.validation = validation or ValidationPipeline(self.llm_router)
+        self.skill_selector = get_skill_selector()
 
     # ----------------------------- public entry -----------------------------
 
@@ -218,7 +220,18 @@ class Orchestrator:
                 tenant_id=tenant.tenant_id, task_type=task_ref.meta.task_type
             ).inc()
 
-        # 6. Execute steps (walking skeleton = 1 step)
+        # 6. Select candidate skills (L1 summary injected into step prompt)
+        skill_candidates = self.skill_selector.select(task_ref, top_k=3)
+        if skill_candidates:
+            yield OrchestratorEvent(
+                kind="action_plan",
+                data={
+                    "stage": "skill_selection",
+                    "candidates": [s.skill_id for s in skill_candidates],
+                },
+            )
+
+        # 7. Execute steps (walking skeleton = 1 step)
         answer = ""
         status: TaskStatus = "running"
         notifications: list[Notification] = []
@@ -232,12 +245,13 @@ class Orchestrator:
                     data={"step_id": step_plan.step_id, "description": step_plan.description},
                 )
 
-                # Execute via LLM
+                # Execute via LLM with skill candidates hinted in system prompt
                 answer, response = await self._execute_step(
                     task_ref=task_ref,
                     step_description=step_plan.description,
                     purpose=choice.purpose,
                     profile=choice.task_profile,
+                    skills_summary=self.skill_selector.summary(skill_candidates),
                 )
                 last_response = response
 
@@ -489,12 +503,16 @@ class Orchestrator:
         step_description: str,
         purpose,
         profile,
+        skills_summary: str = "",
     ) -> tuple[str, LLMResponse]:
         """Execute a single step by calling the LLM."""
-        system_prompt = (
+        system_parts = [
             "你是 KUN 系统里的执行角色. 按用户要求完成任务, 回答简洁、准确、可验证. "
             "若需要外部数据, 说明需要什么. 不要编造."
-        )
+        ]
+        if skills_summary:
+            system_parts.append(skills_summary)
+        system_prompt = "\n\n".join(system_parts)
         request = LLMRequest(
             messages=[
                 LLMMessage(role="system", content=system_prompt, cache=True),

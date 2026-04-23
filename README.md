@@ -13,23 +13,35 @@
 brew install uv
 
 # 2. 装依赖
-uv sync --dev
+make install     # 等价于 uv sync --dev
 
 # 3. 配置环境
 cp .env.example .env
-# 编辑 .env 填入你的 KUN_OFOX_API_KEY / MINIMAX_API_KEY 等
+# 编辑 .env 填入 KUN_OFOX_API_KEY / MINIMAX_API_KEY 等
 
 # 4. 拉起基础设施 (Postgres/Redis/Qdrant/NATS/MinIO/OTel/Jaeger/Prometheus/Grafana/Loki)
-docker compose -f docker-compose.dev.yml up -d
+make up
 
 # 5. 跑数据库迁移
-uv run alembic upgrade head
+make migrate
 
 # 6. 起 API 服务
-uv run kun serve
+make serve
 
 # 或直接
-uv run uvicorn kun.api.main:app --reload --port 8000
+uv run kun serve --reload
+```
+
+### 常用命令
+
+```bash
+make test         # 跑所有测试
+make lint         # ruff + format 检查
+make format       # 自动修复格式
+make rules        # 看加载的守望规则
+make skills       # 看加载的 starter skills
+make idle-batch   # 跑一次 idle-batch (health_report 子集)
+make run-cli      # 对话框 CLI smoke
 ```
 
 访问：
