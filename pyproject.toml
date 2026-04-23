@@ -81,12 +81,26 @@ src = ["kun", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "B", "C4", "UP", "ASYNC", "S", "SIM", "RUF"]
 ignore = [
-  "S101",  # asserts OK in tests
+  "S101",  # asserts OK
+  "S104",  # 0.0.0.0 for local dev is intentional
+  "S105",  # minio default creds for local dev
+  "S106",  # same
+  "S110",  # silent passes in cleanup paths are intentional
+  "S311",  # random for bucketing, not crypto
+  "S603",  # subprocess called with variable — expected by some skills
+  "B008",  # typer Option() in defaults is idiomatic typer
+  "B904",  # allow bare raise in some async contexts
   "E501",  # handled by formatter
+  "RUF001", # allow CJK/fullwidth chars in identifiers (中文 docstrings)
+  "RUF002", # same, in docstrings
+  "RUF003", # same, in comments
+  "N814",   # CamelCase-as-constant allowed for typing imports
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S"]
+"tests/**" = ["S", "B"]
+"alembic/versions/**" = ["S", "B", "UP"]
+"kun/cli.py" = ["B008"]
 
 [tool.ruff.format]
 quote-style = "double"

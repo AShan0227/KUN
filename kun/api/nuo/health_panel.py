@@ -26,7 +26,7 @@ async def health_summary() -> dict:
             .group_by(RuntimeStateRow.status)
         )
         rows = (await s.execute(stmt)).all()
-        task_by_status = {status: count for status, count in rows}
+        task_by_status = dict(rows)
 
         # Outbox lag
         lag_stmt = select(func.count()).select_from(EventRow).where(EventRow.published_at.is_(None))

@@ -27,6 +27,7 @@ Message format:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -110,10 +111,8 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         log.info("ws.disconnected", tenant_id=tenant_id)
     except Exception as e:
         log.exception("ws.error", error=str(e))
-        try:
+        with contextlib.suppress(Exception):
             await ws.send_json({"type": "error", "message": str(e)})
-        except Exception:
-            pass
 
 
 async def _run_task_stream(ws: WebSocket, user_message: str) -> None:

@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import yaml
 from simpleeval import EvalWithCompoundTypes
@@ -60,7 +60,7 @@ class RuleEngine:
     """Stateless-ish rule evaluator with a small cooldown table."""
 
     # Safe builtins exposed to expressions
-    _SAFE_FUNCS: dict[str, Any] = {
+    _SAFE_FUNCS: ClassVar[dict[str, Any]] = {
         "min": min,
         "max": max,
         "abs": abs,

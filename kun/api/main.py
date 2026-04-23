@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -61,10 +61,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     outbox: asyncio.Task | None = getattr(app.state, "outbox_task", None)
     if outbox is not None:
         outbox.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await outbox
-        except asyncio.CancelledError:
-            pass
     log.info("kun.api.stopped")
 
 
