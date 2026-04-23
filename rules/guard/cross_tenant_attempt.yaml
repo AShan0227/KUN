@@ -1,0 +1,15 @@
+id: cross_tenant_attempt
+kind: guard
+description: 任何跨租户访问尝试 → 立即告警升级给人 (ADR-007 安全红线)
+trigger:
+  event_type: security.cross_tenant_attempt
+  when: "True"
+severity: critical
+actions:
+  - handler: escalate_human
+    params:
+      title: "安全红线 — 跨租户访问尝试"
+      body: "请立即排查. 详见 payload."
+  - handler: log
+    params:
+      message: "SECURITY: cross-tenant access attempt"

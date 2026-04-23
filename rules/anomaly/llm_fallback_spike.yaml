@@ -1,0 +1,15 @@
+id: llm_fallback_spike
+kind: anomaly
+description: MiniMax fallback 触发率 > 10% → 主力/次力路径异常
+trigger:
+  event_type: llm.fallback.triggered
+  when: "event['payload'].get('rolling_rate_10min', 0) > 0.1"
+severity: medium
+cooldown_sec: 600
+actions:
+  - handler: notify_user
+    params:
+      title: "LLM 路由频繁 fallback"
+      body: "主力/次力路径异常, 请检查订阅状态或网络."
+      kind: alert
+      severity: warn

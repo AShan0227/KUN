@@ -1,0 +1,67 @@
+# ADR-013: CI/CD 护栏分级
+# 根据 git diff 的文件路径匹配自动识别影响面，决定走哪档流程
+
+tiers:
+  # 小改 - CI 通过即自动 merge
+  small:
+    patterns:
+      - "tests/**"
+      - "docs/**"
+      - "skills/**"              # 单个 skill 增删
+      - "frontend/components/**" # 单个 UI 组件
+      - "**/*.md"
+    checks:
+      - lint
+      - unit_tests
+      - smoke_eval
+
+  # 中改 - CI 通过 + 一键 approve
+  medium:
+    patterns:
+      - "kun/engineering/**"
+      - "kun/context/**"
+      - "kun/brain/**"
+      - "kun/api/**"
+      - "kun/watchtower/handlers/**"
+      - "nuo/**"
+    checks:
+      - lint
+      - unit_tests
+      - integration_tests
+      - smoke_eval
+      - cost_regression
+      - latency_regression
+    requires_human_approval: true
+
+  # 大改 - CI 全套 + 影子 3 天 + 明确批准
+  large:
+    patterns:
+      - "kun/core/**"                     # 核心抽象
+      - "kun/datamodel/**"                # 数据模型
+      - "kun/interface/llm/base.py"       # LLM 抽象
+      - "kun/watchtower/engine.py"        # 守望引擎
+      - "alembic/versions/**"             # DB schema 变更
+      - "rules/guard/**"                  # 守望规则
+      - ".kun/ci-tiers.yaml"              # 护栏配置自身
+      - "pyproject.toml"                  # 依赖变更
+    checks:
+      - lint
+      - unit_tests
+      - integration_tests
+      - smoke_eval
+      - regression_eval
+      - cost_regression
+      - latency_regression
+      - security_scan
+      - shadow_mode_eval     # 跑在影子模式下
+    requires_shadow_days: 3
+    requires_human_approval: true
+    requires_adr: true        # 必须引用 ADR
+
+# 紧急通道 - 生产告警立即回滚
+emergency_bypass:
+  patterns:
+    - "!all"
+  checks:
+    - lint
+  requires_post_hoc_review: true  # 事后必须补审

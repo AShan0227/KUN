@@ -1,0 +1,17 @@
+id: cost_runaway
+kind: guard
+description: 单任务预算耗尽 × 1.2 → 强制停止, 保存进度, 问人 (ADR-015 硬熔断策略)
+trigger:
+  event_type: task.step.completed
+  when: "event['payload'].get('accumulated_cost_usd', 0) > event['payload'].get('estimated_cost_usd', 0) * 1.2"
+severity: high
+cooldown_sec: 300
+actions:
+  - handler: pause_task
+  - handler: notify_user
+    params:
+      template: cost_exceeded
+      kind: alert
+      severity: warn
+      title: "任务成本超预估 20%, 已暂停"
+      body: "请确认是否继续, 或调整预算上限."

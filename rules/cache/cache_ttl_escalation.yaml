@@ -1,0 +1,14 @@
+id: cache_ttl_escalation
+kind: cache
+description: 稳定段缓存命中率持续 < 40% → 切换到 extended 1-hour cache beta (ADR-016)
+trigger:
+  event_type: "*"
+  when: "False"   # 由 idle-batch 聚合后手动触发, 不是即时评估
+severity: info
+actions:
+  - handler: cache_ttl_escalate
+    params:
+      tier: stable
+  - handler: log
+    params:
+      message: "cache hit rate below threshold, escalating TTL"
