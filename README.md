@@ -8,28 +8,21 @@
 
 ## Quickstart
 
+**一键启动** (首次):
+
 ```bash
-# 1. 安装 uv (如未安装)
-brew install uv
+brew install uv        # 如未安装
+./scripts/bootstrap.sh # 检查 toolchain + uv sync + docker up + migrate + run tests
+```
 
-# 2. 装依赖
-make install     # 等价于 uv sync --dev
+**手动步骤**:
 
-# 3. 配置环境
-cp .env.example .env
-# 编辑 .env 填入 KUN_OFOX_API_KEY / MINIMAX_API_KEY 等
-
-# 4. 拉起基础设施 (Postgres/Redis/Qdrant/NATS/MinIO/OTel/Jaeger/Prometheus/Grafana/Loki)
-make up
-
-# 5. 跑数据库迁移
-make migrate
-
-# 6. 起 API 服务
-make serve
-
-# 或直接
-uv run kun serve --reload
+```bash
+make install     # uv sync --dev
+cp .env.example .env && edit .env    # 填入 KUN_OFOX_API_KEY / MINIMAX_API_KEY
+make up          # docker compose up -d (infra)
+make migrate     # alembic upgrade head
+make serve       # 启 API (autoreload)
 ```
 
 ### 常用命令
