@@ -41,6 +41,7 @@ from kun.datamodel.notification import Notification
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
 from kun.datamodel.task import Owner, TaskMeta, TaskRef
 from kun.engineering.capability_writeback import Outcome, TaskOutcome, record_outcome
+from kun.engineering.validation import ValidationPipeline, pick_tier
 from kun.interface.llm import (
     LLMMessage,
     LLMRequest,
@@ -91,12 +92,14 @@ class Orchestrator:
         *,
         llm_router: LLMRouter | None = None,
         rule_engine: RuleEngine | None = None,
+        validation: ValidationPipeline | None = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
         self.planner = TaskPlanner()
         self.task_router = TaskRouter()
         self.rule_engine = rule_engine or RuleEngine()
+        self.validation = validation or ValidationPipeline(self.llm_router)
 
     # ----------------------------- public entry -----------------------------
 
@@ -380,10 +383,49 @@ class Orchestrator:
                 )
             )
 
+        # 7.4 ValidationPipeline (ADR-018 §16.2). Tier selected from risk × complexity.
+        validation_outcome: Outcome = "pass" if status == "done" else "fail"
+        validation_score: float | None = None
+        if status == "done":
+            tier = pick_tier(task_ref.meta)
+            if tier != "tier0" and answer.strip():
+                try:
+                    results = await self.validation.validate_task(
+                        task_ref.meta,
+                        answer,
+                        goal=task_ref.meta.success_criteria_short,
+                    )
+                    aggregated = ValidationPipeline.aggregate(results)
+                    if aggregated is not None:
+                        validation_score = aggregated.score.value
+                        if not aggregated.pass_:
+                            validation_outcome = "partial"
+                            yield OrchestratorEvent(
+                                kind="insight",
+                                data={
+                                    "stage": "validation",
+                                    "tier": tier,
+                                    "verdict": "did_not_fully_pass",
+                                    "score": validation_score,
+                                    "reason": aggregated.reason,
+                                },
+                            )
+                        else:
+                            yield OrchestratorEvent(
+                                kind="insight",
+                                data={
+                                    "stage": "validation",
+                                    "tier": tier,
+                                    "verdict": "passed",
+                                    "score": validation_score,
+                                },
+                            )
+                except Exception as e:
+                    log.warning("validation.failed", error=str(e))
+
         # 7.5 Capability card writeback (ADR-018 §16.4 KnowledgePrecipitation)
-        outcome: Outcome = (
-            "pass" if status == "done" else "fail"
-        )  # walking skeleton: binary pass/fail
+        outcome: Outcome = validation_outcome
+        rubric_5 = validation_score * 5.0 if validation_score is not None else None
         try:
             await record_outcome(
                 tenant.tenant_id,
@@ -394,6 +436,7 @@ class Orchestrator:
                     outcome=outcome,
                     cost_usd=runtime.accumulated_cost_usd_equivalent,
                     duration_sec=total_duration,
+                    rubric_score=rubric_5,
                     surprise_score=surprise,
                 ),
             )
@@ -407,6 +450,7 @@ class Orchestrator:
                         outcome=outcome,
                         cost_usd=last_response.cost_usd_equivalent,
                         duration_sec=last_response.latency_ms / 1000.0,
+                        rubric_score=rubric_5,
                         surprise_score=surprise,
                     ),
                 )

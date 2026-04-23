@@ -49,20 +49,42 @@
 ### 🔬 当前可验证的能力
 
 ```bash
-# 跑所有单测
+# 跑所有测试
 uv run pytest tests/ -q
-# → 72 passed
+# → 85 passed
 
-# 看加载的规则
+# 列出加载的规则
 uv run kun rules
-# → table of 4 rules
+# → 4 YAML 规则
 
-# 看 FastAPI 路由
-uv run python -c "from kun.api.main import app; print([r.path for r in app.routes])"
+# 列出加载的 skills
+uv run kun skills
+# → 5 starter skills
 
 # 端到端跑 (stub providers, 不需要外部 API)
-uv run python -m kun.cli run "Say hi to the world"
+uv run kun run "Say hi to the world"
+# → thinking → action_plan → action → cost_tick → answer → done
+
+# 跑一次 idle-batch
+uv run kun idle-batch --only health_report
+# → 健康报告
+
+# 跑校准任务集
+uv run kun calibrate --type role_template --id rt-default
+# → 6 个校准任务的结果表
 ```
+
+### 📊 当前代码规模
+
+| 模块 | 行数 / 数量 |
+|------|-----:|
+| kun/ (Python) | 6714 |
+| tests/ | 1282 |
+| rules/ | 4 YAML |
+| skills/ | 5 starter |
+| frontend/ | Next.js scaffold (dialog + NUO) |
+| alembic/ | 2 migrations |
+| ADR + 方案 | decisions.md (ADR-001 ~ 018) + KUN-V1.md |
 
 ---
 
