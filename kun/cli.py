@@ -136,5 +136,62 @@ def rules(
     console.print(table)
 
 
+@app.command()
+def skills(
+    path: Path = typer.Option(Path("skills"), "--path"),
+) -> None:
+    """List loaded skills (Starter Pack)."""
+    from kun.skills.loader import load_skills_from_dir
+
+    reg = load_skills_from_dir(path)
+    table = Table(title=f"Skills ({len(reg)} loaded)")
+    table.add_column("name")
+    table.add_column("license")
+    table.add_column("curated_by")
+    table.add_column("description")
+    for r in reg:
+        table.add_row(
+            r.skill_id,
+            r.manifest.license,
+            r.manifest.curated_by or "-",
+            r.manifest.description[:60],
+        )
+    console.print(table)
+
+
+@app.command()
+def idle_batch(
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+    only: str | None = typer.Option(
+        None,
+        "--only",
+        help="Comma-separated step ids to run (default: all)",
+    ),
+) -> None:
+    """Run one pass of the idle-batch scheduler (§6.4)."""
+    from kun.core.logging import configure_logging
+    from kun.core.tenancy import TenantContext, tenant_scope
+    from kun.engineering.idle_batch import run_once
+
+    configure_logging()
+
+    async def _go() -> None:
+        enabled = set(only.split(",")) if only else None
+        with tenant_scope(TenantContext(tenant_id=tenant)):
+            reports = await run_once(tenant_id=tenant, enabled=enabled)
+        table = Table(title=f"idle-batch 报告 — {tenant}")
+        table.add_column("step")
+        table.add_column("status")
+        table.add_column("summary")
+        for r in reports:
+            color = {"ok": "green", "failed": "red", "skipped": "yellow"}.get(r.status, "white")
+            table.add_row(
+                r.step_id, f"[{color}]{r.status}[/]", json.dumps(r.summary, ensure_ascii=False)[:80]
+            )
+        console.print(table)
+
+    asyncio.run(_go())
+
+
 if __name__ == "__main__":
     app()

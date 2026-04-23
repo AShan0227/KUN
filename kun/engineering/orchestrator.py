@@ -40,6 +40,7 @@ from kun.datamodel.events import Event
 from kun.datamodel.notification import Notification
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
 from kun.datamodel.task import Owner, TaskMeta, TaskRef
+from kun.engineering.capability_writeback import Outcome, TaskOutcome, record_outcome
 from kun.interface.llm import (
     LLMMessage,
     LLMRequest,
@@ -218,6 +219,7 @@ class Orchestrator:
         answer = ""
         status: TaskStatus = "running"
         notifications: list[Notification] = []
+        last_response: LLMResponse | None = None
 
         try:
             for step_plan in plan.steps:
@@ -234,6 +236,7 @@ class Orchestrator:
                     purpose=choice.purpose,
                     profile=choice.task_profile,
                 )
+                last_response = response
 
                 duration = time.perf_counter() - step_t0
                 step_record = StepRecord(
@@ -376,6 +379,40 @@ class Orchestrator:
                     payload={"task_id": task_ref.meta.task_id},
                 )
             )
+
+        # 7.5 Capability card writeback (ADR-018 §16.4 KnowledgePrecipitation)
+        outcome: Outcome = (
+            "pass" if status == "done" else "fail"
+        )  # walking skeleton: binary pass/fail
+        try:
+            await record_outcome(
+                tenant.tenant_id,
+                TaskOutcome(
+                    entity_type="role_template",
+                    entity_id=choice.role_template_id,
+                    task_type=task_ref.meta.task_type,
+                    outcome=outcome,
+                    cost_usd=runtime.accumulated_cost_usd_equivalent,
+                    duration_sec=total_duration,
+                    surprise_score=surprise,
+                ),
+            )
+            if last_response is not None:
+                await record_outcome(
+                    tenant.tenant_id,
+                    TaskOutcome(
+                        entity_type="model",
+                        entity_id=last_response.model or "unknown",
+                        task_type=task_ref.meta.task_type,
+                        outcome=outcome,
+                        cost_usd=last_response.cost_usd_equivalent,
+                        duration_sec=last_response.latency_ms / 1000.0,
+                        surprise_score=surprise,
+                    ),
+                )
+        except Exception as e:
+            # Writeback failure must not break the task.
+            log.warning("capability.writeback_failed", error=str(e))
 
         result = TaskResult(
             task_id=task_ref.meta.task_id,
