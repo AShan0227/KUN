@@ -162,6 +162,53 @@ class RuntimeStateRow(Base):
     )
 
 
+# ============== TASK RESULTS ==============
+
+
+class TaskResultRow(Base):
+    """Final task result cache for idempotent API/WebSocket replies."""
+
+    __tablename__ = "task_results"
+
+    task_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tasks.task_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    cost_usd_actual: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    cost_usd_equivalent: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    tokens_in: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    tokens_out: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    duration_sec: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    surprise_score: Mapped[float] = mapped_column(nullable=False, default=0.0)
+
+    notifications_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'paused', 'done', 'failed', 'cancelled')",
+            name="task_result_status_valid",
+        ),
+        Index("ix_task_results_tenant_task", "tenant_id", "task_id"),
+    )
+
+
 # ============== CAPABILITY CARDS ==============
 
 

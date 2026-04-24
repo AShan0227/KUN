@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import pytest
-from kun.engineering.orchestrator import Orchestrator
+from kun.engineering.orchestrator import Orchestrator, TaskResult
 from kun.interface.llm import LLMRouter
 from kun.interface.llm.base import LLMResponse, UsageInfo
 from kun.interface.llm.router import set_router
@@ -133,3 +133,48 @@ async def test_orchestrator_run_returns_result():
     assert result.answer == "Hello, world!"
     assert result.task_id.startswith("tk-")
     assert result.cost_usd_equivalent == 0.0  # stub has zero prices
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_duplicate_returns_cached_answer(monkeypatch):
+    providers = {
+        "top": _RoutingStub(tier="top"),
+        "cheap": _RoutingStub(tier="cheap"),
+        "coding": _RoutingStub(tier="coding"),
+        "fallback": _RoutingStub(tier="fallback"),
+    }
+    set_router(LLMRouter(providers))
+
+    async def fake_find_idempotent_result_ref(*args, **kwargs):
+        return "task-existing"
+
+    async def fake_load_cached_task_result(*, tenant_id: str, task_id: str):
+        return TaskResult(
+            task_id=task_id,
+            status="done",
+            answer="cached answer",
+            cost_usd_equivalent=0.03,
+            tokens_in=7,
+            tokens_out=2,
+        )
+
+    async def fail_if_executed(*args, **kwargs):
+        raise AssertionError("duplicate request should not execute a new step")
+
+    monkeypatch.setattr(
+        "kun.engineering.orchestrator._find_idempotent_result_ref",
+        fake_find_idempotent_result_ref,
+    )
+    monkeypatch.setattr(
+        "kun.engineering.orchestrator._load_cached_task_result",
+        fake_load_cached_task_result,
+    )
+    monkeypatch.setattr(Orchestrator, "_execute_step", fail_if_executed)
+
+    result = await Orchestrator().run("Please greet the world")
+
+    assert result.task_id == "task-existing"
+    assert result.status == "done"
+    assert result.answer == "cached answer"
+    assert result.cost_usd_equivalent == 0.03

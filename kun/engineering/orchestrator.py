@@ -22,11 +22,13 @@ from typing import Any, cast
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from kun.brain.intent import IntentInterpreter
 from kun.brain.planner import TaskPlanner
 from kun.brain.router import TaskRouter
+from kun.context.packer import ContextPacker
 from kun.core.db import session_scope
 from kun.core.events import emit
 from kun.core.logging import get_logger
@@ -35,7 +37,7 @@ from kun.core.metrics import (
     task_started_total,
     task_surprise_score,
 )
-from kun.core.orm import IdempotencyRow, RuntimeStateRow, TaskRow
+from kun.core.orm import IdempotencyRow, RuntimeStateRow, TaskResultRow, TaskRow
 from kun.core.tenancy import current_tenant
 from kun.datamodel.events import Event
 from kun.datamodel.notification import Notification
@@ -97,6 +99,7 @@ class Orchestrator:
         llm_router: LLMRouter | None = None,
         rule_engine: RuleEngine | None = None,
         validation: ValidationPipeline | None = None,
+        context_packer: ContextPacker | None = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -105,6 +108,7 @@ class Orchestrator:
         self.rule_engine = rule_engine or RuleEngine()
         self.validation = validation or ValidationPipeline(self.llm_router)
         self.skill_selector = get_skill_selector()
+        self.context_packer = context_packer or ContextPacker()
 
     # ----------------------------- public entry -----------------------------
 
@@ -196,6 +200,29 @@ class Orchestrator:
                 raise
 
         if duplicate_ref is not None:
+            cached_result = await _load_cached_task_result(
+                tenant_id=tenant.tenant_id,
+                task_id=duplicate_ref,
+            )
+            if cached_result is not None:
+                yield OrchestratorEvent(
+                    kind="insight",
+                    data={
+                        "message": "Duplicate task detected. Returning cached result.",
+                        "cached_ref": duplicate_ref,
+                        "status": cached_result.status,
+                    },
+                )
+                yield OrchestratorEvent(
+                    kind="answer",
+                    data={"content": cached_result.answer, "task_id": duplicate_ref},
+                )
+                yield OrchestratorEvent(
+                    kind="done",
+                    data={"result": cached_result.model_dump(mode="json")},
+                )
+                return
+
             duplicate_status = await _load_task_status(duplicate_ref)
             duration = time.perf_counter() - t0
             message = f"Duplicate task detected. Existing task: {duplicate_ref}."
@@ -266,6 +293,21 @@ class Orchestrator:
             ).inc()
 
         # 6. Select candidate skills (L1 summary injected into step prompt)
+        context_pack = await self.context_packer.pack(
+            task_ref,
+            tenant_id=tenant.tenant_id,
+            limit=5,
+        )
+        context_summary = context_pack.summary()
+        if context_pack.items:
+            yield OrchestratorEvent(
+                kind="action_plan",
+                data={
+                    "stage": "context_preheat",
+                    "asset_ids": [item.asset_id for item in context_pack.items],
+                },
+            )
+
         skill_candidates = self.skill_selector.select(task_ref, top_k=3)
         if skill_candidates:
             yield OrchestratorEvent(
@@ -281,6 +323,7 @@ class Orchestrator:
         status: TaskStatus = "running"
         notifications: list[Notification] = []
         last_response: LLMResponse | None = None
+        step_outputs: list[tuple[int, str]] = []
 
         try:
             for step_plan in plan.steps:
@@ -297,8 +340,11 @@ class Orchestrator:
                     purpose=choice.purpose,
                     profile=choice.task_profile,
                     skills_summary=self.skill_selector.summary(skill_candidates),
+                    context_summary=context_summary,
+                    prior_outputs=step_outputs,
                 )
                 last_response = response
+                step_outputs.append((step_plan.step_id, answer))
 
                 duration = time.perf_counter() - step_t0
                 step_record = StepRecord(
@@ -530,6 +576,9 @@ class Orchestrator:
             notifications=notifications,
         )
 
+        async with session_scope() as s:
+            await _persist_task_result(s, tenant_id=tenant.tenant_id, result=result)
+
         yield OrchestratorEvent(
             kind="answer",
             data={"content": answer, "task_id": task_ref.meta.task_id},
@@ -549,6 +598,8 @@ class Orchestrator:
         purpose: TaskPurpose,
         profile: TaskProfile,
         skills_summary: str = "",
+        context_summary: str = "",
+        prior_outputs: list[tuple[int, str]] | None = None,
     ) -> tuple[str, LLMResponse]:
         """Execute a single step by calling the LLM."""
         system_parts = [
@@ -557,11 +608,20 @@ class Orchestrator:
         ]
         if skills_summary:
             system_parts.append(skills_summary)
+        if context_summary:
+            system_parts.append(context_summary)
         system_prompt = "\n\n".join(system_parts)
         request = LLMRequest(
             messages=[
                 LLMMessage(role="system", content=system_prompt, cache=True),
-                LLMMessage(role="user", content=_execution_user_prompt(task_ref, step_description)),
+                LLMMessage(
+                    role="user",
+                    content=_execution_user_prompt(
+                        task_ref,
+                        step_description,
+                        prior_outputs=prior_outputs or [],
+                    ),
+                ),
             ],
             temperature=0.5,
             max_tokens=1024,
@@ -620,7 +680,72 @@ async def _find_idempotent_result_ref(
     return cast(str | None, task_id)
 
 
-def _execution_user_prompt(task_ref: TaskRef, step_description: str) -> str:
+async def _load_cached_task_result(*, tenant_id: str, task_id: str) -> TaskResult | None:
+    """Load a persisted final result for an idempotent duplicate request."""
+    async with session_scope() as s:
+        result = await s.execute(
+            select(TaskResultRow.result_json).where(
+                TaskResultRow.tenant_id == tenant_id,
+                TaskResultRow.task_id == task_id,
+            )
+        )
+        result_json = result.scalar_one_or_none()
+
+    if isinstance(result_json, dict) and result_json:
+        return TaskResult.model_validate(result_json)
+    return None
+
+
+async def _persist_task_result(session: Any, *, tenant_id: str, result: TaskResult) -> None:
+    """Upsert the final task result so idempotent retries can return the old answer."""
+    now = datetime.now(UTC)
+    result_json = result.model_dump(mode="json")
+    values = {
+        "task_id": result.task_id,
+        "tenant_id": tenant_id,
+        "status": result.status,
+        "answer": result.answer,
+        "cost_usd_actual": result.cost_usd_actual,
+        "cost_usd_equivalent": result.cost_usd_equivalent,
+        "tokens_in": result.tokens_in,
+        "tokens_out": result.tokens_out,
+        "duration_sec": result.duration_sec,
+        "surprise_score": result.surprise_score,
+        "notifications_json": [
+            notification.model_dump(mode="json") for notification in result.notifications
+        ],
+        "result_json": result_json,
+        "created_at": now,
+        "updated_at": now,
+    }
+    stmt = pg_insert(TaskResultRow).values(**values)
+    await session.execute(
+        stmt.on_conflict_do_update(
+            index_elements=[TaskResultRow.task_id],
+            set_={
+                "tenant_id": stmt.excluded.tenant_id,
+                "status": stmt.excluded.status,
+                "answer": stmt.excluded.answer,
+                "cost_usd_actual": stmt.excluded.cost_usd_actual,
+                "cost_usd_equivalent": stmt.excluded.cost_usd_equivalent,
+                "tokens_in": stmt.excluded.tokens_in,
+                "tokens_out": stmt.excluded.tokens_out,
+                "duration_sec": stmt.excluded.duration_sec,
+                "surprise_score": stmt.excluded.surprise_score,
+                "notifications_json": stmt.excluded.notifications_json,
+                "result_json": stmt.excluded.result_json,
+                "updated_at": now,
+            },
+        )
+    )
+
+
+def _execution_user_prompt(
+    task_ref: TaskRef,
+    step_description: str,
+    *,
+    prior_outputs: list[tuple[int, str]] | None = None,
+) -> str:
     """Build the execution prompt from TASK.md L1/L2 context."""
     lines = [
         "请执行当前任务步骤。",
@@ -637,6 +762,14 @@ def _execution_user_prompt(task_ref: TaskRef, step_description: str) -> str:
         "成功标准:",
         f"- {task_ref.meta.success_criteria_short}",
     ]
+
+    if prior_outputs:
+        lines.extend(["", "已完成步骤输出摘要:"])
+        for step_id, output in prior_outputs[-3:]:
+            preview = output.strip().replace("\n", " ")
+            if len(preview) > 400:
+                preview = preview[:397].rstrip() + "..."
+            lines.append(f"- step {step_id}: {preview}")
 
     if task_ref.spec is not None:
         spec = task_ref.spec
