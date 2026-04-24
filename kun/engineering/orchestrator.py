@@ -187,6 +187,15 @@ class Orchestrator:
                             result_ref=task_ref.meta.task_id,
                         )
                     )
+                    # Flush the parent TaskRow first so the child RuntimeStateRow's
+                    # foreign-key check sees it. Without a `relationship()` declared
+                    # between TaskRow ↔ RuntimeStateRow, SQLAlchemy's unit-of-work
+                    # does not topologically order plain FK columns reliably, and
+                    # a single combined flush can emit the child INSERT before the
+                    # parent — triggering `fk_runtime_states_task_ref_tasks`.
+                    # A rollback still undoes both (we're in one session_scope txn),
+                    # so crash-window protection from R-1 is preserved.
+                    await s.flush()
                     s.add(_runtime_to_row(initial_runtime, tenant.tenant_id))
                     await emit(
                         s,
