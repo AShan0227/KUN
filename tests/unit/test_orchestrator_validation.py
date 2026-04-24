@@ -42,6 +42,9 @@ class _FakeSession:
     async def commit(self):
         pass
 
+    async def flush(self):
+        pass
+
     async def rollback(self):
         pass
 

@@ -29,18 +29,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from kun.api.runtime import get_orchestrator
 from kun.core.logging import get_logger
 from kun.core.tenancy import TenantContext, tenant_scope
-from kun.engineering.orchestrator import Orchestrator, OrchestratorEvent
+from kun.engineering.orchestrator import OrchestratorEvent
 
 log = get_logger("kun.api.ws")
 
 ws_router = APIRouter()
-
-_orchestrator = Orchestrator()
 
 # A few conversational cues that auto-flag user correction (ADR-010 "纠偏即说")
 _CORRECTION_CUES_CN = (
@@ -118,7 +118,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 async def _run_task_stream(ws: WebSocket, user_message: str) -> None:
     """Run the orchestrator and forward events to the socket."""
     try:
-        async for ev in _orchestrator.stream(user_message):
+        async for ev in get_orchestrator(ws.scope["app"]).stream(user_message):
             await ws.send_json(_event_to_wire(ev))
     except asyncio.CancelledError:
         raise
@@ -126,6 +126,6 @@ async def _run_task_stream(ws: WebSocket, user_message: str) -> None:
         await ws.send_json({"type": "error", "message": str(e)})
 
 
-def _event_to_wire(ev: OrchestratorEvent) -> dict:
+def _event_to_wire(ev: OrchestratorEvent) -> dict[str, Any]:
     """Translate OrchestratorEvent → wire format."""
     return {"type": ev.kind, **ev.data}

@@ -18,10 +18,11 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from kun.brain.intent import IntentInterpreter
 from kun.brain.planner import TaskPlanner
@@ -47,8 +48,10 @@ from kun.interface.llm import (
     LLMRequest,
     LLMResponse,
     LLMRouter,
+    TaskProfile,
     get_router,
 )
+from kun.interface.llm.router import TaskPurpose
 from kun.skills.selector import get_selector as get_skill_selector
 from kun.watchtower.engine import RuleEngine
 
@@ -128,6 +131,98 @@ class Orchestrator:
         # 1. 意图理解 -> TaskRef
         yield OrchestratorEvent(kind="thinking", data={"stage": "intent"})
         task_ref = await self.intent.interpret(user_message, owner=owner)
+
+        # 2. Idempotency check + persist TaskRow + emit task.created
+        duplicate_ref: str | None = None
+        try:
+            async with session_scope() as s:
+                duplicate_ref = await _find_idempotent_result_ref(
+                    s,
+                    tenant_id=tenant.tenant_id,
+                    fingerprint=task_ref.meta.fingerprint,
+                )
+                if duplicate_ref is None:
+                    # Persist TaskRow and idempotency key in the same transaction.
+                    s.add(
+                        TaskRow(
+                            task_id=task_ref.meta.task_id,
+                            tenant_id=tenant.tenant_id,
+                            fingerprint=task_ref.meta.fingerprint,
+                            task_type=task_ref.meta.task_type,
+                            risk_level=task_ref.meta.risk_level,
+                            complexity_score=task_ref.meta.complexity_score,
+                            user_id=owner.user_id,
+                            project_id=owner.project_id,
+                            estimated_cost_usd=task_ref.meta.estimated_cost_usd,
+                            estimated_duration_sec=task_ref.meta.estimated_duration_sec,
+                            deadline_iso=task_ref.meta.deadline_iso,
+                            success_criteria_short=task_ref.meta.success_criteria_short,
+                            version=task_ref.meta.version,
+                            spec_json=(
+                                task_ref.spec.model_dump(mode="json") if task_ref.spec else None
+                            ),
+                            layer3_ref=task_ref.layer3_ref,
+                        )
+                    )
+                    s.add(
+                        IdempotencyRow(
+                            key=task_ref.meta.fingerprint,
+                            tenant_id=tenant.tenant_id,
+                            result_ref=task_ref.meta.task_id,
+                        )
+                    )
+                    await emit(
+                        s,
+                        Event.build(
+                            tenant_id=tenant.tenant_id,
+                            event_type="task.created",
+                            payload={
+                                "task_id": task_ref.meta.task_id,
+                                "task_type": task_ref.meta.task_type,
+                            },
+                            task_ref=task_ref.meta.task_id,
+                        ),
+                    )
+                    await s.flush()
+        except IntegrityError:
+            # A concurrent request may have inserted the same tenant/fingerprint first.
+            async with session_scope() as s:
+                duplicate_ref = await _find_idempotent_result_ref(
+                    s,
+                    tenant_id=tenant.tenant_id,
+                    fingerprint=task_ref.meta.fingerprint,
+                )
+            if duplicate_ref is None:
+                raise
+
+        if duplicate_ref is not None:
+            duplicate_status = await _load_task_status(duplicate_ref)
+            duration = time.perf_counter() - t0
+            message = f"Duplicate task detected. Existing task: {duplicate_ref}."
+            result = TaskResult(
+                task_id=duplicate_ref,
+                status=duplicate_status,
+                answer=message,
+                duration_sec=duration,
+            )
+            yield OrchestratorEvent(
+                kind="insight",
+                data={
+                    "message": message,
+                    "cached_ref": duplicate_ref,
+                    "status": duplicate_status,
+                },
+            )
+            yield OrchestratorEvent(
+                kind="answer",
+                data={"content": message, "task_id": duplicate_ref},
+            )
+            yield OrchestratorEvent(
+                kind="done",
+                data={"result": result.model_dump(mode="json")},
+            )
+            return
+
         yield OrchestratorEvent(
             kind="action_plan",
             data={
@@ -138,56 +233,6 @@ class Orchestrator:
                 "estimated_duration_sec": task_ref.meta.estimated_duration_sec,
             },
         )
-
-        # 2. Idempotency check + persist TaskRow + emit task.created
-        async with session_scope() as s:
-            # Idempotency by fingerprint
-            existing = await s.execute(
-                select(IdempotencyRow).where(IdempotencyRow.key == task_ref.meta.fingerprint)
-            )
-            existing_row = existing.scalar_one_or_none()
-            if existing_row is not None:
-                yield OrchestratorEvent(
-                    kind="insight",
-                    data={
-                        "message": "Duplicate task detected (same fingerprint). Returning cached result.",
-                        "cached_ref": existing_row.result_ref,
-                    },
-                )
-                # In skeleton we still run, but emit the event for honest bookkeeping.
-
-            # Persist TaskRow
-            s.add(
-                TaskRow(
-                    task_id=task_ref.meta.task_id,
-                    tenant_id=tenant.tenant_id,
-                    fingerprint=task_ref.meta.fingerprint,
-                    task_type=task_ref.meta.task_type,
-                    risk_level=task_ref.meta.risk_level,
-                    complexity_score=task_ref.meta.complexity_score,
-                    user_id=owner.user_id,
-                    project_id=owner.project_id,
-                    estimated_cost_usd=task_ref.meta.estimated_cost_usd,
-                    estimated_duration_sec=task_ref.meta.estimated_duration_sec,
-                    deadline_iso=task_ref.meta.deadline_iso,
-                    success_criteria_short=task_ref.meta.success_criteria_short,
-                    version=task_ref.meta.version,
-                    spec_json=(task_ref.spec.model_dump(mode="json") if task_ref.spec else None),
-                    layer3_ref=task_ref.layer3_ref,
-                )
-            )
-            await emit(
-                s,
-                Event.build(
-                    tenant_id=tenant.tenant_id,
-                    event_type="task.created",
-                    payload={
-                        "task_id": task_ref.meta.task_id,
-                        "task_type": task_ref.meta.task_type,
-                    },
-                    task_ref=task_ref.meta.task_id,
-                ),
-            )
 
         # 3. Planning
         plan = self.planner.plan(task_ref)
@@ -501,8 +546,8 @@ class Orchestrator:
         *,
         task_ref: TaskRef,
         step_description: str,
-        purpose,
-        profile,
+        purpose: TaskPurpose,
+        profile: TaskProfile,
         skills_summary: str = "",
     ) -> tuple[str, LLMResponse]:
         """Execute a single step by calling the LLM."""
@@ -546,6 +591,49 @@ def _runtime_to_row(runtime: RuntimeState, tenant_id: str) -> RuntimeStateRow:
         finished_at=runtime.finished_at,
         last_updated=runtime.last_updated,
     )
+
+
+async def _find_idempotent_result_ref(
+    session: Any,
+    *,
+    tenant_id: str,
+    fingerprint: str,
+) -> str | None:
+    """Return the existing task id for a tenant/fingerprint, if any."""
+    existing_key = await session.execute(
+        select(IdempotencyRow).where(
+            IdempotencyRow.key == fingerprint,
+            IdempotencyRow.tenant_id == tenant_id,
+        )
+    )
+    existing_row = existing_key.scalar_one_or_none()
+    if existing_row is not None:
+        return cast(str, existing_row.result_ref)
+
+    existing_task = await session.execute(
+        select(TaskRow.task_id).where(
+            TaskRow.tenant_id == tenant_id,
+            TaskRow.fingerprint == fingerprint,
+        )
+    )
+    task_id = existing_task.scalar_one_or_none()
+    return cast(str | None, task_id)
+
+
+async def _load_task_status(task_id: str) -> TaskStatus:
+    """Load the latest runtime status for an existing task."""
+    async with session_scope() as s:
+        result = await s.execute(
+            select(RuntimeStateRow.status)
+            .where(RuntimeStateRow.task_ref == task_id)
+            .order_by(RuntimeStateRow.last_updated.desc())
+            .limit(1)
+        )
+        status = result.scalar_one_or_none()
+
+    if status in {"queued", "running", "paused", "done", "failed", "cancelled"}:
+        return cast(TaskStatus, status)
+    return "queued"
 
 
 def _compute_surprise_score(meta: TaskMeta, runtime: RuntimeState) -> float:

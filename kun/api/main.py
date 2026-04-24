@@ -12,7 +12,7 @@ Routes:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
@@ -24,6 +24,7 @@ from kun import __version__
 from kun.api.chat import router as chat_router
 from kun.api.health import router as health_router
 from kun.api.nuo import router as nuo_router
+from kun.api.runtime import install_runtime
 from kun.api.ws import ws_router
 from kun.core.config import settings
 from kun.core.events import outbox_worker
@@ -42,7 +43,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Load rules into a shared engine; orchestrator reuses it
     rules = load_rules("rules")
-    app.state.rule_engine = RuleEngine(rules)
+    rule_engine = RuleEngine(rules)
+    install_runtime(app, rule_engine=rule_engine)
     log.info("rules.ready", count=len(rules))
 
     # Start outbox worker
@@ -58,7 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
-    outbox: asyncio.Task | None = getattr(app.state, "outbox_task", None)
+    outbox: asyncio.Task[None] | None = getattr(app.state, "outbox_task", None)
     if outbox is not None:
         outbox.cancel()
         with suppress(asyncio.CancelledError):
@@ -83,7 +85,10 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def tenant_middleware(request: Request, call_next):
+async def tenant_middleware(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
     """ADR-007: resolve tenant from X-Tenant-Id header or fall back to default."""
     tenant_id = request.headers.get("X-Tenant-Id", settings().default_tenant_id)
     user_id = request.headers.get("X-User-Id")

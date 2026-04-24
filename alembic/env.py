@@ -5,15 +5,14 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
+# Ensure ORM models are registered on the metadata.
+import kun.core.orm  # noqa: F401
 from alembic import context
+from kun.core.config import settings
+from kun.core.db import Base
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
-
-# Ensure ORM models are registered on the metadata.
-from kun.core.db import Base  # noqa: F401
-from kun.core.config import settings
-import kun.core.orm  # noqa: F401
 
 config = context.config
 

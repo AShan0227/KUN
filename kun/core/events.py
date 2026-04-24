@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from contextlib import asynccontextmanager, suppress
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,14 +60,20 @@ async def fetch_unpublished(
     limit: int = 100,
 ) -> list[EventRow]:
     """Fetch oldest unpublished events."""
-    stmt = (
+    stmt = _unpublished_stmt(limit=limit)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+def _unpublished_stmt(*, limit: int = 100) -> Any:
+    """Build the outbox polling statement with row-level claiming."""
+    return (
         select(EventRow)
         .where(EventRow.published_at.is_(None))
         .order_by(EventRow.occurred_at)
         .limit(limit)
+        .with_for_update(skip_locked=True)
     )
-    result = await session.execute(stmt)
-    return list(result.scalars().all())
 
 
 async def mark_published(session: AsyncSession, event_ids: list[str]) -> None:
@@ -99,25 +105,36 @@ async def count_unpublished(session: AsyncSession) -> int:
 @asynccontextmanager
 async def nats_client() -> AsyncIterator[NATS | None]:
     """Yield a NATS client or None if unavailable (dev fallback)."""
+    nc = await connect_nats()
+    try:
+        yield nc
+    finally:
+        await close_nats(nc)
+
+
+async def connect_nats() -> NATS | None:
+    """Connect to NATS once. Returns None if unavailable."""
     try:
         import nats
     except ImportError:
         log.warning("nats.unavailable", reason="module not installed")
-        yield None
-        return
+        return None
 
     from kun.core.config import settings
 
-    nc = None
     try:
-        nc = await nats.connect(settings().nats_url)
-        yield nc
+        return await nats.connect(settings().nats_url)
     except Exception as e:
         log.warning("nats.connection_failed", error=str(e))
-        yield None
-    finally:
-        if nc is not None:
-            await nc.drain()
+        return None
+
+
+async def close_nats(nc: NATS | None) -> None:
+    """Close a NATS connection best-effort."""
+    if nc is None:
+        return
+    with suppress(Exception):
+        await nc.drain()
 
 
 async def publish_to_nats(nc: NATS | None, event: EventRow) -> bool:
@@ -145,18 +162,27 @@ async def outbox_worker(*, interval_sec: float = 0.5) -> None:
     from kun.core.db import session_scope
 
     log.info("outbox.worker.started", interval_sec=interval_sec)
-    async with nats_client() as nc:
+    nc: NATS | None = None
+    try:
         while True:
             try:
+                if nc is None:
+                    nc = await connect_nats()
+
                 async with session_scope() as s:
-                    rows = await fetch_unpublished(s, limit=100)
                     lag = await count_unpublished(s)
                     events_outbox_lag.set(lag)
 
                     published_ids: list[str] = []
-                    for row in rows:
-                        if await publish_to_nats(nc, row):
-                            published_ids.append(row.event_id)
+                    if nc is not None:
+                        rows = await fetch_unpublished(s, limit=100)
+                        for row in rows:
+                            if await publish_to_nats(nc, row):
+                                published_ids.append(row.event_id)
+                            else:
+                                await close_nats(nc)
+                                nc = None
+                                break
 
                     if published_ids:
                         await mark_published(s, published_ids)
@@ -164,3 +190,5 @@ async def outbox_worker(*, interval_sec: float = 0.5) -> None:
             except Exception as e:
                 log.exception("outbox.worker.error", error=str(e))
             await asyncio.sleep(interval_sec)
+    finally:
+        await close_nats(nc)
