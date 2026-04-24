@@ -22,15 +22,22 @@
 
 ## ADR-002：开发期 LLM 路由
 
-- **状态**：accepted
-- **决策**：严格按用户指定顺序
-  - 主力 = Opus 4.7（个人订阅）
-  - 次力 = Codex 5.3（个人订阅，编程专项）
-  - 便宜档 = Claude 系列（Haiku 4.5 默认，Sonnet 4.6 中档备选）
-  - Fallback = MiniMax M2.7（API，兜底）
-- **调用实现**：走 `api.ofox.ai` proxy 做统一调用入口；探测限流信号 → 自动 fallback；记录降级事件到 NUO 告警通道
-- **影响**：`LLMProvider` 抽象以"能力标签 + 优先级链"为核心；路由引擎按这个链做尝试
-- **上线后**：替换为 Anthropic / OpenAI / MiniMax 官方 API（不改路由逻辑，只换 adapter）
+- **状态**：accepted（2026-04-24 修订：改走 CLI OAuth）
+- **决策**：
+  - 主力 = Opus 4.7（Claude Code CLI OAuth，走 Pro/Max 订阅）
+  - 次力 = Codex 5.3 / GPT-5.5（Codex CLI OAuth，走 ChatGPT 订阅）
+  - 便宜档 = Claude 系列（Haiku/Sonnet 4.6，同 Claude Code CLI 内部自动选）
+  - Fallback = MiniMax M2.7（直连 API，兜底）
+- **调用实现**（修订）：
+  - CLI OAuth 不用 API key，spawn `claude -p` / `codex exec --json` 子进程，解析 JSON/JSONL 输出
+  - 成本口径：`cost_usd_actual=0`（订阅已付），`cost_usd_equivalent=<CLI 报告的等效 API $>`（ADR-008 一致）
+  - 探测限流 / 登出 → 自动 fallback 到 MiniMax；记录降级事件到 NUO 告警通道
+- **影响**：
+  - 新增 `ClaudeCodeProvider` / `CodexCliProvider` 两个 subprocess adapter
+  - `LLMProvider` 抽象不变（能力标签 + 优先级链）
+  - 路由链：**CLI OAuth → API key（如果有）→ MiniMax → Stub**
+- **上线后**：
+  - 订阅路径只适合单机 dev. 多租户生产走 Anthropic/OpenAI/MiniMax 官方 API（只换 adapter, 不改路由逻辑）
 
 ## ADR-003：对话 → TASK.md 编译由 Claude Code 能力托底
 

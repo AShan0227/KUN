@@ -44,36 +44,58 @@ git clone git@github.com:AShan0227/KUN.git
 6. `uv run alembic upgrade head` 建表
 7. 跑单测
 
-### 3. 填 API keys
+### 3. 配置 LLM
 
-打开 `.env` 填 **至少一个** LLM 供应商的 key:
+**推荐: CLI OAuth (无需 API key, 走订阅)**
+
+KUN 默认优先尝试两个 CLI OAuth 会话:
 
 ```bash
-# 方案 A: MiniMax (成本低, 中国可访问, 当前默认)
+# a) Claude Code CLI (Anthropic 订阅 → Opus/Sonnet/Haiku)
+claude --version             # 确认已安装 (应 ≥ 2.1)
+claude /login                # 交互登录, 浏览器点一下
+
+# b) Codex CLI (ChatGPT 订阅 → GPT-5 / GPT-5.5 for coding)
+codex --version              # 确认已安装 (应 ≥ 0.111)
+codex login                  # 交互登录, 浏览器点一下
+# 如果之前登录过但 refresh token 失效, 也跑这个 — 会自动刷新
+codex login status           # 应看到 "Logged in using ChatGPT"
+```
+
+登进去之后什么 key 都不用填, 直接跑 KUN. 每次调用真实开销 = **订阅 $0** (成本口径:
+`cost_usd_actual=0` / `cost_usd_equivalent=<CLI 报告的等效 API $>`, 方便透明化展示).
+
+**补充: MiniMax API (fallback / 中国直连)**
+
+```bash
+# 在 .env 里填:
 MINIMAX_API_KEY=sk-cp-...
 MINIMAX_API_URL=https://api.minimax.chat/v1
 MINIMAX_MODEL=MiniMax-M2.7
-
-# 方案 B: 直接 Anthropic API (需买额度)
-ANTHROPIC_API_KEY=sk-ant-...
-
-# 方案 C: 直接 OpenAI API (需买额度, 用于编程档)
-OPENAI_API_KEY=sk-...
-
-# 方案 D: ofox proxy (如果你有)
-KUN_OFOX_API_KEY=...
-KUN_OFOX_PROXY_URL=https://api.ofox.ai
 ```
 
-**路由优先级** (kun/interface/llm/router.py):
+**完整路由优先级** (kun/interface/llm/router.py, 2026-04-24 版):
 
 ```
-top/strong/cheap:  Anthropic > MiniMax 替代 > Stub
-coding:            OpenAI > MiniMax 替代 > Stub
-fallback:          MiniMax > Stub
+top / strong / cheap:
+  1. Claude Code CLI (OAuth 订阅) ← 当前默认
+  2. Anthropic API (KUN_OFOX_API_KEY / ANTHROPIC_API_KEY)
+  3. MiniMax 替代 (MINIMAX_API_KEY)
+  4. Stub (测试)
+
+coding:
+  1. Codex CLI (OAuth ChatGPT 订阅) ← 当前默认
+  2. OpenAI API
+  3. Claude Code CLI fallback
+  4. MiniMax 替代
+  5. Stub
+
+fallback (主链失败时):
+  1. MiniMax (直连 API)
+  2. Stub
 ```
 
-三者缺失时一切走 Stub (确定性, 适合无网测试).
+设 `KUN_DISABLE_CLI_OAUTH=1` 可强制跳过 CLI 探测. 所有档位都缺时一切走 Stub (确定性, 适合无网测试).
 
 ### 4. 起服务
 
@@ -197,8 +219,10 @@ CI 做的事:
 |------|------|------|
 | `make up` 报 port already allocated | Genesis/dreamapp 占了同名端口 | 改 docker-compose.dev.yml 的 host 端口 |
 | `make migrate` 报 connection refused | postgres 容器没起 | `docker compose -f docker-compose.dev.yml ps` 看状态; `docker compose logs postgres` 看日志 |
-| `kun run` 报 401 Unauthorized | API key 不对 | 确认 `.env` 里 MINIMAX_API_KEY 填对 |
-| `kun run` 一直走 stub | 没配任何 LLM key | 填 `.env` 里至少一个 key |
+| `kun run` 报 401 Unauthorized (MiniMax) | API key 不对 | 确认 `.env` 里 MINIMAX_API_KEY 填对 |
+| `kun run` 用到了 claude CLI 但报 "Not logged in" | Claude Code OAuth 会话过期 | `claude /login` 重登 |
+| `kun run` 用到了 codex CLI 但报 "refresh_token_reused" | Codex OAuth refresh token 失效 | `codex login` 重登 (浏览器点一下) |
+| `kun run` 一直走 stub | 没配任何 LLM 源 | 登 claude CLI, 或登 codex CLI, 或填 `.env` 里的 key |
 | CI 推不上去 (OAuth scope) | gh 没 workflow scope | `./scripts/push-workflow.sh` 或 `gh auth refresh -s workflow` |
 
 ---

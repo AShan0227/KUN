@@ -29,6 +29,8 @@ from kun.interface.llm.base import (
     ModelTier,
     TaskProfile,
 )
+from kun.interface.llm.claude_code_provider import ClaudeCodeProvider
+from kun.interface.llm.codex_cli_provider import CodexCliProvider
 from kun.interface.llm.minimax_provider import MiniMaxProvider
 from kun.interface.llm.openai_provider import OpenAIProvider
 from kun.interface.llm.stub_provider import StubProvider
@@ -163,19 +165,27 @@ _router: LLMRouter | None = None
 def get_router() -> LLMRouter:
     """Build (or return cached) router from environment.
 
-    Resolution priority (per ADR-002 + dev-time reality):
+    Resolution priority (ADR-002, updated 2026-04-24 — user decision:
+    Claude/GPT via CLI OAuth, not API keys):
 
       top / strong / cheap:
-        1. Anthropic via ofox proxy (KUN_OFOX_API_KEY) or direct (ANTHROPIC_API_KEY)
-        2. MiniMax as substitute (if MINIMAX_API_KEY set and no Anthropic)
-        3. Stub (deterministic, for tests)
+        1. Claude Code CLI (OAuth subscription) ← PREFERRED
+        2. Anthropic API (if KUN_OFOX_API_KEY or ANTHROPIC_API_KEY set)
+        3. MiniMax substitute (if MINIMAX_API_KEY)
+        4. Stub (tests)
 
       coding:
-        1. OpenAI via ofox or direct
-        2. MiniMax substitute
-        3. Stub
+        1. Codex CLI (OAuth ChatGPT subscription) ← PREFERRED
+        2. OpenAI API (if key)
+        3. Claude Code CLI (fallback within OAuth family)
+        4. MiniMax substitute
+        5. Stub
 
-      fallback: MiniMax if creds, else stub.
+      fallback:
+        1. MiniMax (direct API)
+        2. Stub
+
+    Disable CLI probing by setting KUN_DISABLE_CLI_OAUTH=1.
     """
     global _router
     if _router is not None:
@@ -183,19 +193,28 @@ def get_router() -> LLMRouter:
 
     providers: dict[ModelTier, LLMProvider] = {}
 
+    cli_disabled = os.getenv("KUN_DISABLE_CLI_OAUTH") == "1"
+    has_claude_cli = ClaudeCodeProvider.available() and not cli_disabled
+    has_codex_cli = CodexCliProvider.available() and not cli_disabled
     has_ofox = bool(os.getenv("KUN_OFOX_API_KEY"))
     has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY"))
     has_openai = bool(os.getenv("OPENAI_API_KEY"))
     has_minimax = bool(os.getenv("MINIMAX_API_KEY"))
 
-    if has_ofox or has_anthropic:
+    # ---- top / strong / cheap ----
+    if has_claude_cli:
+        log.info("router.claude_code_cli", hint="using logged-in claude CLI OAuth")
+        providers["top"] = ClaudeCodeProvider(tier="top")
+        providers["strong"] = ClaudeCodeProvider(tier="strong")
+        providers["cheap"] = ClaudeCodeProvider(tier="cheap")
+    elif has_ofox or has_anthropic:
         providers["top"] = AnthropicProvider(model_id="claude-opus-4-7", tier="top")
         providers["strong"] = AnthropicProvider(model_id="claude-sonnet-4-6", tier="strong")
         providers["cheap"] = AnthropicProvider(model_id="claude-haiku-4-5-20251001", tier="cheap")
     elif has_minimax:
         log.info(
             "router.minimax_substitute",
-            hint="MiniMax M2.7 used for top/strong/cheap (Anthropic creds missing)",
+            hint="MiniMax used for top/strong/cheap (no Anthropic creds/CLI)",
         )
         providers["top"] = MiniMaxProvider(model_id="MiniMax-M2.7")
         providers["top"].tier = "top"
@@ -209,14 +228,22 @@ def get_router() -> LLMRouter:
         providers["strong"] = StubProvider(model_id="stub-sonnet-4.6", tier="strong")
         providers["cheap"] = StubProvider(model_id="stub-haiku-4.5", tier="cheap")
 
-    if has_openai or has_ofox:
+    # ---- coding ----
+    if has_codex_cli:
+        log.info("router.codex_cli", hint="using logged-in codex CLI OAuth")
+        providers["coding"] = CodexCliProvider(tier="coding", model_id="gpt-5.5")
+    elif has_openai or has_ofox:
         providers["coding"] = OpenAIProvider(model_id="codex-5.3", tier="coding")
+    elif has_claude_cli:
+        # Fallback within the OAuth family — claude-code CLI for coding too
+        providers["coding"] = ClaudeCodeProvider(tier="coding")
     elif has_minimax:
         providers["coding"] = MiniMaxProvider(model_id="MiniMax-M2.7")
         providers["coding"].tier = "coding"
     else:
         providers["coding"] = StubProvider(model_id="stub-codex-5.3", tier="coding")
 
+    # ---- fallback ----
     if has_minimax:
         providers["fallback"] = MiniMaxProvider(model_id="MiniMax-M2.7")
     else:
