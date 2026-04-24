@@ -5,7 +5,7 @@
 #
 # 功能:
 #   1. 检查 uv / docker / node 工具链
-#   2. uv sync --dev
+#   2. uv sync --extra dev
 #   3. cp .env.example → .env (如缺失)
 #   4. docker compose -f docker-compose.dev.yml up -d
 #   5. 等 Postgres 就绪
@@ -36,8 +36,8 @@ if [[ ! -f .env ]]; then
     cp .env.example .env
 fi
 
-log "uv sync --dev"
-uv sync --dev >/dev/null
+log "uv sync --extra dev"
+uv sync --extra dev >/dev/null
 
 log "docker compose up -d"
 docker compose -f docker-compose.dev.yml up -d
@@ -63,18 +63,18 @@ uv run pytest tests/unit -q
 log "done. next steps:"
 cat <<NEXT
 
-  API:        make serve
+  API:        make serve    (http://localhost:8010)
   CLI:        uv run kun run "hello"
   Rules:      make rules
   Skills:     make skills
   IdleBatch:  make idle-batch
   Frontend:   cd frontend && npm install && npm run dev
 
-  Grafana:    http://localhost:3001 (admin/admin)
+  Grafana:    http://localhost:3011 (admin/admin)
   Jaeger:     http://localhost:16686
   Prometheus: http://localhost:9090
   NATS:       http://localhost:8222/varz
-  MinIO:      http://localhost:9001 (minio/minio123)
+  MinIO:      http://localhost:19001 (minio/minio123)
 
   tear down:  make down     (keeps data)
               make down-volumes   (wipe data)

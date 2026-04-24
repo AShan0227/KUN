@@ -22,7 +22,7 @@ brew install uv        # 如未安装
 **手动步骤**:
 
 ```bash
-make install     # uv sync --dev
+make install     # uv sync --extra dev
 cp .env.example .env && edit .env    # 填入 KUN_OFOX_API_KEY / MINIMAX_API_KEY
 make up          # docker compose up -d (infra)
 make migrate     # alembic upgrade head
@@ -42,12 +42,12 @@ make run-cli      # 对话框 CLI smoke
 ```
 
 访问：
-- API: http://localhost:8000
-- Docs: http://localhost:8000/docs
-- WebSocket dialog: `ws://localhost:8000/ws`
+- API: http://localhost:8010
+- Docs: http://localhost:8010/docs
+- WebSocket dialog: `ws://localhost:8010/ws`
 - Jaeger (traces): http://localhost:16686
 - Prometheus: http://localhost:9090
-- Grafana: http://localhost:3001
+- Grafana: http://localhost:3011
 
 ## 目录结构
 

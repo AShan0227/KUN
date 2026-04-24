@@ -38,7 +38,7 @@ git clone git@github.com:AShan0227/KUN.git
 该脚本会:
 1. 检查 `uv` + `docker`
 2. `cp .env.example .env` (只在 .env 不存在时)
-3. `uv sync --dev`
+3. `uv sync --extra dev`
 4. `docker compose -f docker-compose.dev.yml up -d` 起 10 个容器
 5. 等 postgres 就绪
 6. `uv run alembic upgrade head` 建表
