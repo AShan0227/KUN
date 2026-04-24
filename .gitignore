@@ -90,4 +90,3 @@ frontend/.turbo/
 # Uvicorn / runtime
 *.pid
 *.sock
-package.json

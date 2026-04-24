@@ -21,6 +21,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from kun.core.logging import get_logger
 from kun.core.metrics import llm_fallback_total
+from kun.core.quota_tracker import get_tracker
 from kun.interface.llm.anthropic_provider import AnthropicProvider
 from kun.interface.llm.base import (
     LLMProvider,
@@ -69,6 +70,39 @@ _PURPOSE_TO_TIER: dict[TaskPurpose, ModelTier] = {
     "compression": "cheap",
 }
 
+# Character thresholds for complexity heuristic (ADR-002 amendment 2026-04-24).
+# Goal: simple prompts → haiku (fast + low Pro-quota cost), long multi-turn →
+# opus. Applies only to the top/strong/cheap tier family (Claude Code CLI).
+_COMPLEXITY_SIMPLE_MAX = 400  # <400 chars ≈ <100 tokens → haiku
+_COMPLEXITY_COMPLEX_MIN = 3000  # >3000 chars ≈ >750 tokens → opus-worthy
+
+
+def _complexity_hint(request: LLMRequest) -> Literal["simple", "medium", "complex"]:
+    """Estimate task complexity from total prompt length."""
+    total = sum(len(m.content or "") for m in request.messages)
+    if total < _COMPLEXITY_SIMPLE_MAX:
+        return "simple"
+    if total < _COMPLEXITY_COMPLEX_MIN:
+        return "medium"
+    return "complex"
+
+
+def _apply_complexity(tier: ModelTier, hint: str) -> ModelTier:
+    """Adjust tier inside the top/strong/cheap family based on complexity.
+
+    Rules (only within {top, strong, cheap}, coding/fallback untouched):
+      - simple  → cheap (downgrade from top/strong)
+      - complex → at least strong (upgrade from cheap)
+      - medium  → keep purpose-derived tier
+    """
+    if tier not in {"top", "strong", "cheap"}:
+        return tier
+    if hint == "simple":
+        return "cheap"
+    if hint == "complex" and tier == "cheap":
+        return "strong"
+    return tier
+
 
 class LLMRouter:
     """Multi-provider router with tier fallback."""
@@ -82,25 +116,62 @@ class LLMRouter:
         self,
         purpose: TaskPurpose,
         profile: TaskProfile | None = None,
+        request: LLMRequest | None = None,
     ) -> RouteDecision:
-        """Pick a primary tier. Can be overridden by profile hints."""
-        primary = _PURPOSE_TO_TIER.get(purpose, "top")
+        """Pick a primary tier, applying four layers in order:
 
-        # Profile-driven overrides
+        1. purpose → tier (static table, `_PURPOSE_TO_TIER`)
+        2. profile overrides (explicit `risk_level` / `prefer_speed` / `needs_coding`)
+        3. complexity hint (prompt-length heuristic; only adjusts inside top/strong/cheap)
+        4. quota tracker (5h rolling window; downgrades when saturated)
+
+        Critical-risk profiles pin to `top` *before* quota resolution — if even
+        top is saturated the tracker will still downgrade but the ask is recorded.
+        """
+        rationale_parts: list[str] = [f"purpose={purpose}"]
+        primary: ModelTier = _PURPOSE_TO_TIER.get(purpose, "top")
+        rationale_parts.append(f"→ {primary}")
+
+        # --- Layer 2: profile overrides ---
         if profile:
             if profile.needs_coding and purpose == "execution":
                 primary = "coding"
+                rationale_parts.append("coding-profile")
             if profile.prefer_speed and primary == "top":
                 primary = "strong"
-            if profile.risk_level == "critical":
-                # Critical → always top regardless
-                primary = "top"
+                rationale_parts.append("prefer-speed→strong")
+
+        # --- Layer 3: complexity hint (only top/strong/cheap family) ---
+        if request is not None and primary in {"top", "strong", "cheap"}:
+            hint = _complexity_hint(request)
+            new_tier = _apply_complexity(primary, hint)
+            if new_tier != primary:
+                rationale_parts.append(f"complexity={hint}→{new_tier}")
+                primary = new_tier
+
+        # --- Critical pinning (after complexity, before quota) ---
+        if profile and profile.risk_level == "critical":
+            primary = "top"
+            rationale_parts.append("critical→top")
+
+        # --- Layer 4: quota-aware downgrade ---
+        if primary in {"top", "strong", "cheap", "fallback"}:
+            resolved = get_tracker().resolve(primary)  # type: ignore[arg-type]
+            if resolved != primary:
+                rationale_parts.append(f"quota:{primary}→{resolved}")
+                log.info(
+                    "router.quota_downgrade",
+                    from_tier=primary,
+                    to_tier=resolved,
+                    purpose=purpose,
+                )
+                primary = resolved
 
         return RouteDecision(
             purpose=purpose,
             primary_tier=primary,
             fallback_tier="fallback",
-            rationale=f"purpose={purpose} → {primary}",
+            rationale=" | ".join(rationale_parts),
         )
 
     # ---------- Execution with fallback ----------
@@ -111,20 +182,27 @@ class LLMRouter:
         *,
         purpose: TaskPurpose = "execution",
     ) -> LLMResponse:
-        """Execute with automatic fallback on failure."""
-        decision = self.decide(purpose, request.profile)
+        """Execute with automatic fallback on failure.
+
+        Records the tier against the quota tracker on success so the next
+        `decide()` sees an updated rolling-window usage.
+        """
+        decision = self.decide(purpose, request.profile, request=request)
         log.debug(
             "router.invoke",
             purpose=purpose,
             primary_tier=decision.primary_tier,
             fallback_tier=decision.fallback_tier,
+            rationale=decision.rationale,
         )
 
         # Try primary tier
         primary = self.providers.get(decision.primary_tier)
         if primary is not None:
             try:
-                return await _invoke_with_retry(primary, request)
+                result = await _invoke_with_retry(primary, request)
+                get_tracker().record(decision.primary_tier)  # type: ignore[arg-type]
+                return result
             except Exception as e:
                 log.warning(
                     "router.primary_failed",
@@ -149,7 +227,9 @@ class LLMRouter:
             purpose=purpose,
             fallback=fallback.name,
         )
-        return await _invoke_with_retry(fallback, request)
+        result = await _invoke_with_retry(fallback, request)
+        get_tracker().record(decision.fallback_tier)  # type: ignore[arg-type]
+        return result
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
@@ -194,8 +274,13 @@ def get_router() -> LLMRouter:
     providers: dict[ModelTier, LLMProvider] = {}
 
     cli_disabled = os.getenv("KUN_DISABLE_CLI_OAUTH") == "1"
+    # CodexCliProvider is broken for ChatGPT-account users: `codex exec` hits
+    # OpenAI's API endpoint which doesn't accept the ChatGPT-only gpt-5.5 /
+    # gpt-5-codex models. Gate with KUN_DISABLE_CODEX_CLI=1 until the MCP-server
+    # path is wired in (tracked in docs/CODEX_BRIEF.md).
+    codex_cli_disabled = os.getenv("KUN_DISABLE_CODEX_CLI") == "1"
     has_claude_cli = ClaudeCodeProvider.available() and not cli_disabled
-    has_codex_cli = CodexCliProvider.available() and not cli_disabled
+    has_codex_cli = CodexCliProvider.available() and not cli_disabled and not codex_cli_disabled
     has_ofox = bool(os.getenv("KUN_OFOX_API_KEY"))
     has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY"))
     has_openai = bool(os.getenv("OPENAI_API_KEY"))
