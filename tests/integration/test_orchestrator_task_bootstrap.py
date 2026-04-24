@@ -26,7 +26,6 @@ from kun.core.ids import new_id
 from kun.core.orm import IdempotencyRow, RuntimeStateRow, TaskRow
 from sqlalchemy import text
 
-
 pytestmark = pytest.mark.integration
 
 

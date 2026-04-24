@@ -74,7 +74,10 @@ jobs:
         image: nats:2.10-alpine
         ports: ["4222:4222"]
     env:
-      KUN_PG_DSN: postgresql+asyncpg://kun:kun@localhost:5432/kun
+      # CI uses the service-container's default 5432 (not the local dev 55432).
+      # kun_app role will be created by migration 0007 inside this very DB.
+      KUN_PG_DSN: postgresql+asyncpg://kun_app:kun_app@localhost:5432/kun
+      KUN_PG_ADMIN_DSN: postgresql+asyncpg://kun:kun@localhost:5432/kun
       KUN_REDIS_URL: redis://localhost:6379/0
       KUN_NATS_URL: nats://localhost:4222
     steps:
