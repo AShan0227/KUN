@@ -24,6 +24,7 @@ EntityKind = Literal[
     "experiment",  # ex-
     "notification",  # nt-
     "rule",  # rl-
+    "action",  # act-
 ]
 
 _PREFIX: Final[dict[EntityKind, str]] = {
@@ -40,6 +41,7 @@ _PREFIX: Final[dict[EntityKind, str]] = {
     "experiment": "ex",
     "notification": "nt",
     "rule": "rl",
+    "action": "act",
 }
 
 

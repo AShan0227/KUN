@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter
 from sqlalchemy import func, select
 
 from kun.core.db import session_scope
-from kun.core.orm import EventRow, TaskRow
+from kun.core.orm import EventRow, PendingActionRow, TaskRow
 from kun.core.tenancy import current_tenant
 
 router = APIRouter()
 
 
 @router.get("/summary")
-async def health_summary() -> dict:
+async def health_summary() -> dict[str, Any]:
     """High-level system health snapshot."""
     tenant = current_tenant()
     async with session_scope() as s:
@@ -26,10 +28,17 @@ async def health_summary() -> dict:
             .group_by(RuntimeStateRow.status)
         )
         rows = (await s.execute(stmt)).all()
-        task_by_status = dict(rows)
+        task_by_status: dict[str, int] = {str(status): int(count) for status, count in rows}
 
         # Outbox lag
-        lag_stmt = select(func.count()).select_from(EventRow).where(EventRow.published_at.is_(None))
+        lag_stmt = (
+            select(func.count())
+            .select_from(EventRow)
+            .where(
+                EventRow.tenant_id == tenant.tenant_id,
+                EventRow.published_at.is_(None),
+            )
+        )
         lag = (await s.execute(lag_stmt)).scalar_one()
 
         total_tasks_stmt = (
@@ -37,9 +46,20 @@ async def health_summary() -> dict:
         )
         total_tasks = (await s.execute(total_tasks_stmt)).scalar_one()
 
+        pending_actions_stmt = (
+            select(func.count())
+            .select_from(PendingActionRow)
+            .where(
+                PendingActionRow.tenant_id == tenant.tenant_id,
+                PendingActionRow.status == "pending_approval",
+            )
+        )
+        pending_actions = (await s.execute(pending_actions_stmt)).scalar_one()
+
     return {
         "tenant_id": tenant.tenant_id,
         "total_tasks": int(total_tasks),
         "tasks_by_status": task_by_status,
         "events_outbox_lag": int(lag),
+        "pending_actions": int(pending_actions),
     }

@@ -25,21 +25,22 @@ class Settings(BaseSettings):
     default_tenant_id: str = "u-sylvan"
 
     # Postgres
-    pg_dsn: str = "postgresql+asyncpg://kun:kun@localhost:5432/kun"
+    pg_dsn: str = "postgresql+asyncpg://kun_app:kun_app@localhost:55432/kun"
+    pg_admin_dsn: str = "postgresql+asyncpg://kun:kun@localhost:55432/kun"
     pg_pool_size: int = 10
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 
     # Qdrant
-    qdrant_url: str = "http://localhost:6333"
+    qdrant_url: str = "http://localhost:16333"
     qdrant_api_key: str | None = None
 
     # NATS
     nats_url: str = "nats://localhost:4222"
 
     # S3 / MinIO
-    s3_endpoint: str = "http://localhost:9000"
+    s3_endpoint: str = "http://localhost:19000"
     s3_access_key: str = "minio"
     s3_secret_key: str = "minio123"
     s3_bucket: str = "kun-artifacts"

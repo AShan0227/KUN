@@ -7,23 +7,30 @@
   - IdempotencyKey.check_or_record (Redis)
   - ResourceGuard.acquire / release (Redis distributed lock)
   - Version check 由 SQLAlchemy 乐观并发自动处理
-
-后续可扩展的:
   - 预冲突扫描 (pre-conflict scanner)
   - 动作前置队列 (pending-actions queue)
 """
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, Literal, cast
 
 import redis.asyncio as aioredis
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from kun.core.config import settings
+from kun.core.ids import new_id
 from kun.core.logging import get_logger
+from kun.core.orm import PendingActionRow, RuntimeStateRow, TaskRow
+from kun.datamodel.task import RiskLevel, TaskRef, TaskSpec
 
 log = get_logger("kun.engineering.concurrency")
 
@@ -40,7 +47,7 @@ class IdempotencyResult:
 class IdempotencyKey:
     """Redis-backed idempotency with TTL."""
 
-    def __init__(self, redis: aioredis.Redis, ttl_sec: int = 300) -> None:
+    def __init__(self, redis: Any, ttl_sec: int = 300) -> None:
         self._redis = redis
         self._ttl = ttl_sec
 
@@ -70,7 +77,7 @@ class ResourceGuard:
     For production-grade Redlock, upgrade to redis-py's Redlock when multi-node.
     """
 
-    def __init__(self, redis: aioredis.Redis) -> None:
+    def __init__(self, redis: Any) -> None:
         self._redis = redis
 
     async def acquire(self, resource: str, *, ttl_sec: int = 10) -> Lease | None:
@@ -98,10 +105,10 @@ class ResourceGuard:
 # =================== Convenience helpers ===================
 
 
-_redis_pool: aioredis.Redis | None = None
+_redis_pool: Any | None = None
 
 
-async def _get_redis() -> aioredis.Redis:
+async def _get_redis() -> Any:
     global _redis_pool
     if _redis_pool is None:
         _redis_pool = aioredis.from_url(settings().redis_url, decode_responses=True)
@@ -136,3 +143,396 @@ class ResourceBusyError(RuntimeError):
 
 # Backwards-compatible alias
 ResourceBusy = ResourceBusyError
+
+
+# =================== Pre-conflict scanner ===================
+
+
+ResourceMode = Literal["read", "write"]
+
+_ACTIVE_RUNTIME_STATUSES = ("queued", "running", "paused")
+_SIDE_EFFECT_KEYWORDS = {
+    "send": "message.send",
+    "email": "message.send",
+    "mail": "message.send",
+    "slack": "message.send",
+    "sms": "message.send",
+    "publish": "content.publish",
+    "post": "content.publish",
+    "delete": "resource.delete",
+    "remove": "resource.delete",
+    "transfer": "payment.transfer",
+    "pay": "payment.transfer",
+    "payment": "payment.transfer",
+    "refund": "payment.refund",
+    "deploy": "deployment.change",
+    "merge": "repository.merge",
+    "发送": "message.send",
+    "邮件": "message.send",
+    "发布": "content.publish",
+    "删除": "resource.delete",
+    "转账": "payment.transfer",
+    "支付": "payment.transfer",
+    "退款": "payment.refund",
+    "部署": "deployment.change",
+    "合并": "repository.merge",
+}
+
+
+class ResourceIntent(BaseModel):
+    """A resource a task may touch before it starts running."""
+
+    resource: str
+    mode: ResourceMode = "read"
+    reason: str = ""
+
+
+class ConflictFinding(BaseModel):
+    """One pre-start conflict with an already active task."""
+
+    task_id: str
+    status: str
+    resource: str
+    existing_mode: ResourceMode
+    incoming_mode: ResourceMode
+    reason: str = ""
+
+
+class PreConflictReport(BaseModel):
+    """Pre-start conflict scan result."""
+
+    resources: list[ResourceIntent] = Field(default_factory=list)
+    conflicts: list[ConflictFinding] = Field(default_factory=list)
+
+    @property
+    def blocking(self) -> bool:
+        return bool(self.conflicts)
+
+
+class PendingActionSpec(BaseModel):
+    """A side-effect action that must be approved before external execution."""
+
+    action_id: str = Field(default_factory=lambda: new_id("action"))
+    action_type: str
+    target_ref: str = "unknown"
+    risk_level: RiskLevel = "medium"
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+async def scan_pre_conflicts(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    task_ref: TaskRef,
+) -> PreConflictReport:
+    """Scan active tasks for write conflicts before starting a new task."""
+    incoming = derive_resource_intents(task_ref)
+    if not incoming:
+        return PreConflictReport()
+
+    result = await session.execute(
+        select(TaskRow, RuntimeStateRow.status)
+        .join(RuntimeStateRow, RuntimeStateRow.task_ref == TaskRow.task_id)
+        .where(TaskRow.tenant_id == tenant_id)
+        .where(TaskRow.task_id != task_ref.meta.task_id)
+        .where(RuntimeStateRow.status.in_(_ACTIVE_RUNTIME_STATUSES))
+    )
+
+    conflicts: list[ConflictFinding] = []
+    for row in result.all():
+        existing_task = cast(TaskRow, row[0])
+        existing_status = cast(str, row[1])
+        existing = _derive_resource_intents_from_task_row(existing_task)
+        conflicts.extend(
+            _compare_resource_intents(
+                task_id=existing_task.task_id,
+                status=existing_status,
+                existing=existing,
+                incoming=incoming,
+            )
+        )
+
+    return PreConflictReport(resources=incoming, conflicts=conflicts)
+
+
+def derive_resource_intents(task_ref: TaskRef) -> list[ResourceIntent]:
+    """Derive conservative resource intents from TASK.md L1/L2."""
+    intents: dict[str, ResourceIntent] = {}
+
+    if task_ref.meta.owner.project_id:
+        _put_intent(
+            intents,
+            ResourceIntent(
+                resource=f"project:{_normalize(task_ref.meta.owner.project_id)}",
+                mode="write" if _task_has_side_effect(task_ref) else "read",
+                reason="task owner project",
+            ),
+        )
+
+    if task_ref.spec is not None:
+        _add_spec_intents(intents, task_ref.spec)
+
+    if _task_has_side_effect(task_ref):
+        root = task_ref.meta.task_type.split(".", 1)[0]
+        _put_intent(
+            intents,
+            ResourceIntent(
+                resource=f"side_effect:{_normalize(root)}",
+                mode="write",
+                reason="task appears to request an external side effect",
+            ),
+        )
+
+    return sorted(intents.values(), key=lambda item: item.resource)
+
+
+def pending_actions_for(task_ref: TaskRef) -> list[PendingActionSpec]:
+    """Extract side-effect actions that should wait for approval."""
+    text = _task_text(task_ref)
+    action_types = sorted(_matched_action_types(text))
+    if not action_types:
+        return []
+
+    target_ref = "unknown"
+    if task_ref.spec and task_ref.spec.external_resources:
+        target_ref = _normalize(task_ref.spec.external_resources[0])
+    elif task_ref.meta.owner.project_id:
+        target_ref = f"project:{_normalize(task_ref.meta.owner.project_id)}"
+
+    risk_level: RiskLevel = task_ref.meta.risk_level
+    if risk_level == "low":
+        risk_level = "medium"
+
+    return [
+        PendingActionSpec(
+            action_type=action_type,
+            target_ref=target_ref,
+            risk_level=risk_level,
+            payload={
+                "task_id": task_ref.meta.task_id,
+                "task_type": task_ref.meta.task_type,
+                "success_criteria_short": task_ref.meta.success_criteria_short,
+                "matched_action_type": action_type,
+            },
+        )
+        for action_type in action_types
+    ]
+
+
+async def enqueue_pending_actions(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    task_ref: TaskRef,
+    actions: list[PendingActionSpec],
+) -> None:
+    """Persist pending side-effect actions in the same transaction as the task."""
+    now = datetime.now(UTC)
+    for action in actions:
+        session.add(
+            PendingActionRow(
+                action_id=action.action_id,
+                tenant_id=tenant_id,
+                task_ref=task_ref.meta.task_id,
+                action_type=action.action_type,
+                target_ref=action.target_ref,
+                status="pending_approval",
+                risk_level=action.risk_level,
+                payload=action.payload,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+
+def _derive_resource_intents_from_task_row(row: TaskRow) -> list[ResourceIntent]:
+    owner_project = row.project_id
+    spec = row.spec_json
+    meta_text = " ".join(
+        [
+            row.task_type,
+            row.success_criteria_short,
+            _spec_text(spec),
+        ]
+    )
+    has_side_effect = _has_side_effect_text(meta_text)
+
+    intents: dict[str, ResourceIntent] = {}
+    if owner_project:
+        _put_intent(
+            intents,
+            ResourceIntent(
+                resource=f"project:{_normalize(owner_project)}",
+                mode="write" if has_side_effect else "read",
+                reason="existing task owner project",
+            ),
+        )
+    if spec:
+        _add_spec_dict_intents(intents, spec)
+    if has_side_effect:
+        root = row.task_type.split(".", 1)[0]
+        _put_intent(
+            intents,
+            ResourceIntent(
+                resource=f"side_effect:{_normalize(root)}",
+                mode="write",
+                reason="existing task appears to request an external side effect",
+            ),
+        )
+    return list(intents.values())
+
+
+def _add_spec_intents(intents: dict[str, ResourceIntent], spec: TaskSpec) -> None:
+    _add_tool_intents(intents, spec.required_tools)
+    _add_external_resource_intents(intents, spec.external_resources)
+    for constraint in spec.constraints:
+        if constraint.kind == "path_only":
+            _put_intent(
+                intents,
+                ResourceIntent(
+                    resource=f"path:{_normalize(constraint.detail)}",
+                    mode="write",
+                    reason="path_only constraint",
+                ),
+            )
+
+
+def _add_spec_dict_intents(intents: dict[str, ResourceIntent], spec: dict[str, Any]) -> None:
+    _add_tool_intents(intents, [str(item) for item in spec.get("required_tools") or []])
+    _add_external_resource_intents(
+        intents,
+        [str(item) for item in spec.get("external_resources") or []],
+    )
+    for raw_constraint in spec.get("constraints") or []:
+        if not isinstance(raw_constraint, dict):
+            continue
+        if raw_constraint.get("kind") == "path_only":
+            _put_intent(
+                intents,
+                ResourceIntent(
+                    resource=f"path:{_normalize(str(raw_constraint.get('detail', 'unknown')))}",
+                    mode="write",
+                    reason="path_only constraint",
+                ),
+            )
+
+
+def _add_tool_intents(intents: dict[str, ResourceIntent], tools: list[str]) -> None:
+    for tool in tools:
+        mode: ResourceMode = "write" if _has_side_effect_text(tool) else "read"
+        _put_intent(
+            intents,
+            ResourceIntent(
+                resource=f"tool:{_normalize(tool)}",
+                mode=mode,
+                reason="required tool",
+            ),
+        )
+
+
+def _add_external_resource_intents(
+    intents: dict[str, ResourceIntent],
+    resources: list[str],
+) -> None:
+    for resource in resources:
+        mode: ResourceMode = "write" if _has_side_effect_text(resource) else "read"
+        _put_intent(
+            intents,
+            ResourceIntent(
+                resource=f"external:{_normalize(resource)}",
+                mode=mode,
+                reason="external resource",
+            ),
+        )
+
+
+def _compare_resource_intents(
+    *,
+    task_id: str,
+    status: str,
+    existing: list[ResourceIntent],
+    incoming: list[ResourceIntent],
+) -> list[ConflictFinding]:
+    conflicts: list[ConflictFinding] = []
+    existing_by_resource = {item.resource: item for item in existing}
+    for incoming_item in incoming:
+        existing_item = existing_by_resource.get(incoming_item.resource)
+        if existing_item is None:
+            continue
+        if existing_item.mode == "read" and incoming_item.mode == "read":
+            continue
+        conflicts.append(
+            ConflictFinding(
+                task_id=task_id,
+                status=status,
+                resource=incoming_item.resource,
+                existing_mode=existing_item.mode,
+                incoming_mode=incoming_item.mode,
+                reason=incoming_item.reason or existing_item.reason,
+            )
+        )
+    return conflicts
+
+
+def _put_intent(intents: dict[str, ResourceIntent], intent: ResourceIntent) -> None:
+    existing = intents.get(intent.resource)
+    if existing is None or (existing.mode == "read" and intent.mode == "write"):
+        intents[intent.resource] = intent
+
+
+def _task_has_side_effect(task_ref: TaskRef) -> bool:
+    return _has_side_effect_text(_task_text(task_ref))
+
+
+def _task_text(task_ref: TaskRef) -> str:
+    parts = [
+        task_ref.meta.task_type,
+        task_ref.meta.success_criteria_short,
+    ]
+    if task_ref.spec is not None:
+        parts.extend(
+            [
+                task_ref.spec.goal_detail,
+                " ".join(task_ref.spec.required_tools),
+                " ".join(task_ref.spec.external_resources),
+                " ".join(task_ref.spec.success_metrics),
+            ]
+        )
+    return " ".join(parts).lower()
+
+
+def _spec_text(spec: dict[str, Any] | None) -> str:
+    if not spec:
+        return ""
+    chunks: list[str] = []
+    for key in ("goal_detail", "required_tools", "external_resources", "success_metrics"):
+        value = spec.get(key)
+        if isinstance(value, list):
+            chunks.extend(str(item) for item in value)
+        elif value is not None:
+            chunks.append(str(value))
+    return " ".join(chunks).lower()
+
+
+def _has_side_effect_text(text: str) -> bool:
+    return bool(_matched_action_types(text))
+
+
+def _matched_action_types(text: str) -> set[str]:
+    normalized = text.lower()
+    ascii_search_text = re.sub(r"[_\-.]+", " ", normalized)
+    matched: set[str] = set()
+    for keyword, action_type in _SIDE_EFFECT_KEYWORDS.items():
+        if keyword.isascii():
+            pattern = rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])"
+            if re.search(pattern, ascii_search_text):
+                matched.add(action_type)
+        elif keyword in normalized:
+            matched.add(action_type)
+    return matched
+
+
+def _normalize(value: str) -> str:
+    normalized = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff._:-]+", "-", value.strip().lower())
+    normalized = re.sub(r"-+", "-", normalized).strip("-")
+    return normalized or "unknown"

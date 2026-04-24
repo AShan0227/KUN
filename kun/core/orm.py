@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models.
 
-All business tables carry `tenant_id` (ADR-007). RLS policies are installed
-in an alembic migration.
+All business tables carry `tenant_id` (ADR-007). Tenant isolation is enforced
+in both application queries and Postgres RLS policies.
 
 The `events` table is the Outbox (ADR-005).
 """
@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -98,6 +99,18 @@ class TaskRow(Base):
 
     __table_args__ = (
         # Idempotency: within time_window_min same fingerprint + tenant = same task
+        CheckConstraint(
+            "risk_level IN ('low', 'medium', 'high', 'critical')",
+            name="risk_level_valid",
+        ),
+        CheckConstraint(
+            "complexity_score >= 0 AND complexity_score <= 1",
+            name="complexity_score_range",
+        ),
+        CheckConstraint("estimated_cost_usd >= 0", name="estimated_cost_nonnegative"),
+        CheckConstraint("estimated_duration_sec >= 0", name="estimated_duration_nonnegative"),
+        CheckConstraint("version >= 1", name="task_version_positive"),
+        CheckConstraint("length(success_criteria_short) > 0", name="success_criteria_not_empty"),
         UniqueConstraint("tenant_id", "fingerprint", name="uq_tasks_fingerprint"),
         Index("ix_tasks_tenant_type", "tenant_id", "task_type"),
     )
@@ -142,6 +155,134 @@ class RuntimeStateRow(Base):
         onupdate=_utcnow,
     )
 
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'paused', 'done', 'failed', 'cancelled')",
+            name="runtime_status_valid",
+        ),
+        CheckConstraint("current_step >= 0", name="runtime_current_step_nonnegative"),
+        CheckConstraint("total_planned_steps >= 0", name="runtime_total_steps_nonnegative"),
+        CheckConstraint(
+            "accumulated_cost_usd_actual >= 0",
+            name="runtime_actual_cost_nonnegative",
+        ),
+        CheckConstraint(
+            "accumulated_cost_usd_equivalent >= 0",
+            name="runtime_equivalent_cost_nonnegative",
+        ),
+        CheckConstraint("accumulated_tokens >= 0", name="runtime_tokens_nonnegative"),
+        CheckConstraint("failures_this_run >= 0", name="runtime_failures_nonnegative"),
+    )
+
+
+# ============== TASK RESULTS ==============
+
+
+class TaskResultRow(Base):
+    """Final task result cache for idempotent API/WebSocket replies."""
+
+    __tablename__ = "task_results"
+
+    task_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tasks.task_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    cost_usd_actual: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    cost_usd_equivalent: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    tokens_in: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    tokens_out: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    duration_sec: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    surprise_score: Mapped[float] = mapped_column(nullable=False, default=0.0)
+
+    notifications_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'paused', 'done', 'failed', 'cancelled')",
+            name="task_result_status_valid",
+        ),
+        CheckConstraint("cost_usd_actual >= 0", name="task_result_actual_cost_nonnegative"),
+        CheckConstraint(
+            "cost_usd_equivalent >= 0",
+            name="task_result_equivalent_cost_nonnegative",
+        ),
+        CheckConstraint("tokens_in >= 0", name="task_result_tokens_in_nonnegative"),
+        CheckConstraint("tokens_out >= 0", name="task_result_tokens_out_nonnegative"),
+        CheckConstraint("duration_sec >= 0", name="task_result_duration_nonnegative"),
+        CheckConstraint(
+            "surprise_score >= 0 AND surprise_score <= 1",
+            name="task_result_surprise_score_range",
+        ),
+        Index("ix_task_results_tenant_task", "tenant_id", "task_id"),
+    )
+
+
+# ============== PENDING SIDE-EFFECT ACTIONS ==============
+
+
+class PendingActionRow(Base):
+    """Side-effect action queue; actions wait here before external execution."""
+
+    __tablename__ = "pending_actions"
+
+    action_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    task_ref: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tasks.task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_ref: Mapped[str] = mapped_column(String(256), nullable=False, default="unknown")
+    status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="pending_approval",
+        index=True,
+    )
+    risk_level: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending_approval', 'approved', 'rejected', 'executed', 'cancelled')",
+            name="pending_action_status_valid",
+        ),
+        CheckConstraint(
+            "risk_level IN ('low', 'medium', 'high', 'critical')",
+            name="pending_action_risk_level_valid",
+        ),
+        Index("ix_pending_actions_tenant_status", "tenant_id", "status"),
+    )
+
 
 # ============== CAPABILITY CARDS ==============
 
@@ -171,6 +312,19 @@ class CapabilityCardRow(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "entity_type IN ('role_template', 'model', 'skill', 'tool', 'human', 'external_agent')",
+            name="capability_entity_type_valid",
+        ),
+        CheckConstraint(
+            "maturity IN ('cold_start', 'warming_up', 'mature')",
+            name="capability_maturity_valid",
+        ),
+        CheckConstraint("version >= 1", name="capability_version_positive"),
+        CheckConstraint(
+            "overall_reliability >= 0 AND overall_reliability <= 1",
+            name="capability_reliability_range",
+        ),
         UniqueConstraint("tenant_id", "entity_type", "entity_id", name="uq_capability_entity"),
     )
 
@@ -228,6 +382,17 @@ class NotificationRow(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    __table_args__ = (
+        CheckConstraint(
+            "severity IN ('info', 'insight', 'warn', 'error')",
+            name="notification_severity_valid",
+        ),
+        CheckConstraint(
+            "channel IN ('main', 'side', 'email', 'webhook', 'push', 'silent')",
+            name="notification_channel_valid",
+        ),
+    )
+
 
 # ============== EXPERIMENTS (ADR-009) ==============
 
@@ -251,6 +416,17 @@ class ExperimentRow(Base):
     )
     promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'shadow', 'canary', 'rollout', 'stable', 'rolled_back')",
+            name="experiment_status_valid",
+        ),
+        CheckConstraint(
+            "rollout_percent >= 0 AND rollout_percent <= 100",
+            name="experiment_rollout_percent_range",
+        ),
+    )
+
 
 # ============== IDEMPOTENCY KEYS ==============
 
@@ -265,3 +441,5 @@ class IdempotencyRow(Base):
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
     ttl_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+
+    __table_args__ = (CheckConstraint("ttl_sec > 0", name="idempotency_ttl_positive"),)

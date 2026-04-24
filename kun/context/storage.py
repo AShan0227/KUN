@@ -11,7 +11,7 @@ All stores are async and tenant-scoped.
 from __future__ import annotations
 
 import json
-from typing import Protocol
+from typing import Any, Protocol
 
 import redis.asyncio as aioredis
 
@@ -82,7 +82,7 @@ class InMemoryAssetStore:
 class RedisAssetStore:
     """Redis HSET per (tenant_id, asset_kind). Values are JSON-serialized LayeredAsset."""
 
-    def __init__(self, redis: aioredis.Redis) -> None:
+    def __init__(self, redis: Any) -> None:
         self._r = redis
 
     @staticmethod

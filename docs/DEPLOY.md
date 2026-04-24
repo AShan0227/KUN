@@ -38,11 +38,18 @@ git clone git@github.com:AShan0227/KUN.git
 该脚本会:
 1. 检查 `uv` + `docker`
 2. `cp .env.example .env` (只在 .env 不存在时)
-3. `uv sync --dev`
+3. `uv sync --extra dev`
 4. `docker compose -f docker-compose.dev.yml up -d` 起 10 个容器
 5. 等 postgres 就绪
 6. `uv run alembic upgrade head` 建表
 7. 跑单测
+
+> 已有旧 `.env` 的机器注意：Postgres 运行时账号已经切到非超级用户 `kun_app`，否则 RLS 会被 superuser 绕过。确认 `.env` 里是：
+>
+> ```bash
+> KUN_PG_DSN=postgresql+asyncpg://kun_app:kun_app@localhost:55432/kun
+> KUN_PG_ADMIN_DSN=postgresql+asyncpg://kun:kun@localhost:55432/kun
+> ```
 
 ### 3. 配置 LLM
 
@@ -100,15 +107,15 @@ fallback (主链失败时):
 ### 4. 起服务
 
 ```bash
-make serve    # API @ :8010
+make serve    # API @ :8000
 ```
 
 访问:
-- http://localhost:8010 — API root
-- http://localhost:8010/docs — OpenAPI
-- http://localhost:8010/health/ready — 依赖健康
-- ws://localhost:8010/ws — 对话 WebSocket
-- http://localhost:8010/nuo/health/summary — 傩健康面板 JSON
+- http://localhost:8000 — API root
+- http://localhost:8000/docs — OpenAPI
+- http://localhost:8000/health/ready — 依赖健康
+- ws://localhost:8000/ws — 对话 WebSocket
+- http://localhost:8000/nuo/health/summary — 傩健康面板 JSON
 - http://localhost:3011 — Grafana (admin/admin)
 - http://localhost:16686 — Jaeger (traces)
 - http://localhost:9090 — Prometheus
@@ -131,7 +138,7 @@ npm run dev     # @ :3000
 uv run kun run "用一句中文介绍你自己"
 
 # HTTP API
-curl -sS -X POST http://localhost:8010/api/chat/run \
+curl -sS -X POST http://localhost:8000/api/chat/run \
   -H 'Content-Type: application/json' \
   -d '{"message":"用一个成语形容目标远大"}' | jq
 
@@ -161,7 +168,7 @@ uv run kun idle-batch --only health_report
 | Jaeger UI | 16686 | 16686 |
 | Loki | 3100 | 3100 |
 | Grafana | 3011 | 3000 |
-| **KUN API** | **8010** | 8000 |
+| **KUN API** | **8000** | 8000 |
 
 如果另一台电脑没跑 Genesis/dreamapp, 这些 host 端口可以改回默认 (编辑 `docker-compose.dev.yml` + `.env`).
 

@@ -17,15 +17,18 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 
 from kun.brain.intent import IntentInterpreter
 from kun.brain.planner import TaskPlanner
 from kun.brain.router import TaskRouter
+from kun.context.packer import ContextPacker
 from kun.core.db import session_scope
 from kun.core.events import emit
 from kun.core.logging import get_logger
@@ -34,25 +37,34 @@ from kun.core.metrics import (
     task_started_total,
     task_surprise_score,
 )
-from kun.core.orm import IdempotencyRow, RuntimeStateRow, TaskRow
+from kun.core.orm import IdempotencyRow, RuntimeStateRow, TaskResultRow, TaskRow
 from kun.core.tenancy import current_tenant
 from kun.datamodel.events import Event
 from kun.datamodel.notification import Notification
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
 from kun.datamodel.task import Owner, TaskMeta, TaskRef
 from kun.engineering.capability_writeback import Outcome, TaskOutcome, record_outcome
+from kun.engineering.concurrency import (
+    enqueue_pending_actions,
+    pending_actions_for,
+    scan_pre_conflicts,
+)
 from kun.engineering.validation import ValidationPipeline, pick_tier
 from kun.interface.llm import (
     LLMMessage,
     LLMRequest,
     LLMResponse,
     LLMRouter,
+    TaskProfile,
     get_router,
 )
+from kun.interface.llm.router import TaskPurpose
 from kun.skills.selector import get_selector as get_skill_selector
 from kun.watchtower.engine import RuleEngine
 
 log = get_logger("kun.engineering.orchestrator")
+
+_STALE_QUEUED_TASK_AFTER = timedelta(seconds=30)
 
 
 class TaskResult(BaseModel):
@@ -94,6 +106,7 @@ class Orchestrator:
         llm_router: LLMRouter | None = None,
         rule_engine: RuleEngine | None = None,
         validation: ValidationPipeline | None = None,
+        context_packer: ContextPacker | None = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -102,6 +115,7 @@ class Orchestrator:
         self.rule_engine = rule_engine or RuleEngine()
         self.validation = validation or ValidationPipeline(self.llm_router)
         self.skill_selector = get_skill_selector()
+        self.context_packer = context_packer or ContextPacker()
 
     # ----------------------------- public entry -----------------------------
 
@@ -128,6 +142,123 @@ class Orchestrator:
         # 1. 意图理解 -> TaskRef
         yield OrchestratorEvent(kind="thinking", data={"stage": "intent"})
         task_ref = await self.intent.interpret(user_message, owner=owner)
+
+        # 2. Idempotency check + persist TaskRow + emit task.created
+        duplicate_ref: str | None = None
+        try:
+            async with session_scope() as s:
+                duplicate_ref = await _find_idempotent_result_ref(
+                    s,
+                    tenant_id=tenant.tenant_id,
+                    fingerprint=task_ref.meta.fingerprint,
+                )
+                if duplicate_ref is None:
+                    initial_runtime = RuntimeState(
+                        task_ref=task_ref.meta.task_id,
+                        total_planned_steps=1,
+                        status="queued",
+                    )
+                    # Persist TaskRow and idempotency key in the same transaction.
+                    s.add(
+                        TaskRow(
+                            task_id=task_ref.meta.task_id,
+                            tenant_id=tenant.tenant_id,
+                            fingerprint=task_ref.meta.fingerprint,
+                            task_type=task_ref.meta.task_type,
+                            risk_level=task_ref.meta.risk_level,
+                            complexity_score=task_ref.meta.complexity_score,
+                            user_id=owner.user_id,
+                            project_id=owner.project_id,
+                            estimated_cost_usd=task_ref.meta.estimated_cost_usd,
+                            estimated_duration_sec=task_ref.meta.estimated_duration_sec,
+                            deadline_iso=task_ref.meta.deadline_iso,
+                            success_criteria_short=task_ref.meta.success_criteria_short,
+                            version=task_ref.meta.version,
+                            spec_json=(
+                                task_ref.spec.model_dump(mode="json") if task_ref.spec else None
+                            ),
+                            layer3_ref=task_ref.layer3_ref,
+                        )
+                    )
+                    s.add(
+                        IdempotencyRow(
+                            key=task_ref.meta.fingerprint,
+                            tenant_id=tenant.tenant_id,
+                            result_ref=task_ref.meta.task_id,
+                        )
+                    )
+                    s.add(_runtime_to_row(initial_runtime, tenant.tenant_id))
+                    await emit(
+                        s,
+                        Event.build(
+                            tenant_id=tenant.tenant_id,
+                            event_type="task.created",
+                            payload={
+                                "task_id": task_ref.meta.task_id,
+                                "task_type": task_ref.meta.task_type,
+                            },
+                            task_ref=task_ref.meta.task_id,
+                        ),
+                    )
+                    await s.flush()
+        except IntegrityError:
+            # A concurrent request may have inserted the same tenant/fingerprint first.
+            async with session_scope() as s:
+                duplicate_ref = await _find_idempotent_result_ref(
+                    s,
+                    tenant_id=tenant.tenant_id,
+                    fingerprint=task_ref.meta.fingerprint,
+                )
+            if duplicate_ref is None:
+                raise
+
+        if duplicate_ref is not None:
+            cached_result = await _load_cached_task_result(
+                tenant_id=tenant.tenant_id,
+                task_id=duplicate_ref,
+            )
+            if cached_result is not None:
+                yield OrchestratorEvent(
+                    kind="insight",
+                    data={
+                        "message": "Duplicate task detected. Returning cached result.",
+                        "cached_ref": duplicate_ref,
+                        "status": cached_result.status,
+                    },
+                )
+                yield OrchestratorEvent(
+                    kind="answer",
+                    data={"content": cached_result.answer, "task_id": duplicate_ref},
+                )
+                yield OrchestratorEvent(
+                    kind="done",
+                    data={"result": cached_result.model_dump(mode="json")},
+                )
+                return
+
+            duration = time.perf_counter() - t0
+            result = await _resolve_duplicate_without_cached_result(
+                tenant_id=tenant.tenant_id,
+                task_id=duplicate_ref,
+                duration_sec=duration,
+            )
+            yield OrchestratorEvent(
+                kind="insight",
+                data={
+                    "message": result.answer,
+                    "cached_ref": duplicate_ref,
+                    "status": result.status,
+                },
+            )
+            yield OrchestratorEvent(
+                kind="answer", data={"content": result.answer, "task_id": duplicate_ref}
+            )
+            yield OrchestratorEvent(
+                kind="done",
+                data={"result": result.model_dump(mode="json")},
+            )
+            return
+
         yield OrchestratorEvent(
             kind="action_plan",
             data={
@@ -139,70 +270,143 @@ class Orchestrator:
             },
         )
 
-        # 2. Idempotency check + persist TaskRow + emit task.created
-        async with session_scope() as s:
-            # Idempotency by fingerprint
-            existing = await s.execute(
-                select(IdempotencyRow).where(IdempotencyRow.key == task_ref.meta.fingerprint)
-            )
-            existing_row = existing.scalar_one_or_none()
-            if existing_row is not None:
-                yield OrchestratorEvent(
-                    kind="insight",
-                    data={
-                        "message": "Duplicate task detected (same fingerprint). Returning cached result.",
-                        "cached_ref": existing_row.result_ref,
-                    },
-                )
-                # In skeleton we still run, but emit the event for honest bookkeeping.
-
-            # Persist TaskRow
-            s.add(
-                TaskRow(
-                    task_id=task_ref.meta.task_id,
-                    tenant_id=tenant.tenant_id,
-                    fingerprint=task_ref.meta.fingerprint,
-                    task_type=task_ref.meta.task_type,
-                    risk_level=task_ref.meta.risk_level,
-                    complexity_score=task_ref.meta.complexity_score,
-                    user_id=owner.user_id,
-                    project_id=owner.project_id,
-                    estimated_cost_usd=task_ref.meta.estimated_cost_usd,
-                    estimated_duration_sec=task_ref.meta.estimated_duration_sec,
-                    deadline_iso=task_ref.meta.deadline_iso,
-                    success_criteria_short=task_ref.meta.success_criteria_short,
-                    version=task_ref.meta.version,
-                    spec_json=(task_ref.spec.model_dump(mode="json") if task_ref.spec else None),
-                    layer3_ref=task_ref.layer3_ref,
-                )
-            )
-            await emit(
-                s,
-                Event.build(
-                    tenant_id=tenant.tenant_id,
-                    event_type="task.created",
-                    payload={
-                        "task_id": task_ref.meta.task_id,
-                        "task_type": task_ref.meta.task_type,
-                    },
-                    task_ref=task_ref.meta.task_id,
-                ),
-            )
-
         # 3. Planning
         plan = self.planner.plan(task_ref)
 
         # 4. Route (pick role + model purpose)
         choice = self.task_router.choose(task_ref.meta)
 
-        # 5. Create RuntimeState
+        # 5. Pre-start safety: conflict scan + pending side-effect actions.
+        pending_actions = pending_actions_for(task_ref)
+        async with session_scope() as s:
+            pre_conflict_report = await scan_pre_conflicts(
+                s,
+                tenant_id=tenant.tenant_id,
+                task_ref=task_ref,
+            )
+            if pending_actions:
+                await enqueue_pending_actions(
+                    s,
+                    tenant_id=tenant.tenant_id,
+                    task_ref=task_ref,
+                    actions=pending_actions,
+                )
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant.tenant_id,
+                        event_type="task.pending_actions.created",
+                        payload={
+                            "task_id": task_ref.meta.task_id,
+                            "actions": [
+                                action.model_dump(mode="json") for action in pending_actions
+                            ],
+                        },
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+            if pre_conflict_report.conflicts:
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant.tenant_id,
+                        event_type="task.pre_conflict_detected",
+                        payload={
+                            "task_id": task_ref.meta.task_id,
+                            "conflicts": [
+                                conflict.model_dump(mode="json")
+                                for conflict in pre_conflict_report.conflicts
+                            ],
+                            "resources": [
+                                resource.model_dump(mode="json")
+                                for resource in pre_conflict_report.resources
+                            ],
+                        },
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+
+        if pre_conflict_report.blocking or pending_actions:
+            reason_parts: list[str] = []
+            if pre_conflict_report.blocking:
+                resources = ", ".join(
+                    sorted({conflict.resource for conflict in pre_conflict_report.conflicts})
+                )
+                reason_parts.append(f"检测到资源冲突: {resources}")
+            if pending_actions:
+                actions = ", ".join(action.action_type for action in pending_actions)
+                reason_parts.append(f"检测到需要审批的外部副作用动作: {actions}")
+
+            answer = "任务已暂停，等待确认。" + "；".join(reason_parts)
+            paused_result = TaskResult(
+                task_id=task_ref.meta.task_id,
+                status="paused",
+                answer=answer,
+                duration_sec=time.perf_counter() - t0,
+            )
+            paused_runtime = RuntimeState(
+                state_id=initial_runtime.state_id,
+                task_ref=task_ref.meta.task_id,
+                total_planned_steps=len(plan.steps),
+                status="paused",
+                finished_at=datetime.now(UTC),
+            )
+            async with session_scope() as s:
+                await _persist_runtime_snapshot(s, paused_runtime, tenant.tenant_id)
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant.tenant_id,
+                        event_type="task.paused.preflight",
+                        payload={
+                            "task_id": task_ref.meta.task_id,
+                            "reason": answer,
+                            "conflicts": [
+                                conflict.model_dump(mode="json")
+                                for conflict in pre_conflict_report.conflicts
+                            ],
+                            "pending_actions": [
+                                action.model_dump(mode="json") for action in pending_actions
+                            ],
+                        },
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+                await _persist_task_result(s, tenant_id=tenant.tenant_id, result=paused_result)
+
+            yield OrchestratorEvent(
+                kind="guard_intervention",
+                data={
+                    "stage": "preflight",
+                    "reason": answer,
+                    "conflicts": [
+                        conflict.model_dump(mode="json")
+                        for conflict in pre_conflict_report.conflicts
+                    ],
+                    "pending_actions": [
+                        action.model_dump(mode="json") for action in pending_actions
+                    ],
+                },
+            )
+            yield OrchestratorEvent(
+                kind="answer",
+                data={"content": answer, "task_id": task_ref.meta.task_id},
+            )
+            yield OrchestratorEvent(
+                kind="done",
+                data={"result": paused_result.model_dump(mode="json")},
+            )
+            return
+
+        # 6. Create RuntimeState
         runtime = RuntimeState(
+            state_id=initial_runtime.state_id,
             task_ref=task_ref.meta.task_id,
             total_planned_steps=len(plan.steps),
             status="running",
         )
         async with session_scope() as s:
-            s.add(_runtime_to_row(runtime, tenant.tenant_id))
+            await _persist_runtime_snapshot(s, runtime, tenant.tenant_id)
             await emit(
                 s,
                 Event.build(
@@ -220,7 +424,22 @@ class Orchestrator:
                 tenant_id=tenant.tenant_id, task_type=task_ref.meta.task_type
             ).inc()
 
-        # 6. Select candidate skills (L1 summary injected into step prompt)
+        # 7. Select candidate skills (L1 summary injected into step prompt)
+        context_pack = await self.context_packer.pack(
+            task_ref,
+            tenant_id=tenant.tenant_id,
+            limit=5,
+        )
+        context_summary = context_pack.summary()
+        if context_pack.items:
+            yield OrchestratorEvent(
+                kind="action_plan",
+                data={
+                    "stage": "context_preheat",
+                    "asset_ids": [item.asset_id for item in context_pack.items],
+                },
+            )
+
         skill_candidates = self.skill_selector.select(task_ref, top_k=3)
         if skill_candidates:
             yield OrchestratorEvent(
@@ -231,11 +450,12 @@ class Orchestrator:
                 },
             )
 
-        # 7. Execute steps (walking skeleton = 1 step)
+        # 8. Execute steps
         answer = ""
         status: TaskStatus = "running"
         notifications: list[Notification] = []
         last_response: LLMResponse | None = None
+        step_outputs: list[tuple[int, str]] = []
 
         try:
             for step_plan in plan.steps:
@@ -252,8 +472,11 @@ class Orchestrator:
                     purpose=choice.purpose,
                     profile=choice.task_profile,
                     skills_summary=self.skill_selector.summary(skill_candidates),
+                    context_summary=context_summary,
+                    prior_outputs=step_outputs,
                 )
                 last_response = response
+                step_outputs.append((step_plan.step_id, answer))
 
                 duration = time.perf_counter() - step_t0
                 step_record = StepRecord(
@@ -485,6 +708,9 @@ class Orchestrator:
             notifications=notifications,
         )
 
+        async with session_scope() as s:
+            await _persist_task_result(s, tenant_id=tenant.tenant_id, result=result)
+
         yield OrchestratorEvent(
             kind="answer",
             data={"content": answer, "task_id": task_ref.meta.task_id},
@@ -501,9 +727,11 @@ class Orchestrator:
         *,
         task_ref: TaskRef,
         step_description: str,
-        purpose,
-        profile,
+        purpose: TaskPurpose,
+        profile: TaskProfile,
         skills_summary: str = "",
+        context_summary: str = "",
+        prior_outputs: list[tuple[int, str]] | None = None,
     ) -> tuple[str, LLMResponse]:
         """Execute a single step by calling the LLM."""
         system_parts = [
@@ -512,11 +740,20 @@ class Orchestrator:
         ]
         if skills_summary:
             system_parts.append(skills_summary)
+        if context_summary:
+            system_parts.append(context_summary)
         system_prompt = "\n\n".join(system_parts)
         request = LLMRequest(
             messages=[
                 LLMMessage(role="system", content=system_prompt, cache=True),
-                LLMMessage(role="user", content=step_description),
+                LLMMessage(
+                    role="user",
+                    content=_execution_user_prompt(
+                        task_ref,
+                        step_description,
+                        prior_outputs=prior_outputs or [],
+                    ),
+                ),
             ],
             temperature=0.5,
             max_tokens=1024,
@@ -546,6 +783,307 @@ def _runtime_to_row(runtime: RuntimeState, tenant_id: str) -> RuntimeStateRow:
         finished_at=runtime.finished_at,
         last_updated=runtime.last_updated,
     )
+
+
+def _runtime_row_values(runtime: RuntimeState, tenant_id: str) -> dict[str, Any]:
+    return {
+        "state_id": runtime.state_id,
+        "task_ref": runtime.task_ref,
+        "tenant_id": tenant_id,
+        "current_step": runtime.current_step,
+        "total_planned_steps": runtime.total_planned_steps,
+        "status": runtime.status,
+        "accumulated_cost_usd_actual": runtime.accumulated_cost_usd_actual,
+        "accumulated_cost_usd_equivalent": runtime.accumulated_cost_usd_equivalent,
+        "accumulated_tokens": runtime.accumulated_tokens,
+        "failures_this_run": runtime.failures_this_run,
+        "blob": runtime.model_dump(mode="json"),
+        "started_at": runtime.started_at,
+        "finished_at": runtime.finished_at,
+        "last_updated": runtime.last_updated,
+    }
+
+
+async def _persist_runtime_snapshot(session: Any, runtime: RuntimeState, tenant_id: str) -> None:
+    """Insert or update a runtime snapshot by state_id."""
+    values = _runtime_row_values(runtime, tenant_id)
+    stmt = pg_insert(RuntimeStateRow).values(**values)
+    update_values = {
+        key: getattr(stmt.excluded, key)
+        for key in values
+        if key not in {"state_id", "task_ref", "tenant_id"}
+    }
+    await session.execute(
+        stmt.on_conflict_do_update(
+            index_elements=[RuntimeStateRow.state_id],
+            set_=update_values,
+        )
+    )
+
+
+async def _find_idempotent_result_ref(
+    session: Any,
+    *,
+    tenant_id: str,
+    fingerprint: str,
+) -> str | None:
+    """Return the existing task id for a tenant/fingerprint, if any."""
+    existing_key = await session.execute(
+        select(IdempotencyRow).where(
+            IdempotencyRow.key == fingerprint,
+            IdempotencyRow.tenant_id == tenant_id,
+        )
+    )
+    existing_row = existing_key.scalar_one_or_none()
+    if existing_row is not None:
+        return cast(str, existing_row.result_ref)
+
+    existing_task = await session.execute(
+        select(TaskRow.task_id).where(
+            TaskRow.tenant_id == tenant_id,
+            TaskRow.fingerprint == fingerprint,
+        )
+    )
+    task_id = existing_task.scalar_one_or_none()
+    return cast(str | None, task_id)
+
+
+async def _load_cached_task_result(*, tenant_id: str, task_id: str) -> TaskResult | None:
+    """Load a persisted final result for an idempotent duplicate request."""
+    async with session_scope() as s:
+        result = await s.execute(
+            select(TaskResultRow.result_json).where(
+                TaskResultRow.tenant_id == tenant_id,
+                TaskResultRow.task_id == task_id,
+            )
+        )
+        result_json = result.scalar_one_or_none()
+
+    if isinstance(result_json, dict) and result_json:
+        return TaskResult.model_validate(result_json)
+    return None
+
+
+async def _resolve_duplicate_without_cached_result(
+    *,
+    tenant_id: str,
+    task_id: str,
+    duration_sec: float,
+) -> TaskResult:
+    """Return a bounded duplicate response when no final result exists yet.
+
+    If an old request crashed before runtime initialization completed, mark it
+    failed and persist that result so repeat callers do not see a forever-queued
+    task. Fresh queued/running/paused tasks still report their live status.
+    """
+    progress = await _load_task_progress(tenant_id=tenant_id, task_id=task_id)
+    status, last_updated = progress
+
+    if status is None or _is_stale_queued_status(status, last_updated):
+        reason = (
+            "Duplicate task detected, but the previous attempt appears to have stopped "
+            "during initialization. Marked it failed so it will not look stuck forever."
+        )
+        result = TaskResult(
+            task_id=task_id,
+            status="failed",
+            answer=reason,
+            duration_sec=duration_sec,
+        )
+        now = datetime.now(UTC)
+        async with session_scope(tenant_id=tenant_id) as s:
+            if status is None:
+                failed_runtime = RuntimeState(
+                    task_ref=task_id,
+                    total_planned_steps=1,
+                    status="failed",
+                    finished_at=now,
+                    last_updated=now,
+                )
+                await _persist_runtime_snapshot(s, failed_runtime, tenant_id)
+            else:
+                await s.execute(
+                    update(RuntimeStateRow)
+                    .where(
+                        RuntimeStateRow.tenant_id == tenant_id,
+                        RuntimeStateRow.task_ref == task_id,
+                        RuntimeStateRow.status == "queued",
+                    )
+                    .values(status="failed", finished_at=now, last_updated=now)
+                )
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant_id,
+                    event_type="task.failed",
+                    payload={
+                        "task_id": task_id,
+                        "reason": "stale_duplicate_without_cached_result",
+                    },
+                    task_ref=task_id,
+                ),
+            )
+            await _persist_task_result(s, tenant_id=tenant_id, result=result)
+        return result
+
+    message = f"Duplicate task detected. Existing task: {task_id}."
+    return TaskResult(task_id=task_id, status=status, answer=message, duration_sec=duration_sec)
+
+
+def _is_stale_queued_status(status: TaskStatus, last_updated: datetime | None) -> bool:
+    if status != "queued" or last_updated is None:
+        return False
+    return datetime.now(UTC) - last_updated > _STALE_QUEUED_TASK_AFTER
+
+
+async def _persist_task_result(session: Any, *, tenant_id: str, result: TaskResult) -> None:
+    """Upsert the final task result so idempotent retries can return the old answer."""
+    now = datetime.now(UTC)
+    result_json = result.model_dump(mode="json")
+    values = {
+        "task_id": result.task_id,
+        "tenant_id": tenant_id,
+        "status": result.status,
+        "answer": result.answer,
+        "cost_usd_actual": result.cost_usd_actual,
+        "cost_usd_equivalent": result.cost_usd_equivalent,
+        "tokens_in": result.tokens_in,
+        "tokens_out": result.tokens_out,
+        "duration_sec": result.duration_sec,
+        "surprise_score": result.surprise_score,
+        "notifications_json": [
+            notification.model_dump(mode="json") for notification in result.notifications
+        ],
+        "result_json": result_json,
+        "created_at": now,
+        "updated_at": now,
+    }
+    stmt = pg_insert(TaskResultRow).values(**values)
+    await session.execute(
+        stmt.on_conflict_do_update(
+            index_elements=[TaskResultRow.task_id],
+            set_={
+                "tenant_id": stmt.excluded.tenant_id,
+                "status": stmt.excluded.status,
+                "answer": stmt.excluded.answer,
+                "cost_usd_actual": stmt.excluded.cost_usd_actual,
+                "cost_usd_equivalent": stmt.excluded.cost_usd_equivalent,
+                "tokens_in": stmt.excluded.tokens_in,
+                "tokens_out": stmt.excluded.tokens_out,
+                "duration_sec": stmt.excluded.duration_sec,
+                "surprise_score": stmt.excluded.surprise_score,
+                "notifications_json": stmt.excluded.notifications_json,
+                "result_json": stmt.excluded.result_json,
+                "updated_at": now,
+            },
+        )
+    )
+
+
+def _execution_user_prompt(
+    task_ref: TaskRef,
+    step_description: str,
+    *,
+    prior_outputs: list[tuple[int, str]] | None = None,
+) -> str:
+    """Build the execution prompt from TASK.md L1/L2 context."""
+    lines = [
+        "请执行当前任务步骤。",
+        "",
+        "任务身份:",
+        f"- task_id: {task_ref.meta.task_id}",
+        f"- task_type: {task_ref.meta.task_type}",
+        f"- risk_level: {task_ref.meta.risk_level}",
+        f"- complexity_score: {task_ref.meta.complexity_score:.2f}",
+        "",
+        "当前步骤:",
+        f"- {step_description}",
+        "",
+        "成功标准:",
+        f"- {task_ref.meta.success_criteria_short}",
+    ]
+
+    if prior_outputs:
+        lines.extend(["", "已完成步骤输出摘要:"])
+        for step_id, output in prior_outputs[-3:]:
+            preview = output.strip().replace("\n", " ")
+            if len(preview) > 400:
+                preview = preview[:397].rstrip() + "..."
+            lines.append(f"- step {step_id}: {preview}")
+
+    if task_ref.spec is not None:
+        spec = task_ref.spec
+        lines.extend(["", "原始目标:", f"- {spec.goal_detail}"])
+        if spec.success_metrics:
+            lines.extend(["", "可验证指标:", *[f"- {metric}" for metric in spec.success_metrics]])
+        if spec.constraints:
+            lines.extend(
+                [
+                    "",
+                    "约束:",
+                    *[
+                        f"- {constraint.kind}: {constraint.detail}"
+                        for constraint in spec.constraints
+                    ],
+                ]
+            )
+        if spec.required_tools:
+            lines.extend(["", "可能需要的工具:", *[f"- {tool}" for tool in spec.required_tools]])
+        if spec.external_resources:
+            lines.extend(
+                ["", "外部资源:", *[f"- {resource}" for resource in spec.external_resources]]
+            )
+        if spec.foreseen_risks:
+            lines.extend(
+                [
+                    "",
+                    "已预见风险:",
+                    *[
+                        f"- {risk.severity}: {risk.description}"
+                        + (f"；应对: {risk.mitigation_hint}" if risk.mitigation_hint else "")
+                        for risk in spec.foreseen_risks
+                    ],
+                ]
+            )
+        if spec.fallback_plan:
+            lines.extend(["", "失败回退方案:", f"- {spec.fallback_plan}"])
+
+    lines.extend(
+        [
+            "",
+            "输出要求:",
+            "- 直接给结果。",
+            "- 如果信息不足，明确说缺什么，不要编造。",
+            "- 如果触碰约束或高风险动作，先说明风险和需要确认的点。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+async def _load_task_progress(
+    *,
+    tenant_id: str,
+    task_id: str,
+) -> tuple[TaskStatus | None, datetime | None]:
+    """Load the latest runtime status and timestamp for an existing task."""
+    async with session_scope(tenant_id=tenant_id) as s:
+        result = await s.execute(
+            select(RuntimeStateRow.status, RuntimeStateRow.last_updated)
+            .where(
+                RuntimeStateRow.tenant_id == tenant_id,
+                RuntimeStateRow.task_ref == task_id,
+            )
+            .order_by(RuntimeStateRow.last_updated.desc())
+            .limit(1)
+        )
+        row = result.one_or_none()
+
+    if row is None:
+        return None, None
+    status, last_updated = row
+    if status in {"queued", "running", "paused", "done", "failed", "cancelled"}:
+        return cast(TaskStatus, status), cast(datetime, last_updated)
+    return None, cast(datetime | None, last_updated)
 
 
 def _compute_surprise_score(meta: TaskMeta, runtime: RuntimeState) -> float:

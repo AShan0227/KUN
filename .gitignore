@@ -40,6 +40,7 @@ htmlcov/
 .dmypy.json
 .pyre/
 .pytype/
+*.tsbuildinfo
 
 # Ruff
 .ruff_cache/

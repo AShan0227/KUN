@@ -9,7 +9,7 @@ ADR-007: schema-ready + runtime 单租户默认
 from __future__ import annotations
 
 import os
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Self
 
@@ -51,7 +51,7 @@ class tenant_scope:  # noqa: N801 — intentional lowercase for `with` usage
 
     def __init__(self, ctx: TenantContext) -> None:
         self.ctx = ctx
-        self._token = None
+        self._token: Token[TenantContext] | None = None
 
     def __enter__(self) -> Self:
         self._token = _current.set(self.ctx)

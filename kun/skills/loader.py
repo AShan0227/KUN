@@ -25,9 +25,10 @@ SKILL.md 格式 (frontmatter + markdown body):
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -91,7 +92,7 @@ class SkillRegistry:
     def __len__(self) -> int:
         return len(self._by_name)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[SkillRecord]:
         return iter(self._by_name.values())
 
 
@@ -121,7 +122,7 @@ def parse_skill(content: str, source_path: str) -> SkillRecord:
         raise ValueError(f"SKILL.md missing frontmatter: {source_path}")
 
     fm_text, body_md = m.groups()
-    fm_data = yaml.safe_load(fm_text) or {}
+    fm_data = cast(dict[str, Any], yaml.safe_load(fm_text) or {})
     manifest = SkillManifest.model_validate(fm_data)
     return SkillRecord(
         skill_id=manifest.name,

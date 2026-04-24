@@ -5,23 +5,23 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
+# Ensure ORM models are registered on the metadata.
+import kun.core.orm  # noqa: F401
 from alembic import context
+from kun.core.config import settings
+from kun.core.db import Base
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
-
-# Ensure ORM models are registered on the metadata.
-from kun.core.db import Base  # noqa: F401
-from kun.core.config import settings
-import kun.core.orm  # noqa: F401
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Override sqlalchemy.url from env-sourced settings
-config.set_main_option("sqlalchemy.url", settings().pg_dsn)
+# Migrations use the admin DSN. The application runtime uses KUN_PG_DSN,
+# usually a non-superuser role so Postgres RLS is actually enforced.
+config.set_main_option("sqlalchemy.url", settings().pg_admin_dsn)
 
 target_metadata = Base.metadata
 

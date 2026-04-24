@@ -5,7 +5,7 @@
 #
 # 功能:
 #   1. 检查 uv / docker / node 工具链
-#   2. uv sync --dev
+#   2. uv sync --extra dev
 #   3. cp .env.example → .env (如缺失)
 #   4. docker compose -f docker-compose.dev.yml up -d
 #   5. 等 Postgres 就绪
@@ -37,6 +37,12 @@ fi
 if [[ ! -f .env ]]; then
     log "creating .env from .env.example (FILL IN your keys before using real LLMs)"
     cp .env.example .env
+else
+    if grep -q '^KUN_PG_DSN=postgresql+asyncpg://kun:kun@' .env; then
+        log "warning: .env uses admin Postgres role for KUN_PG_DSN; switch to kun_app so RLS is enforced"
+        log "         KUN_PG_DSN=postgresql+asyncpg://kun_app:kun_app@localhost:55432/kun"
+        log "         KUN_PG_ADMIN_DSN=postgresql+asyncpg://kun:kun@localhost:55432/kun"
+    fi
 fi
 
 # uv sync: .venv 可能在 docker rebuild / make clean 后被清掉, 每次 bootstrap 都幂等重跑
@@ -68,18 +74,18 @@ uv run pytest tests/unit -q
 log "done. next steps:"
 cat <<NEXT
 
-  API:        make serve
+  API:        make serve    (http://localhost:8000)
   CLI:        uv run kun run "hello"
   Rules:      make rules
   Skills:     make skills
   IdleBatch:  make idle-batch
   Frontend:   cd frontend && npm install && npm run dev
 
-  Grafana:    http://localhost:3001 (admin/admin)
+  Grafana:    http://localhost:3011 (admin/admin)
   Jaeger:     http://localhost:16686
   Prometheus: http://localhost:9090
   NATS:       http://localhost:8222/varz
-  MinIO:      http://localhost:9001 (minio/minio123)
+  MinIO:      http://localhost:19001 (minio/minio123)
 
   tear down:  make down     (keeps data)
               make down-volumes   (wipe data)

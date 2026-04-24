@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from kun import __version__
+from kun.core.config import settings
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
@@ -24,8 +25,8 @@ def version() -> None:
 
 @app.command()
 def serve(
-    host: str = typer.Option("0.0.0.0", "--host", help="Bind host"),
-    port: int = typer.Option(8000, "--port", help="Bind port"),
+    host: str = typer.Option(settings().api_host, "--host", help="Bind host"),
+    port: int = typer.Option(settings().api_port, "--port", help="Bind port"),
     reload: bool = typer.Option(False, "--reload", help="uvicorn autoreload"),
 ) -> None:
     """Run the FastAPI server."""

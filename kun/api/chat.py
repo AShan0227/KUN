@@ -5,14 +5,13 @@ For streaming / interactive use the WebSocket endpoint at /ws (ADR-010).
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
-from kun.engineering.orchestrator import Orchestrator, TaskResult
+from kun.api.runtime import get_orchestrator
+from kun.engineering.orchestrator import TaskResult
 
 router = APIRouter()
-
-_orchestrator = Orchestrator()
 
 
 class ChatRequest(BaseModel):
@@ -20,6 +19,6 @@ class ChatRequest(BaseModel):
 
 
 @router.post("/run", response_model=TaskResult)
-async def run_task(req: ChatRequest) -> TaskResult:
+async def run_task(req: ChatRequest, request: Request) -> TaskResult:
     """Run one task end-to-end, blocking until completion."""
-    return await _orchestrator.run(req.message)
+    return await get_orchestrator(request.app).run(req.message)

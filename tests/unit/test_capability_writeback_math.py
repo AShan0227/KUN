@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import pytest
 from kun.datamodel.capability import CapabilityCard, EntityRef
-from kun.engineering.capability_writeback import TaskOutcome, _apply_outcome
+from kun.engineering.capability_writeback import (
+    TaskOutcome,
+    _apply_outcome,
+    _select_card_for_update,
+    record_outcome,
+)
+from sqlalchemy.dialects import postgresql
 
 
 def _empty_card() -> CapabilityCard:
@@ -110,3 +116,68 @@ def test_apply_outcome_surprise_rate_ema():
     # surprise_rate after 6 events with an EMA alpha=1/20 starting at 0 should
     # be > 0 but small (we hit 3 surprise events)
     assert 0.0 < cap.quality.surprise_rate < 0.5
+
+
+@pytest.mark.unit
+def test_writeback_select_locks_existing_card() -> None:
+    sql = str(
+        _select_card_for_update(
+            tenant_id="u-sylvan",
+            entity_type="role_template",
+            entity_id="rt-test",
+        ).compile(dialect=postgresql.dialect())
+    )
+
+    assert "FOR UPDATE" in sql
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_record_outcome_sets_explicit_rls_tenant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, str | None] = {}
+
+    class _FakeSession:
+        pass
+
+    class _FakeScope:
+        async def __aenter__(self) -> _FakeSession:
+            return _FakeSession()
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+    def fake_session_scope(*, tenant_id: str | None = None, **_kwargs: object) -> _FakeScope:
+        seen["tenant_id"] = tenant_id
+        return _FakeScope()
+
+    async def fake_record_in_txn(
+        _session: _FakeSession,
+        _tenant_id: str,
+        _outcome: TaskOutcome,
+    ) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "kun.engineering.capability_writeback.session_scope",
+        fake_session_scope,
+    )
+    monkeypatch.setattr(
+        "kun.engineering.capability_writeback._record_outcome_in_txn",
+        fake_record_in_txn,
+    )
+
+    await record_outcome(
+        "u-explicit",
+        TaskOutcome(
+            entity_type="role_template",
+            entity_id="rt-test",
+            task_type="coding.python.basic",
+            outcome="pass",
+            cost_usd=0.01,
+            duration_sec=1,
+        ),
+    )
+
+    assert seen == {"tenant_id": "u-explicit"}

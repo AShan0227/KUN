@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter
 from sqlalchemy import func, select
@@ -16,7 +17,7 @@ router = APIRouter()
 
 
 @router.get("/summary")
-async def budget_summary() -> dict:
+async def budget_summary() -> dict[str, Any]:
     """Cost tally (equivalent vs actual — ADR-008)."""
     tenant = current_tenant()
     cfg = settings()
@@ -35,7 +36,6 @@ async def budget_summary() -> dict:
         )
         day_actual, day_equiv = (await s.execute(stmt)).one()
 
-        stmt2 = stmt.where(False)  # no-op trick: reuse above but different window
         stmt2 = (
             select(
                 func.coalesce(func.sum(RuntimeStateRow.accumulated_cost_usd_actual), 0.0),

@@ -6,7 +6,7 @@ help:  ## show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 install:  ## install dev deps via uv
-	uv sync --dev
+	uv sync --extra dev
 
 dev: install  ## alias for install
 

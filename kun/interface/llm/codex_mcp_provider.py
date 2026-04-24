@@ -88,9 +88,9 @@ class CodexMcpProvider(LLMProvider):
         run_cwd: str | None = None,
     ) -> None:
         self.tier = tier
-        self.model_id = model_id or os.getenv("KUN_CODEX_MCP_MODEL", _DEFAULT_MODEL)
-        self.reasoning_effort = reasoning_effort or os.getenv(
-            "KUN_CODEX_REASONING", _DEFAULT_REASONING
+        self.model_id = model_id or os.getenv("KUN_CODEX_MCP_MODEL") or _DEFAULT_MODEL
+        self.reasoning_effort = (
+            reasoning_effort or os.getenv("KUN_CODEX_REASONING") or _DEFAULT_REASONING
         )
         self._cli = cli_path or shutil.which("codex") or "codex"
         self._timeout = timeout_sec
@@ -122,9 +122,10 @@ class CodexMcpProvider(LLMProvider):
         prompt = self._build_prompt(request)
         started = time.perf_counter()
 
-        payload = {
+        req_id = self._next_id()
+        payload: dict[str, Any] = {
             "jsonrpc": "2.0",
-            "id": self._next_id(),
+            "id": req_id,
             "method": "tools/call",
             "params": {
                 "name": "codex",
@@ -143,18 +144,18 @@ class CodexMcpProvider(LLMProvider):
             },
         }
 
-        future = asyncio.get_event_loop().create_future()
-        self._pending[payload["id"]] = future  # type: ignore[index]
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_event_loop().create_future()
+        self._pending[req_id] = future
 
         try:
             await self._send(payload)
             response = await asyncio.wait_for(future, timeout=self._timeout)
         except TimeoutError:
-            self._pending.pop(payload["id"], None)  # type: ignore[arg-type]
+            self._pending.pop(req_id, None)
             await self._kill()
             raise RuntimeError(f"codex mcp-server timed out after {self._timeout}s") from None
         except Exception:
-            self._pending.pop(payload["id"], None)  # type: ignore[arg-type]
+            self._pending.pop(req_id, None)
             raise
 
         latency_ms = (time.perf_counter() - started) * 1000
