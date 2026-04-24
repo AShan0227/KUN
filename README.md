@@ -5,6 +5,10 @@
 权威文档：
 - [`KUN-V1.md`](./KUN-V1.md) — 开发方案
 - [`decisions.md`](./decisions.md) — ADR 决策记录（权威）
+- [`PROGRESS.md`](./PROGRESS.md) — 开发进度
+- [`docs/DEPLOY.md`](./docs/DEPLOY.md) — 另一台机器如何部署 + 做 PR
+
+GitHub: https://github.com/AShan0227/KUN (private)
 
 ## Quickstart
 
