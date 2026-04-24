@@ -209,6 +209,56 @@ class TaskResultRow(Base):
     )
 
 
+# ============== PENDING SIDE-EFFECT ACTIONS ==============
+
+
+class PendingActionRow(Base):
+    """Side-effect action queue; actions wait here before external execution."""
+
+    __tablename__ = "pending_actions"
+
+    action_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    task_ref: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tasks.task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_ref: Mapped[str] = mapped_column(String(256), nullable=False, default="unknown")
+    status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="pending_approval",
+        index=True,
+    )
+    risk_level: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending_approval', 'approved', 'rejected', 'executed', 'cancelled')",
+            name="pending_action_status_valid",
+        ),
+        CheckConstraint(
+            "risk_level IN ('low', 'medium', 'high', 'critical')",
+            name="pending_action_risk_level_valid",
+        ),
+        Index("ix_pending_actions_tenant_status", "tenant_id", "status"),
+    )
+
+
 # ============== CAPABILITY CARDS ==============
 
 

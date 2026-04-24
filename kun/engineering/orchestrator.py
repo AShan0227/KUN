@@ -44,6 +44,11 @@ from kun.datamodel.notification import Notification
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
 from kun.datamodel.task import Owner, TaskMeta, TaskRef
 from kun.engineering.capability_writeback import Outcome, TaskOutcome, record_outcome
+from kun.engineering.concurrency import (
+    enqueue_pending_actions,
+    pending_actions_for,
+    scan_pre_conflicts,
+)
 from kun.engineering.validation import ValidationPipeline, pick_tier
 from kun.interface.llm import (
     LLMMessage,
@@ -267,7 +272,128 @@ class Orchestrator:
         # 4. Route (pick role + model purpose)
         choice = self.task_router.choose(task_ref.meta)
 
-        # 5. Create RuntimeState
+        # 5. Pre-start safety: conflict scan + pending side-effect actions.
+        pending_actions = pending_actions_for(task_ref)
+        async with session_scope() as s:
+            pre_conflict_report = await scan_pre_conflicts(
+                s,
+                tenant_id=tenant.tenant_id,
+                task_ref=task_ref,
+            )
+            if pending_actions:
+                await enqueue_pending_actions(
+                    s,
+                    tenant_id=tenant.tenant_id,
+                    task_ref=task_ref,
+                    actions=pending_actions,
+                )
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant.tenant_id,
+                        event_type="task.pending_actions.created",
+                        payload={
+                            "task_id": task_ref.meta.task_id,
+                            "actions": [
+                                action.model_dump(mode="json") for action in pending_actions
+                            ],
+                        },
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+            if pre_conflict_report.conflicts:
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant.tenant_id,
+                        event_type="task.pre_conflict_detected",
+                        payload={
+                            "task_id": task_ref.meta.task_id,
+                            "conflicts": [
+                                conflict.model_dump(mode="json")
+                                for conflict in pre_conflict_report.conflicts
+                            ],
+                            "resources": [
+                                resource.model_dump(mode="json")
+                                for resource in pre_conflict_report.resources
+                            ],
+                        },
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+
+        if pre_conflict_report.blocking or pending_actions:
+            reason_parts: list[str] = []
+            if pre_conflict_report.blocking:
+                resources = ", ".join(
+                    sorted({conflict.resource for conflict in pre_conflict_report.conflicts})
+                )
+                reason_parts.append(f"检测到资源冲突: {resources}")
+            if pending_actions:
+                actions = ", ".join(action.action_type for action in pending_actions)
+                reason_parts.append(f"检测到需要审批的外部副作用动作: {actions}")
+
+            answer = "任务已暂停，等待确认。" + "；".join(reason_parts)
+            paused_result = TaskResult(
+                task_id=task_ref.meta.task_id,
+                status="paused",
+                answer=answer,
+                duration_sec=time.perf_counter() - t0,
+            )
+            paused_runtime = RuntimeState(
+                task_ref=task_ref.meta.task_id,
+                total_planned_steps=len(plan.steps),
+                status="paused",
+                finished_at=datetime.now(UTC),
+            )
+            async with session_scope() as s:
+                s.add(_runtime_to_row(paused_runtime, tenant.tenant_id))
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant.tenant_id,
+                        event_type="task.paused.preflight",
+                        payload={
+                            "task_id": task_ref.meta.task_id,
+                            "reason": answer,
+                            "conflicts": [
+                                conflict.model_dump(mode="json")
+                                for conflict in pre_conflict_report.conflicts
+                            ],
+                            "pending_actions": [
+                                action.model_dump(mode="json") for action in pending_actions
+                            ],
+                        },
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+                await _persist_task_result(s, tenant_id=tenant.tenant_id, result=paused_result)
+
+            yield OrchestratorEvent(
+                kind="guard_intervention",
+                data={
+                    "stage": "preflight",
+                    "reason": answer,
+                    "conflicts": [
+                        conflict.model_dump(mode="json")
+                        for conflict in pre_conflict_report.conflicts
+                    ],
+                    "pending_actions": [
+                        action.model_dump(mode="json") for action in pending_actions
+                    ],
+                },
+            )
+            yield OrchestratorEvent(
+                kind="answer",
+                data={"content": answer, "task_id": task_ref.meta.task_id},
+            )
+            yield OrchestratorEvent(
+                kind="done",
+                data={"result": paused_result.model_dump(mode="json")},
+            )
+            return
+
+        # 6. Create RuntimeState
         runtime = RuntimeState(
             task_ref=task_ref.meta.task_id,
             total_planned_steps=len(plan.steps),
@@ -292,7 +418,7 @@ class Orchestrator:
                 tenant_id=tenant.tenant_id, task_type=task_ref.meta.task_type
             ).inc()
 
-        # 6. Select candidate skills (L1 summary injected into step prompt)
+        # 7. Select candidate skills (L1 summary injected into step prompt)
         context_pack = await self.context_packer.pack(
             task_ref,
             tenant_id=tenant.tenant_id,
@@ -318,7 +444,7 @@ class Orchestrator:
                 },
             )
 
-        # 7. Execute steps (walking skeleton = 1 step)
+        # 8. Execute steps
         answer = ""
         status: TaskStatus = "running"
         notifications: list[Notification] = []

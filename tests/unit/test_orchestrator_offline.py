@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import pytest
+from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
 from kun.engineering.orchestrator import Orchestrator, TaskResult
 from kun.interface.llm import LLMRouter
 from kun.interface.llm.base import LLMResponse, UsageInfo
@@ -178,3 +179,44 @@ async def test_orchestrator_duplicate_returns_cached_answer(monkeypatch):
     assert result.status == "done"
     assert result.answer == "cached answer"
     assert result.cost_usd_equivalent == 0.03
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_pauses_side_effect_tasks_before_execution(monkeypatch):
+    owner = Owner(tenant_id="u-sylvan", project_id="proj-main")
+    task_ref = TaskRef(
+        meta=TaskMeta(
+            fingerprint=TaskMeta.compute_fingerprint("send email", owner),
+            task_type="ops.email",
+            risk_level="medium",
+            owner=owner,
+            success_criteria_short="发送邮件给客户",
+        ),
+        spec=TaskSpec(
+            goal_detail="发送邮件给客户",
+            required_tools=["email_sender"],
+            external_resources=["customer-list"],
+        ),
+    )
+
+    async def fake_interpret(*args, **kwargs):
+        return task_ref
+
+    async def fail_if_executed(*args, **kwargs):
+        raise AssertionError("side-effect task should pause before execution")
+
+    orch = Orchestrator()
+    monkeypatch.setattr(orch.intent, "interpret", fake_interpret)
+    monkeypatch.setattr(orch, "_execute_step", fail_if_executed)
+
+    events = []
+    async for ev in orch.stream("send email"):
+        events.append(ev)
+
+    assert "guard_intervention" in [ev.kind for ev in events]
+    done = next(ev for ev in events if ev.kind == "done")
+    result = TaskResult.model_validate(done.data["result"])
+    assert result.status == "paused"
+    assert "等待确认" in result.answer
+    assert "message.send" in result.answer
