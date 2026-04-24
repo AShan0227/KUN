@@ -23,6 +23,7 @@ EventKind = Literal[
     "task.step.completed",
     "task.pre_conflict_detected",
     "task.pending_actions.created",
+    "task.pending_action.executed",
     "task.paused",
     "task.paused.preflight",
     "task.resumed",

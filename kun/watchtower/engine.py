@@ -20,6 +20,7 @@ from simpleeval import EvalWithCompoundTypes
 
 from kun.core.logging import get_logger
 from kun.core.metrics import watchtower_intervention_rate, watchtower_rule_latency_seconds
+from kun.core.tenancy import MissingTenantContextError, current_tenant
 from kun.watchtower.handlers import get_handler
 from kun.watchtower.rules import GuardRule, RuleKind
 
@@ -119,9 +120,7 @@ class RuleEngine:
         """Evaluate all matching rules; return list of rule_ids that fired."""
         fired: list[str] = []
         now = time.time()
-        tenant_id = namespace.get("tenant_id") or namespace.get("event", {}).get(
-            "tenant_id", "u-sylvan"
-        )
+        tenant_id = _tenant_id_from_namespace(namespace)
 
         for rule in self.rules_for(event_type):
             start = time.perf_counter()
@@ -176,3 +175,13 @@ class RuleEngine:
                     )
 
         return fired
+
+
+def _tenant_id_from_namespace(namespace: dict[str, Any]) -> str:
+    tenant_id = namespace.get("tenant_id") or namespace.get("event", {}).get("tenant_id")
+    if tenant_id:
+        return str(tenant_id)
+    try:
+        return current_tenant().tenant_id
+    except MissingTenantContextError:
+        return "unknown"

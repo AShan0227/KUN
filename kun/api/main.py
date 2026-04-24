@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from kun import __version__
@@ -29,7 +29,12 @@ from kun.api.ws import ws_router
 from kun.core.config import settings
 from kun.core.events import outbox_worker
 from kun.core.logging import configure_logging, get_logger
-from kun.core.tenancy import TenantContext, tenant_scope
+from kun.core.tenancy import (
+    MissingTenantContextError,
+    TenantContext,
+    resolve_tenant_id,
+    tenant_scope,
+)
 from kun.watchtower.engine import RuleEngine, load_rules
 
 log = get_logger("kun.api.main")
@@ -89,8 +94,14 @@ async def tenant_middleware(
     request: Request,
     call_next: Callable[[Request], Awaitable[Response]],
 ) -> Response:
-    """ADR-007: resolve tenant from X-Tenant-Id header or fall back to default."""
-    tenant_id = request.headers.get("X-Tenant-Id", settings().default_tenant_id)
+    """ADR-007: resolve tenant from X-Tenant-Id, with fallback disabled in production."""
+    try:
+        tenant_id = resolve_tenant_id(request.headers.get("X-Tenant-Id"))
+    except MissingTenantContextError:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "X-Tenant-Id header is required"},
+        )
     user_id = request.headers.get("X-User-Id")
     ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
     with tenant_scope(ctx):

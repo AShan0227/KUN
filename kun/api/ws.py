@@ -35,7 +35,12 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from kun.api.runtime import get_orchestrator
 from kun.core.logging import get_logger
-from kun.core.tenancy import TenantContext, tenant_scope
+from kun.core.tenancy import (
+    MissingTenantContextError,
+    TenantContext,
+    resolve_tenant_id,
+    tenant_scope,
+)
 from kun.engineering.orchestrator import OrchestratorEvent
 
 log = get_logger("kun.api.ws")
@@ -71,8 +76,13 @@ def _is_correction(text: str) -> bool:
 
 @ws_router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket) -> None:
+    try:
+        tenant_id = resolve_tenant_id(ws.query_params.get("tenant_id"))
+    except MissingTenantContextError:
+        await ws.close(code=1008, reason="tenant_id required")
+        return
+
     await ws.accept()
-    tenant_id = ws.query_params.get("tenant_id", "u-sylvan")
     user_id = ws.query_params.get("user_id")
     ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
     send_lock = asyncio.Lock()

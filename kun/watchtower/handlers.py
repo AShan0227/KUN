@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from kun.core.logging import get_logger
+from kun.core.tenancy import MissingTenantContextError, current_tenant
 
 log = get_logger("kun.watchtower.handlers")
 
@@ -83,7 +84,7 @@ async def _notify_user(ctx: HandlerContext, params: dict[str, Any]) -> None:
     from kun.core.orm import NotificationRow
     from kun.datamodel.notification import Notification
 
-    tenant_id = ctx.get("tenant_id", "u-sylvan")
+    tenant_id = _tenant_id_from_ctx(ctx)
     template = params.get("template", "generic")
     kind = params.get("kind", "alert")
     severity = params.get("severity", "warn")
@@ -117,6 +118,16 @@ async def _notify_user(ctx: HandlerContext, params: dict[str, Any]) -> None:
             )
         )
     log.info("watchtower.action.notify_user", notification_id=notif.notification_id, kind=kind)
+
+
+def _tenant_id_from_ctx(ctx: HandlerContext) -> str:
+    tenant_id = ctx.get("tenant_id")
+    if tenant_id:
+        return str(tenant_id)
+    try:
+        return current_tenant().tenant_id
+    except MissingTenantContextError:
+        return "unknown"
 
 
 @register_handler("escalate_human")

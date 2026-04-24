@@ -13,6 +13,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from kun.core.db import session_scope
 from kun.core.orm import PendingActionRow
 from kun.core.tenancy import current_tenant
+from kun.datamodel.runtime import TaskStatus
+from kun.engineering.action_executor import ActionExecutionResult, execute_approved_action_once
 
 router = APIRouter()
 
@@ -46,6 +48,8 @@ class ActionDecisionResponse(BaseModel):
     action_id: str
     status: ActionStatus
     message: str = ""
+    task_ref: str | None = None
+    task_status: TaskStatus | None = None
 
 
 @router.get("/pending", response_model=PendingActionList)
@@ -113,10 +117,19 @@ async def decide_pending_action(
                 detail=f"pending action already decided: {old_status}",
             )
 
+    execution: ActionExecutionResult | None = None
+    if new_status == "approved":
+        execution = await execute_approved_action_once(
+            tenant_id=tenant.tenant_id,
+            action_id=action_id,
+        )
+
     return ActionDecisionResponse(
         action_id=action_id,
-        status=new_status,
-        message=_decision_message(new_status),
+        status=cast(ActionStatus, execution.action_status if execution else new_status),
+        message=execution.message if execution else _decision_message(new_status),
+        task_ref=execution.task_ref if execution else None,
+        task_status=execution.task_status if execution else None,
     )
 
 
@@ -152,10 +165,7 @@ def _decision_update_stmt(
 
 def _decision_message(status: ActionStatus) -> str:
     if status == "approved":
-        return (
-            "Action approved and waiting for the side-effect executor; "
-            "task resume is not automatic yet."
-        )
+        return "Action approved. The side-effect executor will pick it up."
     return f"Action marked {status}."
 
 

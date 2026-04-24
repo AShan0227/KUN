@@ -40,4 +40,4 @@ def test_decision_update_is_atomic_pending_only() -> None:
 
 @pytest.mark.unit
 def test_approved_decision_message_discloses_executor_gap() -> None:
-    assert "waiting for the side-effect executor" in _decision_message("approved")
+    assert "side-effect executor" in _decision_message("approved")
