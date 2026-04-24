@@ -226,13 +226,13 @@ cd frontend && npm run lint && npm run typecheck -- --pretty false
 这些不是这轮“必须先改”的阻塞项，但 Claude 可以判断优先级：
 
 1. **真实认证/授权还没有做完**
-   - 现在租户主要来自 `X-Tenant-Id` 或 WS query。
+   - dev/staging 允许 `KUN_DEFAULT_TENANT_ID` 兜底；production 已强制要求显式 `X-Tenant-Id` 或 WS query。
    - RLS 能防 DB 串租户，但 API 层还需要真正的 authn/authz，不然 header/query 可以伪造。
 
-2. **Pending action 目前是审批队列，不是完整执行器**
-   - approve/reject/cancel 有了。
-   - approved action 后续怎么安全执行外部副作用，还需要接入层执行器。
-   - API 响应已明确提示 approve 不会自动 resume。
+2. **Pending action 已有最小 approval-gate 执行器，但还没接真实外部 adapter**
+   - approve/reject/cancel 有了，approved action 会被执行器领取并标记 `executed`。
+   - 同一任务下所有 pending action 都 resolved 后，paused runtime 会解除阻塞回到 `queued`，并写 `task.resumed` 事件。
+   - 真实发邮件/发布/支付等外部副作用 adapter 还没接入，当前执行器只释放审批门。
 
 3. **HTTP 请求没有“用户主动取消”机制**
    - WebSocket interrupt 已经真 cancel。

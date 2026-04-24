@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,7 +22,14 @@ class Settings(BaseSettings):
     # Deployment
     env: Literal["dev", "staging", "production"] = "dev"
     log_level: str = "INFO"
-    default_tenant_id: str = "u-sylvan"
+    default_tenant_id: str | None = "u-sylvan"
+
+    @field_validator("default_tenant_id", mode="before")
+    @classmethod
+    def _blank_default_tenant_to_none(cls, v: object) -> object:
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     # Postgres
     pg_dsn: str = "postgresql+asyncpg://kun_app:kun_app@localhost:55432/kun"

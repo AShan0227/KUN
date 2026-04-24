@@ -116,7 +116,7 @@ async def _set_rls_context(
     *,
     tenant_id: str | None = None,
 ) -> None:
-    effective_tenant_id = tenant_id or current_tenant().tenant_id
+    effective_tenant_id = (tenant_id or "").strip() or current_tenant().tenant_id
     await session.execute(
         text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
         {"tenant_id": effective_tenant_id},
