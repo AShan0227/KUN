@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from pydantic import BaseModel, Field
@@ -63,6 +63,8 @@ from kun.skills.selector import get_selector as get_skill_selector
 from kun.watchtower.engine import RuleEngine
 
 log = get_logger("kun.engineering.orchestrator")
+
+_STALE_QUEUED_TASK_AFTER = timedelta(seconds=30)
 
 
 class TaskResult(BaseModel):
@@ -151,6 +153,11 @@ class Orchestrator:
                     fingerprint=task_ref.meta.fingerprint,
                 )
                 if duplicate_ref is None:
+                    initial_runtime = RuntimeState(
+                        task_ref=task_ref.meta.task_id,
+                        total_planned_steps=1,
+                        status="queued",
+                    )
                     # Persist TaskRow and idempotency key in the same transaction.
                     s.add(
                         TaskRow(
@@ -180,6 +187,7 @@ class Orchestrator:
                             result_ref=task_ref.meta.task_id,
                         )
                     )
+                    s.add(_runtime_to_row(initial_runtime, tenant.tenant_id))
                     await emit(
                         s,
                         Event.build(
@@ -228,26 +236,22 @@ class Orchestrator:
                 )
                 return
 
-            duplicate_status = await _load_task_status(duplicate_ref)
             duration = time.perf_counter() - t0
-            message = f"Duplicate task detected. Existing task: {duplicate_ref}."
-            result = TaskResult(
+            result = await _resolve_duplicate_without_cached_result(
+                tenant_id=tenant.tenant_id,
                 task_id=duplicate_ref,
-                status=duplicate_status,
-                answer=message,
                 duration_sec=duration,
             )
             yield OrchestratorEvent(
                 kind="insight",
                 data={
-                    "message": message,
+                    "message": result.answer,
                     "cached_ref": duplicate_ref,
-                    "status": duplicate_status,
+                    "status": result.status,
                 },
             )
             yield OrchestratorEvent(
-                kind="answer",
-                data={"content": message, "task_id": duplicate_ref},
+                kind="answer", data={"content": result.answer, "task_id": duplicate_ref}
             )
             yield OrchestratorEvent(
                 kind="done",
@@ -341,13 +345,14 @@ class Orchestrator:
                 duration_sec=time.perf_counter() - t0,
             )
             paused_runtime = RuntimeState(
+                state_id=initial_runtime.state_id,
                 task_ref=task_ref.meta.task_id,
                 total_planned_steps=len(plan.steps),
                 status="paused",
                 finished_at=datetime.now(UTC),
             )
             async with session_scope() as s:
-                s.add(_runtime_to_row(paused_runtime, tenant.tenant_id))
+                await _persist_runtime_snapshot(s, paused_runtime, tenant.tenant_id)
                 await emit(
                     s,
                     Event.build(
@@ -395,12 +400,13 @@ class Orchestrator:
 
         # 6. Create RuntimeState
         runtime = RuntimeState(
+            state_id=initial_runtime.state_id,
             task_ref=task_ref.meta.task_id,
             total_planned_steps=len(plan.steps),
             status="running",
         )
         async with session_scope() as s:
-            s.add(_runtime_to_row(runtime, tenant.tenant_id))
+            await _persist_runtime_snapshot(s, runtime, tenant.tenant_id)
             await emit(
                 s,
                 Event.build(
@@ -779,6 +785,42 @@ def _runtime_to_row(runtime: RuntimeState, tenant_id: str) -> RuntimeStateRow:
     )
 
 
+def _runtime_row_values(runtime: RuntimeState, tenant_id: str) -> dict[str, Any]:
+    return {
+        "state_id": runtime.state_id,
+        "task_ref": runtime.task_ref,
+        "tenant_id": tenant_id,
+        "current_step": runtime.current_step,
+        "total_planned_steps": runtime.total_planned_steps,
+        "status": runtime.status,
+        "accumulated_cost_usd_actual": runtime.accumulated_cost_usd_actual,
+        "accumulated_cost_usd_equivalent": runtime.accumulated_cost_usd_equivalent,
+        "accumulated_tokens": runtime.accumulated_tokens,
+        "failures_this_run": runtime.failures_this_run,
+        "blob": runtime.model_dump(mode="json"),
+        "started_at": runtime.started_at,
+        "finished_at": runtime.finished_at,
+        "last_updated": runtime.last_updated,
+    }
+
+
+async def _persist_runtime_snapshot(session: Any, runtime: RuntimeState, tenant_id: str) -> None:
+    """Insert or update a runtime snapshot by state_id."""
+    values = _runtime_row_values(runtime, tenant_id)
+    stmt = pg_insert(RuntimeStateRow).values(**values)
+    update_values = {
+        key: getattr(stmt.excluded, key)
+        for key in values
+        if key not in {"state_id", "task_ref", "tenant_id"}
+    }
+    await session.execute(
+        stmt.on_conflict_do_update(
+            index_elements=[RuntimeStateRow.state_id],
+            set_=update_values,
+        )
+    )
+
+
 async def _find_idempotent_result_ref(
     session: Any,
     *,
@@ -820,6 +862,78 @@ async def _load_cached_task_result(*, tenant_id: str, task_id: str) -> TaskResul
     if isinstance(result_json, dict) and result_json:
         return TaskResult.model_validate(result_json)
     return None
+
+
+async def _resolve_duplicate_without_cached_result(
+    *,
+    tenant_id: str,
+    task_id: str,
+    duration_sec: float,
+) -> TaskResult:
+    """Return a bounded duplicate response when no final result exists yet.
+
+    If an old request crashed before runtime initialization completed, mark it
+    failed and persist that result so repeat callers do not see a forever-queued
+    task. Fresh queued/running/paused tasks still report their live status.
+    """
+    progress = await _load_task_progress(tenant_id=tenant_id, task_id=task_id)
+    status, last_updated = progress
+
+    if status is None or _is_stale_queued_status(status, last_updated):
+        reason = (
+            "Duplicate task detected, but the previous attempt appears to have stopped "
+            "during initialization. Marked it failed so it will not look stuck forever."
+        )
+        result = TaskResult(
+            task_id=task_id,
+            status="failed",
+            answer=reason,
+            duration_sec=duration_sec,
+        )
+        now = datetime.now(UTC)
+        async with session_scope(tenant_id=tenant_id) as s:
+            if status is None:
+                failed_runtime = RuntimeState(
+                    task_ref=task_id,
+                    total_planned_steps=1,
+                    status="failed",
+                    finished_at=now,
+                    last_updated=now,
+                )
+                await _persist_runtime_snapshot(s, failed_runtime, tenant_id)
+            else:
+                await s.execute(
+                    update(RuntimeStateRow)
+                    .where(
+                        RuntimeStateRow.tenant_id == tenant_id,
+                        RuntimeStateRow.task_ref == task_id,
+                        RuntimeStateRow.status == "queued",
+                    )
+                    .values(status="failed", finished_at=now, last_updated=now)
+                )
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant_id,
+                    event_type="task.failed",
+                    payload={
+                        "task_id": task_id,
+                        "reason": "stale_duplicate_without_cached_result",
+                    },
+                    task_ref=task_id,
+                ),
+            )
+            await _persist_task_result(s, tenant_id=tenant_id, result=result)
+        return result
+
+    message = f"Duplicate task detected. Existing task: {task_id}."
+    return TaskResult(task_id=task_id, status=status, answer=message, duration_sec=duration_sec)
+
+
+def _is_stale_queued_status(status: TaskStatus, last_updated: datetime | None) -> bool:
+    if status != "queued" or last_updated is None:
+        return False
+    return datetime.now(UTC) - last_updated > _STALE_QUEUED_TASK_AFTER
 
 
 async def _persist_task_result(session: Any, *, tenant_id: str, result: TaskResult) -> None:
@@ -946,20 +1060,30 @@ def _execution_user_prompt(
     return "\n".join(lines)
 
 
-async def _load_task_status(task_id: str) -> TaskStatus:
-    """Load the latest runtime status for an existing task."""
-    async with session_scope() as s:
+async def _load_task_progress(
+    *,
+    tenant_id: str,
+    task_id: str,
+) -> tuple[TaskStatus | None, datetime | None]:
+    """Load the latest runtime status and timestamp for an existing task."""
+    async with session_scope(tenant_id=tenant_id) as s:
         result = await s.execute(
-            select(RuntimeStateRow.status)
-            .where(RuntimeStateRow.task_ref == task_id)
+            select(RuntimeStateRow.status, RuntimeStateRow.last_updated)
+            .where(
+                RuntimeStateRow.tenant_id == tenant_id,
+                RuntimeStateRow.task_ref == task_id,
+            )
             .order_by(RuntimeStateRow.last_updated.desc())
             .limit(1)
         )
-        status = result.scalar_one_or_none()
+        row = result.one_or_none()
 
+    if row is None:
+        return None, None
+    status, last_updated = row
     if status in {"queued", "running", "paused", "done", "failed", "cancelled"}:
-        return cast(TaskStatus, status)
-    return "queued"
+        return cast(TaskStatus, status), cast(datetime, last_updated)
+    return None, cast(datetime | None, last_updated)
 
 
 def _compute_surprise_score(meta: TaskMeta, runtime: RuntimeState) -> float:

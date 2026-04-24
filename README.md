@@ -48,9 +48,9 @@ make run-cli      # 对话框 CLI smoke
 ```
 
 访问：
-- API: http://localhost:8010
-- Docs: http://localhost:8010/docs
-- WebSocket dialog: `ws://localhost:8010/ws`
+- API: http://localhost:8000
+- Docs: http://localhost:8000/docs
+- WebSocket dialog: `ws://localhost:8000/ws`
 - Jaeger (traces): http://localhost:16686
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3011

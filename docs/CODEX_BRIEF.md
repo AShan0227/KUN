@@ -55,9 +55,9 @@ make serve
 
 默认访问：
 
-- API / Docs: http://localhost:8010/docs
-- Health: http://localhost:8010/health/ready
-- Frontend: `cd frontend && npm install && KUN_API_ORIGIN=http://localhost:8010 npm run dev`
+- API / Docs: http://localhost:8000/docs
+- Health: http://localhost:8000/health/ready
+- Frontend: `cd frontend && npm install && KUN_API_ORIGIN=http://localhost:8000 npm run dev`
 
 没有真实 LLM key 时，系统应走 stub provider。这是本地审计可接受状态。
 

@@ -9,6 +9,24 @@ git log --oneline origin/main..HEAD
 
 当前要求：先审查，不合并，不推送。
 
+## Review 后补丁
+
+Claude 初审后点了 5 个问题。本分支已继续补了其中 3 个合并前应处理项：
+
+1. **R-1 幂等 crash 窗口**
+   - 新任务创建时，同事务写入初始 `RuntimeState(status='queued')`，避免只有 `TaskRow` 没有 runtime 的孤儿窗口。
+   - 重复请求如果发现历史任务没有 cached result 且 runtime 缺失/陈旧 queued，会标记为 `failed` 并持久化结果，避免永远显示“在跑”。
+   - 测试：`tests/unit/test_orchestrator_offline.py::test_orchestrator_duplicate_orphan_is_marked_failed`
+
+2. **R-2 API 端口对齐**
+   - API 默认端口、前端 rewrite fallback、`.env.example`、README/部署文档统一回 `8000`。
+   - 这样和远端 main / Dockerfile / frontend 默认保持一致，减少 merge 后本地体验问题。
+
+3. **R-5 pending action 审批 race**
+   - `decide_pending_action()` 改成 `UPDATE ... WHERE status='pending_approval' RETURNING ...`。
+   - 并发双击/重复审批时，只有一个请求能成功，其余返回 409。
+   - approve 响应里明确说明：当前只是标记 approved，等待 side-effect executor，任务不会自动 resume。
+
 ## 这轮解决了什么
 
 这批改动是围绕最早那 12 个风险点做的收口，目标是让 KUN 现在的后端护栏从“看起来有”变成“真的生效”。
@@ -214,6 +232,7 @@ cd frontend && npm run lint && npm run typecheck -- --pretty false
 2. **Pending action 目前是审批队列，不是完整执行器**
    - approve/reject/cancel 有了。
    - approved action 后续怎么安全执行外部副作用，还需要接入层执行器。
+   - API 响应已明确提示 approve 不会自动 resume。
 
 3. **HTTP 请求没有“用户主动取消”机制**
    - WebSocket interrupt 已经真 cancel。

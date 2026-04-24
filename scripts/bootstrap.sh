@@ -69,7 +69,7 @@ uv run pytest tests/unit -q
 log "done. next steps:"
 cat <<NEXT
 
-  API:        make serve    (http://localhost:8010)
+  API:        make serve    (http://localhost:8000)
   CLI:        uv run kun run "hello"
   Rules:      make rules
   Skills:     make skills

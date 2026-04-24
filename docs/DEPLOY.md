@@ -85,15 +85,15 @@ fallback:          MiniMax > Stub
 ### 4. 起服务
 
 ```bash
-make serve    # API @ :8010
+make serve    # API @ :8000
 ```
 
 访问:
-- http://localhost:8010 — API root
-- http://localhost:8010/docs — OpenAPI
-- http://localhost:8010/health/ready — 依赖健康
-- ws://localhost:8010/ws — 对话 WebSocket
-- http://localhost:8010/nuo/health/summary — 傩健康面板 JSON
+- http://localhost:8000 — API root
+- http://localhost:8000/docs — OpenAPI
+- http://localhost:8000/health/ready — 依赖健康
+- ws://localhost:8000/ws — 对话 WebSocket
+- http://localhost:8000/nuo/health/summary — 傩健康面板 JSON
 - http://localhost:3011 — Grafana (admin/admin)
 - http://localhost:16686 — Jaeger (traces)
 - http://localhost:9090 — Prometheus
@@ -116,7 +116,7 @@ npm run dev     # @ :3000
 uv run kun run "用一句中文介绍你自己"
 
 # HTTP API
-curl -sS -X POST http://localhost:8010/api/chat/run \
+curl -sS -X POST http://localhost:8000/api/chat/run \
   -H 'Content-Type: application/json' \
   -d '{"message":"用一个成语形容目标远大"}' | jq
 
@@ -146,7 +146,7 @@ uv run kun idle-batch --only health_report
 | Jaeger UI | 16686 | 16686 |
 | Loki | 3100 | 3100 |
 | Grafana | 3011 | 3000 |
-| **KUN API** | **8010** | 8000 |
+| **KUN API** | **8000** | 8000 |
 
 如果另一台电脑没跑 Genesis/dreamapp, 这些 host 端口可以改回默认 (编辑 `docker-compose.dev.yml` + `.env`).
 

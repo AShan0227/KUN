@@ -1,4 +1,4 @@
-const apiOrigin = process.env.KUN_API_ORIGIN ?? "http://localhost:8010";
+const apiOrigin = process.env.KUN_API_ORIGIN ?? "http://localhost:8000";
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {

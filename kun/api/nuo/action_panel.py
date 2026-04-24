@@ -7,7 +7,8 @@ from typing import Any, Literal, cast
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import literal, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 
 from kun.core.db import session_scope
 from kun.core.orm import PendingActionRow
@@ -44,6 +45,7 @@ class ActionDecisionRequest(BaseModel):
 class ActionDecisionResponse(BaseModel):
     action_id: str
     status: ActionStatus
+    message: str = ""
 
 
 @router.get("/pending", response_model=PendingActionList)
@@ -86,48 +88,75 @@ async def decide_pending_action(
     now = datetime.now(UTC)
 
     async with session_scope() as s:
-        existing = await s.execute(
-            select(PendingActionRow.status).where(
-                PendingActionRow.tenant_id == tenant.tenant_id,
-                PendingActionRow.action_id == action_id,
+        result = await s.execute(
+            _decision_update_stmt(
+                tenant_id=tenant.tenant_id,
+                action_id=action_id,
+                new_status=new_status,
+                now=now,
+                reason=req.reason,
             )
         )
-        old_status = existing.scalar_one_or_none()
-        if old_status is None:
-            raise HTTPException(status_code=404, detail="pending action not found")
-        if old_status != "pending_approval":
+        updated = result.one_or_none()
+        if updated is None:
+            existing = await s.execute(
+                select(PendingActionRow.status).where(
+                    PendingActionRow.tenant_id == tenant.tenant_id,
+                    PendingActionRow.action_id == action_id,
+                )
+            )
+            old_status = existing.scalar_one_or_none()
+            if old_status is None:
+                raise HTTPException(status_code=404, detail="pending action not found")
             raise HTTPException(
                 status_code=409,
                 detail=f"pending action already decided: {old_status}",
             )
 
-        payload_update = {"decision_reason": req.reason} if req.reason else {}
-        values: dict[str, Any] = {
-            "status": new_status,
-            "updated_at": now,
-            "decided_at": now,
-        }
-        if payload_update:
-            row = await s.execute(
-                select(PendingActionRow.payload).where(
-                    PendingActionRow.tenant_id == tenant.tenant_id,
-                    PendingActionRow.action_id == action_id,
-                )
-            )
-            payload = dict(row.scalar_one_or_none() or {})
-            payload.update(payload_update)
-            values["payload"] = payload
+    return ActionDecisionResponse(
+        action_id=action_id,
+        status=new_status,
+        message=_decision_message(new_status),
+    )
 
-        await s.execute(
-            update(PendingActionRow)
-            .where(
-                PendingActionRow.tenant_id == tenant.tenant_id,
-                PendingActionRow.action_id == action_id,
-            )
-            .values(**values)
+
+def _decision_update_stmt(
+    *,
+    tenant_id: str,
+    action_id: str,
+    new_status: ActionStatus,
+    now: datetime,
+    reason: str | None = None,
+) -> Any:
+    values: dict[str, Any] = {
+        "status": new_status,
+        "updated_at": now,
+        "decided_at": now,
+    }
+    if reason:
+        values["payload"] = PendingActionRow.payload.op("||")(
+            literal({"decision_reason": reason}, type_=JSONB)
         )
 
-    return ActionDecisionResponse(action_id=action_id, status=new_status)
+    return (
+        update(PendingActionRow)
+        .where(
+            PendingActionRow.tenant_id == tenant_id,
+            PendingActionRow.action_id == action_id,
+            PendingActionRow.status == "pending_approval",
+        )
+        .values(**values)
+        .returning(PendingActionRow.action_id, PendingActionRow.status)
+    )
+
+
+def _decision_message(status: ActionStatus) -> str:
+    if status == "approved":
+        return (
+            "Action approved and waiting for the side-effect executor; "
+            "task resume is not automatic yet."
+        )
+    return f"Action marked {status}."
 
 
 def _decision_to_status(decision: ActionDecision) -> ActionStatus:
