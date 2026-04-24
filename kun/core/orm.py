@@ -1,7 +1,8 @@
 """SQLAlchemy ORM models.
 
-All business tables carry `tenant_id` (ADR-007). RLS policies are installed
-in an alembic migration.
+All business tables carry `tenant_id` (ADR-007). Tenant isolation is currently
+enforced by application queries and tests; database RLS policies are planned
+but not installed yet.
 
 The `events` table is the Outbox (ADR-005).
 """
@@ -13,6 +14,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -98,6 +100,14 @@ class TaskRow(Base):
 
     __table_args__ = (
         # Idempotency: within time_window_min same fingerprint + tenant = same task
+        CheckConstraint(
+            "risk_level IN ('low', 'medium', 'high', 'critical')",
+            name="risk_level_valid",
+        ),
+        CheckConstraint(
+            "complexity_score >= 0 AND complexity_score <= 1",
+            name="complexity_score_range",
+        ),
         UniqueConstraint("tenant_id", "fingerprint", name="uq_tasks_fingerprint"),
         Index("ix_tasks_tenant_type", "tenant_id", "task_type"),
     )
@@ -140,6 +150,15 @@ class RuntimeStateRow(Base):
         default=_utcnow,
         nullable=False,
         onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'paused', 'done', 'failed', 'cancelled')",
+            name="runtime_status_valid",
+        ),
+        CheckConstraint("current_step >= 0", name="runtime_current_step_nonnegative"),
+        CheckConstraint("total_planned_steps >= 0", name="runtime_total_steps_nonnegative"),
     )
 
 
@@ -250,6 +269,17 @@ class ExperimentRow(Base):
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
     promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'shadow', 'canary', 'rollout', 'stable', 'rolled_back')",
+            name="experiment_status_valid",
+        ),
+        CheckConstraint(
+            "rollout_percent >= 0 AND rollout_percent <= 100",
+            name="experiment_rollout_percent_range",
+        ),
+    )
 
 
 # ============== IDEMPOTENCY KEYS ==============

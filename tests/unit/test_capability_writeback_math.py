@@ -11,7 +11,12 @@ from __future__ import annotations
 
 import pytest
 from kun.datamodel.capability import CapabilityCard, EntityRef
-from kun.engineering.capability_writeback import TaskOutcome, _apply_outcome
+from kun.engineering.capability_writeback import (
+    TaskOutcome,
+    _apply_outcome,
+    _select_card_for_update,
+)
+from sqlalchemy.dialects import postgresql
 
 
 def _empty_card() -> CapabilityCard:
@@ -110,3 +115,16 @@ def test_apply_outcome_surprise_rate_ema():
     # surprise_rate after 6 events with an EMA alpha=1/20 starting at 0 should
     # be > 0 but small (we hit 3 surprise events)
     assert 0.0 < cap.quality.surprise_rate < 0.5
+
+
+@pytest.mark.unit
+def test_writeback_select_locks_existing_card() -> None:
+    sql = str(
+        _select_card_for_update(
+            tenant_id="u-sylvan",
+            entity_type="role_template",
+            entity_id="rt-test",
+        ).compile(dialect=postgresql.dialect())
+    )
+
+    assert "FOR UPDATE" in sql

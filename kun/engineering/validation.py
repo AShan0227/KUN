@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -260,13 +260,13 @@ def _safe_parse_json(text: str) -> dict[str, Any]:
     import re
 
     try:
-        return json.loads(text.strip())
+        return cast(dict[str, Any], json.loads(text.strip()))
     except json.JSONDecodeError:
         pass
     m = re.search(r"\{.*\}", text, re.DOTALL)
     if m:
         try:
-            return json.loads(m.group(0))
+            return cast(dict[str, Any], json.loads(m.group(0)))
         except json.JSONDecodeError:
             pass
     return {}

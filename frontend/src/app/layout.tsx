@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -20,8 +21,12 @@ export default function RootLayout({
             <span className="text-sm text-gray-500">KUN · Agent OS</span>
           </div>
           <nav className="flex gap-4 text-sm">
-            <a href="/" className="hover:text-kun-accent">主工作区</a>
-            <a href="/nuo" className="hover:text-kun-accent">傩 · 管家</a>
+            <Link href="/" className="hover:text-kun-accent">
+              主工作区
+            </Link>
+            <Link href="/nuo" className="hover:text-kun-accent">
+              傩 · 管家
+            </Link>
           </nav>
         </header>
         <main className="flex-1">{children}</main>

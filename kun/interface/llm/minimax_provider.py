@@ -51,7 +51,14 @@ class MiniMaxProvider(LLMProvider):
         api_key: str | None = None,
     ) -> None:
         self.model_id = model_id
-        self.base_url = base_url or os.getenv("MINIMAX_API_URL", "https://api.minimax.chat/v1")
+        self.base_url: str = (
+            base_url
+            or os.getenv(
+                "MINIMAX_API_URL",
+                "https://api.minimax.chat/v1",
+            )
+            or "https://api.minimax.chat/v1"
+        )
         self.api_key = api_key or os.getenv("MINIMAX_API_KEY", "")
 
         self._client = httpx.AsyncClient(

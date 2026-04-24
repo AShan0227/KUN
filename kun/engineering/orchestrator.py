@@ -561,7 +561,7 @@ class Orchestrator:
         request = LLMRequest(
             messages=[
                 LLMMessage(role="system", content=system_prompt, cache=True),
-                LLMMessage(role="user", content=step_description),
+                LLMMessage(role="user", content=_execution_user_prompt(task_ref, step_description)),
             ],
             temperature=0.5,
             max_tokens=1024,
@@ -618,6 +618,73 @@ async def _find_idempotent_result_ref(
     )
     task_id = existing_task.scalar_one_or_none()
     return cast(str | None, task_id)
+
+
+def _execution_user_prompt(task_ref: TaskRef, step_description: str) -> str:
+    """Build the execution prompt from TASK.md L1/L2 context."""
+    lines = [
+        "请执行当前任务步骤。",
+        "",
+        "任务身份:",
+        f"- task_id: {task_ref.meta.task_id}",
+        f"- task_type: {task_ref.meta.task_type}",
+        f"- risk_level: {task_ref.meta.risk_level}",
+        f"- complexity_score: {task_ref.meta.complexity_score:.2f}",
+        "",
+        "当前步骤:",
+        f"- {step_description}",
+        "",
+        "成功标准:",
+        f"- {task_ref.meta.success_criteria_short}",
+    ]
+
+    if task_ref.spec is not None:
+        spec = task_ref.spec
+        lines.extend(["", "原始目标:", f"- {spec.goal_detail}"])
+        if spec.success_metrics:
+            lines.extend(["", "可验证指标:", *[f"- {metric}" for metric in spec.success_metrics]])
+        if spec.constraints:
+            lines.extend(
+                [
+                    "",
+                    "约束:",
+                    *[
+                        f"- {constraint.kind}: {constraint.detail}"
+                        for constraint in spec.constraints
+                    ],
+                ]
+            )
+        if spec.required_tools:
+            lines.extend(["", "可能需要的工具:", *[f"- {tool}" for tool in spec.required_tools]])
+        if spec.external_resources:
+            lines.extend(
+                ["", "外部资源:", *[f"- {resource}" for resource in spec.external_resources]]
+            )
+        if spec.foreseen_risks:
+            lines.extend(
+                [
+                    "",
+                    "已预见风险:",
+                    *[
+                        f"- {risk.severity}: {risk.description}"
+                        + (f"；应对: {risk.mitigation_hint}" if risk.mitigation_hint else "")
+                        for risk in spec.foreseen_risks
+                    ],
+                ]
+            )
+        if spec.fallback_plan:
+            lines.extend(["", "失败回退方案:", f"- {spec.fallback_plan}"])
+
+    lines.extend(
+        [
+            "",
+            "输出要求:",
+            "- 直接给结果。",
+            "- 如果信息不足，明确说缺什么，不要编造。",
+            "- 如果触碰约束或高风险动作，先说明风险和需要确认的点。",
+        ]
+    )
+    return "\n".join(lines)
 
 
 async def _load_task_status(task_id: str) -> TaskStatus:

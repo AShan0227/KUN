@@ -139,10 +139,17 @@ class AnthropicProvider(LLMProvider):
         content_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         for block in resp.content:
-            if block.type == "text":
-                content_parts.append(block.text)
-            elif block.type == "tool_use":
-                tool_calls.append(ToolCall(id=block.id, name=block.name, arguments=block.input))
+            block_type = getattr(block, "type", "")
+            if block_type == "text":
+                content_parts.append(str(getattr(block, "text", "")))
+            elif block_type == "tool_use":
+                tool_calls.append(
+                    ToolCall(
+                        id=str(getattr(block, "id", "")),
+                        name=str(getattr(block, "name", "")),
+                        arguments=getattr(block, "input", {}),
+                    )
+                )
 
         usage = UsageInfo(
             input_tokens=getattr(resp.usage, "input_tokens", 0),

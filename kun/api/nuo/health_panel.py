@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter
 from sqlalchemy import func, select
 
@@ -13,7 +15,7 @@ router = APIRouter()
 
 
 @router.get("/summary")
-async def health_summary() -> dict:
+async def health_summary() -> dict[str, Any]:
     """High-level system health snapshot."""
     tenant = current_tenant()
     async with session_scope() as s:
@@ -26,10 +28,17 @@ async def health_summary() -> dict:
             .group_by(RuntimeStateRow.status)
         )
         rows = (await s.execute(stmt)).all()
-        task_by_status = dict(rows)
+        task_by_status: dict[str, int] = {str(status): int(count) for status, count in rows}
 
         # Outbox lag
-        lag_stmt = select(func.count()).select_from(EventRow).where(EventRow.published_at.is_(None))
+        lag_stmt = (
+            select(func.count())
+            .select_from(EventRow)
+            .where(
+                EventRow.tenant_id == tenant.tenant_id,
+                EventRow.published_at.is_(None),
+            )
+        )
         lag = (await s.execute(lag_stmt)).scalar_one()
 
         total_tasks_stmt = (

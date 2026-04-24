@@ -19,6 +19,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Any
 
 import redis.asyncio as aioredis
 
@@ -40,7 +41,7 @@ class IdempotencyResult:
 class IdempotencyKey:
     """Redis-backed idempotency with TTL."""
 
-    def __init__(self, redis: aioredis.Redis, ttl_sec: int = 300) -> None:
+    def __init__(self, redis: Any, ttl_sec: int = 300) -> None:
         self._redis = redis
         self._ttl = ttl_sec
 
@@ -70,7 +71,7 @@ class ResourceGuard:
     For production-grade Redlock, upgrade to redis-py's Redlock when multi-node.
     """
 
-    def __init__(self, redis: aioredis.Redis) -> None:
+    def __init__(self, redis: Any) -> None:
         self._redis = redis
 
     async def acquire(self, resource: str, *, ttl_sec: int = 10) -> Lease | None:
@@ -98,10 +99,10 @@ class ResourceGuard:
 # =================== Convenience helpers ===================
 
 
-_redis_pool: aioredis.Redis | None = None
+_redis_pool: Any | None = None
 
 
-async def _get_redis() -> aioredis.Redis:
+async def _get_redis() -> Any:
     global _redis_pool
     if _redis_pool is None:
         _redis_pool = aioredis.from_url(settings().redis_url, decode_responses=True)

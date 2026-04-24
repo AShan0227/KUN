@@ -75,57 +75,116 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     tenant_id = ws.query_params.get("tenant_id", "u-sylvan")
     user_id = ws.query_params.get("user_id")
     ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
+    send_lock = asyncio.Lock()
+    current_task: asyncio.Task[None] | None = None
 
     log.info("ws.connected", tenant_id=tenant_id, user_id=user_id)
 
     try:
         with tenant_scope(ctx):
             while True:
+                current_task = _clear_finished_task(current_task)
                 raw = await ws.receive_text()
                 try:
                     msg = json.loads(raw)
                 except json.JSONDecodeError:
-                    await ws.send_json({"type": "error", "message": "invalid JSON"})
+                    await _send_json(ws, {"type": "error", "message": "invalid JSON"}, send_lock)
                     continue
 
                 mtype = msg.get("type", "user_message")
-                content = msg.get("content", "")
+                content = str(msg.get("content", ""))
 
                 if mtype == "user_message":
+                    if current_task is not None:
+                        await _send_json(
+                            ws,
+                            {"type": "error", "message": "task already running"},
+                            send_lock,
+                        )
+                        continue
                     if _is_correction(content):
-                        await ws.send_json({"type": "correction_ack", "content": content})
+                        await _send_json(
+                            ws,
+                            {"type": "correction_ack", "content": content},
+                            send_lock,
+                        )
                         # fall through and run it like a user_message anyway —
                         # the model will be told upstream that this is a correction.
-                    await _run_task_stream(ws, content)
+                    current_task = asyncio.create_task(_run_task_stream(ws, content, send_lock))
                 elif mtype == "correction":
-                    await ws.send_json({"type": "correction_ack", "content": content})
-                    await _run_task_stream(ws, content)
+                    if current_task is not None:
+                        await _cancel_task(current_task)
+                    await _send_json(
+                        ws,
+                        {"type": "correction_ack", "content": content},
+                        send_lock,
+                    )
+                    current_task = asyncio.create_task(_run_task_stream(ws, content, send_lock))
                 elif mtype == "interrupt":
-                    # Current skeleton: no pre-emptive interrupt yet.
-                    await ws.send_json({"type": "correction_ack", "content": "interrupted"})
+                    if current_task is not None:
+                        await _cancel_task(current_task)
+                        current_task = None
+                        content = "interrupted"
+                    else:
+                        content = "no running task"
+                    await _send_json(
+                        ws,
+                        {"type": "correction_ack", "content": content},
+                        send_lock,
+                    )
                 else:
-                    await ws.send_json(
-                        {"type": "error", "message": f"unknown message type: {mtype}"}
+                    await _send_json(
+                        ws,
+                        {"type": "error", "message": f"unknown message type: {mtype}"},
+                        send_lock,
                     )
     except WebSocketDisconnect:
         log.info("ws.disconnected", tenant_id=tenant_id)
     except Exception as e:
         log.exception("ws.error", error=str(e))
         with contextlib.suppress(Exception):
-            await ws.send_json({"type": "error", "message": str(e)})
+            await _send_json(ws, {"type": "error", "message": str(e)}, send_lock)
+    finally:
+        if current_task is not None:
+            await _cancel_task(current_task)
 
 
-async def _run_task_stream(ws: WebSocket, user_message: str) -> None:
+async def _run_task_stream(ws: WebSocket, user_message: str, send_lock: asyncio.Lock) -> None:
     """Run the orchestrator and forward events to the socket."""
     try:
         async for ev in get_orchestrator(ws.scope["app"]).stream(user_message):
-            await ws.send_json(_event_to_wire(ev))
+            await _send_json(ws, _event_to_wire(ev), send_lock)
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        await ws.send_json({"type": "error", "message": str(e)})
+        await _send_json(ws, {"type": "error", "message": str(e)}, send_lock)
 
 
 def _event_to_wire(ev: OrchestratorEvent) -> dict[str, Any]:
     """Translate OrchestratorEvent → wire format."""
     return {"type": ev.kind, **ev.data}
+
+
+def _clear_finished_task(task: asyncio.Task[None] | None) -> asyncio.Task[None] | None:
+    """Drop a completed task handle before handling the next client message."""
+    if task is not None and task.done():
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            task.result()
+        return None
+    return task
+
+
+async def _cancel_task(task: asyncio.Task[None]) -> None:
+    """Cancel a running task and wait until cancellation is observed."""
+    if task.done():
+        _clear_finished_task(task)
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def _send_json(ws: WebSocket, payload: dict[str, Any], lock: asyncio.Lock) -> None:
+    """Serialize writes to the same WebSocket."""
+    async with lock:
+        await ws.send_json(payload)

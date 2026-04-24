@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from kun.core.db import session_scope
 from kun.core.logging import get_logger
@@ -51,36 +53,82 @@ class TaskOutcome:
 
 async def record_outcome(tenant_id: str, outcome: TaskOutcome) -> None:
     """Upsert a capability card with a new task outcome."""
-    async with session_scope() as s:
-        row = (
-            await s.execute(
-                select(CapabilityCardRow).where(
-                    CapabilityCardRow.tenant_id == tenant_id,
-                    CapabilityCardRow.entity_type == outcome.entity_type,
-                    CapabilityCardRow.entity_id == outcome.entity_id,
-                )
+    for attempt in range(2):
+        try:
+            async with session_scope() as s:
+                await _record_outcome_in_txn(s, tenant_id, outcome)
+            break
+        except IntegrityError:
+            if attempt >= 1:
+                raise
+            log.info(
+                "capability.writeback.retry_after_conflict",
+                entity=f"{outcome.entity_type}:{outcome.entity_id}",
+                task_type=outcome.task_type,
             )
-        ).scalar_one_or_none()
 
-        if row is None:
-            card = _new_card(outcome)
-            s.add(_card_to_row(tenant_id, card))
-        else:
-            card = _row_to_card(row)
-            _apply_outcome(card, outcome)
-            card.recompute_summary()
-            row.version = (row.version or 0) + 1
-            row.maturity = card.maturity
-            row.overall_reliability = card.overall_reliability
-            row.primary_strength = card.primary_strength
-            row.primary_weakness = card.primary_weakness
-            row.card_json = card.model_dump(mode="json")
-            row.last_updated = datetime.now(UTC)
     log.info(
         "capability.writeback",
         entity=f"{outcome.entity_type}:{outcome.entity_id}",
         task_type=outcome.task_type,
         outcome=outcome.outcome,
+    )
+
+
+async def _record_outcome_in_txn(
+    s: AsyncSession,
+    tenant_id: str,
+    outcome: TaskOutcome,
+) -> None:
+    """Apply one outcome inside a transaction.
+
+    Existing rows are locked so concurrent writers serialize. First-write races
+    are handled by the caller retrying after the unique constraint trips.
+    """
+    row = (
+        await s.execute(
+            _select_card_for_update(
+                tenant_id=tenant_id,
+                entity_type=outcome.entity_type,
+                entity_id=outcome.entity_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if row is None:
+        card = _new_card(outcome)
+        s.add(_card_to_row(tenant_id, card))
+        await s.flush()
+        return
+
+    card = _row_to_card(row)
+    _apply_outcome(card, outcome)
+    row.version = (row.version or 0) + 1
+    card.version = row.version
+    card.recompute_summary()
+    row.maturity = card.maturity
+    row.overall_reliability = card.overall_reliability
+    row.primary_strength = card.primary_strength
+    row.primary_weakness = card.primary_weakness
+    row.card_json = card.model_dump(mode="json")
+    row.last_updated = datetime.now(UTC)
+
+
+def _select_card_for_update(
+    *,
+    tenant_id: str,
+    entity_type: EntityType,
+    entity_id: str,
+) -> Any:
+    """Build the capability-card row lock query."""
+    return (
+        select(CapabilityCardRow)
+        .where(
+            CapabilityCardRow.tenant_id == tenant_id,
+            CapabilityCardRow.entity_type == entity_type,
+            CapabilityCardRow.entity_id == entity_id,
+        )
+        .with_for_update()
     )
 
 

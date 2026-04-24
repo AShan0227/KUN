@@ -8,6 +8,8 @@ Output format constrained by Pydantic schema via structured prompt.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from kun.core.logging import get_logger
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
 from kun.interface.llm import (
@@ -109,14 +111,14 @@ class IntentInterpreter:
         return TaskRef(meta=meta, spec=spec)
 
     @staticmethod
-    def _parse_json(text: str) -> dict:
+    def _parse_json(text: str) -> dict[str, Any]:
         import json
         import re
 
         # Try direct JSON
         stripped = text.strip()
         try:
-            return json.loads(stripped)
+            return cast(dict[str, Any], json.loads(stripped))
         except json.JSONDecodeError:
             pass
 
@@ -124,7 +126,7 @@ class IntentInterpreter:
         m = re.search(r"```(?:json)?\s*\n(.+?)\n```", stripped, re.DOTALL)
         if m:
             try:
-                return json.loads(m.group(1))
+                return cast(dict[str, Any], json.loads(m.group(1)))
             except json.JSONDecodeError:
                 pass
 
@@ -132,7 +134,7 @@ class IntentInterpreter:
         m = re.search(r"\{.*\}", stripped, re.DOTALL)
         if m:
             try:
-                return json.loads(m.group(0))
+                return cast(dict[str, Any], json.loads(m.group(0)))
             except json.JSONDecodeError:
                 pass
 

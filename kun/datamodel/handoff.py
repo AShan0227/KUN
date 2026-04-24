@@ -8,7 +8,7 @@ ADR-005 (Outbox): Handoff 写入时同时写 events 表, 消费者通过 NATS �
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -108,13 +108,13 @@ class HandoffPacket(BaseModel):
     l4: HandoffL4 | None = None
     serialization: SerializationFormat = "json"
 
-    def compact(self) -> dict:
+    def compact(self) -> dict[str, Any]:
         """Emit only L1+L2 as dict (default over-the-wire form)."""
-        data: dict = {"l1": self.l1.model_dump(mode="json")}
+        data: dict[str, Any] = {"l1": self.l1.model_dump(mode="json")}
         if self.l2 is not None:
             data["l2"] = self.l2.model_dump(mode="json")
         return data
 
-    def full(self) -> dict:
+    def full(self) -> dict[str, Any]:
         """Emit all layers as dict (for debugging / audit)."""
         return self.model_dump(mode="json")

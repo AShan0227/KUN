@@ -11,14 +11,25 @@ import { useCallback, useEffect, useRef, useState } from "react";
  */
 
 type Msg = {
-  kind: "user" | "thinking" | "action_plan" | "action" | "answer" | "error";
+  kind:
+    | "user"
+    | "thinking"
+    | "action_plan"
+    | "action"
+    | "answer"
+    | "error"
+    | "correction_ack";
   text: string;
   at: string;
 };
 
+type WireMessage = Record<string, unknown> & {
+  type?: string;
+};
+
 type SideMsg = {
   kind: "cost_tick" | "insight" | "surprise" | "alert" | "guard_intervention" | "idle_batch_report";
-  payload: any;
+  payload: WireMessage;
   at: string;
 };
 
@@ -45,7 +56,7 @@ export default function Home() {
     ws.onclose = () => setConnected(false);
     ws.onmessage = (e) => {
       try {
-        const msg = JSON.parse(e.data);
+        const msg = JSON.parse(e.data) as WireMessage;
         dispatchIncoming(msg);
       } catch {
         console.warn("bad ws frame", e.data);
@@ -54,9 +65,10 @@ export default function Home() {
     return () => ws.close();
   }, []);
 
-  const dispatchIncoming = (msg: any) => {
+  const dispatchIncoming = (msg: WireMessage) => {
     const at = new Date().toISOString();
-    switch (msg.type) {
+    const type = msg.type;
+    switch (type) {
       case "thinking":
       case "action_plan":
       case "action":
@@ -65,11 +77,11 @@ export default function Home() {
       case "correction_ack":
         setMessages((m) => [
           ...m,
-          { kind: msg.type, text: formatMain(msg), at },
+          { kind: type, text: formatMain(msg), at },
         ]);
         break;
       case "cost_tick":
-        setTotalCost((t) => t + (msg.cost_usd_equivalent || 0));
+        setTotalCost((t) => t + numberValue(msg.cost_usd_equivalent));
         setSide((s) => [...s, { kind: "cost_tick", payload: msg, at }]);
         break;
       case "insight":
@@ -77,7 +89,7 @@ export default function Home() {
       case "alert":
       case "guard_intervention":
       case "idle_batch_report":
-        setSide((s) => [...s, { kind: msg.type, payload: msg, at }]);
+        setSide((s) => [...s, { kind: type, payload: msg, at }]);
         break;
       case "done":
         // no-op; covered by answer
@@ -191,13 +203,24 @@ const ICONS: Record<string, string> = {
   idle_batch_report: "🌙",
 };
 
-function formatMain(msg: any): string {
-  if (msg.type === "thinking") return `思考中... (${msg.stage || ""})`;
+function formatMain(msg: WireMessage): string {
+  if (msg.type === "thinking") return `思考中... (${stringValue(msg.stage)})`;
   if (msg.type === "action_plan")
-    return `类型 ${msg.task_type} / 风险 ${msg.risk_level} / 预估 $${(msg.estimated_cost_usd || 0).toFixed(4)}`;
-  if (msg.type === "action") return `执行步骤 ${msg.step_id}: ${msg.description}`;
-  if (msg.type === "answer") return msg.content || "";
-  if (msg.type === "error") return `错误: ${msg.message || ""}`;
+    return `类型 ${stringValue(msg.task_type)} / 风险 ${stringValue(msg.risk_level)} / 预估 $${numberValue(msg.estimated_cost_usd).toFixed(4)}`;
+  if (msg.type === "action")
+    return `执行步骤 ${stringValue(msg.step_id)}: ${stringValue(msg.description)}`;
+  if (msg.type === "answer") return stringValue(msg.content);
+  if (msg.type === "error") return `错误: ${stringValue(msg.message)}`;
   if (msg.type === "correction_ack") return `(已确认纠偏)`;
   return JSON.stringify(msg);
+}
+
+function stringValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === "number" ? value : 0;
 }
