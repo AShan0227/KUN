@@ -1,18 +1,29 @@
-"""Subscription quota tracker — 5h rolling window + downgrade chain.
+"""Subscription quota tracker — 5h rolling window + soft warnings.
 
-ADR-002 amendment (2026-04-24): Claude Code CLI (OAuth) is the default for
-top/strong/cheap tiers. Because Claude Pro/Max subscriptions have an
-undocumented-but-real 5-hour rate limit, we track per-tier usage here and
-downgrade when a tier approaches its ceiling:
+ADR-002 amendment (2026-04-24, test-phase policy):
 
-    top (opus) → strong (sonnet) → cheap (haiku) → fallback (MiniMax)
+    User is in product-testing mode, not cost-sensitive. We do NOT auto-downgrade
+    Opus / Sonnet / Haiku — the user wants the best tier for each request and
+    is paying a flat subscription anyway. What we DO want is a *heads-up*
+    before the Claude Pro 5h rate limit bites.
 
-Limits are conservative defaults that can be overridden via env vars
-(``KUN_QUOTA_TOP`` / ``KUN_QUOTA_STRONG`` / ``KUN_QUOTA_CHEAP``) or by
-passing ``limits=`` to :class:`QuotaTracker`.
+So the tracker now has two concepts:
 
-Usage-driven, not time-of-day. Process-local state — restart resets the
-window. For multi-process deployment wire a Redis-backed impl later.
+  - **limit (hard)**   — if exceeded, :meth:`resolve` walks the downgrade chain.
+                          Default `None` for top/strong/cheap (never downgrade).
+                          Kept as `10_000` for `fallback` (MiniMax is paid).
+  - **warn_at (soft)** — on cross, logs `quota.approaching_limit` once per
+                          30-min window. Lets the user know "hey, Opus has
+                          been used ~N times in 5h — heading toward the wall".
+
+Env overrides:
+  - ``KUN_QUOTA_TOP`` / ``..._STRONG`` / ``..._CHEAP`` / ``..._FALLBACK``:
+     integer hard limit (or ``none`` to disable).
+  - ``KUN_QUOTA_WARN_TOP`` / ``..._WARN_STRONG`` / ``..._WARN_CHEAP``:
+     integer soft-warn threshold.
+
+Process-local state — restart resets the window. For multi-process deployment
+wire a Redis-backed impl later.
 """
 
 from __future__ import annotations
@@ -22,6 +33,10 @@ import threading
 import time
 from collections import deque
 from typing import Literal
+
+from kun.core.logging import get_logger
+
+log = get_logger("kun.quota")
 
 TierName = Literal["top", "strong", "cheap", "fallback"]
 
@@ -33,50 +48,114 @@ DOWNGRADE: dict[TierName, TierName | None] = {
     "fallback": None,  # nowhere left to go — surface the exhaustion
 }
 
-# Conservative 5h call-count ceilings for a Claude Pro subscription.
-# Real limits are token-based and opaque; count-based is the cheapest safe
-# proxy. Tune via env if you see premature downgrades.
-_DEFAULT_LIMITS: dict[TierName, int] = {
-    "top": 40,  # Opus 4.7 — expensive tokens, tight budget
-    "strong": 200,  # Sonnet 4.6 — middle ground
-    "cheap": 1000,  # Haiku 4.5 — essentially free
-    "fallback": 10_000,  # MiniMax — paid per call, separate budget
+# Hard ceilings. ``None`` disables downgrade for the tier.
+# User is on a Pro subscription and explicitly opted OUT of auto-downgrade
+# during the test phase — we only cap fallback (MiniMax) which is metered.
+_DEFAULT_LIMITS: dict[TierName, int | None] = {
+    "top": None,  # Opus — never auto-downgrade
+    "strong": None,  # Sonnet — never auto-downgrade
+    "cheap": None,  # Haiku — never auto-downgrade
+    "fallback": 10_000,  # MiniMax — paid per call, keep a soft cap
+}
+
+# Soft warn thresholds (5h rolling window). 0 / None = don't warn.
+# These are rough estimates of where Claude Pro's 5h rate limit starts to bite.
+# Tune by observation.
+_DEFAULT_WARNS: dict[TierName, int] = {
+    "top": 30,  # Opus: ~30 calls / 5h → start worrying about rate limit
+    "strong": 150,
+    "cheap": 0,  # Haiku: don't bother warning
+    "fallback": 0,
 }
 
 _WINDOW_SEC = 5 * 3600
 
+# Don't spam the same warning — re-log at most once every 30 min per tier.
+_WARN_REPEAT_SEC = 30 * 60
 
-def _load_limits_from_env() -> dict[TierName, int]:
+
+def _int_or_none(raw: str | None, default: int | None) -> int | None:
+    if raw is None:
+        return default
+    low = raw.strip().lower()
+    if low in {"", "none", "null", "off", "-1", "inf"}:
+        return None
+    try:
+        return int(low)
+    except ValueError:
+        return default
+
+
+def _load_limits_from_env() -> dict[TierName, int | None]:
     return {
-        "top": int(os.getenv("KUN_QUOTA_TOP", _DEFAULT_LIMITS["top"])),
-        "strong": int(os.getenv("KUN_QUOTA_STRONG", _DEFAULT_LIMITS["strong"])),
-        "cheap": int(os.getenv("KUN_QUOTA_CHEAP", _DEFAULT_LIMITS["cheap"])),
-        "fallback": int(os.getenv("KUN_QUOTA_FALLBACK", _DEFAULT_LIMITS["fallback"])),
+        "top": _int_or_none(os.getenv("KUN_QUOTA_TOP"), _DEFAULT_LIMITS["top"]),
+        "strong": _int_or_none(os.getenv("KUN_QUOTA_STRONG"), _DEFAULT_LIMITS["strong"]),
+        "cheap": _int_or_none(os.getenv("KUN_QUOTA_CHEAP"), _DEFAULT_LIMITS["cheap"]),
+        "fallback": _int_or_none(os.getenv("KUN_QUOTA_FALLBACK"), _DEFAULT_LIMITS["fallback"]),
+    }
+
+
+def _load_warns_from_env() -> dict[TierName, int]:
+    return {
+        "top": int(os.getenv("KUN_QUOTA_WARN_TOP", _DEFAULT_WARNS["top"])),
+        "strong": int(os.getenv("KUN_QUOTA_WARN_STRONG", _DEFAULT_WARNS["strong"])),
+        "cheap": int(os.getenv("KUN_QUOTA_WARN_CHEAP", _DEFAULT_WARNS["cheap"])),
+        "fallback": int(os.getenv("KUN_QUOTA_WARN_FALLBACK", _DEFAULT_WARNS["fallback"])),
     }
 
 
 class QuotaTracker:
-    """5h rolling per-tier call counter with downgrade suggestion."""
+    """5h rolling per-tier call counter — soft warn + optional hard cap."""
 
     def __init__(
         self,
-        limits: dict[TierName, int] | None = None,
+        limits: dict[TierName, int | None] | None = None,
+        warns: dict[TierName, int] | None = None,
         window_sec: int = _WINDOW_SEC,
     ) -> None:
-        self._limits = limits or _load_limits_from_env()
+        self._limits: dict[TierName, int | None] = (
+            limits if limits is not None else _load_limits_from_env()
+        )
+        self._warns: dict[TierName, int] = warns if warns is not None else _load_warns_from_env()
         self._window = window_sec
         self._buckets: dict[TierName, deque[float]] = {t: deque() for t in self._limits}
+        # last time we emitted a warning for each tier — throttles repeats
+        self._last_warn_at: dict[TierName, float] = dict.fromkeys(self._limits, 0.0)
         self._lock = threading.Lock()
 
     # ---------- observation ----------
 
     def record(self, tier: TierName) -> None:
-        """Log one call against the tier's rolling window."""
+        """Log one call against the tier's rolling window. May emit a warning."""
         if tier not in self._buckets:
             return
         with self._lock:
             self._prune_locked()
             self._buckets[tier].append(time.monotonic())
+            current = len(self._buckets[tier])
+            warn_at = self._warns.get(tier, 0)
+            last_warn = self._last_warn_at.get(tier, 0.0)
+        # Warn outside the lock so the log call can't deadlock
+        if (
+            warn_at > 0
+            and current >= warn_at
+            and (time.monotonic() - last_warn) >= _WARN_REPEAT_SEC
+        ):
+            limit = self._limits.get(tier)
+            log.warning(
+                "quota.approaching_limit",
+                tier=tier,
+                usage_5h=current,
+                warn_at=warn_at,
+                hard_limit=limit if limit is not None else "unlimited",
+                hint=(
+                    f"heads-up: {tier} tier at {current}/5h (warn_at={warn_at}). "
+                    "if you hit the Claude Pro 5h rate limit, set "
+                    f"KUN_QUOTA_{tier.upper()}=<N> to force a downgrade before that."
+                ),
+            )
+            with self._lock:
+                self._last_warn_at[tier] = time.monotonic()
 
     def usage(self, tier: TierName) -> int:
         """How many calls against ``tier`` in the current 5h window."""
@@ -85,12 +164,21 @@ class QuotaTracker:
             return len(self._buckets.get(tier, ()))
 
     def saturated(self, tier: TierName) -> bool:
-        """True if ``tier`` has hit its configured ceiling."""
-        return self.usage(tier) >= self._limits.get(tier, 1 << 30)
+        """True if ``tier`` has hit its configured hard ceiling.
 
-    def headroom(self, tier: TierName) -> int:
-        """Remaining calls in the window (>=0)."""
-        return max(0, self._limits.get(tier, 0) - self.usage(tier))
+        ``None`` limit = never saturated (the user opted out of downgrade).
+        """
+        limit = self._limits.get(tier)
+        if limit is None:
+            return False
+        return self.usage(tier) >= limit
+
+    def headroom(self, tier: TierName) -> int | None:
+        """Remaining calls in the window. ``None`` = unlimited."""
+        limit = self._limits.get(tier)
+        if limit is None:
+            return None
+        return max(0, limit - self.usage(tier))
 
     # ---------- decision helper ----------
 

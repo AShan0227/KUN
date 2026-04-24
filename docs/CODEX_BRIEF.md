@@ -66,25 +66,18 @@ cp ../KUN/.env .env                           # 复用 MiniMax key 和配置
 
 ## 首批任务（按优先级）
 
-### 🚨 P0: 你自己刚写的 `CodexCliProvider` 是坏的 — 必须本周修
+### ~~P0: CodexCliProvider bug~~ → Claude 已接手完成
 
-**背景**：你在 commit `cdf0483` 加了 `kun/interface/llm/codex_cli_provider.py`，通过 `codex exec --json -c model="gpt-5.5"` 调 gpt-5.5。Claude 实测了 **所有模型**（gpt-5.5 / gpt-5 / gpt-5-mini / o3-mini / codex-mini-latest / gpt-4o）在 ChatGPT 账号下的 `codex exec` **全部被 API 拒**。
+**结论（2026-04-24, Claude）**：
+- `codex exec` 对 ChatGPT 账号确实不可用（所有 model 都被 OpenAI API 拒）
+- `codex mcp-server` 可行；真实可用的 model id 是 **`gpt-5.3-codex-spark`**（UI 显示名 "gpt-5.5" 是展示别名）
+- Claude 新写了 `kun/interface/llm/codex_mcp_provider.py`，走长期 MCP stdio session
+- Router factory 优先用 MCP，失败降级到 exec → OpenAI → Claude CLI → MiniMax
+- 真实调用验证：~6s latency / $0 actual cost / 订阅配额内
 
-**根因**：`codex exec` 硬走 OpenAI 官方 API endpoint，这个 endpoint 只给 API key 用户；ChatGPT 账号（`auth_mode=chatgpt`）的 gpt-5.5 只在交互 UI / MCP server 模式下可用。
-
-**临时处置**：Claude 已在 `.env` 加 `KUN_DISABLE_CODEX_CLI=1` 让 router 绕开你这个 provider，coding tier 会降级到 MiniMax。
-
-**你的任务**：
-1. 读 [Codex MCP docs](https://github.com/openai/codex) 和 `codex mcp-server --help`
-2. 验证 `codex mcp-server` 启 stdio 后，客户端可以用 ChatGPT 订阅走 gpt-5.5
-3. 改写 `CodexCliProvider`（或新写 `CodexMcpProvider`）：
-   - 启动一个长期 `codex mcp-server` subprocess（或按需启）
-   - 用 MCP JSON-RPC stdio 通信
-   - 支持 tools（复用 LLMRequest.tools 转 MCP tools/list）
-   - 不在每次 invoke 里 fork 新进程（费时）
-4. 跑通 `uv run kun run "用一句话介绍自己"` 能真实拿到 gpt-5.5 回答
-5. 写 `docs/AUDITS/2026-04-XX-codex-mcp-migration.md` 说明变动
-6. 删掉 `.env` 里的 `KUN_DISABLE_CODEX_CLI=1`（连同注释）
+**你**（codex）的遗留：
+- 读 `kun/interface/llm/codex_mcp_provider.py`，审计它的错误处理、竞态、资源泄漏（见 P1 标准）
+- 如果发现 bug，按 audit 流程处理（小则直接 PR，大则写报告）
 
 ---
 
@@ -132,6 +125,22 @@ cp ../KUN/.env .env                           # 复用 MiniMax key 和配置
 ### P4: 审计你自己改过的 `kun/cli.py`
 
 你在 `cdf0483` 动过 CLI，自己 review 一遍看有没有回归。
+
+---
+
+### P5（新）: 审计 Claude 刚写的 `CodexMcpProvider`
+
+**入口**：`kun/interface/llm/codex_mcp_provider.py`
+
+**关注点**：
+- subprocess 生命周期：`_kill` 的 cleanup 是否能在所有异常路径触发（重启、超时、多协程并发 invoke）
+- 读循环 `_read_loop` 被 cancel 时 pending futures 是否被全部 set_exception
+- `_send_lock` 是否覆盖了所有写 stdin 的路径（现在 `_send` 都拿了）
+- codex/event 流里 `token_count` / `rate_limits` 现在被丢掉了 — 建议接到 QuotaTracker（`kun/core/quota_tracker.py`）给 coding tier 独立计数
+- `cwd=/tmp/kun-codex-cwd` 的 isolation：如果有 AGENTS.md / CLAUDE.md 从别处泄进来会炸延迟 —— 要不要加启动自检？
+- reasoning_effort 当前是进程级常量；未来按 request complexity 动态调整（low/medium/high）是个优化点
+
+产出：`docs/AUDITS/2026-04-XX-codex-mcp-provider.md`
 
 ---
 

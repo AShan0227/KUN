@@ -32,6 +32,7 @@ from kun.interface.llm.base import (
 )
 from kun.interface.llm.claude_code_provider import ClaudeCodeProvider
 from kun.interface.llm.codex_cli_provider import CodexCliProvider
+from kun.interface.llm.codex_mcp_provider import CodexMcpProvider
 from kun.interface.llm.minimax_provider import MiniMaxProvider
 from kun.interface.llm.openai_provider import OpenAIProvider
 from kun.interface.llm.stub_provider import StubProvider
@@ -255,17 +256,20 @@ def get_router() -> LLMRouter:
         4. Stub (tests)
 
       coding:
-        1. Codex CLI (OAuth ChatGPT subscription) ← PREFERRED
-        2. OpenAI API (if key)
-        3. Claude Code CLI (fallback within OAuth family)
-        4. MiniMax substitute
-        5. Stub
+        1. Codex MCP-server (OAuth ChatGPT subscription, gpt-5.3-codex-spark) ← PREFERRED
+        2. Codex exec CLI (OpenAI API accounts only — ChatGPT accounts must use MCP)
+        3. OpenAI API (if key)
+        4. Claude Code CLI (fallback within OAuth family)
+        5. MiniMax substitute
+        6. Stub
 
       fallback:
         1. MiniMax (direct API)
         2. Stub
 
     Disable CLI probing by setting KUN_DISABLE_CLI_OAUTH=1.
+    Disable only codex (keep Claude CLI): KUN_DISABLE_CODEX_CLI=1.
+    Override codex model id: KUN_CODEX_MCP_MODEL=gpt-5.3-codex-spark.
     """
     global _router
     if _router is not None:
@@ -274,13 +278,12 @@ def get_router() -> LLMRouter:
     providers: dict[ModelTier, LLMProvider] = {}
 
     cli_disabled = os.getenv("KUN_DISABLE_CLI_OAUTH") == "1"
-    # CodexCliProvider is broken for ChatGPT-account users: `codex exec` hits
-    # OpenAI's API endpoint which doesn't accept the ChatGPT-only gpt-5.5 /
-    # gpt-5-codex models. Gate with KUN_DISABLE_CODEX_CLI=1 until the MCP-server
-    # path is wired in (tracked in docs/CODEX_BRIEF.md).
-    codex_cli_disabled = os.getenv("KUN_DISABLE_CODEX_CLI") == "1"
+    codex_disabled = os.getenv("KUN_DISABLE_CODEX_CLI") == "1"
     has_claude_cli = ClaudeCodeProvider.available() and not cli_disabled
-    has_codex_cli = CodexCliProvider.available() and not cli_disabled and not codex_cli_disabled
+    # Prefer MCP (works with ChatGPT accounts via gpt-5.3-codex-spark);
+    # fall back to exec CLI only when the user has an OpenAI API key account.
+    has_codex_mcp = CodexMcpProvider.available() and not cli_disabled and not codex_disabled
+    has_codex_cli = CodexCliProvider.available() and not cli_disabled and not codex_disabled
     has_ofox = bool(os.getenv("KUN_OFOX_API_KEY"))
     has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY"))
     has_openai = bool(os.getenv("OPENAI_API_KEY"))
@@ -314,11 +317,18 @@ def get_router() -> LLMRouter:
         providers["cheap"] = StubProvider(model_id="stub-haiku-4.5", tier="cheap")
 
     # ---- coding ----
-    if has_codex_cli:
-        log.info("router.codex_cli", hint="using logged-in codex CLI OAuth")
-        providers["coding"] = CodexCliProvider(tier="coding", model_id="gpt-5.5")
+    if has_codex_mcp:
+        log.info(
+            "router.codex_mcp",
+            hint="using codex mcp-server (ChatGPT OAuth, gpt-5.3-codex-spark)",
+        )
+        providers["coding"] = CodexMcpProvider(tier="coding")
+    elif has_codex_cli:
+        # Legacy path — only works for OpenAI-API-key accounts, not ChatGPT OAuth
+        log.info("router.codex_cli_legacy", hint="using codex exec (API-key path)")
+        providers["coding"] = CodexCliProvider(tier="coding", model_id="gpt-5")
     elif has_openai or has_ofox:
-        providers["coding"] = OpenAIProvider(model_id="codex-5.3", tier="coding")
+        providers["coding"] = OpenAIProvider(model_id="gpt-5", tier="coding")
     elif has_claude_cli:
         # Fallback within the OAuth family — claude-code CLI for coding too
         providers["coding"] = ClaudeCodeProvider(tier="coding")
