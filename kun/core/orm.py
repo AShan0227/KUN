@@ -107,6 +107,10 @@ class TaskRow(Base):
             "complexity_score >= 0 AND complexity_score <= 1",
             name="complexity_score_range",
         ),
+        CheckConstraint("estimated_cost_usd >= 0", name="estimated_cost_nonnegative"),
+        CheckConstraint("estimated_duration_sec >= 0", name="estimated_duration_nonnegative"),
+        CheckConstraint("version >= 1", name="task_version_positive"),
+        CheckConstraint("length(success_criteria_short) > 0", name="success_criteria_not_empty"),
         UniqueConstraint("tenant_id", "fingerprint", name="uq_tasks_fingerprint"),
         Index("ix_tasks_tenant_type", "tenant_id", "task_type"),
     )
@@ -158,6 +162,16 @@ class RuntimeStateRow(Base):
         ),
         CheckConstraint("current_step >= 0", name="runtime_current_step_nonnegative"),
         CheckConstraint("total_planned_steps >= 0", name="runtime_total_steps_nonnegative"),
+        CheckConstraint(
+            "accumulated_cost_usd_actual >= 0",
+            name="runtime_actual_cost_nonnegative",
+        ),
+        CheckConstraint(
+            "accumulated_cost_usd_equivalent >= 0",
+            name="runtime_equivalent_cost_nonnegative",
+        ),
+        CheckConstraint("accumulated_tokens >= 0", name="runtime_tokens_nonnegative"),
+        CheckConstraint("failures_this_run >= 0", name="runtime_failures_nonnegative"),
     )
 
 
@@ -203,6 +217,18 @@ class TaskResultRow(Base):
         CheckConstraint(
             "status IN ('queued', 'running', 'paused', 'done', 'failed', 'cancelled')",
             name="task_result_status_valid",
+        ),
+        CheckConstraint("cost_usd_actual >= 0", name="task_result_actual_cost_nonnegative"),
+        CheckConstraint(
+            "cost_usd_equivalent >= 0",
+            name="task_result_equivalent_cost_nonnegative",
+        ),
+        CheckConstraint("tokens_in >= 0", name="task_result_tokens_in_nonnegative"),
+        CheckConstraint("tokens_out >= 0", name="task_result_tokens_out_nonnegative"),
+        CheckConstraint("duration_sec >= 0", name="task_result_duration_nonnegative"),
+        CheckConstraint(
+            "surprise_score >= 0 AND surprise_score <= 1",
+            name="task_result_surprise_score_range",
         ),
         Index("ix_task_results_tenant_task", "tenant_id", "task_id"),
     )
@@ -286,6 +312,19 @@ class CapabilityCardRow(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "entity_type IN ('role_template', 'model', 'skill', 'tool', 'human', 'external_agent')",
+            name="capability_entity_type_valid",
+        ),
+        CheckConstraint(
+            "maturity IN ('cold_start', 'warming_up', 'mature')",
+            name="capability_maturity_valid",
+        ),
+        CheckConstraint("version >= 1", name="capability_version_positive"),
+        CheckConstraint(
+            "overall_reliability >= 0 AND overall_reliability <= 1",
+            name="capability_reliability_range",
+        ),
         UniqueConstraint("tenant_id", "entity_type", "entity_id", name="uq_capability_entity"),
     )
 
@@ -343,6 +382,17 @@ class NotificationRow(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    __table_args__ = (
+        CheckConstraint(
+            "severity IN ('info', 'insight', 'warn', 'error')",
+            name="notification_severity_valid",
+        ),
+        CheckConstraint(
+            "channel IN ('main', 'side', 'email', 'webhook', 'push', 'silent')",
+            name="notification_channel_valid",
+        ),
+    )
+
 
 # ============== EXPERIMENTS (ADR-009) ==============
 
@@ -391,3 +441,5 @@ class IdempotencyRow(Base):
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
     ttl_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+
+    __table_args__ = (CheckConstraint("ttl_sec > 0", name="idempotency_ttl_positive"),)

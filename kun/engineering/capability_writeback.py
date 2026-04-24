@@ -55,7 +55,7 @@ async def record_outcome(tenant_id: str, outcome: TaskOutcome) -> None:
     """Upsert a capability card with a new task outcome."""
     for attempt in range(2):
         try:
-            async with session_scope() as s:
+            async with session_scope(tenant_id=tenant_id) as s:
                 await _record_outcome_in_txn(s, tenant_id, outcome)
             break
         except IntegrityError:
