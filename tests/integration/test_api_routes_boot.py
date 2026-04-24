@@ -22,6 +22,8 @@ def test_routes_registered():
         "/ws",
         "/nuo/health/summary",
         "/nuo/budget/summary",
+        "/nuo/actions/pending",
+        "/nuo/actions/{action_id}/decision",
     }
     assert expected <= paths, f"missing routes: {expected - paths}"
 

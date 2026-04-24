@@ -8,7 +8,7 @@ from fastapi import APIRouter
 from sqlalchemy import func, select
 
 from kun.core.db import session_scope
-from kun.core.orm import EventRow, TaskRow
+from kun.core.orm import EventRow, PendingActionRow, TaskRow
 from kun.core.tenancy import current_tenant
 
 router = APIRouter()
@@ -46,9 +46,20 @@ async def health_summary() -> dict[str, Any]:
         )
         total_tasks = (await s.execute(total_tasks_stmt)).scalar_one()
 
+        pending_actions_stmt = (
+            select(func.count())
+            .select_from(PendingActionRow)
+            .where(
+                PendingActionRow.tenant_id == tenant.tenant_id,
+                PendingActionRow.status == "pending_approval",
+            )
+        )
+        pending_actions = (await s.execute(pending_actions_stmt)).scalar_one()
+
     return {
         "tenant_id": tenant.tenant_id,
         "total_tasks": int(total_tasks),
         "tasks_by_status": task_by_status,
         "events_outbox_lag": int(lag),
+        "pending_actions": int(pending_actions),
     }
