@@ -1,10 +1,10 @@
-# SPDX-License-Identifier: Proprietary
+# SPDX-License-Identifier: LicenseRef-Proprietary
 # Copyright © 2026 KUN Project
 ---
 name: research-web-fetch
 description: Fetch a URL and extract clean text (no scripts/ads) for downstream analysis
 version: 0.1.0
-license: Proprietary
+license: LicenseRef-Proprietary
 curated_by: KUN
 maturity: cold_start
 input_schema:

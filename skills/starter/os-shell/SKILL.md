@@ -1,10 +1,10 @@
-# SPDX-License-Identifier: Proprietary
+# SPDX-License-Identifier: LicenseRef-Proprietary
 # Copyright © 2026 KUN Project
 ---
 name: os-shell
 description: Execute vetted, non-destructive shell commands in the task sandbox
 version: 0.1.0
-license: Proprietary
+license: LicenseRef-Proprietary
 curated_by: KUN
 maturity: cold_start
 allowed_commands:

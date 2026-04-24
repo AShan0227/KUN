@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 KUN Project
+
 # KUN Starter Pack
 
 > 从 Anthropic 140+ 开源 skill 精选, 覆盖 coding / writing / research / data / os 五大类.
@@ -19,9 +22,9 @@
 | `coding-docx` | Anthropic open skills | Apache-2.0 | 读 / 写 docx |
 | `coding-xlsx` | Anthropic open skills | Apache-2.0 | 读 / 写 spreadsheet |
 | `writing-markdown` | Anthropic open skills | Apache-2.0 | 格式化 markdown |
-| `research-web-fetch` | Internal | Proprietary | 抓取 URL 并解析 |
+| `research-web-fetch` | Internal | LicenseRef-Proprietary | 抓取 URL 并解析 |
 | `data-csv-query` | Anthropic open skills | Apache-2.0 | 在 CSV 上做 SQL |
-| `os-shell` | Internal | Proprietary | 受限 shell 命令 |
+| `os-shell` | Internal | LicenseRef-Proprietary | 受限 shell 命令 |
 
 后续在 `skills/<skill-name>/SKILL.md` 添加完整 skill 定义.
 

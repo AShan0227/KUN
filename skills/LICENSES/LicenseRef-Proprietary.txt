@@ -1,0 +1,10 @@
+KUN Proprietary Starter Skill License
+
+Copyright 2026 KUN Project
+
+All rights reserved.
+
+This license text applies to files marked with SPDX-License-Identifier:
+LicenseRef-Proprietary inside the KUN starter skill pack. These files may be
+used, modified, and redistributed only as part of the KUN project or with
+separate written permission from the KUN Project maintainers.
