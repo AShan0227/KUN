@@ -28,7 +28,10 @@ log "checking toolchain..."
 need uv
 need docker
 if ! docker info >/dev/null 2>&1; then
-    err "docker daemon is not running. start Docker Desktop and retry."
+    err "docker daemon is not running. start Docker Desktop / colima and retry."
+fi
+if ! docker compose version >/dev/null 2>&1; then
+    err "docker compose plugin missing. install: brew install docker-compose, then add '/opt/homebrew/lib/docker/cli-plugins' to cliPluginsExtraDirs in ~/.docker/config.json"
 fi
 
 if [[ ! -f .env ]]; then
@@ -36,8 +39,10 @@ if [[ ! -f .env ]]; then
     cp .env.example .env
 fi
 
-log "uv sync --dev"
-uv sync --dev >/dev/null
+# uv sync: .venv 可能在 docker rebuild / make clean 后被清掉, 每次 bootstrap 都幂等重跑
+# 用 --extra dev 而不是 --dev, 因为 pytest 等放在 [project.optional-dependencies].dev
+log "uv sync --extra dev (idempotent; safe after .venv cleanup)"
+uv sync --extra dev >/dev/null
 
 log "docker compose up -d"
 docker compose -f docker-compose.dev.yml up -d
