@@ -29,6 +29,12 @@ make migrate     # alembic upgrade head
 make serve       # 启 API (autoreload)
 ```
 
+Postgres 现在分两条连接：
+- `KUN_PG_DSN`：应用运行时使用 `kun_app` 非超级用户，RLS 会真正生效。
+- `KUN_PG_ADMIN_DSN`：Alembic 迁移和系统级后台任务使用 admin。
+
+如果你已有旧 `.env`，确认把 `KUN_PG_DSN` 从 `kun:kun` 改成 `kun_app:kun_app`，并补上 `KUN_PG_ADMIN_DSN`。
+
 ### 常用命令
 
 ```bash

@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     default_tenant_id: str = "u-sylvan"
 
     # Postgres
-    pg_dsn: str = "postgresql+asyncpg://kun:kun@localhost:55432/kun"
+    pg_dsn: str = "postgresql+asyncpg://kun_app:kun_app@localhost:55432/kun"
+    pg_admin_dsn: str = "postgresql+asyncpg://kun:kun@localhost:55432/kun"
     pg_pool_size: int = 10
 
     # Redis

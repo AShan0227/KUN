@@ -19,8 +19,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Override sqlalchemy.url from env-sourced settings
-config.set_main_option("sqlalchemy.url", settings().pg_dsn)
+# Migrations use the admin DSN. The application runtime uses KUN_PG_DSN,
+# usually a non-superuser role so Postgres RLS is actually enforced.
+config.set_main_option("sqlalchemy.url", settings().pg_admin_dsn)
 
 target_metadata = Base.metadata
 

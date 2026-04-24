@@ -169,7 +169,7 @@ async def outbox_worker(*, interval_sec: float = 0.5) -> None:
                 if nc is None:
                     nc = await connect_nats()
 
-                async with session_scope() as s:
+                async with session_scope(bypass_rls=True) as s:
                     lag = await count_unpublished(s)
                     events_outbox_lag.set(lag)
 

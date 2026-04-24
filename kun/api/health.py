@@ -33,7 +33,21 @@ async def ready() -> dict[str, Any]:
         engine = get_engine()
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
-        checks["postgres"] = "ok"
+            role = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT rolsuper, rolbypassrls
+                        FROM pg_roles
+                        WHERE rolname = current_user
+                        """
+                    )
+                )
+            ).one()
+        if bool(role.rolsuper) or bool(role.rolbypassrls):
+            checks["postgres"] = "degraded: app role bypasses RLS"
+        else:
+            checks["postgres"] = "ok"
     except Exception as e:
         checks["postgres"] = f"down: {e!r}"
 

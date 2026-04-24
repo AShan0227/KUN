@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from kun.core.logging import get_logger
+from kun.core.tenancy import TenantContext, tenant_scope
 
 log = get_logger("kun.engineering.idle_batch")
 
@@ -76,31 +77,32 @@ async def run_all(
     reports: list[StepReport] = []
     names = [n for n in list_steps() if enabled is None or n in enabled]
     log.info("idle_batch.run_all.start", tenant_id=tenant_id, steps=names)
-    for name in names:
-        step = _steps[name]
-        started = datetime.now(UTC)
-        try:
-            summary = await step.run(tenant_id)
-            reports.append(
-                StepReport(
-                    step_id=name,
-                    started_at=started,
-                    finished_at=datetime.now(UTC),
-                    status="ok",
-                    summary=summary,
+    with tenant_scope(TenantContext(tenant_id=tenant_id)):
+        for name in names:
+            step = _steps[name]
+            started = datetime.now(UTC)
+            try:
+                summary = await step.run(tenant_id)
+                reports.append(
+                    StepReport(
+                        step_id=name,
+                        started_at=started,
+                        finished_at=datetime.now(UTC),
+                        status="ok",
+                        summary=summary,
+                    )
                 )
-            )
-        except Exception as e:
-            log.exception("idle_batch.step_failed", step=name, error=str(e))
-            reports.append(
-                StepReport(
-                    step_id=name,
-                    started_at=started,
-                    finished_at=datetime.now(UTC),
-                    status="failed",
-                    summary={"error": str(e)},
+            except Exception as e:
+                log.exception("idle_batch.step_failed", step=name, error=str(e))
+                reports.append(
+                    StepReport(
+                        step_id=name,
+                        started_at=started,
+                        finished_at=datetime.now(UTC),
+                        status="failed",
+                        summary={"error": str(e)},
+                    )
                 )
-            )
     log.info("idle_batch.run_all.done", tenant_id=tenant_id, n=len(reports))
     return reports
 

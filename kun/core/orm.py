@@ -1,8 +1,7 @@
 """SQLAlchemy ORM models.
 
-All business tables carry `tenant_id` (ADR-007). Tenant isolation is currently
-enforced by application queries and tests; database RLS policies are planned
-but not installed yet.
+All business tables carry `tenant_id` (ADR-007). Tenant isolation is enforced
+in both application queries and Postgres RLS policies.
 
 The `events` table is the Outbox (ADR-005).
 """

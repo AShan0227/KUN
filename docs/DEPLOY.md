@@ -44,6 +44,13 @@ git clone git@github.com:AShan0227/KUN.git
 6. `uv run alembic upgrade head` 建表
 7. 跑单测
 
+> 已有旧 `.env` 的机器注意：Postgres 运行时账号已经切到非超级用户 `kun_app`，否则 RLS 会被 superuser 绕过。确认 `.env` 里是：
+>
+> ```bash
+> KUN_PG_DSN=postgresql+asyncpg://kun_app:kun_app@localhost:55432/kun
+> KUN_PG_ADMIN_DSN=postgresql+asyncpg://kun:kun@localhost:55432/kun
+> ```
+
 ### 3. 填 API keys
 
 打开 `.env` 填 **至少一个** LLM 供应商的 key:

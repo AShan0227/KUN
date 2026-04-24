@@ -34,6 +34,12 @@ fi
 if [[ ! -f .env ]]; then
     log "creating .env from .env.example (FILL IN your keys before using real LLMs)"
     cp .env.example .env
+else
+    if grep -q '^KUN_PG_DSN=postgresql+asyncpg://kun:kun@' .env; then
+        log "warning: .env uses admin Postgres role for KUN_PG_DSN; switch to kun_app so RLS is enforced"
+        log "         KUN_PG_DSN=postgresql+asyncpg://kun_app:kun_app@localhost:55432/kun"
+        log "         KUN_PG_ADMIN_DSN=postgresql+asyncpg://kun:kun@localhost:55432/kun"
+    fi
 fi
 
 log "uv sync --extra dev"

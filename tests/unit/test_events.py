@@ -51,7 +51,7 @@ async def test_outbox_worker_retries_nats_when_initial_connect_fails(
         return None
 
     @asynccontextmanager
-    async def fake_session_scope() -> AsyncIterator[object]:
+    async def fake_session_scope(**_kwargs: object) -> AsyncIterator[object]:
         yield object()
 
     async def fake_count_unpublished(_session: object) -> int:
