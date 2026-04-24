@@ -97,6 +97,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: REUSE compliance
-        uses: fsfe/reuse-action@v4
+        uses: fsfe/reuse-action@v6
         with:
           args: --root skills lint
