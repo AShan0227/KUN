@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      - run: uv run ruff check kun tests
+      - run: uv run ruff format --check kun tests
+
+  typecheck:
+    name: Typecheck (mypy, soft)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      - run: uv run mypy kun
+
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      - run: uv run pytest tests/unit -q
+
+  integration-tests:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: kun
+          POSTGRES_PASSWORD: kun
+          POSTGRES_DB: kun
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kun"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      nats:
+        image: nats:2.10-alpine
+        ports: ["4222:4222"]
+    env:
+      KUN_PG_DSN: postgresql+asyncpg://kun:kun@localhost:5432/kun
+      KUN_REDIS_URL: redis://localhost:6379/0
+      KUN_NATS_URL: nats://localhost:4222
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      - run: uv run alembic upgrade head
+      - run: uv run pytest tests/integration -q
+        continue-on-error: true  # ADR-013 integration tier 稳定前允许 soft-fail
+
+  license-scan:
+    name: Starter skill license scan
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: REUSE compliance
+        uses: fsfe/reuse-action@v4
+        with:
+          args: --root skills lint
