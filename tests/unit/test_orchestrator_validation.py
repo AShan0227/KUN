@@ -12,8 +12,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import pytest
-
-import kun.engineering.orchestrator as orch_mod
 from kun.engineering.orchestrator import Orchestrator
 from kun.interface.llm import LLMRouter
 from kun.interface.llm.base import LLMResponse, UsageInfo
@@ -57,9 +55,7 @@ async def _fake_session_scope() -> AsyncIterator[_FakeSession]:
 def _patch_db(monkeypatch):
     monkeypatch.setattr("kun.engineering.orchestrator.session_scope", _fake_session_scope)
     # Also patch capability writeback's session scope
-    monkeypatch.setattr(
-        "kun.engineering.capability_writeback.session_scope", _fake_session_scope
-    )
+    monkeypatch.setattr("kun.engineering.capability_writeback.session_scope", _fake_session_scope)
 
 
 def _high_complexity_intent(request):

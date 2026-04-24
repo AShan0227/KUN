@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Any
 
@@ -18,6 +19,10 @@ from kun.interface.llm.base import (
     ToolCall,
     UsageInfo,
 )
+
+# MiniMax M2.7 emits `<think>...</think>` reasoning blocks. Strip them from
+# user-facing answer unless caller opted in via `KUN_KEEP_THINK=1`.
+_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 log = get_logger("kun.llm.minimax")
 
@@ -91,6 +96,8 @@ class MiniMaxProvider(LLMProvider):
         choice = data["choices"][0]
         message = choice["message"]
         content = message.get("content") or ""
+        if os.getenv("KUN_KEEP_THINK", "0") != "1":
+            content = _THINK_RE.sub("", content).strip()
 
         tool_calls: list[ToolCall] = []
         if message.get("tool_calls"):

@@ -161,14 +161,28 @@ _router: LLMRouter | None = None
 
 
 def get_router() -> LLMRouter:
-    """Build (or return cached) router from environment."""
+    """Build (or return cached) router from environment.
+
+    Resolution priority (per ADR-002 + dev-time reality):
+
+      top / strong / cheap:
+        1. Anthropic via ofox proxy (KUN_OFOX_API_KEY) or direct (ANTHROPIC_API_KEY)
+        2. MiniMax as substitute (if MINIMAX_API_KEY set and no Anthropic)
+        3. Stub (deterministic, for tests)
+
+      coding:
+        1. OpenAI via ofox or direct
+        2. MiniMax substitute
+        3. Stub
+
+      fallback: MiniMax if creds, else stub.
+    """
     global _router
     if _router is not None:
         return _router
 
     providers: dict[ModelTier, LLMProvider] = {}
 
-    # ADR-002 primary chain. If creds missing, fall back to stub.
     has_ofox = bool(os.getenv("KUN_OFOX_API_KEY"))
     has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY"))
     has_openai = bool(os.getenv("OPENAI_API_KEY"))
@@ -178,19 +192,33 @@ def get_router() -> LLMRouter:
         providers["top"] = AnthropicProvider(model_id="claude-opus-4-7", tier="top")
         providers["strong"] = AnthropicProvider(model_id="claude-sonnet-4-6", tier="strong")
         providers["cheap"] = AnthropicProvider(model_id="claude-haiku-4-5-20251001", tier="cheap")
+    elif has_minimax:
+        log.info(
+            "router.minimax_substitute",
+            hint="MiniMax M2.7 used for top/strong/cheap (Anthropic creds missing)",
+        )
+        providers["top"] = MiniMaxProvider(model_id="MiniMax-M2.7")
+        providers["top"].tier = "top"
+        providers["strong"] = MiniMaxProvider(model_id="MiniMax-M2.7")
+        providers["strong"].tier = "strong"
+        providers["cheap"] = MiniMaxProvider(model_id="MiniMax-M2.7")
+        providers["cheap"].tier = "cheap"
     else:
-        log.warning("router.no_anthropic_creds", hint="falling back to stub for top/strong/cheap")
+        log.warning("router.no_creds", hint="falling back to stub for top/strong/cheap")
         providers["top"] = StubProvider(model_id="stub-opus-4.7", tier="top")
         providers["strong"] = StubProvider(model_id="stub-sonnet-4.6", tier="strong")
         providers["cheap"] = StubProvider(model_id="stub-haiku-4.5", tier="cheap")
 
     if has_openai or has_ofox:
         providers["coding"] = OpenAIProvider(model_id="codex-5.3", tier="coding")
+    elif has_minimax:
+        providers["coding"] = MiniMaxProvider(model_id="MiniMax-M2.7")
+        providers["coding"].tier = "coding"
     else:
         providers["coding"] = StubProvider(model_id="stub-codex-5.3", tier="coding")
 
     if has_minimax:
-        providers["fallback"] = MiniMaxProvider(model_id="minimax-m2.7")
+        providers["fallback"] = MiniMaxProvider(model_id="MiniMax-M2.7")
     else:
         log.warning("router.no_minimax_creds", hint="falling back to stub for fallback")
         providers["fallback"] = StubProvider(model_id="stub-minimax-m2.7", tier="fallback")

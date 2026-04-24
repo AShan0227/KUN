@@ -16,6 +16,7 @@ dependencies = [
   # Data
   "pydantic>=2.9.0",
   "pydantic-settings>=2.6.0",
+  "python-dotenv>=1.0.0",
   "python-ulid>=3.0.0",
   # DB
   "sqlalchemy[asyncio]>=2.0.0",
