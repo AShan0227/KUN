@@ -68,6 +68,24 @@ log = get_logger("kun.engineering.orchestrator")
 _STALE_QUEUED_TASK_AFTER = timedelta(seconds=30)
 
 
+# R-N3: per-audience system-prompt directives. Concatenated after the base
+# "执行角色" preamble so the assistant adjusts voice / depth without losing
+# its primary instructions.
+_AUDIENCE_DIRECTIVES: dict[str, str] = {
+    "novice": (
+        "回答风格: 大白话, 不堆英文术语和缩写, 必要时打比方, 短句, 不堆代码. "
+        "用户是非技术背景, 给结论 + 一两句解释 + 下一步建议."
+    ),
+    "developer": (
+        "回答风格: 简洁直接, 给代码块或具体命令, 文件路径精确. 默认对方懂基础概念, 不解释入门术语."
+    ),
+    "expert": (
+        "回答风格: 深度分析, 列替代方案 + 每个方案的 trade-off, 引用具体代码位置 / ADR. "
+        "可以长但要结构化."
+    ),
+}
+
+
 # OTel tracer — best-effort, lazy-initialized; no-op if SDK isn't wired.
 def _tracer() -> Any:
     try:
@@ -566,13 +584,13 @@ class Orchestrator:
                     data={"step_id": step_plan.step_id, "description": step_plan.description},
                 )
 
-                # Apply budget kill switch — when over budget the router
-                # ignores tier and routes everything through MiniMax fallback.
-                exec_profile = (
-                    choice.task_profile.model_copy(update={"force_fallback": True})
-                    if force_fallback
-                    else choice.task_profile
-                )
+                # Build the per-step profile: thread the caller's audience
+                # preference (R-N3) and the budget kill switch into a copy so
+                # we don't mutate the router-returned default.
+                profile_updates: dict[str, Any] = {"audience": tenant.audience}
+                if force_fallback:
+                    profile_updates["force_fallback"] = True
+                exec_profile = choice.task_profile.model_copy(update=profile_updates)
 
                 # Execute via LLM with skill candidates hinted in system prompt
                 answer, response = await self._execute_step(
@@ -769,6 +787,33 @@ class Orchestrator:
         validation_score: float | None = None
         if status == "done":
             tier = pick_tier(task_ref.meta)
+            # tier0 — cheapest path. We still run a structural sanity check
+            # (R-A4) so an empty / trivially-broken answer trips a "partial"
+            # outcome instead of silently passing.
+            if tier == "tier0":
+                stripped = answer.strip()
+                if not stripped:
+                    validation_outcome = "partial"
+                    yield OrchestratorEvent(
+                        kind="insight",
+                        data={
+                            "stage": "validation",
+                            "tier": tier,
+                            "verdict": "empty_answer",
+                            "reason": "tier0 sanity: answer was empty",
+                        },
+                    )
+                elif len(stripped) < 4:
+                    validation_outcome = "partial"
+                    yield OrchestratorEvent(
+                        kind="insight",
+                        data={
+                            "stage": "validation",
+                            "tier": tier,
+                            "verdict": "too_short",
+                            "reason": f"tier0 sanity: answer is only {len(stripped)} chars",
+                        },
+                    )
             if tier != "tier0" and answer.strip():
                 try:
                     results = await self.validation.validate_task(
@@ -878,9 +923,13 @@ class Orchestrator:
         prior_outputs: list[tuple[int, str]] | None = None,
     ) -> tuple[str, LLMResponse]:
         """Execute a single step by calling the LLM."""
+        # R-N3: pick a voice tier based on the caller's audience preference.
+        audience = profile.audience if profile else "developer"
+        audience_directive = _AUDIENCE_DIRECTIVES.get(audience, _AUDIENCE_DIRECTIVES["developer"])
         system_parts = [
-            "你是 KUN 系统里的执行角色. 按用户要求完成任务, 回答简洁、准确、可验证. "
-            "若需要外部数据, 说明需要什么. 不要编造."
+            "你是 KUN 系统里的执行角色. 按用户要求完成任务, 回答准确、可验证. "
+            "若需要外部数据, 说明需要什么. 不要编造.",
+            audience_directive,
         ]
         if skills_summary:
             system_parts.append(skills_summary)

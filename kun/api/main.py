@@ -149,7 +149,11 @@ async def tenant_middleware(
     request: Request,
     call_next: Callable[[Request], Awaitable[Response]],
 ) -> Response:
-    """ADR-007: resolve tenant from X-Tenant-Id, with fallback disabled in production."""
+    """ADR-007: resolve tenant from X-Tenant-Id, with fallback disabled in production.
+
+    Also threads X-Scopes (comma-separated) into TenantContext so endpoints can
+    enforce permission checks (R-A12). Empty / missing scopes = empty tuple.
+    """
     try:
         tenant_id = resolve_tenant_id(request.headers.get("X-Tenant-Id"))
     except MissingTenantContextError:
@@ -158,7 +162,16 @@ async def tenant_middleware(
             content={"detail": "X-Tenant-Id header is required"},
         )
     user_id = request.headers.get("X-User-Id")
-    ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
+    raw_scopes = request.headers.get("X-Scopes") or ""
+    scopes = tuple(s.strip() for s in raw_scopes.split(",") if s.strip())
+    raw_audience = (request.headers.get("X-Audience") or "developer").lower()
+    audience = raw_audience if raw_audience in {"novice", "developer", "expert"} else "developer"
+    ctx = TenantContext(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        scopes=scopes,
+        audience=audience,  # type: ignore[arg-type]
+    )
     with tenant_scope(ctx):
         return await call_next(request)
 

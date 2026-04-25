@@ -84,7 +84,13 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 
     await ws.accept()
     user_id = ws.query_params.get("user_id")
-    ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
+    raw_audience = (ws.query_params.get("audience") or "developer").lower()
+    audience = raw_audience if raw_audience in {"novice", "developer", "expert"} else "developer"
+    ctx = TenantContext(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        audience=audience,  # type: ignore[arg-type]
+    )
     send_lock = asyncio.Lock()
     current_task: asyncio.Task[None] | None = None
 

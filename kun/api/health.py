@@ -23,12 +23,17 @@ async def health() -> dict[str, Any]:
 
 @router.get("/ready")
 async def ready() -> dict[str, Any]:
-    """Check dependencies: DB, Redis, NATS (best-effort)."""
+    """Check all runtime dependencies — covers DB / Redis / NATS / Qdrant /
+    MinIO / codex CLI / claude CLI (best-effort).
+
+    Each probe is wrapped in its own try/except — a single down dependency
+    surfaces as ``degraded`` instead of failing the whole endpoint. R-D2.
+    """
     from kun.core.db import get_engine
 
     checks: dict[str, str] = {}
 
-    # Postgres
+    # Postgres + RLS guard
     try:
         engine = get_engine()
         async with engine.connect() as conn:
@@ -51,7 +56,7 @@ async def ready() -> dict[str, Any]:
     except Exception as e:
         checks["postgres"] = f"down: {e!r}"
 
-    # Redis (optional)
+    # Redis
     try:
         import redis.asyncio as aioredis
 
@@ -62,5 +67,41 @@ async def ready() -> dict[str, Any]:
     except Exception as e:
         checks["redis"] = f"down: {e!r}"
 
-    overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
+    # NATS
+    try:
+        import nats
+
+        nc = await nats.connect(settings().nats_url, connect_timeout=2)
+        await nc.close()
+        checks["nats"] = "ok"
+    except Exception as e:
+        checks["nats"] = f"down: {e!r}"
+
+    # Qdrant
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r2 = await client.get(f"{settings().qdrant_url}/healthz")
+            checks["qdrant"] = "ok" if r2.status_code < 400 else f"degraded: {r2.status_code}"
+    except Exception as e:
+        checks["qdrant"] = f"down: {e!r}"
+
+    # MinIO / S3
+    try:
+        from kun.core.object_store import get_object_store
+
+        await get_object_store().ensure_bucket()
+        checks["minio"] = "ok"
+    except Exception as e:
+        checks["minio"] = f"down: {e!r}"
+
+    # Codex CLI (subscription path)
+    import shutil
+
+    checks["codex_cli"] = "ok" if shutil.which("codex") else "absent"
+    # Claude Code CLI (subscription path)
+    checks["claude_cli"] = "ok" if shutil.which("claude") else "absent"
+
+    overall = "ok" if all(v in {"ok", "absent"} for v in checks.values()) else "degraded"
     return {"status": overall, "checks": checks}

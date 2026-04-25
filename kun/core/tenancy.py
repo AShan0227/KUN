@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Self
+from typing import Literal, Self
 
 from kun.core.config import settings
+
+Audience = Literal["novice", "developer", "expert"]
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,10 @@ class TenantContext:
     project_id: str | None = None
     # 权限作用域; 空 = 继承默认
     scopes: tuple[str, ...] = ()
+    # Reply tier — shapes the assistant's voice and routing default.
+    # Resolved from X-Audience header / WS query / explicit set; defaults to
+    # "developer" when caller doesn't specify (R-N3).
+    audience: Audience = "developer"
 
 
 class MissingTenantContextError(RuntimeError):
