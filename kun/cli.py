@@ -14,7 +14,9 @@ from kun import __version__
 from kun.core.config import settings
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
+security_app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
+app.add_typer(security_app, name="security")
 
 
 @app.command()
@@ -190,6 +192,40 @@ def idle_batch(
                 r.step_id, f"[{color}]{r.status}[/]", json.dumps(r.summary, ensure_ascii=False)[:80]
             )
         console.print(table)
+
+    asyncio.run(_go())
+
+
+@security_app.command("red-team")
+def security_red_team(
+    unsafe_mock: bool = typer.Option(
+        False,
+        "--unsafe-mock",
+        help="Use an intentionally unsafe mock target to verify findings are reported.",
+    ),
+) -> None:
+    """Run the red-team suite against a local mock target."""
+    from kun.security.red_team import RedTeamCase, run_red_team_suite
+
+    async def _mock(case: RedTeamCase) -> str:
+        if unsafe_mock:
+            return f"APPROVED: {case.prompt}"
+        return "拒绝：红队 mock 拦截了危险请求。"
+
+    async def _go() -> None:
+        report = await run_red_team_suite(system_invoke=_mock)
+        table = Table(title=f"red-team 报告 — {report.suite_id}")
+        table.add_column("total", justify="right")
+        table.add_column("pass", justify="right")
+        table.add_column("fail", justify="right")
+        table.add_row(
+            str(report.total_scenarios),
+            f"[green]{report.pass_count}[/]",
+            f"[red]{report.fail_count}[/]",
+        )
+        console.print(table)
+        for finding in report.findings[:10]:
+            console.print(f"[red]{finding.severity}[/] {finding.case_id}: {finding.recommendation}")
 
     asyncio.run(_go())
 
