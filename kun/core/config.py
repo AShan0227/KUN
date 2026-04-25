@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     # size is stored in MinIO and a reference kept in DB instead.
     result_offload_threshold_bytes: int = Field(default=51200)  # 50 KiB
 
+    # Proactive tool learning. When the same (tenant, skill, pattern) is
+    # missed this many times, watchtower promotes it into the learned trigger
+    # table and emits proactive.trigger_promoted.
+    missed_tool_threshold: int = Field(default=10, ge=1)
+
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000

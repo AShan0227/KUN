@@ -73,7 +73,10 @@ async def dispatch_event_to_handlers(
 async def watchtower_handler(row: EventRow) -> None:
     """默认 handler: 把事件类型喂给 watchtower RuleEngine."""
     from kun.watchtower.engine import RuleEngine
+    from kun.watchtower.handlers import handle_tool_skipped
 
+    if row.event_type == "task.tool_skipped":
+        await handle_tool_skipped(row)
     engine = RuleEngine()
     namespace = {
         "event_type": row.event_type,
