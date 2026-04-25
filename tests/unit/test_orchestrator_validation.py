@@ -50,7 +50,8 @@ class _FakeSession:
 
 
 @asynccontextmanager
-async def _fake_session_scope() -> AsyncIterator[_FakeSession]:
+async def _fake_session_scope(*_args, **_kwargs) -> AsyncIterator[_FakeSession]:
+    # Tolerate tenant_id / bypass_rls kwargs that real callers pass.
     yield _FakeSession()
 
 

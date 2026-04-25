@@ -400,8 +400,11 @@ class NotificationRow(Base):
 class ExperimentRow(Base):
     __tablename__ = "experiments"
 
+    # Composite PK (tenant_id, id) — two tenants may pick the same experiment
+    # id without colliding; updates that filter on id alone become tenant-safe
+    # at the DB layer because the unique constraint is per tenant.
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft", index=True)
     rollout_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -434,8 +437,12 @@ class ExperimentRow(Base):
 class IdempotencyRow(Base):
     __tablename__ = "idempotency_keys"
 
+    # Composite PK (tenant_id, key) — two tenants asking the same prompt
+    # (same fingerprint) keep separate idempotency state; without this two
+    # tenants colliding on a fingerprint would race the second INSERT into
+    # an IntegrityError that the orchestrator can't recover from.
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
     result_ref: Mapped[str] = mapped_column(String(256), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False

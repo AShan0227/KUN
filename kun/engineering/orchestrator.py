@@ -21,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
@@ -161,8 +161,44 @@ class Orchestrator:
         owner = Owner(tenant_id=tenant.tenant_id, user_id=tenant.user_id)
 
         t0 = time.perf_counter()
-        duration_cap = float(max_duration_sec or settings().task_max_duration_sec)
+        cfg = settings()
+        duration_cap = float(max_duration_sec or cfg.task_max_duration_sec)
         deadline_monotonic = time.monotonic() + duration_cap
+
+        # Budget gate (R-A11) — query today's cumulative cost; if past the
+        # warn threshold emit an alert, if past the hard cap force every LLM
+        # call this task makes onto the cheap MiniMax fallback.
+        budget_used, budget_cap = await _today_cost_vs_budget(tenant.tenant_id)
+        warn_threshold = cfg.budget_warn_fraction * budget_cap
+        force_fallback = budget_cap > 0 and budget_used >= budget_cap
+        if budget_cap > 0 and budget_used >= warn_threshold and not force_fallback:
+            yield OrchestratorEvent(
+                kind="insight",
+                data={
+                    "stage": "budget",
+                    "level": "warn",
+                    "used_usd": round(budget_used, 4),
+                    "cap_usd": budget_cap,
+                    "message": (
+                        f"今天累计已花约 ${budget_used:.2f}（占预算 "
+                        f"{budget_used / budget_cap * 100:.0f}%），临近上限。"
+                    ),
+                },
+            )
+        if force_fallback:
+            yield OrchestratorEvent(
+                kind="guard_intervention",
+                data={
+                    "stage": "budget",
+                    "level": "exceeded",
+                    "used_usd": round(budget_used, 4),
+                    "cap_usd": budget_cap,
+                    "message": (
+                        f"今天累计已花约 ${budget_used:.2f}，已超日预算 ${budget_cap:.2f}。"
+                        "本任务会降级到便宜模型（MiniMax fallback）继续，避免烧订阅 quota。"
+                    ),
+                },
+            )
 
         # 1. 意图理解 -> TaskRef
         yield OrchestratorEvent(kind="thinking", data={"stage": "intent"})
@@ -507,12 +543,20 @@ class Orchestrator:
                     data={"step_id": step_plan.step_id, "description": step_plan.description},
                 )
 
+                # Apply budget kill switch — when over budget the router
+                # ignores tier and routes everything through MiniMax fallback.
+                exec_profile = (
+                    choice.task_profile.model_copy(update={"force_fallback": True})
+                    if force_fallback
+                    else choice.task_profile
+                )
+
                 # Execute via LLM with skill candidates hinted in system prompt
                 answer, response = await self._execute_step(
                     task_ref=task_ref,
                     step_description=step_plan.description,
                     purpose=choice.purpose,
-                    profile=choice.task_profile,
+                    profile=exec_profile,
                     skills_summary=self.skill_selector.summary(skill_candidates),
                     context_summary=context_summary,
                     prior_outputs=step_outputs,
@@ -1135,6 +1179,27 @@ def _execution_user_prompt(
         ]
     )
     return "\n".join(lines)
+
+
+async def _today_cost_vs_budget(tenant_id: str) -> tuple[float, float]:
+    """Return (cost_used_today_usd, daily_cap_usd) for a tenant.
+
+    Sums ``cost_usd_equivalent`` from finished task results since 00:00 UTC.
+    A cap of 0 means "no budget configured" — caller treats this as no gate.
+    """
+    cfg = settings()
+    cap = float(cfg.budget_daily_usd)
+    if cap <= 0:
+        return (0.0, 0.0)
+    today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    async with session_scope(tenant_id=tenant_id) as s:
+        result = await s.execute(
+            select(func.coalesce(func.sum(TaskResultRow.cost_usd_equivalent), 0.0))
+            .where(TaskResultRow.tenant_id == tenant_id)
+            .where(TaskResultRow.created_at >= today_start)
+        )
+        used = float(result.scalar_one() or 0.0)
+    return (used, cap)
 
 
 async def _load_task_progress(

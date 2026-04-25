@@ -157,6 +157,19 @@ class LLMRouter:
         primary: ModelTier = _PURPOSE_TO_TIER.get(purpose, "top")
         rationale_parts.append(f"→ {primary}")
 
+        # --- Budget kill switch ---
+        # Orchestrator sets profile.force_fallback when daily budget is over
+        # the hard cap. Skip every other layer and pin to fallback so we stop
+        # burning subscription quota for the rest of the day.
+        if profile and profile.force_fallback:
+            rationale_parts.append("budget→fallback")
+            return RouteDecision(
+                purpose=purpose,
+                primary_tier="fallback",
+                fallback_tier="fallback",
+                rationale=" | ".join(rationale_parts),
+            )
+
         # --- Layer 2: profile overrides ---
         if profile:
             if profile.needs_coding and purpose == "execution":

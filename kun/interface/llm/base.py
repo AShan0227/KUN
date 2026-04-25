@@ -96,6 +96,14 @@ class TaskProfile(BaseModel):
             "expert = depth, alternatives, trade-offs."
         ),
     )
+    force_fallback: bool = Field(
+        default=False,
+        description=(
+            "Set by the orchestrator when daily budget is exceeded — router "
+            "must skip top/strong/cheap and route everything to the cheap "
+            "fallback (MiniMax) instead of letting the subscription pile up."
+        ),
+    )
 
 
 class LLMRequest(BaseModel):
