@@ -3,8 +3,8 @@
 > 单一真相源：`docs/汇总版V2.docx`（产品方案）。这份文档是它的**进度尺**。
 > 每次推进都更新这份；用户随时知道"对照整份方案"完成度。
 
-**最近更新**：2026-04-25（含主动用工具层 1）
-**整体加权完成度**：**~39%**（+2 来自主动用工具 + intent OTel span）
+**最近更新**：2026-04-25（主动用工具 4 层全部接通）
+**整体加权完成度**：**~40%**（+1 来自主动用工具 layer 2/3/4：yaml 触发器 + SKILL.md auto_trigger_when + tool_skipped 反馈）
 
 ---
 
@@ -25,7 +25,7 @@
 | 二 | 整体架构（三元 / 两脑 / 黑板） | 50% | **黑板（双向交互式）❌**；**第三个大脑：LLM 路由归守望管 半做**（playbook 在但守望规则没用） |
 | 三 | Context 子系统 | 25% | **中央重要度打分器 ❌**；**压缩器 LLMLingua ❌**；**遗忘器 FadeMem ❌**；分类合并 ❌；反查 ❌；热更新 ❌；三级披露**只在资产做了**，skill / 通讯没统一 |
 | 四 | 接入层 | 35% | HTTP/WS ✓ + 4 个 LLM provider ✓ + MCP ✓；**翻译适配器层 ❌**；**A2A ❌**；硬件协议 N/A |
-| 五 | 工程化子系统（按时序） | 45% | 事前 55%（**主动用工具层 1 ✓** keyword 触发器；三维风险预估 ❌、Context 预热 ❌）；事中 30%（预算追踪四档 ❌、早期错误左移 ❌、自我修复 ❌）；事后 20% |
+| 五 | 工程化子系统（按时序） | 50% | 事前 75%（**主动用工具 4 层全通** ✓ keyword/yaml/SKILL.md/反馈；三维风险预估 ❌、Context 预热 ❌）；事中 30%（预算追踪四档 ❌、早期错误左移 ❌、自我修复 ❌）；事后 20% |
 | 六 | 守望子系统（隐藏大脑） | 25% | RuleEngine 骨架 ✓；4 条规则**只 1 条真接通**；分级自治四级**只到第 3 级**；**守望管 LLM 路由 ❌**；夜间作业 placeholder |
 | 七 | 任务执行大脑 | 30% | 意图 ✓；**拆解 ❌（TaskPlanner 是占位）**；路由 ✓ 4 层；模型能力地图 半做（playbook 是手册，capability_card 收集中） |
 | 八 | 评估与进化 | 15% | tier 矩阵简版 ✓；**多判官投票 ❌**；**iMAD 辩论 ❌**；**AB 4 阶段 ❌**；**惊喜反馈 ❌**；基准测试 ❌ |
@@ -53,13 +53,13 @@
 
 ## 下个阶段（按价值密度排）
 
-**阶段 A — 把"主动用工具"做实**（最高价值密度，2.5 小时）
-- TASK.md 加 `required_tools` 字段
-- 意图识别阶段预填
-- orchestrator 启动时先 dispatch、结果塞 user message
-- 守望 3-5 条强匹配规则
-- SKILL.md 加 `auto_trigger_when` 字段
-- 失败回看驱动主动性（写进 capability_card）
+**阶段 A — 把"主动用工具"做实** ✅ DONE
+- TASK.md 加 `required_tools` 字段 ✓
+- 意图识别阶段预填 ✓
+- orchestrator 启动时先 dispatch、结果塞 user message ✓
+- 守望 3-5 条强匹配规则 ✓ (rules/proactive/triggers.yaml, layer 2)
+- SKILL.md 加 `auto_trigger_when` 字段 ✓ (layer 3)
+- 失败回看驱动主动性 ✓ (task.tool_skipped 事件, layer 4 — 写进 capability_card 等下一阶段消费)
 
 **阶段 B — 4 个 follow-up 清尾**（2-3 小时）
 - A: 真跑一次 agent loop 让 LLM 输出 `<skill>` 验证
