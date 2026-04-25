@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from kun.core.config import settings
+from kun.core.events import emit
 from kun.core.logging import get_logger
+from kun.core.orm import EventRow, ProactiveMissRow
 from kun.core.tenancy import MissingTenantContextError, current_tenant
 
 log = get_logger("kun.watchtower.handlers")
@@ -40,6 +48,128 @@ def get_handler(name: str) -> HandlerFunc | None:
 
 def list_handlers() -> list[str]:
     return sorted(_registry)
+
+
+async def handle_tool_skipped(row: EventRow) -> None:
+    """把 task.tool_skipped 事件累积成 proactive trigger 学习信号。"""
+    if row.event_type != "task.tool_skipped":
+        return
+
+    from kun.core.db import session_scope
+    from kun.datamodel.events import Event
+
+    tenant_id = row.tenant_id
+    missed = row.payload.get("missed") if isinstance(row.payload, dict) else None
+    if not isinstance(missed, list):
+        return
+
+    threshold = settings().missed_tool_threshold
+    async with session_scope(tenant_id=tenant_id) as s:
+        for raw in missed:
+            miss = _coerce_tool_miss(raw)
+            if miss is None:
+                continue
+            promoted_count = await _record_proactive_miss(
+                s,
+                tenant_id=tenant_id,
+                skill_id=miss["skill_id"],
+                pattern=miss["pattern"],
+                reason=miss["reason"],
+                trigger_source=miss["trigger_source"],
+                threshold=threshold,
+            )
+            if promoted_count is None:
+                continue
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant_id,
+                    event_type="proactive.trigger_promoted",
+                    payload={
+                        "skill_id": miss["skill_id"],
+                        "pattern": miss["pattern"],
+                        "miss_count": promoted_count,
+                        "threshold": threshold,
+                        "trigger_source": miss["trigger_source"],
+                    },
+                    task_ref=row.task_ref,
+                    causation_event_id=row.event_id,
+                ),
+            )
+            log.info(
+                "proactive.trigger_promoted",
+                tenant_id=tenant_id,
+                skill_id=miss["skill_id"],
+                miss_count=promoted_count,
+            )
+
+
+def _coerce_tool_miss(raw: object) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    skill_id = str(raw.get("skill_id") or "").strip()
+    pattern = str(raw.get("pattern") or "").strip()[:512]
+    if not skill_id or not pattern:
+        return None
+    return {
+        "skill_id": skill_id[:128],
+        "pattern": pattern,
+        "reason": str(raw.get("reason") or "")[:500],
+        "trigger_source": str(raw.get("trigger_source") or "")[:64],
+    }
+
+
+async def _record_proactive_miss(
+    s: AsyncSession,
+    *,
+    tenant_id: str,
+    skill_id: str,
+    pattern: str,
+    reason: str,
+    trigger_source: str,
+    threshold: int,
+) -> int | None:
+    now = datetime.now(UTC)
+    stmt = pg_insert(ProactiveMissRow).values(
+        tenant_id=tenant_id,
+        skill_id=skill_id,
+        pattern=pattern,
+        miss_count=1,
+        last_reason=reason,
+        trigger_source=trigger_source,
+        last_missed_at=now,
+    )
+    upsert_stmt = stmt.on_conflict_do_update(
+        index_elements=[
+            ProactiveMissRow.tenant_id,
+            ProactiveMissRow.skill_id,
+            ProactiveMissRow.pattern,
+        ],
+        set_={
+            "miss_count": ProactiveMissRow.miss_count + 1,
+            "last_reason": reason,
+            "trigger_source": trigger_source,
+            "last_missed_at": now,
+        },
+    ).returning(ProactiveMissRow.miss_count)
+    miss_count = int((await s.execute(upsert_stmt)).scalar_one())
+    if miss_count < threshold:
+        return None
+
+    promoted = (
+        await s.execute(
+            update(ProactiveMissRow)
+            .where(
+                ProactiveMissRow.tenant_id == tenant_id,
+                ProactiveMissRow.skill_id == skill_id,
+                ProactiveMissRow.pattern == pattern,
+                ProactiveMissRow.promoted_at.is_(None),
+            )
+            .values(promoted_at=now)
+            .returning(ProactiveMissRow.miss_count)
+        )
+    ).scalar_one_or_none()
+    return int(promoted) if promoted is not None else None
 
 
 # ================ Built-in handlers ================

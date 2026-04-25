@@ -60,6 +60,7 @@ EventKind = Literal[
     "experiment.rolled_back",
     # Notification
     "notification.emitted",
+    "proactive.trigger_promoted",
     # Security
     "security.cross_tenant_attempt",
     "security.redteam.finding",

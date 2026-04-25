@@ -18,6 +18,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    PrimaryKeyConstraint,
     String,
     Text,
     UniqueConstraint,
@@ -326,6 +327,30 @@ class CapabilityCardRow(Base):
             name="capability_reliability_range",
         ),
         UniqueConstraint("tenant_id", "entity_type", "entity_id", name="uq_capability_entity"),
+    )
+
+
+# ============== PROACTIVE TOOL LEARNING ==============
+
+
+class ProactiveMissRow(Base):
+    __tablename__ = "proactive_misses"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    skill_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    pattern: Mapped[str] = mapped_column(String(512), nullable=False)
+    miss_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trigger_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_missed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "skill_id", "pattern", name="pk_proactive_misses"),
+        CheckConstraint("miss_count >= 0", name="proactive_misses_count_nonnegative"),
+        Index("ix_proactive_misses_tenant_promoted", "tenant_id", "promoted_at"),
     )
 
 
