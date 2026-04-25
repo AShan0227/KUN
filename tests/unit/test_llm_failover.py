@@ -121,3 +121,44 @@ async def test_router_skips_provider_after_threshold() -> None:
     assert second.provider == "backup"
     assert top.calls == top_calls_after_first_failure
     assert backup.calls == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_router_emits_one_fallback_event_with_full_tier_chain(monkeypatch) -> None:
+    primary = _FakeProvider(name="primary", tier="top", fail=False)
+    challenger = _FakeProvider(name="challenger", tier="top", fail=True)
+    fallback = _FakeProvider(name="fallback", tier="fallback", fail=False)
+    emitted: list[dict[str, object]] = []
+
+    async def fake_emit_fallback_event(**kwargs: object) -> None:
+        emitted.append(kwargs)
+
+    monkeypatch.setattr("kun.interface.llm.router._ab_roll", lambda: 0.0)
+    monkeypatch.setattr(
+        "kun.interface.llm.router._emit_fallback_event",
+        fake_emit_fallback_event,
+    )
+
+    router = LLMRouter(
+        {"top": primary, "fallback": fallback},
+        ab_alternates={"top": challenger},
+        ab_ratio=1.0,
+    )
+
+    response = await router.invoke(
+        LLMRequest(messages=[LLMMessage(role="user", content="hello" * 1000)]),
+        purpose="execution",
+    )
+
+    assert response.provider == "fallback"
+    assert len(emitted) == 1
+    assert emitted[0]["primary_provider"] == "challenger"
+    assert emitted[0]["fallback_tier"] == "fallback"
+    chain = emitted[0]["tier_chain"]
+    assert isinstance(chain, list)
+    assert chain[0]["tier"] == "top"
+    assert chain[0]["ab_branch"] == "challenger"
+    assert chain[0]["status"] == "failed"
+    assert chain[-1]["tier"] == "fallback"
+    assert chain[-1]["status"] == "success"

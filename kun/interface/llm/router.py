@@ -13,6 +13,7 @@ idle-batch 按聚类 / 关联规则挖掘涌现新路由规则.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from typing import Literal
@@ -272,6 +273,7 @@ class LLMRouter:
             )
             skipped_providers: list[str] = []
             attempted_tiers = 0
+            tier_chain: list[dict[str, str]] = []
             last_error: Exception | None = None
             for tier in candidate_tiers:
                 provider = self.providers.get(tier)
@@ -283,6 +285,23 @@ class LLMRouter:
                 ):
                     skipped_providers.append(f"{tier}:{provider.name}")
                     log.info("router.provider_in_cooldown", provider=provider.name, tier=tier)
+                    span.add_event(
+                        "kun.router.tier_skipped",
+                        attributes={
+                            "kun.tier": str(tier),
+                            "kun.provider": provider.name,
+                            "kun.reason": "cooldown",
+                        },
+                    )
+                    tier_chain.append(
+                        {
+                            "tier": str(tier),
+                            "provider": provider.name,
+                            "model": provider.model_id,
+                            "ab_branch": "skipped",
+                            "status": "skipped",
+                        }
+                    )
                     continue
 
                 # A/B 切流: A/B 只决定这个 tier 里用 primary 还是 challenger.
@@ -293,10 +312,27 @@ class LLMRouter:
                 if challenger is not None and self.ab_ratio > 0.0 and _ab_roll() < self.ab_ratio:
                     selected_provider = challenger
                     ab_branch = "challenger"
-                span.set_attribute("kun.ab_branch", ab_branch)
+                attempt_info = {
+                    "tier": str(tier),
+                    "provider": selected_provider.name,
+                    "model": selected_provider.model_id,
+                    "ab_branch": ab_branch,
+                    "status": "attempted",
+                }
+                tier_chain.append(attempt_info)
+                span.add_event(
+                    "kun.router.tier_attempt",
+                    attributes={
+                        "kun.tier": str(tier),
+                        "kun.provider": selected_provider.name,
+                        "kun.model": selected_provider.model_id,
+                        "kun.ab_branch": ab_branch,
+                    },
+                )
                 attempted_tiers += 1
                 try:
                     result = await _invoke_with_retry(selected_provider, request)
+                    attempt_info["status"] = "success"
                     if self._failover_guard:
                         await self._failover_guard.record_success(
                             selected_provider.name,
@@ -311,11 +347,44 @@ class LLMRouter:
                     span.set_attribute("kun.failover_triggered", failover_triggered)
                     span.set_attribute("kun.skipped_provider", ",".join(skipped_providers))
                     span.set_attribute("kun.fallback_engaged", tier != decision.primary_tier)
+                    span.set_attribute("kun.ab_branch", ab_branch)
+                    span.set_attribute("kun.ab_branches", json.dumps(tier_chain))
                     span.set_attribute("kun.final_provider", selected_provider.name)
                     span.set_attribute("kun.final_tier", str(tier))
                     span.set_attribute("kun.cost_usd_equivalent", result.cost_usd_equivalent)
+                    if tier != decision.primary_tier and last_error is not None:
+                        primary_attempt = next(
+                            (
+                                item
+                                for item in tier_chain
+                                if item["tier"] == str(decision.primary_tier)
+                            ),
+                            {
+                                "tier": str(decision.primary_tier),
+                                "provider": self.providers.get(
+                                    decision.primary_tier,
+                                    selected_provider,
+                                ).name,
+                                "model": self.providers.get(
+                                    decision.primary_tier,
+                                    selected_provider,
+                                ).model_id,
+                            },
+                        )
+                        await _emit_fallback_event(
+                            primary_provider=primary_attempt["provider"],
+                            primary_model=primary_attempt["model"],
+                            primary_tier=decision.primary_tier,
+                            fallback_tier=tier,
+                            final_provider=selected_provider.name,
+                            final_model=selected_provider.model_id,
+                            tier_chain=tier_chain,
+                            error=last_error,
+                        )
                     return result
                 except Exception as e:
+                    attempt_info["status"] = "failed"
+                    attempt_info["error"] = type(e).__name__
                     last_error = e
                     should_switch = (
                         await self._failover_guard.record_failure(
@@ -341,15 +410,6 @@ class LLMRouter:
                         ).name,
                         reason=type(e).__name__,
                     ).inc()
-                    # Emit a watchtower-observable event so the
-                    # llm_fallback_spike rule can fire (R-A1).
-                    await _emit_fallback_event(
-                        primary_provider=selected_provider.name,
-                        primary_model=selected_provider.model_id,
-                        primary_tier=tier,
-                        fallback_tier=decision.fallback_tier,
-                        error=e,
-                    )
 
             if last_error is not None:
                 raise last_error
@@ -377,6 +437,9 @@ async def _emit_fallback_event(
     primary_model: str,
     primary_tier: ModelTier,
     fallback_tier: ModelTier,
+    final_provider: str,
+    final_model: str,
+    tier_chain: list[dict[str, str]],
     error: BaseException,
 ) -> None:
     """Emit ``llm.fallback.triggered`` so watchtower rules can react.
@@ -408,6 +471,9 @@ async def _emit_fallback_event(
                         "primary_model": primary_model,
                         "primary_tier": primary_tier,
                         "fallback_tier": fallback_tier,
+                        "final_provider": final_provider,
+                        "final_model": final_model,
+                        "tier_chain": tier_chain,
                         "reason": type(error).__name__,
                     },
                 ),
