@@ -64,16 +64,25 @@ class IntentInterpreter:
         owner: Owner,
     ) -> TaskRef:
         """Parse user message into a TaskRef (meta + spec)."""
-        request = LLMRequest(
-            messages=[
-                LLMMessage(role="system", content=_SYSTEM_PROMPT, cache=True),
-                LLMMessage(role="user", content=user_message),
-            ],
-            temperature=0.2,
-            max_tokens=1024,
-            profile=TaskProfile(needs_reasoning=True),
-        )
-        response = await self.router.invoke(request, purpose="intent")
+        # OTel: business-level span around intent parsing.
+        from opentelemetry import trace
+
+        tracer = trace.get_tracer("kun.brain.intent")
+        with tracer.start_as_current_span("kun.intent.interpret") as span:
+            span.set_attribute("kun.tenant_id", owner.tenant_id)
+            span.set_attribute("kun.user_message_len", len(user_message))
+
+            request = LLMRequest(
+                messages=[
+                    LLMMessage(role="system", content=_SYSTEM_PROMPT, cache=True),
+                    LLMMessage(role="user", content=user_message),
+                ],
+                temperature=0.2,
+                max_tokens=1024,
+                profile=TaskProfile(needs_reasoning=True),
+            )
+            response = await self.router.invoke(request, purpose="intent")
+            span.set_attribute("kun.cost_usd_equivalent", response.cost_usd_equivalent)
 
         parsed = self._parse_json(response.content)
 
