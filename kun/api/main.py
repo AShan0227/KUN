@@ -77,6 +77,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Start outbox worker
     app.state.outbox_task = asyncio.create_task(outbox_worker(interval_sec=0.5))
 
+    # Start NATS subscriber (小尾巴 C: 跨进程订阅)
+    # Default ON; KUN_NATS_SUBSCRIBER_ENABLED=0 关闭. 没 NATS 时 worker 自己
+    # 优雅退出, 不会阻塞 startup.
+    import os as _os
+
+    if _os.getenv("KUN_NATS_SUBSCRIBER_ENABLED", "1") == "1":
+        from kun.core.nats_subscriber import subscriber_worker
+
+        app.state.nats_subscriber_task = asyncio.create_task(
+            subscriber_worker(
+                subject_pattern=_os.getenv("KUN_NATS_SUBSCRIBE_SUBJECT", "kun.>"),
+                queue=_os.getenv("KUN_NATS_QUEUE_GROUP", "kun-watchtower"),
+            )
+        )
+        log.info("nats_subscriber.scheduled")
+
     # Start idle-batch worker (R-A8) if enabled.
     # Default ON in dev, off in production until we've verified it.
     import os
@@ -114,6 +130,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         idle_batch.cancel()
         with suppress(asyncio.CancelledError):
             await idle_batch
+
+    nats_sub: asyncio.Task[None] | None = getattr(app.state, "nats_subscriber_task", None)
+    if nats_sub is not None:
+        nats_sub.cancel()
+        with suppress(asyncio.CancelledError):
+            await nats_sub
 
     # Close LLM router providers — important for CodexMcpProvider which holds
     # a long-lived `codex mcp-server` subprocess. Without this, an API restart
