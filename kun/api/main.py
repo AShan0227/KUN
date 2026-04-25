@@ -52,6 +52,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     install_runtime(app, rule_engine=rule_engine)
     log.info("rules.ready", count=len(rules))
 
+    # Register builtin executable skills (R-A2). Imports the 6 builtin
+    # modules so their @register calls populate the dispatcher table.
+    try:
+        from kun.skills.dispatcher import autoload_builtins, list_registered
+
+        autoload_builtins()
+        log.info("skills.builtin.loaded", count=len(list_registered()))
+    except Exception as e:
+        log.warning("skills.builtin.load_failed", error=str(e))
+
+    # Seed context assets if the store is empty — without seeds the
+    # ContextPacker preheat path returns nothing (R-A5).
+    try:
+        from kun.context.seeds import seed_default
+
+        default_tenant = settings().default_tenant_id or "u-sylvan"
+        seeded = await seed_default(tenant_id=default_tenant)
+        if seeded:
+            log.info("context.seeds.applied", tenant_id=default_tenant, count=seeded)
+    except Exception as e:
+        log.warning("context.seeds.startup_failed", error=str(e))
+
     # Start outbox worker
     app.state.outbox_task = asyncio.create_task(outbox_worker(interval_sec=0.5))
 

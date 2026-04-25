@@ -47,6 +47,8 @@ dependencies = [
   "tenacity>=9.0.0",
   "rich>=13.9.0",
   "typer>=0.13.0",
+  "pypdf>=6.10.2",
+  "minio>=7.2.20",
 ]
 
 [project.optional-dependencies]

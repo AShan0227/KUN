@@ -1058,9 +1058,22 @@ def _is_stale_queued_status(status: TaskStatus, last_updated: datetime | None) -
 
 
 async def _persist_task_result(session: Any, *, tenant_id: str, result: TaskResult) -> None:
-    """Upsert the final task result so idempotent retries can return the old answer."""
+    """Upsert the final task result so idempotent retries can return the old answer.
+
+    When the serialized JSON exceeds ``KUN_RESULT_OFFLOAD_THRESHOLD_BYTES``
+    (default 50 KiB) the heavy payload is written to MinIO instead and the
+    DB row stores a small reference stub. Falls back to inline storage if
+    the object store is unavailable.
+    """
+    from kun.core.object_store import maybe_offload_result_json
+
     now = datetime.now(UTC)
-    result_json = result.model_dump(mode="json")
+    full_payload = result.model_dump(mode="json")
+    persisted_json, offload_ref = await maybe_offload_result_json(
+        full_payload,
+        tenant_id=tenant_id,
+        task_id=result.task_id,
+    )
     values = {
         "task_id": result.task_id,
         "tenant_id": tenant_id,
@@ -1075,10 +1088,17 @@ async def _persist_task_result(session: Any, *, tenant_id: str, result: TaskResu
         "notifications_json": [
             notification.model_dump(mode="json") for notification in result.notifications
         ],
-        "result_json": result_json,
+        "result_json": persisted_json,
         "created_at": now,
         "updated_at": now,
     }
+    if offload_ref is not None:
+        log.debug(
+            "task_result.offloaded",
+            task_id=result.task_id,
+            uri=offload_ref.uri,
+            size_bytes=offload_ref.size_bytes,
+        )
     stmt = pg_insert(TaskResultRow).values(**values)
     await session.execute(
         stmt.on_conflict_do_update(

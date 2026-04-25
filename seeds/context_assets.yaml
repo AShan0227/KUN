@@ -1,0 +1,142 @@
+# KUN context asset seeds — hand-written knowledge that the agent should
+# always have available even on cold start. These get loaded into the
+# AssetStore at API startup if the store is empty for the default tenant.
+#
+# The "ContextPacker" preheats relevant items into each task's prompt;
+# without seeds the pack is empty (which was the A5 finding in the audit).
+#
+# Each seed becomes a LayeredAsset:
+#   asset_kind ∈ {methodology, knowledge, skill, role_template, memory}
+#   tags is searched by ContextPacker
+#   summary is what gets pulled into the prompt at L2
+#
+# Edit / append freely. Reload with:
+#   uv run kun context seed --tenant u-sylvan
+#
+# Tenant defaults to KUN_DEFAULT_TENANT_ID at startup; for other tenants
+# call `kun context seed --tenant <id>`.
+
+version: 1
+assets:
+  # ============ methodology — KUN 自己的工作方式 ============
+
+  - kind: methodology
+    tags: [kun, deployment, postgres, rls]
+    summary: |
+      KUN 部署有两个 Postgres DSN：KUN_PG_DSN 是非 superuser 的应用账号 (kun_app),
+      跑业务请求；KUN_PG_ADMIN_DSN 是 superuser, 给 alembic / outbox worker 走绕过 RLS 的路径。
+      生产环境必须确认 /health/ready 报 postgres=ok 而不是 degraded; degraded 说明应用账号
+      仍是 superuser 或带 BYPASSRLS, RLS 不生效。
+    metadata:
+      doc_ref: "docs/DEPLOY.md#3-填-api-keys"
+
+  - kind: methodology
+    tags: [kun, llm, routing, models]
+    summary: |
+      KUN router 走四层决策：(1) purpose→tier 静态表 (2) profile 覆盖 (3) prompt 长度
+      complexity 调整 (4) 5h 滑窗用量软警告。预算超额时 force_fallback 强制走 MiniMax。
+      新模型加进来流程：在 kun/interface/llm/playbook.yaml 加一段 → idle-batch 自动学
+      capability_card → router 后续会按 reliability 加权选模型。
+    metadata:
+      doc_ref: "kun/interface/llm/router.py:decide"
+
+  - kind: methodology
+    tags: [kun, llm, codex, gpt-5.5, subscription]
+    summary: |
+      KUN 的 coding tier 走 codex MCP server (`kun/interface/llm/codex_mcp_provider.py`)
+      接 ChatGPT 订阅, 不烧 API key. 默认模型是 gpt-5.5 (2026-04-23 OpenAI 旗舰),
+      要求 codex CLI ≥ 0.125. 老 CLI 会报 "requires a newer version of Codex".
+      升级: npm install -g @openai/codex@latest
+
+  - kind: methodology
+    tags: [kun, security, idempotency, tenant_isolation]
+    summary: |
+      多租户键的关键约束：(1) idempotency_keys 和 experiments 都是 (tenant_id, key) 复合 PK,
+      不再单字段。(2) Redis 的 idem / lock key 都加 "kun:t:<tenant>:" 前缀。
+      (3) 应用层每次查询都显式带 tenant_id 过滤, RLS 是兜底而非唯一防线。
+      新加多租户字段时记得这三条都跟上。
+
+  # ============ knowledge — 通用领域知识 ============
+
+  - kind: knowledge
+    tags: [postgres, rls, gotcha]
+    summary: |
+      Postgres 的 RLS policy 在 FORCE ROW LEVEL SECURITY 下连 table owner 也受约束.
+      FK 检查走的是 SELECT trigger, 也受 RLS 影响. 同事务里子表 INSERT 引用父表 PK 时,
+      若 parent INSERT 还没 flush, FK check 看不到 → IntegrityError. 修法是同 session 里
+      先 flush 父表再 add 子表. SQLAlchemy 的 unit-of-work 拓扑排序对纯 FK column (没声明
+      relationship()) 不可靠, 必须显式 flush.
+
+  - kind: knowledge
+    tags: [sqlalchemy, async, transaction]
+    summary: |
+      SQLAlchemy async session 的 SET LOCAL 必须在事务内执行才生效, autobegin 会在第一个
+      execute() 时开事务, 所以 _set_rls_context 要先调一个 SELECT (set_config 就够) 才能让
+      tenant GUC 生效. SET LOCAL 自动随事务结束清掉, 连接池复用安全.
+
+  - kind: knowledge
+    tags: [openai, models, naming]
+    summary: |
+      OpenAI 的 model id 命名混乱: codex CLI 里"GPT-5.5" UI 显示名对应实际 API model
+      "gpt-5.5"; 老版 CLI 还认 "gpt-5.3-codex" / "gpt-5.3-codex-spark" 这类 codex 专精变体.
+      ChatGPT 账号 codex CLI 有自己的可用列表, 不等于 OpenAI 公开 API 的 model.
+
+  # ============ skill — 内建技能的速记摘要 (selector 提示用) ============
+
+  - kind: skill
+    tags: [skill, web-search, internet]
+    summary: |
+      web-search: DuckDuckGo HTML 搜, 不需要 API key. 入参 query (必填) + max_results
+      (默认 5, 最大 20). 返回 [{title, url, snippet}]. 适合查事实性问题、最新新闻、
+      官方文档地址.
+
+  - kind: skill
+    tags: [skill, python-exec, code, sandbox]
+    summary: |
+      python-exec: subprocess 跑 Python 代码, 默认 30s 超时 (最大 300s). 入参 code
+      (必填) / timeout_sec / stdin. 返回 {stdout, stderr, returncode, truncated}.
+      没做 chroot, 同进程权限可见整个 host 文件系统. 不要给不可信代码用.
+
+  - kind: skill
+    tags: [skill, file-io, sandbox]
+    summary: |
+      file-io: 读写沙盒目录的文件 (默认 /tmp/kun-skills, 可改 KUN_SKILL_FILE_ROOT).
+      op ∈ read|write|list|delete. 自动拒绝路径穿越 (../). 单文件读上限 5 MiB.
+
+  - kind: skill
+    tags: [skill, csv-query, data, sql]
+    summary: |
+      csv-query: 把沙盒里 CSV 加载到 sqlite :memory: 然后跑 SQL (表名固定 data).
+      入参 path / sql / max_rows (默认 200, 最大 5000). 文件 > 50 MiB 拒绝, 转 python-exec.
+
+  - kind: skill
+    tags: [skill, pdf-read, document]
+    summary: |
+      pdf-read: pypdf 解析 PDF 文本. 入参 path / pages (e.g. "1-3,5") / max_chars
+      (默认 10000). 不做 OCR, 扫描件请用 python-exec 拉 OCR 库.
+
+  # ============ role_template — 几个常用角色 ============
+
+  - kind: role_template
+    tags: [role, novice, plain_language]
+    summary: |
+      novice 风格回答: 用大白话, 避免英文术语和缩写, 必要时打比方. 输出短句, 不堆代码.
+      用户是非技术背景, 要的是结论 + 一两句解释 + 下一步建议.
+    metadata:
+      audience_default: novice
+
+  - kind: role_template
+    tags: [role, developer, concise]
+    summary: |
+      developer 风格回答: 简洁直接, 给代码块或具体命令, 文件路径精确到行号. 不解释
+      基础概念, 默认对方懂. 失败信息原样返回, 加一句怎么修.
+    metadata:
+      audience_default: developer
+
+  - kind: role_template
+    tags: [role, expert, depth]
+    summary: |
+      expert 风格回答: 深度分析, 列替代方案 + 每个方案的 trade-off, 引用具体 ADR /
+      调用链. 对 KUN 项目可以引用文件:行号 + 设计哲学. 输出可以长但要结构化.
+    metadata:
+      audience_default: expert
