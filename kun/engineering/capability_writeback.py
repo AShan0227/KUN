@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -30,6 +30,10 @@ from kun.datamodel.capability import (
     QualityMetrics,
     Stats,
 )
+from kun.engineering.agent_benchmark import AgentBenchmarkResult, aggregate_results
+
+if TYPE_CHECKING:
+    from kun.engineering.multi_judge import JuryVerdict
 
 log = get_logger("kun.engineering.capability_writeback")
 
@@ -73,6 +77,77 @@ async def record_outcome(tenant_id: str, outcome: TaskOutcome) -> None:
         task_type=outcome.task_type,
         outcome=outcome.outcome,
     )
+
+
+async def record_judge_verdict(
+    *,
+    judge_id: str,
+    task_type: str,
+    verdict: JuryVerdict,
+    tenant_id: str,
+) -> None:
+    """multi_judge 跑完后，把单个 judge 的 ballot 写回 model 能力卡。"""
+    ballot = next((item for item in verdict.ballots if item.judge_id == judge_id), None)
+    if ballot is None:
+        return
+
+    await record_outcome(
+        tenant_id,
+        TaskOutcome(
+            entity_type="model",
+            entity_id=judge_id,
+            task_type=f"judge.{task_type}",
+            outcome="pass" if ballot.pass_ else "fail",
+            cost_usd=ballot.cost_usd_actual,
+            duration_sec=ballot.latency_ms / 1000.0,
+            rubric_score=ballot.score * 5.0,
+            consistency_score=max(0.0, min(1.0, 1.0 - verdict.spread)),
+            failure_name=None if ballot.pass_ else "judge_rejected",
+            failure_root_cause=None if ballot.pass_ else ballot.reason,
+        ),
+    )
+
+
+async def record_benchmark_result(
+    *,
+    agent_ref: str,
+    results: list[AgentBenchmarkResult],
+    tenant_id: str,
+) -> None:
+    """agent_benchmark 跑完后，按 agent_ref 聚合写回能力卡。"""
+    if not results:
+        return
+
+    summary = aggregate_results(results)
+    success_rate = float(summary.get("success_rate", 0.0))
+    avg_score = float(summary.get("avg_score", 0.0))
+    outcome: Outcome
+    if success_rate >= 0.7:
+        outcome = "pass"
+    elif success_rate > 0.0:
+        outcome = "partial"
+    else:
+        outcome = "fail"
+
+    await record_outcome(
+        tenant_id,
+        TaskOutcome(
+            entity_type=_entity_type_for_agent_ref(agent_ref),
+            entity_id=agent_ref,
+            task_type="benchmark",
+            outcome=outcome,
+            cost_usd=float(summary.get("cost_usd", 0.0)),
+            duration_sec=sum(result.duration_sec for result in results),
+            rubric_score=avg_score * 5.0,
+            consistency_score=success_rate,
+            failure_name=None if outcome != "fail" else "benchmark_failed",
+            failure_root_cause=None if outcome != "fail" else "no benchmark tasks passed",
+        ),
+    )
+
+
+def _entity_type_for_agent_ref(agent_ref: str) -> Literal["external_agent", "model"]:
+    return "model" if agent_ref.startswith("model:") else "external_agent"
 
 
 async def _record_outcome_in_txn(

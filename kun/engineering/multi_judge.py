@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from kun.core.logging import get_logger
+from kun.engineering.capability_writeback import record_judge_verdict
 from kun.interface.llm import LLMMessage, LLMRequest, LLMRouter
 
 log = get_logger("kun.engineering.multi_judge")
@@ -60,6 +61,8 @@ async def jury_evaluate(
     rubric: str,
     judge_models: list[str],
     router: LLMRouter,
+    tenant_id: str | None = None,
+    task_type: str = "general",
 ) -> JuryVerdict:
     """并发跑多个 judge，并用多数票产出评估结论。
 
@@ -93,7 +96,7 @@ async def jury_evaluate(
         ballots.append(result)
 
     if len(ballots) < 3:
-        return JuryVerdict(
+        verdict = JuryVerdict(
             pass_=False,
             avg_score=_avg_score(ballots),
             spread=_spread(ballots),
@@ -103,10 +106,12 @@ async def jury_evaluate(
                 f"need at least 3; failures={failures}"
             ),
         )
+        await _write_back_verdict(tenant_id=tenant_id, task_type=task_type, verdict=verdict)
+        return verdict
 
     pass_count = sum(1 for ballot in ballots if ballot.pass_)
     majority = pass_count > len(ballots) / 2
-    return JuryVerdict(
+    verdict = JuryVerdict(
         pass_=majority,
         avg_score=_avg_score(ballots),
         spread=_spread(ballots),
@@ -115,6 +120,33 @@ async def jury_evaluate(
             f"{pass_count}/{len(ballots)} judges pass; seed={seed}; failures={failures or 'none'}"
         ),
     )
+    await _write_back_verdict(tenant_id=tenant_id, task_type=task_type, verdict=verdict)
+    return verdict
+
+
+async def _write_back_verdict(
+    *,
+    tenant_id: str | None,
+    task_type: str,
+    verdict: JuryVerdict,
+) -> None:
+    if tenant_id is None:
+        return
+    results = await asyncio.gather(
+        *(
+            record_judge_verdict(
+                judge_id=ballot.judge_id,
+                task_type=task_type,
+                verdict=verdict,
+                tenant_id=tenant_id,
+            )
+            for ballot in verdict.ballots
+        ),
+        return_exceptions=True,
+    )
+    for result in results:
+        if isinstance(result, BaseException):
+            log.warning("multi_judge.writeback_failed", error=str(result))
 
 
 async def _run_judge(
