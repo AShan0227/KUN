@@ -253,6 +253,15 @@ class LLMRouter:
                     to_provider=self.providers.get(decision.fallback_tier, primary).name,
                     reason=type(e).__name__,
                 ).inc()
+                # Emit a watchtower-observable event so the
+                # llm_fallback_spike rule can fire (R-A1).
+                await _emit_fallback_event(
+                    primary_provider=primary.name,
+                    primary_model=primary.model_id,
+                    primary_tier=decision.primary_tier,
+                    fallback_tier=decision.fallback_tier,
+                    error=e,
+                )
 
         # Fallback tier
         fallback = self.providers.get(decision.fallback_tier)
@@ -273,6 +282,51 @@ class LLMRouter:
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
 async def _invoke_with_retry(provider: LLMProvider, request: LLMRequest) -> LLMResponse:
     return await provider.invoke(request)
+
+
+async def _emit_fallback_event(
+    *,
+    primary_provider: str,
+    primary_model: str,
+    primary_tier: ModelTier,
+    fallback_tier: ModelTier,
+    error: BaseException,
+) -> None:
+    """Emit ``llm.fallback.triggered`` so watchtower rules can react.
+
+    Best-effort: we never let observability raise into the LLM hot path.
+    Lazy-imports core/db to avoid a circular import (router is loaded by
+    config/orchestrator before db engine is set up in some test paths).
+    """
+    try:
+        from kun.core.db import session_scope
+        from kun.core.events import emit
+        from kun.core.tenancy import current_tenant
+        from kun.datamodel.events import Event
+
+        tenant = current_tenant()
+    except Exception as e:
+        log.debug("router.fallback_event_skipped_no_tenant", error=str(e))
+        return
+
+    try:
+        async with session_scope() as s:
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant.tenant_id,
+                    event_type="llm.fallback.triggered",
+                    payload={
+                        "primary_provider": primary_provider,
+                        "primary_model": primary_model,
+                        "primary_tier": primary_tier,
+                        "fallback_tier": fallback_tier,
+                        "reason": type(error).__name__,
+                    },
+                ),
+            )
+    except Exception as e:
+        log.debug("router.fallback_event_emit_failed", error=str(e))
 
 
 # =============== Factory ===============

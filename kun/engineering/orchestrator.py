@@ -68,6 +68,16 @@ log = get_logger("kun.engineering.orchestrator")
 _STALE_QUEUED_TASK_AFTER = timedelta(seconds=30)
 
 
+# OTel tracer — best-effort, lazy-initialized; no-op if SDK isn't wired.
+def _tracer() -> Any:
+    try:
+        from opentelemetry import trace
+
+        return trace.get_tracer("kun.orchestrator")
+    except Exception:
+        return None
+
+
 class TaskTimedOutError(RuntimeError):
     """Raised when a single task exceeds its hard duration cap."""
 
@@ -164,6 +174,19 @@ class Orchestrator:
         cfg = settings()
         duration_cap = float(max_duration_sec or cfg.task_max_duration_sec)
         deadline_monotonic = time.monotonic() + duration_cap
+
+        # OTel: tag the auto-injected HTTP span with task metadata. Tracer
+        # auto-instrumentation already creates the span; we just enrich it.
+        tracer = _tracer()
+        if tracer is not None:
+            try:
+                from opentelemetry import trace
+
+                current_span = trace.get_current_span()
+                current_span.set_attribute("kun.tenant_id", tenant.tenant_id)
+                current_span.set_attribute("kun.duration_cap_sec", duration_cap)
+            except Exception:
+                pass
 
         # Budget gate (R-A11) — query today's cumulative cost; if past the
         # warn threshold emit an alert, if past the hard cap force every LLM
