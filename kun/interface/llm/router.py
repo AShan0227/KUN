@@ -108,8 +108,24 @@ def _apply_complexity(tier: ModelTier, hint: str) -> ModelTier:
 class LLMRouter:
     """Multi-provider router with tier fallback."""
 
-    def __init__(self, providers: dict[ModelTier, LLMProvider]) -> None:
+    def __init__(
+        self,
+        providers: dict[ModelTier, LLMProvider],
+        *,
+        ab_alternates: dict[ModelTier, LLMProvider] | None = None,
+        ab_ratio: float = 0.0,
+    ) -> None:
+        """providers: 每 tier 1 个 primary 模型 (现在的默认行为).
+
+        ab_alternates: 每 tier 可选的"挑战者"模型. invoke 时按 ab_ratio 概率切流;
+            走挑战者 → OTel span 标 kun.ab_branch="challenger" + 记 cost. 这样
+            Grafana 能直接对比同 tier 两模型的 success / latency / cost. 不并行
+            调用 (避免成本翻倍), 是真 A/B 不是 shadow.
+        ab_ratio: 0.0-1.0. 默认 0 关闭 A/B; 0.1 = 10% 流量进 challenger.
+        """
         self.providers = providers
+        self.ab_alternates: dict[ModelTier, LLMProvider] = ab_alternates or {}
+        self.ab_ratio = max(0.0, min(1.0, ab_ratio))
 
     async def close(self) -> None:
         """Release provider resources (long-lived subprocesses, HTTP pools).
@@ -243,8 +259,17 @@ class LLMRouter:
                 rationale=decision.rationale,
             )
 
-            # Try primary tier
+            # A/B 切流: 同 tier 配了挑战者 + 命中 ab_ratio → 用挑战者代替 primary.
+            # 失败时挑战者也走同样的 fallback 路径. 不并行调用 (不是 shadow).
             primary = self.providers.get(decision.primary_tier)
+            challenger = self.ab_alternates.get(decision.primary_tier)
+            ab_branch = "primary"
+            if challenger is not None and self.ab_ratio > 0.0 and _ab_roll() < self.ab_ratio:
+                primary = challenger
+                ab_branch = "challenger"
+            span.set_attribute("kun.ab_branch", ab_branch)
+
+            # Try primary tier
             if primary is not None:
                 try:
                     result = await _invoke_with_retry(primary, request)
@@ -297,6 +322,13 @@ class LLMRouter:
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
 async def _invoke_with_retry(provider: LLMProvider, request: LLMRequest) -> LLMResponse:
     return await provider.invoke(request)
+
+
+def _ab_roll() -> float:
+    """A/B 抛骰. 单独抽一个函数, 让测试可以 monkeypatch 决定走哪条路."""
+    import random
+
+    return random.random()
 
 
 async def _emit_fallback_event(
@@ -451,8 +483,43 @@ def get_router() -> LLMRouter:
         log.warning("router.no_minimax_creds", hint="falling back to stub for fallback")
         providers["fallback"] = StubProvider(model_id="stub-minimax-m2.7", tier="fallback")
 
-    _router = LLMRouter(providers)
+    # ---- A/B alternates (optional) ----
+    # KUN_AB_RATIO=0.1 + KUN_AB_TOP_CHALLENGER_TIER=strong → 10% 的 top 流量
+    # 走 strong tier 的 provider, 让两档模型在同 purpose 下做对照实验.
+    # 不指定就是 0% (默认关闭, 等价于现在的行为).
+    ab_alternates: dict[ModelTier, LLMProvider] = {}
+    for tier_name in ("top", "strong", "cheap", "coding"):
+        env_key = f"KUN_AB_{tier_name.upper()}_CHALLENGER_TIER"
+        challenger_tier = os.getenv(env_key)
+        if not challenger_tier:
+            continue
+        if challenger_tier not in providers or tier_name not in providers:
+            log.warning(
+                "router.ab_alt_missing",
+                tier=tier_name,
+                challenger=challenger_tier,
+            )
+            continue
+        ab_alternates[cast_tier(tier_name)] = providers[cast_tier(challenger_tier)]
+
+    try:
+        ab_ratio = float(os.getenv("KUN_AB_RATIO", "0") or "0")
+    except ValueError:
+        ab_ratio = 0.0
+    if ab_alternates and ab_ratio > 0.0:
+        log.info(
+            "router.ab_enabled",
+            ratio=ab_ratio,
+            tiers=list(ab_alternates.keys()),
+        )
+
+    _router = LLMRouter(providers, ab_alternates=ab_alternates, ab_ratio=ab_ratio)
     return _router
+
+
+def cast_tier(name: str) -> ModelTier:
+    """Helper — annotation cast for the tier strings we already validated."""
+    return name  # type: ignore[return-value]
 
 
 def set_router(router: LLMRouter) -> None:
