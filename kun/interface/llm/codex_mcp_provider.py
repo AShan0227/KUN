@@ -143,9 +143,15 @@ class CodexMcpProvider(LLMProvider):
                     "approval-policy": "never",
                     "sandbox": "read-only",
                     "cwd": self._cwd,
-                    # Keep codex stateless: no agent system prompt, no AGENTS.md
-                    # pickup. Strictly a model-call adapter.
-                    "base-instructions": "",
+                    # Keep codex stateless: minimal agent system prompt, no
+                    # AGENTS.md pickup. Codex 0.125+ requires non-empty
+                    # instructions; we give a one-liner that stays out of
+                    # the way and lets the user prompt drive everything.
+                    "base-instructions": (
+                        "You are an LLM call adapter. Answer the user's prompt "
+                        "directly and concisely. Do not run tools or take side "
+                        "effects unless asked."
+                    ),
                     "developer-instructions": "",
                     "config": {"model_reasoning_effort": self.reasoning_effort},
                 },

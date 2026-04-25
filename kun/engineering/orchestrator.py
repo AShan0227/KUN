@@ -561,6 +561,23 @@ class Orchestrator:
                 },
             )
 
+        # Build the <skill>-aware system-prompt addendum so the agent loop
+        # can dispatch real tool calls (R-A2). We feed every executable
+        # builtin that's both registered AND a candidate into the directive.
+        from kun.engineering.agent_loop import build_skill_directive
+        from kun.skills.dispatcher import is_registered as _skill_is_registered
+
+        skill_summaries = [
+            (
+                s.skill_id,
+                s.manifest.description,
+                dict(s.manifest.input_schema or {}),
+            )
+            for s in skill_candidates
+            if _skill_is_registered(s.skill_id)
+        ]
+        skill_directive = build_skill_directive(skill_summaries) if skill_summaries else ""
+
         # 8. Execute steps
         answer = ""
         status: TaskStatus = "running"
@@ -592,13 +609,16 @@ class Orchestrator:
                     profile_updates["force_fallback"] = True
                 exec_profile = choice.task_profile.model_copy(update=profile_updates)
 
-                # Execute via LLM with skill candidates hinted in system prompt
+                # Execute via LLM with skill candidates hinted in system prompt.
+                # When skill_directive is non-empty the agent loop is active
+                # and the LLM may call <skill> tools (dispatched in agent_loop).
                 answer, response = await self._execute_step(
                     task_ref=task_ref,
                     step_description=step_plan.description,
                     purpose=choice.purpose,
                     profile=exec_profile,
                     skills_summary=self.skill_selector.summary(skill_candidates),
+                    skill_directive=skill_directive,
                     context_summary=context_summary,
                     prior_outputs=step_outputs,
                 )
@@ -919,10 +939,13 @@ class Orchestrator:
         purpose: TaskPurpose,
         profile: TaskProfile,
         skills_summary: str = "",
+        skill_directive: str = "",
         context_summary: str = "",
         prior_outputs: list[tuple[int, str]] | None = None,
     ) -> tuple[str, LLMResponse]:
-        """Execute a single step by calling the LLM."""
+        """Execute a single step. Runs an agent loop so the LLM can call skills."""
+        from kun.engineering.agent_loop import run_agent_loop
+
         # R-N3: pick a voice tier based on the caller's audience preference.
         audience = profile.audience if profile else "developer"
         audience_directive = _AUDIENCE_DIRECTIVES.get(audience, _AUDIENCE_DIRECTIVES["developer"])
@@ -933,6 +956,8 @@ class Orchestrator:
         ]
         if skills_summary:
             system_parts.append(skills_summary)
+        if skill_directive:
+            system_parts.append(skill_directive)
         if context_summary:
             system_parts.append(context_summary)
         system_prompt = "\n\n".join(system_parts)
@@ -952,8 +977,31 @@ class Orchestrator:
             max_tokens=1024,
             profile=profile,
         )
-        response = await self.llm_router.invoke(request, purpose=purpose)
-        return response.content, response
+        # Run the ReAct loop — LLM may call skills via <skill> envelopes.
+        # If it doesn't, this degrades to one normal LLM call.
+        loop_result = await run_agent_loop(
+            router=self.llm_router,
+            purpose=purpose,
+            initial_request=request,
+            max_iterations=3,
+        )
+        # Roll iteration cost / tokens back into a single LLMResponse so the
+        # rest of orchestrator (StepRecord, capability writeback, NUO panel)
+        # sees the full step weight, not just the final iteration.
+        aggregated = loop_result.final_response.model_copy(
+            update={
+                "content": loop_result.final_answer,
+                "cost_usd_actual": loop_result.total_cost_actual,
+                "cost_usd_equivalent": loop_result.total_cost_equivalent,
+                "usage": loop_result.final_response.usage.model_copy(
+                    update={
+                        "input_tokens": loop_result.total_input_tokens,
+                        "output_tokens": loop_result.total_output_tokens,
+                    }
+                ),
+            }
+        )
+        return loop_result.final_answer, aggregated
 
 
 # =================== helpers ===================
