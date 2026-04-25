@@ -29,6 +29,18 @@ class OutputAdapter(Protocol):
 
 _REGISTRY: dict[str, OutputAdapter] = {}
 
+DEFAULT_MAPPING: dict[str, str] = {
+    "user": "human",
+    "human": "human",
+    "agent": "a2a",
+    "a2a": "a2a",
+    "company": "rest",
+    "rest": "rest",
+    "doc_system": "markdown",
+    "markdown": "markdown",
+    "email": "email",
+}
+
 
 def register(adapter: OutputAdapter) -> None:
     """注册一个输出适配器。重复注册会覆盖。"""
@@ -64,6 +76,22 @@ async def translate(
     )
 
 
+async def translate_for(
+    *,
+    payload: dict[str, Any],
+    recipient_kind: str,
+    context: dict[str, Any] | None = None,
+) -> str:
+    """按 recipient_kind 选择默认适配器并翻译输出。"""
+    adapter_name = DEFAULT_MAPPING.get(recipient_kind, "markdown")
+    return await translate(
+        adapter_name,
+        payload=payload,
+        recipient_kind=recipient_kind,
+        context=context,
+    )
+
+
 def autoload_builtins() -> None:
     """导入内置适配器，让它们完成注册。"""
     for module in (
@@ -83,10 +111,12 @@ autoload_builtins()
 
 
 __all__ = [
+    "DEFAULT_MAPPING",
     "OutputAdapter",
     "autoload_builtins",
     "get_adapter",
     "list_adapters",
     "register",
     "translate",
+    "translate_for",
 ]
