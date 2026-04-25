@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from kun.engineering.proactive_tools import (
     DEFAULT_TRIGGERS,
     ProactiveDispatch,
     ProactiveScanResult,
+    load_triggers_from_yaml,
     proactive_dispatch,
 )
 from kun.skills.dispatcher import SkillResult, autoload_builtins
@@ -110,3 +113,55 @@ def test_prefix_message_renders_failure_branch() -> None:
     rendered = scan.to_prefix_message()
     assert "失败" in rendered
     assert "not a file" in rendered
+
+
+# ============== Layer 2: yaml 加载 ==============
+
+
+@pytest.mark.unit
+def test_load_triggers_from_yaml_default_path_has_core_skills() -> None:
+    """默认 yaml 文件存在时, 必须把 4 个核心触发器都加载出来."""
+    triggers = load_triggers_from_yaml()
+    skill_ids = {t.skill_id for t in triggers}
+    assert {"pdf-read", "csv-query", "python-exec", "web-search"} <= skill_ids
+
+
+@pytest.mark.unit
+def test_load_triggers_from_yaml_missing_file_returns_empty(tmp_path: Path) -> None:
+    """文件不存在时返回空列表, 调用方负责 fallback 到 DEFAULT_TRIGGERS."""
+    fake = tmp_path / "nonexistent.yaml"
+    assert load_triggers_from_yaml(fake) == []
+
+
+@pytest.mark.unit
+def test_load_triggers_from_yaml_skips_invalid_entries(tmp_path: Path) -> None:
+    """单条坏规则不能拖垮整份 yaml — 好的还能加载."""
+    bad_yaml = tmp_path / "triggers.yaml"
+    bad_yaml.write_text(
+        """
+version: 1
+triggers:
+  - skill_id: web-search
+    pattern: '(test)'
+    extract:
+      kind: search_query
+      param_name: query
+  - skill_id: broken-skill
+    pattern: '[unclosed'
+    extract:
+      kind: match_group_0
+      param_name: x
+""",
+        encoding="utf-8",
+    )
+    triggers = load_triggers_from_yaml(bad_yaml)
+    assert len(triggers) == 1
+    assert triggers[0].skill_id == "web-search"
+
+
+@pytest.mark.unit
+def test_load_triggers_from_yaml_garbage_returns_empty(tmp_path: Path) -> None:
+    """彻底坏的 yaml 不能让进程崩 — 返回空, 由调用方走 DEFAULT_TRIGGERS."""
+    junk = tmp_path / "junk.yaml"
+    junk.write_text(":\n  - this is: : not yaml\n  - [", encoding="utf-8")
+    assert load_triggers_from_yaml(junk) == []

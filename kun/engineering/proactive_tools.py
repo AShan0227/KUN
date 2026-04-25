@@ -5,19 +5,23 @@ KUN 的 LLM 主动性不够 — 工具描述塞进 prompt, 模型大概率直接
 塞进 LLM 的 user message. LLM 看到的不是"我可能要 web-search", 而是"以下是
 web-search 已经查到的结果, 请基于它回答".
 
-四层机制 (本文件实现层 1, 配合 orchestrator + watchtower 协作):
+四层机制:
+  层 1: 关键词触发器 (本文件 DEFAULT_TRIGGERS)         — fallback
+  层 2: yaml 规则可配置 (rules/proactive/triggers.yaml) — 守望加载, 可热改, 后续可学习
+  层 3: SKILL.md auto_trigger_when                    — 每 skill 自己声明
+  层 4: capability_card 失败回看                       — evaluator 升级"强制用工具"
 
-  层 1: 关键词触发器 (本文件)         — orchestrator 早期调
-  层 2: 守望规则订阅 task.created   — rules/guard/proactive_*.yaml
-  层 3: SKILL.md auto_trigger_when  — selector 强匹配
-  层 4: capability_card 失败回看      — evaluator 升级"强制用工具"
+主流程: load_triggers_from_yaml() 优先加载 yaml; 没找到 / 解析失败时回退 DEFAULT_TRIGGERS.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from kun.core.logging import get_logger
 from kun.skills.dispatcher import SkillResult, is_registered
@@ -114,6 +118,110 @@ def _extract_csv_path(match: re.Match[str], _prompt: str) -> dict[str, Any] | No
     return {"path": path, "sql": "SELECT * FROM data LIMIT 10"}
 
 
+# ============== Yaml-driven triggers (layer 2) ==============
+
+
+_DEFAULT_YAML_PATH = Path(__file__).resolve().parents[2] / "rules" / "proactive" / "triggers.yaml"
+
+
+def _make_extract_callable(extract_cfg: dict[str, Any]) -> Any:
+    """Build an extract_params callable from a yaml extract block.
+
+    Three kinds supported (matches what triggers.yaml ships):
+      - match_group_0: pull match.group(0), with optional length bounds
+      - match_group_1: pull match.group(1), with optional length bounds
+      - search_query: take prompt up to first sentence-end punctuation
+    Returns dict[str, Any] with the named param and any extra_params merged in,
+    or None if length bounds reject the candidate.
+    """
+    kind = extract_cfg.get("kind", "match_group_0")
+    param_name = extract_cfg.get("param_name", "input")
+    min_len = int(extract_cfg.get("min_len", 0))
+    max_len_raw = extract_cfg.get("max_len")
+    max_len = int(max_len_raw) if max_len_raw is not None else None
+    extra_params: dict[str, Any] = dict(extract_cfg.get("extra_params") or {})
+
+    def _length_ok(value: str) -> bool:
+        if len(value) < min_len:
+            return False
+        return not (max_len is not None and len(value) > max_len)
+
+    if kind == "match_group_0":
+
+        def extract_g0(match: re.Match[str], _prompt: str) -> dict[str, Any] | None:
+            value = match.group(0).strip()
+            if not _length_ok(value):
+                return None
+            return {param_name: value, **extra_params}
+
+        return extract_g0
+
+    if kind == "match_group_1":
+
+        def extract_g1(match: re.Match[str], _prompt: str) -> dict[str, Any] | None:
+            try:
+                value = match.group(1).strip()
+            except IndexError:
+                return None
+            if not _length_ok(value):
+                return None
+            return {param_name: value, **extra_params}
+
+        return extract_g1
+
+    if kind == "search_query":
+
+        def extract_query(_match: re.Match[str], prompt: str) -> dict[str, Any] | None:
+            cleaned = re.sub(r"[。.!?！？;；\n].*", "", prompt).strip()
+            if 5 < len(cleaned) < 200:
+                return {param_name: cleaned, **extra_params}
+            return {param_name: prompt[:200], **extra_params}
+
+        return extract_query
+
+    log.warning("proactive.unknown_extract_kind", kind=kind)
+    return lambda _m, _p: None
+
+
+def load_triggers_from_yaml(path: Path | str | None = None) -> list[ToolTrigger]:
+    """Load triggers from yaml. Empty / missing / malformed → empty list.
+
+    Caller is expected to fall back to DEFAULT_TRIGGERS on empty result.
+    Catches everything intentionally — observability never breaks routing.
+    """
+    target = Path(path) if path else _DEFAULT_YAML_PATH
+    if not target.exists():
+        log.info("proactive.yaml_absent", path=str(target))
+        return []
+    try:
+        with target.open(encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError) as e:
+        log.warning("proactive.yaml_load_failed", path=str(target), error=str(e))
+        return []
+
+    raw_entries = data.get("triggers") or []
+    out: list[ToolTrigger] = []
+    for entry in raw_entries:
+        try:
+            pattern = re.compile(entry["pattern"], re.IGNORECASE | re.MULTILINE)
+            extract = _make_extract_callable(entry.get("extract") or {})
+            out.append(
+                ToolTrigger(
+                    skill_id=str(entry["skill_id"]),
+                    description=str(entry.get("description", "")),
+                    pattern=pattern,
+                    extract_params=extract,
+                    confidence=str(entry.get("confidence", "medium")),
+                )
+            )
+        except (KeyError, re.error, TypeError) as e:
+            log.warning("proactive.trigger_invalid", entry=entry, error=str(e))
+            continue
+    log.info("proactive.yaml_loaded", path=str(target), count=len(out))
+    return out
+
+
 # Order matters — first matching trigger wins (high-confidence rules first).
 DEFAULT_TRIGGERS: list[ToolTrigger] = [
     # PDF in prompt → pdf-read
@@ -172,7 +280,12 @@ async def proactive_dispatch(
 
     Errors are caught per-skill — one failed dispatch doesn't block others.
     """
-    triggers = triggers if triggers is not None else DEFAULT_TRIGGERS
+    if triggers is None:
+        # Layer 2: yaml-configured triggers take priority. Layer 1 hardcoded
+        # DEFAULT_TRIGGERS is the fallback when yaml is missing / malformed
+        # / empty so the system always has something to fire on.
+        loaded = load_triggers_from_yaml()
+        triggers = loaded if loaded else DEFAULT_TRIGGERS
     seen: set[str] = set()
     dispatches: list[ProactiveDispatch] = []
 

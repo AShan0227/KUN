@@ -1,0 +1,71 @@
+# 主动用工具的触发器规则（产品方案 §5.2 主动用工具 层 2）
+#
+# 这是 proactive_tools.py DEFAULT_TRIGGERS 的"可配置版本" — 守望子系统启动时
+# 加载这个文件，把规则塞进 proactive_tools 的触发器表。
+#
+# 工作机制：
+#   1. orchestrator 接到 user_message
+#   2. proactive_tools.proactive_dispatch() 拿这份规则扫 prompt
+#   3. 命中的规则 → 自动 dispatch 对应 skill → 结果塞进 LLM 的 user message
+#   4. LLM 看到的不是"我可能要用 X"，而是"X 已经查好了，请基于结果回答"
+#
+# 字段说明：
+#   - skill_id: 触发哪个 skill（必须是已 register 的）
+#   - description: 给开发者看的注释
+#   - pattern: 正则匹配，命中即触发
+#   - confidence: high / medium / low（影响优先级；后续学习用）
+#   - extract: 提取参数的策略
+#       - kind: "match_group_0" / "match_group_1" / "search_query"
+#       - param_name: 提取出的字符串赋给哪个参数
+#       - extra_params: 额外固定参数
+#
+# 规则可以**学习**：守望子系统记录"这种任务 LLM 没用工具的失败率"，
+# 高于阈值 → 自动加触发器（后续实现）。
+
+version: 1
+updated_at: "2026-04-25"
+
+triggers:
+  # PDF 文件 → pdf-read
+  - skill_id: pdf-read
+    description: "prompt 里引用了 .pdf 文件 → 自动读取"
+    pattern: '\S*\.pdf\b'
+    confidence: high
+    extract:
+      kind: match_group_0
+      param_name: path
+
+  # CSV 文件 → csv-query
+  - skill_id: csv-query
+    description: "prompt 里引用了 .csv 文件 → 自动加载并预览前 10 行"
+    pattern: '\S*\.csv\b'
+    confidence: high
+    extract:
+      kind: match_group_0
+      param_name: path
+      extra_params:
+        sql: "SELECT * FROM data LIMIT 10"
+
+  # Python 代码块 → python-exec
+  - skill_id: python-exec
+    description: "prompt 含 ```python 代码块 → 自动执行"
+    pattern: '```python\s*\n([\s\S]*?)```'
+    confidence: high
+    extract:
+      kind: match_group_1
+      param_name: code
+      min_len: 4
+      max_len: 4000
+      extra_params:
+        timeout_sec: 30
+
+  # 时效性词 → web-search
+  - skill_id: web-search
+    description: "prompt 含时效性关键词 → 联网搜索"
+    pattern: '(最新|现在|今天|当前|实时|这周|本月|近期|latest|today|recent)'
+    confidence: medium
+    extract:
+      kind: search_query
+      param_name: query
+      extra_params:
+        max_results: 5
