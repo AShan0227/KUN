@@ -56,6 +56,12 @@ class SkillManifest(BaseModel):
     allowed_commands: list[str] = Field(default_factory=list)
     denied_patterns: list[str] = Field(default_factory=list)
     denied_domains: list[str] = Field(default_factory=list)
+    # 主动用工具 layer 3: 每个 skill 自带的"看到这种 prompt 就触发我"声明.
+    # 元素跟 rules/proactive/triggers.yaml 的 trigger 同形:
+    #   - pattern: 正则
+    #   - extract: {kind, param_name, min_len, max_len, extra_params}
+    # 例子: [{pattern: '\\.csv\\b', extract: {kind: match_group_0, param_name: path}}]
+    auto_trigger_when: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SkillRecord(BaseModel):
@@ -94,6 +100,26 @@ class SkillRegistry:
 
     def __iter__(self) -> Iterator[SkillRecord]:
         return iter(self._by_name.values())
+
+    def match_auto_triggers(self, prompt: str) -> list[tuple[str, str, dict[str, Any]]]:
+        """主动用工具 layer 3: 扫所有 skill 的 auto_trigger_when, 返回命中.
+
+        Returns: [(skill_id, pattern, extract_cfg), ...] — 每个 skill 至多 1 条.
+        正则坏掉 / 字段缺失 → 跳过, 不抛.
+        """
+        out: list[tuple[str, str, dict[str, Any]]] = []
+        for rec in self._by_name.values():
+            for entry in rec.manifest.auto_trigger_when or []:
+                pattern = entry.get("pattern")
+                if not isinstance(pattern, str) or not pattern:
+                    continue
+                try:
+                    if re.search(pattern, prompt, re.IGNORECASE | re.MULTILINE):
+                        out.append((rec.skill_id, pattern, dict(entry.get("extract") or {})))
+                        break
+                except re.error:
+                    continue
+        return out
 
 
 def _extract_spdx(content: str) -> str | None:

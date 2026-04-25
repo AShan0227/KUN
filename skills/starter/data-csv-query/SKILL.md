@@ -21,6 +21,16 @@ input_schema:
     max_rows:
       type: integer
       default: 100
+# 主动用工具 layer 3 — 看到 prompt 里有 .csv 文件路径就自己声明该被触发.
+# pattern 命中 → orchestrator 用 extract 提参数, dispatch 该 skill.
+# 字段格式跟 rules/proactive/triggers.yaml 完全一致.
+auto_trigger_when:
+  - pattern: '\S*\.csv\b'
+    extract:
+      kind: match_group_0
+      param_name: csv_path
+      extra_params:
+        query: "SELECT * FROM t LIMIT 10"
 ---
 
 # data-csv-query

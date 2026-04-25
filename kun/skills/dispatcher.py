@@ -84,7 +84,11 @@ async def dispatch(skill_id: str, params: dict[str, Any] | None = None) -> Skill
 
 
 def autoload_builtins() -> None:
-    """Import builtin skill modules so their @register calls run."""
+    """Import builtin skill modules so their @register calls run.
+
+    同时把 builtin 的 SkillManifest 注册到 SkillRegistry, 让 selector 和
+    proactive_dispatch layer 3 能扫到内置 skill (主动用工具 layer 3).
+    """
     for mod in (
         "kun.skills.builtin.web_search",
         "kun.skills.builtin.python_exec",
@@ -97,6 +101,14 @@ def autoload_builtins() -> None:
             importlib.import_module(mod)
         except Exception as e:
             log.warning("skill.builtin.import_failed", module=mod, error=str(e))
+
+    # 把 builtin manifest 注册到 SkillRegistry (layer 3 需要)
+    try:
+        from kun.skills.builtin import autoload_builtin_manifests
+
+        autoload_builtin_manifests()
+    except Exception as e:
+        log.warning("skill.builtin.manifest_register_failed", error=str(e))
 
 
 __all__ = [

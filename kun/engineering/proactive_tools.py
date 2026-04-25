@@ -334,6 +334,55 @@ async def proactive_dispatch(
         if len(dispatches) >= max_dispatches:
             break
 
+    # Layer 3: SKILL.md auto_trigger_when — 每个 skill 自己声明触发条件.
+    # 跟 layer 1/2 共享 seen, 已经被前面层覆盖的 skill 不重复触发.
+    # SkillRegistry 装的是 starter pack + builtin manifest, 所以 builtin 也能扫到.
+    if len(dispatches) < max_dispatches:
+        try:
+            from kun.skills.loader import get_registry as get_skill_registry
+
+            skill_reg = get_skill_registry()
+            hits = skill_reg.match_auto_triggers(prompt)
+        except Exception as e:
+            log.warning("proactive.layer3_scan_failed", error=str(e))
+            hits = []
+
+        for skill_id, pattern_str, extract_cfg in hits:
+            if skill_id in seen:
+                continue
+            if not is_registered(skill_id):
+                # SkillRegistry 里有, 但 dispatcher 没注册 executor —
+                # 用户描述了一个 skill 但还没实现, 跳过.
+                continue
+            try:
+                pattern = re.compile(pattern_str, re.IGNORECASE | re.MULTILINE)
+                extract = _make_extract_callable(extract_cfg)
+                match = pattern.search(prompt)
+                if match is None:
+                    continue
+                params = extract(match, prompt)
+                if params is None:
+                    continue
+                result = await skill_dispatch(skill_id, params)
+            except Exception as e:
+                log.warning(
+                    "proactive.layer3_dispatch_failed",
+                    skill_id=skill_id,
+                    error=str(e),
+                )
+                continue
+            dispatches.append(
+                ProactiveDispatch(
+                    skill_id=skill_id,
+                    params=params,
+                    result=result,
+                    trigger_reason=f"SKILL.md auto_trigger_when 命中: {pattern_str}",
+                )
+            )
+            seen.add(skill_id)
+            if len(dispatches) >= max_dispatches:
+                break
+
     if dispatches:
         log.info(
             "proactive.dispatched",
