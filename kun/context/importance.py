@@ -14,7 +14,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, cast
 
 import httpx
 from openai import OpenAI
@@ -42,6 +42,7 @@ SHORT_HALF_LIFE_DAYS = 5.0
 LOCAL_EMBEDDING_DIMS = 128
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_VOYAGE_EMBEDDING_MODEL = "voyage-3-large"
+_UNSET = object()
 
 
 @dataclass(frozen=True)
@@ -61,10 +62,13 @@ class ImportanceScorer:
     def __init__(
         self,
         *,
-        embed_text: EmbedText | None = None,
+        embed_text: EmbedText | None | object = _UNSET,
         weights: dict[str, float] | None = None,
     ) -> None:
-        self._embed_text = embed_text or qdrant_embed_text
+        if embed_text is _UNSET:
+            self._embed_text: EmbedText | None = qdrant_embed_text
+        else:
+            self._embed_text = cast(EmbedText | None, embed_text)
         self.weights = _normalize_weights(weights or DEFAULT_WEIGHTS)
 
     def score(
@@ -136,7 +140,7 @@ class ImportanceScorer:
         elapsed_days = (now - asset.last_accessed).total_seconds() / 86400
         if elapsed_days <= 0:
             return 1.0
-        return _clamp01(math.exp(-elapsed_days / half_life))
+        return _clamp01(math.exp(-math.log(2) * elapsed_days / half_life))
 
     def score_descriptor(
         self,
@@ -181,7 +185,6 @@ def half_life_days(asset: LayeredAsset) -> float | None:
     return LONG_HALF_LIFE_DAYS
 
 
-@lru_cache(maxsize=4096)
 def qdrant_embed_text(text: str) -> list[float]:
     """Embed text for context importance scoring.
 
@@ -192,17 +195,38 @@ def qdrant_embed_text(text: str) -> list[float]:
     - ``voyage``: Voyage embeddings API.
     - ``qdrant_fastembed``: Qdrant client's FastEmbed integration when installed.
 
-    The function name is intentionally Qdrant-oriented because Qdrant is the
-    vector-store boundary. Embedding providers may vary, but callers should not
-    care which one is active.
+    The cache is intentionally shared across tenants: text → vector is a
+    deterministic, tenant-independent transform. Provider, model, and Qdrant URL
+    are part of the cache key so changing embedding settings cannot reuse a stale
+    vector from another model.
     """
+    cfg = settings()
+    return _qdrant_embed_text_cached(
+        text,
+        cfg.embedding_provider,
+        cfg.embedding_model or "",
+        cfg.qdrant_url,
+    )
+
+
+def clear_qdrant_embed_cache() -> None:
+    """Clear process-local embedding cache (tests / settings reload)."""
+    _qdrant_embed_text_cached.cache_clear()
+
+
+@lru_cache(maxsize=4096)
+def _qdrant_embed_text_cached(
+    text: str,
+    provider: Literal["local", "openai", "voyage", "qdrant_fastembed"],
+    model_key: str,
+    qdrant_url: str,
+) -> list[float]:
     cleaned = text.strip()
     if not cleaned:
         return [0.0] * LOCAL_EMBEDDING_DIMS
 
-    cfg = settings()
-    provider = cfg.embedding_provider
-    model = cfg.embedding_model
+    model = model_key or None
+    _ = qdrant_url  # cache key only; the cached Qdrant client owns the connection.
 
     try:
         if provider == "openai":
@@ -254,11 +278,20 @@ def _voyage_embed_text(text: str, model: str) -> list[float]:
 
 
 def _qdrant_fastembed_text(text: str, model: str | None) -> list[float]:
+    """Use Qdrant's FastEmbed integration when installed.
+
+    Qdrant client currently exposes single-document embedding through a private
+    helper. Keep it isolated here so a future qdrant-client change only breaks
+    this narrow adapter, and the caller still falls back to local embeddings.
+    """
     client = get_qdrant_client()
     embedding_model = model or QdrantClient.DEFAULT_EMBEDDING_MODEL
-    documents = client._embed_documents([text], embedding_model_name=embedding_model)
-    _document, vector = next(iter(documents))
-    return [float(value) for value in vector]
+    try:
+        documents = client._embed_documents([text], embedding_model_name=embedding_model)
+        _document, vector = next(iter(documents))
+        return [float(value) for value in vector]
+    except Exception as exc:
+        raise RuntimeError("qdrant fastembed adapter failed") from exc
 
 
 def _local_embed_text(text: str) -> list[float]:
@@ -345,6 +378,7 @@ def _clamp01(value: float) -> float:
 __all__ = [
     "ImportanceScore",
     "ImportanceScorer",
+    "clear_qdrant_embed_cache",
     "half_life_days",
     "qdrant_embed_text",
 ]
