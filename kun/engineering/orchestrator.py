@@ -578,6 +578,28 @@ class Orchestrator:
         ]
         skill_directive = build_skill_directive(skill_summaries) if skill_summaries else ""
 
+        # Proactive tool dispatch (主动用工具 layer 1) — scan the user message
+        # for keyword triggers and pre-dispatch matching skills BEFORE asking
+        # the LLM anything. The result is injected into step 1's user-turn so
+        # the LLM sees concrete data instead of "you might want to call X".
+        from kun.engineering.proactive_tools import proactive_dispatch
+
+        required_tools_hint = list(task_ref.spec.required_tools) if task_ref.spec else None
+        proactive_scan = await proactive_dispatch(
+            prompt=user_message,
+            required_tools_hint=required_tools_hint,
+        )
+        pre_dispatched_block = proactive_scan.to_prefix_message()
+        if proactive_scan.dispatched:
+            yield OrchestratorEvent(
+                kind="action_plan",
+                data={
+                    "stage": "proactive_tools",
+                    "skills": [d.skill_id for d in proactive_scan.dispatched],
+                    "reasons": [d.trigger_reason for d in proactive_scan.dispatched],
+                },
+            )
+
         # 8. Execute steps
         answer = ""
         status: TaskStatus = "running"
@@ -612,6 +634,10 @@ class Orchestrator:
                 # Execute via LLM with skill candidates hinted in system prompt.
                 # When skill_directive is non-empty the agent loop is active
                 # and the LLM may call <skill> tools (dispatched in agent_loop).
+                # pre_dispatched_block carries proactive tool results from
+                # the keyword trigger scan above; only attach to step 1 to
+                # avoid re-injecting the same prefix every iteration.
+                step_pre_dispatched = pre_dispatched_block if step_plan.step_id == 1 else ""
                 answer, response = await self._execute_step(
                     task_ref=task_ref,
                     step_description=step_plan.description,
@@ -621,6 +647,7 @@ class Orchestrator:
                     skill_directive=skill_directive,
                     context_summary=context_summary,
                     prior_outputs=step_outputs,
+                    pre_dispatched_block=step_pre_dispatched,
                 )
                 last_response = response
                 step_outputs.append((step_plan.step_id, answer))
@@ -942,6 +969,7 @@ class Orchestrator:
         skill_directive: str = "",
         context_summary: str = "",
         prior_outputs: list[tuple[int, str]] | None = None,
+        pre_dispatched_block: str = "",
     ) -> tuple[str, LLMResponse]:
         """Execute a single step. Runs an agent loop so the LLM can call skills."""
         from kun.engineering.agent_loop import run_agent_loop
@@ -961,17 +989,19 @@ class Orchestrator:
         if context_summary:
             system_parts.append(context_summary)
         system_prompt = "\n\n".join(system_parts)
+        # User-turn body: standard execution prompt + any proactive tool
+        # prefetch results (proactive_tools.py layer 1).
+        user_content = _execution_user_prompt(
+            task_ref,
+            step_description,
+            prior_outputs=prior_outputs or [],
+        )
+        if pre_dispatched_block:
+            user_content = user_content + pre_dispatched_block
         request = LLMRequest(
             messages=[
                 LLMMessage(role="system", content=system_prompt, cache=True),
-                LLMMessage(
-                    role="user",
-                    content=_execution_user_prompt(
-                        task_ref,
-                        step_description,
-                        prior_outputs=prior_outputs or [],
-                    ),
-                ),
+                LLMMessage(role="user", content=user_content),
             ],
             temperature=0.5,
             max_tokens=1024,
