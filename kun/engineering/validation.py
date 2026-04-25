@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from kun.core.logging import get_logger
 from kun.core.scoring import ScoreDescriptor
 from kun.datamodel.task import TaskMeta
+from kun.engineering.multi_judge import jury_evaluate
 from kun.interface.llm import LLMMessage, LLMRequest, LLMRouter, get_router
 
 log = get_logger("kun.engineering.validation")
@@ -146,24 +147,30 @@ class MultiJudge:
         artifact: str,
         context: dict[str, Any],
     ) -> ValidationResult:
-        single = SingleJudge(self._router)
-        results = [
-            await single.validate(artifact=artifact, context=context) for _ in range(self._n)
-        ]
-        passes = sum(1 for r in results if r.pass_)
-        majority = passes > self._n // 2
-        avg_score = sum(r.score.value for r in results) / self._n
+        rubric = context.get("rubric", {})
+        verdict = await jury_evaluate(
+            artifact=artifact,
+            rubric=str(rubric),
+            judge_models=[f"judge_{i + 1}" for i in range(self._n)],
+            router=self._router,
+        )
         return ValidationResult(
             validator_kind=self.kind,
-            pass_=majority,
+            pass_=verdict.pass_,
             score=ScoreDescriptor(
                 kind="rubric",
-                value=avg_score,
-                components={f"judge_{i}": r.score.value for i, r in enumerate(results)},
-                weights={f"judge_{i}": 1.0 / self._n for i in range(self._n)},
+                value=verdict.avg_score,
+                components={ballot.judge_id: ballot.score for ballot in verdict.ballots},
+                weights={
+                    ballot.judge_id: 1.0 / max(1, len(verdict.ballots))
+                    for ballot in verdict.ballots
+                },
             ),
-            reason=f"{passes}/{self._n} judges pass",
-            details={"individual": [r.model_dump() for r in results]},
+            reason=verdict.rationale,
+            details={
+                "spread": verdict.spread,
+                "ballots": [ballot.__dict__ for ballot in verdict.ballots],
+            },
         )
 
 
