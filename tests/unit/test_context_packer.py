@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from kun.context.assets import LayeredAsset
+from kun.context.importance import ImportanceScorer
 from kun.context.packer import ContextPacker
 from kun.context.storage import InMemoryAssetStore
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
@@ -71,3 +72,38 @@ async def test_context_packer_keeps_tenant_boundary() -> None:
     pack = await ContextPacker(store).pack(_task(), tenant_id="u-sylvan")
 
     assert pack.items == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_uses_importance_scorer_semantic_path() -> None:
+    store = InMemoryAssetStore()
+    relevant = LayeredAsset.build(
+        "knowledge",
+        "u-sylvan",
+        metadata={"title": "RLS"},
+        summary="postgres tenant rls",
+        tags=[],
+    )
+    unrelated = LayeredAsset.build(
+        "knowledge",
+        "u-sylvan",
+        metadata={"title": "Sales"},
+        summary="email marketing",
+        tags=[],
+    )
+    await store.put(unrelated)
+    await store.put(relevant)
+
+    def embed_text(text: str) -> list[float]:
+        lowered = text.lower()
+        if "pytest" in lowered or "postgres" in lowered or "tenant" in lowered:
+            return [1.0, 0.0]
+        return [0.0, 1.0]
+
+    pack = await ContextPacker(
+        store,
+        importance_scorer=ImportanceScorer(embed_text=embed_text),
+    ).pack(_task(), tenant_id="u-sylvan")
+
+    assert [item.asset_id for item in pack.items] == [relevant.asset_id]

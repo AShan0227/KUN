@@ -11,6 +11,7 @@ from kun.context.importance import (
     ImportanceScore,
     ImportanceScorer,
     half_life_days,
+    qdrant_embed_text,
 )
 from kun.context.storage import InMemoryAssetStore
 
@@ -100,6 +101,31 @@ def test_embedding_similarity_path_is_used_when_injected() -> None:
     unrelated = scorer.score(asset=_asset(summary="email marketing"), query="postgres")
 
     assert relevant.semantic > unrelated.semantic
+
+
+@pytest.mark.unit
+def test_default_qdrant_embedder_keeps_local_term_similarity() -> None:
+    scorer = ImportanceScorer()
+
+    relevant = scorer.score(asset=_asset(summary="postgres tenant rls"), query="postgres rls")
+    unrelated = scorer.score(
+        asset=_asset(summary="email marketing", metadata={"title": "marketing guide"}),
+        query="postgres rls",
+    )
+
+    assert relevant.semantic > unrelated.semantic
+    assert unrelated.semantic == 0.0
+
+
+@pytest.mark.unit
+def test_qdrant_embed_text_is_stable_without_external_provider() -> None:
+    qdrant_embed_text.cache_clear()
+
+    first = qdrant_embed_text("postgres tenant rls")
+    second = qdrant_embed_text("postgres tenant rls")
+
+    assert first == second
+    assert len(first) == 128
 
 
 @pytest.mark.unit
