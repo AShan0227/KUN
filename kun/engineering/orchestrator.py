@@ -668,17 +668,34 @@ class Orchestrator:
                 # the keyword trigger scan above; only attach to step 1 to
                 # avoid re-injecting the same prefix every iteration.
                 step_pre_dispatched = pre_dispatched_block if step_plan.step_id == 1 else ""
-                answer, response = await self._execute_step(
-                    task_ref=task_ref,
-                    step_description=step_plan.description,
-                    purpose=choice.purpose,
-                    profile=exec_profile,
-                    skills_summary=self.skill_selector.summary(skill_candidates),
-                    skill_directive=skill_directive,
-                    context_summary=context_summary,
-                    prior_outputs=step_outputs,
-                    pre_dispatched_block=step_pre_dispatched,
-                )
+
+                # OTel: per-step span so Grafana 能按 step_id × provider 切片成本和延迟
+                from opentelemetry import trace as _trace
+
+                step_tracer = _trace.get_tracer("kun.orchestrator")
+                with step_tracer.start_as_current_span("kun.orchestrator.step") as step_span:
+                    step_span.set_attribute("kun.task_id", task_ref.meta.task_id)
+                    step_span.set_attribute("kun.step_id", step_plan.step_id)
+                    step_span.set_attribute("kun.skill_hint", step_plan.skill_hint or "")
+                    step_span.set_attribute("kun.audience", tenant.audience)
+                    step_span.set_attribute("kun.force_fallback", force_fallback)
+                    answer, response = await self._execute_step(
+                        task_ref=task_ref,
+                        step_description=step_plan.description,
+                        purpose=choice.purpose,
+                        profile=exec_profile,
+                        skills_summary=self.skill_selector.summary(skill_candidates),
+                        skill_directive=skill_directive,
+                        context_summary=context_summary,
+                        prior_outputs=step_outputs,
+                        pre_dispatched_block=step_pre_dispatched,
+                    )
+                    step_span.set_attribute("kun.provider", response.provider)
+                    step_span.set_attribute("kun.model", response.model)
+                    step_span.set_attribute("kun.tier", str(response.tier))
+                    step_span.set_attribute("kun.cost_usd_equivalent", response.cost_usd_equivalent)
+                    step_span.set_attribute("kun.tokens_in", response.usage.input_tokens)
+                    step_span.set_attribute("kun.tokens_out", response.usage.output_tokens)
                 last_response = response
                 step_outputs.append((step_plan.step_id, answer))
 

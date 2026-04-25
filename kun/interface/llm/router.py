@@ -225,58 +225,73 @@ class LLMRouter:
         Records the tier against the quota tracker on success so the next
         `decide()` sees an updated rolling-window usage.
         """
-        decision = self.decide(purpose, request.profile, request=request)
-        log.debug(
-            "router.invoke",
-            purpose=purpose,
-            primary_tier=decision.primary_tier,
-            fallback_tier=decision.fallback_tier,
-            rationale=decision.rationale,
-        )
+        # OTel: span around router so Grafana can show
+        # purpose × primary_tier 路由分布 + fallback 触发率.
+        from opentelemetry import trace
 
-        # Try primary tier
-        primary = self.providers.get(decision.primary_tier)
-        if primary is not None:
-            try:
-                result = await _invoke_with_retry(primary, request)
-                get_tracker().record(decision.primary_tier)  # type: ignore[arg-type]
-                return result
-            except Exception as e:
-                log.warning(
-                    "router.primary_failed",
-                    provider=primary.name,
-                    model=primary.model_id,
-                    error=str(e),
-                )
-                llm_fallback_total.labels(
-                    from_provider=primary.name,
-                    to_provider=self.providers.get(decision.fallback_tier, primary).name,
-                    reason=type(e).__name__,
-                ).inc()
-                # Emit a watchtower-observable event so the
-                # llm_fallback_spike rule can fire (R-A1).
-                await _emit_fallback_event(
-                    primary_provider=primary.name,
-                    primary_model=primary.model_id,
-                    primary_tier=decision.primary_tier,
-                    fallback_tier=decision.fallback_tier,
-                    error=e,
-                )
-
-        # Fallback tier
-        fallback = self.providers.get(decision.fallback_tier)
-        if fallback is None:
-            raise RuntimeError(
-                f"No provider for primary={decision.primary_tier} or fallback={decision.fallback_tier}"
+        tracer = trace.get_tracer("kun.interface.llm.router")
+        with tracer.start_as_current_span("kun.router.invoke") as span:
+            decision = self.decide(purpose, request.profile, request=request)
+            span.set_attribute("kun.purpose", str(purpose))
+            span.set_attribute("kun.primary_tier", str(decision.primary_tier))
+            span.set_attribute("kun.fallback_tier", str(decision.fallback_tier))
+            log.debug(
+                "router.invoke",
+                purpose=purpose,
+                primary_tier=decision.primary_tier,
+                fallback_tier=decision.fallback_tier,
+                rationale=decision.rationale,
             )
-        log.info(
-            "router.fallback_engaged",
-            purpose=purpose,
-            fallback=fallback.name,
-        )
-        result = await _invoke_with_retry(fallback, request)
-        get_tracker().record(decision.fallback_tier)  # type: ignore[arg-type]
-        return result
+
+            # Try primary tier
+            primary = self.providers.get(decision.primary_tier)
+            if primary is not None:
+                try:
+                    result = await _invoke_with_retry(primary, request)
+                    get_tracker().record(decision.primary_tier)  # type: ignore[arg-type]
+                    span.set_attribute("kun.fallback_engaged", False)
+                    span.set_attribute("kun.final_provider", primary.name)
+                    span.set_attribute("kun.cost_usd_equivalent", result.cost_usd_equivalent)
+                    return result
+                except Exception as e:
+                    log.warning(
+                        "router.primary_failed",
+                        provider=primary.name,
+                        model=primary.model_id,
+                        error=str(e),
+                    )
+                    llm_fallback_total.labels(
+                        from_provider=primary.name,
+                        to_provider=self.providers.get(decision.fallback_tier, primary).name,
+                        reason=type(e).__name__,
+                    ).inc()
+                    # Emit a watchtower-observable event so the
+                    # llm_fallback_spike rule can fire (R-A1).
+                    await _emit_fallback_event(
+                        primary_provider=primary.name,
+                        primary_model=primary.model_id,
+                        primary_tier=decision.primary_tier,
+                        fallback_tier=decision.fallback_tier,
+                        error=e,
+                    )
+
+            # Fallback tier
+            fallback = self.providers.get(decision.fallback_tier)
+            if fallback is None:
+                raise RuntimeError(
+                    f"No provider for primary={decision.primary_tier} or fallback={decision.fallback_tier}"
+                )
+            log.info(
+                "router.fallback_engaged",
+                purpose=purpose,
+                fallback=fallback.name,
+            )
+            result = await _invoke_with_retry(fallback, request)
+            get_tracker().record(decision.fallback_tier)  # type: ignore[arg-type]
+            span.set_attribute("kun.fallback_engaged", True)
+            span.set_attribute("kun.final_provider", fallback.name)
+            span.set_attribute("kun.cost_usd_equivalent", result.cost_usd_equivalent)
+            return result
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))

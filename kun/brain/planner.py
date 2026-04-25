@@ -32,6 +32,23 @@ class TaskPlanner:
     """Decompose a task into a small, deterministic execution plan."""
 
     def plan(self, task_ref: TaskRef) -> ExecutionPlan:
+        # OTel: business-level span around planning so we can graph
+        # task_type → step count distribution and find where heuristics
+        # collapse to single_step (tells us where to invest L2 blueprints).
+        from opentelemetry import trace
+
+        tracer = trace.get_tracer("kun.brain.planner")
+        with tracer.start_as_current_span("kun.planner.plan") as span:
+            span.set_attribute("kun.task_id", task_ref.meta.task_id)
+            span.set_attribute("kun.task_type", task_ref.meta.task_type)
+            span.set_attribute("kun.complexity_score", task_ref.meta.complexity_score)
+            span.set_attribute("kun.has_spec", task_ref.spec is not None)
+            plan = self._plan_inner(task_ref)
+            span.set_attribute("kun.steps_planned", len(plan.steps))
+            span.set_attribute("kun.estimated_cost_usd", plan.total_estimated_cost())
+            return plan
+
+    def _plan_inner(self, task_ref: TaskRef) -> ExecutionPlan:
         if task_ref.spec is None:
             return ExecutionPlan(task_ref=task_ref, steps=[self._single_step(task_ref)])
 
