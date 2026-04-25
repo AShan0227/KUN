@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -21,9 +22,6 @@ from kun.engineering.agent_benchmark import (
 
 router = APIRouter()
 AgentInvoke = Callable[[str], Awaitable[str]]
-
-_AGENTS: dict[str, AgentInvoke] = {}
-_RUNS: dict[str, BenchmarkRunRecord] = {}
 
 
 class BenchmarkTaskIn(BaseModel):
@@ -55,9 +53,25 @@ class BenchmarkAgentSummary(BaseModel):
     latest_summary: dict[str, float] = Field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class BenchmarkAgentRegistration:
+    tenant_id: str
+    agent_ref: str
+    invoke: AgentInvoke
+
+
+_AGENTS: dict[tuple[str, str], BenchmarkAgentRegistration] = {}
+_RUNS: dict[str, BenchmarkRunRecord] = {}
+
+
 def register_agent(agent_ref: str, invoke: AgentInvoke) -> None:
     """注册一个可 benchmark 的 agent。"""
-    _AGENTS[agent_ref] = invoke
+    tenant_id = current_tenant().tenant_id
+    _AGENTS[(tenant_id, agent_ref)] = BenchmarkAgentRegistration(
+        tenant_id=tenant_id,
+        agent_ref=agent_ref,
+        invoke=invoke,
+    )
 
 
 def clear_benchmark_state() -> None:
@@ -69,12 +83,17 @@ def clear_benchmark_state() -> None:
 @router.get("/agents", response_model=list[BenchmarkAgentSummary])
 async def list_benchmark_agents() -> list[BenchmarkAgentSummary]:
     """列出已注册 agent 和最新得分。"""
+    tenant_id = current_tenant().tenant_id
     summaries: list[BenchmarkAgentSummary] = []
-    for agent_ref in sorted(_AGENTS):
-        latest = _latest_run_for(agent_ref)
+    registrations = sorted(
+        (agent for agent in _AGENTS.values() if agent.tenant_id == tenant_id),
+        key=lambda agent: agent.agent_ref,
+    )
+    for registration in registrations:
+        latest = _latest_run_for(agent_ref=registration.agent_ref, tenant_id=tenant_id)
         summaries.append(
             BenchmarkAgentSummary(
-                agent_ref=agent_ref,
+                agent_ref=registration.agent_ref,
                 latest_run_id=latest.run_id if latest else None,
                 latest_summary=latest.summary if latest else {},
             )
@@ -86,8 +105,8 @@ async def list_benchmark_agents() -> list[BenchmarkAgentSummary]:
 async def start_benchmark_run(req: BenchmarkRunRequest) -> BenchmarkRunRecord:
     """启动一轮 benchmark。当前版本同步执行，后续可接后台任务。"""
     tenant = current_tenant()
-    invoke = _AGENTS.get(req.agent_ref)
-    if invoke is None:
+    registration = _AGENTS.get((tenant.tenant_id, req.agent_ref))
+    if registration is None:
         raise HTTPException(
             status_code=404, detail=f"benchmark agent not registered: {req.agent_ref}"
         )
@@ -96,7 +115,11 @@ async def start_benchmark_run(req: BenchmarkRunRequest) -> BenchmarkRunRecord:
         [_task_from_input(task) for task in req.tasks] if req.tasks else sample_benchmark_tasks()
     )
     started = datetime.now(UTC)
-    results = await run_benchmark(agent_invoke=invoke, tasks=tasks, agent_ref=req.agent_ref)
+    results = await run_benchmark(
+        agent_invoke=registration.invoke,
+        tasks=tasks,
+        agent_ref=req.agent_ref,
+    )
     finished = datetime.now(UTC)
     run = BenchmarkRunRecord(
         run_id=f"bench-{uuid.uuid4().hex[:12]}",
@@ -113,14 +136,17 @@ async def start_benchmark_run(req: BenchmarkRunRequest) -> BenchmarkRunRecord:
 
 @router.get("/results/{run_id}", response_model=BenchmarkRunRecord)
 async def get_benchmark_result(run_id: str) -> BenchmarkRunRecord:
+    tenant_id = current_tenant().tenant_id
     run = _RUNS.get(run_id)
-    if run is None:
+    if run is None or run.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="benchmark run not found")
     return run
 
 
-def _latest_run_for(agent_ref: str) -> BenchmarkRunRecord | None:
-    runs = [run for run in _RUNS.values() if run.agent_ref == agent_ref]
+def _latest_run_for(*, agent_ref: str, tenant_id: str) -> BenchmarkRunRecord | None:
+    runs = [
+        run for run in _RUNS.values() if run.agent_ref == agent_ref and run.tenant_id == tenant_id
+    ]
     if not runs:
         return None
     return max(runs, key=lambda run: run.finished_at)
