@@ -81,6 +81,10 @@ class ProactiveDispatch:
 @dataclass
 class ProactiveScanResult:
     dispatched: list[ProactiveDispatch] = field(default_factory=list)
+    # 主动用工具 layer 4: pattern 命中但没成功 dispatch 的 (未注册 / 提参失败 / 抛异常).
+    # orchestrator 拿到这一栏 → emit task.tool_skipped 事件 → 守望/evaluator
+    # 累积到 capability_card → 阈值上去自动加触发器 / 升级"强制用工具".
+    missed_opportunities: list[dict[str, Any]] = field(default_factory=list)
 
     def to_prefix_message(self) -> str:
         """Aggregate all dispatches into one prefix block for the LLM."""
@@ -288,6 +292,7 @@ async def proactive_dispatch(
         triggers = loaded if loaded else DEFAULT_TRIGGERS
     seen: set[str] = set()
     dispatches: list[ProactiveDispatch] = []
+    missed: list[dict[str, Any]] = []  # layer 4: 命中但没抓住的
 
     # Layer 1a: hard requirements from intent layer
     for required_skill in required_tools_hint or []:
@@ -305,13 +310,30 @@ async def proactive_dispatch(
     for trigger in triggers:
         if trigger.skill_id in seen:
             continue
-        if not is_registered(trigger.skill_id):
-            continue
         match = trigger.pattern.search(prompt)
         if match is None:
             continue
+        # Pattern 命中 = "本应触发". 下面任何中断都记到 missed 里 (layer 4).
+        if not is_registered(trigger.skill_id):
+            missed.append(
+                {
+                    "skill_id": trigger.skill_id,
+                    "reason": "executor_unregistered",
+                    "pattern": trigger.pattern.pattern,
+                    "trigger_source": "keyword",
+                }
+            )
+            continue
         params = trigger.extract_params(match, prompt)
         if params is None:
+            missed.append(
+                {
+                    "skill_id": trigger.skill_id,
+                    "reason": "params_extraction_returned_none",
+                    "pattern": trigger.pattern.pattern,
+                    "trigger_source": "keyword",
+                }
+            )
             continue
         try:
             result = await skill_dispatch(trigger.skill_id, params)
@@ -320,6 +342,14 @@ async def proactive_dispatch(
                 "proactive.dispatch_failed",
                 skill_id=trigger.skill_id,
                 error=str(e),
+            )
+            missed.append(
+                {
+                    "skill_id": trigger.skill_id,
+                    "reason": f"dispatch_exception:{type(e).__name__}",
+                    "pattern": trigger.pattern.pattern,
+                    "trigger_source": "keyword",
+                }
             )
             continue
         dispatches.append(
@@ -352,7 +382,15 @@ async def proactive_dispatch(
                 continue
             if not is_registered(skill_id):
                 # SkillRegistry 里有, 但 dispatcher 没注册 executor —
-                # 用户描述了一个 skill 但还没实现, 跳过.
+                # 用户描述了一个 skill 但还没实现, layer 4 记一笔.
+                missed.append(
+                    {
+                        "skill_id": skill_id,
+                        "reason": "executor_unregistered",
+                        "pattern": pattern_str,
+                        "trigger_source": "skill_manifest",
+                    }
+                )
                 continue
             try:
                 pattern = re.compile(pattern_str, re.IGNORECASE | re.MULTILINE)
@@ -362,6 +400,14 @@ async def proactive_dispatch(
                     continue
                 params = extract(match, prompt)
                 if params is None:
+                    missed.append(
+                        {
+                            "skill_id": skill_id,
+                            "reason": "params_extraction_returned_none",
+                            "pattern": pattern_str,
+                            "trigger_source": "skill_manifest",
+                        }
+                    )
                     continue
                 result = await skill_dispatch(skill_id, params)
             except Exception as e:
@@ -369,6 +415,14 @@ async def proactive_dispatch(
                     "proactive.layer3_dispatch_failed",
                     skill_id=skill_id,
                     error=str(e),
+                )
+                missed.append(
+                    {
+                        "skill_id": skill_id,
+                        "reason": f"dispatch_exception:{type(e).__name__}",
+                        "pattern": pattern_str,
+                        "trigger_source": "skill_manifest",
+                    }
                 )
                 continue
             dispatches.append(
@@ -389,8 +443,14 @@ async def proactive_dispatch(
             count=len(dispatches),
             skills=[d.skill_id for d in dispatches],
         )
+    if missed:
+        log.info(
+            "proactive.missed_opportunities",
+            count=len(missed),
+            details=[m["skill_id"] for m in missed],
+        )
 
-    return ProactiveScanResult(dispatched=dispatches)
+    return ProactiveScanResult(dispatched=dispatches, missed_opportunities=missed)
 
 
 __all__ = [

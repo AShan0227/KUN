@@ -30,6 +30,7 @@ EventKind = Literal[
     "task.timed_out",
     "task.budget_warn",
     "task.budget_exceeded",
+    "task.tool_skipped",
     "task.done",
     "task.failed",
     "task.cancelled",

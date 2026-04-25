@@ -600,6 +600,36 @@ class Orchestrator:
                 },
             )
 
+        # 主动用工具 layer 4: 触发器命中但没成功 dispatch 的 → emit task.tool_skipped.
+        # 守望子系统订阅这个事件 → 累积到 capability_card → 阈值上去自动加触发器
+        # 或升级"强制用工具"等级. 现在先把信号送出去.
+        if proactive_scan.missed_opportunities:
+            try:
+                async with session_scope(tenant_id=tenant.tenant_id) as s:
+                    await emit(
+                        s,
+                        Event.build(
+                            tenant_id=tenant.tenant_id,
+                            event_type="task.tool_skipped",
+                            payload={
+                                "task_id": task_ref.meta.task_id,
+                                "missed": proactive_scan.missed_opportunities,
+                                "prompt_excerpt": user_message[:200],
+                            },
+                            task_ref=task_ref.meta.task_id,
+                        ),
+                    )
+            except Exception as e:
+                log.warning("orchestrator.tool_skipped_emit_failed", error=str(e))
+            yield OrchestratorEvent(
+                kind="action_plan",
+                data={
+                    "stage": "tool_skipped",
+                    "missed": [m["skill_id"] for m in proactive_scan.missed_opportunities],
+                    "reasons": [m["reason"] for m in proactive_scan.missed_opportunities],
+                },
+            )
+
         # 8. Execute steps
         answer = ""
         status: TaskStatus = "running"

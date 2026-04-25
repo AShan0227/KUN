@@ -261,3 +261,80 @@ async def test_layer3_triggers_via_skill_manifest() -> None:
     assert "SKILL.md" in csv.trigger_reason
     # tsv 文件不存在, dispatcher 会失败 — 但 trigger 已经成功命中
     assert csv.params.get("path", "").endswith(".tsv")
+
+
+# ============== Layer 4: 失败回看 (missed_opportunities) ==============
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_layer4_records_missed_when_executor_unregistered() -> None:
+    """触发器命中但 dispatcher 没注册执行器 → missed_opportunities 加一条."""
+    import re
+
+    from kun.engineering.proactive_tools import ToolTrigger
+
+    # 自定义一条触发器, skill_id 故意指向不存在的 executor
+    fake_trigger = ToolTrigger(
+        skill_id="ghost-skill",  # 没注册
+        description="幽灵 skill",
+        pattern=re.compile(r"幽灵关键词"),
+        extract_params=lambda m, p: {"x": 1},
+    )
+    result = await proactive_dispatch(
+        prompt="这里出现幽灵关键词",
+        triggers=[fake_trigger],
+    )
+    assert result.dispatched == []
+    assert len(result.missed_opportunities) == 1
+    miss = result.missed_opportunities[0]
+    assert miss["skill_id"] == "ghost-skill"
+    assert miss["reason"] == "executor_unregistered"
+    assert miss["trigger_source"] == "keyword"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_layer4_records_missed_when_extract_returns_none() -> None:
+    """触发器命中但 extract_params 返回 None → missed_opportunities 加一条."""
+    import re
+
+    from kun.engineering.proactive_tools import ToolTrigger
+
+    fake_trigger = ToolTrigger(
+        skill_id="python-exec",  # 已注册的真 skill
+        description="假装 python-exec",
+        pattern=re.compile(r"trigger_me"),
+        extract_params=lambda m, p: None,  # 强制返回 None
+    )
+    result = await proactive_dispatch(
+        prompt="trigger_me 现在",
+        triggers=[fake_trigger],
+    )
+    # python-exec 没成功 dispatch, 但 missed 抓到
+    miss_ids = [m["skill_id"] for m in result.missed_opportunities]
+    assert "python-exec" in miss_ids
+    miss = next(m for m in result.missed_opportunities if m["skill_id"] == "python-exec")
+    assert miss["reason"] == "params_extraction_returned_none"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_layer4_no_missed_when_pattern_does_not_match() -> None:
+    """Pattern 没命中 = 没机会, 不算 missed."""
+    import re
+
+    from kun.engineering.proactive_tools import ToolTrigger
+
+    fake_trigger = ToolTrigger(
+        skill_id="ghost-skill",
+        description="幽灵",
+        pattern=re.compile(r"完全不会出现的字符串_xyz_xyz"),
+        extract_params=lambda m, p: {"x": 1},
+    )
+    result = await proactive_dispatch(
+        prompt="正常的提问没什么特殊关键词",
+        triggers=[fake_trigger],
+    )
+    assert result.dispatched == []
+    assert result.missed_opportunities == []
