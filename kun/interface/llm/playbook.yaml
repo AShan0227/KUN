@@ -1,0 +1,175 @@
+# Model Playbook — KUN's hand-written guide for what each model is good at
+# and where it should be routed. Pair with the runtime "model_profile" data
+# stored in capability_cards (auto-learned from real task outcomes).
+#
+# When you bring in a new model, add a stanza here and re-load (idle-batch
+# picks it up daily; CLI: `kun models reload`). The router uses these
+# strengths/weaknesses as the prior; the capability_card data refines it
+# over time.
+#
+# Schema:
+#   model_id          short id used in router / capability_card.entity_id
+#   family            anthropic | openai | minimax | openai-codex | stub
+#   display_name      human label shown in NUO
+#   tier_default      preferred tier for this model in KUN routing
+#   context_tokens    max input context
+#   strengths         tags the router prefers when matching purpose
+#   weaknesses        tags the router avoids
+#   notes             free-text usage tips
+#   pricing_usd_per_mtok
+#     input/output/cached  — per-million-token list price
+#   subscription_quota   true if costs are paid by a CLI OAuth subscription
+#
+# audience_default: hint for KUN multi-audience reply tier (novice / developer
+#   / expert) — defaults to "developer" when omitted.
+
+version: 1
+updated_at: "2026-04-25"
+
+models:
+  # ============ Anthropic / Claude family (via Claude Code CLI OAuth) ============
+
+  - model_id: "claude-opus-4-7"
+    family: anthropic
+    display_name: "Claude Opus 4.7"
+    tier_default: top
+    context_tokens: 1000000
+    strengths:
+      - reasoning
+      - planning
+      - long_context
+      - agent_orchestration
+      - nuanced_writing
+      - chinese
+    weaknesses:
+      - latency
+      - cost_per_token
+    notes: |
+      旗舰大脑。1M token 上下文 + Agent Teams 协调能力强。
+      用于：意图解析、计划拆解、关键判官、长文档分析、跨步骤推理。
+      注意：不擅长极简快速分类（用 Haiku 更便宜）。
+    pricing_usd_per_mtok:
+      input: 15.0
+      output: 75.0
+      cached: 1.5
+    subscription_quota: true
+    audience_default: expert
+
+  - model_id: "claude-sonnet-4-6"
+    family: anthropic
+    display_name: "Claude Sonnet 4.6"
+    tier_default: strong
+    context_tokens: 500000
+    strengths:
+      - balanced_reasoning
+      - speed
+      - cost_efficiency
+      - code_review
+      - chinese
+    weaknesses:
+      - depth_vs_opus
+    notes: |
+      性价比之王。Opus 80% 的能力 + 一半的延迟和成本。
+      用于：日常执行、中等复杂度判官、代码 review。
+    pricing_usd_per_mtok:
+      input: 3.0
+      output: 15.0
+      cached: 0.3
+    subscription_quota: true
+    audience_default: developer
+
+  - model_id: "claude-haiku-4-5-20251001"
+    family: anthropic
+    display_name: "Claude Haiku 4.5"
+    tier_default: cheap
+    context_tokens: 200000
+    strengths:
+      - speed
+      - classification
+      - routing_decisions
+      - simple_qa
+      - cheap
+    weaknesses:
+      - reasoning_depth
+      - long_context
+    notes: |
+      最便宜最快。亚秒级延迟。
+      用于：路由判断、简单分类、压缩、短问题、轻量 judge。
+    pricing_usd_per_mtok:
+      input: 0.8
+      output: 4.0
+      cached: 0.08
+    subscription_quota: true
+    audience_default: novice
+
+  # ============ OpenAI / GPT family (via codex MCP server, ChatGPT OAuth) ============
+
+  - model_id: "gpt-5.5"
+    family: openai
+    display_name: "GPT-5.5"
+    tier_default: coding
+    context_tokens: 256000
+    strengths:
+      - frontier_reasoning
+      - coding
+      - terminal_tasks
+      - speed
+      - tool_use
+    weaknesses:
+      - context_size_vs_opus
+    notes: |
+      OpenAI 当前旗舰（2026-04-23 发布，GPT-4.5 后第一个完全重训的 base）。
+      比 5.3-codex 更快更通用，但 context 比 Opus 短。
+      用于：代码生成、终端任务、重度 tool 调用。
+      候选用于"常规执行"做 A/B 比对。
+    pricing_usd_per_mtok:
+      input: 12.0
+      output: 48.0
+      cached: 1.2
+    subscription_quota: true
+    audience_default: developer
+
+  - model_id: "gpt-5.3-codex-spark"
+    family: openai-codex
+    display_name: "GPT-5.3 Codex Spark"
+    tier_default: coding
+    context_tokens: 256000
+    strengths:
+      - coding_specialty
+      - terminal_tasks_77
+      - speed
+    weaknesses:
+      - reasoning_depth_vs_opus
+    notes: |
+      Codex 专精变体。SWE-bench 略低于 Opus，但 terminal 任务 77%（vs Opus 65%）+ 25% 快。
+      作为 GPT-5.5 之前的稳定回退。
+    pricing_usd_per_mtok:
+      input: 10.0
+      output: 40.0
+      cached: 1.0
+    subscription_quota: true
+    audience_default: developer
+
+  # ============ MiniMax (paid API, fallback) ============
+
+  - model_id: "MiniMax-M2.7"
+    family: minimax
+    display_name: "MiniMax M2.7"
+    tier_default: fallback
+    context_tokens: 256000
+    strengths:
+      - chinese
+      - cost_efficiency
+      - availability
+    weaknesses:
+      - reasoning_depth
+      - english_nuance
+    notes: |
+      付费 API 兜底。订阅配额耗尽 / 预算超额时强制走这条路。
+      实际花钱（约 $0.4/M input、$1.2/M output），便宜。
+    pricing_usd_per_mtok:
+      input: 0.4
+      output: 1.2
+      cached: 0.04
+    subscription_quota: false
+    audience_default: developer

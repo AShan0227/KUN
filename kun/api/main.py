@@ -55,6 +55,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Start outbox worker
     app.state.outbox_task = asyncio.create_task(outbox_worker(interval_sec=0.5))
 
+    # Start idle-batch worker (R-A8) if enabled.
+    # Default ON in dev, off in production until we've verified it.
+    import os
+
+    if os.getenv("KUN_IDLE_BATCH_ENABLED", "1") == "1":
+        from kun.engineering.idle_batch import idle_batch_worker
+
+        idle_interval = int(os.getenv("KUN_IDLE_BATCH_INTERVAL_SEC", "3600"))
+        app.state.idle_batch_task = asyncio.create_task(
+            idle_batch_worker(
+                interval_sec=idle_interval,
+                tenant_id=settings().default_tenant_id or "u-sylvan",
+            )
+        )
+        log.info("idle_batch.scheduled", interval_sec=idle_interval)
+
     # Opentelemetry auto-instrumentation (best effort)
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -70,6 +86,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         outbox.cancel()
         with suppress(asyncio.CancelledError):
             await outbox
+
+    idle_batch: asyncio.Task[None] | None = getattr(app.state, "idle_batch_task", None)
+    if idle_batch is not None:
+        idle_batch.cancel()
+        with suppress(asyncio.CancelledError):
+            await idle_batch
 
     # Close LLM router providers — important for CodexMcpProvider which holds
     # a long-lived `codex mcp-server` subprocess. Without this, an API restart
