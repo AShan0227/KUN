@@ -33,6 +33,7 @@ from kun.interface.llm.base import (
 from kun.interface.llm.claude_code_provider import ClaudeCodeProvider
 from kun.interface.llm.codex_cli_provider import CodexCliProvider
 from kun.interface.llm.codex_mcp_provider import CodexMcpProvider
+from kun.interface.llm.failover import FailoverGuard
 from kun.interface.llm.minimax_provider import MiniMaxProvider
 from kun.interface.llm.openai_provider import OpenAIProvider
 from kun.interface.llm.stub_provider import StubProvider
@@ -114,6 +115,7 @@ class LLMRouter:
         *,
         ab_alternates: dict[ModelTier, LLMProvider] | None = None,
         ab_ratio: float = 0.0,
+        failover_guard: FailoverGuard | None = None,
     ) -> None:
         """providers: 每 tier 1 个 primary 模型 (现在的默认行为).
 
@@ -126,6 +128,7 @@ class LLMRouter:
         self.providers = providers
         self.ab_alternates: dict[ModelTier, LLMProvider] = ab_alternates or {}
         self.ab_ratio = max(0.0, min(1.0, ab_ratio))
+        self._failover_guard = failover_guard
 
     async def close(self) -> None:
         """Release provider resources (long-lived subprocesses, HTTP pools).
@@ -259,64 +262,101 @@ class LLMRouter:
                 rationale=decision.rationale,
             )
 
-            # A/B 切流: 同 tier 配了挑战者 + 命中 ab_ratio → 用挑战者代替 primary.
-            # 失败时挑战者也走同样的 fallback 路径. 不并行调用 (不是 shadow).
-            primary = self.providers.get(decision.primary_tier)
-            challenger = self.ab_alternates.get(decision.primary_tier)
-            ab_branch = "primary"
-            if challenger is not None and self.ab_ratio > 0.0 and _ab_roll() < self.ab_ratio:
-                primary = challenger
-                ab_branch = "challenger"
-            span.set_attribute("kun.ab_branch", ab_branch)
+            candidate_tiers = (
+                self._failover_guard.candidate_order(
+                    decision.primary_tier,
+                    decision.fallback_tier,
+                )
+                if self._failover_guard
+                else [decision.primary_tier, decision.fallback_tier]
+            )
+            skipped_providers: list[str] = []
+            attempted_tiers = 0
+            last_error: Exception | None = None
+            for tier in candidate_tiers:
+                provider = self.providers.get(tier)
+                if provider is None:
+                    continue
+                if self._failover_guard and not await self._failover_guard.is_available(
+                    provider.name,
+                    tier=tier,
+                ):
+                    skipped_providers.append(f"{tier}:{provider.name}")
+                    log.info("router.provider_in_cooldown", provider=provider.name, tier=tier)
+                    continue
 
-            # Try primary tier
-            if primary is not None:
+                # A/B 切流: A/B 只决定这个 tier 里用 primary 还是 challenger.
+                # failover 只决定这个 tier 当前要不要试.
+                selected_provider = provider
+                ab_branch = "primary"
+                challenger = self.ab_alternates.get(tier)
+                if challenger is not None and self.ab_ratio > 0.0 and _ab_roll() < self.ab_ratio:
+                    selected_provider = challenger
+                    ab_branch = "challenger"
+                span.set_attribute("kun.ab_branch", ab_branch)
+                attempted_tiers += 1
                 try:
-                    result = await _invoke_with_retry(primary, request)
-                    get_tracker().record(decision.primary_tier)  # type: ignore[arg-type]
-                    span.set_attribute("kun.fallback_engaged", False)
-                    span.set_attribute("kun.final_provider", primary.name)
+                    result = await _invoke_with_retry(selected_provider, request)
+                    if self._failover_guard:
+                        await self._failover_guard.record_success(
+                            selected_provider.name,
+                            tier=tier,
+                        )
+                    get_tracker().record(tier)  # type: ignore[arg-type]
+                    failover_triggered = (
+                        tier != decision.primary_tier
+                        or attempted_tiers > 1
+                        or bool(skipped_providers)
+                    )
+                    span.set_attribute("kun.failover_triggered", failover_triggered)
+                    span.set_attribute("kun.skipped_provider", ",".join(skipped_providers))
+                    span.set_attribute("kun.fallback_engaged", tier != decision.primary_tier)
+                    span.set_attribute("kun.final_provider", selected_provider.name)
+                    span.set_attribute("kun.final_tier", str(tier))
                     span.set_attribute("kun.cost_usd_equivalent", result.cost_usd_equivalent)
                     return result
                 except Exception as e:
+                    last_error = e
+                    should_switch = (
+                        await self._failover_guard.record_failure(
+                            selected_provider.name,
+                            tier=tier,
+                        )
+                        if self._failover_guard
+                        else False
+                    )
                     log.warning(
                         "router.primary_failed",
-                        provider=primary.name,
-                        model=primary.model_id,
+                        provider=selected_provider.name,
+                        model=selected_provider.model_id,
+                        tier=tier,
+                        failover_triggered=should_switch,
                         error=str(e),
                     )
                     llm_fallback_total.labels(
-                        from_provider=primary.name,
-                        to_provider=self.providers.get(decision.fallback_tier, primary).name,
+                        from_provider=selected_provider.name,
+                        to_provider=self.providers.get(
+                            decision.fallback_tier,
+                            selected_provider,
+                        ).name,
                         reason=type(e).__name__,
                     ).inc()
                     # Emit a watchtower-observable event so the
                     # llm_fallback_spike rule can fire (R-A1).
                     await _emit_fallback_event(
-                        primary_provider=primary.name,
-                        primary_model=primary.model_id,
-                        primary_tier=decision.primary_tier,
+                        primary_provider=selected_provider.name,
+                        primary_model=selected_provider.model_id,
+                        primary_tier=tier,
                         fallback_tier=decision.fallback_tier,
                         error=e,
                     )
 
-            # Fallback tier
-            fallback = self.providers.get(decision.fallback_tier)
-            if fallback is None:
-                raise RuntimeError(
-                    f"No provider for primary={decision.primary_tier} or fallback={decision.fallback_tier}"
-                )
-            log.info(
-                "router.fallback_engaged",
-                purpose=purpose,
-                fallback=fallback.name,
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError(
+                f"No available provider for primary={decision.primary_tier} "
+                f"or fallback={decision.fallback_tier}"
             )
-            result = await _invoke_with_retry(fallback, request)
-            get_tracker().record(decision.fallback_tier)  # type: ignore[arg-type]
-            span.set_attribute("kun.fallback_engaged", True)
-            span.set_attribute("kun.final_provider", fallback.name)
-            span.set_attribute("kun.cost_usd_equivalent", result.cost_usd_equivalent)
-            return result
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
@@ -513,7 +553,12 @@ def get_router() -> LLMRouter:
             tiers=list(ab_alternates.keys()),
         )
 
-    _router = LLMRouter(providers, ab_alternates=ab_alternates, ab_ratio=ab_ratio)
+    _router = LLMRouter(
+        providers,
+        ab_alternates=ab_alternates,
+        ab_ratio=ab_ratio,
+        failover_guard=FailoverGuard.from_providers(providers),
+    )
     return _router
 
 
