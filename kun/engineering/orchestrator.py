@@ -382,7 +382,7 @@ class Orchestrator:
         )
 
         # 3. Planning
-        plan = self.planner.plan(task_ref)
+        plan = await self.planner.plan(task_ref, router=self.llm_router)
 
         # 4. Route (pick role + model purpose)
         choice = self.task_router.choose(task_ref.meta)

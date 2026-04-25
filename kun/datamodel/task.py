@@ -120,6 +120,7 @@ class TaskSpec(BaseModel):
     success_metrics: list[str] = Field(default_factory=list)
     required_skills: list[str] = Field(default_factory=list)
     required_tools: list[str] = Field(default_factory=list)
+    subtasks_hint: list[str] = Field(default_factory=list)
     external_resources: list[str] = Field(default_factory=list)
     constraints: list[Constraint] = Field(default_factory=list)
     foreseen_risks: list[Risk] = Field(default_factory=list)
