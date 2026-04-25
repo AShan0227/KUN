@@ -79,3 +79,46 @@ async def test_run_benchmark_scores_five_tasks() -> None:
     assert all(result.success for result in results)
     assert summary["success_rate"] == 1.0
     assert summary["avg_score"] == 1.0
+    assert summary["cost_usd"] > 0.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_benchmark_accepts_custom_cost_estimator() -> None:
+    task = BenchmarkTask(
+        task_id="t1",
+        task_type="exact",
+        prompt="return hello",
+        expected_kind="exact_match",
+        expected="hello",
+    )
+
+    async def agent(_prompt: str) -> str:
+        return "hello"
+
+    results = await run_benchmark(
+        agent_invoke=agent,
+        tasks=[task],
+        cost_estimator=lambda _task, _response: 0.42,
+    )
+
+    assert results[0].cost_usd == 0.42
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_benchmark_default_cost_estimator_uses_prompt_and_response_size() -> None:
+    task = BenchmarkTask(
+        task_id="t1",
+        task_type="exact",
+        prompt="abcdefgh",
+        expected_kind="exact_match",
+        expected="abcdefgh",
+    )
+
+    async def agent(_prompt: str) -> str:
+        return "abcdefgh"
+
+    results = await run_benchmark(agent_invoke=agent, tasks=[task])
+
+    assert results[0].cost_usd == pytest.approx(0.000012)

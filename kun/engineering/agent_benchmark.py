@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 ExpectedKind = Literal["code_compile", "exact_match", "rubric_score"]
 AgentInvoke = Callable[[str], Awaitable[str]]
+CostEstimator = Callable[["BenchmarkTask", str], float]
 
 
 @dataclass(frozen=True)
@@ -39,11 +40,14 @@ async def run_benchmark(
     agent_invoke: AgentInvoke,
     tasks: list[BenchmarkTask],
     agent_ref: str = "agent",
+    cost_estimator: CostEstimator | None = None,
 ) -> list[AgentBenchmarkResult]:
     """按顺序跑一组 benchmark 任务。"""
+    estimator = cost_estimator or _default_cost_estimator
     results: list[AgentBenchmarkResult] = []
     for task in tasks:
         started = time.perf_counter()
+        output = ""
         try:
             output = await agent_invoke(task.prompt)
             score = score_output(output=output, task=task)
@@ -51,13 +55,14 @@ async def run_benchmark(
         except Exception:
             score = 0.0
             success = False
+        cost_usd = _estimate_cost(estimator=estimator, task=task, response=output)
         results.append(
             AgentBenchmarkResult(
                 agent_ref=agent_ref,
                 task_id=task.task_id,
                 success=success,
                 score=score,
-                cost_usd=0.0,
+                cost_usd=cost_usd,
                 duration_sec=time.perf_counter() - started,
             )
         )
@@ -134,6 +139,24 @@ def _success_from_score(*, score: float, task: BenchmarkTask) -> bool:
     return score >= 1.0
 
 
+def _default_cost_estimator(task: BenchmarkTask, response: str) -> float:
+    in_tokens = len(task.prompt) // 4
+    out_tokens = len(response) // 4
+    return (in_tokens * 0.001 + out_tokens * 0.005) / 1000
+
+
+def _estimate_cost(
+    *,
+    estimator: CostEstimator,
+    task: BenchmarkTask,
+    response: str,
+) -> float:
+    try:
+        return max(0.0, estimator(task, response))
+    except Exception:
+        return 0.0
+
+
 def _score_code_compile(output: str) -> float:
     try:
         compile(output, "<agent-output>", "exec")
@@ -157,6 +180,7 @@ __all__ = [
     "AgentBenchmarkResult",
     "AgentInvoke",
     "BenchmarkTask",
+    "CostEstimator",
     "aggregate_results",
     "run_benchmark",
     "sample_benchmark_tasks",

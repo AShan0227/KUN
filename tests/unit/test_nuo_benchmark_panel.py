@@ -12,6 +12,7 @@ from kun.api.nuo.benchmark_panel import (
     register_agent,
     start_benchmark_run,
 )
+from kun.core.tenancy import TenantContext, tenant_scope
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +50,59 @@ async def test_benchmark_panel_runs_registered_agent() -> None:
     assert run.summary["success_rate"] == 1.0
     assert len(run.results) == 5
     assert agents_after[0].latest_run_id == run.run_id
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_benchmark_panel_isolates_agents_and_runs_by_tenant() -> None:
+    async def agent(prompt: str) -> str:
+        if "hello" in prompt:
+            return "hello"
+        return prompt
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a")):
+        register_agent("external_agent:same", agent)
+        run_a = await start_benchmark_run(
+            BenchmarkRunRequest(
+                agent_ref="external_agent:same",
+                tasks=[
+                    {
+                        "task_id": "exact-hello",
+                        "task_type": "exact_match",
+                        "prompt": "Return exactly: hello",
+                        "expected_kind": "exact_match",
+                        "expected": "hello",
+                    }
+                ],
+            )
+        )
+        agents_a = await list_benchmark_agents()
+
+    with tenant_scope(TenantContext(tenant_id="tenant-b")):
+        register_agent("external_agent:same", agent)
+        agents_b_before = await list_benchmark_agents()
+        with pytest.raises(HTTPException) as exc:
+            await get_benchmark_result(run_a.run_id)
+        run_b = await start_benchmark_run(
+            BenchmarkRunRequest(
+                agent_ref="external_agent:same",
+                tasks=[
+                    {
+                        "task_id": "exact-hello",
+                        "task_type": "exact_match",
+                        "prompt": "Return exactly: hello",
+                        "expected_kind": "exact_match",
+                        "expected": "hello",
+                    }
+                ],
+            )
+        )
+        agents_b_after = await list_benchmark_agents()
+
+    assert agents_a[0].latest_run_id == run_a.run_id
+    assert agents_b_before[0].latest_run_id is None
+    assert exc.value.status_code == 404
+    assert agents_b_after[0].latest_run_id == run_b.run_id
 
 
 @pytest.mark.unit
