@@ -104,3 +104,35 @@ class RuntimeState(BaseModel):
         if estimated_cost_usd <= 0:
             return False
         return self.accumulated_cost_usd_equivalent > estimated_cost_usd * multiplier
+
+
+def validate_dag(dependencies: dict[int, list[int]]) -> None:
+    """Validate a small execution DAG.
+
+    Raises ValueError when a step depends on a missing step or when dependencies
+    contain a cycle.
+    """
+    nodes = set(dependencies)
+    for step_id, deps in dependencies.items():
+        if step_id in deps:
+            raise ValueError(f"step {step_id} depends on itself")
+        missing = [dep for dep in deps if dep not in nodes]
+        if missing:
+            raise ValueError(f"step {step_id} has missing dependencies: {missing}")
+
+    visiting: set[int] = set()
+    visited: set[int] = set()
+
+    def visit(node: int) -> None:
+        if node in visited:
+            return
+        if node in visiting:
+            raise ValueError(f"cycle detected at step {node}")
+        visiting.add(node)
+        for dep in dependencies[node]:
+            visit(dep)
+        visiting.remove(node)
+        visited.add(node)
+
+    for node in nodes:
+        visit(node)

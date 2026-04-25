@@ -6,6 +6,7 @@ Skips DB I/O by monkey-patching session_scope.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -84,6 +85,13 @@ def _exec_builder(request):
     )
 
 
+def _judge_builder(request):
+    return LLMResponse(
+        content='{"pass": true, "score": 0.9, "reason": "ok"}',
+        usage=UsageInfo(input_tokens=12, output_tokens=8),
+    )
+
+
 class _RoutingStub(StubProvider):
     """Stub that picks the right response based on 'system' content.
 
@@ -94,6 +102,64 @@ class _RoutingStub(StubProvider):
         sys_text = " ".join(m.content for m in request.messages if m.role == "system")
         if "意图理解层" in sys_text:
             self._builder = _intent_builder  # type: ignore[assignment]
+        else:
+            self._builder = _exec_builder  # type: ignore[assignment]
+        return await super().invoke(request)
+
+
+class _PlanningRoutingStub(StubProvider):
+    planning_calls: int
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.planning_calls = 0
+
+    async def invoke(self, request):
+        sys_text = " ".join(m.content for m in request.messages if m.role == "system")
+        if "意图理解层" in sys_text:
+            self._builder = lambda _request: LLMResponse(
+                content=json.dumps(
+                    {
+                        "task_type": "coding.python.complex",
+                        "risk_level": "low",
+                        "complexity_score": 0.8,
+                        "estimated_cost_usd": 0.02,
+                        "estimated_duration_sec": 5,
+                        "success_criteria_short": "完成复杂任务",
+                        "goal_detail": "完成复杂任务并验证结果",
+                        "success_metrics": ["结果通过"],
+                        "required_skills": ["code-review"],
+                    },
+                    ensure_ascii=False,
+                ),
+                usage=UsageInfo(input_tokens=5, output_tokens=20),
+            )
+        elif "任务拆解层" in sys_text:
+            self.planning_calls += 1
+            self._builder = lambda _request: LLMResponse(
+                content=json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "step_id": 1,
+                                "description": "核对边界",
+                                "skill_hint": "task.boundary_check",
+                                "depends_on": [],
+                            },
+                            {
+                                "step_id": 2,
+                                "description": "执行复杂任务",
+                                "skill_hint": "code-review",
+                                "depends_on": [1],
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                usage=UsageInfo(input_tokens=12, output_tokens=30),
+            )
+        elif "评估判官" in sys_text:
+            self._builder = _judge_builder  # type: ignore[assignment]
         else:
             self._builder = _exec_builder  # type: ignore[assignment]
         return await super().invoke(request)
@@ -120,6 +186,27 @@ async def test_orchestrator_runs_end_to_end():
     assert "action_plan" in events_seen
     assert "action" in events_seen
     assert "cost_tick" in events_seen
+    assert "answer" in events_seen
+    assert "done" in events_seen
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_uses_llm_planner_for_complex_task():
+    top = _PlanningRoutingStub(tier="top")
+    providers = {
+        "top": top,
+        "cheap": _PlanningRoutingStub(tier="cheap"),
+        "coding": _PlanningRoutingStub(tier="coding"),
+        "fallback": _PlanningRoutingStub(tier="fallback"),
+    }
+    set_router(LLMRouter(providers))
+
+    events_seen = []
+    async for ev in Orchestrator().stream("Do a complex thing"):
+        events_seen.append(ev.kind)
+
+    assert top.planning_calls == 1
     assert "answer" in events_seen
     assert "done" in events_seen
 
