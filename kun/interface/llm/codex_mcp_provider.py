@@ -41,9 +41,11 @@ from kun.interface.llm.base import (
 
 log = get_logger("kun.llm.codex_mcp")
 
-# Default model id — verified working against ChatGPT Plus / Pro / Team subs.
-# Override via KUN_CODEX_MCP_MODEL.
-_DEFAULT_MODEL = "gpt-5.3-codex-spark"
+# Default model id — GPT-5.5 since 2026-04-23 (OpenAI's current frontier; the
+# first fully-retrained base since GPT-4.5). Requires codex CLI ≥ 0.125.
+# Override via KUN_CODEX_MCP_MODEL (e.g. fall back to gpt-5.3-codex-spark
+# if you need to pin an older CLI).
+_DEFAULT_MODEL = "gpt-5.5"
 
 # Default reasoning effort — "low" is a 3s-turnaround baseline. Override via
 # KUN_CODEX_REASONING (low / medium / high / xhigh).
@@ -55,7 +57,13 @@ _DEFAULT_REASONING = "low"
 _DEFAULT_CWD = "/tmp/kun-codex-cwd"  # noqa: S108 — intentional sandbox root
 
 # Rough $/M-token equivalent (for ADR-008 equivalent cost; actual = 0).
+# Numbers are public-API list prices; we never charge them, but the
+# orchestrator uses them to size budgets in NUO panels.
 _PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
+    # GPT-5.5 (frontier, 2026-04-23+)
+    "gpt-5.5": (12.0, 48.0),
+    "gpt-5.5-mini": (1.5, 6.0),
+    # GPT-5.3 family (codex specialty, 2026-02-05+)
     "gpt-5.3-codex-spark": (10.0, 40.0),
     "gpt-5.3-codex": (10.0, 40.0),
     "gpt-5-codex": (10.0, 40.0),

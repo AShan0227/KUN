@@ -111,6 +111,30 @@ class LLMRouter:
     def __init__(self, providers: dict[ModelTier, LLMProvider]) -> None:
         self.providers = providers
 
+    async def close(self) -> None:
+        """Release provider resources (long-lived subprocesses, HTTP pools).
+
+        Called from FastAPI lifespan shutdown. Safe to call multiple times —
+        each provider's `close()` is best-effort.
+        """
+        seen: set[int] = set()
+        for provider in self.providers.values():
+            # Some providers are shared across tiers; close each instance once
+            if id(provider) in seen:
+                continue
+            seen.add(id(provider))
+            close_fn = getattr(provider, "close", None)
+            if close_fn is None:
+                continue
+            try:
+                await close_fn()
+            except Exception as e:
+                log.warning(
+                    "router.provider_close_failed",
+                    provider=provider.name,
+                    error=str(e),
+                )
+
     # ---------- Routing decision ----------
 
     def decide(

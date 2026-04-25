@@ -44,16 +44,31 @@ class IdempotencyResult:
     cached_result_ref: str | None
 
 
+def _sanitize_tenant(tenant_id: str) -> str:
+    """Keep only safe chars in the Redis key segment so the prefix can't
+    inject `:` or wildcards into the namespace."""
+    return re.sub(r"[^A-Za-z0-9_\-]", "_", tenant_id)[:64] or "unknown"
+
+
 class IdempotencyKey:
-    """Redis-backed idempotency with TTL."""
+    """Redis-backed idempotency with TTL.
+
+    Keys are namespaced per tenant so two tenants with colliding fingerprints
+    can never see each other's cached result_ref.
+    """
 
     def __init__(self, redis: Any, ttl_sec: int = 300) -> None:
         self._redis = redis
         self._ttl = ttl_sec
 
-    async def check_or_record(self, key: str, result_ref: str) -> IdempotencyResult:
+    async def check_or_record(
+        self,
+        tenant_id: str,
+        key: str,
+        result_ref: str,
+    ) -> IdempotencyResult:
         """Atomic 'record if not exists'. Returns whether this is first time."""
-        full_key = f"kun:idem:{key}"
+        full_key = f"kun:t:{_sanitize_tenant(tenant_id)}:idem:{key}"
         ok = await self._redis.set(full_key, result_ref, nx=True, ex=self._ttl)
         if ok:
             return IdempotencyResult(first=True, cached_result_ref=None)
@@ -69,10 +84,14 @@ class Lease:
     resource: str
     token: str
     ttl_sec: int
+    tenant_id: str = "unknown"
 
 
 class ResourceGuard:
     """Redis SET NX EX + token check on release — single-node lightweight lock.
+
+    Locks are namespaced per tenant; two tenants asking for the same resource
+    name (e.g. ``project:abc``) get independent locks.
 
     For production-grade Redlock, upgrade to redis-py's Redlock when multi-node.
     """
@@ -80,16 +99,22 @@ class ResourceGuard:
     def __init__(self, redis: Any) -> None:
         self._redis = redis
 
-    async def acquire(self, resource: str, *, ttl_sec: int = 10) -> Lease | None:
+    async def acquire(
+        self,
+        tenant_id: str,
+        resource: str,
+        *,
+        ttl_sec: int = 10,
+    ) -> Lease | None:
         token = uuid.uuid4().hex
-        full_key = f"kun:lock:{resource}"
+        full_key = f"kun:t:{_sanitize_tenant(tenant_id)}:lock:{resource}"
         ok = await self._redis.set(full_key, token, nx=True, ex=ttl_sec)
         if not ok:
             return None
-        return Lease(resource=resource, token=token, ttl_sec=ttl_sec)
+        return Lease(resource=resource, token=token, ttl_sec=ttl_sec, tenant_id=tenant_id)
 
     async def release(self, lease: Lease) -> bool:
-        full_key = f"kun:lock:{lease.resource}"
+        full_key = f"kun:t:{_sanitize_tenant(lease.tenant_id)}:lock:{lease.resource}"
         # Lua script: only delete if token matches (avoid releasing someone else's lock)
         script = """
         if redis.call('get', KEYS[1]) == ARGV[1] then
@@ -117,14 +142,15 @@ async def _get_redis() -> Any:
 
 @asynccontextmanager
 async def acquire_or_raise(
+    tenant_id: str,
     resource: str,
     *,
     ttl_sec: int = 10,
 ) -> AsyncIterator[Lease]:
-    """Grab a lock or raise. Auto-releases on exit."""
+    """Grab a lock or raise. Auto-releases on exit. Per-tenant namespaced."""
     redis = await _get_redis()
     guard = ResourceGuard(redis)
-    lease = await guard.acquire(resource, ttl_sec=ttl_sec)
+    lease = await guard.acquire(tenant_id, resource, ttl_sec=ttl_sec)
     if lease is None:
         raise ResourceBusyError(resource)
     try:

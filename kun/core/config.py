@@ -60,6 +60,19 @@ class Settings(BaseSettings):
     # Budgets (ADR-008)
     budget_daily_usd: float = Field(default=10.0)
     budget_monthly_usd: float = Field(default=200.0)
+    # Soft warn threshold as fraction of daily budget. orchestrator emits a
+    # warning event before hitting the hard cap.
+    budget_warn_fraction: float = Field(default=0.8)
+
+    # Task hard ceiling — orchestrator cancels and emits task.timed_out when
+    # a single task runs longer than this. Per-task TaskProfile.max_duration_sec
+    # overrides this. Set generously up front (30 min); idle-batch is meant to
+    # learn realistic per-task-type defaults later.
+    task_max_duration_sec: int = Field(default=1800)
+
+    # MinIO / object storage offload threshold. Task result_json over this
+    # size is stored in MinIO and a reference kept in DB instead.
+    result_offload_threshold_bytes: int = Field(default=51200)  # 50 KiB
 
     # API
     api_host: str = "0.0.0.0"

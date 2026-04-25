@@ -60,8 +60,17 @@ class UsageInfo(BaseModel):
         return self.input_tokens + self.output_tokens
 
 
+Audience = Literal["novice", "developer", "expert"]
+
+
 class TaskProfile(BaseModel):
-    """Hints about a task, used by the router to pick tier."""
+    """Hints about a task, used by the router to pick tier and shape output.
+
+    Three knobs the caller can tune:
+      - **risk_level / needs_***: routing strength (router maps these to tier)
+      - **max_cost_usd / max_duration_sec**: hard ceilings the orchestrator enforces
+      - **audience**: shapes the system prompt — novice / developer / expert
+    """
 
     task_type: str = ""
     risk_level: str = "low"
@@ -69,7 +78,24 @@ class TaskProfile(BaseModel):
     needs_creative: bool = False
     needs_reasoning: bool = False
     max_cost_usd: float | None = None
+    max_duration_sec: float | None = Field(
+        default=None,
+        description=(
+            "Hard cap on total task duration in seconds. None = use the global "
+            "default (KUN_TASK_MAX_DURATION_SEC, 1800s). Overflow → orchestrator "
+            "cancels and emits task.timed_out."
+        ),
+    )
     prefer_speed: bool = False
+    audience: Audience = Field(
+        default="developer",
+        description=(
+            "Who's reading the answer — controls the assistant's voice. "
+            "novice = plain language, no jargon. "
+            "developer = concise, code/paths welcome. "
+            "expert = depth, alternatives, trade-offs."
+        ),
+    )
 
 
 class LLMRequest(BaseModel):

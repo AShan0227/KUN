@@ -70,6 +70,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         outbox.cancel()
         with suppress(asyncio.CancelledError):
             await outbox
+
+    # Close LLM router providers — important for CodexMcpProvider which holds
+    # a long-lived `codex mcp-server` subprocess. Without this, an API restart
+    # leaves orphan processes that pile up over time.
+    try:
+        from kun.interface.llm.router import get_router
+
+        await get_router().close()
+    except Exception as e:
+        log.warning("kun.api.router_close_failed", error=str(e))
+
     log.info("kun.api.stopped")
 
 

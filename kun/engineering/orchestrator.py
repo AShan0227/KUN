@@ -29,6 +29,7 @@ from kun.brain.intent import IntentInterpreter
 from kun.brain.planner import TaskPlanner
 from kun.brain.router import TaskRouter
 from kun.context.packer import ContextPacker
+from kun.core.config import settings
 from kun.core.db import session_scope
 from kun.core.events import emit
 from kun.core.logging import get_logger
@@ -65,6 +66,18 @@ from kun.watchtower.engine import RuleEngine
 log = get_logger("kun.engineering.orchestrator")
 
 _STALE_QUEUED_TASK_AFTER = timedelta(seconds=30)
+
+
+class TaskTimedOutError(RuntimeError):
+    """Raised when a single task exceeds its hard duration cap."""
+
+    def __init__(self, task_id: str, elapsed_sec: float, cap_sec: float) -> None:
+        super().__init__(
+            f"task {task_id} exceeded duration cap: {elapsed_sec:.1f}s > {cap_sec:.0f}s"
+        )
+        self.task_id = task_id
+        self.elapsed_sec = elapsed_sec
+        self.cap_sec = cap_sec
 
 
 class TaskResult(BaseModel):
@@ -129,15 +142,27 @@ class Orchestrator:
             raise RuntimeError("orchestrator exited without a done event")
         return final
 
-    async def stream(self, user_message: str) -> AsyncIterator[OrchestratorEvent]:
+    async def stream(
+        self,
+        user_message: str,
+        *,
+        max_duration_sec: float | None = None,
+    ) -> AsyncIterator[OrchestratorEvent]:
         """Streaming entry. Yields OrchestratorEvents for WebSocket.
 
         Events align with ADR-010 dialog protocol message blocks.
+
+        ``max_duration_sec`` overrides the global ``KUN_TASK_MAX_DURATION_SEC``
+        cap for this task only. The orchestrator checks the deadline before
+        each step; on overshoot it raises :class:`TaskTimedOutError`, persists
+        a failed result, and emits ``task.timed_out``.
         """
         tenant = current_tenant()
         owner = Owner(tenant_id=tenant.tenant_id, user_id=tenant.user_id)
 
         t0 = time.perf_counter()
+        duration_cap = float(max_duration_sec or settings().task_max_duration_sec)
+        deadline_monotonic = time.monotonic() + duration_cap
 
         # 1. 意图理解 -> TaskRef
         yield OrchestratorEvent(kind="thinking", data={"stage": "intent"})
@@ -468,6 +493,14 @@ class Orchestrator:
 
         try:
             for step_plan in plan.steps:
+                # Hard task-level deadline check (R-D1).
+                if time.monotonic() > deadline_monotonic:
+                    raise TaskTimedOutError(
+                        task_ref.meta.task_id,
+                        time.perf_counter() - t0,
+                        duration_cap,
+                    )
+
                 step_t0 = time.perf_counter()
                 yield OrchestratorEvent(
                     kind="action",
@@ -562,6 +595,41 @@ class Orchestrator:
                     )
 
             status = "done"
+        except TaskTimedOutError as exc:
+            status = "failed"
+            log.warning(
+                "orchestrator.timed_out",
+                task_id=task_ref.meta.task_id,
+                elapsed_sec=exc.elapsed_sec,
+                cap_sec=exc.cap_sec,
+            )
+            answer = (
+                f"任务超时，已强制结束（{exc.elapsed_sec:.0f}s 超过上限 {exc.cap_sec:.0f}s）。"
+                "如需放宽，请在 TaskProfile.max_duration_sec 或 KUN_TASK_MAX_DURATION_SEC 调整。"
+            )
+            yield OrchestratorEvent(
+                kind="error",
+                data={
+                    "message": "task_timed_out",
+                    "task_id": task_ref.meta.task_id,
+                    "elapsed_sec": exc.elapsed_sec,
+                    "cap_sec": exc.cap_sec,
+                },
+            )
+            async with session_scope() as s:
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant.tenant_id,
+                        event_type="task.timed_out",
+                        payload={
+                            "task_id": task_ref.meta.task_id,
+                            "elapsed_sec": exc.elapsed_sec,
+                            "cap_sec": exc.cap_sec,
+                        },
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
         except Exception as exc:
             status = "failed"
             log.exception("orchestrator.failed", error=str(exc))

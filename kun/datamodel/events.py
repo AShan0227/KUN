@@ -27,6 +27,7 @@ EventKind = Literal[
     "task.paused",
     "task.paused.preflight",
     "task.resumed",
+    "task.timed_out",
     "task.done",
     "task.failed",
     "task.cancelled",
