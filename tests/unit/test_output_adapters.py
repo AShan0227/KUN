@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 import pytest
-from kun.interface.adapters import get_adapter, list_adapters, register, translate
+from kun.interface.adapters import get_adapter, list_adapters, register, translate, translate_for
 from kun.interface.adapters.human import HumanAdapter
 from kun.interface.llm import LLMRequest, LLMResponse, LLMRouter
 from kun.interface.llm.stub_provider import StubProvider
@@ -74,6 +74,20 @@ async def test_a2a_adapter_outputs_json_rpc() -> None:
     assert decoded["id"] == "task-1"
     assert decoded["method"] == "task.delegate"
     assert decoded["params"]["recipient_kind"] == "agent"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_translate_for_uses_default_mapping() -> None:
+    output = await translate_for(
+        payload={"task_id": "task-1", "goal": "ship"},
+        recipient_kind="a2a",
+        context={"method": "task.delegate"},
+    )
+    decoded = json.loads(output)
+
+    assert decoded["method"] == "task.delegate"
+    assert decoded["params"]["recipient_kind"] == "a2a"
 
 
 @pytest.mark.unit

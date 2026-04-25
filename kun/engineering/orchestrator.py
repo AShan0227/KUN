@@ -18,7 +18,7 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
@@ -51,6 +51,7 @@ from kun.engineering.concurrency import (
     scan_pre_conflicts,
 )
 from kun.engineering.validation import ValidationPipeline, pick_tier
+from kun.interface.adapters import translate_for
 from kun.interface.llm import (
     LLMMessage,
     LLMRequest,
@@ -66,6 +67,16 @@ from kun.watchtower.engine import RuleEngine
 log = get_logger("kun.engineering.orchestrator")
 
 _STALE_QUEUED_TASK_AFTER = timedelta(seconds=30)
+
+
+class OutputTranslator(Protocol):
+    async def __call__(
+        self,
+        *,
+        payload: dict[str, Any],
+        recipient_kind: str,
+        context: dict[str, Any] | None = None,
+    ) -> str: ...
 
 
 # R-N3: per-audience system-prompt directives. Concatenated after the base
@@ -148,6 +159,7 @@ class Orchestrator:
         rule_engine: RuleEngine | None = None,
         validation: ValidationPipeline | None = None,
         context_packer: ContextPacker | None = None,
+        output_translator: OutputTranslator | None = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -157,13 +169,14 @@ class Orchestrator:
         self.validation = validation or ValidationPipeline(self.llm_router)
         self.skill_selector = get_skill_selector()
         self.context_packer = context_packer or ContextPacker()
+        self.output_translator = output_translator or translate_for
 
     # ----------------------------- public entry -----------------------------
 
-    async def run(self, user_message: str) -> TaskResult:
+    async def run(self, user_message: str, *, output_kind: str = "user") -> TaskResult:
         """Non-streaming entry. Useful for tests / HTTP POST."""
         final: TaskResult | None = None
-        async for ev in self.stream(user_message):
+        async for ev in self.stream(user_message, output_kind=output_kind):
             if ev.kind == "done":
                 final = TaskResult.model_validate(ev.data["result"])
         if final is None:
@@ -175,6 +188,7 @@ class Orchestrator:
         user_message: str,
         *,
         max_duration_sec: float | None = None,
+        output_kind: str = "user",
     ) -> AsyncIterator[OrchestratorEvent]:
         """Streaming entry. Yields OrchestratorEvents for WebSocket.
 
@@ -449,6 +463,13 @@ class Orchestrator:
                 reason_parts.append(f"检测到需要审批的外部副作用动作: {actions}")
 
             answer = "任务已暂停，等待确认。" + "；".join(reason_parts)
+            answer = await self._translate_answer(
+                answer=answer,
+                task_ref=task_ref,
+                tenant=tenant,
+                status="paused",
+                output_kind=output_kind,
+            )
             paused_result = TaskResult(
                 task_id=task_ref.meta.task_id,
                 status="paused",
@@ -978,6 +999,13 @@ class Orchestrator:
             # Writeback failure must not break the task.
             log.warning("capability.writeback_failed", error=str(e))
 
+        answer = await self._translate_answer(
+            answer=answer,
+            task_ref=task_ref,
+            tenant=tenant,
+            status=status,
+            output_kind=output_kind,
+        )
         result = TaskResult(
             task_id=task_ref.meta.task_id,
             status=status,
@@ -1004,6 +1032,39 @@ class Orchestrator:
         )
 
     # ---------------------------- helpers ----------------------------
+
+    async def _translate_answer(
+        self,
+        *,
+        answer: str,
+        task_ref: TaskRef,
+        tenant: Any,
+        status: str,
+        output_kind: str,
+    ) -> str:
+        payload = {
+            "task_id": task_ref.meta.task_id,
+            "task_type": task_ref.meta.task_type,
+            "status": status,
+            "answer": answer,
+            "success_criteria": task_ref.meta.success_criteria_short,
+        }
+        context = {
+            "tenant_id": tenant.tenant_id,
+            "audience": tenant.audience,
+            "language": "zh",
+        }
+        try:
+            return await self.output_translator(
+                payload=payload,
+                recipient_kind=output_kind,
+                context=context,
+            )
+        except Exception as e:
+            log.warning(
+                "orchestrator.output_translate_failed", output_kind=output_kind, error=str(e)
+            )
+            return answer
 
     async def _execute_step(
         self,

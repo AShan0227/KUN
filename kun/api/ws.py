@@ -86,6 +86,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     user_id = ws.query_params.get("user_id")
     raw_audience = (ws.query_params.get("audience") or "developer").lower()
     audience = raw_audience if raw_audience in {"novice", "developer", "expert"} else "developer"
+    default_output_kind = str(ws.query_params.get("output_kind") or "user")
     ctx = TenantContext(
         tenant_id=tenant_id,
         user_id=user_id,
@@ -111,6 +112,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 content = str(msg.get("content", ""))
 
                 if mtype == "user_message":
+                    output_kind = str(msg.get("output_kind") or default_output_kind)
                     if current_task is not None:
                         await _send_json(
                             ws,
@@ -126,8 +128,11 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                         )
                         # fall through and run it like a user_message anyway —
                         # the model will be told upstream that this is a correction.
-                    current_task = asyncio.create_task(_run_task_stream(ws, content, send_lock))
+                    current_task = asyncio.create_task(
+                        _run_task_stream(ws, content, send_lock, output_kind=output_kind)
+                    )
                 elif mtype == "correction":
+                    output_kind = str(msg.get("output_kind") or default_output_kind)
                     if current_task is not None:
                         await _cancel_task(current_task)
                     await _send_json(
@@ -135,7 +140,9 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                         {"type": "correction_ack", "content": content},
                         send_lock,
                     )
-                    current_task = asyncio.create_task(_run_task_stream(ws, content, send_lock))
+                    current_task = asyncio.create_task(
+                        _run_task_stream(ws, content, send_lock, output_kind=output_kind)
+                    )
                 elif mtype == "interrupt":
                     if current_task is not None:
                         await _cancel_task(current_task)
@@ -165,10 +172,19 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             await _cancel_task(current_task)
 
 
-async def _run_task_stream(ws: WebSocket, user_message: str, send_lock: asyncio.Lock) -> None:
+async def _run_task_stream(
+    ws: WebSocket,
+    user_message: str,
+    send_lock: asyncio.Lock,
+    *,
+    output_kind: str = "user",
+) -> None:
     """Run the orchestrator and forward events to the socket."""
     try:
-        async for ev in get_orchestrator(ws.scope["app"]).stream(user_message):
+        async for ev in get_orchestrator(ws.scope["app"]).stream(
+            user_message,
+            output_kind=output_kind,
+        ):
             await _send_json(ws, _event_to_wire(ev), send_lock)
     except asyncio.CancelledError:
         raise

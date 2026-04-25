@@ -59,6 +59,12 @@ def _patch_db(monkeypatch):
     monkeypatch.setattr("kun.engineering.orchestrator.session_scope", _fake_session_scope)
 
 
+async def _identity_translator(**kwargs: object) -> str:
+    payload = kwargs["payload"]
+    assert isinstance(payload, dict)
+    return str(payload["answer"])
+
+
 def _intent_builder(request):
     """Return a JSON that the intent interpreter can parse."""
     return LLMResponse(
@@ -104,7 +110,7 @@ async def test_orchestrator_runs_end_to_end():
     }
     set_router(LLMRouter(providers))
 
-    orch = Orchestrator()
+    orch = Orchestrator(output_translator=_identity_translator)
     events_seen = []
     async for ev in orch.stream("Please greet the world"):
         events_seen.append(ev.kind)
@@ -128,7 +134,7 @@ async def test_orchestrator_run_returns_result():
         "fallback": _RoutingStub(tier="fallback"),
     }
     set_router(LLMRouter(providers))
-    orch = Orchestrator()
+    orch = Orchestrator(output_translator=_identity_translator)
     result = await orch.run("Say hi")
     assert result.status == "done"
     assert result.answer == "Hello, world!"
@@ -173,7 +179,9 @@ async def test_orchestrator_duplicate_returns_cached_answer(monkeypatch):
     )
     monkeypatch.setattr(Orchestrator, "_execute_step", fail_if_executed)
 
-    result = await Orchestrator().run("Please greet the world")
+    result = await Orchestrator(output_translator=_identity_translator).run(
+        "Please greet the world"
+    )
 
     assert result.task_id == "task-existing"
     assert result.status == "done"
@@ -226,7 +234,9 @@ async def test_orchestrator_duplicate_orphan_is_marked_failed(monkeypatch):
     )
     monkeypatch.setattr(Orchestrator, "_execute_step", fail_if_executed)
 
-    result = await Orchestrator().run("Please greet the world")
+    result = await Orchestrator(output_translator=_identity_translator).run(
+        "Please greet the world"
+    )
 
     assert result.task_id == "task-orphan"
     assert result.status == "failed"
@@ -259,7 +269,7 @@ async def test_orchestrator_pauses_side_effect_tasks_before_execution(monkeypatc
     async def fail_if_executed(*args, **kwargs):
         raise AssertionError("side-effect task should pause before execution")
 
-    orch = Orchestrator()
+    orch = Orchestrator(output_translator=_identity_translator)
     monkeypatch.setattr(orch.intent, "interpret", fake_interpret)
     monkeypatch.setattr(orch, "_execute_step", fail_if_executed)
 
@@ -273,3 +283,35 @@ async def test_orchestrator_pauses_side_effect_tasks_before_execution(monkeypatc
     assert result.status == "paused"
     assert "等待确认" in result.answer
     assert "message.send" in result.answer
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_translates_final_answer_for_output_kind():
+    providers = {
+        "top": _RoutingStub(tier="top"),
+        "cheap": _RoutingStub(tier="cheap"),
+        "coding": _RoutingStub(tier="coding"),
+        "fallback": _RoutingStub(tier="fallback"),
+    }
+    set_router(LLMRouter(providers))
+    seen: list[dict[str, object]] = []
+
+    async def translator(**kwargs: object) -> str:
+        seen.append(dict(kwargs))
+        payload = kwargs["payload"]
+        assert isinstance(payload, dict)
+        return f"{kwargs['recipient_kind']}::{payload['answer']}"
+
+    result = await Orchestrator(output_translator=translator).run(
+        "Say hi",
+        output_kind="a2a",
+    )
+
+    assert result.answer == "a2a::Hello, world!"
+    assert seen[0]["recipient_kind"] == "a2a"
+    assert seen[0]["context"] == {
+        "tenant_id": "u-sylvan",
+        "audience": "developer",
+        "language": "zh",
+    }
