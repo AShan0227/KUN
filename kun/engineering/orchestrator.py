@@ -595,11 +595,20 @@ class Orchestrator:
             ).inc()
 
         # 7. Select candidate skills (L1 summary injected into step prompt)
-        context_pack = await self.context_packer.pack(
-            task_ref,
-            tenant_id=tenant.tenant_id,
-            limit=5,
-        )
+        # V2.2 §21 wire: mode-driven context limit
+        # FAST 不查记忆 (limit=0), SMART 1 条, MAX 3 条
+        _task_mode = getattr(task_ref.meta, "execution_mode", "FAST")
+        _context_limit = {"FAST": 0, "SMART": 1, "MAX": 3}.get(_task_mode, 1)
+        if _context_limit > 0:
+            context_pack = await self.context_packer.pack(
+                task_ref,
+                tenant_id=tenant.tenant_id,
+                limit=_context_limit,
+            )
+        else:
+            from kun.context.packer import ContextPack
+
+            context_pack = ContextPack()  # FAST 模式跳过, 空 pack
         context_summary = context_pack.summary()
         if context_pack.items:
             yield OrchestratorEvent(
