@@ -326,6 +326,82 @@ class ImportanceScorer:
         long_unvisited_but_kept = asset.access_count == 0 and score.recency < 0.05
         return repeatedly_used_but_low or long_unvisited_but_kept
 
+    async def score_with_graph_boost(
+        self,
+        candidates: list[LayeredAsset],
+        *,
+        anchor_entity_kind: str = "memory",
+        anchor_entity_id: str | None = None,
+        tenant_id: str,
+        query: str | None = None,
+        now: datetime | None = None,
+        graph_boost: float = 0.15,
+        relation_types: list[str] | None = None,
+        min_confidence: float = 0.5,
+    ) -> list[tuple[LayeredAsset, ImportanceScore]]:
+        """V2.2 §20.3 wire: 沿知识图谱 (entity_relationships) 邻接 boost.
+
+        给一个 anchor (e.g. 上一步用的 memory), 查它 outgoing 关系, 找邻接 asset_ids.
+        如果 candidate 在邻接集合, overall += graph_boost (默认 +0.15, cap 1.0).
+
+        效果: ImportanceScorer 不只看相似度, 还看"沿路径走" — 上一步用了 A,
+        跟 A 有 depends_on/mentions/similar_to 关系的 B/C 自动加分.
+
+        Args:
+            candidates: 待打分资产
+            anchor_entity_kind: anchor 的 kind (默认 "memory")
+            anchor_entity_id: anchor 的 id, 为 None 时不做 graph boost (退化到普通 score)
+            tenant_id: RLS 隔离
+            graph_boost: 邻接节点的 boost 增量
+            relation_types: 限定 relation 类型 (默认全部)
+            min_confidence: 关系 confidence 下限
+
+        Returns:
+            list[(LayeredAsset, ImportanceScore)] 按 overall 降序
+        """
+        # 1. 查 anchor 的邻接节点
+        related_asset_ids: set[str] = set()
+        if anchor_entity_id:
+            try:
+                from kun.datamodel.relationship import get_relationships_from
+
+                rels = await get_relationships_from(
+                    entity_kind=anchor_entity_kind,
+                    entity_id=anchor_entity_id,
+                    tenant_id=tenant_id,
+                    relation_types=relation_types,  # type: ignore[arg-type]
+                    min_confidence=min_confidence,
+                )
+                for rel in rels:
+                    related_asset_ids.add(rel.target_entity_id)
+            except Exception:
+                # DB / migration 缺失 → 退化到普通 score
+                related_asset_ids = set()
+
+        # 2. 对每个 candidate 算 score, 加 graph boost
+        scored: list[tuple[LayeredAsset, ImportanceScore]] = []
+        for asset in candidates:
+            base_score = self.score(asset=asset, query=query, now=now)
+            asset_id_str = str(asset.asset_id)
+            if asset_id_str in related_asset_ids:
+                # 邻接节点加 boost (cap 1.0)
+                boosted_overall = min(1.0, base_score.overall + graph_boost)
+                boosted_score = ImportanceScore(
+                    overall=boosted_overall,
+                    semantic=base_score.semantic,
+                    frequency=base_score.frequency,
+                    recency=base_score.recency,
+                    dependency=base_score.dependency,
+                    pin=base_score.pin,
+                    rationale=base_score.rationale + f"; graph_boost=+{graph_boost:.2f}",
+                )
+                scored.append((asset, boosted_score))
+            else:
+                scored.append((asset, base_score))
+
+        scored.sort(key=lambda x: x[1].overall, reverse=True)
+        return scored
+
     def score_anchor_then_expand(
         self,
         candidates: list[LayeredAsset],
