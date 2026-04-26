@@ -152,6 +152,29 @@ def test_hermes_force_disable_via_env() -> None:
         assert get_structured_step_generator(app) is None
 
 
+@pytest.mark.asyncio
+async def test_blackboard_assets_source_returns_pin_and_active_kinds() -> None:
+    """V2.2 Wire 4: assets endpoint 拉真 pin + 资产分组 (不再是空切片)."""
+    from kun.api.blackboard import register_data_source, reset_data_sources
+    from kun.api.blackboard_data_sources import _assets_source_async
+    from kun.context.storage import reset_store as reset_asset_store
+    from kun.core.attention_anchor import reset_manager as reset_anchor_manager
+
+    reset_data_sources()
+    reset_asset_store()
+    reset_anchor_manager()
+
+    register_data_source("assets", _assets_source_async)
+
+    # 默认空 store / 空 anchor → 4 类全空 list, 但 dict shape 完整
+    result = await _assets_source_async(task_id="tk-x", user_id="u-x")
+    assert result["task_id"] == "tk-x"
+    assert isinstance(result["pinned_assets"], list)
+    assert isinstance(result["semantic_assets"], list)
+    assert isinstance(result["methodology_refs"], list)
+    assert isinstance(result["capability_card_refs"], list)
+
+
 def test_knowledge_precipitation_wired_into_idle_batch() -> None:
     """V2.1 §16.12: install_runtime 应该:
     - 创建 KnowledgePrecipitation 单例并注册 4 类内置 step

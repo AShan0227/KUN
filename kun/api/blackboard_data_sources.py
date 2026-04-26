@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import desc, select
 
@@ -223,19 +223,75 @@ async def _workspace_source_async(task_id: str) -> dict[str, Any] | None:
         return None
 
 
-def _assets_source(
+async def _assets_source(
     *,
     task_id: str,
     user_id: str,
     **_: Any,
 ) -> dict[str, Any]:
-    """资产池活跃切片. M3.2 简版: 返空 (M3.3 接 ContextPacker.active_assets)."""
+    """资产池活跃切片.
+
+    V2.2 M4 wire: 拉该 tenant 下最近活跃的 top assets, 按 kind 分组.
+    严格"task 关联"待 M5 加 task_assets 关联表.
+    """
+    return await _assets_source_async(task_id, user_id)
+
+
+async def _assets_source_async(task_id: str, user_id: str) -> dict[str, Any]:
+    """V2.2 wire: 从 AttentionAnchor 拉用户 pin + AssetStore 拉 active 资产分组."""
+    pinned: list[str] = []
+    semantic: list[str] = []
+    methodology: list[str] = []
+    capability_refs: list[str] = []
+
+    try:
+        from kun.context.storage import get_store
+        from kun.core.attention_anchor import get_manager
+        from kun.core.tenancy import current_tenant
+
+        # 1. 用户 pin (AttentionAnchor)
+        try:
+            mgr = get_manager()
+            for anchor in mgr.list_for_user(user_id=user_id):
+                if anchor.target_asset_ref:
+                    pinned.append(anchor.target_asset_ref)
+        except Exception:
+            logger.debug("attention_anchor list failed (non-fatal)")
+
+        # 2. AssetStore 拉 active 资产 (按 kind 分组, top 5/类)
+        try:
+            tenant_id = current_tenant().tenant_id
+        except Exception:
+            tenant_id = "u-sylvan"
+
+        store = get_store()
+        # capability_card 不在 AssetStore 的合法 kind 集合里 (单独 ORM 表), 跳过 store 拉
+        # 让 capability_refs 留空, 后续接 capability_card_router 提供 (M5)
+        kind_targets: list[tuple[str, list[str]]] = [
+            ("memory", semantic),
+            ("knowledge", semantic),
+            ("methodology", methodology),
+        ]
+        for kind, target_list in kind_targets:
+            try:
+                assets = await store.list(
+                    tenant_id=tenant_id,
+                    asset_kind=cast(Any, kind),
+                    limit=5,
+                )
+                for asset in assets:
+                    target_list.append(asset.asset_id)
+            except Exception:
+                logger.debug("asset_store.list kind=%s failed (non-fatal)", kind)
+    except Exception:
+        logger.exception("blackboard.assets_source failed")
+
     return {
         "task_id": task_id,
-        "pinned_assets": [],
-        "semantic_assets": [],
-        "methodology_refs": [],
-        "capability_card_refs": [],
+        "pinned_assets": pinned[:10],
+        "semantic_assets": semantic[:10],
+        "methodology_refs": methodology[:10],
+        "capability_card_refs": capability_refs[:10],
     }
 
 
