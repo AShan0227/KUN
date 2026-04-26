@@ -587,6 +587,197 @@ V2.2 §23 是基础.
 
 ---
 
+## §25 信用分配 + 稀疏奖励 (V2.2 新增, RL 经典问题在 KUN 的解法)
+
+**位置**: 主文档 §17 动态决策中枢之后, §19 决策核心之前 (跟 §19 是孪生 — §19 是"现在选啥", §25 是"过去哪些选择起作用").
+
+### 25.1 一句话定位
+
+KUN 长任务 (≥10 step) 现在有"稀疏奖励 + 信用模糊"的经典 RL 问题:
+- **稀疏**: 只有 task_done 时给 capability_card 写 outcome (pass/fail), 中间 step 没奖励信号
+- **信用模糊**: task pass 时, 信用平摊到所有 step / 资源 → 真起作用的 step 没被强化, 真拖后腿的 step 没被惩罚
+- **跟注意力孤立**: 注意力 (ImportanceScorer / AttentionAnchor) 是"现在该用啥", 跟"用过这资源带来啥结果" (信用) 没耦合
+
+V2.2 §25 把这三件事统一: **注意力 = 信用分配 = 稀疏奖励 shaping**, 三者共用同一个 contribution_history.
+
+### 25.2 大白话
+
+举例: 用户问"修 auth bug", KUN 跑 8 步:
+- step 1-3 拉 auth 相关记忆 + 读代码 (用了 5 条记忆 / 2 个 skill / 1 个 model)
+- step 4 写补丁 + 跑测试 (用了 1 个 skill + 1 个 model)
+- step 5 测试 fail, 调 multi_judge (用了 3 个 judge)
+- step 6 修 bug + 重测 pass (用了 1 个 model)
+- step 7 写 commit msg
+- step 8 done, 用户验收 pass
+
+**现在 KUN**:
+- task pass → record_outcome("model:claude-opus", outcome="pass") + record_outcome("role_template:rt-coder", outcome="pass") + record_outcome("skill:coding-pytest", outcome="pass")
+- 这 3 个实体都得 +1 success
+- 但: step 5 multi_judge 救场了, 没被特别记功; step 7 写 commit msg 是 routine, 也得了 +1
+
+**升级后** (§25):
+- 每 step 完成时记 StepCredit (resources_used + immediate_reward)
+- task done 时反思: 哪些 step 是关键路径 (没它任务就败)? → 这些 step 用的资源得 boost credit
+- record_outcome 用 credit-weighted, 不是均摊
+- 下次 ImportanceScorer.score 时, 高 credit 资源自动 boost (=注意力)
+
+### 25.3 三件套架构
+
+```
+注意力 (ImportanceScorer) ←─ contribution_history ←─ 信用分配 (CreditAssignment)
+                              ↑                       ↑
+                              └─── 稀疏奖励 shaping ──┘
+                                  (dense intermediate reward)
+```
+
+#### 25.3.1 dense intermediate reward (中间稠密奖励)
+
+每 step 后给一个 immediate reward (不等 task done). 信号源:
+
+| 信号 | 来源 | 给谁加 |
+|------|------|--------|
+| ValueGate.expected_value 上升幅度 | V2.2 §19.4 | step 用的资源 |
+| multi_judge 一致率 | §17.10 | step 调的 judge models |
+| 边际收益 (marginal_roi) | V2.2 §19.2 | step 用的扩展资源 (memory/skill) |
+| step 没 escalate (顺利过 ValueGate) | V2.2 §19.4 | step 配置 (mode/skill choice) |
+| code execute pass / lint pass | V2.2 §24 (CodeExecutor) | code skill / language model |
+
+dense reward 累计 → step_value_history (V2.2 已有), 加权进 contribution_history.
+
+#### 25.3.2 step credit (信用分配)
+
+新数据模型:
+```python
+class StepCredit(BaseModel):
+    step_id: int
+    resources_used: dict[str, list[str]]  # {"memory": [...], "skill": [...], "model": [...]}
+    immediate_reward: float                # dense intermediate reward
+    credit_share: dict[str, float]         # {"memory:m1": 0.3, "skill:s2": 0.5, "model:m3": 0.2}
+    is_critical_path: bool = False         # 反思后判定 (task done 时填)
+```
+
+每 step 结束时填 immediate_reward + credit_share. task done 时反思填 is_critical_path.
+
+#### 25.3.3 retrospective reward (回溯奖励)
+
+task done 后, LLM 反思 (cheap model, 一次性, 不阻 task):
+```
+[反思 prompt]
+任务: <task_description>
+结果: <pass/fail>
+步骤摘要 + 资源使用:
+  step 1: 用了 memory:m1, skill:s2 → ΔV=0.10
+  step 2: 用了 model:m3 → ΔV=0.05
+  ...
+请判断: 哪些 step 是"关键路径" (没它任务就失败)? 列 step_id 和理由.
+```
+
+LLM 输出关键路径 step_id list → 给这些 step 的 resources_used 加 boost (×1.5).
+
+#### 25.3.4 contribution_history (跟注意力耦合)
+
+ImportanceScorer 加新维度 (跟 V2.2 §3.2a 5 维并列):
+```python
+class ImportanceScore(BaseModel):
+    # V2.1 5 维
+    semantic / frequency / recency / dependency / pin
+    # V2.2 §25 新加
+    contribution_score: float = 0.0  # 历史上对成功任务的贡献度 (0..1)
+```
+
+contribution_score 算法:
+- 资产 X 的历史: 在 N 个 task 里被用过, 其中 K 个 task pass, M 个 task K 是关键路径之一
+- contribution_score = 0.5 * (K/N) + 0.5 * (M/N)  # 50% 命中成功 + 50% 关键路径
+- 没历史 → 0.0 (新资产不加分)
+
+ImportanceScorer.score 默认权重 加 contribution_score 维度 (5 维 → 6 维), 跟 graph_boost (Wire 7) 累加.
+
+### 25.4 实装 (BATCH7+8 协同, ~15-20h)
+
+新模块 `kun/engineering/credit_assignment.py`:
+- StepCredit / TaskCreditReport / RetrospectiveReflector
+- 跟 capability_writeback 集成 (替换均摊 → credit-weighted)
+- 跟 ImportanceScorer 集成 (加 contribution_score 维度)
+- 跟 ValueGate 集成 (immediate_reward 反馈给 dense reward)
+
+orchestrator wire:
+- step 完成 → fill StepCredit (resources_used + immediate_reward)
+- task done → RetrospectiveReflector.reflect → 填 is_critical_path
+- record_outcome 改成 credit-weighted (调用 CreditAssignment.distribute_outcome)
+
+测试: ≥15 个 (StepCredit / RetrospectiveReflector / contribution_score 算法 / capability_writeback 集成 / ImportanceScorer 集成)
+
+### 25.5 跟现有架构关系
+
+| V2.1/V2.2 模块 | §25 怎么改 |
+|---------------|-----------|
+| capability_card | record_outcome 改 credit-weighted, 不再均摊到所有用过的资源 |
+| ImportanceScorer | 加 contribution_score 维度 (§3.2a 5 维 → 6 维) |
+| ValueGate | expected_value 算法加 contribution_score 信号 |
+| KnowledgePrecipitation | RelationshipMineStep 之外, 加 CreditMineStep (从 task_credit_history 挖掘"高贡献资源" → 升 capability score) |
+| anchor-expand | ImportanceScorer.score 自动用 contribution_score, 不需要额外接 |
+
+向后兼容: 现有 record_outcome 行为保留作 fallback, contribution_score 默认 0 (不影响老数据).
+
+---
+
+## §26 KUN-Lab 内测版 (V2.2 新增, HEX 启发)
+
+**位置**: 主文档 §22 后置, 跟 §10 傩诊断系统平行 (傩是"修", Lab 是"练").
+
+### 26.1 一句话定位
+
+借鉴 **HEX (UCF, ICLR 2026)** — 离散扩散 LLM 测试时推理扩展, 不需要训练, 24.72% → 88.10% (3.56x). 核心思路: **同任务跑多条生成路径, 集成胜出.**
+
+KUN-Lab 是独立内测版, 不直接服务用户, 用来:
+- 跑 ensemble (同任务 N 路径) → 收集"哪种 ensemble 配方有效"
+- 安全实验新 strategy / 新 prompt / 新 mode 组合
+- 沉淀 (KnowledgePrecipitation 真打通) → 推给生产 KUN
+
+### 26.2 跟生产 KUN 区别
+
+| | 生产 KUN | KUN-Lab |
+|---|---------|---------|
+| 用户 | 真用户 | 我们自己 (开发) |
+| 任务延迟 SLA | 严格 (FAST≤200ms) | 不限 (可跑 10min) |
+| 成本预算 | 严格 (用户钱) | 我们自己 burn (实验经费) |
+| Mode | FAST 80% / SMART 15% / MAX 5% | 全部 ENSEMBLE (新加) |
+| LLM 调用 | 单路径 | N 路径并发 + 投票 |
+| KnowledgePrecipitation | 跑用户任务时 emit | 实验任务批量 emit, 沉淀更快 |
+
+### 26.3 ENSEMBLE 模式设计
+
+新 ExecutionMode (V2.2 §21 加第 4 档):
+```python
+ExecutionMode = Literal["FAST", "SMART", "MAX", "ENSEMBLE"]
+```
+
+ENSEMBLE 模式行为:
+- 每 step 跑 N 路径 (e.g. N=5):
+  - 路径 1: tier=top + temp=0.1
+  - 路径 2: tier=strong + temp=0.5
+  - 路径 3: tier=cheap + temp=0.7
+  - 路径 4: tier=top + temp=0.1 + 不同 system prompt
+  - 路径 5: tier=top + temp=0.0 + chain-of-thought prefix
+- 5 个输出 → multi_judge 选最优 (复用 §17.10)
+- 记录每条路径的 (config, output, score) 进 lab_experiment_log
+
+### 26.4 实施 (kun-lab 独立项目, 不在 kun 主仓库)
+
+新仓库: `AShan0227/kun-lab` (跟 kun 同 org, 独立 repo)
+- 复用 kun 主仓库作为 dependency (`pip install -e ../kun`)
+- 加 `kun_lab/ensemble_executor.py` (ENSEMBLE 模式 N 路径并发)
+- 加 `kun_lab/dashboard/` (前端实验对照面板)
+- 加 `kun_lab/recipe_promoter.py` (有效配方写入 KnowledgePrecipitation 推主仓库)
+
+### 26.5 何时启动
+
+V2.2 完整实装后 (BATCH8 完成 + Claude wire 14 完成) → 启 KUN-Lab.
+
+预计工时: ~30-50h 起步版 (ensemble executor + dashboard + recipe promoter MVP).
+
+---
+
 ## §24 代码能力层 / CodeCapability (V2.2 新增, Karpathy 启发)
 
 **位置**: 主文档 §15 (skill 系统) 之后, 跟 §23 (输入翻译器) 平行.

@@ -640,7 +640,29 @@ Codex BATCH7 加 C28 任务 (~10-12h, CodeReader + CodeExecutor 起步), CodeWri
 
 完整 5 件套估 25-35h.
 
-### Z.9 完成度推进
+### Z.10 V2.2 §25 信用分配 + §26 KUN-Lab (第九轮加)
+
+用户问 2 个产品级问题:
+1. 长任务稀疏奖励 + 信用分配 + 注意力机制怎么联动?
+2. KUN 内测版 (HEX 启发, 测试时 ensemble) 怎么做?
+
+V2.2 §25 信用分配:
+- 经典 RL 问题: 长任务只有 task done 才有奖励 → 中间 step 没信号 → 信用平摊
+- 三件套: dense intermediate reward + step credit + retrospective reward
+- 跟注意力耦合: ImportanceScore 加 contribution_score 维度 (5 维 → 6 维)
+- ImportanceScorer / capability_writeback / ValueGate / KnowledgePrecipitation 全部接
+
+V2.2 §26 KUN-Lab 内测版:
+- HEX (UCF, ICLR 2026) 启发 — 测试时推理扩展, 不需要训练
+- 加 ENSEMBLE 模式 (V2.2 §21 第 4 档) — 同 step 跑 N 路径并发 + multi_judge 选最优
+- 独立 repo `kun-lab`, 跟 kun 主仓库通过 KnowledgePrecipitation 推有效配方
+- ~30-50h 起步版
+
+后续:
+- BATCH7/8 加 credit_assignment 模块 (~15-20h)
+- KUN-Lab V2.2 完整后启动 (M5 范畴)
+
+### Z.11 完成度推进
 
 - X 节 (V2.1 抽象层) ~25%
 - Y 节 (M3.3 完整闭环 + M4 持久化 3/4) ~50%
