@@ -49,6 +49,26 @@ type PendingAction = {
   created_at: string;
 };
 
+type AnchorPage<T> = {
+  actions?: T[];
+  findings?: T[];
+  next_cursor: string | null;
+  has_more: boolean;
+  remaining: number;
+  round: number;
+  max_rounds: number;
+};
+
+type DiagnoseFinding = {
+  finding_id: string;
+  subsystem: string;
+  category: string;
+  severity: string;
+  description: string;
+  root_cause: string;
+  cause_method: string;
+};
+
 type CapabilitySnapshot = {
   entity_id: string;
   display_name: string;
@@ -80,26 +100,49 @@ export default function NuoDashboard() {
   const [health, setHealth] = useState<Health | null>(null);
   const [budget, setBudget] = useState<Budget | null>(null);
   const [actions, setActions] = useState<PendingAction[]>([]);
+  const [actionCursor, setActionCursor] = useState<string | null>(null);
+  const [actionHasMore, setActionHasMore] = useState(false);
+  const [actionRemaining, setActionRemaining] = useState(0);
+  const [actionRound, setActionRound] = useState(1);
+  const [findings, setFindings] = useState<DiagnoseFinding[]>([]);
+  const [findingCursor, setFindingCursor] = useState<string | null>(null);
+  const [findingHasMore, setFindingHasMore] = useState(false);
+  const [findingRemaining, setFindingRemaining] = useState(0);
+  const [findingRound, setFindingRound] = useState(1);
+  const [diagnoseHint, setDiagnoseHint] = useState("");
   const [capability, setCapability] = useState<CapabilitySnapshot[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [decideBusy, setDecideBusy] = useState<string | null>(null);
+  const [expandBusy, setExpandBusy] = useState<string | null>(null);
 
   const reload = useCallback(() => {
     Promise.all([
       fetchJson<Health>("/nuo/health/summary"),
       fetchJson<Budget>("/nuo/budget/summary"),
-      fetchJson<{ actions: PendingAction[] }>("/nuo/actions/pending"),
+      fetchJson<AnchorPage<PendingAction>>("/nuo/actions/pending?limit=3"),
+      fetchJson<AnchorPage<DiagnoseFinding>>(
+        `/nuo/diagnose/findings?limit=3&hint_text=${encodeURIComponent(diagnoseHint)}`,
+      ),
       fetchJson<{ snapshots: CapabilitySnapshot[] }>("/nuo/capability/summary"),
     ])
-      .then(([h, b, a, c]) => {
+      .then(([h, b, a, d, c]) => {
         setHealth(h);
         setBudget(b);
         setActions(a.actions || []);
+        setActionCursor(a.next_cursor);
+        setActionHasMore(a.has_more);
+        setActionRemaining(a.remaining);
+        setActionRound(a.round);
+        setFindings(d.findings || []);
+        setFindingCursor(d.next_cursor);
+        setFindingHasMore(d.has_more);
+        setFindingRemaining(d.remaining);
+        setFindingRound(d.round);
         setCapability(c.snapshots || []);
         setErr(null);
       })
       .catch((e) => setErr(String(e)));
-  }, []);
+  }, [diagnoseHint]);
 
   useEffect(() => {
     reload();
@@ -125,6 +168,46 @@ export default function NuoDashboard() {
     },
     [reload],
   );
+
+  const loadMoreActions = useCallback(async () => {
+    if (!actionCursor || !actionHasMore) return;
+    setExpandBusy("actions");
+    try {
+      const page = await fetchJson<AnchorPage<PendingAction>>(
+        `/nuo/actions/pending?limit=3&expand_after=${encodeURIComponent(actionCursor)}`,
+      );
+      setActions((prev) => [...prev, ...(page.actions || [])]);
+      setActionCursor(page.next_cursor);
+      setActionHasMore(page.has_more);
+      setActionRemaining(page.remaining);
+      setActionRound(page.round);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setExpandBusy(null);
+    }
+  }, [actionCursor, actionHasMore]);
+
+  const loadMoreFindings = useCallback(async () => {
+    if (!findingCursor || !findingHasMore) return;
+    setExpandBusy("findings");
+    try {
+      const page = await fetchJson<AnchorPage<DiagnoseFinding>>(
+        `/nuo/diagnose/findings?limit=3&expand_after=${encodeURIComponent(
+          findingCursor,
+        )}&hint_text=${encodeURIComponent(diagnoseHint)}`,
+      );
+      setFindings((prev) => [...prev, ...(page.findings || [])]);
+      setFindingCursor(page.next_cursor);
+      setFindingHasMore(page.has_more);
+      setFindingRemaining(page.remaining);
+      setFindingRound(page.round);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setExpandBusy(null);
+    }
+  }, [findingCursor, findingHasMore, diagnoseHint]);
 
   if (err) return <div className="p-6 text-kun-bad">{err}</div>;
   if (!health || !budget) return <div className="p-6 text-gray-500">加载中...</div>;
@@ -224,8 +307,73 @@ export default function NuoDashboard() {
               </div>
             ))}
           </div>
+          {actionHasMore && (
+            <button
+              className="mt-3 bg-gray-100 px-3 py-2 rounded text-xs disabled:opacity-50"
+              disabled={expandBusy === "actions"}
+              onClick={loadMoreActions}
+            >
+              查看更多（还有 {actionRemaining} 条，第 {actionRound + 1} 轮，最多 3 轮）
+            </button>
+          )}
         </section>
       )}
+
+      <section className="bg-white rounded-lg shadow-sm p-4">
+        <h2 className="text-base font-medium mb-2">诊断面板</h2>
+        <p className="text-xs text-gray-500 mb-3">
+          先显示最严重的 3 条发现，需要再展开下一批。
+        </p>
+        <div className="flex gap-2 mb-3">
+          <input
+            className="border rounded px-2 py-1 text-sm flex-1"
+            value={diagnoseHint}
+            onChange={(e) => setDiagnoseHint(e.target.value)}
+            placeholder="输入诊断线索，例如 auth tenant memory"
+          />
+          <button className="bg-gray-900 text-white px-3 py-1 rounded text-sm" onClick={reload}>
+            刷新
+          </button>
+        </div>
+        <div className="space-y-2">
+          {findings.map((f) => (
+            <div key={f.finding_id} className="border rounded p-2 text-sm">
+              <div className="flex justify-between">
+                <div>
+                  <span className="font-medium">{f.subsystem}</span>
+                  <span className="text-xs text-gray-500 ml-2">{f.category}</span>
+                  <span
+                    className={
+                      f.severity === "critical" || f.severity === "error"
+                        ? "text-kun-bad text-xs ml-2"
+                        : f.severity === "warn"
+                          ? "text-kun-warn text-xs ml-2"
+                          : "text-gray-400 text-xs ml-2"
+                    }
+                  >
+                    [{f.severity}]
+                  </span>
+                </div>
+                <span className="text-xs text-gray-400">{f.cause_method}</span>
+              </div>
+              <div className="text-xs text-gray-500 mt-1">{f.description}</div>
+              {f.root_cause && (
+                <div className="text-xs text-gray-400 mt-1">原因：{f.root_cause}</div>
+              )}
+            </div>
+          ))}
+          {findings.length === 0 && <div className="text-xs text-gray-400">暂无诊断发现</div>}
+        </div>
+        {findingHasMore && (
+          <button
+            className="mt-3 bg-gray-100 px-3 py-2 rounded text-xs disabled:opacity-50"
+            disabled={expandBusy === "findings"}
+            onClick={loadMoreFindings}
+          >
+            查看更多（还有 {findingRemaining} 条，第 {findingRound + 1} 轮，最多 3 轮）
+          </button>
+        )}
+      </section>
 
       {capability.length > 0 && (
         <section className="bg-white rounded-lg shadow-sm p-4">
