@@ -16,10 +16,13 @@ V2.1.2 修订: 提前到 M3.2 (用户自用必需).
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
+
+from kun.core.anchor_expand import AnchorExpandIterator
+from kun.core.ids import new_id
 
 logger = logging.getLogger(__name__)
 
@@ -277,35 +280,67 @@ class DiagnoseRunner:
         findings: list[DiagnoseFinding],
     ) -> list[FixPlan]:
         """3. 修复方案生成."""
-        from kun.core.ids import new_id
-
         plans = []
         for f in findings:
-            # 5 类核心自动可修 → auto, 其他需用户确认
-            if f.category in AUTO_FIX_CATEGORIES:
-                plans.append(
-                    FixPlan(
-                        plan_id=new_id("diag"),
-                        target_finding_id=f.finding_id,
-                        fix_kind="auto",
-                        description=f"自动 {f.category}: {f.description}",
-                        estimated_duration_sec=5.0,
-                    )
-                )
-            else:
-                # 需用户确认
-                token = new_id("diag")[-6:].upper()
-                plan = FixPlan(
-                    plan_id=new_id("diag"),
-                    target_finding_id=f.finding_id,
-                    fix_kind="user_confirm_required",
-                    description=f"需用户确认 {f.category}: {f.description}",
-                    confirm_token=token,
-                    estimated_duration_sec=10.0,
-                )
-                self._pending_confirms[token] = plan
-                plans.append(plan)
+            plans.append(self._build_fix_plan(f))
         return plans
+
+    async def generate_fix_plans_anchor_then_expand(
+        self,
+        findings: list[DiagnoseFinding],
+        *,
+        max_rounds: int = 3,
+    ) -> AsyncIterator[FixPlan]:
+        """按需生成修复方案.
+
+        老的 ``_generate_fix_plans`` 一次性给所有 finding 生成方案. 这个新接口先处理
+        最严重/最容易自动修的 finding, 调用方需要更多时再继续 expand.
+
+        # TODO: wire by Claude in V2.2
+        """
+        ordered = sorted(findings, key=_finding_priority, reverse=True)
+        if not ordered:
+            return
+
+        async def anchor_fn() -> FixPlan:
+            return self._build_fix_plan(ordered[0])
+
+        async def expand_fn(_anchor: FixPlan, prior: list[FixPlan]) -> FixPlan | None:
+            used = {p.target_finding_id for p in prior}
+            next_finding = next((f for f in ordered if f.finding_id not in used), None)
+            if next_finding is None:
+                return None
+            return self._build_fix_plan(next_finding)
+
+        async for plan in AnchorExpandIterator(
+            anchor_fn,
+            expand_fn,
+            max_rounds=max_rounds,
+        ):
+            yield plan
+
+    def _build_fix_plan(self, finding: DiagnoseFinding) -> FixPlan:
+        """为单个 finding 生成修复方案."""
+        if finding.category in AUTO_FIX_CATEGORIES:
+            return FixPlan(
+                plan_id=new_id("diag"),
+                target_finding_id=finding.finding_id,
+                fix_kind="auto",
+                description=f"自动 {finding.category}: {finding.description}",
+                estimated_duration_sec=5.0,
+            )
+
+        token = new_id("diag")[-6:].upper()
+        plan = FixPlan(
+            plan_id=new_id("diag"),
+            target_finding_id=finding.finding_id,
+            fix_kind="user_confirm_required",
+            description=f"需用户确认 {finding.category}: {finding.description}",
+            confirm_token=token,
+            estimated_duration_sec=10.0,
+        )
+        self._pending_confirms[token] = plan
+        return plan
 
     async def _execute(
         self,
@@ -350,6 +385,12 @@ class DiagnoseRunner:
         if plan is None:
             return False
         return accept
+
+
+def _finding_priority(finding: DiagnoseFinding) -> tuple[int, int]:
+    severity_order = {"info": 0, "warn": 1, "error": 2, "critical": 3}
+    auto_bonus = 1 if finding.category in AUTO_FIX_CATEGORIES else 0
+    return (severity_order.get(finding.severity, 0), auto_bonus)
 
 
 __all__ = [

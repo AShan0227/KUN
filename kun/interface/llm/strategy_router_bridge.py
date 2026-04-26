@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import AsyncIterator
 from typing import Any
 
+from kun.core.anchor_expand import AnchorExpandIterator
 from kun.core.strategy_matcher import (
     DecisionKind,
     SignalBundle,
@@ -145,6 +147,49 @@ async def _enumerate_model_candidates(
     return candidates
 
 
+async def enumerate_model_candidates_anchor_then_expand(
+    signals: SignalBundle,
+    previous_decisions: dict[DecisionKind, StrategyDecision] | None = None,
+    *,
+    max_rounds: int = 3,
+) -> AsyncIterator[StrategyCandidate]:
+    """model_select 候选的 anchor-expand 新接口.
+
+    保留 ``_enumerate_model_candidates`` 给 StrategyMatcher 老路径使用; 这个接口给
+    Claude 后续 wire 时按需拉 tier 候选, 避免每次都把 5 个 tier 全塞进下游.
+
+    # TODO: wire by Claude in V2.2
+    """
+    candidates = await _enumerate_model_candidates(signals, previous_decisions or {})
+    if not candidates:
+        return
+
+    matcher = StrategyMatcher()
+    weights = matcher.compute_weights(signals)
+    ranked = sorted(
+        candidates,
+        key=lambda c: matcher.score(c, weights).score,
+        reverse=True,
+    )
+
+    async def anchor_fn() -> StrategyCandidate:
+        return ranked[0]
+
+    async def expand_fn(
+        _anchor: StrategyCandidate,
+        prior: list[StrategyCandidate],
+    ) -> StrategyCandidate | None:
+        seen = {item.candidate_id for item in prior}
+        return next((item for item in ranked if item.candidate_id not in seen), None)
+
+    async for item in AnchorExpandIterator(
+        anchor_fn,
+        expand_fn,
+        max_rounds=max_rounds,
+    ):
+        yield item
+
+
 def ensure_registered(matcher: StrategyMatcher | None = None) -> None:
     """注册 model_select enumerator. 应在 lifespan startup 调用一次."""
     m = matcher or get_matcher()
@@ -202,6 +247,7 @@ __all__ = [
     "TIER_OUTCOME_ESTIMATE",
     "build_signal_bundle",
     "ensure_registered",
+    "enumerate_model_candidates_anchor_then_expand",
     "is_enabled",
     "maybe_override_with_strategy",
 ]

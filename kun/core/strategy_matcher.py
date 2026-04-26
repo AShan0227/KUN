@@ -13,13 +13,14 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from kun.core.anchor_expand import AnchorExpandIterator
 from kun.core.ids import new_id
 
 logger = logging.getLogger(__name__)
@@ -281,6 +282,59 @@ class StrategyMatcher:
             },
         )
         return decision
+
+    async def iter_candidates_anchor_then_expand(
+        self,
+        kind: DecisionKind,
+        signals: SignalBundle,
+        previous_decisions: dict[DecisionKind, StrategyDecision] | None = None,
+        *,
+        max_rounds: int = 3,
+    ) -> AsyncIterator[ScoredCandidate]:
+        """按 anchor-expand 顺序流式返回候选.
+
+        老 API ``decide`` 会一次性枚举所有候选并排序. 这个新 API 保留相同打分逻辑,
+        但先给出最强候选(anchor), 调用方觉得不够时再继续 expand 下一个候选.
+
+        # TODO: wire by Claude in V2.2
+        """
+        prev = previous_decisions or {}
+        if kind not in self._enumerators:
+            raise ValueError(f"No enumerator registered for decision_kind={kind}")
+
+        candidates = await self._enumerators[kind](signals, prev)
+        if not candidates:
+            raise RuntimeError(
+                f"enumerate_candidates returned empty for {kind}. "
+                "All decision points must produce ≥1 candidate (fallback)."
+            )
+
+        weights = self.compute_weights(signals)
+        ranked = sorted(
+            (self.score(c, weights) for c in candidates),
+            key=lambda s: s.score,
+            reverse=True,
+        )
+
+        async def anchor_fn() -> ScoredCandidate:
+            return ranked[0]
+
+        async def expand_fn(
+            _anchor: ScoredCandidate,
+            prior: list[ScoredCandidate],
+        ) -> ScoredCandidate | None:
+            seen = {item.candidate.candidate_id for item in prior}
+            return next(
+                (item for item in ranked if item.candidate.candidate_id not in seen),
+                None,
+            )
+
+        async for item in AnchorExpandIterator(
+            anchor_fn,
+            expand_fn,
+            max_rounds=max_rounds,
+        ):
+            yield item
 
     async def writeback(
         self,
