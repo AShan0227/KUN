@@ -621,7 +621,26 @@ M5 后续可扩:
 - 输出翻译器 (KUN → 真实世界格式)
 - 环境感知器 (主动扫用户文件夹 / 桌面)
 
-### Z.7 完成度推进
+### Z.8 V2.2 §24 代码能力层 (Karpathy 启发, 第八轮加)
+
+用户跟 GPT 讨论 Andrej Karpathy ai-skills 后, 想到 KUN 缺一层"真用 code 解决问题"的能力 — 现在能调单点 skill, 但不会 read-write-execute-debug-review 闭环.
+
+修订点:
+- V2.2 §24 加 "代码能力层" CodeCapability:
+  - CodeReader: 读 codebase + anchor-expand 找邻接
+  - CodeWriter: 写代码 + 自动 lint/format/test 闭环
+  - CodeExecutor: sandbox 跑 + 看输出
+  - CodeDebugger: 错误分类 + fix 建议 (跟傩诊断配合)
+  - CodeReviewer: 静态分析 + multi_judge (跟 ValidationPipeline 配合)
+- 跟 V2.2 §22 hermes 集成: ExecutionStep action_type 加 4 个 code 类
+- 跟 V2.2 §19.3 anchor-expand 集成: CodeReader.read_anchor_then_expand
+- 跟 V2.2 §20 知识图谱集成: code 文件 depends_on / verifies 关系自动入 graph
+
+Codex BATCH7 加 C28 任务 (~10-12h, CodeReader + CodeExecutor 起步), CodeWriter / Debugger / Reviewer 留 BATCH8.
+
+完整 5 件套估 25-35h.
+
+### Z.9 完成度推进
 
 - X 节 (V2.1 抽象层) ~25%
 - Y 节 (M3.3 完整闭环 + M4 持久化 3/4) ~50%

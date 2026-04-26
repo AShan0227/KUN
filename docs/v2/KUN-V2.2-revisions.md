@@ -587,5 +587,108 @@ V2.2 §23 是基础.
 
 ---
 
+## §24 代码能力层 / CodeCapability (V2.2 新增, Karpathy 启发)
+
+**位置**: 主文档 §15 (skill 系统) 之后, 跟 §23 (输入翻译器) 平行.
+
+### 24.1 一句话定位
+
+KUN 现在能"调 skill" (starter_pack 5 个 skill: coding-pytest / os-shell / data-csv-query / etc), 但**不会真正"用 code 解决问题"** — 不能读 codebase 找 bug, 不能写代码后自动 lint/test 闭环, 不能 debug 错误.
+
+借鉴: **Andrej Karpathy ai-skills** (LLM agent 用 code 的能力), KUN 加一层 **"代码能力层"** (CodeCapability), 让 KUN 真能写/读/跑/调试 code.
+
+### 24.2 大白话
+
+GPT-4 / Claude 已经会写代码, 但放在 agent 框架里, 它们"写完就交差", 不:
+- 跑一下看对不对
+- lint 通过吗
+- 有 bug 自己 debug
+- 看完整 codebase 找出依赖 / 调用关系
+
+KUN 升级后, 写代码任务自动闭环:
+1. **读** — 用户说"修 auth 的 bug", KUN 先 read codebase 找 anchor file (CodeReader)
+2. **写** — 写补丁 (CodeWriter)
+3. **跑** — sandbox 跑测试 (CodeExecutor)
+4. **调** — 测试不过 → 看错误 → 自动改 (CodeDebugger)
+5. **审** — 改完静态分析 + 自审 (CodeReviewer)
+
+整个闭环就是一次任务, 不是"写完就走".
+
+### 24.3 5 个组件
+
+| 组件 | 干啥 | 跟现有 KUN 关系 |
+|------|------|----------------|
+| **CodeReader** | 读 codebase, 理解结构 (依赖图 / call graph / 模块) | 用 starter_pack 的 os-shell + grep, 加 LLM 解释 |
+| **CodeWriter** | 写代码 + 触发 lint/format 自动闭环 | 用 starter_pack 的 writing-markdown + ruff/black |
+| **CodeExecutor** | sandbox 跑 code, 看输出 | 用 starter_pack 的 coding-pytest + os-shell, 加 V2.1 sandbox |
+| **CodeDebugger** | 接错误日志, 分类 + 给 fix 建议 | 跟 §10.6 傩诊断 + capability_card 配合 |
+| **CodeReviewer** | 静态分析 + LLM 审查 + 给 diff 评价 | 跟 ValidationPipeline + multi_judge 配合 |
+
+### 24.4 跟 V2.2 §22 hermes 集成 (action_type 扩展)
+
+V2.2 §22 ExecutionStep 现有 5 个 action_type (use_memory / use_skill / web_search / ask_user / direct_llm). 加 4 个 code 类:
+
+```python
+ActionType = Literal[
+    "use_memory", "use_skill", "web_search", "ask_user", "direct_llm",
+    # V2.2 §24 新增
+    "code_read",      # CodeReader: 读 codebase
+    "code_write",     # CodeWriter: 写代码 + lint
+    "code_execute",   # CodeExecutor: sandbox 跑
+    "code_debug",     # CodeDebugger: debug 错误
+]
+```
+
+LLM 在 SMART/MAX 模式 hermes 协议输出可以是:
+```json
+{
+  "thought": "用户要修 auth bug, 先读 auth_service.py 看现状",
+  "action_type": "code_read",
+  "action_payload": {"file": "kun/api/auth.py", "lines": "1-50"},
+  "expected_outcome": "了解 auth 流程",
+  "confidence": 0.9,
+  "cost_estimate_usd": 0.001
+}
+```
+
+守望 (ValueGate) 看到 action_type=code_execute + cost 高 → 可以 block / 改 action 到 code_read 先.
+
+### 24.5 跟 anchor-expand 集成 (V2.2 §19.3)
+
+CodeReader 完美配 anchor-expand:
+1. **Round 1 anchor**: grep + LLM 找最相关 file (1 个)
+2. **Round 2 expand**: 沿 import / call graph 找邻接 file (2-3 个)
+3. **Round 3**: 查测试 / docs (1-2 个)
+
+跟 V2.2 §20 知识图谱 entity_relationships 配套: 代码文件之间的 \`depends_on\` / \`mentions\` / \`verifies\` 关系自动从 code 解析填进 graph.
+
+### 24.6 实装结构
+
+```
+kun/skills/code_capability/  (新目录)
+├── reader.py         # CodeReader (anchor-expand 模式)
+├── writer.py         # CodeWriter (auto lint/format/test 闭环)
+├── executor.py       # CodeExecutor (sandbox)
+├── debugger.py       # CodeDebugger (错误分类 + fix 建议)
+├── reviewer.py       # CodeReviewer (静态分析 + multi_judge)
+└── __init__.py       # CodeCapability facade
+
+kun/engineering/execution_protocol.py  (扩展)
+└── ActionType 加 4 个 code 类
+
+ValueGate.value_estimator (扩展)
+└── 看到 hermes action_type=code_execute → 算 sandbox 成本
+```
+
+### 24.7 跟 V2.1 关系
+
+V2.1 / V2.2 现有的 starter_pack skill 不动 (向后兼容), CodeCapability 是叠加层 — 它**协调** starter_pack skill 形成闭环, 不替换.
+
+### 24.8 实施: BATCH7 C28 起步 (~10-15h)
+
+第一个落地任务: 实装 CodeReader + CodeExecutor (最有价值的 2 个), CodeDebugger + CodeReviewer 后续 BATCH8.
+
+---
+
 **修订日期**: 2026-04-26
-**修订人**: Claude (基于用户跟 GPT 第六轮深度讨论后的反馈 + Google Magika 启发)
+**修订人**: Claude (基于用户跟 GPT 第六轮深度讨论 + Google Magika + Andrej Karpathy ai-skills 启发)
