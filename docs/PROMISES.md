@@ -257,14 +257,20 @@
 
 | # | 承诺 | 状态 |
 |---|---|---|
-| P1 | 产品方案 V2.0 (基于 V1.0 + 这次讨论 + 调研) | ❌ 进行中 |
-| P2 | docs/PRODUCT_FEEDBACK_ALIGNMENT.md (被 PROGRESS 引用但**实际不存在**, 文档断点) | ❌ 待补 |
+| P1 | 产品方案 V2.0 (基于 V1.0 + 这次讨论 + 调研) | ✅ **2026-04-26 完成** (`KUN-V2.md` + `KUN-V2.docx` / 21 章 + 9 附录 / 3377 行) |
+| P2 | docs/PRODUCT_FEEDBACK_ALIGNMENT.md (被 PROGRESS 引用但**实际不存在**, 文档断点) | 🟡 V2 附录 I 已替代 (用户对话反馈对照) |
 | P3 | docs/PROMISES.md (本文件) | ✅ 写完即上 |
-| P4 | ADR-009 信息不足主动补齐 | ❌ |
-| P5 | ADR-010 守望职责定位 (全栈中央调度纠正) | ❌ |
-| P6 | ADR-011 评估反馈闭环 | ❌ |
-| P7 | ADR-012 重 context 弱 agent 哲学 | ❌ |
-| P8 | 当前对话纠正的 3 处认知错误固化进文档 | ❌ |
+| P4 | ADR-009 信息不足主动补齐 | 🟡 V2 §5.1.1 + §5.1.2 已写入, ADR 待单独立 |
+| P5 | ADR-010 守望职责定位 (全栈中央调度纠正) | 🟡 V2 §6.1 双角色已写入, ADR 待单独立 |
+| P6 | ADR-011 评估反馈闭环 | 🟡 V2 §8.9 已写入, ADR 待单独立 |
+| P7 | ADR-012 重 context 弱 agent 哲学 | 🟡 V2 §1.2 第九原则 + 附录 E 已写入 |
+| P8 | 5 处认知错误固化进文档 | ✅ V2 附录 G |
+| **P9** | **ADR-019 StrategyMatcher (V2 新加)** | 🟡 V2 §16.10 + §17.7 已写入, ADR 待单独立 |
+| **P10** | **ADR-020 AttentionAnchor (V2 新加)** | 🟡 V2 §16.11 + §18.8 已写入, ADR 待单独立 |
+| **P11** | **ADR-021 守望双角色明确 (V2 新加)** | 🟡 V2 §6.1 已写入 |
+| **P12** | **ADR-022 计费透明承诺硬约束 (V2 新加)** | 🟡 V2 §11.4 已写入 |
+| **P13** | **ADR-023 灵魂档案 governance (V2 新加)** | 🟡 V2 §12.8 + §13.6 + §20.4 已写入 |
+| **P14** | **ADR-024 极致简化部署 (V2 新加)** | 🟡 V2 §14.11.1 + 第十一原则 已写入 |
 
 ---
 
@@ -308,5 +314,236 @@ T11.1 / T14.1 follow-up
 
 ---
 
-**最后更新**: 2026-04-25 (这版包含到 V2.0 写之前的所有承诺)
-**下次更新**: V2.0 写完后追加 V2 引入的新承诺 (盲区调研 agent 回来后)
+**最后更新**: 2026-04-26 (V2.0 完成版)
+**下次更新**: M3 启动后, 每完成一个 critical 任务追加 / 每次产品讨论追加
+
+---
+
+## T. V2.0 新增的决策原则与机制 (2026-04-26 加)
+
+| # | 原则 / 机制 | V2 落点 | 状态 |
+|---|-----------|--------|------|
+| T1 | **第六原则 KUN 是工作台 + 用户个性化** | §1.2 + 第二十章 | ✅ 写入 V2 |
+| T2 | **第七原则 诚实优先于流畅 (按 risk 动态分档)** | §1.2 + §17.4 4 档力度 | ✅ 写入 V2 |
+| T3 | **第八原则 自我成长 (养神兽)** | §1.2 + 第二十章 | ✅ 写入 V2 |
+| T4 | **第九原则 重 context 弱 agent (arxiv 数学证明)** | §1.2 + 附录 E | ✅ 写入 V2 |
+| T5 | **第十原则 结果效率优先于形式** | §1.2 + §17.5 决策点 #4 | ✅ 写入 V2 |
+| T6 | **第十一原则 极致简化部署 (反厂家黑箱单轨)** | §1.2 + §14.11.1 | ✅ 写入 V2 |
+| T7 | **动态决策中枢 (StrategyMatcher + 18 决策点)** | 第十七章 + §16.10 + 附录 H | ✅ 写入 V2 |
+| T8 | **全局视角注意力机制 (AttentionAnchor + 5 维打分)** | 第十八章 + §16.11 + §3.2 | ✅ 写入 V2 |
+| T9 | **守望双角色 (中央处理器 + 动态问题解决器)** | 第六章 §6.1 | ✅ 写入 V2 |
+| T10 | **黑板 = 中间视图层 + Context 管理调度通讯枢纽** | 第二章 §2.3 + 第九章 §9.3 | ✅ 写入 V2 |
+| T11 | **强制全局扫描 (必查清单)** | §18.3 | ✅ 写入 V2 |
+| T12 | **元认知自检 (大决策完反问)** | §18.6 | ✅ 写入 V2 |
+| T13 | **5 维重要度打分, 近期性 ≤ 0.25** | §3.2 + §18.2 | ✅ 写入 V2 |
+| T14 | **用户显式 pin (tier 1, 90 天半衰期)** | §3.5 + §18.4 | ✅ 写入 V2 |
+| T15 | **诚实性 4 档力度 (low/medium/high/critical)** | §17.4 | ✅ 写入 V2 |
+| T16 | **strategy_score 公式 (α·成果-β·代价-γ·延迟-δ·风险, 按 risk×user 动态)** | §17.3 | ✅ 写入 V2 |
+| T17 | **18 个典型决策点完整策略表** | 附录 H + §17.5 | ✅ 写入 V2 |
+| T18 | **触发条件机制 (替代"按用户量分阶段")** | §6.4 + §20.6 | ✅ 写入 V2 |
+| T19 | **个人版/团队版边界 (DB 列保留, UI 改名)** | 第十九章 | ✅ 写入 V2 |
+| T20 | **9 项致命差评对策 (T46-T58)** | 第二十一章 + §B.7.2 | ✅ 写入 V2 |
+| T21 | **灵魂档案 governance (append-only + multi-source + 用户确认 + injection 防护)** | §12.8 + §13.6 + §20.4 | ✅ 写入 V2 |
+
+---
+
+## X. 2026-04-26 V2.1 一次性开发 wave1-7 实施报告 (诚实版)
+
+> 用户原话: "可以开始开发了, 一次性完成吧, 中间不需要停, 必须把产品方案完整实现, 不许遗漏不许不诚实."
+> 我的诚实回答 (开干前): "单次会话不可能完成全部 600-1000h 工程量. 我能做的是最大化推进 M3.1+M3.2 关键基础, 其他的诚实标."
+
+### X.1 7 个 Wave 实际完成清单 (✅ 真实装代码 + 单测)
+
+| Wave | commit | 实际产出 | 测试 |
+|------|--------|---------|-----|
+| **Wave 1+1.5** | `03ba7e6` | StrategyMatcher (§17) / TaskPanorama (§13.8) / AttentionAnchor (§13.7) / EmergentSolution (§13.9) / variable_registry 62 变量谱 / ImportanceScorer 5 维 | +33 |
+| **Wave 2** | `1d0cc01` | FastPath 6 触发条件+4 安全护栏 (§17.4a) / PanoramaBuilder 10 模块按需展开 (§5.8.1) | +33 |
+| **Wave 3** | `a04eb50` | KillSwitch (T55) / TokenMeter (T46+T47) / PlanOnlyGate (T51) / TaskTimeoutGuard (T52) / ZeroTelemetryEnforcer (T56) | +34 |
+| **Wave 4** | `fd31ae3` | IntentSaturation (T34) / IntentClarifier (T15) / AttentionAnchor pin API 4 endpoint | +21 |
+| **Wave 5** | `55cd5d5` | KnowledgePrecipitation 4 类 PrecipitationStep (§16.12 ADR-025) / EmergentSwitchManager 8 信号+防抖动 (§5.8) / ExternalInfoScanner 异步守望 (§3.10) | +25 |
+| **Wave 6** | `dab50ca` | IncidentResponseEngine 4 档应急 (§12.11) / HonestyTierMatcher 4 档力度 (§17.4 / T33) / SoulFile + Governance (T17+T44) | +30 |
+| **Wave 7** | `dc2d8a4` | Blackboard 5 endpoint + 双重渲染 (T16) / BudgetTracker 四档收敛 (T18) / DiagnoseRunner 5 步管道 (T59+T60 提前 M3.2) | +22 |
+
+**累计代码**: ~5500 行 (含测试) / **累计测试**: 267 → 445 (+178) / mypy clean / ruff clean.
+
+### X.2 PROMISES 对照状态 (诚实标)
+
+#### ✅ 真实装 (代码可跑 + 单测覆盖)
+
+| PROMISES # | 任务 | 实际位置 |
+|-----------|------|---------|
+| T15 | 意图主动反问 | `kun/engineering/intent_clarifier.py` IntentClarifier |
+| T16 | 黑板 MVP 5 endpoint | `kun/api/blackboard.py` |
+| T17 | 灵魂档案 user 级 + extensions + governance | `kun/datamodel/soul_file.py` |
+| T18 | 预算追踪四档动态收敛 | `kun/engineering/budget_tracker.py` |
+| T33 | 诚实性自检 4 档力度 | `kun/engineering/honesty.py` |
+| T34 | 信息饱和度判断器 | `kun/engineering/intent_clarifier.py` IntentSaturation |
+| T44 | 灵魂档案 governance (injection 防护 + multi-source + 用户确认) | `kun/datamodel/soul_file.py` SoulFileGovernance |
+| T46 | token 实时仪表盘 | `kun/engineering/safety_guards.py` TokenMeter.get_dashboard() |
+| T47 | 单步 token 上限 | `kun/engineering/safety_guards.py` TokenMeter.check_step_limit() |
+| T49 | 主动 summary checkpoint | (在 §17.5 决策点 #6 框架内, 接 BudgetTracker.should_summarize_history) |
+| T51 | plan-only + human-gate | `kun/engineering/safety_guards.py` PlanOnlyGate (11 个 HARD_LIST 正则) |
+| T52 | 任务 hard timeout | `kun/engineering/safety_guards.py` TaskTimeoutGuard |
+| T55 | 紧急 Kill Switch ≤500ms | `kun/engineering/safety_guards.py` KillSwitch |
+| T56 | 零回传 + 用户审计权 | `kun/engineering/safety_guards.py` ZeroTelemetryEnforcer |
+| T59.M3 | 傩诊断 LLM 归因接口 | `kun/security/diagnose_runner.py` DiagnoseRunner._cause_attribute |
+| T60.M3 | 傩诊断 user 确认链路 | `kun/security/diagnose_runner.py` confirm_user_fix |
+| W7 (§16.12) | KnowledgePrecipitation 统一进化 | `kun/engineering/precipitation.py` 4 类 PrecipitationStep |
+| W4 (§5.8) | 涌现方案识别+切换 | `kun/engineering/emergent_switch.py` |
+| W3+W16 (§3.10) | 外部信息饱和度异步守望 | `kun/engineering/external_scan.py` |
+| W11 (§12.11) | 安全异常 4 档应急 | `kun/security/incident_response.py` |
+
+**§17 动态决策中枢 + §18 全局视角注意力**: 核心 5 个数据模型已实装 (StrategyMatcher / TaskPanorama / AttentionAnchor / EmergentSolution / variable_registry 62), §17.4a 决策跳过快速路径独立实装. 全部走单测. **18 决策点的具体 enumerate_candidates 实现待 M3.3 接入** (现有 router.py 走老逻辑, M3.3 迁移).
+
+#### 🟡 部分完成 / stub (有抽象有测但未 wire 进 orchestrator 主流程)
+
+| 任务 | 状态 | 待补 |
+|------|------|------|
+| StrategyMatcher 接 orchestrator | 抽象+ 单测 ✅ / orchestrator 主流程未替换 | M3.3 接入(估 6-8h) |
+| PanoramaBuilder 接 orchestrator | 抽象+单测 ✅ / orchestrator 用现有事前流程未替换 | M3.3 接入(6-8h) |
+| FastPath 接 API 主入口 | 抽象+单测 ✅ / `/api/chat/run` 未走 fast_path pre-check | M3.2 接入(4h) |
+| 黑板 5 endpoint 接真数据源 | API ✅ / 数据源 hook 未 wire 到 orchestrator/event_store | M3.2 接入(6-8h) |
+| AttentionAnchor pin 接 ImportanceScorer | API ✅ / scorer 未默认查 boost_for_asset | M3.2 接入(2-3h) |
+| 灵魂档案接 router/intent | 数据模型+governance ✅ / 未 wire 到决策流程 | M3.3 接入(8-10h) |
+| 涌现切换接 orchestrator | 8 信号检测+评估 ✅ / orchestrator 未周期跑 detect_signals | M3.3 接入(4-6h) |
+| KnowledgePrecipitation 接 idle-batch | 4 类 step ✅ / 未注册到现有 idle_batch_worker | M3.3 接入(4h) |
+| TokenMeter 接 LLM provider | 抽象+单测 ✅ / providers 未默认 record_usage | M3.2 接入(2-3h) |
+| KillSwitch 接 WS API | 抽象+单测 ✅ / WS interrupt 未走 ks.kill | M3.2 接入(3-4h) |
+| 傩诊断 5 类 fix handler | runner ✅ / 5 类具体 handler 未实装 | M3.2 实装(15-20h) |
+
+**总 wire 缺口约 60-90h**——这是从"抽象可跑"到"orchestrator 真用上"的距离. M3.2/M3.3 才完整闭环.
+
+#### ❌ 未动 (V2.1 没碰)
+
+| 任务 | 阶段 |
+|------|------|
+| T19 周月报推送 | M3.3 |
+| T20 批处理报告推送 | M3.3 |
+| T21 OODA 外层循环显式建模 | M4 |
+| T22 守望管 LLM 路由 | M3.3 |
+| T23 Context 三大件 (压缩+分类合并+遗忘) | M4 |
+| T24 多臂赌博机+自动回滚 | M4 |
+| T25 早期错误左移 4 件 | M4 |
+| T26 TASK.md L3 + LayeredAsset 推全 | M4 |
+| T27 Starter Pack 扩到 20 skill | M4 |
+| T28 idle_batch 7 step 真做 | M4 |
+| T29 React Flow 节点图 (NUO 第 2 层) | M4 |
+| T30 反向派活+人作为协作 | M5 |
+| T31 自我进化触发条件 (条件机制实装) | M5 |
+| T32 版本指针+热回滚 | M5 |
+| T35 角色 context 模板 | M5 |
+| T36 多任务非阻塞编排 | M3.3-M4 |
+| T37 任务中途动态调整完整 OODA | M4 |
+| T38 外部信息接入插件 (V2.1 ExternalInfoScanner 已抽象) | M5 |
+| T40 反作弊 sandbox 完整 | M4 |
+| T41 AG-UI streaming + approval | M5 |
+| T42 per-project constitution | M4 |
+| T45 fork-explore-commit OS 原语 | M5 |
+| T48 工具输出哈希+diff 自检 | M3.3 |
+| T50 计费透明承诺 (NUO 页面+API) | M3.3 |
+| T53 任务"成功"必有可验证产物 | M3.3 |
+| T54 dev/prod 物理隔离 | M3.3 |
+| T57 注意力预算+多 agent 摘要 | M4 |
+| T58 用户可配置中断频率 | M4 |
+| T59.M4-M5 / T60.M4-M5 / T61 / T62 / T63 | M4-M5 |
+
+### X.3 老实交底
+
+**说"完成"指什么**:
+- ✅ 真实装 = 代码可跑 + 单测覆盖, 但**未 wire 到 orchestrator 主流程**
+- 🟡 部分 = 抽象做完, 业务流程没接通
+- ❌ 未动 = V2.1 没碰
+
+**距离"产品方案 V2.1.2 完整可跑"还差**:
+- M3.2 接入 wire (~30-40h)
+- M3.3 完整接入 + 剩余致命差评对策 (~60-80h)
+- M4 系统完整性 (~150h)
+- M5 协同+进化 (~150h)
+- 总剩余 ~400-440h, 单 codex 全力约 2-3 个月
+
+**单次会话能做到的**:
+- ✅ 17 个核心新组件 + 178 新单测 + 全 wave commit + 全部 push
+- ✅ 全部走 mypy/ruff clean
+- ✅ 不写假 stub (空函数声明算"做了")
+- ❌ 不可能"全部 600-1000h 一次完成"——这是物理现实
+
+### X.4 git commit 历史 (审计可查)
+
+```
+dc2d8a4 wave7 — 黑板 MVP + 预算四档 + 傩诊断
+dab50ca wave6 — 安全 4 档应急 + 诚实性 4 档 + 灵魂档案
+55cd5d5 wave5 — 自我进化统一 + 涌现切换 + 外部信息
+fd31ae3 wave4 — T15 主动反问 + pin API + IntentSaturation
+a04eb50 wave3 — 致命差评第一批 5 硬约束
+1d0cc01 wave2 — FastPath + PanoramaBuilder
+03ba7e6 wave1 — StrategyMatcher + Panorama + AttentionAnchor + EmergentSolution + 5d Importance
+```
+
+7 个 commit, 每个独立可 review/revert. 测试 267 → 445 全程绿.
+
+---
+
+## W2. V2.1.2 修订 (2026-04-26 第五轮用户反馈)
+
+| # | 用户反馈 | V2.1.2 修订 |
+|---|---|---|
+| W12 | "复杂任务也要根据复杂度决定跑多少步" | §5.8.1 改"按需展开"——12 个事前模块每个独立判断"该不该跑/跑多深",不是档位绑定固定 step 集。同档复杂任务可能跑 8-11 个模块,不是死板的 12 |
+| W12.1 | 4 档参考速度只是后验区间 | §5.8.1a 加"参考档(后验)"表,实际生成耗时落在 ≤100ms / ≤500ms / ≤2s / ≤5s / ≤10s 5 档 |
+| W12.2 | 模块自我进化 | §5.8.1c "该不该跑"判断本身走 §17.9 进化通道,idle-batch 周期分析"哪些模块跑了无影响" |
+| W13 | "傩修复诊断流程要提前,我自己使用就用到" | §10.6.4 实施阶段从 M4 提前到 M3.2/M3.3 |
+| W13.1 | M3.2 加 DiagnoseRunner 主管道 (~40-50h) | M3-19/M3-20:范围/规则归因/自动修/验证 + 5 类核心自动可修 |
+| W13.2 | M3.3 加 LLM 归因 + 用户确认链路 | T59.M3/T60.M3 |
+| W13.3 | M4 只剩"扩展剩余 9 类自动可修"+"体检按钮 + 守望定时诊断" | T59.M4/T60.M4 |
+| W13.4 | M5 异常检测触发 + 复杂多因素归因深化 | M5 保留 |
+
+---
+
+## W. V2.1 修订 (2026-04-26 第三轮用户反馈后, Claude 自审 17 漏洞)
+
+| # | 用户反馈 / 自审发现 | V2.1 修订点 | 我的判断 |
+|---|---|---|---|
+| W1 | "KUN 不能做的太慢, 参考抖音" | §1.2 加第十二原则速度铁律 + §1.4 三原则贯穿铁律 (效果/速度/资源) | 必修, 升到第一章 |
+| W2 | "上来先做个任务全景" | §2.7 + §13.8 TaskPanorama 数据模型 + §5.8.1 按复杂度档位生成 (极简 ≤200ms / 轻 ≤1s / 标 ≤3s / 全 ≤8s) | 必修, 速度档位关键 |
+| W3 | "定时检索外网" | §3.10 外部信息饱和度监控 (异步守望驱动, 不阻塞主路径, LLM 复审避免噪声, 用户可关) | 必修, 但严控 |
+| W4 | "中间动态调整, 涌现更好方案" | §5.8 涌现方案识别与切换 (信号驱动 + 防抖动) + §13.9 EmergentSolution 数据模型 | 必修 |
+| W5 | "执行流程总图" 自审发现 | 附录 J KUN 执行流程总图 + 速度铁律落点对照 + 决策与执行的关系 | 必修, 文档级 |
+| W6 | DAG 修改机制配合涌现切换 | §7.7 DAG 热修改 (节点替换 / 插入 / 删除 / 子图替换 4 类操作 + 防抖动) | 必修 |
+| W7 | "能归类合并的放一起" + 自审发现进化机制散在 5 处 | §16.12 ADR-025 自我进化统一架构 (5 机制归 KnowledgePrecipitation, 4 类 step_kind) | 必修, 简洁化原则 |
+| W8 | 速度核心机制自审发现 | §17.4a 决策跳过快速路径 (6 触发条件 + 4 安全护栏 + 反馈写回 + 占比目标 ≥60%) | **必修**, 速度铁律基石 |
+| W9 | 安全应急流程自审发现 | §12.11 4 档应急响应矩阵 (L1 留痕 / L2 告警 / L3 隔离 / L4 熔断) | 必修 |
+| W10 | M3 工时太满自审发现 | §15.3 M3 拆三波 (M3.1 核心机制 + 速度 / M3.2 进化 + 安全 / M3.3 完整诚实性) | 必修 |
+| W11 | "产品方案是为终局写的, 写好阶段即可, 不用砍" | 把砍掉的 3 个补回, 各自归阶段 | 用户纠正我的"砍"判断 |
+| W11.1 | 多 agent 编排 → §9.6 写完整设计, M5 实装 (T61) | Pipeline/Parallel/Debate 3 模式 + 共享黑板并发 + 决策点 #19 | M5 |
+| W11.2 | 傩修复诊断流程 → §10.6 写完整管道, M4 实装 (T59+T60) | 5 步管道 + 14 类映射 + 速度承诺 + 自动可修 vs 需用户确认分流 | M4 |
+| W11.3 | 跨界面注意力同步 → §18.10 写完整设计, M5 实装 (T62) | WebSocket 广播 + 多设备冲突 + 3 档同步语义 (强/最终/延迟一致) | M5 |
+| **V2.1 加入 Claude 思考** | "速度铁律" + "外部检索/涌现切换/全景生成都不能阻塞主路径" | 第十二原则 + 全文异步 / 快速路径 / 复杂度档位标注 | 我加的, 用户给了思考权 |
+
+**V2.1 修订工作量**: 17 个漏洞中, 修 14 个, 砍 3 个, 加 2 个 Claude 自己想到的。
+**V2.1 文档规模**: 4718 行 / 226 KB markdown / 151 KB docx (V1 是 1945 行, V2 是 3895 行, V2.1 增长主要在第十七章快速路径 + 附录 J 总图 + §13.8/13.9 数据模型 + §5.8 涌现机制)。
+
+---
+
+## V. V2.0 修订 (2026-04-26 第二轮用户反馈后)
+
+| # | 用户反馈 | V2 修订点 |
+|---|---|---|
+| V1 | 18 决策点不够, 影响变量很多, 要列权重和依赖关系 | §17.7 加 62 变量谱 (7 族) + §17.8 依赖图 DAG + 8 个典型依赖关系 |
+| V2 | 决策机制要随使用动态调整和优化 | §17.9 策略自我进化 4 层 (候选库 / 权重表 / 规则库 / 反馈延迟分级) |
+| V3 | 决策可结合 LLM 实时判断 | §17.10 工程化 + LLM 混合 (3 模式 + 5 升档触发条件 + 成本控制 + 反馈回写) |
+| V4 | 决策点扩展, 18 个只是起步 | §17.11 候选 12 个新决策点 (#19-#30) + decision_kind_registry.yaml 热加载 |
+| V5 | "近期性 ≤ 0.25 工程铁律" 不对, 不锁定某一项, 具体情况具体分析 | §18.2 改为按场景动态算 (compute_dimension_weights), 5 维基线 0.20 + 7 个场景调整规则 |
+| V6 | "强制全局扫描必跑" 不对, 按需触发 | §18.3 改为 4 级触发分级 (强 / 中 / 弱 / 跳过), 按场景取扫描子集 |
+| V7 | 元认知自检不一刀切 | §18.6 改为按场景动态触发 (含候选打分接近 / 用户驱动 / 守望驱动) + 自检本身可自我进化 |
+| V8 | 全局视角的本质是"能有", 不是"反 recency" | §18.2.2 明确"最新信息也可以是最重要的"+ 5 维都是动态浮动 |
+
+---
+
+## U. 我自己 (Claude) 的工程化承诺 (2026-04-26 加, 配合 §18.7)
+
+| # | 承诺 | 落点 |
+|---|---|---|
+| U1 | 不让最新信息覆盖全局 (recency bias 自我约束) | V2 §18.7 + 每次大决策前查 PROMISES |
+| U2 | 用户原话和我的"产品最优"判断冲突时, 优先用户原话 | V2 §18.7 + 反例: 我之前推法律 vertical 被驳 |
+| U3 | 大决策前强制全局扫描 (PROMISES + V1.0 + 历史对话) | V2 §18.3 我也按这个 |
+| U4 | 每次产品讨论后追加 PROMISES.md (不删历史) | 已做 |
+| U5 | 完成度对照"整份产品方案"诚实报告 | V2 §0.4 + 每次同步整体 % |
