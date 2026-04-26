@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -63,38 +64,30 @@ async def test_anthropic_response_format_via_tool_calling() -> None:
 
     captured_kwargs: dict[str, Any] = {}
 
+    class FakeMessages:
+        @staticmethod
+        async def create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="t1",
+                        name="structured_output",
+                        input={"thought": "hi", "action_type": "direct_llm"},
+                    )
+                ],
+                usage=SimpleNamespace(
+                    input_tokens=5,
+                    output_tokens=3,
+                    cache_read_input_tokens=0,
+                    cache_creation_input_tokens=0,
+                ),
+                stop_reason="tool_use",
+            )
+
     class FakeClient:
-        class messages:  # noqa: N801
-            @staticmethod
-            async def create(**kwargs):
-                captured_kwargs.update(kwargs)
-
-                class _Resp:
-                    content = [  # noqa: RUF012
-                        type(
-                            "Block",
-                            (),
-                            {
-                                "type": "tool_use",
-                                "id": "t1",
-                                "name": "structured_output",
-                                "input": {"thought": "hi", "action_type": "direct_llm"},
-                            },
-                        )()
-                    ]
-                    usage = type(
-                        "U",
-                        (),
-                        {
-                            "input_tokens": 5,
-                            "output_tokens": 3,
-                            "cache_read_input_tokens": 0,
-                            "cache_creation_input_tokens": 0,
-                        },
-                    )()
-                    stop_reason = "tool_use"
-
-                return _Resp()
+        messages = FakeMessages()
 
     provider = AnthropicProvider(model_id="stub", tier="strong")
     provider._client = FakeClient()  # type: ignore[assignment]
@@ -128,34 +121,30 @@ async def test_openai_response_format_passes_through() -> None:
 
     captured_kwargs: dict[str, Any] = {}
 
+    class FakeCompletions:
+        @staticmethod
+        async def create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content='{"thought":"x","action_type":"direct_llm"}',
+                            tool_calls=None,
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=5,
+                    completion_tokens=3,
+                    prompt_tokens_details=None,
+                ),
+                model="stub",
+            )
+
     class FakeClient:
-        class chat:  # noqa: N801
-            class completions:  # noqa: N801
-                @staticmethod
-                async def create(**kwargs):
-                    captured_kwargs.update(kwargs)
-
-                    class _Choice:
-                        class message:  # noqa: N801
-                            content = '{"thought":"x","action_type":"direct_llm"}'
-                            tool_calls = None
-
-                        finish_reason = "stop"
-
-                    class _Resp:
-                        choices = [_Choice()]  # noqa: RUF012
-                        usage = type(
-                            "U",
-                            (),
-                            {
-                                "prompt_tokens": 5,
-                                "completion_tokens": 3,
-                                "prompt_tokens_details": None,
-                            },
-                        )()
-                        model = "stub"
-
-                    return _Resp()
+        chat = SimpleNamespace(completions=FakeCompletions())
 
     provider = OpenAIProvider(model_id="stub", tier="strong")
     provider._client = FakeClient()  # type: ignore[assignment]
