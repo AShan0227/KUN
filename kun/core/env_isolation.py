@@ -41,7 +41,9 @@ class EnvIsolation:
 
         return self._require_resource(self._object_store_buckets.get(env), env, "bucket")
 
-    def can_cross_env(self, from_env: EnvironmentName, to_env: EnvironmentName, user_id: str) -> bool:
+    def can_cross_env(
+        self, from_env: EnvironmentName, to_env: EnvironmentName, user_id: str
+    ) -> bool:
         """跨 env 操作默认拒绝; 同环境允许; 双人审批可通过 checker 放行."""
 
         if from_env == to_env:
