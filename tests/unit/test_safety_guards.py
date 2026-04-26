@@ -140,8 +140,10 @@ def test_plan_only_drop_database() -> None:
 
 def test_plan_only_delete_table() -> None:
     g = PlanOnlyGate()
+    d = g.check("DELETE FROM users WHERE 1=1")
     # DELETE FROM 不包含 TABLE 关键字, 不在 hard list
     # 但有"删除"关键字也行 (中文 hard list 通过 user_message)
+    assert d.triggered is False
     assert g.check("delete table users").triggered is True
 
 

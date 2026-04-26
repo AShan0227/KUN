@@ -21,6 +21,7 @@ from kun.datamodel.handoff import (
 from kun.datamodel.notification import Notification, NotificationChannel, NotificationKind
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
 from kun.datamodel.task import RiskLevel, TaskMeta, TaskRef, TaskSpec
+from kun.datamodel.verification_spec import VerificationKind, VerificationResult, VerificationSpec
 
 __all__ = [
     "Capability",
@@ -48,4 +49,7 @@ __all__ = [
     "TaskRef",
     "TaskSpec",
     "TaskStatus",
+    "VerificationKind",
+    "VerificationResult",
+    "VerificationSpec",
 ]
