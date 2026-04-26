@@ -6,7 +6,15 @@ import shutil
 from pathlib import Path
 
 import pytest
-from kun.skills.code_capability import CodeCapability, CodeExecutor, CodeReader
+from kun.skills.code_capability import (
+    CodeCapability,
+    CodeDebugger,
+    CodeExecutor,
+    CodeReader,
+    CodeReviewer,
+    CodeWriter,
+)
+from kun.skills.code_capability.writer import TextReplacement
 
 FIXTURE_ROOT = Path("tests/fixtures/code_samples")
 
@@ -157,9 +165,9 @@ def test_code_capability_singleton_and_placeholders() -> None:
     assert first is second
     assert isinstance(first.reader, CodeReader)
     assert isinstance(first.executor, CodeExecutor)
-    assert first.writer is None
-    assert first.debugger is None
-    assert first.reviewer is None
+    assert isinstance(first.writer, CodeWriter)
+    assert isinstance(first.debugger, CodeDebugger)
+    assert isinstance(first.reviewer, CodeReviewer)
 
 
 @pytest.mark.unit
@@ -168,3 +176,109 @@ def test_code_capability_custom_root() -> None:
 
     assert capability.reader.root == FIXTURE_ROOT.resolve()
     assert capability.executor.workspace_root == FIXTURE_ROOT.resolve()
+    assert capability.writer.workspace_root == FIXTURE_ROOT.resolve()
+    assert capability.reviewer.workspace_root == FIXTURE_ROOT.resolve()
+
+
+@pytest.mark.unit
+def test_code_writer_write_file_and_reject_escape(tmp_path: Path) -> None:
+    writer = CodeWriter(workspace_root=tmp_path)
+
+    result = writer.write_file("pkg/module.py", "VALUE = 1\n", create_dirs=True)
+
+    assert result.ok is True
+    assert result.created is True
+    assert (tmp_path / "pkg/module.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    with pytest.raises(ValueError, match="escapes code workspace"):
+        writer.write_file(tmp_path.parent / "escape.py", "bad")
+
+
+@pytest.mark.unit
+def test_code_writer_apply_replacements(tmp_path: Path) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    writer = CodeWriter(workspace_root=tmp_path)
+
+    result = writer.apply_replacements("module.py", [TextReplacement("VALUE = 1", "VALUE = 2")])
+
+    assert result.ok is True
+    assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_code_writer_write_and_check_lint(tmp_path: Path) -> None:
+    writer = CodeWriter(workspace_root=tmp_path)
+
+    result = await writer.write_and_check(
+        "ok.py",
+        "def ok() -> int:\n    return 1\n",
+        create_dirs=True,
+        lint_tools=("ruff",),
+    )
+
+    assert result.ok is True
+    assert len(result.lint_results) == 1
+    assert result.lint_results[0].ok is True
+
+
+@pytest.mark.unit
+def test_code_debugger_classifies_syntax_and_timeout() -> None:
+    debugger = CodeDebugger()
+
+    syntax = debugger.analyze_failure(error='  File "bad.py", line 3\nSyntaxError: invalid')
+    timeout = debugger.analyze_failure(error="timed out after 1s", timed_out=True)
+
+    assert syntax.category == "syntax_error"
+    assert syntax.path == "bad.py"
+    assert syntax.line == 3
+    assert timeout.category == "timeout"
+
+
+@pytest.mark.unit
+def test_code_debugger_classifies_assertion_and_lint() -> None:
+    debugger = CodeDebugger()
+
+    assertion = debugger.analyze_failure(output="E   AssertionError: expected 1")
+    lint = debugger.analyze_failure(output="bad.py:1:1: F401 imported but unused")
+
+    assert assertion.category == "assertion_failure"
+    assert lint.category == "lint_error"
+    assert lint.line == 1
+
+
+@pytest.mark.unit
+def test_code_reviewer_flags_dangerous_diff() -> None:
+    reviewer = CodeReviewer(workspace_root=FIXTURE_ROOT)
+    diff = """diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -0,0 +1,4 @@
++import subprocess
++subprocess.run("rm -rf /", shell=True)
++token = "abcd1234SECRET"
++eval("1+1")
+"""
+
+    result = reviewer.review_diff(diff)
+
+    assert result.ok is False
+    assert {finding.rule for finding in result.findings} >= {
+        "no-shell-true",
+        "no-hardcoded-secret",
+        "no-eval-exec",
+    }
+
+
+@pytest.mark.unit
+def test_code_reviewer_review_file_and_reject_escape(tmp_path: Path) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("except Exception:\n    print('recover')\n", encoding="utf-8")
+    reviewer = CodeReviewer(workspace_root=tmp_path)
+
+    result = reviewer.review_file("app.py")
+
+    assert result.ok is True
+    assert result.findings[0].rule == "broad-except"
+    with pytest.raises(ValueError, match="escapes code workspace"):
+        reviewer.review_file(tmp_path.parent / "escape.py")

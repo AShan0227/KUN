@@ -1,19 +1,15 @@
-"""CodeCapability — read and execute code as a reusable capability layer.
-
-C28 only wires the first two pieces:
-- CodeReader: find/read nearby code.
-- CodeExecutor: run snippets, tests, and lint with a soft sandbox.
-
-Writer/debugger/reviewer are intentionally left as placeholders for BATCH8.
-"""
+"""CodeCapability — read, write, execute, debug, and review code."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import ClassVar
 
+from kun.skills.code_capability.debugger import CodeDebugger
 from kun.skills.code_capability.executor import CodeExecutor
 from kun.skills.code_capability.reader import CodeReader
+from kun.skills.code_capability.reviewer import CodeReviewer
+from kun.skills.code_capability.writer import CodeWriter
 
 
 class CodeCapability:
@@ -24,9 +20,9 @@ class CodeCapability:
     def __init__(self, *, workspace_root: str | Path = ".") -> None:
         self.reader = CodeReader(root=workspace_root)
         self.executor = CodeExecutor(workspace_root=workspace_root)
-        self.writer = None
-        self.debugger = None
-        self.reviewer = None
+        self.writer = CodeWriter(workspace_root=workspace_root, executor=self.executor)
+        self.debugger = CodeDebugger()
+        self.reviewer = CodeReviewer(workspace_root=workspace_root)
 
     @classmethod
     def get(cls) -> CodeCapability:
@@ -41,4 +37,11 @@ class CodeCapability:
         cls._instance = None
 
 
-__all__ = ["CodeCapability", "CodeExecutor", "CodeReader"]
+__all__ = [
+    "CodeCapability",
+    "CodeDebugger",
+    "CodeExecutor",
+    "CodeReader",
+    "CodeReviewer",
+    "CodeWriter",
+]
