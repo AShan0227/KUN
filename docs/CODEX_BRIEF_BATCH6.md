@@ -290,6 +290,121 @@ async def build_anchored(self, task_ref) -> AsyncIterator[ModuleResult]:
 
 ---
 
+### C27. 输入翻译器 / 真实世界交互层 (Magika 启发, ~8-10h, V2.2 §23 新增)
+
+**目标**: 任何输入进 KUN 第一步都过"翻译器" — 识别类型 + 推荐处理 pipeline. 不只是文件, text 流也要分类型 (JSON/Markdown/code/SQL).
+
+**位置**: `kun/interface/input_translator.py` (新)
+
+**依赖**: 加 `magika>=0.6.0` 到 pyproject.toml dependencies (Google 开源, ~10MB ONNX 模型, MIT license).
+
+**数据模型**:
+```python
+from typing import Literal
+from datetime import datetime
+from pydantic import BaseModel, Field
+
+InputKind = Literal[
+    # text
+    "plain_text", "json", "yaml", "markdown", "html", "xml", "sql", "code",
+    # binary
+    "pdf", "csv", "xlsx", "image_jpg", "image_png", "image_webp",
+    "audio_mp3", "audio_wav", "video_mp4",
+    "archive_zip", "archive_tar", "executable", "binary_unknown",
+]
+
+class InputDescriptor(BaseModel):
+    kind: InputKind
+    mime_type: str
+    confidence: float  # 0..1
+    suggested_handler: str  # skill_id / model_purpose / "ask_user" / "reject"
+    content_summary: str = ""
+    metadata: dict = Field(default_factory=dict)
+    detected_at: datetime = Field(default_factory=datetime.utcnow)
+```
+
+**Translator**:
+```python
+class RealWorldTranslator:
+    def __init__(self) -> None:
+        from magika import Magika
+        self._magika = Magika()
+    
+    async def detect(self, raw: bytes | str | Path) -> InputDescriptor:
+        """主入口. 先 TextTypeDetector (如果是 str), 再 FileTypeDetector (Magika)."""
+    
+    async def detect_text_kind(self, text: str) -> InputDescriptor:
+        """text 流分类: 启发式规则 (开头是 { → json, # 是 markdown, etc) + 置信度."""
+    
+    async def detect_file_kind(self, raw: bytes) -> InputDescriptor:
+        """二进制文件: 调 Magika."""
+    
+    def suggest_handler(self, kind: InputKind, content: bytes) -> str:
+        """按 kind 推荐 skill_id / model_purpose:
+        - image_* → "vision_llm"
+        - pdf → "pdf_extract" skill
+        - csv → "csv_query" skill
+        - audio_* / video_* → "transcribe" skill
+        - executable / binary_unknown → "ask_user"
+        - json / yaml / sql / code / etc → "direct_llm" (text 流)
+        """
+```
+
+**ContentExtractor** (按 kind 选 extractor):
+```python
+class ContentExtractor:
+    """提取内容摘要 (前 500 字 / 缩略图描述 / 表头 / 行列数 etc)."""
+    
+    async def extract_summary(self, descriptor: InputDescriptor, raw: bytes) -> str:
+        # pdf → 第 1 页前 500 字
+        # csv → 表头 + 前 5 行
+        # image → dimensions + EXIF
+        # audio → duration + sample_rate
+        # text → 前 500 字
+        # binary_unknown → ""
+```
+
+**配 anchor-expand** (V2.2 §19.3):
+```python
+class RealWorldTranslator:
+    def detect_anchor_then_expand(self, raw: bytes) -> AsyncIterator[InputDescriptor]:
+        """流式: anchor=fast detect, expand=extract content, expand=deep understand.
+        
+        Round 1: Magika fast detect (返 kind+confidence, 不读 content)
+        Round 2: ContentExtractor.extract_summary (读内容摘要)
+        Round 3: 调 vision/text LLM 给 deep understanding (可选, 高成本)
+        ≤3 rounds, 调用方按 marginal_roi 判停
+        """
+```
+
+**集成预留** (不主动 wire):
+```python
+# TODO: chat_handler / WS binary frame wire by Claude in V2.2
+# 用户上传文件 → ws.binary frame → translator.detect → 按 suggested_handler 路由
+```
+
+**单测**: ≥12 个
+- TextTypeDetector: JSON / Markdown / code / SQL / plain text 5 类各 1 测
+- FileTypeDetector: pdf / png / csv / mp3 / zip / unknown 6 类用 fixture (小样本文件)
+- ContentExtractor: pdf / csv / image / text 4 类
+- detect_anchor_then_expand: 3 round 流式, marginal_roi 触发停止
+
+**fixture 文件** (放 `tests/fixtures/input_samples/`):
+- minimal.pdf (1 页 hello)
+- minimal.png (10x10 黑色)
+- minimal.csv (3 行 2 列)
+- minimal.mp3 (1 秒静音)
+- (optional, 可省) minimal.zip / minimal.exe
+
+**验收**: `uv run pytest tests/unit/test_input_translator.py` 全过.
+
+**注意**:
+- magika 是 ~10MB ONNX 模型, lazy-load 第一次 detect 时加载
+- 跟 V2.1/V2.2 现有架构兼容: InputDescriptor 是新数据, 不动现有 LayeredAsset
+- M5 可以扩到"输出翻译器" (KUN → 真实世界格式) 和"环境感知器" (主动扫用户文件)
+
+---
+
 ### C26. NUO action_panel + diagnose_panel anchor-expand UX (~8-10h)
 
 **目标**: V2.2 §19.3 #16-17. NUO 前端"待审批列表"和"诊断面板"用 anchor-expand 模式 — 先显示最高风险/严重的 N=3, 用户点击 expand 看更多.
@@ -359,12 +474,13 @@ C24 是大块 (≥4 个子 PR), 别一次性推. 一个一个独立 PR.
 
 ## 总工时估算
 
-- C21: 6-8h
+- C21: 6-8h ✅ merged (#31)
 - C22: 12-14h
-- C23: 10-12h
+- C23: 10-12h ✅ merged (#32)
 - C24: 20-25h (拆 4 子 PR)
 - C25: 6-8h
 - C26: 8-10h
-- **总: 62-77h**
+- C27: 8-10h (V2.2 §23 输入翻译器, Magika 启发, 新增)
+- **剩余: 64-77h** (C21+C23 已合)
 
 加上 BATCH5 剩余 9 个 (C12-C20 ~80-100h), codex 总待干工作 ~140-180h. 配合 Claude 30-40h 心脏部分, V2.2 完整实施总 ~170-220h.

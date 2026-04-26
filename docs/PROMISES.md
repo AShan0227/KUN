@@ -606,7 +606,22 @@ BATCH5 C12-C20 仍然有效 (Context 三大件 / 多臂赌博机 / sandbox / con
 - FAST 模式默认行为跟 V2.1 一致 (不开守望主动决策, 不查记忆)
 - SMART/MAX 模式才启用 V2.2 新机制
 
-### Z.5 完成度推进
+### Z.6 V2.2 §23 输入翻译器 (Magika 启发, 第七轮加)
+
+用户跟 GPT 讨论 Google Magika (AI 文件类型识别) 后, 想到 KUN 缺一层"真实世界 ↔ KUN 翻译器".
+
+修订点:
+- V2.2 §23 加 InputTranslator + InputDescriptor (kind / mime_type / confidence / suggested_handler / content_summary)
+- 应用范围: 用户上传文件 / 用户消息 (text 也分 JSON/Markdown/code/SQL) / 外部 API 响应 / skill 输出 / WS binary frame / 粘贴板
+- 技术: Magika 做底层 file type detection, KUN 包一层 InputDescriptor + 推荐 handler
+- 配 anchor-expand: Round1 detect → Round2 extract → Round3 deep understand
+- Codex BATCH6 加 C27 任务 (~8-10h)
+
+M5 后续可扩:
+- 输出翻译器 (KUN → 真实世界格式)
+- 环境感知器 (主动扫用户文件夹 / 桌面)
+
+### Z.7 完成度推进
 
 - X 节 (V2.1 抽象层) ~25%
 - Y 节 (M3.3 完整闭环 + M4 持久化 3/4) ~50%

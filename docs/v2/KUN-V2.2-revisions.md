@@ -495,5 +495,97 @@ V2.2 实施后, KUN 从 "高度结构化的执行系统" → "会做选择 / 会
 
 ---
 
+## §23 输入翻译器 / 真实世界交互层 (V2.2 新增, Magika 启发)
+
+**位置**: 主文档 §15 (skill 系统) 之后, §16 (LayeredAsset) 之前.
+
+### 23.1 一句话定位
+
+KUN 跟真实世界 (用户上传的文件 / 外部 API / 系统输入 / WS binary frame) 之间需要一个"翻译器" — **任何输入进 KUN 第一步先识别类型 + 推荐处理 pipeline, 不能直接拿原始 bytes 给 LLM**.
+
+借鉴: Google Magika (AI 文件类型识别), 但 KUN 把它扩展成更广义的"输入理解层".
+
+### 23.2 大白话
+
+现在 KUN 的问题: 用户丢一个文件进来 (PDF / CSV / 图片 / 代码 / 二进制), KUN 要么直接送 LLM (浪费 token + LLM 不一定懂), 要么靠 mime_type 简单分类 (容易错).
+
+升级后:
+- 文件进来 → **InputTranslator.detect()** → 返 InputDescriptor (kind / confidence / suggested_handler / content_summary)
+- KUN 按 descriptor 决定: 用 vision LLM 看图? 用 PDF skill 提取? 用 CSV query 算? 还是直接 reject ("二进制看不懂, 请说明这是什么")
+- 跟 V2.2 §19 anchor-expand 配合: 第 1 轮 detect, 第 2 轮 extract, 第 3 轮 understand
+
+### 23.3 应用范围 (不只文件)
+
+| 输入种类 | 现状 | V2.2 后 |
+|---------|------|---------|
+| **用户上传文件** (PDF/CSV/img/audio/...) | 没 detect | Magika + extractor 链 |
+| **用户消息** (text) | 当 plain text | 检测 JSON/Markdown/code/SQL/HTML/纯文本, 选不同 prompt |
+| **外部 API 响应** | 直接 parse | 检测 JSON/XML/HTML/text + 编码 + schema |
+| **skill 输出** | 当 string | 检测是 binary/text/structured, 决定下游怎么用 |
+| **WS binary frame** | 没处理 | 走 InputTranslator |
+| **粘贴板内容** (用户 paste) | 当 text | 检测 code language / log / stack trace / etc |
+
+### 23.4 数据模型
+
+```python
+class InputDescriptor(BaseModel):
+    kind: Literal[
+        # text 类
+        "plain_text", "json", "yaml", "markdown", "html", "xml", "sql", "code",
+        # 二进制类 (Magika 输出)
+        "pdf", "csv", "xlsx", "image_jpg", "image_png", "image_webp",
+        "audio_mp3", "audio_wav", "video_mp4",
+        "archive_zip", "archive_tar",
+        "executable", "binary_unknown",
+    ]
+    mime_type: str
+    confidence: float           # Magika 给的概率
+    suggested_handler: str      # skill_id / model_purpose / "ask_user" / "reject"
+    content_summary: str = ""   # 前 500 字 / 缩略图描述 / 表头 etc
+    metadata: dict[str, Any]    # size, encoding, pages, dimensions, etc
+    detected_at: datetime
+```
+
+### 23.5 实装结构
+
+```
+RealWorldTranslator (kun/interface/input_translator.py)
+├── TextTypeDetector — text 流先猜 (规则: JSON 看 {/[, code 看 def/function, etc)
+├── FileTypeDetector — 调 Magika, 100+ 类型
+├── ContentExtractor — 按 kind 选 extractor (pdf2text / ocr / csv2dict / transcribe)
+└── HandlerSuggester — 按 kind + content 推荐 skill_id / model_purpose
+```
+
+### 23.6 配 anchor-expand (V2.2 §19.3)
+
+```
+用户上传 unknown.bin
+
+InputTranslator.detect_anchor_then_expand(file_bytes):
+  Round 1 (anchor):
+    Magika fast detect → InputDescriptor(kind="image_png", confidence=0.95)
+    yield descriptor
+    # caller: 够吗? 我要内容, 不够
+  Round 2 (extract):
+    OCR + dimensions
+    yield descriptor.with_content(summary="A login screen", dimensions=(1920,1080))
+    # caller: 够吗? marginal_roi 评估: ΔV 大, 继续
+  Round 3 (understand):
+    vision LLM 描述
+    yield descriptor.with_understanding(...)
+```
+
+### 23.7 跟 V2.1 关系
+
+V2.1 没有"输入理解层". V2.2 §23 补这层 — 是真实世界 ↔ KUN 之间的"翻译器".
+
+后续(M5)可以扩到:
+- **输出翻译器** — KUN 输出 → 真实世界格式 (PDF / 图表 / 代码 / 邮件)
+- **环境感知器** — 主动扫用户文件夹 / 桌面 / 浏览器历史 (得用户授权)
+
+V2.2 §23 是基础.
+
+---
+
 **修订日期**: 2026-04-26
-**修订人**: Claude (基于用户跟 GPT 第六轮深度讨论后的反馈)
+**修订人**: Claude (基于用户跟 GPT 第六轮深度讨论后的反馈 + Google Magika 启发)
