@@ -21,6 +21,7 @@ from kun.lab.ensemble_executor import (
     EnsemblePathResult,
     EnsembleResult,
 )
+from kun.lab.events import LabEventEmitter, summarize_ensemble, summarize_promotion
 from kun.lab.experiment_log import (
     Experiment,
     ExperimentLog,
@@ -38,8 +39,11 @@ __all__ = [
     "Experiment",
     "ExperimentLog",
     "LLMRouterEnsembleAdapter",
+    "LabEventEmitter",
     "RecipePromoter",
     "get_experiment_log",
     "make_default_adapter",
     "reset_experiment_log",
+    "summarize_ensemble",
+    "summarize_promotion",
 ]

@@ -131,11 +131,15 @@ class EnsembleExecutor:
         llm_invoker: Any,
         *,
         default_paths: list[PathConfig] | None = None,
+        event_emitter: Any = None,
     ) -> None:
         """
         Args:
             llm_invoker: async fn(prompt, path_config) → (output_text, cost_usd, latency_sec)
             default_paths: 默认 5 路径 (V2.2 §26.3); 调用方可覆盖
+            event_emitter: 可选 async fn(EnsembleResult, *, task_type=None) → 任意.
+                Wire 21: 跑完 emit experiment.created 事件给主仓库 events bus.
+                None → 不 emit (lab 自治 / 单元测试场景)
         """
         if not is_lab_enabled():
             logger.warning(
@@ -143,6 +147,7 @@ class EnsembleExecutor:
             )
         self._invoker = llm_invoker
         self._default_paths = default_paths or DEFAULT_PATHS
+        self._event_emitter = event_emitter
 
     async def run(
         self,
@@ -150,6 +155,7 @@ class EnsembleExecutor:
         config: EnsembleConfig | None = None,
         *,
         scoring_fn: Any = None,
+        task_type: str | None = None,
     ) -> EnsembleResult:
         """跑 N 路径并发, 用 scoring_fn 选最优.
 
@@ -205,7 +211,7 @@ class EnsembleExecutor:
                 cfg.cost_budget_total_usd,
             )
 
-        return EnsembleResult(
+        result = EnsembleResult(
             experiment_id=new_id("experiment"),
             config=cfg,
             path_results=path_results,
@@ -215,6 +221,15 @@ class EnsembleExecutor:
             total_latency_sec=total_latency,
             selection_reason=winner_reason,
         )
+
+        # Wire 21: 把实验结果 emit 进 events bus (best-effort, 不阻塞主流程)
+        if self._event_emitter is not None:
+            try:
+                await self._event_emitter(result, task_type=task_type)
+            except Exception:
+                logger.exception("ensemble.event_emitter_failed exp=%s", result.experiment_id)
+
+        return result
 
     async def _run_one_path(
         self,

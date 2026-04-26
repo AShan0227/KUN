@@ -61,13 +61,24 @@ class RecipePromoter:
         min_total: int = 10,
         min_winrate: float = 0.6,
         precipitation_dispatcher: Any = None,
+        event_emitter: Any = None,
+        rollback_emitter: Any = None,
     ) -> None:
+        """
+        Args:
+            event_emitter: 可选 async fn(RecipePromotion) — 每次推升 emit
+                experiment.promoted (Wire 21). None → 不 emit.
+            rollback_emitter: 可选 async fn(RecipePromotion, *, reason, error) —
+                dispatcher 失败时 emit experiment.rolled_back. None → 不 emit.
+        """
         if not 0 <= min_winrate <= 1:
             raise ValueError("min_winrate must be in [0, 1]")
         self._log = experiment_log
         self.min_total = min_total
         self.min_winrate = min_winrate
         self._dispatcher = precipitation_dispatcher
+        self._event_emitter = event_emitter
+        self._rollback_emitter = rollback_emitter
         self._promotions_history: list[RecipePromotion] = []
 
     def find_eligible_recipes(self) -> list[RecipeStats]:
@@ -103,11 +114,33 @@ class RecipePromoter:
             self._promotions_history.append(p)
 
             # 推主仓库 (KnowledgePrecipitation)
+            dispatch_error = ""
             if self._dispatcher is not None:
                 try:
                     await self._dispatcher(p)
-                except Exception:
+                except Exception as exc:
                     logger.exception("recipe_promoter.dispatcher failed for %s", p.promotion_id)
+                    dispatch_error = f"{type(exc).__name__}: {exc}"
+
+            # Wire 21: emit experiment.promoted (best-effort)
+            if self._event_emitter is not None:
+                try:
+                    await self._event_emitter(p)
+                except Exception:
+                    logger.exception(
+                        "recipe_promoter.event_emitter failed for %s", p.promotion_id
+                    )
+
+            # Wire 21: dispatcher 失败 → emit experiment.rolled_back
+            if dispatch_error and self._rollback_emitter is not None:
+                try:
+                    await self._rollback_emitter(
+                        p, reason="dispatcher_failed", error=dispatch_error
+                    )
+                except Exception:
+                    logger.exception(
+                        "recipe_promoter.rollback_emitter failed for %s", p.promotion_id
+                    )
         return promotions
 
     def _already_promoted_recently(self, stats: RecipeStats, window_hours: int = 168) -> bool:
