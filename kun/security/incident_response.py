@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
+
+from kun.core.anchor_expand import AnchorExpandIterator
 
 logger = logging.getLogger(__name__)
 
@@ -144,20 +146,7 @@ class IncidentResponseEngine:
         actual_severity = self.upgrade_severity(event)
         event.severity = actual_severity
 
-        action_kinds = RESPONSE_MATRIX[actual_severity]
-        actions = [
-            IncidentResponseAction(
-                action_kind=ak,  # type: ignore[arg-type]
-                target=(
-                    event.affected_task_id
-                    or event.affected_user_id
-                    or event.affected_tenant_id
-                    or "global"
-                ),
-                reason=f"{event.category}/{actual_severity}: {event.title}",
-            )
-            for ak in action_kinds
-        ]
+        actions = self._build_actions_for(event, actual_severity)
 
         sla_sec = SLA_BY_SEVERITY[actual_severity]
 
@@ -204,6 +193,64 @@ class IncidentResponseEngine:
         await asyncio.gather(*(_exec(a) for a in actions))
         self._history.append((event, actions))
         return actions
+
+    async def iter_response_actions_anchor_then_expand(
+        self,
+        event: IncidentEvent,
+        *,
+        max_rounds: int = 3,
+        apply_upgrade: bool = False,
+    ) -> AsyncIterator[IncidentResponseAction]:
+        """按需返回应急响应动作.
+
+        默认不做累积升档, 避免调用方只是预览动作时污染 pattern_counts.
+        真正执行仍走 ``handle``.
+
+        # TODO: wire by Claude in V2.2
+        """
+        severity = self.upgrade_severity(event) if apply_upgrade else event.severity
+        actions = self._build_actions_for(event, severity)
+        if not actions:
+            return
+
+        async def anchor_fn() -> IncidentResponseAction:
+            return actions[0]
+
+        async def expand_fn(
+            _anchor: IncidentResponseAction,
+            prior: list[IncidentResponseAction],
+        ) -> IncidentResponseAction | None:
+            idx = len(prior)
+            if idx >= len(actions):
+                return None
+            return actions[idx]
+
+        async for action in AnchorExpandIterator(
+            anchor_fn,
+            expand_fn,
+            max_rounds=max_rounds,
+        ):
+            yield action
+
+    def _build_actions_for(
+        self,
+        event: IncidentEvent,
+        severity: IncidentSeverity,
+    ) -> list[IncidentResponseAction]:
+        action_kinds = RESPONSE_MATRIX[severity]
+        return [
+            IncidentResponseAction(
+                action_kind=ak,  # type: ignore[arg-type]
+                target=(
+                    event.affected_task_id
+                    or event.affected_user_id
+                    or event.affected_tenant_id
+                    or "global"
+                ),
+                reason=f"{event.category}/{severity}: {event.title}",
+            )
+            for ak in action_kinds
+        ]
 
     def get_history(
         self,
