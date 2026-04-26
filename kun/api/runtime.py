@@ -14,7 +14,15 @@ from typing import Any, Protocol, cast
 from kun.core.emergent_solution import EmergentSolutionLibrary
 from kun.engineering.emergent_switch import EmergentSwitchManager
 from kun.engineering.fast_path import FastPathRouter
+from kun.engineering.idle_batch import KnowledgePrecipitationStep, register_step
 from kun.engineering.orchestrator import Orchestrator
+from kun.engineering.precipitation import (
+    KnowledgePrecipitation,
+    NarrativeDistillStep,
+    RuleEmergeStep,
+    StatsWritebackStep,
+    WeightTuneStep,
+)
 from kun.engineering.safety_guards import (
     KillSwitch,
     PlanOnlyGate,
@@ -47,6 +55,15 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     emergent_switch_manager = EmergentSwitchManager(library=emergent_library)
     app.state.emergent_library = emergent_library
     app.state.emergent_switch_manager = emergent_switch_manager
+
+    # V2.1 §16.12: 知识沉淀管道 (4 类内置 step) + 接进 idle_batch
+    precipitation = KnowledgePrecipitation()
+    precipitation.register_step(StatsWritebackStep())
+    precipitation.register_step(WeightTuneStep())
+    precipitation.register_step(RuleEmergeStep())
+    precipitation.register_step(NarrativeDistillStep())
+    app.state.knowledge_precipitation = precipitation
+    register_step(KnowledgePrecipitationStep(kp_provider=lambda: app.state.knowledge_precipitation))
 
     orchestrator = Orchestrator(
         rule_engine=rule_engine,
@@ -110,3 +127,7 @@ def get_emergent_switch_manager(app: _AppWithState) -> EmergentSwitchManager:
 
 def get_emergent_library(app: _AppWithState) -> EmergentSolutionLibrary:
     return cast(EmergentSolutionLibrary, app.state.emergent_library)
+
+
+def get_knowledge_precipitation(app: _AppWithState) -> KnowledgePrecipitation:
+    return cast(KnowledgePrecipitation, app.state.knowledge_precipitation)

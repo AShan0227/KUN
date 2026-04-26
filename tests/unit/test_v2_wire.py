@@ -75,6 +75,27 @@ def test_emergent_switch_manager_wired_into_orchestrator() -> None:
     assert orch.emergent_switch_manager is mgr
 
 
+def test_knowledge_precipitation_wired_into_idle_batch() -> None:
+    """V2.1 §16.12: install_runtime 应该:
+    - 创建 KnowledgePrecipitation 单例并注册 4 类内置 step
+    - 把 KnowledgePrecipitationStep 注册到 idle_batch._steps
+    """
+    from fastapi import FastAPI
+    from kun.api.runtime import get_knowledge_precipitation
+    from kun.engineering.idle_batch import KnowledgePrecipitationStep, _steps
+    from kun.engineering.precipitation import KnowledgePrecipitation
+
+    app = FastAPI()
+    install_runtime(app, rule_engine=RuleEngine([]))
+
+    kp = get_knowledge_precipitation(app)
+    assert isinstance(kp, KnowledgePrecipitation)
+    assert len(kp._steps) == 4
+
+    assert "knowledge_precipitation" in _steps
+    assert isinstance(_steps["knowledge_precipitation"], KnowledgePrecipitationStep)
+
+
 def test_chat_fast_path_chitchat(runtime_app) -> None:
     client = TestClient(runtime_app)
     resp = client.post(

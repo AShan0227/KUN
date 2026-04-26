@@ -214,6 +214,54 @@ class RouteRuleMiningStep(IdleBatchStep):
         return {"new_patterns": 0, "note": "placeholder"}
 
 
+class KnowledgePrecipitationStep(IdleBatchStep):
+    """V2.1 wire (§16.12): 跑 KnowledgePrecipitation hourly/daily/weekly 调度.
+
+    每次跑 idle-batch, 按当前小时 / 日期判断要跑哪一档:
+    - 每次跑都跑 hourly
+    - 每天 0 点附近跑 daily
+    - 每周一 0 点附近跑 weekly
+
+    M3.3 wire: idle-batch 注册这一步, KnowledgePrecipitation 单例在 install_runtime 创建.
+    """
+
+    step_id = "knowledge_precipitation"
+
+    def __init__(self, kp_provider: Callable[[], Any] | None = None) -> None:
+        self._kp_provider = kp_provider
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        if self._kp_provider is None:
+            log.info("knowledge_precipitation.no_provider", tenant_id=tenant_id)
+            return {"hourly": 0, "daily": 0, "weekly": 0, "note": "no_provider"}
+        kp = self._kp_provider()
+        if kp is None:
+            return {"hourly": 0, "daily": 0, "weekly": 0, "note": "kp_none"}
+
+        now = datetime.now(UTC)
+        results: dict[str, Any] = {}
+        hourly_updates = await kp.run_scheduled("hourly")
+        results["hourly"] = len(hourly_updates)
+        if now.hour == 0:
+            daily_updates = await kp.run_scheduled("daily")
+            results["daily"] = len(daily_updates)
+        else:
+            results["daily"] = 0
+        if now.weekday() == 0 and now.hour == 0:
+            weekly_updates = await kp.run_scheduled("weekly")
+            results["weekly"] = len(weekly_updates)
+        else:
+            results["weekly"] = 0
+        log.info(
+            "knowledge_precipitation.cycle_done",
+            tenant_id=tenant_id,
+            hourly=results["hourly"],
+            daily=results["daily"],
+            weekly=results["weekly"],
+        )
+        return results
+
+
 def register_default_steps() -> None:
     for step in [
         TaskReplayStep(),
