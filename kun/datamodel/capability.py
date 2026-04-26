@@ -25,6 +25,8 @@ EntityType = Literal[
     "external_agent",
     "company",
     "model",
+    "skill",  # V2.2 Wire 9: skill 级 capability writeback
+    "tool",   # V2.2 Wire 9: tool 级 (跟 ORM CheckConstraint 一致)
 ]
 
 Maturity = Literal["cold_start", "warming_up", "mature"]

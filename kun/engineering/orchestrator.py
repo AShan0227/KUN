@@ -875,6 +875,25 @@ class Orchestrator:
                 )
                 runtime.accumulate_step(step_record)
 
+                # V2.2 Wire 9: skill 级 capability_card writeback
+                # 每 step 完后给 skill 写一条 outcome (除了 llm.direct, 那不是真 skill)
+                if step_record.skill_used and step_record.skill_used != "llm.direct":
+                    try:
+                        await record_outcome(
+                            tenant.tenant_id,
+                            TaskOutcome(
+                                entity_type="skill",
+                                entity_id=step_record.skill_used,
+                                task_type=task_ref.meta.task_type,
+                                outcome="pass",  # step 跑完了, 默认 pass; 失败时 except 走
+                                cost_usd=step_record.cost_usd_equivalent,
+                                duration_sec=duration,
+                                rubric_score=None,
+                            ),
+                        )
+                    except Exception:
+                        log.exception("skill capability writeback failed (non-fatal)")
+
                 # emit cost_tick
                 yield OrchestratorEvent(
                     kind="cost_tick",
