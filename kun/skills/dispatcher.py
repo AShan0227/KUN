@@ -96,6 +96,21 @@ def autoload_builtins() -> None:
         "kun.skills.builtin.file_io",
         "kun.skills.builtin.csv_query",
         "kun.skills.builtin.pdf_read",
+        "kun.skills.builtin.web_summarize",
+        "kun.skills.builtin.pdf_extract",
+        "kun.skills.builtin.image_describe",
+        "kun.skills.builtin.code_lint",
+        "kun.skills.builtin.code_format",
+        "kun.skills.builtin.git_diff_review",
+        "kun.skills.builtin.sql_query",
+        "kun.skills.builtin.csv_analyze",
+        "kun.skills.builtin.markdown_to_docx",
+        "kun.skills.builtin.markdown_to_pdf",
+        "kun.skills.builtin.translate",
+        "kun.skills.builtin.regex_explain",
+        "kun.skills.builtin.cron_explain",
+        "kun.skills.builtin.json_validate",
+        "kun.skills.builtin.time_zone_convert",
     ):
         try:
             importlib.import_module(mod)
