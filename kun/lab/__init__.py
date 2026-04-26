@@ -43,9 +43,18 @@ from kun.lab.precipitation_bridge import (
     make_kp_adopter,
 )
 from kun.lab.recipe_promoter import RecipePromoter
+from kun.lab.recipe_registry import (
+    MIN_CONFIDENCE_FOR_REGISTRY,
+    LabRecipeEntry,
+    LabRecipeRegistry,
+    get_recipe_registry,
+    make_registry_apply_hook,
+    reset_recipe_registry,
+)
 
 __all__ = [
     "HIGH_CONFIDENCE_WIN_RATE",
+    "MIN_CONFIDENCE_FOR_REGISTRY",
     "EnsembleConfig",
     "EnsembleExecutor",
     "EnsemblePathResult",
@@ -56,16 +65,21 @@ __all__ = [
     "LabAdopter",
     "LabEventEmitter",
     "LabRecipeAdoptionStep",
+    "LabRecipeEntry",
     "LabRecipePrecipitationStep",
+    "LabRecipeRegistry",
     "RecipePromoter",
     "get_adoption_step",
     "get_experiment_log",
+    "get_recipe_registry",
     "install_lab_adoption_step",
     "install_lab_kp_bridge",
     "make_default_adapter",
     "make_kp_adopter",
+    "make_registry_apply_hook",
     "reset_adoption_step",
     "reset_experiment_log",
+    "reset_recipe_registry",
     "summarize_ensemble",
     "summarize_promotion",
 ]
