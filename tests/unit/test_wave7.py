@@ -289,8 +289,9 @@ async def test_diagnose_llm_reviewer_called_for_unmatched() -> None:
         tenant_id="t-1",
         hint_text="something obscure happened",
     )
-    await runner.run(req)
+    report = await runner.run(req)
     assert len(captured) >= 1
+    assert report.request_id == "dr-llm"
 
 
 @pytest.mark.asyncio
