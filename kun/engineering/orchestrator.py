@@ -269,9 +269,12 @@ class Orchestrator:
         yield OrchestratorEvent(kind="thinking", data={"stage": "intent"})
         task_ref = await self.intent.interpret(user_message, owner=owner)
 
-        # 1.5 V2.1 wire (M3.3, opt-in): TaskPanorama 按需展开 + 推黑板
+        # 1.5 V2.1 wire (M3.3, opt-in) + V2.2 §19.3/C25 wire (always on if panorama enabled):
+        # FAST/SMART/MAX 模式按需展开 panorama 模块, 不一次性构造 12 个.
         # KUN_PANORAMA_BUILDER_ENABLED=1 启用; 默认 off, 不破坏现有流程.
         from kun.engineering.panorama_orchestrator_bridge import (
+            anchored_modules_to_event_data,
+            build_panorama_anchored_for_task,
             build_panorama_for_task,
             panorama_to_event_data,
         )
@@ -280,12 +283,21 @@ class Orchestrator:
         )
 
         if _panorama_enabled():
-            _panorama = await build_panorama_for_task(task_ref, user_message)
-            if _panorama is not None:
+            # V2.2 wire: 优先用 build_anchored (按 mode 展开), fallback 老 expand
+            _anchored_modules = await build_panorama_anchored_for_task(task_ref, user_message)
+            if _anchored_modules:
                 yield OrchestratorEvent(
                     kind="action_plan",
-                    data=panorama_to_event_data(_panorama),
+                    data=anchored_modules_to_event_data(task_ref, _anchored_modules),
                 )
+            else:
+                # fallback: 老 expand 路径 (已存在测试覆盖)
+                _panorama = await build_panorama_for_task(task_ref, user_message)
+                if _panorama is not None:
+                    yield OrchestratorEvent(
+                        kind="action_plan",
+                        data=panorama_to_event_data(_panorama),
+                    )
 
         # 2. Idempotency check + persist TaskRow + emit task.created
         duplicate_ref: str | None = None

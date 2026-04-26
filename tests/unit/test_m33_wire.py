@@ -105,6 +105,108 @@ async def test_build_panorama_enabled_returns_panorama() -> None:
     assert result.tier in ("minimal", "light", "medium", "heavy", "full")
 
 
+# V2.2 §19.3 + C25 wire: build_anchored
+
+
+@pytest.mark.asyncio
+async def test_build_panorama_anchored_disabled_returns_empty() -> None:
+    fake_task_ref = type(
+        "TR",
+        (),
+        {
+            "meta": type(
+                "M",
+                (),
+                {
+                    "task_id": "tk-1",
+                    "task_type": "x",
+                    "risk_level": "low",
+                    "complexity_score": 0.2,
+                    "estimated_cost_usd": 0.01,
+                    "success_criteria_short": "测试",
+                    "execution_mode": "FAST",
+                },
+            )()
+        },
+    )()
+    from kun.engineering.panorama_orchestrator_bridge import (
+        build_panorama_anchored_for_task,
+    )
+
+    with patch.dict(os.environ, {}, clear=True):
+        result = await build_panorama_anchored_for_task(fake_task_ref, "test")
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_build_panorama_anchored_enabled_yields_modules() -> None:
+    """V2.2 wire: enabled + FAST mode → 1 round (1-2 module)."""
+    fake_task_ref = type(
+        "TR",
+        (),
+        {
+            "meta": type(
+                "M",
+                (),
+                {
+                    "task_id": "tk-fast",
+                    "task_type": "x",
+                    "risk_level": "low",
+                    "complexity_score": 0.2,
+                    "estimated_cost_usd": 0.01,
+                    "success_criteria_short": "fast 任务",
+                    "execution_mode": "FAST",
+                },
+            )()
+        },
+    )()
+    from kun.engineering.panorama_orchestrator_bridge import (
+        build_panorama_anchored_for_task,
+    )
+
+    with patch.dict(os.environ, {"KUN_PANORAMA_BUILDER_ENABLED": "1"}):
+        modules = await build_panorama_anchored_for_task(fake_task_ref, "test")
+    # FAST → 1 round = at least intent_one_sentence + risk_summary 2 个
+    assert len(modules) >= 1
+
+
+@pytest.mark.asyncio
+async def test_build_panorama_anchored_max_yields_more_modules_than_fast() -> None:
+    """V2.2 wire: MAX 模式应跑更多 round → 更多 module."""
+    from kun.engineering.panorama_orchestrator_bridge import (
+        build_panorama_anchored_for_task,
+    )
+
+    def _make_ref(mode: str):
+        return type(
+            "TR",
+            (),
+            {
+                "meta": type(
+                    "M",
+                    (),
+                    {
+                        "task_id": f"tk-{mode}",
+                        "task_type": "x",
+                        "risk_level": "high",
+                        "complexity_score": 0.8,
+                        "estimated_cost_usd": 0.5,
+                        "success_criteria_short": f"{mode} 任务",
+                        "execution_mode": mode,
+                    },
+                )()
+            },
+        )()
+
+    with patch.dict(os.environ, {"KUN_PANORAMA_BUILDER_ENABLED": "1"}):
+        fast_modules = await build_panorama_anchored_for_task(_make_ref("FAST"), "x")
+        max_modules = await build_panorama_anchored_for_task(_make_ref("MAX"), "x")
+
+    # MAX 跑 3 round, FAST 跑 1 round → MAX 模块数 ≥ FAST
+    assert len(max_modules) >= len(fast_modules)
+    assert len(max_modules) > 1
+
+
 def test_panorama_to_event_data() -> None:
     from kun.core.task_panorama import TaskPanorama
 

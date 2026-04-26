@@ -107,7 +107,71 @@ def panorama_to_event_data(panorama: TaskPanorama) -> dict[str, Any]:
     }
 
 
+async def build_panorama_anchored_for_task(
+    task_ref: Any,
+    user_message: str,
+) -> list[Any]:
+    """V2.2 §19.3 + C25 wire: 用 build_anchored 按需展开模块.
+
+    跟 build_panorama_for_task 一样 opt-in (KUN_PANORAMA_BUILDER_ENABLED=1).
+    根据 task_ref.meta.execution_mode (FAST/SMART/MAX) 决定跑几轮.
+
+    Returns:
+        list[ModuleResult] — 已 yield 的模块清单. 空 list 表示禁用 / 失败.
+    """
+    if not is_enabled():
+        return []
+
+    try:
+        meta = task_ref.meta
+        intent = getattr(meta, "success_criteria_short", "")
+        risk = getattr(meta, "risk_level", "low")
+        # 创建一个 minimal TaskPanorama 实例供 build_anchored 用
+        panorama = TaskPanorama(
+            task_ref=meta.task_id,
+            intent_one_sentence=intent,
+            tier="medium",  # 占位, 实际 mode 决定 round 数
+        )
+        modules: list[Any] = []
+        async for module in panorama.build_anchored(task_ref):
+            modules.append(module)
+        logger.info(
+            "panorama.anchored.built task_id=%s mode=%s modules=%d risk=%s",
+            meta.task_id,
+            getattr(meta, "execution_mode", "FAST"),
+            len(modules),
+            risk,
+        )
+        return modules
+    except Exception:
+        logger.exception(
+            "build_panorama_anchored_for_task failed (non-fatal, orchestrator continues)"
+        )
+        return []
+
+
+def anchored_modules_to_event_data(task_ref: Any, modules: list[Any]) -> dict[str, Any]:
+    """把 anchored module 列表转成 OrchestratorEvent.data 格式 (推黑板)."""
+    return {
+        "stage": "panorama_anchored_built",
+        "task_id": task_ref.meta.task_id,
+        "mode": getattr(task_ref.meta, "execution_mode", "FAST"),
+        "module_count": len(modules),
+        "modules": [
+            {
+                "name": m.module_name,
+                "round": m.round_index,
+                "depth": m.depth,
+                "required": m.required,
+            }
+            for m in modules
+        ],
+    }
+
+
 __all__ = [
+    "anchored_modules_to_event_data",
+    "build_panorama_anchored_for_task",
     "build_panorama_for_task",
     "get_builder",
     "is_enabled",
