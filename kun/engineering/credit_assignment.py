@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -33,6 +33,22 @@ logger = logging.getLogger(__name__)
 
 # 资源类型 (跟 EntityType 对齐, 加 memory)
 ResourceKind = str  # "memory" / "skill" / "model" / "role_template" / "tool"
+
+
+# V2.2 §25.4a RewardMap (ICLR 2026 启发): step 内部 4 子阶段
+StageKind = Literal["perceive", "understand", "reason", "decide"]
+
+
+class StageReward(BaseModel):
+    """V2.2 §25.4a — step 内部子阶段奖励 (RewardMap 启发).
+
+    把"一个 step 一个 reward"拆成 4 个子阶段各自 reward, 让 KUN 知道
+    "在哪个子阶段错了" → 学习效率暴涨.
+    """
+
+    stage: StageKind
+    reward: float = Field(ge=0.0, le=1.0)
+    reason: str = ""
 
 
 class StepCredit(BaseModel):
@@ -48,16 +64,29 @@ class StepCredit(BaseModel):
 
     # immediate reward (dense intermediate, 不等 task done)
     # 累计 ValueGate ΔV / multi_judge ΔConsensus / marginal ROI 等信号
+    # V2.2 §25.4a: 默认从 stage_rewards 平均算; 也可调用方手动设
     immediate_reward: float = 0.0
 
+    # V2.2 §25.4a: 4 子阶段各自 reward (perceive / understand / reason / decide)
+    # 留空 → step 没走 RewardMap 模式, immediate_reward 是手动设的标量
+    stage_rewards: list[StageReward] = Field(default_factory=list)
+
     # 信用份额 (sum to 1.0, 反思后填), key = "kind:id"
-    # e.g. {"memory:mem-1": 0.4, "skill:coding-pytest": 0.4, "model:claude-opus": 0.2}
     credit_share: dict[str, float] = Field(default_factory=dict)
 
     # 反思后判定 (task done 时由 RetrospectiveReflector 填)
     is_critical_path: bool = False
 
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def compute_stage_aggregated_reward(self) -> float:
+        """V2.2 §25.4a: 从 stage_rewards 算平均 immediate_reward.
+
+        如果 stage_rewards 不空 → 用它; 否则保留 self.immediate_reward.
+        """
+        if not self.stage_rewards:
+            return self.immediate_reward
+        return sum(s.reward for s in self.stage_rewards) / len(self.stage_rewards)
 
 
 class TaskCreditReport(BaseModel):
@@ -111,13 +140,25 @@ class CreditAssignment:
         resources: dict[ResourceKind, list[str]],
         immediate_reward: float = 0.0,
         metadata: dict[str, Any] | None = None,
+        stage_rewards: list[StageReward] | None = None,
     ) -> StepCredit:
-        """每 step 完时调一次."""
+        """每 step 完时调一次.
+
+        Args:
+            stage_rewards: V2.2 §25.4a — 可选 4 子阶段 reward (RewardMap 模式).
+                          给了的话 immediate_reward 自动算 (覆盖手动 reward).
+        """
+        if stage_rewards:
+            # RewardMap 模式: 用 4 子阶段平均
+            computed_reward = sum(s.reward for s in stage_rewards) / len(stage_rewards)
+        else:
+            computed_reward = float(immediate_reward)
         credit = StepCredit(
             step_id=step_id,
             finished_at=datetime.now(UTC),
             resources_used=dict(resources),
-            immediate_reward=max(self.immediate_reward_floor, float(immediate_reward)),
+            immediate_reward=max(self.immediate_reward_floor, computed_reward),
+            stage_rewards=stage_rewards or [],
             credit_share=self._equal_share(resources),
             metadata=metadata or {},
         )
@@ -327,6 +368,8 @@ def reset_contribution_tracker() -> None:
 __all__ = [
     "ContributionTracker",
     "CreditAssignment",
+    "StageKind",
+    "StageReward",
     "StepCredit",
     "TaskCreditReport",
     "get_contribution_tracker",

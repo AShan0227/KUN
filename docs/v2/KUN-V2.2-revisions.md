@@ -587,6 +587,76 @@ V2.2 §23 是基础.
 
 ---
 
+## §27 推理时反思 + 学习成长区 (V2.2 新增, ICLR 2026 启发)
+
+**位置**: 主文档 §22 hermes 之后, 跟 §26 KUN-Lab 联动 (KUN-Lab 的"学习成长区" 实装这个).
+
+### 27.1 一句话定位
+
+借鉴 **Inference-Time Rethinking** (ICLR Latent Thinking Workshop): 模型在回答前修正推理 (潜在思维向量用于数学推理). 不需要训练, 纯推理时机制.
+
+KUN 升级: 在 SMART/MAX 模式下, **关键 step 强制走 rethinking 路径** — LLM 出 hermes ExecutionStep 后, 不立即 act, 而是先"反思 thought 跟 action 是否一致" (FaithCoT 启发), 不一致 → 重新 generate.
+
+### 27.2 大白话
+
+现在 KUN hermes 协议 (V2.2 §22) 让 LLM 输出 thought + action_type + expected_outcome, 但: **LLM 可能只是写得好看, 实际决策跟 thought 没关系** (FaithCoT 揭示的"模型只是会解释, 不是会思考").
+
+升级后:
+1. LLM 出第一版 ExecutionStep (thought + action)
+2. KUN 守望 (ValueGate) 算一个"thought-action consistency score"
+3. consistency 低 → 让 LLM 重出, 直到一致
+4. 不影响 FAST 模式 (跳过, 节省 latency)
+
+### 27.3 thought-action consistency check
+
+实装在 `kun/engineering/execution_protocol.py`:
+
+```python
+class ThoughtActionConsistency:
+    """检测 thought 跟 action 是否真一致 (不是事后解释)."""
+    
+    async def check(self, step: ExecutionStep) -> tuple[float, str]:
+        """返 (consistency_score 0..1, reason).
+        
+        启发式 + LLM judge 二合:
+        - 启发式: thought 含 keyword 是否对应 action_type
+          (e.g. thought 含 "拉记忆" → action_type=use_memory)
+        - LLM judge: cheap model 一次性判 thought 是否能推出 action
+        """
+```
+
+阈值: < 0.5 → 让 LLM 重出 (max 2 次重试).
+
+### 27.4 学习成长区 (跟 KUN-Lab §26 联动)
+
+KUN-Lab 加新模块 "学习成长区" (Learning Lab):
+- 周期跑 Inference-Time Rethinking 实验
+- 收集 KUN 在不同任务上的 thought 模式
+- 找出"高 consistency + 高成功率" 的 thought 模板
+- 沉淀进 KnowledgePrecipitation → 推给生产 KUN 的 hermes prompt
+
+### 27.5 跟 §22 hermes 关系
+
+V2.2 §22 ExecutionStep 不变. 加新字段:
+```python
+class ExecutionStep(BaseModel):
+    # 原有: step_id / thought / action_type / action_payload / expected_outcome / confidence / cost_estimate_usd
+    # V2.2 §27 加
+    thought_action_consistency: float = 1.0  # 默认 1.0 (FAST 跳过 check)
+    rethink_count: int = 0  # 这条 step 重出过几次
+```
+
+### 27.6 怎么"省掉形式化提效率" (FaithCoT 启发)
+
+FaithCoT 揭示: 模型可能只是写解释. 那么:
+- **FAST 模式**: 完全跳过 thought (直接 action_type, 默认 "direct_llm")
+- **SMART 模式**: 加 thought 但不强制 consistency check (节省 1 次 LLM call)
+- **MAX 模式**: 强制 consistency check + rethinking 重出
+
+这跟 V2.2 §21 三模式分级天然对齐.
+
+---
+
 ## §25 信用分配 + 稀疏奖励 (V2.2 新增, RL 经典问题在 KUN 的解法)
 
 **位置**: 主文档 §17 动态决策中枢之后, §19 决策核心之前 (跟 §19 是孪生 — §19 是"现在选啥", §25 是"过去哪些选择起作用").
@@ -706,6 +776,43 @@ orchestrator wire:
 - record_outcome 改成 credit-weighted (调用 CreditAssignment.distribute_outcome)
 
 测试: ≥15 个 (StepCredit / RetrospectiveReflector / contribution_score 算法 / capability_writeback 集成 / ImportanceScorer 集成)
+
+### 25.4a RewardMap 升级: stage-level dense reward (ICLR 2026 启发)
+
+**RewardMap (ICLR 2026)** 启发: 把"一个 step 的 immediate_reward" 升级为
+"**step 内部 4 子阶段各自 reward**":
+
+```
+step
+├── 阶段 1 感知 (perceive): 接到任务 + 解析输入 → reward_perceive (信号: 输入是否完整)
+├── 阶段 2 理解 (understand): hermes thought 出来 → reward_understand (信号: thought 是否合理)
+├── 阶段 3 推理 (reason): action 选择 → reward_reason (信号: action 跟 thought 一致 — V2.2 §27)
+└── 阶段 4 决策 (decide): 真执行 → reward_decide (信号: 输出质量 / cost / latency)
+```
+
+为什么重要:
+- 现在 step 失败 → "整个 step 减分", 但不知道是 thought 错 / action 错 / execute 错
+- 升级后 → 哪一阶段错, 哪一阶段单独减分
+- 学习效率暴涨 (KUN 知道"我在哪个子阶段总错")
+
+升级 StepCredit 数据模型:
+```python
+class StageReward(BaseModel):
+    stage: Literal["perceive", "understand", "reason", "decide"]
+    reward: float  # 0..1
+    reason: str = ""
+
+class StepCredit(BaseModel):
+    # 原字段不变
+    # 加:
+    stage_rewards: list[StageReward] = Field(default_factory=list)  # V2.2 §25.4a 4 子阶段
+```
+
+immediate_reward = sum(stage_rewards) / 4 (默认), 或加权.
+
+跟 §27 thought-action consistency 联动:
+- 阶段 3 reason reward = ThoughtActionConsistency.check(step) score
+- 阶段 4 decide reward = ValueGate.expected_value 上升幅度
 
 ### 25.5 跟现有架构关系
 

@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import re
-from typing import Any, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel, field_validator
 
 from kun.interface.llm import LLMMessage, LLMRequest, TaskProfile
+
+logger = logging.getLogger(__name__)
 
 ActionType = Literal["use_memory", "use_skill", "web_search", "ask_user", "direct_llm"]
 ExecutionMode = Literal["FAST", "SMART", "MAX"]
@@ -53,6 +56,11 @@ class ExecutionStep(BaseModel):
     expected_outcome: str
     confidence: float = 0.5
     cost_estimate_usd: float = 0.0
+    # V2.2 §27 (FaithCoT 启发) — thought 跟 action 的一致性 (0..1)
+    # 默认 1.0 (FAST 模式跳过 check); SMART/MAX 模式 ThoughtActionConsistency.check 真算
+    thought_action_consistency: float = 1.0
+    # V2.2 §27 — 这条 step 重出过几次 (rethinking 触发, max 2)
+    rethink_count: int = 0
 
     @field_validator("confidence", mode="before")
     @classmethod
@@ -71,6 +79,91 @@ class ExecutionStep(BaseModel):
         except (TypeError, ValueError):
             cost = 0.0
         return max(0.0, cost)
+
+    @field_validator("thought_action_consistency", mode="before")
+    @classmethod
+    def _clamp_consistency(cls, value: Any) -> float:
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            v = 1.0
+        return min(1.0, max(0.0, v))
+
+
+# ============================================================================
+# V2.2 §27 ThoughtActionConsistency (FaithCoT 启发)
+# ============================================================================
+
+
+class ThoughtActionConsistency:
+    """检测 thought 跟 action 是否真一致 (不是事后解释).
+
+    FaithCoT 揭示: 模型可能"会解释而不会思考". KUN 升级:
+    - SMART/MAX 模式 LLM 出 ExecutionStep 后, 算 consistency
+    - consistency < threshold (默认 0.5) → emit signal 让守望决定 rethink
+    - FAST 模式跳过 (节省 latency)
+
+    实装: 启发式 + LLM judge 二合
+    - 启发式 (无 LLM call, 快): thought 含 keyword 是否对应 action_type
+    - LLM judge (cheap model 一次性): 不一致时调用作 final 判定
+    """
+
+    # action_type → 期望出现的 keyword (启发式)
+    _EXPECTED_KEYWORDS: ClassVar[dict[str, list[str]]] = {
+        "use_memory": ["记忆", "历史", "回顾", "memory", "recall", "history"],
+        "use_skill": ["调用", "skill", "工具", "tool"],
+        "web_search": ["搜索", "查询", "search", "web", "网", "外部"],
+        "ask_user": ["问", "确认", "ask", "user", "确定"],
+        "direct_llm": [],  # 默认, 无强 keyword
+    }
+
+    def __init__(
+        self,
+        *,
+        consistency_threshold: float = 0.5,
+        llm_judge: Any = None,  # async fn(thought, action_type) → float, 可选
+    ) -> None:
+        self.consistency_threshold = consistency_threshold
+        self._llm_judge = llm_judge
+
+    async def check(self, step: ExecutionStep) -> tuple[float, str]:
+        """返 (consistency_score, reason)."""
+        # 1. 启发式
+        heuristic_score = self._heuristic_check(step.thought, step.action_type)
+
+        # 2. 如果启发式高 (>=0.7) → 直接信
+        if heuristic_score >= 0.7:
+            return heuristic_score, f"heuristic_high:{heuristic_score:.2f}"
+
+        # 3. 启发式低 + LLM judge 可用 → 调一次 LLM 兜底
+        if self._llm_judge is not None:
+            try:
+                llm_score = await self._llm_judge(step.thought, step.action_type)
+                final = max(heuristic_score, float(llm_score))
+                return final, f"llm_judge:{llm_score:.2f}"
+            except Exception:
+                logger.exception("ThoughtActionConsistency llm_judge failed")
+
+        # 4. 没 LLM judge → 只用启发式
+        return heuristic_score, f"heuristic_only:{heuristic_score:.2f}"
+
+    def _heuristic_check(self, thought: str, action_type: str) -> float:
+        """启发式: thought 含期望 keyword → 高 consistency."""
+        keywords = self._EXPECTED_KEYWORDS.get(action_type, [])
+        if not keywords:
+            # direct_llm 没强 keyword, 默认 0.7 (中性偏高)
+            return 0.7
+        thought_lower = thought.lower()
+        hits = sum(1 for kw in keywords if kw.lower() in thought_lower)
+        if hits == 0:
+            return 0.2
+        if hits == 1:
+            return 0.6
+        return 0.9  # 多个 keyword 命中
+
+    def needs_rethink(self, score: float) -> bool:
+        """consistency 低于阈值 → 需要 rethink."""
+        return score < self.consistency_threshold
 
 
 class StructuredStepGenerator:
