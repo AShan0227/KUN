@@ -161,6 +161,7 @@ class Orchestrator:
         context_packer: ContextPacker | None = None,
         output_translator: OutputTranslator | None = None,
         emergent_switch_manager: Any = None,
+        value_gate: Any = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -172,6 +173,10 @@ class Orchestrator:
         self.context_packer = context_packer or ContextPacker()
         self.output_translator = output_translator or translate_for
         self.emergent_switch_manager = emergent_switch_manager
+        # V2.2 §19.4: 守望主决策 gate (opt-in, 默认 None 不影响现有测试)
+        self.value_gate = value_gate
+        # 累计 step value history, 给 value_gate marginal_roi 用
+        self._value_history: list[float] = []
 
     # ----------------------------- public entry -----------------------------
 
@@ -699,6 +704,43 @@ class Orchestrator:
                     )
 
                 step_t0 = time.perf_counter()
+
+                # V2.2 §19.4 wire: 守望主决策 gate (opt-in)
+                # 在每一步开始前算 expected_value + marginal_roi, 决定 continue/skip/stop/escalate
+                if self.value_gate is not None:
+                    try:
+                        gate_decision = await self.value_gate.check_step(
+                            task_ref=task_ref,
+                            step_plan=step_plan,
+                            prior_value_history=list(self._value_history),
+                            context={"purpose": str(choice.purpose)},
+                        )
+                        if gate_decision.decision in ("stop", "escalate"):
+                            yield OrchestratorEvent(
+                                kind="value_gate_intervention",
+                                data={
+                                    "step_id": step_plan.step_id,
+                                    "decision": gate_decision.decision,
+                                    "reason": gate_decision.reason,
+                                    "expected_value": gate_decision.expected_value,
+                                },
+                            )
+                            # stop / escalate 都中止当前 step loop
+                            status = "paused" if gate_decision.decision == "escalate" else "done"
+                            break
+                        if gate_decision.decision == "skip":
+                            yield OrchestratorEvent(
+                                kind="value_gate_skip",
+                                data={
+                                    "step_id": step_plan.step_id,
+                                    "reason": gate_decision.reason,
+                                    "expected_value": gate_decision.expected_value,
+                                },
+                            )
+                            continue
+                    except Exception:
+                        log.exception("value_gate.check_step failed (non-fatal)")
+
                 yield OrchestratorEvent(
                     kind="action",
                     data={"step_id": step_plan.step_id, "description": step_plan.description},
@@ -846,6 +888,26 @@ class Orchestrator:
                             )
                     except Exception:
                         log.exception("emergent_switch.detect_signals failed (non-fatal)")
+
+                # V2.2 §19.4 wire: step 完, 让 ValueGate 记 outcome + 更新 value_history
+                if self.value_gate is not None:
+                    try:
+                        # 启发式 step value: 基础 0.6 + 步号 0.05 增量, cap 1.0
+                        # M4: 接 capability_card 历史 success_rate / multi_judge consensus
+                        step_value = min(
+                            1.0,
+                            0.6 + 0.05 * step_record.step_id,
+                        )
+                        self._value_history.append(step_value)
+                        await self.value_gate.record_step_outcome(
+                            task_id=task_ref.meta.task_id,
+                            step_id=step_record.step_id,
+                            outcome_value=step_value,
+                            cost_usd=response.cost_usd_equivalent,
+                            success=True,
+                        )
+                    except Exception:
+                        log.exception("value_gate.record_step_outcome failed (non-fatal)")
 
             status = "done"
         except TaskTimedOutError as exc:

@@ -16,6 +16,7 @@ from kun.engineering.cron_scheduler import CronScheduler
 from kun.engineering.emergent_switch import EmergentSwitchManager
 from kun.engineering.fast_path import FastPathRouter
 from kun.engineering.idle_batch import KnowledgePrecipitationStep, register_step
+from kun.engineering.marginal_roi import ModulePresets
 from kun.engineering.orchestrator import Orchestrator
 from kun.engineering.precipitation import (
     KnowledgePrecipitation,
@@ -34,6 +35,7 @@ from kun.engineering.safety_guards import (
 from kun.security.diagnose_runner import DiagnoseRunner
 from kun.security.fix_handlers import register_default_fix_handlers
 from kun.watchtower.engine import RuleEngine
+from kun.watchtower.value_gate import ValueGate
 
 
 class _AppWithState(Protocol):
@@ -76,9 +78,21 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     # V2.1 M4: 真 cron scheduler (替换固定 interval idle_batch_worker)
     app.state.cron_scheduler = CronScheduler()
 
+    # V2.2 §19.4: 守望主决策 gate (opt-in via KUN_VALUE_GATE_ENABLED env)
+    import os as _os
+
+    value_gate = None
+    if _os.getenv("KUN_VALUE_GATE_ENABLED", "0") == "1":
+        value_gate = ValueGate(
+            marginal_criterion=ModulePresets.for_idle_batch_step(),
+            min_value_threshold=0.20,
+        )
+    app.state.value_gate = value_gate
+
     orchestrator = Orchestrator(
         rule_engine=rule_engine,
         emergent_switch_manager=emergent_switch_manager,
+        value_gate=value_gate,
     )
     app.state.rule_engine = rule_engine
     app.state.orchestrator = orchestrator
@@ -150,3 +164,8 @@ def get_diagnose_runner(app: _AppWithState) -> DiagnoseRunner:
 
 def get_cron_scheduler(app: _AppWithState) -> CronScheduler:
     return cast(CronScheduler, app.state.cron_scheduler)
+
+
+def get_value_gate(app: _AppWithState) -> ValueGate | None:
+    """V2.2 §19.4: 守望主决策 gate. 默认 None, env KUN_VALUE_GATE_ENABLED=1 启用."""
+    return getattr(app.state, "value_gate", None)
