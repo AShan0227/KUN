@@ -22,6 +22,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from kun import __version__
 from kun.api.attention_pin import router as attention_pin_router
+from kun.api.billing_transparency import router as billing_router
 from kun.api.blackboard import router as blackboard_router
 from kun.api.chat import router as chat_router
 from kun.api.diagnose import router as diagnose_router
@@ -227,6 +228,7 @@ async def metrics() -> Response:
 
 
 app.include_router(health_router, prefix="/health", tags=["health"])
+app.include_router(billing_router, prefix="/api/billing", tags=["billing"])
 app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
 app.include_router(ws_router)
 app.include_router(nuo_router, prefix="/nuo", tags=["nuo"])
