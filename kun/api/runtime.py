@@ -35,6 +35,7 @@ from kun.engineering.safety_guards import (
 from kun.security.diagnose_runner import DiagnoseRunner
 from kun.security.fix_handlers import register_default_fix_handlers
 from kun.watchtower.engine import RuleEngine
+from kun.watchtower.value_estimators import ProductionValueEstimator
 from kun.watchtower.value_gate import ValueGate
 
 
@@ -84,9 +85,13 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
 
     value_gate = None
     if _os.getenv("KUN_VALUE_GATE_ENABLED", "1") == "1":
+        # V2.2 Wire 2: 用 production estimator 替代 default heuristic
+        # capability_card 历史 + 预算剩余 + multi_judge 一致率 加权
+        prod_estimator = ProductionValueEstimator()
         value_gate = ValueGate(
             marginal_criterion=ModulePresets.for_idle_batch_step(),
             min_value_threshold=0.20,
+            value_estimator=prod_estimator.estimate,
         )
     app.state.value_gate = value_gate
 
