@@ -547,3 +547,79 @@ a04eb50 wave3 — 致命差评第一批 5 硬约束
 | U3 | 大决策前强制全局扫描 (PROMISES + V1.0 + 历史对话) | V2 §18.3 我也按这个 |
 | U4 | 每次产品讨论后追加 PROMISES.md (不删历史) | 已做 |
 | U5 | 完成度对照"整份产品方案"诚实报告 | V2 §0.4 + 每次同步整体 % |
+
+---
+
+## Y. 2026-04-26 第二轮 (M3.3 wire 完成 + M4 真持久化 + codex BATCH4 7 PR 合并)
+
+承接 X 节 (V2.1 wave1-7), 这一轮把 X.2 列出的 11 个🟡 部分完成项的 wire 主流程接通,
+M4 持久化的 4 件大事 3 件做完, codex BATCH4 10 个 PR 中 7 个 merged.
+
+### Y.1 wire 主流程 (M3.3 完结)
+
+| wire 项 | 状态 | 实际位置 |
+|---------|------|---------|
+| FastPath → /api/chat/run | ✅ (X.2 错记, 实际已 wire) | `kun/api/chat.py:50-75` |
+| TokenMeter → chat_handler | ✅ (X.2 错记, 实际已 wire) | `kun/api/chat.py:82-91` |
+| AttentionAnchor pin → ImportanceScorer | ✅ (X.2 错记, 实际已 wire) | `kun/context/importance.py:192-261` 的 score_with_anchors |
+| 黑板 5 endpoint → 真数据源 | ✅ (X.2 错记, W5 已 wire) | `kun/api/blackboard_data_sources.py` + main.py lifespan:60-66 |
+| KnowledgePrecipitation → idle_batch | ✅ (X.2 错记, W7 已 wire) | `kun/engineering/precipitation_idle_step.py` + main.py lifespan:68-75 |
+| KillSwitch → WS interrupt | ✅ (Y 轮新做) | `kun/api/ws.py` + commit d7d7192 |
+| EmergentSwitch → orchestrator | ✅ (Y 轮新做) | `kun/engineering/orchestrator.py` 4 行 wire + commit d7d7192 |
+
+X.2 状态过悲观, 实际 7 个 wire 中 5 个早已存在 (W5/W7/W8 wire 时做), 我重新 audit
+代码后修正. KillSwitch + EmergentSwitch 本轮新加.
+
+### Y.2 M4 真持久化
+
+| 项 | 状态 | 实际位置 |
+|---|------|---------|
+| SoulFile DB 持久化 + alembic migration | ✅ Y 轮 | alembic 0011 + `kun/datamodel/soul_file_provider.py` 加 load_or_create / save / preload + 4 个集成测试 (commit 14f5553) |
+| 真 cron scheduler (替换 fixed interval) | ✅ Y 轮 | `kun/engineering/cron_scheduler.py` + main.py lifespan 注册 3 个 jobs (commit a61d89c) |
+| capability_card 真数据回填 | ✅ (X.2 错记, 已存在) | `kun/engineering/capability_writeback.py` + orchestrator.py:1024 已调 record_outcome |
+| 黑板真数据 (LayeredAsset L2/L3) | 🟡 task_store 已接, asset/workspace 还是 stub | M5 |
+
+### Y.3 5 类傩诊断 fix handler 实装 (M3.2 提前)
+
+`kun/security/fix_handlers.py` (commit a8376a6):
+- clean / accelerate / failover / network_guard / privacy 5 类 handler 真做 in-memory side effect
+- /api/diagnose 3 endpoint (run / confirm / audit-log)
+- 14 个单测覆盖 + install_runtime 注册 5 类 default handler
+
+### Y.4 codex BATCH4 协作
+
+- 7 PR merged: C2 (#21) / C4 (#23) / C5 (#24) / C7 (#26) / C8 (#27) / C9 (#28) / C10 (#29)
+- 3 PR open 等 codex:
+  - C1 #20 工具输出哈希 (待修 path traversal + git false negative)
+  - C3 #22 任务成功验证 (待修 SSRF + human_approval 持久化)
+  - C6 #25 守望路由治理 (LGTM, 等 codex rebase)
+- 修了 codex C1-C9 PR 共同的 lint bug (test_wave7.py 漏 report assert)
+- 修了 CI 配置只允许 base=main 的问题 (加上 feat/v2.1-foundation + workflow_dispatch)
+- 派了 BATCH5 brief (10 个 M4 阶段独立任务 ~80-100h)
+
+### Y.5 测试增长
+
+| 阶段 | 测试数 |
+|------|--------|
+| Y 轮起点 | 490 |
+| KillSwitch wire | 494 |
+| EmergentSwitch wire | 495 |
+| Precipitation wire | 496 |
+| 5 类 fix handler | 510 |
+| SoulFile DB | 514 |
+| codex 7 PR merged | 575 |
+| 真 cron scheduler | 597 |
+
+497 测试增长 → 全程绿. ruff format/check + mypy 干净.
+
+### Y.6 距离 V2.1.2 完整可跑
+
+剩余 (相对 X.2 60-80h M3.3 wire + 150h M4 + 150h M5):
+- M3.3 wire 完结 ✅ (Y 轮 + audit 后发现已存在的)
+- M4 真持久化 3/4 完成 ✅ (剩 LayeredAsset L2/L3 资产池真数据 → M5)
+- 剩 codex 处理 #20 #22 #25 (~10h codex 工)
+- BATCH5 10 个 M4 任务 (~80-100h codex 工)
+- M5 协同+进化 (~150h, 包括真切 EmergentSwitch / OODA 完整 / 多臂赌博机 etc)
+
+完成度从 X 节的 ~25% (V2.1 抽象层) → Y 节 ~50% (M3.3 完整闭环 + M4 持久化 3/4).
+M5 完成 → 70%, 完整 V2.1.2 上线 → 90% (剩 10% 是真用户磨合 + 调参).
