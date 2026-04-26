@@ -87,23 +87,8 @@ def test_cron_scheduler_singleton_in_app_state() -> None:
     assert sched.list_jobs() == []  # lifespan registers jobs, install_runtime 不
 
 
-def test_value_gate_default_disabled() -> None:
-    """V2.2 §19.4: 默认 KUN_VALUE_GATE_ENABLED=0 → ValueGate 是 None."""
-    import os
-    from unittest.mock import patch
-
-    from fastapi import FastAPI
-    from kun.api.runtime import get_value_gate
-
-    with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("KUN_VALUE_GATE_ENABLED", None)
-        app = FastAPI()
-        install_runtime(app, rule_engine=RuleEngine([]))
-        assert get_value_gate(app) is None
-
-
-def test_value_gate_enabled_via_env() -> None:
-    """V2.2 §19.4: KUN_VALUE_GATE_ENABLED=1 → ValueGate 实例 + orchestrator 持有."""
+def test_value_gate_default_enabled() -> None:
+    """V2.2 §19.4 + §21 wire: 默认 KUN_VALUE_GATE_ENABLED=1 (FAST 模式自动跳过)."""
     import os
     from unittest.mock import patch
 
@@ -111,14 +96,28 @@ def test_value_gate_enabled_via_env() -> None:
     from kun.api.runtime import get_orchestrator, get_value_gate
     from kun.watchtower.value_gate import ValueGate
 
-    with patch.dict(os.environ, {"KUN_VALUE_GATE_ENABLED": "1"}):
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("KUN_VALUE_GATE_ENABLED", None)
         app = FastAPI()
         install_runtime(app, rule_engine=RuleEngine([]))
         gate = get_value_gate(app)
         assert isinstance(gate, ValueGate)
-        # orchestrator 持有同一实例
         orch = get_orchestrator(app)
         assert orch.value_gate is gate
+
+
+def test_value_gate_force_disable_via_env() -> None:
+    """KUN_VALUE_GATE_ENABLED=0 强制关 ValueGate."""
+    import os
+    from unittest.mock import patch
+
+    from fastapi import FastAPI
+    from kun.api.runtime import get_value_gate
+
+    with patch.dict(os.environ, {"KUN_VALUE_GATE_ENABLED": "0"}):
+        app = FastAPI()
+        install_runtime(app, rule_engine=RuleEngine([]))
+        assert get_value_gate(app) is None
 
 
 def test_knowledge_precipitation_wired_into_idle_batch() -> None:

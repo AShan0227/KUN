@@ -705,15 +705,16 @@ class Orchestrator:
 
                 step_t0 = time.perf_counter()
 
-                # V2.2 §19.4 wire: 守望主决策 gate (opt-in)
-                # 在每一步开始前算 expected_value + marginal_roi, 决定 continue/skip/stop/escalate
-                if self.value_gate is not None:
+                # V2.2 §19.4 + §21 wire: 守望主决策 gate
+                # ExecutionMode 决定 ValueGate 启用 (FAST 跳过, SMART/MAX 启用)
+                _exec_mode = getattr(task_ref.meta, "execution_mode", "FAST")
+                if self.value_gate is not None and _exec_mode != "FAST":
                     try:
                         gate_decision = await self.value_gate.check_step(
                             task_ref=task_ref,
                             step_plan=step_plan,
                             prior_value_history=list(self._value_history),
-                            context={"purpose": str(choice.purpose)},
+                            context={"purpose": str(choice.purpose), "mode": _exec_mode},
                         )
                         if gate_decision.decision in ("stop", "escalate"):
                             yield OrchestratorEvent(
@@ -890,7 +891,8 @@ class Orchestrator:
                         log.exception("emergent_switch.detect_signals failed (non-fatal)")
 
                 # V2.2 §19.4 wire: step 完, 让 ValueGate 记 outcome + 更新 value_history
-                if self.value_gate is not None:
+                # FAST 模式跳过, 不消耗 ValueGate state
+                if self.value_gate is not None and _exec_mode != "FAST":
                     try:
                         # 启发式 step value: 基础 0.6 + 步号 0.05 增量, cap 1.0
                         # M4: 接 capability_card 历史 success_rate / multi_judge consensus

@@ -78,11 +78,12 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     # V2.1 M4: 真 cron scheduler (替换固定 interval idle_batch_worker)
     app.state.cron_scheduler = CronScheduler()
 
-    # V2.2 §19.4: 守望主决策 gate (opt-in via KUN_VALUE_GATE_ENABLED env)
+    # V2.2 §19.4 + §21: 守望主决策 gate (默认开, FAST 模式自动跳过)
+    # KUN_VALUE_GATE_ENABLED=0 强制关闭整个 gate
     import os as _os
 
     value_gate = None
-    if _os.getenv("KUN_VALUE_GATE_ENABLED", "0") == "1":
+    if _os.getenv("KUN_VALUE_GATE_ENABLED", "1") == "1":
         value_gate = ValueGate(
             marginal_criterion=ModulePresets.for_idle_batch_step(),
             min_value_threshold=0.20,
