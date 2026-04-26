@@ -222,11 +222,70 @@ class StructuredStepGenerator:
 
 ---
 
-### C24. anchor-expand 接其余 14 处 (~20-25h, 大块)
+### C24. anchor-expand 接其余 N 处 (~15-20h)
 
-**前提**: Claude 先完成 `kun/core/anchor_expand.py` 通用工具 (我做完会 commit foundation, 你 rebase 后用).
+**当前实际剩余清单** (2026-04-26 更新, 已扣除已完成的):
 
-**目标**: V2.2 §19.3 列的 18 处中, Claude 接 4 处 (ImportanceScorer / LayeredAsset / SkillSelector / multi_judge), 你接其余 14 处.
+V2.2 §19.3 原列 18 处, 已完成:
+- ✅ ImportanceScorer (Claude Core 4a)
+- ✅ ContextPacker (Claude Core 4c)
+- ✅ SkillSelector (Claude Core 4b)
+- ✅ multi_judge (Claude Core 4d)
+- ✅ Panorama 模块按需展开 (codex C25 #33)
+- ✅ Input Translator (codex C27 #34, 跟 anchor-expand 思路对齐)
+
+**C24 真正剩 9 处可做** (跟 Claude 心脏 0 冲突, 大胆做):
+
+| # | 接入点 | 代码位置 | 难度 |
+|---|-------|---------|------|
+| 1 | StrategyMatcher 候选枚举 | `kun/core/strategy_matcher.py:240` | M (核心决策) |
+| 2 | CapabilityRouter 模型排序 | `kun/interface/llm/capability_router.py:107` | S |
+| 3 | Tier 枚举 | `kun/interface/llm/strategy_router_bridge.py:127` | S |
+| 4 | DiagnoseRunner findings | `kun/security/diagnose_runner.py:211` | M |
+| 5 | FixPlan 生成 | `kun/security/diagnose_runner.py:275` | S |
+| 6 | ExternalInfoScanner 多源 | `kun/engineering/external_scan.py:117` | M |
+| 7 | idle_batch step 调度 | `kun/engineering/idle_batch.py:84` | M |
+| 8 | AttentionAnchor 检查 | `kun/core/attention_anchor.py:123` | S |
+| 9 | IncidentResponse 动作矩阵 | `kun/security/incident_response.py:76` | M |
+
+**特别留意 (推到下一轮)**:
+- ❌ Watchtower 规则触发 (`engine.py:114`) — Claude 计划在这里加 ValueDecisionRule 集成 (V2.2 §19.4 wire), C24 暂时跳过
+- ❌ NUO action_panel + diagnose_panel — 跟 C26 重叠, C26 一起做
+- ❌ KnowledgePrecipitation 分发 (`precipitation.py:107`) — RelationshipMineStep 已 wire 这里, 等 C24 时再 audit 是否还需要 anchor-expand
+
+**通用模式** (每处接入用同一套):
+```python
+from kun.core.anchor_expand import AnchorExpandIterator
+from kun.engineering.marginal_roi import MarginalROIStopCriterion, ValueEstimator
+
+async def anchor_fn() -> T:
+    return top_1(query)
+
+async def expand_fn(anchor: T, prior: list[T]) -> T | None:
+    return next_relevant(anchor, prior)
+
+iterator = AnchorExpandIterator(
+    anchor_fn=anchor_fn,
+    expand_fn=expand_fn,
+    max_rounds=3,
+    stop_criterion=MarginalROIStopCriterion(...),
+    value_estimator=ValueEstimator(custom_fn=...),
+)
+async for item in iterator:
+    process(item)
+```
+
+**保留老 API**: 每个模块加新方法 (e.g. `select_anchor_then_expand`), 不替换老的 `select(top_k=...)`. 这样:
+- 现有 600+ 测试不受影响
+- 调用方按需用新 API
+- 老 API 标 \"legacy, prefer xxx_anchor_then_expand\" docstring
+
+**建议拆 3 个子 PR** (按依赖度排):
+- **C24-a 决策类 4 处**: StrategyMatcher / CapabilityRouter / Tier 枚举 / FixPlan 生成 (~6-8h)
+- **C24-b 守望/诊断类 3 处**: DiagnoseRunner findings / ExternalInfoScanner / IncidentResponse (~5-7h)
+- **C24-c 调度/锚定类 2 处**: idle_batch step / AttentionAnchor (~3-4h)
+
+每个子 PR ≥ 8 单测 (3 处 × 3 case + 1-2 边界).
 
 **清单 (按代码位置, 每处独立改, 不互相依赖)**:
 
@@ -472,15 +531,15 @@ C24 是大块 (≥4 个子 PR), 别一次性推. 一个一个独立 PR.
 
 ---
 
-## 总工时估算
+## 总工时估算 (2026-04-26 更新)
 
 - C21: 6-8h ✅ merged (#31)
-- C22: 12-14h
+- C22: 12-14h ✅ merged (#35)
 - C23: 10-12h ✅ merged (#32)
-- C24: 20-25h (拆 4 子 PR)
-- C25: 6-8h
+- C24: 15-20h (拆 3 子 PR, 9 处接入, 缩水 — 详见 C24 节)
+- C25: 6-8h ✅ merged (#33)
 - C26: 8-10h
-- C27: 8-10h (V2.2 §23 输入翻译器, Magika 启发, 新增)
-- **剩余: 64-77h** (C21+C23 已合)
+- C27: 8-10h ✅ merged (#34)
+- **剩余: 23-30h** (C21/C22/C23/C25/C27 全合, 剩 C24 + C26)
 
 加上 BATCH5 剩余 9 个 (C12-C20 ~80-100h), codex 总待干工作 ~140-180h. 配合 Claude 30-40h 心脏部分, V2.2 完整实施总 ~170-220h.
