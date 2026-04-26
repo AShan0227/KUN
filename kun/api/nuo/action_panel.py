@@ -37,6 +37,11 @@ class PendingActionItem(BaseModel):
 class PendingActionList(BaseModel):
     tenant_id: str
     actions: list[PendingActionItem]
+    next_cursor: str | None = None
+    has_more: bool = False
+    remaining: int = 0
+    round: int = 1
+    max_rounds: int = 3
 
 
 class ActionDecisionRequest(BaseModel):
@@ -55,9 +60,17 @@ class ActionDecisionResponse(BaseModel):
 @router.get("/pending", response_model=PendingActionList)
 async def list_pending_actions(
     status: ActionStatus = Query(default="pending_approval"),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=3, ge=1, le=50),
+    expand_after: str | None = Query(default=None),
+    max_rounds: int = Query(default=3, ge=1, le=3),
 ) -> PendingActionList:
-    """List tenant-scoped side-effect actions waiting in NUO."""
+    """List tenant-scoped side-effect actions waiting in NUO.
+
+    Anchor-expand UX:
+    - 首屏默认只返最高风险的 3 条;
+    - expand_after=<上一页最后一条 action_id> 时返后续 3 条;
+    - max_rounds 最多 3 轮, 防止用户一次拉太多注意力噪声.
+    """
     tenant = current_tenant()
     async with session_scope() as s:
         result = await s.execute(
@@ -67,13 +80,29 @@ async def list_pending_actions(
                 PendingActionRow.status == status,
             )
             .order_by(PendingActionRow.created_at)
-            .limit(limit)
+            .limit(200)
         )
         rows = list(result.scalars().all())
 
+    rows = _sort_actions_for_anchor(rows)
+    try:
+        page, next_cursor, remaining, round_no = _page_actions_anchor(
+            rows,
+            limit=limit,
+            expand_after=expand_after,
+            max_rounds=max_rounds,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
     return PendingActionList(
         tenant_id=tenant.tenant_id,
-        actions=[_row_to_item(row) for row in rows],
+        actions=[_row_to_item(row) for row in page],
+        next_cursor=next_cursor,
+        has_more=remaining > 0 and round_no < max_rounds,
+        remaining=remaining if round_no < max_rounds else 0,
+        round=round_no,
+        max_rounds=max_rounds,
     )
 
 
@@ -189,3 +218,44 @@ def _row_to_item(row: PendingActionRow) -> PendingActionItem:
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+_RISK_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def _sort_actions_for_anchor(rows: list[PendingActionRow]) -> list[PendingActionRow]:
+    """最高风险优先, 同风险按创建时间稳定排序."""
+    return sorted(
+        rows,
+        key=lambda row: (
+            _RISK_ORDER.get(row.risk_level, 99),
+            row.created_at,
+            row.action_id,
+        ),
+    )
+
+
+def _page_actions_anchor(
+    rows: list[PendingActionRow],
+    *,
+    limit: int,
+    expand_after: str | None,
+    max_rounds: int,
+) -> tuple[list[PendingActionRow], str | None, int, int]:
+    """返回一页 action + 下一页 cursor + 剩余数量 + 当前轮次."""
+    if expand_after is None:
+        start = 0
+    else:
+        idx = next((i for i, row in enumerate(rows) if row.action_id == expand_after), None)
+        if idx is None:
+            raise ValueError("expand_after action not found")
+        start = idx + 1
+
+    round_no = min(max(start // limit + 1, 1), max_rounds)
+    if round_no > max_rounds:
+        return ([], None, 0, round_no)
+
+    page = rows[start : start + limit]
+    next_cursor = page[-1].action_id if page else None
+    remaining = max(0, len(rows) - (start + len(page)))
+    return (page, next_cursor, remaining, round_no)
