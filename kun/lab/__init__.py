@@ -36,9 +36,16 @@ from kun.lab.experiment_log import (
     reset_experiment_log,
 )
 from kun.lab.llm_router_adapter import LLMRouterEnsembleAdapter, make_default_adapter
+from kun.lab.precipitation_bridge import (
+    HIGH_CONFIDENCE_WIN_RATE,
+    LabRecipePrecipitationStep,
+    install_lab_kp_bridge,
+    make_kp_adopter,
+)
 from kun.lab.recipe_promoter import RecipePromoter
 
 __all__ = [
+    "HIGH_CONFIDENCE_WIN_RATE",
     "EnsembleConfig",
     "EnsembleExecutor",
     "EnsemblePathResult",
@@ -49,11 +56,14 @@ __all__ = [
     "LabAdopter",
     "LabEventEmitter",
     "LabRecipeAdoptionStep",
+    "LabRecipePrecipitationStep",
     "RecipePromoter",
     "get_adoption_step",
     "get_experiment_log",
     "install_lab_adoption_step",
+    "install_lab_kp_bridge",
     "make_default_adapter",
+    "make_kp_adopter",
     "reset_adoption_step",
     "reset_experiment_log",
     "summarize_ensemble",

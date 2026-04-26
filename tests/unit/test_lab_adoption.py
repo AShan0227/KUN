@@ -19,6 +19,11 @@ def _reset_singleton():
     reset_adoption_step()
     yield
     reset_adoption_step()
+    # install_lab_adoption_step 在某些测试里把 step 注入了 idle_batch._steps,
+    # 清理避免污染下个测试 (顺序依赖很烦)
+    from kun.engineering.idle_batch import _steps
+
+    _steps.pop("lab_recipe_adoption", None)
 
 
 def _make_event(
