@@ -49,6 +49,7 @@ dependencies = [
   "typer>=0.13.0",
   "pypdf>=6.10.2",
   "minio>=7.2.20",
+  "magika>=0.6.0",
 ]
 
 [project.optional-dependencies]
