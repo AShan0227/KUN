@@ -259,6 +259,24 @@ class Orchestrator:
         yield OrchestratorEvent(kind="thinking", data={"stage": "intent"})
         task_ref = await self.intent.interpret(user_message, owner=owner)
 
+        # 1.5 V2.1 wire (M3.3, opt-in): TaskPanorama 按需展开 + 推黑板
+        # KUN_PANORAMA_BUILDER_ENABLED=1 启用; 默认 off, 不破坏现有流程.
+        from kun.engineering.panorama_orchestrator_bridge import (
+            build_panorama_for_task,
+            panorama_to_event_data,
+        )
+        from kun.engineering.panorama_orchestrator_bridge import (
+            is_enabled as _panorama_enabled,
+        )
+
+        if _panorama_enabled():
+            _panorama = await build_panorama_for_task(task_ref, user_message)
+            if _panorama is not None:
+                yield OrchestratorEvent(
+                    kind="action_plan",
+                    data=panorama_to_event_data(_panorama),
+                )
+
         # 2. Idempotency check + persist TaskRow + emit task.created
         duplicate_ref: str | None = None
         try:

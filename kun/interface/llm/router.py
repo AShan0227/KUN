@@ -248,6 +248,22 @@ class LLMRouter:
         tracer = trace.get_tracer("kun.interface.llm.router")
         with tracer.start_as_current_span("kun.router.invoke") as span:
             decision = self.decide(purpose, request.profile, request=request)
+
+            # V2.1 §17 wire (M3.3): opt-in StrategyMatcher 第 5 层覆盖
+            # KUN_STRATEGY_MATCHER_ENABLED=1 启用; 默认 off, 不破坏现有行为.
+            from kun.interface.llm.strategy_router_bridge import (
+                is_enabled as _sm_enabled,
+            )
+            from kun.interface.llm.strategy_router_bridge import (
+                maybe_override_with_strategy,
+            )
+
+            if _sm_enabled():
+                decision = await maybe_override_with_strategy(
+                    decision, purpose, request, request.profile,
+                )
+                span.set_attribute("kun.strategy_matcher_engaged", True)
+
             span.set_attribute("kun.purpose", str(purpose))
             span.set_attribute("kun.primary_tier", str(decision.primary_tier))
             span.set_attribute("kun.fallback_tier", str(decision.fallback_tier))
