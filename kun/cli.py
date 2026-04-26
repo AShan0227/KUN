@@ -15,8 +15,10 @@ from kun.core.config import settings
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 security_app = typer.Typer(add_completion=False, no_args_is_help=True)
+lab_app = typer.Typer(add_completion=False, no_args_is_help=True, help="KUN-Lab 内测分区 (V2.2 §26)")
 console = Console()
 app.add_typer(security_app, name="security")
+app.add_typer(lab_app, name="lab")
 
 
 @app.command()
@@ -226,6 +228,203 @@ def security_red_team(
         console.print(table)
         for finding in report.findings[:10]:
             console.print(f"[red]{finding.severity}[/] {finding.case_id}: {finding.recommendation}")
+
+    asyncio.run(_go())
+
+
+# =============== lab subcommands (Wire 22) ===============
+
+
+@lab_app.command("run")
+def lab_run(
+    task: str = typer.Argument(..., help="Task prompt for ensemble experiment"),
+    paths: int = typer.Option(5, "--paths", "-n", min=2, max=10, help="并发路径数"),
+    selection: str = typer.Option(
+        "best_score",
+        "--selection",
+        help="best_score | majority_vote | judge_picks",
+    ),
+    task_type: str = typer.Option("kun_lab.cli", "--task-type", help="跟主仓库 task taxonomy 对齐"),
+    enable: bool = typer.Option(
+        False,
+        "--enable",
+        help="自动 set KUN_LAB_MODE=1 (默认要求用户已 export)",
+    ),
+    no_emit: bool = typer.Option(False, "--no-emit", help="不 emit experiment.created 事件"),
+    cost_budget: float = typer.Option(1.0, "--cost-budget", help="lab 总预算上限 USD"),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+) -> None:
+    """跑一次 ensemble 实验 (V2.2 §26.3 HEX 启发).
+
+    示例:
+        kun lab run "为 Q4 商业方案出 3 套" --paths 5 --enable
+    """
+    import os
+
+    if enable:
+        os.environ["KUN_LAB_MODE"] = "1"
+
+    from kun.core.tenancy import TenantContext, tenant_scope
+    from kun.lab import (
+        EnsembleConfig,
+        EnsembleExecutor,
+        LabEventEmitter,
+        get_experiment_log,
+        make_default_adapter,
+    )
+    from kun.lab.ensemble_executor import is_lab_enabled
+
+    if not is_lab_enabled():
+        console.print(
+            "[bold red]KUN-Lab 未启用[/]: export KUN_LAB_MODE=1, 或加 --enable flag"
+        )
+        raise typer.Exit(code=2)
+
+    async def _go() -> None:
+        adapter = make_default_adapter(task_type=task_type)
+        emitter = None if no_emit else LabEventEmitter(task_type_default=task_type)
+        executor = EnsembleExecutor(
+            adapter,
+            event_emitter=emitter.on_experiment_completed if emitter else None,
+        )
+        cfg = EnsembleConfig(
+            n_paths=paths,
+            selection_method=selection,
+            cost_budget_total_usd=cost_budget,
+        )
+
+        with tenant_scope(TenantContext(tenant_id=tenant)):
+            result = await executor.run(task, config=cfg, task_type=task_type)
+            # 同时记进 ExperimentLog 让 promote 子命令能看
+            get_experiment_log().record(task_type=task_type, ensemble_result=result)
+
+        # 输出
+        table = Table(title=f"实验 {result.experiment_id} — winner={result.winning_path_idx}")
+        table.add_column("idx", justify="right")
+        table.add_column("strategy")
+        table.add_column("tier")
+        table.add_column("score", justify="right")
+        table.add_column("cost $", justify="right")
+        table.add_column("err")
+        for pr in result.path_results:
+            table.add_row(
+                str(pr.path_idx),
+                str(pr.config.get("strategy", "")),
+                str(pr.config.get("tier", "")),
+                f"{pr.score:.2f}",
+                f"{pr.cost_usd:.4f}",
+                "[red]" + pr.error[:40] + "[/]" if pr.error else "",
+            )
+        console.print(table)
+        console.print(
+            f"[bold green]winning_output[/]: {result.winning_output[:200]!r}"
+            + ("..." if len(result.winning_output) > 200 else "")
+        )
+        console.print(
+            f"selection={result.selection_reason}  cost=${result.total_cost_usd:.4f}"
+            f"  latency={result.total_latency_sec:.2f}s  emit={'on' if emitter else 'off'}"
+        )
+
+    asyncio.run(_go())
+
+
+@lab_app.command("stats")
+def lab_stats(
+    task_type: str = typer.Option("", "--task-type", help="过滤 task_type, 空 = 全部"),
+    top_k: int = typer.Option(10, "--top", help="显示 top N strategy"),
+) -> None:
+    """显示 ExperimentLog 当前累积统计 (in-process singleton)."""
+    from kun.lab import get_experiment_log
+
+    log = get_experiment_log()
+    experiments = log.list_all() if not task_type else log.by_task_type(task_type)
+    if not experiments:
+        console.print(
+            "[yellow]ExperimentLog empty[/] (单进程 singleton; 用 `kun lab run` 累积数据)"
+        )
+        return
+
+    stats = log.recipe_stats(task_type or None)
+    stats.sort(key=lambda s: s.win_rate, reverse=True)
+
+    table = Table(title=f"recipe stats (n_experiments={len(experiments)})")
+    table.add_column("task_type")
+    table.add_column("strategy")
+    table.add_column("wins/total", justify="right")
+    table.add_column("win_rate", justify="right")
+    table.add_column("avg_score", justify="right")
+    table.add_column("avg_cost $", justify="right")
+    for s in stats[:top_k]:
+        table.add_row(
+            s.task_type,
+            s.strategy,
+            f"{s.win_count}/{s.total_count}",
+            f"{s.win_rate:.2f}",
+            f"{s.avg_score:.2f}",
+            f"{s.avg_cost_usd:.4f}",
+        )
+    console.print(table)
+    console.print(f"[dim]total lab cost: ${log.total_lab_cost_usd():.4f}[/]")
+
+
+@lab_app.command("promote")
+def lab_promote(
+    min_total: int = typer.Option(10, "--min-total", help="至少累计实验数"),
+    min_winrate: float = typer.Option(0.6, "--min-winrate", min=0.0, max=1.0),
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--apply",
+        help="dry_run 默认 (只列 eligible); --apply 真推 events bus",
+    ),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+) -> None:
+    """找符合 min_total + min_winrate 的 recipe → 推主仓库 (KnowledgePrecipitation)."""
+    from kun.core.tenancy import TenantContext, tenant_scope
+    from kun.lab import LabEventEmitter, RecipePromoter, get_experiment_log
+
+    log = get_experiment_log()
+    if not log.list_all():
+        console.print(
+            "[yellow]ExperimentLog empty[/] (单进程 singleton; 先 `kun lab run` 跑实验)"
+        )
+        return
+
+    async def _go() -> None:
+        emitter = None if dry_run else LabEventEmitter()
+        promoter = RecipePromoter(
+            log,
+            min_total=min_total,
+            min_winrate=min_winrate,
+            event_emitter=emitter.on_recipe_promoted if emitter else None,
+        )
+        eligible = promoter.find_eligible_recipes()
+
+        table = Table(title=f"eligible recipes (min_total={min_total}, min_winrate={min_winrate})")
+        table.add_column("task_type")
+        table.add_column("strategy")
+        table.add_column("wins/total", justify="right")
+        table.add_column("win_rate", justify="right")
+        for s in eligible:
+            table.add_row(
+                s.task_type,
+                s.strategy,
+                f"{s.win_count}/{s.total_count}",
+                f"{s.win_rate:.2f}",
+            )
+        console.print(table)
+
+        if dry_run:
+            console.print(
+                "[dim]dry_run — 不 emit. 加 --apply 才真推 (会发 experiment.promoted 事件).[/]"
+            )
+            return
+
+        with tenant_scope(TenantContext(tenant_id=tenant)):
+            promotions = await promoter.promote_eligible()
+        console.print(
+            f"[green]推升 {len(promotions)} 条 recipe → events bus[/] "
+            f"(experiment.promoted; 主仓库 idle_batch 消费)"
+        )
 
     asyncio.run(_go())
 
