@@ -102,6 +102,8 @@ class SoulFile(BaseModel):
     cost_sensitivity: Literal["low", "medium", "high"] = "medium"
     speed_sensitivity: Literal["low", "medium", "high"] = "medium"
     interruption_tolerance: Literal["low", "medium", "high"] = "medium"
+    interruption_frequency: Literal["full_auto", "ask_every_n", "manual_review"] = "ask_every_n"
+    ask_every_n_steps: int = Field(default=5, ge=1)
 
     # 工具偏好
     preferred_tools: list[dict[str, Any]] = Field(default_factory=list)
@@ -126,6 +128,15 @@ class SoulFile(BaseModel):
 
     # append-only 历史 (governance 核心)
     revision_history: list[SoulFileRevision] = Field(default_factory=list)
+
+    def should_interrupt_at_step(self, step_index: int) -> bool:
+        """按用户中断频率偏好决定当前 step 后是否打扰用户."""
+
+        if self.interruption_frequency == "full_auto":
+            return False
+        if self.interruption_frequency == "manual_review":
+            return True
+        return step_index > 0 and step_index % self.ask_every_n_steps == 0
 
 
 @dataclass
