@@ -162,6 +162,7 @@ class Orchestrator:
         output_translator: OutputTranslator | None = None,
         emergent_switch_manager: Any = None,
         value_gate: Any = None,
+        structured_step_generator: Any = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -175,6 +176,8 @@ class Orchestrator:
         self.emergent_switch_manager = emergent_switch_manager
         # V2.2 §19.4: 守望主决策 gate (opt-in, 默认 None 不影响现有测试)
         self.value_gate = value_gate
+        # V2.2 §22 wire: hermes 结构化执行协议 generator (SMART/MAX 模式启用)
+        self.structured_step_generator = structured_step_generator
         # 累计 step value history, 给 value_gate marginal_roi 用
         self._value_history: list[float] = []
 
@@ -708,13 +711,57 @@ class Orchestrator:
                 # V2.2 §19.4 + §21 wire: 守望主决策 gate
                 # ExecutionMode 决定 ValueGate 启用 (FAST 跳过, SMART/MAX 启用)
                 _exec_mode = getattr(task_ref.meta, "execution_mode", "FAST")
+
+                # V2.2 §22 wire: SMART/MAX 模式生成 hermes ExecutionStep, 让守望介入
+                # FAST 跳过 (节省一次 LLM call)
+                _hermes_step: Any = None
+                if self.structured_step_generator is not None and _exec_mode != "FAST":
+                    try:
+                        _hermes_step = await self.structured_step_generator.generate(
+                            prompt=step_plan.description,
+                            context={
+                                "purpose": str(choice.purpose),
+                                "risk_level": task_ref.meta.risk_level,
+                                "step_id": step_plan.step_id,
+                                "max_cost_usd": task_ref.meta.estimated_cost_usd,
+                            },
+                            mode=_exec_mode,
+                        )
+                        yield OrchestratorEvent(
+                            kind="hermes_step",
+                            data={
+                                "step_id": step_plan.step_id,
+                                "thought": _hermes_step.thought,
+                                "action_type": _hermes_step.action_type,
+                                "expected_outcome": _hermes_step.expected_outcome,
+                                "confidence": _hermes_step.confidence,
+                                "cost_estimate_usd": _hermes_step.cost_estimate_usd,
+                            },
+                        )
+                    except Exception:
+                        log.exception("hermes_step.generate failed (non-fatal)")
+
                 if self.value_gate is not None and _exec_mode != "FAST":
                     try:
+                        # 把 hermes ExecutionStep 的 cost_estimate / confidence 喂给 ValueGate
+                        # 让 estimator 看到 LLM 自评的 cost (产 production estimator 用)
+                        _gate_ctx: dict[str, Any] = {
+                            "purpose": str(choice.purpose),
+                            "mode": _exec_mode,
+                            "tenant_id": tenant.tenant_id,
+                            "task_type": task_ref.meta.task_type,
+                            "accumulated_cost_usd": runtime.accumulated_cost_usd_equivalent,
+                            "budget_usd": task_ref.meta.estimated_cost_usd,
+                        }
+                        if _hermes_step is not None:
+                            _gate_ctx["hermes_confidence"] = _hermes_step.confidence
+                            _gate_ctx["hermes_cost_estimate"] = _hermes_step.cost_estimate_usd
+                            _gate_ctx["hermes_action_type"] = _hermes_step.action_type
                         gate_decision = await self.value_gate.check_step(
                             task_ref=task_ref,
                             step_plan=step_plan,
                             prior_value_history=list(self._value_history),
-                            context={"purpose": str(choice.purpose), "mode": _exec_mode},
+                            context=_gate_ctx,
                         )
                         if gate_decision.decision in ("stop", "escalate"):
                             yield OrchestratorEvent(

@@ -120,6 +120,38 @@ def test_value_gate_force_disable_via_env() -> None:
         assert get_value_gate(app) is None
 
 
+def test_hermes_default_enabled_and_orchestrator_holds_it() -> None:
+    """V2.2 §22 wire: 默认 KUN_HERMES_ENABLED=1, orchestrator 持有 generator."""
+    import os
+    from unittest.mock import patch
+
+    from fastapi import FastAPI
+    from kun.api.runtime import get_orchestrator, get_structured_step_generator
+    from kun.engineering.execution_protocol import StructuredStepGenerator
+
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("KUN_HERMES_ENABLED", None)
+        app = FastAPI()
+        install_runtime(app, rule_engine=RuleEngine([]))
+        gen = get_structured_step_generator(app)
+        assert isinstance(gen, StructuredStepGenerator)
+        orch = get_orchestrator(app)
+        assert orch.structured_step_generator is gen
+
+
+def test_hermes_force_disable_via_env() -> None:
+    import os
+    from unittest.mock import patch
+
+    from fastapi import FastAPI
+    from kun.api.runtime import get_structured_step_generator
+
+    with patch.dict(os.environ, {"KUN_HERMES_ENABLED": "0"}):
+        app = FastAPI()
+        install_runtime(app, rule_engine=RuleEngine([]))
+        assert get_structured_step_generator(app) is None
+
+
 def test_knowledge_precipitation_wired_into_idle_batch() -> None:
     """V2.1 §16.12: install_runtime 应该:
     - 创建 KnowledgePrecipitation 单例并注册 4 类内置 step

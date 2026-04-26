@@ -14,6 +14,7 @@ from typing import Any, Protocol, cast
 from kun.core.emergent_solution import EmergentSolutionLibrary
 from kun.engineering.cron_scheduler import CronScheduler
 from kun.engineering.emergent_switch import EmergentSwitchManager
+from kun.engineering.execution_protocol import StructuredStepGenerator
 from kun.engineering.fast_path import FastPathRouter
 from kun.engineering.idle_batch import KnowledgePrecipitationStep, register_step
 from kun.engineering.marginal_roi import ModulePresets
@@ -95,10 +96,19 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         )
     app.state.value_gate = value_gate
 
+    # V2.2 §22 + Wire 3: hermes 结构化执行 generator (默认开, FAST 模式自动跳过)
+    structured_step_generator = None
+    if _os.getenv("KUN_HERMES_ENABLED", "1") == "1":
+        from kun.interface.llm import get_router
+
+        structured_step_generator = StructuredStepGenerator(get_router())
+    app.state.structured_step_generator = structured_step_generator
+
     orchestrator = Orchestrator(
         rule_engine=rule_engine,
         emergent_switch_manager=emergent_switch_manager,
         value_gate=value_gate,
+        structured_step_generator=structured_step_generator,
     )
     app.state.rule_engine = rule_engine
     app.state.orchestrator = orchestrator
@@ -175,3 +185,8 @@ def get_cron_scheduler(app: _AppWithState) -> CronScheduler:
 def get_value_gate(app: _AppWithState) -> ValueGate | None:
     """V2.2 §19.4: 守望主决策 gate. 默认 None, env KUN_VALUE_GATE_ENABLED=1 启用."""
     return getattr(app.state, "value_gate", None)
+
+
+def get_structured_step_generator(app: _AppWithState) -> StructuredStepGenerator | None:
+    """V2.2 §22: hermes 结构化执行 generator. 默认开, env KUN_HERMES_ENABLED=0 关."""
+    return getattr(app.state, "structured_step_generator", None)
