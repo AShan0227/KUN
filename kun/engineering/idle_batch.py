@@ -315,7 +315,9 @@ class RouteRuleMiningStep(IdleBatchStep):
         for task_type, candidates in by_task.items():
             best = max(candidates, key=lambda item: (item["success_rate"], -item["avg_cost_usd"]))
             if best["samples"] >= 2 and best["success_rate"] >= 0.8:
-                patterns.append({"task_type": task_type, "recommended_model": best["model"], **best})
+                patterns.append(
+                    {"task_type": task_type, "recommended_model": best["model"], **best}
+                )
         return {"logs": len(logs), "new_patterns": len(patterns), "patterns": patterns}
 
 
