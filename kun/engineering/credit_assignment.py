@@ -265,10 +265,72 @@ async def llm_reflector_factory(
     return _reflect
 
 
+class ContributionTracker:
+    """全局资源贡献跟踪 (V2.2 §25.3.4 wire).
+
+    累计每个资源 (memory:m1 / skill:s2 / model:m3) 的历史贡献度.
+    给 ImportanceScorer.score_with_contribution_boost 用.
+
+    contribution_score = 0.5 × (K/N) + 0.5 × (M/N)
+    - N: 总被用次数
+    - K: 在 pass 任务里被用的次数
+    - M: 在 critical_path 里的次数
+
+    没历史 → 0.0 (新资源不加分).
+    """
+
+    def __init__(self) -> None:
+        # resource_key (e.g. "memory:m1") → (N, K, M)
+        self._stats: dict[str, tuple[int, int, int]] = {}
+
+    def update_from_report(self, report: TaskCreditReport) -> None:
+        """task done 后, 用 TaskCreditReport 更新统计."""
+        is_pass = report.task_outcome in ("pass", "partial")
+        for step in report.step_credits:
+            for resource_key in step.credit_share:
+                n, k, m = self._stats.get(resource_key, (0, 0, 0))
+                n += 1
+                if is_pass:
+                    k += 1
+                if step.is_critical_path:
+                    m += 1
+                self._stats[resource_key] = (n, k, m)
+
+    def contribution_score(self, asset_id: str, kind: str = "memory") -> float:
+        """查 contribution score [0..1]. asset_id 可裸 id, 自动加 kind 前缀."""
+        key = asset_id if ":" in asset_id else f"{kind}:{asset_id}"
+        n, k, m = self._stats.get(key, (0, 0, 0))
+        if n == 0:
+            return 0.0
+        return 0.5 * (k / n) + 0.5 * (m / n)
+
+    def reset(self) -> None:
+        self._stats.clear()
+
+
+_tracker: ContributionTracker | None = None
+
+
+def get_contribution_tracker() -> ContributionTracker:
+    """singleton getter."""
+    global _tracker
+    if _tracker is None:
+        _tracker = ContributionTracker()
+    return _tracker
+
+
+def reset_contribution_tracker() -> None:
+    global _tracker
+    _tracker = None
+
+
 __all__ = [
+    "ContributionTracker",
     "CreditAssignment",
     "StepCredit",
     "TaskCreditReport",
+    "get_contribution_tracker",
     "heuristic_reflector",
     "llm_reflector_factory",
+    "reset_contribution_tracker",
 ]

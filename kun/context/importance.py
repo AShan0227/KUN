@@ -41,7 +41,7 @@ SHORT_HALF_LIFE_DAYS = 5.0
 
 @dataclass(frozen=True)
 class ImportanceScore:
-    """Context 资产重要度分数 (V2.1.2 5 维)."""
+    """Context 资产重要度分数 (V2.2 §25 6 维)."""
 
     overall: float
     semantic: float
@@ -49,6 +49,7 @@ class ImportanceScore:
     recency: float
     dependency: float = 0.0  # V2 任务依赖度
     pin: float = 0.0  # V2 用户显式 pin
+    contribution: float = 0.0  # V2.2 §25 历史贡献度 (CreditAssignment 反推)
     rationale: str = ""
 
 
@@ -325,6 +326,68 @@ class ImportanceScorer:
         repeatedly_used_but_low = asset.access_count >= 10 and score.overall < 0.25
         long_unvisited_but_kept = asset.access_count == 0 and score.recency < 0.05
         return repeatedly_used_but_low or long_unvisited_but_kept
+
+    async def score_with_contribution_boost(
+        self,
+        candidates: list[LayeredAsset],
+        *,
+        query: str | None = None,
+        now: datetime | None = None,
+        contribution_lookup: Callable[[str], float] | None = None,
+        boost_weight: float = 0.20,
+    ) -> list[tuple[LayeredAsset, ImportanceScore]]:
+        """V2.2 §25 wire: 用 contribution_history 加 boost.
+
+        contribution_lookup: callable(asset_id) → float [0..1]. None → 退化普通 score.
+
+        典型用法:
+        - 调用方注入 lookup_fn (从 CreditAssignment / capability_card 拿历史 credit)
+        - 高 contribution 资产自动 boost overall
+        - 跟 graph_boost / pin / dependency 累加 (cap 1.0)
+
+        Returns:
+            list[(LayeredAsset, ImportanceScore)] 按 overall 降序
+        """
+        scored: list[tuple[LayeredAsset, ImportanceScore]] = []
+        for asset in candidates:
+            base_score = self.score(asset=asset, query=query, now=now)
+            asset_id = str(asset.asset_id)
+
+            # 拿 contribution
+            contribution = 0.0
+            if contribution_lookup is not None:
+                try:
+                    contribution = float(contribution_lookup(asset_id))
+                    contribution = max(0.0, min(1.0, contribution))
+                except Exception:
+                    contribution = 0.0
+
+            # 加权进 overall (cap 1.0)
+            boosted_overall = min(1.0, base_score.overall + boost_weight * contribution)
+
+            scored.append(
+                (
+                    asset,
+                    ImportanceScore(
+                        overall=boosted_overall,
+                        semantic=base_score.semantic,
+                        frequency=base_score.frequency,
+                        recency=base_score.recency,
+                        dependency=base_score.dependency,
+                        pin=base_score.pin,
+                        contribution=contribution,
+                        rationale=(
+                            base_score.rationale
+                            + f"; contribution={contribution:.2f} (boost={boost_weight:.2f})"
+                            if contribution > 0
+                            else base_score.rationale
+                        ),
+                    ),
+                )
+            )
+
+        scored.sort(key=lambda x: x[1].overall, reverse=True)
+        return scored
 
     async def score_with_graph_boost(
         self,
