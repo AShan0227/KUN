@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from kun.core.anchor_expand import AnchorExpandIterator
 from kun.core.logging import get_logger
 from kun.core.tenancy import TenantContext, tenant_scope
 
@@ -118,6 +119,81 @@ async def run_all(
                 )
     log.info("idle_batch.run_all.done", tenant_id=tenant_id, n=len(reports))
     return reports
+
+
+async def run_all_anchor_then_expand(
+    tenant_id: str,
+    *,
+    enabled: set[str] | None = None,
+    max_rounds: int = 3,
+) -> AsyncIterator[StepReport]:
+    """按需运行 idle-batch step.
+
+    老的 ``run_all`` 会一次性跑完所有启用 step. 新接口先跑最高优先级 step,
+    调用方需要更多离线工作时再继续 expand.
+
+    # TODO: wire by Claude in V2.2
+    """
+    names = _selected_step_names(enabled)
+    if not names:
+        return
+
+    log.info("idle_batch.run_all_anchor.start", tenant_id=tenant_id, steps=names)
+
+    async def anchor_fn() -> StepReport:
+        return await _run_one_step(tenant_id, names[0])
+
+    async def expand_fn(_anchor: StepReport, prior: list[StepReport]) -> StepReport | None:
+        idx = len(prior)
+        if idx >= len(names):
+            return None
+        return await _run_one_step(tenant_id, names[idx])
+
+    with tenant_scope(TenantContext(tenant_id=tenant_id)):
+        async for report in AnchorExpandIterator(
+            anchor_fn,
+            expand_fn,
+            max_rounds=max_rounds,
+        ):
+            yield report
+
+
+def _selected_step_names(enabled: set[str] | None) -> list[str]:
+    names = [n for n in list_steps() if enabled is None or n in enabled]
+    priority = {
+        "health_report": 0,
+        "knowledge_precipitation": 1,
+        "knowledge_conflict": 2,
+        "methodology_distill": 3,
+        "route_rule_mining": 4,
+        "ab_decision_roll_up": 5,
+        "consistency_test": 6,
+        "task_replay": 7,
+    }
+    return sorted(names, key=lambda name: (priority.get(name, 99), name))
+
+
+async def _run_one_step(tenant_id: str, name: str) -> StepReport:
+    step = _steps[name]
+    started = datetime.now(UTC)
+    try:
+        summary = await step.run(tenant_id)
+        return StepReport(
+            step_id=name,
+            started_at=started,
+            finished_at=datetime.now(UTC),
+            status="ok",
+            summary=summary,
+        )
+    except Exception as e:
+        log.exception("idle_batch.step_failed", step=name, error=str(e))
+        return StepReport(
+            step_id=name,
+            started_at=started,
+            finished_at=datetime.now(UTC),
+            status="failed",
+            summary={"error": str(e)},
+        )
 
 
 # ============= Built-in steps (placeholders) ============

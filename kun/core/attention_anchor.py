@@ -12,11 +12,13 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from kun.core.anchor_expand import AnchorExpandIterator
 from kun.core.ids import new_id
 
 AnchorKind = Literal[
@@ -138,6 +140,55 @@ class AttentionManager:
             for a in self._anchors.values()
             if a.anchor_kind in kinds and (a.expires_at is None or a.expires_at >= now)
         ]
+
+    async def must_check_for_decision_anchor_then_expand(
+        self,
+        decision_kind: str,
+        *,
+        max_rounds: int = 3,
+    ) -> AsyncIterator[AttentionAnchor]:
+        """按需返回决策前必查锚点.
+
+        老的 ``must_check_for_decision`` 一次性返回所有锚点. 新接口先返回最高优先级
+        锚点, 下游需要更多时再 expand.
+
+        # TODO: wire by Claude in V2.2
+        """
+        anchors = sorted(
+            self.must_check_for_decision(decision_kind),
+            key=_anchor_priority,
+            reverse=True,
+        )
+        if not anchors:
+            return
+
+        async def anchor_fn() -> AttentionAnchor:
+            return anchors[0]
+
+        async def expand_fn(
+            _anchor: AttentionAnchor,
+            prior: list[AttentionAnchor],
+        ) -> AttentionAnchor | None:
+            seen = {item.anchor_id for item in prior}
+            return next((item for item in anchors if item.anchor_id not in seen), None)
+
+        async for anchor in AnchorExpandIterator(
+            anchor_fn,
+            expand_fn,
+            max_rounds=max_rounds,
+        ):
+            yield anchor
+
+
+def _anchor_priority(anchor: AttentionAnchor) -> tuple[int, float]:
+    kind_order = {
+        "permanent_redline": 5,
+        "task_dependency": 4,
+        "project_context": 3,
+        "session_bootstrap": 2,
+        "user_pin": 1,
+    }
+    return (kind_order.get(anchor.anchor_kind, 0), anchor.weight_boost)
 
 
 _manager: AttentionManager | None = None
