@@ -89,6 +89,16 @@ def test_invalid_delta_threshold_raises() -> None:
 
     with pytest.raises(ValueError):
         MarginalROIStopCriterion(delta_threshold=1.5)
+    with pytest.raises(ValueError):
+        MarginalROIStopCriterion(delta_threshold=-1.5)
+
+
+def test_negative_delta_threshold_allowed() -> None:
+    """负 delta 表示'跌幅 > |delta| 算明显下降', 用于检测 score 跌的停止器."""
+    c = MarginalROIStopCriterion(delta_threshold=-0.3, window_k=1, min_steps=2)
+    # marginal = -0.5 (跌得多), all(-0.5 < -0.3) → True → 停
+    d = c.should_stop([1.0, 0.5])
+    assert d.should_stop is True
 
 
 # ---- ValueEstimator ----

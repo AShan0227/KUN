@@ -61,8 +61,9 @@ class MarginalROIStopCriterion:
             raise ValueError("window_k must be >= 1")
         if self.min_steps < 1:
             raise ValueError("min_steps must be >= 1")
-        if not 0 <= self.delta_threshold <= 1:
-            raise ValueError("delta_threshold must be in [0, 1]")
+        if not -1 <= self.delta_threshold <= 1:
+            # 允许负值 — 用来表达"跌幅 > |delta| 算明显下降, 该停"
+            raise ValueError("delta_threshold must be in [-1, 1]")
 
     def should_stop(self, value_history: list[float]) -> StopDecision:
         """根据 value 历史判定是否停止.

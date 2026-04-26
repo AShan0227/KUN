@@ -11,7 +11,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from kun.context.assets import LayeredAsset
 from kun.core.scoring import ScoreDescriptor
@@ -325,6 +325,93 @@ class ImportanceScorer:
         repeatedly_used_but_low = asset.access_count >= 10 and score.overall < 0.25
         long_unvisited_but_kept = asset.access_count == 0 and score.recency < 0.05
         return repeatedly_used_but_low or long_unvisited_but_kept
+
+    def score_anchor_then_expand(
+        self,
+        candidates: list[LayeredAsset],
+        *,
+        query: str | None = None,
+        now: datetime | None = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
+        task_meta: dict[str, object] | None = None,
+        user_meta: dict[str, object] | None = None,
+        context_meta: dict[str, object] | None = None,
+        max_rounds: int = 3,
+        use_marginal_stop: bool = True,
+    ) -> Any:
+        """V2.2 §19.3 + §20.3: 按需扩展式打分.
+
+        不一次性打全部 K 个候选, 而是流式 yield (asset, score):
+        1. 第 1 轮: yield 评分最高的 anchor
+        2. 后续轮次: yield 次高的, 调用方判断"够吗"决定继续/break
+        3. ≤ max_rounds 个 (默认 3), marginal_roi 自动判停
+
+        用法:
+            async for asset, score in scorer.score_anchor_then_expand(candidates, ...):
+                use(asset)
+                if my_caller_satisfied: break
+
+        Returns:
+            AsyncIterator[tuple[LayeredAsset, ImportanceScore]]
+
+        Note:
+            score 是 sync 函数, 但 anchor_expand iterator 是 async — 我们 wrap 成 async.
+            候选 list 全部预先 score 一遍 (这是 sync 内存操作, 快), 然后按 overall
+            降序流式 yield. 真正"省"的是: 调用方拿 anchor 后能 break, 不消费后续.
+        """
+        from kun.core.anchor_expand import AnchorExpandIterator
+        from kun.engineering.marginal_roi import (
+            MarginalROIStopCriterion,
+            ModulePresets,
+            ValueEstimator,
+        )
+
+        # 预 score 全部, 按 overall 降序
+        scored: list[tuple[LayeredAsset, ImportanceScore]] = []
+        for asset in candidates:
+            sc = self.score_with_anchors(
+                asset=asset,
+                query=query,
+                now=now,
+                user_id=user_id,
+                project_id=project_id,
+                task_meta=task_meta,
+                user_meta=user_meta,
+                context_meta=context_meta,
+            )
+            scored.append((asset, sc))
+        scored.sort(key=lambda x: x[1].overall, reverse=True)
+
+        async def anchor_fn() -> tuple[LayeredAsset, ImportanceScore]:
+            if not scored:
+                raise StopAsyncIteration
+            return scored[0]
+
+        async def expand_fn(
+            anchor: tuple[LayeredAsset, ImportanceScore],
+            prior: list[tuple[LayeredAsset, ImportanceScore]],
+        ) -> tuple[LayeredAsset, ImportanceScore] | None:
+            idx = len(prior)
+            if idx >= len(scored):
+                return None
+            return scored[idx]
+
+        criterion: MarginalROIStopCriterion | None = None
+        estimator: ValueEstimator | None = None
+        if use_marginal_stop:
+            criterion = ModulePresets.for_memory_expand()
+            estimator = ValueEstimator(
+                custom_fn=lambda item, prior: float(item[1].overall),
+            )
+
+        return AnchorExpandIterator(
+            anchor_fn=anchor_fn,
+            expand_fn=expand_fn,
+            max_rounds=max_rounds,
+            stop_criterion=criterion,
+            value_estimator=estimator,
+        )
 
 
 def half_life_days(asset: LayeredAsset) -> float | None:

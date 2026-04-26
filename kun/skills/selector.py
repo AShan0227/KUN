@@ -13,6 +13,8 @@ Later:
 
 from __future__ import annotations
 
+from typing import Any
+
 from kun.core.logging import get_logger
 from kun.datamodel.task import TaskRef
 from kun.skills.loader import SkillRecord, SkillRegistry, get_registry
@@ -58,6 +60,89 @@ class SkillSelector:
             return ""
         lines = [f"- {s.skill_id}: {s.manifest.description}" for s in skills]
         return f"可用技能 (top {len(lines)}):\n" + "\n".join(lines)
+
+    def select_anchor_then_expand(
+        self,
+        task_ref: TaskRef,
+        *,
+        max_rounds: int = 3,
+        use_marginal_stop: bool = True,
+    ) -> Any:
+        """V2.2 §19.3: 按需扩展 skill 选择.
+
+        流式 yield SkillRecord, 而不是一次性返 top-K.
+        - 第 1 轮: 评分最高的 skill (anchor)
+        - 后续: 沿 overlap 排序的次优, ≤ max_rounds
+        - marginal_stop: 上一个 skill 跟 anchor overlap 接近 → 停 (避免拉一堆同类)
+
+        用法:
+            async for skill in selector.select_anchor_then_expand(task_ref):
+                consider(skill)
+                if my_caller_satisfied: break
+
+        Returns:
+            AsyncIterator[SkillRecord]
+        """
+        from kun.core.anchor_expand import AnchorExpandIterator
+        from kun.engineering.marginal_roi import (
+            MarginalROIStopCriterion,
+            ValueEstimator,
+        )
+
+        # 1. 显式 required_skills 优先
+        if task_ref.spec and task_ref.spec.required_skills:
+            ordered: list[tuple[int, SkillRecord]] = []
+            for sid in task_ref.spec.required_skills:
+                rec = self._reg.get(sid)
+                if rec is not None:
+                    ordered.append((10, rec))  # required = 高 score
+        else:
+            ordered = []
+
+        # 2. heuristic overlap 排序
+        if not ordered:
+            task_type = task_ref.meta.task_type
+            parts = set(task_type.split("."))
+            for rec in self._reg:
+                name_parts = set(rec.skill_id.replace("_", "-").split("-"))
+                overlap = len(parts & name_parts)
+                if overlap > 0:
+                    ordered.append((overlap, rec))
+            ordered.sort(key=lambda t: (-t[0], t[1].skill_id))
+
+        async def anchor_fn() -> tuple[int, SkillRecord]:
+            if not ordered:
+                raise StopAsyncIteration
+            return ordered[0]
+
+        async def expand_fn(
+            anchor: tuple[int, SkillRecord], prior: list[tuple[int, SkillRecord]]
+        ) -> tuple[int, SkillRecord] | None:
+            idx = len(prior)
+            if idx >= len(ordered):
+                return None
+            return ordered[idx]
+
+        criterion: MarginalROIStopCriterion | None = None
+        estimator: ValueEstimator | None = None
+        if use_marginal_stop:
+            # skill overlap 跌得快就停 (next overlap < 0.5 * anchor overlap)
+            criterion = MarginalROIStopCriterion(
+                delta_threshold=-0.3,  # value 是 overlap, 跌幅 > 0.3 算明显
+                window_k=1,
+                min_steps=2,
+            )
+            estimator = ValueEstimator(
+                custom_fn=lambda item, prior: float(item[0]) / 10.0,  # 归一到 0..1
+            )
+
+        return AnchorExpandIterator(
+            anchor_fn=anchor_fn,
+            expand_fn=expand_fn,
+            max_rounds=max_rounds,
+            stop_criterion=criterion,
+            value_estimator=estimator,
+        )
 
 
 _selector: SkillSelector | None = None
