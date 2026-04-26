@@ -189,6 +189,77 @@ class ImportanceScorer:
             decay_half_life_days=None if half_life is None else round(half_life),
         )
 
+    def score_with_anchors(
+        self,
+        *,
+        asset: LayeredAsset,
+        query: str | None = None,
+        now: datetime | None = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
+        task_meta: dict[str, object] | None = None,
+        user_meta: dict[str, object] | None = None,
+        context_meta: dict[str, object] | None = None,
+    ) -> ImportanceScore:
+        """V2.1 wire 便捷入口: 自动从 AttentionManager 拉 pin boost +
+        从场景算动态权重.
+
+        相当于:
+        - boost_for_asset(asset, user, project) → pin_boost (§3.5 tier 1)
+        - compute_dimension_weights(task, user, context) → weights_override
+        - 返 5 维 score (含 dependency / pin)
+
+        让调用方不需要手动算 anchor + 权重.
+        """
+        from kun.core.attention_anchor import get_manager  # 局部 import 避免循环
+
+        # 取该 asset 的 pin boost
+        asset_ref = asset.l1_metadata.get("asset_id") or getattr(asset, "asset_id", "")
+        pin_boost = 0.0
+        if asset_ref:
+            try:
+                pin_boost = get_manager().boost_for_asset(
+                    str(asset_ref),
+                    user_id=user_id,
+                    project_id=project_id,
+                )
+            except Exception:
+                pin_boost = 0.0
+
+        # 任务依赖度: 从 task_meta.required_resources 简单匹配
+        task_dependency_score = 0.0
+        if task_meta:
+            required = task_meta.get("required_resources", []) or []
+            if isinstance(required, list) and asset_ref:
+                if str(asset_ref) in required:
+                    task_dependency_score = 1.0
+                # 部分匹配 (asset 含 required keyword)
+                else:
+                    text_for_match = (
+                        str(asset.l2_summary or "")
+                        + " "
+                        + " ".join(str(t) for t in (asset.tags or []))
+                    ).lower()
+                    for r in required:
+                        if str(r).lower() in text_for_match:
+                            task_dependency_score = max(task_dependency_score, 0.6)
+
+        # 按场景算权重
+        weights = self.compute_dimension_weights(
+            task_meta=task_meta,
+            user_meta=user_meta,
+            context_meta=context_meta,
+        )
+
+        return self.score(
+            asset=asset,
+            query=query,
+            now=now,
+            task_dependency_score=task_dependency_score,
+            pin_boost=pin_boost,
+            weights_override=weights,
+        )
+
     def compute_dimension_weights(
         self,
         *,

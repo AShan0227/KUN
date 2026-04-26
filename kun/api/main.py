@@ -21,10 +21,13 @@ from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from kun import __version__
+from kun.api.attention_pin import router as attention_pin_router
+from kun.api.blackboard import router as blackboard_router
 from kun.api.chat import router as chat_router
 from kun.api.health import router as health_router
 from kun.api.nuo import router as nuo_router
 from kun.api.runtime import install_runtime
+from kun.api.task_control import router as task_control_router
 from kun.api.ws import ws_router
 from kun.core.config import settings
 from kun.core.events import outbox_worker
@@ -51,6 +54,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     rule_engine = RuleEngine(rules)
     install_runtime(app, rule_engine=rule_engine)
     log.info("rules.ready", count=len(rules))
+
+    # V2.1 wire W5: 黑板 5 endpoint 接真实数据源 (events / TaskRow / RuntimeStateRow)
+    try:
+        from kun.api.blackboard_data_sources import install_blackboard_data_sources
+
+        install_blackboard_data_sources()
+        log.info("blackboard.data_sources.installed")
+    except Exception as e:
+        log.warning("blackboard.data_sources.install_failed", error=str(e))
+
+    # V2.1 wire W7: KnowledgePrecipitation 接 idle_batch
+    try:
+        from kun.engineering.precipitation_idle_step import install_precipitation_steps
+
+        install_precipitation_steps()
+        log.info("precipitation.idle_steps.installed")
+    except Exception as e:
+        log.warning("precipitation.idle_steps.install_failed", error=str(e))
 
     # Register builtin executable skills (R-A2). Imports the 6 builtin
     # modules so their @register calls populate the dispatcher table.
@@ -208,6 +229,10 @@ app.include_router(health_router, prefix="/health", tags=["health"])
 app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
 app.include_router(ws_router)
 app.include_router(nuo_router, prefix="/nuo", tags=["nuo"])
+# V2.1 wire: 黑板 + 注意力 pin + task control (kill switch / timeout)
+app.include_router(blackboard_router)
+app.include_router(attention_pin_router)
+app.include_router(task_control_router)
 
 
 @app.get("/")

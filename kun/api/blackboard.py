@@ -95,8 +95,17 @@ def reset_data_sources() -> None:
 # ---- 5 endpoint ----
 
 
+async def _maybe_await(value: Any) -> Any:
+    """Hooks 可以是 sync 或 async, 统一 await."""
+    import inspect
+
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
 @router.get("/tasks", response_model=list[TaskBoardItem])
-def get_tasks(
+async def get_tasks(
     x_user_id: Annotated[str, Header(alias="X-User-Id")],
     x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
     status: str | None = Query(None),
@@ -105,12 +114,12 @@ def get_tasks(
     fn = _data_sources.get("tasks")
     if fn is None:
         return []
-    items = fn(tenant_id=x_tenant_id, user_id=x_user_id, status=status)
+    items = await _maybe_await(fn(tenant_id=x_tenant_id, user_id=x_user_id, status=status))
     return [TaskBoardItem(**i) if isinstance(i, dict) else i for i in items]
 
 
 @router.get("/events", response_model=list[EventStreamItem])
-def get_events(
+async def get_events(
     x_user_id: Annotated[str, Header(alias="X-User-Id")],
     x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
     limit: int = Query(50, ge=1, le=500),
@@ -119,12 +128,12 @@ def get_events(
     fn = _data_sources.get("events")
     if fn is None:
         return []
-    items = fn(tenant_id=x_tenant_id, user_id=x_user_id, limit=limit)
+    items = await _maybe_await(fn(tenant_id=x_tenant_id, user_id=x_user_id, limit=limit))
     return [EventStreamItem(**i) if isinstance(i, dict) else i for i in items]
 
 
 @router.get("/state", response_model=GlobalStateView)
-def get_state(
+async def get_state(
     x_user_id: Annotated[str, Header(alias="X-User-Id")],
     x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
 ) -> GlobalStateView:
@@ -136,7 +145,7 @@ def get_state(
             user_id=x_user_id,
             last_update=datetime.now(UTC).isoformat(),
         )
-    state = fn(tenant_id=x_tenant_id, user_id=x_user_id)
+    state = await _maybe_await(fn(tenant_id=x_tenant_id, user_id=x_user_id))
     if isinstance(state, dict):
         return GlobalStateView(**state)
     if isinstance(state, GlobalStateView):
@@ -145,7 +154,7 @@ def get_state(
 
 
 @router.get("/workspace/{task_id}", response_model=WorkspaceView)
-def get_workspace(
+async def get_workspace(
     task_id: str,
     x_user_id: Annotated[str, Header(alias="X-User-Id")],
 ) -> WorkspaceView:
@@ -156,7 +165,7 @@ def get_workspace(
             task_id=task_id,
             last_update=datetime.now(UTC).isoformat(),
         )
-    ws = fn(task_id=task_id, user_id=x_user_id)
+    ws = await _maybe_await(fn(task_id=task_id, user_id=x_user_id))
     if ws is None:
         raise HTTPException(404, "workspace not found")
     if isinstance(ws, dict):
@@ -167,7 +176,7 @@ def get_workspace(
 
 
 @router.get("/assets/{task_id}", response_model=AssetPoolSliceView)
-def get_assets(
+async def get_assets(
     task_id: str,
     x_user_id: Annotated[str, Header(alias="X-User-Id")],
 ) -> AssetPoolSliceView:
@@ -175,7 +184,7 @@ def get_assets(
     fn = _data_sources.get("assets")
     if fn is None:
         return AssetPoolSliceView(task_id=task_id)
-    assets = fn(task_id=task_id, user_id=x_user_id)
+    assets = await _maybe_await(fn(task_id=task_id, user_id=x_user_id))
     if isinstance(assets, dict):
         return AssetPoolSliceView(**assets)
     if isinstance(assets, AssetPoolSliceView):
@@ -185,7 +194,7 @@ def get_assets(
 
 # 对 agent 的全量 JSON dump (双重渲染另一面)
 @router.get("/full/{task_id}")
-def get_full_for_agent(
+async def get_full_for_agent(
     task_id: str,
     x_user_id: Annotated[str, Header(alias="X-User-Id")],
 ) -> dict[str, Any]:
@@ -197,10 +206,20 @@ def get_full_for_agent(
     return {
         "rendered_for": "agent",
         "task_id": task_id,
-        "state": state_fn(tenant_id="-", user_id=x_user_id) if state_fn else {},
-        "workspace": ws_fn(task_id=task_id, user_id=x_user_id) if ws_fn else {},
-        "assets": assets_fn(task_id=task_id, user_id=x_user_id) if assets_fn else {},
-        "events": events_fn(tenant_id="-", user_id=x_user_id, limit=100) if events_fn else [],
+        "state": (
+            await _maybe_await(state_fn(tenant_id="-", user_id=x_user_id)) if state_fn else {}
+        ),
+        "workspace": (
+            await _maybe_await(ws_fn(task_id=task_id, user_id=x_user_id)) if ws_fn else {}
+        ),
+        "assets": (
+            await _maybe_await(assets_fn(task_id=task_id, user_id=x_user_id)) if assets_fn else {}
+        ),
+        "events": (
+            await _maybe_await(events_fn(tenant_id="-", user_id=x_user_id, limit=100))
+            if events_fn
+            else []
+        ),
         "rendered_at": datetime.now(UTC).isoformat(),
     }
 

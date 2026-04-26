@@ -2,13 +2,24 @@
 
 HTTP and WebSocket routes must use the same app-level Orchestrator so the
 Watchtower rules loaded during startup are actually used on real requests.
+
+V2.1 wire: 加 safety singletons (FastPath / KillSwitch / TokenMeter) 让
+chat / WS 入口共享同一份实例.
 """
 
 from __future__ import annotations
 
 from typing import Any, Protocol, cast
 
+from kun.engineering.fast_path import FastPathRouter
 from kun.engineering.orchestrator import Orchestrator
+from kun.engineering.safety_guards import (
+    KillSwitch,
+    PlanOnlyGate,
+    TaskTimeoutGuard,
+    TokenMeter,
+    ZeroTelemetryEnforcer,
+)
 from kun.watchtower.engine import RuleEngine
 
 
@@ -17,10 +28,36 @@ class _AppWithState(Protocol):
 
 
 def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestrator:
-    """Install shared runtime services onto ``app.state``."""
+    """Install shared runtime services onto ``app.state``.
+
+    V2.1 安装的 singletons:
+    - orchestrator: 主执行
+    - rule_engine: 守望规则
+    - fast_path: §17.4a 决策跳过快速路径
+    - kill_switch: §5.2.3 紧急中断
+    - token_meter: §5.2.1 token 仪表盘 + 单步上限
+    - plan_only_gate: §5.2.4 destructive 操作 plan-only
+    - task_timeout: §5.2.2 任务级超时
+    - zero_telemetry: §11.5 零回传
+    """
     orchestrator = Orchestrator(rule_engine=rule_engine)
     app.state.rule_engine = rule_engine
     app.state.orchestrator = orchestrator
+
+    # V2.1 safety singletons
+    app.state.fast_path = FastPathRouter(
+        # M3.2 暂用空 lookup, M3.3 接真 cache / template / history
+        cache_lookup=None,
+        template_lookup=None,
+        history_lookup=None,
+        deterministic_types=("tools.echo",),
+        user_trust_lookup=None,  # M3.3 接 capability_card 查 task_count
+    )
+    app.state.kill_switch = KillSwitch(sla_ms=500)
+    app.state.token_meter = TokenMeter()
+    app.state.plan_only_gate = PlanOnlyGate()
+    app.state.task_timeout = TaskTimeoutGuard()
+    app.state.zero_telemetry = ZeroTelemetryEnforcer()  # 默认关回传
     return orchestrator
 
 
@@ -30,3 +67,27 @@ def get_orchestrator(app: _AppWithState) -> Orchestrator:
     if orchestrator is None:
         raise RuntimeError("API runtime has not been initialized")
     return cast(Orchestrator, orchestrator)
+
+
+def get_fast_path(app: _AppWithState) -> FastPathRouter:
+    return cast(FastPathRouter, app.state.fast_path)
+
+
+def get_kill_switch(app: _AppWithState) -> KillSwitch:
+    return cast(KillSwitch, app.state.kill_switch)
+
+
+def get_token_meter(app: _AppWithState) -> TokenMeter:
+    return cast(TokenMeter, app.state.token_meter)
+
+
+def get_plan_only_gate(app: _AppWithState) -> PlanOnlyGate:
+    return cast(PlanOnlyGate, app.state.plan_only_gate)
+
+
+def get_task_timeout(app: _AppWithState) -> TaskTimeoutGuard:
+    return cast(TaskTimeoutGuard, app.state.task_timeout)
+
+
+def get_zero_telemetry(app: _AppWithState) -> ZeroTelemetryEnforcer:
+    return cast(ZeroTelemetryEnforcer, app.state.zero_telemetry)
