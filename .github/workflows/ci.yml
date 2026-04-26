@@ -5,6 +5,7 @@ on:
     branches: [main, "feat/v2.1-foundation"]
   pull_request:
     branches: [main, "feat/v2.1-foundation"]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
