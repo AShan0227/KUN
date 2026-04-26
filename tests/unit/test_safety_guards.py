@@ -51,9 +51,10 @@ async def test_kill_switch_responds_within_sla() -> None:
         ks.kill("tk-slow")
 
     start = time.perf_counter()
-    asyncio.create_task(kill_after_delay())
+    _killer = asyncio.create_task(kill_after_delay())
     with pytest.raises(asyncio.CancelledError):
         await ks.wait_or_proceed("tk-slow", slow_work())
+    await _killer
     elapsed_ms = (time.perf_counter() - start) * 1000
     # SLA: kill 后应 ≤500ms 完成 cancel (实际 ~50ms)
     assert elapsed_ms < 500, f"kill took {elapsed_ms:.1f}ms"
@@ -139,7 +140,6 @@ def test_plan_only_drop_database() -> None:
 
 def test_plan_only_delete_table() -> None:
     g = PlanOnlyGate()
-    d = g.check("DELETE FROM users WHERE 1=1")
     # DELETE FROM 不包含 TABLE 关键字, 不在 hard list
     # 但有"删除"关键字也行 (中文 hard list 通过 user_message)
     assert g.check("delete table users").triggered is True

@@ -214,7 +214,9 @@ async def _workspace_source_async(task_id: str) -> dict[str, Any] | None:
                     for s in steps
                 ],
                 "handoff_packets": [],  # M4 接交接协议 L1-L4
-                "last_update": (row.last_updated or row.started_at or datetime.now(UTC)).isoformat(),
+                "last_update": (
+                    row.last_updated or row.started_at or datetime.now(UTC)
+                ).isoformat(),
             }
     except Exception:
         logger.exception("blackboard.workspace_source failed")

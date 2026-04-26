@@ -260,7 +260,10 @@ class LLMRouter:
 
             if _sm_enabled():
                 decision = await maybe_override_with_strategy(
-                    decision, purpose, request, request.profile,
+                    decision,
+                    purpose,
+                    request,
+                    request.profile,
                 )
                 span.set_attribute("kun.strategy_matcher_engaged", True)
 

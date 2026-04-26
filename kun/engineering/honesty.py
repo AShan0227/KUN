@@ -123,10 +123,7 @@ class HonestyTierMatcher:
         sources = sources or []
 
         # confidence 计算: 按 sources 平均 + 多 judge 一致性加权
-        if sources:
-            avg_conf = sum(s.confidence for s in sources) / len(sources)
-        else:
-            avg_conf = 0.7  # 没明示 source → 中等信心
+        avg_conf = sum(s.confidence for s in sources) / len(sources) if sources else 0.7
 
         if multi_judge_verdict and "consensus" in multi_judge_verdict:
             consensus = float(multi_judge_verdict["consensus"])

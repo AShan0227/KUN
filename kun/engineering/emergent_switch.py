@@ -148,10 +148,8 @@ class EmergentSwitchManager:
             return SwitchEvaluation(should_switch=False, blocked_by="task_not_registered")
 
         # 防抖动 1: 冷却期
-        if (
-            st.last_switch_at is not None
-            and datetime.now(UTC) - st.last_switch_at
-            < timedelta(minutes=self.cooldown_minutes)
+        if st.last_switch_at is not None and datetime.now(UTC) - st.last_switch_at < timedelta(
+            minutes=self.cooldown_minutes
         ):
             return SwitchEvaluation(should_switch=False, blocked_by="cooldown")
 

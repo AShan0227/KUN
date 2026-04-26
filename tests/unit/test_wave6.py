@@ -116,7 +116,7 @@ async def test_incident_pattern_upgrade_l1_to_l2() -> None:
             title="small",
             affected_user_id="u-1",
         )
-        actions = await eng.handle(event)
+        await eng.handle(event)
 
     # 第 3 次应升 L2
     assert event.severity == "L2"

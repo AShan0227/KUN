@@ -125,7 +125,11 @@ def test_score_descriptor_keeps_existing_display_contract() -> None:
     assert 0 <= descriptor.value <= 1
     assert descriptor.sample_size == 3
     assert set(descriptor.components) == {
-        "semantic", "frequency", "recency", "dependency", "pin",
+        "semantic",
+        "frequency",
+        "recency",
+        "dependency",
+        "pin",
     }
 
 

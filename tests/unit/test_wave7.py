@@ -289,7 +289,7 @@ async def test_diagnose_llm_reviewer_called_for_unmatched() -> None:
         tenant_id="t-1",
         hint_text="something obscure happened",
     )
-    report = await runner.run(req)
+    await runner.run(req)
     assert len(captured) >= 1
 
 
