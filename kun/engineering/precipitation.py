@@ -19,9 +19,10 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ PrecipitationKind = Literal[
     "weight_tune",  # weekly
     "rule_emerge",  # weekly
     "narrative_distill",  # daily
+    "relationship_mine",  # daily
 ]
 
 PrecipitationSchedule = Literal["realtime", "hourly", "daily", "weekly"]
@@ -291,6 +293,218 @@ class NarrativeDistillStep:
         ]
 
 
+class RelationshipMineStep:
+    """relationship_mine (daily): scan recent events for knowledge graph edges."""
+
+    source_event_type = "task.completed"
+    step_kind: PrecipitationKind = "relationship_mine"
+    schedule: PrecipitationSchedule = "daily"
+
+    async def precipitate(
+        self, event: PrecipitationEvent, context: dict[str, Any] | None = None
+    ) -> list[AssetUpdate]:
+        from kun.core.ids import new_id
+        from kun.datamodel.relationship import EntityRelationship, confidence_for_evidence
+
+        tenant_id = str(event.payload.get("tenant_id") or (context or {}).get("tenant_id") or "")
+        if not tenant_id:
+            return []
+
+        events = await self._load_recent_events(event, tenant_id, context or {})
+        if not events:
+            return []
+
+        co_occurrence_counts: Counter[tuple[tuple[str, str], tuple[str, str]]] = Counter()
+        temporal_counts: Counter[tuple[tuple[str, str], tuple[str, str]]] = Counter()
+
+        event_entities: list[tuple[datetime, list[tuple[str, str]]]] = []
+        for recent in events:
+            entities = sorted(set(_extract_entity_refs(recent.payload)))
+            if entities:
+                event_entities.append((recent.occurred_at, entities))
+            for idx, source in enumerate(entities):
+                for target in entities[idx + 1 :]:
+                    co_occurrence_counts[(source, target)] += 1
+                    co_occurrence_counts[(target, source)] += 1
+
+        sorted_event_entities = sorted(event_entities, key=lambda item: item[0])
+        for idx, (source_time, sources) in enumerate(sorted_event_entities):
+            for target_time, targets in sorted_event_entities[idx + 1 :]:
+                if target_time - source_time > timedelta(hours=1):
+                    break
+                for source in sources:
+                    for target in targets:
+                        if source != target:
+                            temporal_counts[(source, target)] += 1
+
+        updates: list[AssetUpdate] = []
+        for (source, target), count in co_occurrence_counts.items():
+            if count < 2:
+                continue
+            relationship = EntityRelationship(
+                tenant_id=tenant_id,
+                source_entity_kind=source[0],
+                source_entity_id=source[1],
+                target_entity_kind=target[0],
+                target_entity_id=target[1],
+                relation_type="co_occurs",
+                confidence=confidence_for_evidence(count),
+                evidence_count=count,
+                metadata={"source": "RelationshipMineStep", "window_hours": 24},
+            )
+            await _upsert_mined_relationship(relationship)
+            updates.append(
+                AssetUpdate(
+                    update_id=new_id("memory"),
+                    asset_kind="entity_relationship",
+                    asset_ref=relationship.relation_id,
+                    update_kind="create",
+                    payload=relationship.model_dump(mode="json"),
+                    confidence=relationship.confidence,
+                )
+            )
+
+        for (source, target), count in temporal_counts.items():
+            if count < 2:
+                continue
+            relationship = EntityRelationship(
+                tenant_id=tenant_id,
+                source_entity_kind=source[0],
+                source_entity_id=source[1],
+                target_entity_kind=target[0],
+                target_entity_id=target[1],
+                relation_type="produced_by",
+                confidence=confidence_for_evidence(count),
+                evidence_count=count,
+                metadata={"source": "RelationshipMineStep", "window_hours": 24, "lag_hours": 1},
+            )
+            await _upsert_mined_relationship(relationship)
+            updates.append(
+                AssetUpdate(
+                    update_id=new_id("memory"),
+                    asset_kind="entity_relationship",
+                    asset_ref=relationship.relation_id,
+                    update_kind="create",
+                    payload=relationship.model_dump(mode="json"),
+                    confidence=relationship.confidence,
+                )
+            )
+
+        return updates
+
+    async def _load_recent_events(
+        self,
+        event: PrecipitationEvent,
+        tenant_id: str,
+        context: dict[str, Any],
+    ) -> list[PrecipitationEvent]:
+        injected_events = context.get("events")
+        if injected_events is not None:
+            recent_events: list[PrecipitationEvent] = []
+            for item in injected_events:
+                recent = _coerce_precipitation_event(item)
+                if recent.occurred_at < event.occurred_at - timedelta(hours=24):
+                    continue
+                if str(recent.payload.get("tenant_id", tenant_id)) != tenant_id:
+                    continue
+                recent_events.append(recent)
+            return recent_events
+
+        from sqlalchemy import select
+
+        from kun.core.db import session_scope
+        from kun.core.orm import EventRow
+
+        since = event.occurred_at - timedelta(hours=24)
+        async with session_scope(tenant_id=tenant_id) as session:
+            stmt = (
+                select(EventRow)
+                .where(
+                    EventRow.tenant_id == tenant_id,
+                    EventRow.occurred_at >= since,
+                )
+                .order_by(EventRow.occurred_at)
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+        return [
+            PrecipitationEvent(
+                event_id=row.event_id,
+                event_type=row.event_type,
+                payload=row.payload,
+                occurred_at=row.occurred_at,
+            )
+            for row in rows
+        ]
+
+
+def _coerce_precipitation_event(item: Any) -> PrecipitationEvent:
+    if isinstance(item, PrecipitationEvent):
+        return item
+    payload = dict(item.get("payload", {}))
+    return PrecipitationEvent(
+        event_id=str(item.get("event_id", "event-inline")),
+        event_type=str(item.get("event_type", "task.completed")),
+        payload=payload,
+        occurred_at=item.get("occurred_at", datetime.now(UTC)),
+    )
+
+
+def _extract_entity_refs(payload: dict[str, Any]) -> list[tuple[str, str]]:
+    raw_entities = payload.get("entities") or payload.get("entity_refs") or []
+    entities: list[tuple[str, str]] = []
+    for item in raw_entities:
+        if isinstance(item, dict):
+            kind = item.get("kind") or item.get("entity_kind") or item.get("entity_type")
+            entity_id = item.get("id") or item.get("entity_id")
+            if kind and entity_id:
+                entities.append((str(kind), str(entity_id)))
+        elif isinstance(item, str) and ":" in item:
+            kind, entity_id = item.split(":", 1)
+            if kind and entity_id:
+                entities.append((kind, entity_id))
+    for prefix in ("source", "target", "entity"):
+        kind = payload.get(f"{prefix}_entity_kind") or payload.get(f"{prefix}_entity_type")
+        entity_id = payload.get(f"{prefix}_entity_id")
+        if kind and entity_id:
+            entities.append((str(kind), str(entity_id)))
+    return entities
+
+
+async def _upsert_mined_relationship(relationship: Any) -> None:
+    from kun.datamodel.relationship import (
+        add_relationship,
+        get_relationships_from,
+        reinforce_relationship,
+    )
+
+    existing = await get_relationships_from(
+        relationship.source_entity_kind,
+        relationship.source_entity_id,
+        relationship.tenant_id,
+        relation_types=[relationship.relation_type],
+        min_confidence=0.0,
+    )
+    match = next(
+        (
+            rel
+            for rel in existing
+            if rel.target_entity_kind == relationship.target_entity_kind
+            and rel.target_entity_id == relationship.target_entity_id
+        ),
+        None,
+    )
+    if match is None:
+        await add_relationship(relationship)
+        return
+    await reinforce_relationship(
+        match.relation_id,
+        match.tenant_id,
+        evidence_delta=relationship.evidence_count,
+        confidence=relationship.confidence,
+        metadata=relationship.metadata,
+    )
+
+
 __all__ = [
     "AssetUpdate",
     "KnowledgePrecipitation",
@@ -299,6 +513,7 @@ __all__ = [
     "PrecipitationKind",
     "PrecipitationSchedule",
     "PrecipitationStep",
+    "RelationshipMineStep",
     "RuleEmergeStep",
     "StatsWritebackStep",
     "WeightTuneStep",

@@ -330,6 +330,67 @@ class CapabilityCardRow(Base):
     )
 
 
+# ============== ENTITY RELATIONSHIPS ==============
+
+
+class EntityRelationshipRow(Base):
+    """Knowledge graph relationship edge between two tenant-scoped entities."""
+
+    __tablename__ = "entity_relationships"
+
+    relation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_entity_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_entity_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    target_entity_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_entity_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    relation_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[float] = mapped_column(nullable=False, default=0.3)
+    evidence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        JSONB,
+        nullable=False,
+        default=dict,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    last_reinforced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1",
+            name="entity_relationship_confidence_range",
+        ),
+        CheckConstraint(
+            "evidence_count >= 0",
+            name="entity_relationship_evidence_nonnegative",
+        ),
+        CheckConstraint(
+            "relation_type IN ("
+            "'depends_on','mentions','verifies','contradicts','similar_to',"
+            "'co_occurs','produced_by','transfer_confidence'"
+            ")",
+            name="entity_relationship_type_valid",
+        ),
+        Index(
+            "ix_relationships_tenant_source",
+            "tenant_id",
+            "source_entity_kind",
+            "source_entity_id",
+        ),
+        Index(
+            "ix_relationships_tenant_target",
+            "tenant_id",
+            "target_entity_kind",
+            "target_entity_id",
+        ),
+    )
+
+
 # ============== PROACTIVE TOOL LEARNING ==============
 
 
