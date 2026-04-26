@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol, cast
 
+from kun.core.emergent_solution import EmergentSolutionLibrary
+from kun.engineering.emergent_switch import EmergentSwitchManager
 from kun.engineering.fast_path import FastPathRouter
 from kun.engineering.orchestrator import Orchestrator
 from kun.engineering.safety_guards import (
@@ -40,7 +42,16 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     - task_timeout: §5.2.2 任务级超时
     - zero_telemetry: §11.5 零回传
     """
-    orchestrator = Orchestrator(rule_engine=rule_engine)
+    # V2.1 §5.8: 涌现方案库 + 切换管理器 (信号驱动, 真切给 M5)
+    emergent_library = EmergentSolutionLibrary()
+    emergent_switch_manager = EmergentSwitchManager(library=emergent_library)
+    app.state.emergent_library = emergent_library
+    app.state.emergent_switch_manager = emergent_switch_manager
+
+    orchestrator = Orchestrator(
+        rule_engine=rule_engine,
+        emergent_switch_manager=emergent_switch_manager,
+    )
     app.state.rule_engine = rule_engine
     app.state.orchestrator = orchestrator
 
@@ -91,3 +102,11 @@ def get_task_timeout(app: _AppWithState) -> TaskTimeoutGuard:
 
 def get_zero_telemetry(app: _AppWithState) -> ZeroTelemetryEnforcer:
     return cast(ZeroTelemetryEnforcer, app.state.zero_telemetry)
+
+
+def get_emergent_switch_manager(app: _AppWithState) -> EmergentSwitchManager:
+    return cast(EmergentSwitchManager, app.state.emergent_switch_manager)
+
+
+def get_emergent_library(app: _AppWithState) -> EmergentSolutionLibrary:
+    return cast(EmergentSolutionLibrary, app.state.emergent_library)

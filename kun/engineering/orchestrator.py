@@ -160,6 +160,7 @@ class Orchestrator:
         validation: ValidationPipeline | None = None,
         context_packer: ContextPacker | None = None,
         output_translator: OutputTranslator | None = None,
+        emergent_switch_manager: Any = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -170,6 +171,7 @@ class Orchestrator:
         self.skill_selector = get_skill_selector()
         self.context_packer = context_packer or ContextPacker()
         self.output_translator = output_translator or translate_for
+        self.emergent_switch_manager = emergent_switch_manager
 
     # ----------------------------- public entry -----------------------------
 
@@ -415,6 +417,16 @@ class Orchestrator:
 
         # 3. Planning
         plan = await self.planner.plan(task_ref, router=self.llm_router)
+
+        # V2.1 §5.8 wire: 注册任务到 EmergentSwitchManager (信号驱动, 零额外开销 90% 任务)
+        if self.emergent_switch_manager is not None:
+            try:
+                self.emergent_switch_manager.register_task(
+                    task_ref.meta.task_id,
+                    estimated_steps=len(plan.steps),
+                )
+            except Exception:
+                log.exception("emergent_switch.register_task failed (non-fatal)")
 
         # 4. Route (pick role + model purpose)
         choice = self.task_router.choose(task_ref.meta)
@@ -811,6 +823,29 @@ class Orchestrator:
                         kind="guard_intervention",
                         data={"rules_fired": fired},
                     )
+
+                # V2.1 §5.8 wire: step 完, 让 EmergentSwitchManager 检测信号 (M5 真切, 现在只 emit)
+                if self.emergent_switch_manager is not None:
+                    try:
+                        self.emergent_switch_manager.step_completed(
+                            task_ref.meta.task_id,
+                            surprise_score=0.0,  # M4 接 surprise detector 后接真值
+                        )
+                        signals = self.emergent_switch_manager.detect_signals(
+                            task_ref.meta.task_id,
+                            task_type=str(choice.purpose),
+                        )
+                        if signals:
+                            yield OrchestratorEvent(
+                                kind="emergent_signal",
+                                data={
+                                    "task_id": task_ref.meta.task_id,
+                                    "signals": signals,
+                                    "step_id": step_record.step_id,
+                                },
+                            )
+                    except Exception:
+                        log.exception("emergent_switch.detect_signals failed (non-fatal)")
 
             status = "done"
         except TaskTimedOutError as exc:

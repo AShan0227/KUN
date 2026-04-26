@@ -5,14 +5,19 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 from kun.api.runtime import (
+    get_emergent_library,
+    get_emergent_switch_manager,
     get_fast_path,
     get_kill_switch,
+    get_orchestrator,
     get_plan_only_gate,
     get_task_timeout,
     get_token_meter,
     get_zero_telemetry,
     install_runtime,
 )
+from kun.core.emergent_solution import EmergentSolutionLibrary
+from kun.engineering.emergent_switch import EmergentSwitchManager
 from kun.engineering.fast_path import FastPathRouter
 from kun.engineering.safety_guards import (
     KillSwitch,
@@ -55,6 +60,19 @@ def test_install_runtime_creates_all_v2_singletons() -> None:
     assert isinstance(get_plan_only_gate(app), PlanOnlyGate)
     assert isinstance(get_task_timeout(app), TaskTimeoutGuard)
     assert isinstance(get_zero_telemetry(app), ZeroTelemetryEnforcer)
+    assert isinstance(get_emergent_library(app), EmergentSolutionLibrary)
+    assert isinstance(get_emergent_switch_manager(app), EmergentSwitchManager)
+
+
+def test_emergent_switch_manager_wired_into_orchestrator() -> None:
+    """V2.1 §5.8: orchestrator 必须持有同一个 EmergentSwitchManager 实例 (而不是 None)."""
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    install_runtime(app, rule_engine=RuleEngine([]))
+    orch = get_orchestrator(app)
+    mgr = get_emergent_switch_manager(app)
+    assert orch.emergent_switch_manager is mgr
 
 
 def test_chat_fast_path_chitchat(runtime_app) -> None:

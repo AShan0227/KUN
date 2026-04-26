@@ -29,11 +29,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from kun.api.runtime import get_orchestrator
+from kun.api.runtime import get_kill_switch, get_orchestrator
 from kun.core.logging import get_logger
 from kun.core.tenancy import (
     MissingTenantContextError,
@@ -94,6 +95,8 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     )
     send_lock = asyncio.Lock()
     current_task: asyncio.Task[None] | None = None
+    current_task_id: str | None = None
+    ks = get_kill_switch(ws.scope["app"])
 
     log.info("ws.connected", tenant_id=tenant_id, user_id=user_id)
 
@@ -128,24 +131,37 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                         )
                         # fall through and run it like a user_message anyway —
                         # the model will be told upstream that this is a correction.
+                    current_task_id = f"ws-{uuid.uuid4().hex[:12]}"
+                    ks.register_task(current_task_id)
                     current_task = asyncio.create_task(
                         _run_task_stream(ws, content, send_lock, output_kind=output_kind)
                     )
                 elif mtype == "correction":
                     output_kind = str(msg.get("output_kind") or default_output_kind)
                     if current_task is not None:
+                        if current_task_id:
+                            ks.kill(current_task_id, reason="user_correction")
                         await _cancel_task(current_task)
+                        if current_task_id:
+                            ks.cleanup(current_task_id)
                     await _send_json(
                         ws,
                         {"type": "correction_ack", "content": content},
                         send_lock,
                     )
+                    current_task_id = f"ws-{uuid.uuid4().hex[:12]}"
+                    ks.register_task(current_task_id)
                     current_task = asyncio.create_task(
                         _run_task_stream(ws, content, send_lock, output_kind=output_kind)
                     )
                 elif mtype == "interrupt":
                     if current_task is not None:
+                        if current_task_id:
+                            ks.kill(current_task_id, reason="user_interrupt")
                         await _cancel_task(current_task)
+                        if current_task_id:
+                            ks.cleanup(current_task_id)
+                            current_task_id = None
                         current_task = None
                         content = "interrupted"
                     else:
@@ -169,7 +185,11 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             await _send_json(ws, {"type": "error", "message": str(e)}, send_lock)
     finally:
         if current_task is not None:
+            if current_task_id:
+                ks.kill(current_task_id, reason="ws_disconnect")
             await _cancel_task(current_task)
+        if current_task_id:
+            ks.cleanup(current_task_id)
 
 
 async def _run_task_stream(
