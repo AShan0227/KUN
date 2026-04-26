@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feat/v2.1-foundation"]
   pull_request:
-    branches: [main]
+    branches: [main, "feat/v2.1-foundation"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
