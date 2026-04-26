@@ -974,6 +974,51 @@ class Orchestrator:
                                     "step_id": step_record.step_id,
                                 },
                             )
+
+                            # V2.2 §5.8 Wire 13: 真切换. 检 evaluate_switch, 满足条件 emit
+                            # switch event + commit_switch (orchestrator 后续 step 走新方案).
+                            # 当前最小实装: 不真改 plan/model, 只 emit 让外部观察 + 记账.
+                            # M5 后续: 接 DynamicReplanner.replan_from_step 真重 plan.
+                            try:
+                                eval_result = self.emergent_switch_manager.evaluate_switch(
+                                    task_id=task_ref.meta.task_id,
+                                    task_type=str(choice.purpose),
+                                    current_strategy_outcome=0.7,  # M4 接真 outcome
+                                    current_remaining_cost_usd=max(
+                                        0.0,
+                                        task_ref.meta.estimated_cost_usd
+                                        - runtime.accumulated_cost_usd_equivalent,
+                                    ),
+                                    signals=signals,
+                                )
+                                if eval_result.should_switch and eval_result.chosen_solution:
+                                    self.emergent_switch_manager.commit_switch(
+                                        task_ref.meta.task_id
+                                    )
+                                    yield OrchestratorEvent(
+                                        kind="emergent_switch_committed",
+                                        data={
+                                            "task_id": task_ref.meta.task_id,
+                                            "step_id": step_record.step_id,
+                                            "switch_score": eval_result.switch_score,
+                                            "solution_id": eval_result.chosen_solution.solution_id,
+                                            "solution_status": eval_result.chosen_solution.status,
+                                            "reason": eval_result.reason,
+                                        },
+                                    )
+                                elif eval_result.blocked_by:
+                                    yield OrchestratorEvent(
+                                        kind="emergent_switch_blocked",
+                                        data={
+                                            "task_id": task_ref.meta.task_id,
+                                            "blocked_by": eval_result.blocked_by,
+                                            "switch_score": eval_result.switch_score,
+                                        },
+                                    )
+                            except Exception:
+                                log.exception(
+                                    "emergent_switch.evaluate_or_commit failed (non-fatal)"
+                                )
                     except Exception:
                         log.exception("emergent_switch.detect_signals failed (non-fatal)")
 
