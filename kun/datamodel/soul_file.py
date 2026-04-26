@@ -104,6 +104,13 @@ class SoulFile(BaseModel):
     interruption_tolerance: Literal["low", "medium", "high"] = "medium"
     interruption_frequency: Literal["full_auto", "ask_every_n", "manual_review"] = "ask_every_n"
     ask_every_n_steps: int = Field(default=5, ge=1)
+    execution_mode_preference: dict[str, Any] = Field(
+        default_factory=lambda: {
+            "default_mode": "FAST",
+            "always_max_kinds": [],
+            "always_fast_kinds": ["chitchat", "translate"],
+        }
+    )
 
     # 工具偏好
     preferred_tools: list[dict[str, Any]] = Field(default_factory=list)

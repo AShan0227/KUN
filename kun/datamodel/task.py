@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from kun.core.ids import new_id
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
+ExecutionMode = Literal["FAST", "SMART", "MAX"]
 
 
 class Owner(BaseModel):
@@ -52,6 +53,8 @@ class TaskMeta(BaseModel):
     owner: Owner
     estimated_cost_usd: float = Field(default=0.05, ge=0.0)
     estimated_duration_sec: float = Field(default=30.0, ge=0.0)
+    execution_mode: ExecutionMode = "FAST"
+    mode_override_reason: str = ""
     deadline_iso: datetime | None = None
     success_criteria_short: str = Field(max_length=200)
     version: int = Field(default=1, description="TASK.md structure version, not run count")
