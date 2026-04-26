@@ -30,6 +30,8 @@ from kun.engineering.safety_guards import (
     TokenMeter,
     ZeroTelemetryEnforcer,
 )
+from kun.security.diagnose_runner import DiagnoseRunner
+from kun.security.fix_handlers import register_default_fix_handlers
 from kun.watchtower.engine import RuleEngine
 
 
@@ -64,6 +66,11 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     precipitation.register_step(NarrativeDistillStep())
     app.state.knowledge_precipitation = precipitation
     register_step(KnowledgePrecipitationStep(kp_provider=lambda: app.state.knowledge_precipitation))
+
+    # V2.1 §10.6 / M3.2 提前: 傩诊断 runner + 5 类默认 fix handler
+    diagnose_runner = DiagnoseRunner()
+    register_default_fix_handlers(diagnose_runner)
+    app.state.diagnose_runner = diagnose_runner
 
     orchestrator = Orchestrator(
         rule_engine=rule_engine,
@@ -131,3 +138,7 @@ def get_emergent_library(app: _AppWithState) -> EmergentSolutionLibrary:
 
 def get_knowledge_precipitation(app: _AppWithState) -> KnowledgePrecipitation:
     return cast(KnowledgePrecipitation, app.state.knowledge_precipitation)
+
+
+def get_diagnose_runner(app: _AppWithState) -> DiagnoseRunner:
+    return cast(DiagnoseRunner, app.state.diagnose_runner)

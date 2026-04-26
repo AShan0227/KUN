@@ -24,6 +24,7 @@ from kun import __version__
 from kun.api.attention_pin import router as attention_pin_router
 from kun.api.blackboard import router as blackboard_router
 from kun.api.chat import router as chat_router
+from kun.api.diagnose import router as diagnose_router
 from kun.api.health import router as health_router
 from kun.api.nuo import router as nuo_router
 from kun.api.runtime import install_runtime
@@ -233,6 +234,8 @@ app.include_router(nuo_router, prefix="/nuo", tags=["nuo"])
 app.include_router(blackboard_router)
 app.include_router(attention_pin_router)
 app.include_router(task_control_router)
+# V2.1 §10.6 / M3.2 提前: 傩诊断
+app.include_router(diagnose_router, prefix="/api/diagnose", tags=["diagnose"])
 
 
 @app.get("/")
