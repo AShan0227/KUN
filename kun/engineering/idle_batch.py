@@ -51,6 +51,7 @@ class IdleBatchStep(ABC):
 
 
 _steps: dict[str, IdleBatchStep] = {}
+_data_source: Any | None = None
 
 
 def register_step(step: IdleBatchStep) -> None:
@@ -63,6 +64,18 @@ def list_steps() -> list[str]:
 
 def get_step(step_id: str) -> IdleBatchStep | None:
     return _steps.get(step_id)
+
+
+def set_idle_batch_data_source(data_source: Any) -> None:
+    """Inject a data source for idle-batch steps (tests / future DB adapter)."""
+
+    global _data_source
+    _data_source = data_source
+
+
+def reset_idle_batch_data_source() -> None:
+    global _data_source
+    _data_source = None
 
 
 # ============= Runner ============
@@ -116,10 +129,20 @@ class TaskReplayStep(IdleBatchStep):
     step_id = "task_replay"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        # Placeholder: in full impl we'd sample tasks, re-run with shadow config,
-        # compute metric deltas, and report.
-        log.info("task_replay.placeholder", tenant_id=tenant_id)
-        return {"replayed": 0, "note": "placeholder"}
+        tasks = await _source_list("recent_tasks", tenant_id)
+        replayed = len(tasks)
+        treatment_wins = sum(
+            1 for task in tasks if _float(task.get("new_score")) > _float(task.get("old_score"))
+        )
+        control_wins = sum(
+            1 for task in tasks if _float(task.get("old_score")) > _float(task.get("new_score"))
+        )
+        return {
+            "replayed": replayed,
+            "treatment_wins": treatment_wins,
+            "control_wins": control_wins,
+            "win_rate": treatment_wins / replayed if replayed else 0.0,
+        }
 
 
 class ConsistencyTestStep(IdleBatchStep):
@@ -128,8 +151,14 @@ class ConsistencyTestStep(IdleBatchStep):
     step_id = "consistency_test"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        log.info("consistency_test.placeholder", tenant_id=tenant_id)
-        return {"samples": 0, "note": "placeholder"}
+        samples = await _source_list("consistency_samples", tenant_id)
+        spreads = [_spread(sample.get("scores", [])) for sample in samples]
+        unstable = [spread for spread in spreads if spread > 0.25]
+        return {
+            "samples": len(samples),
+            "unstable": len(unstable),
+            "avg_spread": sum(spreads) / len(spreads) if spreads else 0.0,
+        }
 
 
 class MethodologyDistillStep(IdleBatchStep):
@@ -138,8 +167,19 @@ class MethodologyDistillStep(IdleBatchStep):
     step_id = "methodology_distill"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        log.info("methodology_distill.placeholder", tenant_id=tenant_id)
-        return {"new_rules": 0, "note": "placeholder"}
+        narratives = await _source_list("narratives", tenant_id)
+        rules = sorted(
+            {
+                str(item.get("rule") or item.get("lesson") or "").strip()
+                for item in narratives
+                if str(item.get("rule") or item.get("lesson") or "").strip()
+            },
+        )
+        return {
+            "source_narratives": len(narratives),
+            "new_rules": len(rules),
+            "rules": rules[:10],
+        }
 
 
 class KnowledgeConflictStep(IdleBatchStep):
@@ -148,8 +188,25 @@ class KnowledgeConflictStep(IdleBatchStep):
     step_id = "knowledge_conflict"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        log.info("knowledge_conflict.placeholder", tenant_id=tenant_id)
-        return {"resolved": 0, "note": "placeholder"}
+        claims = await _source_list("memory_claims", tenant_id)
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for claim in claims:
+            grouped.setdefault(str(claim.get("key") or ""), []).append(claim)
+
+        resolved: list[dict[str, Any]] = []
+        for key, items in grouped.items():
+            values = {str(item.get("value")) for item in items}
+            if key and len(values) > 1:
+                winner = max(items, key=lambda item: _float(item.get("confidence"), default=0.0))
+                resolved.append(
+                    {
+                        "key": key,
+                        "winner": winner.get("value"),
+                        "confidence": _float(winner.get("confidence"), default=0.0),
+                        "candidates": len(items),
+                    }
+                )
+        return {"checked": len(claims), "resolved": len(resolved), "resolutions": resolved}
 
 
 class ABDecisionRollupStep(IdleBatchStep):
@@ -158,8 +215,29 @@ class ABDecisionRollupStep(IdleBatchStep):
     step_id = "ab_decision_roll_up"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        log.info("ab_decision_roll_up.placeholder", tenant_id=tenant_id)
-        return {"promoted": 0, "rolled_back": 0, "note": "placeholder"}
+        experiments = await _source_list("experiments", tenant_id)
+        promoted = 0
+        rolled_back = 0
+        observed = 0
+        decisions: list[dict[str, Any]] = []
+        for exp in experiments:
+            if bool(exp.get("guardrail_breached")):
+                decision = "rollback"
+                rolled_back += 1
+            elif _float(exp.get("treatment_score")) > _float(exp.get("control_score")):
+                decision = "promote_shadow"
+                promoted += 1
+            else:
+                decision = "observe"
+                observed += 1
+            decisions.append({"experiment_id": exp.get("experiment_id"), "decision": decision})
+        return {
+            "experiments": len(experiments),
+            "promoted": promoted,
+            "rolled_back": rolled_back,
+            "observed": observed,
+            "decisions": decisions,
+        }
 
 
 class HealthReportStep(IdleBatchStep):
@@ -168,6 +246,10 @@ class HealthReportStep(IdleBatchStep):
     step_id = "health_report"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
+        sourced = await _source_dict("health_snapshot", tenant_id)
+        if sourced:
+            return sourced
+
         # Produce a minimal but real snapshot here (tasks count, outbox lag, cost)
         from sqlalchemy import func, select
 
@@ -210,8 +292,31 @@ class RouteRuleMiningStep(IdleBatchStep):
     step_id = "route_rule_mining"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        log.info("route_rule_mining.placeholder", tenant_id=tenant_id)
-        return {"new_patterns": 0, "note": "placeholder"}
+        logs = await _source_list("route_logs", tenant_id)
+        buckets: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for item in logs:
+            key = (str(item.get("task_type") or "unknown"), str(item.get("model") or "unknown"))
+            buckets.setdefault(key, []).append(item)
+
+        patterns: list[dict[str, Any]] = []
+        by_task: dict[str, list[dict[str, Any]]] = {}
+        for (task_type, model), items in buckets.items():
+            success_rate = sum(1 for item in items if bool(item.get("success"))) / len(items)
+            avg_cost = sum(_float(item.get("cost_usd")) for item in items) / len(items)
+            by_task.setdefault(task_type, []).append(
+                {
+                    "task_type": task_type,
+                    "model": model,
+                    "success_rate": success_rate,
+                    "avg_cost_usd": avg_cost,
+                    "samples": len(items),
+                }
+            )
+        for task_type, candidates in by_task.items():
+            best = max(candidates, key=lambda item: (item["success_rate"], -item["avg_cost_usd"]))
+            if best["samples"] >= 2 and best["success_rate"] >= 0.8:
+                patterns.append({"task_type": task_type, "recommended_model": best["model"], **best})
+        return {"logs": len(logs), "new_patterns": len(patterns), "patterns": patterns}
 
 
 class KnowledgePrecipitationStep(IdleBatchStep):
@@ -319,3 +424,41 @@ async def run_once(
         if asyncio.iscoroutine(result):
             await result
     return reports
+
+
+async def _source_list(method_name: str, tenant_id: str) -> list[dict[str, Any]]:
+    result = await _call_data_source(method_name, tenant_id)
+    if isinstance(result, list):
+        return [item for item in result if isinstance(item, dict)]
+    return []
+
+
+async def _source_dict(method_name: str, tenant_id: str) -> dict[str, Any]:
+    result = await _call_data_source(method_name, tenant_id)
+    return result if isinstance(result, dict) else {}
+
+
+async def _call_data_source(method_name: str, tenant_id: str) -> Any:
+    if _data_source is None:
+        return None
+    method = getattr(_data_source, method_name, None)
+    if method is None:
+        return None
+    result = method(tenant_id)
+    if asyncio.iscoroutine(result):
+        return await result
+    return result
+
+
+def _float(value: Any, *, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _spread(values: Any) -> float:
+    if not isinstance(values, list) or not values:
+        return 0.0
+    nums = [_float(value) for value in values]
+    return max(nums) - min(nums)
