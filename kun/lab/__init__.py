@@ -15,6 +15,13 @@
 启动: 见 docs/v2/KUN-V2.2-revisions.md §26.
 """
 
+from kun.lab.adoption import (
+    LabAdopter,
+    LabRecipeAdoptionStep,
+    get_adoption_step,
+    install_lab_adoption_step,
+    reset_adoption_step,
+)
 from kun.lab.ensemble_executor import (
     EnsembleConfig,
     EnsembleExecutor,
@@ -39,10 +46,15 @@ __all__ = [
     "Experiment",
     "ExperimentLog",
     "LLMRouterEnsembleAdapter",
+    "LabAdopter",
     "LabEventEmitter",
+    "LabRecipeAdoptionStep",
     "RecipePromoter",
+    "get_adoption_step",
     "get_experiment_log",
+    "install_lab_adoption_step",
     "make_default_adapter",
+    "reset_adoption_step",
     "reset_experiment_log",
     "summarize_ensemble",
     "summarize_promotion",
