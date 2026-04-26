@@ -19,29 +19,47 @@ from kun.core.scoring import ScoreDescriptor
 EmbedText = Callable[[str], Sequence[float]]
 ImportanceTier = Literal["permanent", "long", "short"]
 
+# V2.1.2 §3.2 / §18.2: 5 维基线权重 (按场景动态算, 不写死任何一维上限)
 DEFAULT_WEIGHTS = {
+    "semantic": 0.20,
+    "frequency": 0.20,
+    "recency": 0.20,
+    "dependency": 0.20,
+    "pin": 0.20,
+}
+# V1 兼容: 旧 3 维权重 (传入只含 semantic/frequency/recency 时自动 backfill)
+LEGACY_3D_WEIGHTS = {
     "semantic": 0.5,
     "frequency": 0.3,
     "recency": 0.2,
 }
 FREQUENCY_SATURATION_COUNT = 100
 LONG_HALF_LIFE_DAYS = 11.25
+PIN_HALF_LIFE_DAYS = 90.0  # V2 §3.5 tier 1 用户 pin
 SHORT_HALF_LIFE_DAYS = 5.0
 
 
 @dataclass(frozen=True)
 class ImportanceScore:
-    """Context 资产重要度分数。"""
+    """Context 资产重要度分数 (V2.1.2 5 维)."""
 
     overall: float
     semantic: float
     frequency: float
     recency: float
-    rationale: str
+    dependency: float = 0.0  # V2 任务依赖度
+    pin: float = 0.0  # V2 用户显式 pin
+    rationale: str = ""
 
 
 class ImportanceScorer:
-    """按语义相关度、访问频率、近期性给资产打分。"""
+    """按 5 维 (语义相关 + 访问频率 + 近期性 + 任务依赖 + 用户 pin) 给资产打分.
+
+    V2.1.2 §3.2 / §18.2 修订:
+    - 不再写死"近期性 ≤ 0.25 铁律", 5 维权重按场景动态算
+    - 加 dependency (任务硬依赖) 和 pin (用户显式 pin) 两维
+    - 兼容 V1 旧 3 维权重 (会自动 backfill dependency=0 / pin=0)
+    """
 
     def __init__(
         self,
@@ -58,29 +76,44 @@ class ImportanceScorer:
         asset: LayeredAsset,
         query: str | None = None,
         now: datetime | None = None,
+        task_dependency_score: float = 0.0,
+        pin_boost: float = 0.0,
+        weights_override: dict[str, float] | None = None,
     ) -> ImportanceScore:
-        """给一个资产打 0..1 的重要度分。
+        """给一个资产打 0..1 的重要度分 (5 维 V2).
 
-        query 为空时，说明调用方只想按资产自身热度排序，semantic 直接给 1。
-        query 不为空时，优先走注入的 embedding 函数；没有 embedding 时用本地词项相似度兜底。
+        Args:
+            task_dependency_score: 0-1, 该资产是否当前任务硬依赖
+                (TASK.md required_resources 命中 / 关联任务的能力卡 / 等)
+            pin_boost: 0-1, 用户显式 pin 加权 (来自 AttentionAnchor.boost_for_asset)
+            weights_override: V2 §18.2 按场景动态算的权重, 不传用 self.weights
         """
         now = now or datetime.now(UTC)
         semantic = self.semantic(asset=asset, query=query)
         frequency = self.frequency(asset.access_count)
         recency = self.recency(asset=asset, now=now)
+        dependency = _clamp01(task_dependency_score)
+        pin = _clamp01(pin_boost)
+
+        weights = _normalize_weights(weights_override or self.weights)
         overall = _clamp01(
-            self.weights["semantic"] * semantic
-            + self.weights["frequency"] * frequency
-            + self.weights["recency"] * recency
+            weights.get("semantic", 0.0) * semantic
+            + weights.get("frequency", 0.0) * frequency
+            + weights.get("recency", 0.0) * recency
+            + weights.get("dependency", 0.0) * dependency
+            + weights.get("pin", 0.0) * pin
         )
         return ImportanceScore(
             overall=overall,
             semantic=semantic,
             frequency=frequency,
             recency=recency,
+            dependency=dependency,
+            pin=pin,
             rationale=(
-                f"semantic={semantic:.3f}, frequency={frequency:.3f}, recency={recency:.3f}; "
-                f"weights={self.weights}"
+                f"semantic={semantic:.3f}, frequency={frequency:.3f}, "
+                f"recency={recency:.3f}, dependency={dependency:.3f}, "
+                f"pin={pin:.3f}; weights={weights}"
             ),
         )
 
@@ -126,10 +159,21 @@ class ImportanceScorer:
         asset: LayeredAsset,
         query: str | None = None,
         now: datetime | None = None,
+        task_dependency_score: float = 0.0,
+        pin_boost: float = 0.0,
+        weights_override: dict[str, float] | None = None,
     ) -> ScoreDescriptor:
-        """兼容现有统一打分展示层。"""
-        score = self.score(asset=asset, query=query, now=now)
+        """兼容现有统一打分展示层 (V2.1.2 5 维)."""
+        score = self.score(
+            asset=asset,
+            query=query,
+            now=now,
+            task_dependency_score=task_dependency_score,
+            pin_boost=pin_boost,
+            weights_override=weights_override,
+        )
         half_life = half_life_days(asset)
+        weights_used = _normalize_weights(weights_override or self.weights)
         return ScoreDescriptor(
             kind="importance",
             value=score.overall,
@@ -137,11 +181,70 @@ class ImportanceScorer:
                 "semantic": score.semantic,
                 "frequency": score.frequency,
                 "recency": score.recency,
+                "dependency": score.dependency,
+                "pin": score.pin,
             },
-            weights=self.weights,
+            weights=weights_used,
             sample_size=max(0, asset.access_count),
             decay_half_life_days=None if half_life is None else round(half_life),
         )
+
+    def compute_dimension_weights(
+        self,
+        *,
+        task_meta: dict[str, object] | None = None,
+        user_meta: dict[str, object] | None = None,
+        context_meta: dict[str, object] | None = None,
+    ) -> dict[str, float]:
+        """V2.1.2 §18.2.1: 按场景动态算 5 维权重 (不写死任何上限).
+
+        基线:5 维等权 0.20. 按场景调整:
+        - 任务明示"按最新偏好" → recency +0.20
+        - 任务有 required_resources → dependency +0.15
+        - 长对话频繁切话题 → semantic +0.15
+        - 用户刚 pin 资产 → pin +0.20
+        - 高频复用任务 → frequency +0.10
+        - 大决策 → 全维放平
+        - critical 风险 → 单维 cap 0.50 防被一维带跑
+        """
+        task = task_meta or {}
+        user = user_meta or {}
+        context = context_meta or {}
+
+        w = dict(DEFAULT_WEIGHTS)
+
+        # 场景 1: 任务明示按最新
+        intent = str(task.get("intent_text", "")).lower()
+        if any(s in intent for s in ("最新", "现在", "刚才", "latest", "recent")):
+            w["recency"] += 0.20
+
+        # 场景 2: 有 required_resources
+        if task.get("required_resources"):
+            w["dependency"] += 0.15
+
+        # 场景 3: 长对话频繁切话题
+        topic_switches = context.get("topic_switches_in_session", 0)
+        if isinstance(topic_switches, int) and topic_switches >= 3:
+            w["semantic"] += 0.15
+
+        # 场景 4: 用户刚 pin
+        if user.get("recent_pin_action"):
+            w["pin"] += 0.20
+
+        # 场景 5: 高频复用 task_type
+        if task.get("is_high_frequency_type"):
+            w["frequency"] += 0.10
+
+        # 场景 6: 大决策 → 全维放平 (向基线靠拢)
+        if task.get("is_major_decision"):
+            for k in w:
+                w[k] = (w[k] + DEFAULT_WEIGHTS[k]) / 2
+
+        # 场景 7: critical 风险 → 单维 cap 0.50
+        if task.get("risk_level") == "critical":
+            w = {k: min(v, 0.50) for k, v in w.items()}
+
+        return _normalize_weights(w)
 
     def review_needed(self, *, asset: LayeredAsset, score: ImportanceScore) -> bool:
         """判断是否需要后续便宜模型复审。
@@ -212,13 +315,25 @@ def _terms(text: str) -> set[str]:
 
 
 def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
-    keys = {"semantic", "frequency", "recency"}
-    if set(weights) != keys:
-        raise ValueError(f"importance weights must be exactly {sorted(keys)}")
-    total = sum(weights.values())
+    """V2.1.2: 接受 5 维 (semantic/frequency/recency/dependency/pin) 或
+    V1 兼容 3 维 (semantic/frequency/recency, 自动 backfill dependency=0/pin=0).
+
+    所有未指定维度按 0 填充, 然后归一化.
+    """
+    expected = {"semantic", "frequency", "recency", "dependency", "pin"}
+    actual = set(weights.keys())
+    unknown = actual - expected
+    if unknown:
+        raise ValueError(
+            f"importance weights contain unknown dims {sorted(unknown)}. "
+            f"Allowed: {sorted(expected)}"
+        )
+    # backfill 未指定的维度 = 0 (V1 旧 3 维传进来时, dependency / pin 自动 0)
+    full = {key: float(weights.get(key, 0.0)) for key in expected}
+    total = sum(full.values())
     if total <= 0:
         raise ValueError("importance weights must sum to a positive number")
-    return {key: value / total for key, value in weights.items()}
+    return {key: value / total for key, value in full.items()}
 
 
 def _clamp01(value: float) -> float:

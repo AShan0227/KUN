@@ -25,6 +25,15 @@ EntityKind = Literal[
     "notification",  # nt-
     "rule",  # rl-
     "action",  # act-
+    # V2.1 additions
+    "sd",  # StrategyDecision (§17.7)
+    "tp",  # TaskPanorama (§13.8)
+    "aa",  # AttentionAnchor (§13.7 / §18.8)
+    "es",  # EmergentSolution (§13.9)
+    "preheat",  # ContextPreheat
+    "patch",  # PanoramaPatch (§7.7)
+    "diag",  # DiagnoseRun (§10.6)
+    "anchor",  # alias for aa
 ]
 
 _PREFIX: Final[dict[EntityKind, str]] = {
@@ -42,6 +51,15 @@ _PREFIX: Final[dict[EntityKind, str]] = {
     "notification": "nt",
     "rule": "rl",
     "action": "act",
+    # V2.1
+    "sd": "sd",
+    "tp": "tp",
+    "aa": "aa",
+    "es": "es",
+    "preheat": "ph",
+    "patch": "pat",
+    "diag": "diag",
+    "anchor": "aa",
 }
 
 

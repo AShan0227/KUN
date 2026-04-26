@@ -117,13 +117,16 @@ def test_embedding_failure_falls_back_to_local_text_similarity() -> None:
 
 @pytest.mark.unit
 def test_score_descriptor_keeps_existing_display_contract() -> None:
+    """V2.1.2: components 升级为 5 维 (含 dependency / pin)."""
     asset = _asset(access_count=3)
     descriptor = ImportanceScorer().score_descriptor(asset=asset, query="postgres")
 
     assert descriptor.kind == "importance"
     assert 0 <= descriptor.value <= 1
     assert descriptor.sample_size == 3
-    assert set(descriptor.components) == {"semantic", "frequency", "recency"}
+    assert set(descriptor.components) == {
+        "semantic", "frequency", "recency", "dependency", "pin",
+    }
 
 
 @pytest.mark.unit
