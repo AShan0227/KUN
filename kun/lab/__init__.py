@@ -27,6 +27,7 @@ from kun.lab.experiment_log import (
     get_experiment_log,
     reset_experiment_log,
 )
+from kun.lab.llm_router_adapter import LLMRouterEnsembleAdapter, make_default_adapter
 from kun.lab.recipe_promoter import RecipePromoter
 
 __all__ = [
@@ -36,7 +37,9 @@ __all__ = [
     "EnsembleResult",
     "Experiment",
     "ExperimentLog",
+    "LLMRouterEnsembleAdapter",
     "RecipePromoter",
     "get_experiment_log",
+    "make_default_adapter",
     "reset_experiment_log",
 ]
