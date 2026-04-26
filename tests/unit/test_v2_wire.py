@@ -75,6 +75,18 @@ def test_emergent_switch_manager_wired_into_orchestrator() -> None:
     assert orch.emergent_switch_manager is mgr
 
 
+def test_cron_scheduler_singleton_in_app_state() -> None:
+    from fastapi import FastAPI
+    from kun.api.runtime import get_cron_scheduler
+    from kun.engineering.cron_scheduler import CronScheduler
+
+    app = FastAPI()
+    install_runtime(app, rule_engine=RuleEngine([]))
+    sched = get_cron_scheduler(app)
+    assert isinstance(sched, CronScheduler)
+    assert sched.list_jobs() == []  # lifespan registers jobs, install_runtime 不
+
+
 def test_knowledge_precipitation_wired_into_idle_batch() -> None:
     """V2.1 §16.12: install_runtime 应该:
     - 创建 KnowledgePrecipitation 单例并注册 4 类内置 step

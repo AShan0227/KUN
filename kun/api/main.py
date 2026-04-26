@@ -132,6 +132,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         log.info("idle_batch.scheduled", interval_sec=idle_interval)
 
+    # V2.1 M4: 真 cron scheduler — 默认开, KUN_CRON_SCHEDULER_ENABLED=0 关
+    if os.getenv("KUN_CRON_SCHEDULER_ENABLED", "1") == "1":
+        from kun.api.runtime import get_cron_scheduler
+        from kun.engineering.idle_batch import run_all as _run_idle_steps
+        from kun.engineering.precipitation_idle_step import get_kp
+
+        sched = get_cron_scheduler(app)
+        default_tenant = settings().default_tenant_id or "u-sylvan"
+
+        async def _hourly_idle_batch() -> None:
+            await _run_idle_steps(default_tenant)
+
+        async def _daily_kp() -> None:
+            await get_kp().run_scheduled("daily")
+
+        async def _weekly_kp() -> None:
+            await get_kp().run_scheduled("weekly")
+
+        sched.register("idle_batch_hourly", "@hourly", _hourly_idle_batch)
+        sched.register("kp_daily", "@daily", _daily_kp)
+        sched.register("kp_weekly", "@weekly", _weekly_kp)
+
+        app.state.cron_scheduler_task = asyncio.create_task(sched.run_forever())
+        log.info("cron_scheduler.started", jobs=sched.list_jobs())
+
     # Opentelemetry auto-instrumentation (best effort)
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -159,6 +184,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         nats_sub.cancel()
         with suppress(asyncio.CancelledError):
             await nats_sub
+
+    cron_task: asyncio.Task[None] | None = getattr(app.state, "cron_scheduler_task", None)
+    if cron_task is not None:
+        cron_sched = getattr(app.state, "cron_scheduler", None)
+        if cron_sched is not None:
+            cron_sched.stop()
+        cron_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cron_task
 
     # Close LLM router providers — important for CodexMcpProvider which holds
     # a long-lived `codex mcp-server` subprocess. Without this, an API restart

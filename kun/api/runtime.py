@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Protocol, cast
 
 from kun.core.emergent_solution import EmergentSolutionLibrary
+from kun.engineering.cron_scheduler import CronScheduler
 from kun.engineering.emergent_switch import EmergentSwitchManager
 from kun.engineering.fast_path import FastPathRouter
 from kun.engineering.idle_batch import KnowledgePrecipitationStep, register_step
@@ -71,6 +72,9 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     diagnose_runner = DiagnoseRunner()
     register_default_fix_handlers(diagnose_runner)
     app.state.diagnose_runner = diagnose_runner
+
+    # V2.1 M4: 真 cron scheduler (替换固定 interval idle_batch_worker)
+    app.state.cron_scheduler = CronScheduler()
 
     orchestrator = Orchestrator(
         rule_engine=rule_engine,
@@ -142,3 +146,7 @@ def get_knowledge_precipitation(app: _AppWithState) -> KnowledgePrecipitation:
 
 def get_diagnose_runner(app: _AppWithState) -> DiagnoseRunner:
     return cast(DiagnoseRunner, app.state.diagnose_runner)
+
+
+def get_cron_scheduler(app: _AppWithState) -> CronScheduler:
+    return cast(CronScheduler, app.state.cron_scheduler)
