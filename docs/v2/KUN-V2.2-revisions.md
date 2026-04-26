@@ -587,6 +587,112 @@ V2.2 §23 是基础.
 
 ---
 
+## §28 任务边界守护 / TaskBoundaryGuard (V2.2 新增, OffTopicEval 启发)
+
+**位置**: 主文档 §7 (intent) 之后, §10 (傩诊断) 之前 — 任务边界跟意图理解是孪生.
+
+### 28.1 一句话定位
+
+OffTopicEval (Lambda, ICLR 2026 Agents in the Wild) 揭示: **即使 LLM 被给了明确角色和边界, 它"几乎每次都回答不该回答的问题"**. KUN 用工程化方式对治 — 加一层 "TaskBoundaryGuard", 在 intent 阶段就检测 task 是否在 agent role 的 scope 内, 不在 → reject + 反问.
+
+### 28.2 大白话
+
+举例: 用户雇了一个"营销文案 agent"专门写广告. 用户突然问: "帮我修个 bug." LLM 大概率会答 (虽然超出范围), 因为它"什么都能聊". 但作为产品, 这是个**严重问题** — 用户付费雇的是营销文案 agent, 不是通用 LLM. 答了等于:
+1. 浪费成本 (跑了不该跑的任务)
+2. 质量风险 (营销 agent 不擅长 debug)
+3. 边界混乱 (用户长期会失去对 agent 角色的认知)
+4. 安全隐患 (修 bug 可能触发用户没意识到的高危操作)
+
+KUN 加 TaskBoundaryGuard:
+- intent 之后, planner 之前, 算"task 在 role scope 内的概率" (boundary_score 0-1)
+- < 阈值 (默认 0.4) → reject + 反问: "我是 [营销文案 agent], 这个 bug 修复任务不在我擅长范围. 您要继续吗? 我可以转给 [coding agent] 或者您自己处理."
+- 用户确认 → 强制走, 但记账 (出了问题不背锅)
+- 用户取消 → 任务结束
+
+### 28.3 跟 KUN 现有架构关系
+
+| KUN 现有 | OffTopicEval 维度 | 升级 |
+|---------|-------------------|------|
+| PlanOnlyGate | 防"高危操作" (destructive) | 不防 off-topic |
+| SoulFile.professional_role | 描述用户角色 | 跟 agent role 不直接关联 |
+| role_template (V1 §13) | 描述 agent 角色 | 没"allowed_task_types" 字段 |
+| watchtower | 规则触发 (e.g. cost 超限) | 没"task scope" 规则 |
+| ValueGate | 步级 ROI | 没"任务级 in-scope" 检测 |
+
+V2.2 §28 补这个空缺.
+
+### 28.4 数据模型
+
+`kun/datamodel/role_template.py` (现有, 加字段):
+```python
+class RoleTemplate(BaseModel):
+    role_id: str
+    role_name: str
+    description: str
+    # V2.2 §28 加
+    allowed_task_types: list[str] = []  # 白名单, e.g. ["marketing.copywriting", "marketing.ad"]
+    forbidden_task_types: list[str] = []  # 黑名单, e.g. ["coding.*"]
+    boundary_strict_mode: bool = True  # True → boundary_score 低就 reject; False → 给警告但放行
+    out_of_scope_redirect: str = ""  # off-topic 时建议转给哪个 role
+```
+
+### 28.5 TaskBoundaryGuard 实装
+
+```python
+class BoundaryDecision(BaseModel):
+    in_scope: bool
+    boundary_score: float  # 0..1
+    reason: str  # whitelist_match / blacklist_hit / llm_judge / no_scope_defined
+    suggested_redirect: str = ""  # 建议转给的 role_id
+
+class TaskBoundaryGuard:
+    """在 intent 之后, planner 之前算 task 是否在 agent role scope 内."""
+    
+    def __init__(self, llm_judge=None, threshold=0.4): ...
+    
+    async def check(
+        self,
+        task_meta: dict,  # 含 task_type / success_criteria_short
+        role_template: RoleTemplate,
+    ) -> BoundaryDecision:
+        # 1. allowed_task_types 命中 → in_scope=1.0
+        # 2. forbidden_task_types 命中 → in_scope=0.0
+        # 3. 都没命中 → LLM judge 算 in-scope 概率
+        # 4. 没 role / 没 LLM judge → 默认 in_scope=0.7 (中性放行 + log)
+```
+
+### 28.6 跟 V2.2 已有模块联动
+
+- **跟 §21 三模式**: TaskBoundaryGuard 在 mode classifier 之前 (boundary 第一道, mode 是第二道)
+- **跟 §27 ThoughtActionConsistency**: hermes 出 ExecutionStep 后, 守望可以再算 "step.action_payload 是否在 scope 内" (双层护栏)
+- **跟 §17 ValueGate**: off-topic task → expected_value = 0 → escalate
+- **跟 SoulFile**: 用户的 \`always_max_kinds\` 优先级 < boundary_strict_mode (boundary 是硬约束)
+
+### 28.7 配 OffTopicEval benchmark
+
+V2.2 §26 KUN-Lab 学习成长区可以加一个"OffTopicEval benchmark" 跑测试:
+- 给 KUN 装一个特定 role agent (e.g. 营销文案)
+- 喂 100 条 off-topic 问题 (e.g. 写代码 / 修 bug / 算数学)
+- 统计 reject rate, target ≥ 95% (vs LLM 直接答的 ≤ 10%)
+
+### 28.8 实施 (Wire 18, ~6-8h)
+
+`kun/security/task_boundary_guard.py` (新):
+- TaskBoundaryGuard 类
+- BoundaryDecision 模型
+- LLM judge factory (cheap model 一次性)
+- 启发式 fallback (没 LLM 时用)
+
+orchestrator wire (Wire 18):
+- intent.interpret → IntentInterpreter (现有)
+- → TaskBoundaryGuard.check (新)
+- in_scope=False + boundary_strict → emit "boundary_violation" event + ws ask_user
+- 用户取消 → end task; 用户强制 → 走 (记账)
+
+测试: ≥10 个 (whitelist / blacklist / LLM judge / 无 scope / strict 模式 / redirect 建议).
+
+---
+
 ## §27 推理时反思 + 学习成长区 (V2.2 新增, ICLR 2026 启发)
 
 **位置**: 主文档 §22 hermes 之后, 跟 §26 KUN-Lab 联动 (KUN-Lab 的"学习成长区" 实装这个).
