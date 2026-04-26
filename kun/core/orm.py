@@ -475,3 +475,70 @@ class IdempotencyRow(Base):
     ttl_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
 
     __table_args__ = (CheckConstraint("ttl_sec > 0", name="idempotency_ttl_positive"),)
+
+
+# ============== SOUL FILE (V2.1 §13 / T17 / M4 持久化) ==============
+
+
+class SoulFileRow(Base):
+    """user 级灵魂档案持久化.
+
+    主体字段 (audience / risk_tolerance / etc) 拍平方便查询; nested 字段
+    (revision_history / evolved_traits / preferred_tools / extensions / etc)
+    存 blob JSONB.
+
+    复合 PK (tenant_id, user_id) — 同一 user 在不同 tenant 互相隔离.
+    """
+
+    __tablename__ = "soul_files"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    # 拍平的主体字段 (常用于查询 / NUO 显示)
+    audience: Mapped[str] = mapped_column(String(16), nullable=False, default="developer")
+    default_language: Mapped[str] = mapped_column(String(16), nullable=False, default="zh-CN")
+    risk_tolerance: Mapped[str] = mapped_column(String(8), nullable=False, default="medium")
+    cost_sensitivity: Mapped[str] = mapped_column(String(8), nullable=False, default="medium")
+    speed_sensitivity: Mapped[str] = mapped_column(String(8), nullable=False, default="medium")
+    interruption_tolerance: Mapped[str] = mapped_column(String(8), nullable=False, default="medium")
+    approval_threshold_money: Mapped[float] = mapped_column(nullable=False, default=10.0)
+    professional_role: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+
+    # 整个 SoulFile pydantic dump (含 revisions / evolved_traits / preferred_tools / etc)
+    blob: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    last_updated: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "audience IN ('novice', 'developer', 'expert')",
+            name="soul_file_audience_valid",
+        ),
+        CheckConstraint(
+            "risk_tolerance IN ('low', 'medium', 'high')",
+            name="soul_file_risk_valid",
+        ),
+        CheckConstraint(
+            "cost_sensitivity IN ('low', 'medium', 'high')",
+            name="soul_file_cost_valid",
+        ),
+        CheckConstraint(
+            "speed_sensitivity IN ('low', 'medium', 'high')",
+            name="soul_file_speed_valid",
+        ),
+        CheckConstraint(
+            "interruption_tolerance IN ('low', 'medium', 'high')",
+            name="soul_file_interrupt_valid",
+        ),
+        CheckConstraint(
+            "approval_threshold_money >= 0",
+            name="soul_file_approval_threshold_nonneg",
+        ),
+        Index("ix_soul_files_tenant_updated", "tenant_id", "last_updated"),
+    )
