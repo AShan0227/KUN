@@ -72,6 +72,31 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     app.state.knowledge_precipitation = precipitation
     register_step(KnowledgePrecipitationStep(kp_provider=lambda: app.state.knowledge_precipitation))
 
+    # V2.2 §26 / Wire 26: KUN-Lab → 主仓库闭环
+    # KUN_LAB_BRIDGE_ENABLED=1 启用 (默认 off — 跟 KUN_LAB_MODE 解耦, 防意外消费).
+    # 启用后:
+    #   1. precipitation 收 experiment.promoted 事件 → LabRecipePrecipitationStep
+    #      产 AssetUpdate
+    #   2. apply_hook 写入 LabRecipeRegistry
+    #   3. ExecutionMode classifier 自动查 registry, lab 推荐影响 mode 决策
+    #   4. idle_batch.LabRecipeAdoptionStep 周期拉 events 流入闭环
+    import os as _os
+
+    if _os.getenv("KUN_LAB_BRIDGE_ENABLED", "0") == "1":
+        from kun.lab import (
+            LabRecipePrecipitationStep,
+            get_recipe_registry,
+            install_lab_adoption_step,
+            make_kp_adopter,
+            make_registry_apply_hook,
+        )
+
+        lab_registry = get_recipe_registry()
+        precipitation.register_asset_apply_hook(make_registry_apply_hook(lab_registry))
+        precipitation.register_step(LabRecipePrecipitationStep())
+        install_lab_adoption_step(adopter=make_kp_adopter(precipitation))
+        app.state.lab_recipe_registry = lab_registry
+
     # V2.1 §10.6 / M3.2 提前: 傩诊断 runner + 5 类默认 fix handler
     diagnose_runner = DiagnoseRunner()
     register_default_fix_handlers(diagnose_runner)
@@ -82,8 +107,6 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
 
     # V2.2 §19.4 + §21: 守望主决策 gate (默认开, FAST 模式自动跳过)
     # KUN_VALUE_GATE_ENABLED=0 强制关闭整个 gate
-    import os as _os
-
     value_gate = None
     if _os.getenv("KUN_VALUE_GATE_ENABLED", "1") == "1":
         # V2.2 Wire 2: 用 production estimator 替代 default heuristic
