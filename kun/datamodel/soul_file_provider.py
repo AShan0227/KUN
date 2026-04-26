@@ -149,6 +149,59 @@ async def save_soul_file(soul: SoulFile) -> None:
     _store[_cache_key(soul.user_id, soul.tenant_id)] = soul
 
 
+async def write_soul_field(
+    user_id: str,
+    field_path: str,
+    new_value: Any,
+    *,
+    tenant_id: str = "u-sylvan",
+    reason: str = "system_inferred",
+    causing_event_id: str | None = None,
+    accompanying_text: str = "",
+    auto_save: bool = True,
+) -> Any:
+    """V2.2 §13 Wire 8: 写 SoulFile 字段并 (默认) 自动落 DB.
+
+    流程:
+    1. await load_or_create_soul_file (从 DB 拿或创建默认)
+    2. governance.write_field(soul, ...) — 走 injection 防护 / multi-source 验证 /
+       confirmation_required_for_core
+    3. 如果 accepted=True 且 auto_save=True → await save_soul_file (DB upsert)
+    4. 返 SoulWriteResult
+
+    用法:
+        result = await write_soul_field(
+            user_id="u-1",
+            field_path="cost_sensitivity",
+            new_value="high",
+            reason="user_explicit",
+        )
+        if result.accepted:
+            print("saved")
+        elif result.requires_confirmation:
+            print(f"awaiting confirmation: {result.awaiting_confirmation_token}")
+    """
+    soul = await load_or_create_soul_file(user_id, tenant_id=tenant_id)
+    governance = get_governance()
+    result = governance.write_field(
+        soul,
+        field_path=field_path,
+        new_value=new_value,
+        reason=reason,  # type: ignore[arg-type]
+        causing_event_id=causing_event_id,
+        accompanying_text=accompanying_text,
+    )
+    if result.accepted and auto_save:
+        try:
+            await save_soul_file(soul)
+        except Exception:
+            logger.exception(
+                "soul_file.auto_save failed",
+                extra={"user_id": user_id, "field": field_path},
+            )
+    return result
+
+
 async def preload_all_soul_files(tenant_id: str = "u-sylvan") -> int:
     """启动时把所有 SoulFile 拉进 cache, 返加载条数."""
     from kun.core.db import session_scope
@@ -218,4 +271,5 @@ __all__ = [
     "save_soul_file",
     "soul_file_to_router_overrides",
     "soul_file_to_signal_user_dict",
+    "write_soul_field",
 ]
