@@ -538,6 +538,86 @@ a04eb50 wave3 — 致命差评第一批 5 硬约束
 
 ---
 
+## Z. 2026-04-26 第六轮: V2.2 修订 (决策核心 + 按需扩展)
+
+承接 Y 节 (M3.3 wire 完成 + M4 持久化 3/4 + codex 7 PR), 这一轮用户跟 GPT 深度讨论后,
+反馈 GPT 提的 5 个"补缺"中 4 个是 KUN V2.1 已实装 (用户判断准), 但有 5-6 个真正
+启发. 用户拍板把"按需扩展"提升为通用范式, 把守望从被动监控升级成主动决策投资人.
+
+### Z.1 5 个核心修订
+
+| # | 修订点 | 文档位置 | 实施位置 |
+|---|--------|---------|---------|
+| Z.1.1 | 边际收益递减 (Marginal ROI Stop) | V2.2 §19.2 | `kun/engineering/marginal_roi.py` (待实装) |
+| Z.1.2 | 按需扩展 / Anchor-Then-Expand 通用范式 | V2.2 §19.3 | `kun/core/anchor_expand.py` (待实装) — 18 处接入 |
+| Z.1.3 | 守望 = 决策投资人 (StrategyMatcher 接 watchtower) | V2.2 §19.4 | `kun/watchtower/engine.py` 加 ValueDecisionRule |
+| Z.1.4 | 知识图谱 + 导航式记忆 (合并 mempalace + KG) | V2.2 §20 | `kun/datamodel/relationship.py` + alembic + ImportanceScorer 升级 |
+| Z.1.5 | 三模式分级 FAST/SMART/MAX | V2.2 §21 | TaskRef.execution_mode 字段 + 模式判定器 |
+| Z.1.6 | hermes 结构化执行协议 | V2.2 §22 | `kun/engineering/execution_protocol.py` |
+
+### Z.2 anchor-expand 应用清单 (18 处)
+
+用户已识别 4 处 + 我审计代码后扩展 14 处:
+
+**已识别**:
+1. ImportanceScorer (`kun/context/importance.py:73`)
+2. LayeredAsset 查询 (`kun/context/packer.py:56`)
+3. SkillSelector (`kun/skills/selector.py:29`)
+4. agent 通讯 (新)
+
+**审计扩展**:
+5. StrategyMatcher 候选枚举 (`strategy_matcher.py:240`)
+6. CapabilityRouter 模型排序 (`capability_router.py:107`)
+7. Tier 枚举 (`strategy_router_bridge.py:127`)
+8. DiagnoseRunner findings (`diagnose_runner.py:211`)
+9. FixPlan 生成 (`diagnose_runner.py:275`)
+10. ExternalInfoScanner 多源 (`external_scan.py:117`)
+11. MultiJudge 评议 (`multi_judge.py:57`)
+12. idle_batch step 调度 (`idle_batch.py:84`)
+13. AttentionAnchor 检查 (`attention_anchor.py:123`)
+14. Panorama 模块按需展开 (`task_panorama.py:116`)
+15. IncidentResponse 动作矩阵 (`incident_response.py:76`)
+16. Watchtower 规则触发 (`watchtower/engine.py:114`)
+17. NUO 待审批列表 (`action_panel.py:56`)
+18. KnowledgePrecipitation 步分发 (`precipitation.py:107`)
+
+### Z.3 任务排期 (V2.2 实施)
+
+**我自己 (Claude) — 心脏部分 ~30-40h**:
+- marginal_roi 模块
+- anchor_expand 通用工具
+- 守望 ValueDecisionRule + wire orchestrator
+- ImportanceScorer + LayeredAsset + SkillSelector + multi_judge 接 anchor-expand (4 个核心)
+
+**Codex BATCH6 — 周边模块 ~80-100h**:
+- C21 三模式分级 (FAST/SMART/MAX) — TaskRef + classifier + orchestrator wire
+- C22 知识图谱 entity_relationships 表 + RelationshipMineStep
+- C23 hermes 结构化执行协议 + LLM JSON output schema
+- C24 anchor-expand 接其余 14 处 (StrategyMatcher / CapabilityRouter / DiagnoseRunner / etc)
+- C25 Panorama 按需展开优化
+- C26 NUO action_panel + diagnose_panel anchor-expand UX
+
+BATCH5 C12-C20 仍然有效 (Context 三大件 / 多臂赌博机 / sandbox / constitution / React Flow / starter pack / multi_task / TASK.md L3 / dynamic replan), 跟 BATCH6 并行做.
+
+### Z.4 跟 V2.1 兼容性
+
+- V2.2 是叠加, 不替换 V2.1 的 600 测试都过
+- 老 API 保留 (e.g. ImportanceScorer.score() 仍存在), 新 API 叠加 (score_anchor_then_expand)
+- FAST 模式默认行为跟 V2.1 一致 (不开守望主动决策, 不查记忆)
+- SMART/MAX 模式才启用 V2.2 新机制
+
+### Z.5 完成度推进
+
+- X 节 (V2.1 抽象层) ~25%
+- Y 节 (M3.3 完整闭环 + M4 持久化 3/4) ~50%
+- Z 节 (V2.2 决策核心 + 按需扩展) 计划完成后 ~70%
+- M5 (剩余) 完成后 ~85%
+- 真用户磨合 + 调参 ~10%, 总 100%
+
+V2.2 是从"高度结构化执行系统" → "会做选择/会下注/会停止/会节奏控制"的决策系统.
+
+---
+
 ## U. 我自己 (Claude) 的工程化承诺 (2026-04-26 加, 配合 §18.7)
 
 | # | 承诺 | 落点 |
