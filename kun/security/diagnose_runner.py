@@ -246,6 +246,41 @@ class DiagnoseRunner:
             )
         return findings
 
+    async def scope_identify_anchor_then_expand(
+        self,
+        request: DiagnoseRequest,
+        *,
+        max_rounds: int = 3,
+    ) -> AsyncIterator[DiagnoseFinding]:
+        """按需返回诊断发现.
+
+        老的 ``_scope_identify`` 一次性返回全部命中范围. 这个新接口先返回最高优先级
+        finding, 调用方觉得不够再展开后续命中.
+
+        # TODO: wire by Claude in V2.2
+        """
+        findings = await self._scope_identify(request)
+        ordered = sorted(findings, key=_scope_finding_priority, reverse=True)
+        if not ordered:
+            return
+
+        async def anchor_fn() -> DiagnoseFinding:
+            return ordered[0]
+
+        async def expand_fn(
+            _anchor: DiagnoseFinding,
+            prior: list[DiagnoseFinding],
+        ) -> DiagnoseFinding | None:
+            seen = {item.finding_id for item in prior}
+            return next((item for item in ordered if item.finding_id not in seen), None)
+
+        async for item in AnchorExpandIterator(
+            anchor_fn,
+            expand_fn,
+            max_rounds=max_rounds,
+        ):
+            yield item
+
     async def _cause_attribute(
         self,
         findings: list[DiagnoseFinding],
@@ -391,6 +426,22 @@ def _finding_priority(finding: DiagnoseFinding) -> tuple[int, int]:
     severity_order = {"info": 0, "warn": 1, "error": 2, "critical": 3}
     auto_bonus = 1 if finding.category in AUTO_FIX_CATEGORIES else 0
     return (severity_order.get(finding.severity, 0), auto_bonus)
+
+
+def _scope_finding_priority(finding: DiagnoseFinding) -> tuple[int, int]:
+    severity_order = {"info": 0, "warn": 1, "error": 2, "critical": 3}
+    subsystem_order = {
+        "security": 6,
+        "data": 5,
+        "watchtower": 4,
+        "router_llm": 3,
+        "engineering": 2,
+        "context": 1,
+    }
+    return (
+        severity_order.get(finding.severity, 0),
+        subsystem_order.get(finding.subsystem, 0),
+    )
 
 
 __all__ = [

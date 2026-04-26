@@ -13,11 +13,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from kun.core.anchor_expand import AnchorExpandIterator
 from kun.core.emergent_solution import (
     EmergentSolution,
     EmergentSolutionLibrary,
@@ -191,6 +192,115 @@ class ExternalInfoScanner:
             candidates_added=candidates_added,
             candidates_rejected=candidates_rejected,
             duration_sec=elapsed,
+        )
+
+    async def scan_for_user_anchor_then_expand(
+        self,
+        user_id: str,
+        *,
+        max_rounds: int = 3,
+    ) -> AsyncIterator[ScanResult]:
+        """按需扫描外部来源.
+
+        老的 ``scan_for_user`` 会遍历用户高频任务 × 所有来源. 新接口先扫最靠前的
+        一个来源, 调用方需要更多信息时再继续 expand 后续来源.
+
+        # TODO: wire by Claude in V2.2
+        """
+        if self._user_telemetry_enabled is not None and not self._user_telemetry_enabled(user_id):
+            return
+
+        top_types = (
+            []
+            if self._user_top_task_types_lookup is None
+            else self._user_top_task_types_lookup(user_id)[:5]
+        )
+        pairs = [
+            (task_type, source_kind, fetcher)
+            for task_type in top_types
+            for source_kind, fetcher in self._fetchers.items()
+        ]
+        if not pairs:
+            return
+
+        async def anchor_fn() -> ScanResult:
+            task_type, source_kind, fetcher = pairs[0]
+            return await self._scan_one_source(user_id, task_type, source_kind, fetcher)
+
+        async def expand_fn(
+            _anchor: ScanResult,
+            prior: list[ScanResult],
+        ) -> ScanResult | None:
+            idx = len(prior)
+            if idx >= len(pairs):
+                return None
+            task_type, source_kind, fetcher = pairs[idx]
+            return await self._scan_one_source(user_id, task_type, source_kind, fetcher)
+
+        async for result in AnchorExpandIterator(
+            anchor_fn,
+            expand_fn,
+            max_rounds=max_rounds,
+        ):
+            yield result
+
+    async def _scan_one_source(
+        self,
+        user_id: str,
+        task_type: str,
+        source_kind: SourceKind,
+        fetcher: ExternalFetcher,
+    ) -> ScanResult:
+        """扫描一个 task_type/source 组合."""
+        start = datetime.now(UTC)
+        if not self._under_budget(user_id):
+            return ScanResult(
+                user_id=user_id,
+                scanned_task_types=[task_type],
+                duration_sec=0.0,
+            )
+
+        try:
+            raw_items = await fetcher(task_type)
+        except Exception:
+            logger.exception("fetcher %s failed", source_kind)
+            return ScanResult(
+                user_id=user_id,
+                scanned_task_types=[task_type],
+                duration_sec=(datetime.now(UTC) - start).total_seconds(),
+            )
+
+        self._consume(user_id, 1)
+        candidates_added = 0
+        candidates_rejected = 0
+        for raw in raw_items[: self.max_candidates_per_source]:
+            relevant, summary = await self._review(task_type, raw)
+            if not relevant:
+                candidates_rejected += 1
+                continue
+
+            sol = EmergentSolution(
+                task_type=task_type,
+                discovered_by="external_scan",
+                source=EmergentSource(
+                    kind=source_kind,
+                    url=raw.get("url", ""),
+                    snippet=raw.get("snippet", "")[:300],
+                ),
+                description=summary,
+                estimated_outcome_delta=float(raw.get("estimated_outcome_delta", 0.0)),
+                estimated_cost_delta=float(raw.get("estimated_cost_delta", 0.0)),
+            )
+            self._library.add(sol)
+            candidates_added += 1
+
+        return ScanResult(
+            user_id=user_id,
+            scanned_task_types=[task_type],
+            sources_queried=1,
+            candidates_added=candidates_added,
+            candidates_rejected=candidates_rejected,
+            duration_sec=(datetime.now(UTC) - start).total_seconds(),
         )
 
     async def _review(
