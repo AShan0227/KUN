@@ -95,6 +95,12 @@ class OpenAIProvider(LLMProvider):
             ]
             kwargs["tool_choice"] = "auto"
 
+        # V2.2 §22 Wire 11: response_format strict mode (OpenAI 原生支持)
+        # 接受 {"type": "json_schema", "json_schema": {...}} (OpenAI 4o 原生格式)
+        # 或 {"type": "json_object"} (旧格式)
+        if request.response_format:
+            kwargs["response_format"] = request.response_format
+
         resp = await self._client.chat.completions.create(**kwargs)
         latency = (time.perf_counter() - started) * 1000
 

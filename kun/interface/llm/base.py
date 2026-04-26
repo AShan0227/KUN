@@ -120,6 +120,10 @@ class LLMRequest(BaseModel):
     profile: TaskProfile | None = None
     # Stream or not (streaming not used for every call, but supported)
     stream: bool = False
+    # V2.2 §22 Wire 11: hermes 结构化执行 — 强制 LLM JSON output schema
+    # provider 看到这字段就启用 strict mode (Anthropic tool calling 模拟 / OpenAI
+    # response_format json_schema). 不支持的 provider 静默降级到 prompt-only.
+    response_format: dict[str, Any] | None = None
 
 
 class LLMResponse(BaseModel):

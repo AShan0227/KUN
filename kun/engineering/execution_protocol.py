@@ -133,6 +133,15 @@ def _build_request(prompt: str, context: dict[str, Any], mode: ExecutionMode) ->
         temperature=0.1,
         max_tokens=512,
         profile=profile,
+        # V2.2 Wire 11: response_format strict mode (provider 支持时启用)
+        # Anthropic 用 tool calling 模拟, OpenAI 用 json_schema, fallback 到 prompt-only
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "execution_step",
+                "schema": ExecutionStep.model_json_schema(),
+            },
+        },
     )
 
 
