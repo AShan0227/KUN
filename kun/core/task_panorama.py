@@ -11,14 +11,26 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field
 
 from kun.core.ids import new_id
 
 PanoramaTier = Literal["minimal", "light", "medium", "heavy", "full"]
+ExecutionMode = Literal["FAST", "SMART", "MAX"]
+
+
+class ModuleResult(BaseModel):
+    """A single on-demand panorama module result."""
+
+    module_name: str
+    round_index: int = Field(ge=1, le=3)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    depth: Literal["minimal", "light", "heavy"] = "minimal"
+    required: bool = False
 
 
 class StepPlan(BaseModel):
@@ -150,12 +162,44 @@ class TaskPanorama(BaseModel):
     modules_run: list[str] = Field(default_factory=list)
     modules_skipped: list[str] = Field(default_factory=list)
 
+    async def build_anchored(
+        self,
+        task_ref: Any | None = None,
+        *,
+        execution_mode: ExecutionMode | None = None,
+        max_rounds: int | None = None,
+    ) -> AsyncIterator[ModuleResult]:
+        """Yield panorama modules in anchor-then-expand rounds.
+
+        Round 1 is the always-on minimal anchor. Round 2 adds light risk and
+        complexity modules. Round 3 adds heavy review modules. Callers may stop
+        consuming at any point, including future marginal-ROI decisions.
+
+        TODO: wire by Claude in V2.2.
+        """
+
+        ref = task_ref if task_ref is not None else self
+        mode = (
+            execution_mode or _execution_mode_from_ref(ref) or _execution_mode_from_tier(self.tier)
+        )
+        mode_rounds = _rounds_for_execution_mode(mode)
+        if max_rounds is not None:
+            if max_rounds < 1:
+                raise ValueError("max_rounds must be >= 1")
+            mode_rounds = min(mode_rounds, max_rounds)
+        effective_rounds = min(mode_rounds, 3)
+
+        for module in _modules_for_rounds(effective_rounds):
+            yield _build_module_result(module, ref, self)
+
 
 __all__ = [
     "AlternativePath",
     "AttentionAllocation",
     "ConflictHint",
     "ContextPreheat",
+    "ExecutionMode",
+    "ModuleResult",
     "PanoramaPatch",
     "PanoramaTier",
     "PreConflictScan",
@@ -164,3 +208,136 @@ __all__ = [
     "StepPlan",
     "TaskPanorama",
 ]
+
+
+def _execution_mode_from_tier(tier: PanoramaTier) -> ExecutionMode:
+    if tier in ("minimal", "light"):
+        return "FAST"
+    if tier in ("medium", "heavy"):
+        return "SMART"
+    return "MAX"
+
+
+def _execution_mode_from_ref(task_ref: Any) -> ExecutionMode | None:
+    mode = _ref_value(task_ref, "execution_mode")
+    if mode in ("FAST", "SMART", "MAX"):
+        return cast(ExecutionMode, mode)
+    return None
+
+
+def _rounds_for_execution_mode(mode: ExecutionMode) -> int:
+    return {"FAST": 1, "SMART": 2, "MAX": 3}[mode]
+
+
+def _modules_for_rounds(
+    max_rounds: int,
+) -> list[tuple[str, int, Literal["minimal", "light", "heavy"]]]:
+    modules: list[tuple[str, int, Literal["minimal", "light", "heavy"]]] = [
+        ("intent_one_sentence", 1, "minimal"),
+        ("risk_summary", 1, "minimal"),
+    ]
+    if max_rounds >= 2:
+        modules.extend(
+            [
+                ("risk_assessment", 2, "light"),
+                ("complexity_score", 2, "light"),
+            ]
+        )
+    if max_rounds >= 3:
+        modules.extend(
+            [
+                ("multi_judge_review", 3, "heavy"),
+                ("cross_check", 3, "heavy"),
+                ("alternative_paths", 3, "heavy"),
+                ("risk_graph", 3, "heavy"),
+            ]
+        )
+    return modules
+
+
+def _build_module_result(
+    module: tuple[str, int, Literal["minimal", "light", "heavy"]],
+    task_ref: Any,
+    panorama: TaskPanorama,
+) -> ModuleResult:
+    name, round_index, depth = module
+    payload_builders: dict[str, Callable[[], dict[str, Any]]] = {
+        "intent_one_sentence": lambda: {
+            "task_ref": _task_id(task_ref, panorama),
+            "intent_one_sentence": _intent(task_ref, panorama),
+        },
+        "risk_summary": lambda: {
+            "task_ref": _task_id(task_ref, panorama),
+            "risk_level": _ref_value(task_ref, "risk_level", "low"),
+        },
+        "risk_assessment": lambda: {
+            "risk_level": _ref_value(task_ref, "risk_level", "low"),
+            "estimated_cost_usd": _ref_value(task_ref, "estimated_cost_usd", 0.0),
+        },
+        "complexity_score": lambda: {
+            "complexity_score": _ref_value(task_ref, "complexity_score", 0.0),
+        },
+        "multi_judge_review": lambda: {
+            "enabled": True,
+            "reason": "heavy panorama expansion",
+        },
+        "cross_check": lambda: {
+            "enabled": True,
+            "reason": "heavy panorama expansion",
+        },
+        "alternative_paths": lambda: {
+            "enabled": True,
+            "reason": "heavy panorama expansion",
+        },
+        "risk_graph": lambda: {
+            "enabled": True,
+            "reason": "heavy panorama expansion",
+        },
+    }
+    return ModuleResult(
+        module_name=name,
+        round_index=round_index,
+        depth=depth,
+        required=round_index == 1,
+        payload=payload_builders[name](),
+    )
+
+
+def _task_id(task_ref: Any, panorama: TaskPanorama) -> str:
+    value = _ref_value(task_ref, "task_id")
+    if value is None and isinstance(task_ref, str):
+        value = task_ref
+    if value is None:
+        value = panorama.task_ref
+    return str(value)
+
+
+def _intent(task_ref: Any, panorama: TaskPanorama) -> str:
+    value = _ref_value(task_ref, "intent_one_sentence")
+    if value is None:
+        value = _ref_value(task_ref, "success_criteria_short")
+    if value is None:
+        value = _ref_value(task_ref, "user_message")
+    if value is None:
+        value = panorama.intent_one_sentence
+    return str(value or "(no explicit intent)")
+
+
+def _ref_value(task_ref: Any, key: str, default: Any = None) -> Any:
+    if isinstance(task_ref, dict):
+        if key in task_ref:
+            return task_ref[key]
+        meta = task_ref.get("meta")
+        if isinstance(meta, dict) and key in meta:
+            return meta[key]
+        if meta is not None and hasattr(meta, key):
+            return getattr(meta, key)
+        return default
+
+    if hasattr(task_ref, key):
+        return getattr(task_ref, key)
+
+    meta = getattr(task_ref, "meta", None)
+    if meta is not None and hasattr(meta, key):
+        return getattr(meta, key)
+    return default
