@@ -221,7 +221,9 @@ def _resolve_identity(x_tenant_id: str | None, x_user_id: str | None) -> tuple[s
 
 
 def _entries_for(tenant_id: str, user_id: str) -> list[BillingAuditEntry]:
-    return [entry for entry in _AUDIT_LOG if entry.tenant_id == tenant_id and entry.user_id == user_id]
+    return [
+        entry for entry in _AUDIT_LOG if entry.tenant_id == tenant_id and entry.user_id == user_id
+    ]
 
 
 def _sum_charges(entries: list[BillingAuditEntry], *, since: datetime) -> float:
