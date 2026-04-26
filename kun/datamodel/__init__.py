@@ -19,6 +19,7 @@ from kun.datamodel.handoff import (
     HandoffPacket,
 )
 from kun.datamodel.notification import Notification, NotificationChannel, NotificationKind
+from kun.datamodel.relationship import EntityRelationship, RelationType
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
 from kun.datamodel.task import RiskLevel, TaskMeta, TaskRef, TaskSpec
 from kun.datamodel.verification_spec import VerificationKind, VerificationResult, VerificationSpec
@@ -28,6 +29,7 @@ __all__ = [
     "CapabilityCard",
     "DecayModel",
     "EntityRef",
+    "EntityRelationship",
     "Event",
     "EventKind",
     "FailureMode",
@@ -41,6 +43,7 @@ __all__ = [
     "NotificationChannel",
     "NotificationKind",
     "QualityMetrics",
+    "RelationType",
     "RiskLevel",
     "RuntimeState",
     "Stats",
