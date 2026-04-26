@@ -127,6 +127,7 @@ ignore_missing_imports = true
 minversion = "8.0"
 addopts = "-ra -q --strict-markers --strict-config"
 testpaths = ["tests"]
+norecursedirs = ["tests/fixtures"]
 asyncio_mode = "auto"
 markers = [
   "unit: unit tests (fast, no external deps)",
