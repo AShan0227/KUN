@@ -15,7 +15,6 @@ import pytest
 from kun.engineering.execution_protocol import ExecutionStep, _build_request
 from kun.interface.llm import LLMMessage, LLMRequest
 
-
 # ---- LLMRequest 字段 ----
 
 
@@ -65,13 +64,13 @@ async def test_anthropic_response_format_via_tool_calling() -> None:
     captured_kwargs: dict[str, Any] = {}
 
     class FakeClient:
-        class messages:
+        class messages:  # noqa: N801
             @staticmethod
             async def create(**kwargs):
                 captured_kwargs.update(kwargs)
 
                 class _Resp:
-                    content = [
+                    content = [  # noqa: RUF012
                         type(
                             "Block",
                             (),
@@ -130,21 +129,21 @@ async def test_openai_response_format_passes_through() -> None:
     captured_kwargs: dict[str, Any] = {}
 
     class FakeClient:
-        class chat:
-            class completions:
+        class chat:  # noqa: N801
+            class completions:  # noqa: N801
                 @staticmethod
                 async def create(**kwargs):
                     captured_kwargs.update(kwargs)
 
                     class _Choice:
-                        class message:
+                        class message:  # noqa: N801
                             content = '{"thought":"x","action_type":"direct_llm"}'
                             tool_calls = None
 
                         finish_reason = "stop"
 
                     class _Resp:
-                        choices = [_Choice()]
+                        choices = [_Choice()]  # noqa: RUF012
                         usage = type(
                             "U",
                             (),
