@@ -648,7 +648,7 @@ def lab_dogfood(
 
     async def _go() -> None:
         # 用 mock invoker — dogfood 不烧真 LLM
-        async def mock_invoker(prompt: str, path) -> tuple[str, float, float]:
+        async def mock_invoker(prompt: str, path: Any) -> tuple[str, float, float]:
             import asyncio
             import random
 

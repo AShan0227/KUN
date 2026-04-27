@@ -85,6 +85,24 @@ def _intent_smart_response() -> LLMResponse:
     )
 
 
+def _intent_ensemble_response() -> LLMResponse:
+    """Intent 返 critical + user_can_wait → 触发 ENSEMBLE."""
+    return LLMResponse(
+        content=json.dumps(
+            {
+                "task_type": "decision.strategy",
+                "risk_level": "critical",
+                "complexity_score": 0.4,
+                "estimated_cost_usd": 0.20,
+                "estimated_duration_sec": 60,
+                "user_can_wait": True,
+                "success_criteria_short": "给出稳妥决策",
+            }
+        ),
+        usage=UsageInfo(input_tokens=5, output_tokens=20),
+    )
+
+
 def _make_hermes_step_response(action_type: str, payload: dict | None = None) -> LLMResponse:
     """构造 hermes ExecutionStep JSON 响应."""
     return LLMResponse(
@@ -130,6 +148,29 @@ class _HermesActionRouter(StubProvider):
         return _exec_response()
 
 
+class _EnsembleRouter(StubProvider):
+    """Stub LLMProvider for production ENSEMBLE smoke test."""
+
+    async def invoke(self, request):
+        sys_text = " ".join(m.content for m in request.messages if m.role == "system")
+        if "意图理解层" in sys_text:
+            return _intent_ensemble_response()
+        if "独立评估判官" in sys_text:
+            return LLMResponse(
+                content='{"pass": true, "score": 0.9, "reason": "候选可用"}',
+                usage=UsageInfo(input_tokens=5, output_tokens=5),
+                cost_usd_equivalent=0.001,
+                latency_ms=10,
+            )
+        return LLMResponse(
+            content=f"ensemble answer via {self.tier}",
+            usage=UsageInfo(input_tokens=10, output_tokens=10),
+            cost_usd_equivalent=0.01,
+            cost_usd_actual=0.01,
+            latency_ms=20,
+        )
+
+
 def _set_router_with_action(action_type: str, payload: dict | None = None) -> None:
     stub = _HermesActionRouter(tier="top")
     stub.hermes_action_type = action_type
@@ -140,6 +181,14 @@ def _set_router_with_action(action_type: str, payload: dict | None = None) -> No
         "cheap": stub,
         "coding": stub,
         "fallback": stub,
+    }
+    set_router(LLMRouter(providers))
+
+
+def _set_router_for_ensemble() -> None:
+    providers = {
+        tier: _EnsembleRouter(tier=tier)
+        for tier in ("top", "strong", "cheap", "coding", "fallback")
     }
     set_router(LLMRouter(providers))
 
@@ -167,6 +216,27 @@ async def test_hermes_use_skill_emits_override_event() -> None:
     assert len(overrides) >= 1
     assert overrides[0]["to"] == "writing.creative_polish"
     assert overrides[0]["action_type"] == "use_skill"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ensemble_mode_emits_five_path_result() -> None:
+    """critical + user_can_wait → orchestrator 直接走生产 ENSEMBLE."""
+    _set_router_for_ensemble()
+
+    from kun.interface.llm.router import get_router
+
+    orch = Orchestrator(output_translator=_identity_translator, llm_router=get_router())
+    events: list[tuple[str, dict]] = []
+    async for ev in orch.stream("这是关键决策，可以慢一点"):
+        events.append((ev.kind, ev.data))
+
+    ensemble_events = [data for kind, data in events if kind == "ensemble_result"]
+    assert len(ensemble_events) == 1
+    assert ensemble_events[0]["winner"] >= 0
+    assert len(ensemble_events[0]["paths"]) == 5
+    answers = [data for kind, data in events if kind == "answer"]
+    assert answers and "ensemble answer" in answers[-1]["content"]
 
 
 @pytest.mark.unit

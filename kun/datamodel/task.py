@@ -26,7 +26,7 @@ from kun.core.ids import new_id
 from kun.datamodel.verification_spec import VerificationSpec
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
-ExecutionMode = Literal["FAST", "SMART", "MAX"]
+ExecutionMode = Literal["FAST", "SMART", "MAX", "ENSEMBLE"]
 
 
 class Owner(BaseModel):

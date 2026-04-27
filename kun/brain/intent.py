@@ -104,7 +104,11 @@ class IntentInterpreter:
             from kun.datamodel.soul_file_provider import get_soul_file
 
             soul = get_soul_file(owner.user_id or "u-anon", tenant_id=owner.tenant_id)
-            mode_str, mode_reason = classify_execution_mode(meta_kwargs, soul)
+            classifier_meta = {
+                **meta_kwargs,
+                "user_can_wait": parsed.get("user_can_wait", False),
+            }
+            mode_str, mode_reason = classify_execution_mode(classifier_meta, soul)
             meta_kwargs["execution_mode"] = mode_str
             meta_kwargs["mode_override_reason"] = mode_reason
         except Exception:

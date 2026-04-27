@@ -46,6 +46,22 @@ async def test_executor_run_disabled_raises() -> None:
             await ex.run("test prompt")
 
 
+@pytest.mark.asyncio
+async def test_executor_can_skip_lab_env_for_production_ensemble() -> None:
+    """生产 ENSEMBLE 复用 executor, 但不要求用户打开 KUN_LAB_MODE."""
+
+    async def fake_invoker(prompt, path):
+        return (f"{path.strategy}:{prompt}", 0.01, 0.1)
+
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("KUN_LAB_MODE", None)
+        ex = EnsembleExecutor(fake_invoker, require_lab_mode=False)
+        result = await ex.run("test prompt", config=EnsembleConfig(n_paths=2))
+
+    assert result.winning_output.startswith("tier_top_low_temp:")
+    assert result.total_cost_usd == 0.02
+
+
 # ---- EnsembleExecutor.run ----
 
 
