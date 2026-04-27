@@ -162,6 +162,8 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./kun/infra/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./kun/infra/grafana-dashboards-provision.yaml:/etc/grafana/provisioning/dashboards/kun-lab.yml:ro
+      - ./kun/infra/grafana-dashboard-kun-lab.json:/var/lib/grafana/dashboards/kun-lab.json:ro
     depends_on:
       - prometheus
       - loki
