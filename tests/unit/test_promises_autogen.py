@@ -8,8 +8,11 @@ from kun.engineering.promises_autogen import (
     CommitPromise,
     append_promises_section,
     extract_refs,
+    group_release_notes,
+    infer_v22_section,
     parse_git_log_lines,
     render_promises_section,
+    render_release_notes,
 )
 
 
@@ -59,3 +62,66 @@ def test_append_promises_section_preserves_existing_content(tmp_path) -> None:
     text = target.read_text()
     assert text.startswith("# KUN 历史承诺清单")
     assert "## New" in text
+
+
+def test_infer_v22_section_from_c_task_ref() -> None:
+    commit = CommitPromise(
+        commit="abc123",
+        subject="feat: C43 wire input translator into chat",
+        refs=["C43"],
+    )
+
+    assert infer_v22_section(commit) == "§23"
+
+
+def test_infer_v22_section_prefers_explicit_spec_section() -> None:
+    commit = CommitPromise(
+        commit="abc123",
+        subject="docs: V2.2 §26 release notes for lab",
+        refs=["V2.2"],
+    )
+
+    assert infer_v22_section(commit) == "§26"
+
+
+def test_infer_v22_section_does_not_treat_codex_as_codecapability() -> None:
+    commit = CommitPromise(
+        commit="abc123",
+        subject="docs(codex): BATCH12 release prep",
+        refs=["BATCH12"],
+    )
+
+    assert infer_v22_section(commit) == "release"
+
+
+def test_group_release_notes_by_section() -> None:
+    groups = group_release_notes(
+        [
+            CommitPromise("a1", "feat: C38 graph API", ["C38"]),
+            CommitPromise("b2", "feat: C32 ensemble mode", ["C32"]),
+            CommitPromise("c3", "docs: C52 release checklist", ["C52"]),
+        ]
+    )
+
+    assert [(group.section, len(group.commits)) for group in groups] == [
+        ("§20", 1),
+        ("§21", 1),
+        ("release", 1),
+    ]
+
+
+def test_render_release_notes_outputs_grouped_markdown() -> None:
+    notes = render_release_notes(
+        [
+            CommitPromise("a1", "feat: C38 graph API", ["C38"]),
+            CommitPromise("b2", "feat: C32 ensemble mode", ["C32"]),
+        ],
+        version="v2.2.0",
+        generated_at=datetime(2026, 4, 27, tzinfo=UTC),
+    )
+
+    assert "# KUN v2.2.0 Changelog" in notes
+    assert "## §20 知识图谱 + 导航式记忆" in notes
+    assert "`a1` [C38] feat: C38 graph API" in notes
+    assert "## §21 ExecutionMode FAST/SMART/MAX/ENSEMBLE" in notes
+    assert "`b2` [C32] feat: C32 ensemble mode" in notes
