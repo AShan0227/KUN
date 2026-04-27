@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from typing import Any
@@ -48,6 +49,70 @@ class RecipeStats(BaseModel):
     @property
     def win_rate(self) -> float:
         return self.win_count / self.total_count if self.total_count > 0 else 0.0
+
+
+def _recipe_stats_from_experiments(
+    experiments: list[Experiment],
+    task_type: str | None = None,
+) -> list[RecipeStats]:
+    relevant = [e for e in experiments if e.task_type == task_type] if task_type else experiments
+    # (task_type, strategy) → (win_count, total_count, score_sum, cost_sum)
+    agg: dict[tuple[str, str], list[float]] = defaultdict(lambda: [0, 0, 0.0, 0.0])
+
+    for exp in relevant:
+        er = exp.ensemble_result
+        winner_idx = er.winning_path_idx
+        for pr in er.path_results:
+            if pr.error:
+                continue
+            key = (exp.task_type, str(pr.config.get("strategy", "unknown")))
+            agg[key][1] += 1  # total_count
+            agg[key][2] += pr.score
+            agg[key][3] += pr.cost_usd
+            if pr.path_idx == winner_idx:
+                agg[key][0] += 1  # win_count
+
+    results: list[RecipeStats] = []
+    for (tt, strat), (wins, total, score_sum, cost_sum) in agg.items():
+        if total == 0:
+            continue
+        results.append(
+            RecipeStats(
+                task_type=tt,
+                strategy=strat,
+                win_count=int(wins),
+                total_count=int(total),
+                avg_score=score_sum / total,
+                avg_cost_usd=cost_sum / total,
+            )
+        )
+    return results
+
+
+def _top_winning_strategies_from_experiments(
+    experiments: list[Experiment],
+    *,
+    top_k: int,
+) -> list[tuple[str, float]]:
+    strategy_wins: Counter[str] = Counter()
+    strategy_totals: Counter[str] = Counter()
+    for exp in experiments:
+        er = exp.ensemble_result
+        winner_idx = er.winning_path_idx
+        for pr in er.path_results:
+            if pr.error:
+                continue
+            strat = str(pr.config.get("strategy", "unknown"))
+            strategy_totals[strat] += 1
+            if pr.path_idx == winner_idx:
+                strategy_wins[strat] += 1
+
+    rates: list[tuple[str, float]] = []
+    for strat, total in strategy_totals.items():
+        if total > 0:
+            rates.append((strat, strategy_wins[strat] / total))
+    rates.sort(key=lambda x: x[1], reverse=True)
+    return rates[:top_k]
 
 
 class ExperimentLog:
@@ -88,60 +153,11 @@ class ExperimentLog:
 
     def recipe_stats(self, task_type: str | None = None) -> list[RecipeStats]:
         """按 (task_type, strategy) 聚合胜率."""
-        relevant = self.by_task_type(task_type) if task_type is not None else self._experiments
-        # (task_type, strategy) → (win_count, total_count, score_sum, cost_sum)
-        agg: dict[tuple[str, str], list[float]] = defaultdict(lambda: [0, 0, 0.0, 0.0])
-
-        for exp in relevant:
-            er = exp.ensemble_result
-            winner_idx = er.winning_path_idx
-            for pr in er.path_results:
-                if pr.error:
-                    continue
-                key = (exp.task_type, str(pr.config.get("strategy", "unknown")))
-                agg[key][1] += 1  # total_count
-                agg[key][2] += pr.score
-                agg[key][3] += pr.cost_usd
-                if pr.path_idx == winner_idx:
-                    agg[key][0] += 1  # win_count
-
-        results: list[RecipeStats] = []
-        for (tt, strat), (wins, total, score_sum, cost_sum) in agg.items():
-            if total == 0:
-                continue
-            results.append(
-                RecipeStats(
-                    task_type=tt,
-                    strategy=strat,
-                    win_count=int(wins),
-                    total_count=int(total),
-                    avg_score=score_sum / total,
-                    avg_cost_usd=cost_sum / total,
-                )
-            )
-        return results
+        return _recipe_stats_from_experiments(self._experiments, task_type)
 
     def top_winning_strategies(self, top_k: int = 5) -> list[tuple[str, float]]:
         """全局 top N 胜出 strategy. 返 [(strategy, win_rate), ...]."""
-        strategy_wins: Counter[str] = Counter()
-        strategy_totals: Counter[str] = Counter()
-        for exp in self._experiments:
-            er = exp.ensemble_result
-            winner_idx = er.winning_path_idx
-            for pr in er.path_results:
-                if pr.error:
-                    continue
-                strat = str(pr.config.get("strategy", "unknown"))
-                strategy_totals[strat] += 1
-                if pr.path_idx == winner_idx:
-                    strategy_wins[strat] += 1
-
-        rates: list[tuple[str, float]] = []
-        for strat, total in strategy_totals.items():
-            if total > 0:
-                rates.append((strat, strategy_wins[strat] / total))
-        rates.sort(key=lambda x: x[1], reverse=True)
-        return rates[:top_k]
+        return _top_winning_strategies_from_experiments(self._experiments, top_k=top_k)
 
     def total_lab_cost_usd(self) -> float:
         return sum(e.ensemble_result.total_cost_usd for e in self._experiments)
@@ -156,7 +172,12 @@ _log: ExperimentLog | None = None
 def get_experiment_log() -> ExperimentLog:
     global _log
     if _log is None:
-        _log = ExperimentLog()
+        if os.getenv("KUN_LAB_DB_BACKED", "0") == "1":
+            from kun.lab.experiment_log_db import SqlExperimentLog
+
+            _log = SqlExperimentLog()
+        else:
+            _log = ExperimentLog()
     return _log
 
 
@@ -187,7 +208,9 @@ __all__ = [
     "Experiment",
     "ExperimentLog",
     "RecipeStats",
+    "_recipe_stats_from_experiments",
     "_summarize_for_event",
+    "_top_winning_strategies_from_experiments",
     "get_experiment_log",
     "reset_experiment_log",
 ]

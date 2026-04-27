@@ -517,6 +517,21 @@ class ExperimentRow(Base):
     )
 
 
+# ============== KUN-LAB EXPERIMENT LOG ==============
+
+
+class LabExperimentRow(Base):
+    __tablename__ = "lab_experiments"
+
+    experiment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    prompt_hash: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    ensemble_result: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, index=True
+    )
+
+
 # ============== IDEMPOTENCY KEYS ==============
 
 

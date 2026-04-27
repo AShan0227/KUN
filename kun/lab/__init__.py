@@ -52,6 +52,7 @@ from kun.lab.experiment_log import (
     get_experiment_log,
     reset_experiment_log,
 )
+from kun.lab.experiment_log_db import SqlExperimentLog
 from kun.lab.llm_router_adapter import LLMRouterEnsembleAdapter, make_default_adapter
 from kun.lab.precipitation_bridge import (
     HIGH_CONFIDENCE_WIN_RATE,
@@ -99,6 +100,7 @@ __all__ = [
     "LabRecipeStorage",
     "RecipePromoter",
     "SqlCursorStorage",
+    "SqlExperimentLog",
     "SqlLabRecipeStorage",
     "benchmark_report_from_log",
     "get_adoption_step",
