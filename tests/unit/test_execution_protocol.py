@@ -1,17 +1,27 @@
 from __future__ import annotations
 
 import pytest
-from kun.engineering.execution_protocol import ExecutionStep, StructuredStepGenerator
+from kun.engineering.execution_protocol import (
+    ExecutionStep,
+    StructuredStepGenerator,
+    ThoughtActionConsistency,
+    make_jury_consistency_judge,
+)
 from kun.interface.llm import LLMResponse
 
 
 class FakeRouter:
-    def __init__(self, response):
+    def __init__(self, response, *, judge_response: LLMResponse | None = None):
         self.response = response
+        self.judge_response = judge_response or LLMResponse(
+            content='{"pass": true, "score": 0.9, "reason": "一致"}'
+        )
         self.calls = []
 
     async def invoke(self, request, *, purpose: str):
         self.calls.append((request, purpose))
+        if purpose == "judge":
+            return self.judge_response
         return self.response
 
 
@@ -244,3 +254,100 @@ def test_execution_step_model_clamps_boundaries_directly():
 
     assert step.confidence == 1.0
     assert step.cost_estimate_usd == 0.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_jury_consistency_judge_uses_configured_judges():
+    router = FakeRouter({})
+    judge = make_jury_consistency_judge(router, judge_count=3)
+
+    score = await judge("Need memory", "use_memory")
+
+    assert score == 0.9
+    assert [purpose for _, purpose in router.calls] == ["judge", "judge", "judge"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_jury_consistency_judge_clamps_failed_verdict_below_threshold():
+    router = FakeRouter(
+        {},
+        judge_response=LLMResponse(content='{"pass": false, "score": 0.8, "reason": "不一致"}'),
+    )
+    judge = make_jury_consistency_judge(router, judge_count=5)
+
+    score = await judge("Need memory", "web_search")
+
+    assert score == 0.49
+    assert [purpose for _, purpose in router.calls].count("judge") == 5
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_max_mode_rethinks_with_injected_jury_judge():
+    responses = [
+        {
+            "step_id": 1,
+            "thought": "Need memory",
+            "action_type": "web_search",
+            "action_payload": {"query": "profile"},
+            "expected_outcome": "External context",
+        },
+        {
+            "step_id": 2,
+            "thought": "Need web search",
+            "action_type": "web_search",
+            "action_payload": {"query": "profile"},
+            "expected_outcome": "External context",
+        },
+    ]
+
+    class SequenceRouter(FakeRouter):
+        async def invoke(self, request, *, purpose: str):
+            self.calls.append((request, purpose))
+            if purpose == "judge":
+                return LLMResponse(content='{"pass": false, "score": 0.2, "reason": "不一致"}')
+            return responses.pop(0)
+
+    router = SequenceRouter({})
+    checker = ThoughtActionConsistency(
+        consistency_threshold=0.5,
+        llm_judge=make_jury_consistency_judge(router, judge_count=5),
+    )
+
+    step = await StructuredStepGenerator(
+        router,
+        consistency_checker=checker,
+        max_rethinks=1,
+    ).generate("fix it", {}, mode="MAX")
+
+    assert step.rethink_count == 1
+    assert step.thought_action_consistency == 0.9
+    execution_calls = [purpose for _, purpose in router.calls if purpose == "execution"]
+    assert len(execution_calls) == 2
+    assert [purpose for _, purpose in router.calls].count("judge") == 5
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_runtime_style_checker_uses_jury_without_generator_special_case():
+    router = FakeRouter({})
+    checker = ThoughtActionConsistency(
+        consistency_threshold=0.5,
+        llm_judge=make_jury_consistency_judge(router, judge_count=5),
+    )
+
+    score, reason = await checker.check(
+        ExecutionStep(
+            step_id=1,
+            thought="Need memory",
+            action_type="web_search",
+            action_payload={},
+            expected_outcome="External context",
+        )
+    )
+
+    assert score == 0.9
+    assert reason == "llm_judge:0.90"
+    assert [purpose for _, purpose in router.calls].count("judge") == 5

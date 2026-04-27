@@ -123,15 +123,27 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     # Wire 35: 加 ThoughtActionConsistency checker → 自动 rethink (max 2 次)
     structured_step_generator = None
     if _os.getenv("KUN_HERMES_ENABLED", "1") == "1":
-        from kun.engineering.execution_protocol import ThoughtActionConsistency
+        from kun.engineering.execution_protocol import (
+            ThoughtActionConsistency,
+            make_jury_consistency_judge,
+        )
         from kun.interface.llm import get_router
 
         consistency_threshold = float(_os.getenv("KUN_HERMES_CONSISTENCY_THRESHOLD", "0.5"))
         max_rethinks = int(_os.getenv("KUN_HERMES_MAX_RETHINKS", "2"))
+        router = get_router()
+        jury_enabled = _os.getenv("KUN_HERMES_CONSISTENCY_JURY_ENABLED", "1") == "1"
+        jury_judge = None
+        if jury_enabled:
+            jury_judge = make_jury_consistency_judge(
+                router,
+                judge_count=int(_os.getenv("KUN_HERMES_CONSISTENCY_JURY_JUDGES", "5")),
+            )
         structured_step_generator = StructuredStepGenerator(
-            get_router(),
+            router,
             consistency_checker=ThoughtActionConsistency(
-                consistency_threshold=consistency_threshold
+                consistency_threshold=consistency_threshold,
+                llm_judge=jury_judge,
             ),
             max_rethinks=max_rethinks,
         )
