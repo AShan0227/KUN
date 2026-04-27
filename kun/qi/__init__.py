@@ -16,6 +16,30 @@
 """
 
 from kun.qi.budget import QiBudgetExhaustedError, QiDailyBudget, get_qi_budget
+from kun.qi.pheromone import (
+    PHEROMONE_BASE_FACTOR,
+    PHEROMONE_DECAY_RATE,
+    PHEROMONE_MAX,
+    PHEROMONE_REINFORCE_INCREMENT,
+    InMemoryPheromoneStorage,
+    PheromoneStorage,
+    get_pheromone_storage,
+    neighbor_pheromone_score,
+    reset_pheromone_storage,
+    set_pheromone_storage,
+)
+from kun.qi.predictive_coding import (
+    InMemoryPredictionLog,
+    PredictionLog,
+    PredictionLogModelUpdater,
+    PredictionModel,
+    PredictionRecord,
+    PredictionTrainer,
+    get_prediction_log,
+    load_model,
+    reset_prediction_log,
+    save_model,
+)
 from kun.qi.protocol import (
     InMemoryProtocolStorage,
     Protocol,
@@ -39,7 +63,19 @@ from kun.qi.window import (
 )
 
 __all__ = [
+    "PHEROMONE_BASE_FACTOR",
+    "PHEROMONE_DECAY_RATE",
+    "PHEROMONE_MAX",
+    "PHEROMONE_REINFORCE_INCREMENT",
+    "InMemoryPheromoneStorage",
+    "InMemoryPredictionLog",
     "InMemoryProtocolStorage",
+    "PheromoneStorage",
+    "PredictionLog",
+    "PredictionLogModelUpdater",
+    "PredictionModel",
+    "PredictionRecord",
+    "PredictionTrainer",
     "Protocol",
     "ProtocolExecution",
     "ProtocolHermesTemplate",
@@ -54,9 +90,17 @@ __all__ = [
     "QiWindowConfig",
     "QiWindowError",
     "SqlProtocolStorage",
+    "get_pheromone_storage",
+    "get_prediction_log",
     "get_protocol_registry",
     "get_qi_budget",
     "is_qi_window_active",
+    "load_model",
+    "neighbor_pheromone_score",
     "require_qi_active",
+    "reset_pheromone_storage",
+    "reset_prediction_log",
     "reset_protocol_registry",
+    "save_model",
+    "set_pheromone_storage",
 ]
