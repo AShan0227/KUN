@@ -46,24 +46,6 @@ Return exactly one JSON object matching this schema:
 Do not include markdown fences or extra prose.
 """
 
-# V2.2 §26 / Wire 29A: lab recipe → 额外 system prompt 注入
-# 跟 Wire 25 ExecutionMode classifier 对称 — KUN-Lab 的 RecipePromoter 推 strategy
-# 时如果 target_module="hermes_prompt_template", 这里查 registry 加 prompt 变体.
-# 跟 ENSEMBLE DEFAULT_PATHS 的 system_prompt_override 一致.
-_LAB_STRATEGY_PROMPT_HINT: dict[str, str] = {
-    "chain_of_thought": (
-        "[Lab-validated recipe] Think step by step. Show your reasoning briefly before the JSON."
-    ),
-    "diverse_perspective": (
-        "[Lab-validated recipe] Take a contrarian view first. "
-        "Challenge any default assumptions before deciding."
-    ),
-    "tier_top_low_temp": (
-        "[Lab-validated recipe] Be conservative — high stakes detected. "
-        "Prefer correctness over speed."
-    ),
-}
-
 
 class ExecutionStep(BaseModel):
     """One structured execution decision for the orchestrator/watchtower path."""
@@ -360,7 +342,7 @@ def _build_request(
 
 
 def _maybe_lab_recipe_prompt_hint(context: dict[str, Any]) -> str | None:
-    """查 LabRecipeRegistry → 该 task_type 的 hermes_prompt_template recipe.
+    """查 LabRecipeRegistry + PromptTemplateRegistry → Hermes prompt hint.
 
     Returns 额外 system prompt 字符串, 没 lab recipe / 模块没装 → None.
     任何异常静默 None (不破 hermes 主流程).
@@ -369,13 +351,22 @@ def _maybe_lab_recipe_prompt_hint(context: dict[str, Any]) -> str | None:
     if not task_type:
         return None
     try:
+        from kun.datamodel.prompt_template import (
+            HERMES_PROMPT_TARGET,
+            get_prompt_template_registry,
+        )
         from kun.lab.recipe_registry import get_recipe_registry
 
         registry = get_recipe_registry()
-        entry = registry.get(task_type, "hermes_prompt_template")
+        entry = registry.get(task_type, HERMES_PROMPT_TARGET)
         if entry is None:
             return None
-        return _LAB_STRATEGY_PROMPT_HINT.get(entry.strategy)
+        template = get_prompt_template_registry().get(
+            task_type,
+            HERMES_PROMPT_TARGET,
+            entry.strategy,
+        )
+        return None if template is None else template.content
     except Exception:
         return None
 

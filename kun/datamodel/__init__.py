@@ -19,6 +19,7 @@ from kun.datamodel.handoff import (
     HandoffPacket,
 )
 from kun.datamodel.notification import Notification, NotificationChannel, NotificationKind
+from kun.datamodel.prompt_template import PromptTemplate
 from kun.datamodel.relationship import EntityRelationship, RelationType
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
 from kun.datamodel.task import RiskLevel, TaskLayer3Context, TaskMeta, TaskRef, TaskSpec
@@ -42,6 +43,7 @@ __all__ = [
     "Notification",
     "NotificationChannel",
     "NotificationKind",
+    "PromptTemplate",
     "QualityMetrics",
     "RelationType",
     "RiskLevel",

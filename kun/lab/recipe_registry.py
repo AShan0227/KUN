@@ -288,10 +288,35 @@ def make_registry_apply_hook(
                 "requires_approval": update.requires_approval,
             },
         )
-        await registry.aupsert(
+        accepted = await registry.aupsert(
             entry,
             tenant_id=str(update.payload.get("tenant_id") or "u-sylvan"),
         )
+        if accepted and target == "hermes_prompt_template":
+            try:
+                from kun.datamodel.prompt_template import upsert_prompt_template_from_lab_recipe
+
+                await upsert_prompt_template_from_lab_recipe(
+                    task_type=task_type,
+                    strategy=entry.strategy,
+                    tenant_id=str(update.payload.get("tenant_id") or "u-sylvan"),
+                    content=(
+                        str(update.payload.get("prompt_template_content"))
+                        if update.payload.get("prompt_template_content") is not None
+                        else None
+                    ),
+                    metadata={
+                        "promotion_id": entry.promotion_id,
+                        "win_rate": entry.win_rate,
+                        "confidence": entry.confidence,
+                        "source_update_id": update.update_id,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "lab.registry.prompt_template_upsert_failed update=%s",
+                    update.update_id,
+                )
 
     return apply_hook
 
