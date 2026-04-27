@@ -56,6 +56,52 @@ async def test_weight_tune_queued_for_weekly() -> None:
 
 
 @pytest.mark.asyncio
+async def test_weight_tune_writes_transfer_confidence_relationship(monkeypatch) -> None:
+    import kun.engineering.precipitation as precipitation
+
+    captured = []
+
+    async def fake_upsert(relationship):
+        captured.append(relationship)
+
+    monkeypatch.setattr(precipitation, "_upsert_mined_relationship", fake_upsert)
+
+    kp = KnowledgePrecipitation()
+    kp.register_step(WeightTuneStep())
+    event = PrecipitationEvent(
+        event_id="ev-transfer",
+        event_type="decision.completed",
+        payload={
+            "tenant_id": "u-test",
+            "decision_kind": "model_select",
+            "source_strategy_id": "strategy-a",
+            "target_strategy_id": "strategy-b",
+            "transfer_confidence": 0.82,
+            "evidence_count": 4,
+            "source_task_type": "coding.fix",
+            "target_task_type": "coding.review",
+        },
+    )
+
+    await kp.dispatch(event)
+    updates = await kp.run_scheduled("weekly")
+
+    assert len(captured) == 1
+    relationship = captured[0]
+    assert relationship.source_entity_kind == "strategy"
+    assert relationship.source_entity_id == "strategy-a"
+    assert relationship.target_entity_id == "strategy-b"
+    assert relationship.relation_type == "transfer_confidence"
+    assert relationship.confidence == 0.82
+    assert relationship.evidence_count == 4
+    assert relationship.metadata["source"] == "WeightTuneStep"
+    assert [update.asset_kind for update in updates] == [
+        "weight_table",
+        "entity_relationship",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_rule_emerge_queued_weekly() -> None:
     kp = KnowledgePrecipitation()
     kp.register_step(RuleEmergeStep())

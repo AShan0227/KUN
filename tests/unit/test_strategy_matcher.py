@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 from kun.core.strategy_matcher import (
     WEIGHT_TABLE,
@@ -12,6 +14,51 @@ from kun.core.strategy_matcher import (
     get_matcher,
     reset_matcher,
 )
+
+
+@dataclass(frozen=True)
+class _FakeStrategyNeighbor:
+    entity_kind: str
+    entity_id: str
+    relation_type: str
+    confidence: float
+    hops: int = 1
+    via_path: tuple[tuple[str, str], ...] = (
+        ("strategy", "strategy-a"),
+        ("strategy", "strategy-b"),
+    )
+
+
+class _FakeGraphTraversal:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def neighbors(
+        self,
+        kind: str,
+        entity_id: str,
+        *,
+        hops: int,
+        relation_types=None,
+        limit_per_hop: int,
+    ) -> list[_FakeStrategyNeighbor]:
+        self.calls.append(
+            {
+                "kind": kind,
+                "entity_id": entity_id,
+                "hops": hops,
+                "relation_types": relation_types,
+                "limit_per_hop": limit_per_hop,
+            }
+        )
+        return [
+            _FakeStrategyNeighbor(
+                entity_kind="strategy",
+                entity_id="strategy-b",
+                relation_type="transfer_confidence",
+                confidence=0.92,
+            )
+        ]
 
 
 def test_weights_normalize() -> None:
@@ -177,6 +224,65 @@ async def test_writeback_hook() -> None:
     await m.writeback(decision, actual_outcome=0.6, actual_cost_usd=0.0)
     assert len(captured) == 1
     assert captured[0][1]["actual_outcome"] == 0.6
+
+
+@pytest.mark.asyncio
+async def test_decide_adds_transfer_confidence_candidate_from_graph() -> None:
+    traversal = _FakeGraphTraversal()
+    m = StrategyMatcher(graph_traversal=traversal)
+
+    async def enum(_sb, _prev):
+        return [
+            StrategyCandidate(
+                candidate_id="strategy-a",
+                description="local baseline",
+                expected_outcome=0.35,
+                expected_cost_usd=0.0,
+                expected_latency_sec=1.0,
+            )
+        ]
+
+    m.register("model_select", enum)
+    sb = SignalBundle(task={"risk_level": "critical", "anchor_strategy_id": "strategy-a"})
+    decision = await m.decide("model_select", sb)
+
+    assert traversal.calls == [
+        {
+            "kind": "strategy",
+            "entity_id": "strategy-a",
+            "hops": 1,
+            "relation_types": ["transfer_confidence"],
+            "limit_per_hop": 12,
+        }
+    ]
+    assert decision.chosen.candidate_id == "strategy-b"
+    assert decision.chosen.metadata["transfer_confidence"] == 0.92
+
+
+@pytest.mark.asyncio
+async def test_iter_candidates_anchor_expand_uses_transfer_confidence_candidate() -> None:
+    traversal = _FakeGraphTraversal()
+    m = StrategyMatcher(graph_traversal=traversal)
+
+    async def enum(_sb, _prev):
+        return [
+            StrategyCandidate(
+                candidate_id="strategy-a",
+                description="local baseline",
+                expected_outcome=0.4,
+                expected_cost_usd=0.0,
+                expected_latency_sec=1.0,
+            )
+        ]
+
+    m.register("model_select", enum)
+    sb = SignalBundle(task={"risk_level": "critical", "anchor_strategy_id": "strategy-a"})
+    yielded = [
+        item
+        async for item in m.iter_candidates_anchor_then_expand("model_select", sb, max_rounds=2)
+    ]
+
+    assert [item.candidate.candidate_id for item in yielded] == ["strategy-b", "strategy-a"]
 
 
 def test_singleton_matcher() -> None:
