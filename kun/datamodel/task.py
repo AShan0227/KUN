@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from kun.context.assets import AssetLayer, LayeredAsset
 from kun.core.ids import new_id
+from kun.datamodel.verification_spec import VerificationSpec
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
 ExecutionMode = Literal["FAST", "SMART", "MAX"]
@@ -131,6 +132,9 @@ class TaskSpec(BaseModel):
     fallback_plan: str | None = None
     parent_task_id: str | None = None
     blocking_task_ids: list[str] = Field(default_factory=list)
+    # V2.2 Wire 36 (BATCH4 C3 / T53): 任务完成验证规格 — orchestrator 标记 done 前
+    # 跑 VerificationRunner.verify(), 任何 required spec failed → mark failed
+    verification_specs: list[VerificationSpec] = Field(default_factory=list)
 
 
 class TaskLayer3Context(BaseModel):

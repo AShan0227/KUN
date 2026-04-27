@@ -113,7 +113,15 @@ class IntentInterpreter:
         meta = TaskMeta(**meta_kwargs)
 
         spec: TaskSpec | None = None
-        if any(k in parsed for k in ("goal_detail", "success_metrics", "required_skills")):
+        if any(
+            k in parsed
+            for k in (
+                "goal_detail",
+                "success_metrics",
+                "required_skills",
+                "verification_specs",
+            )
+        ):
             spec = TaskSpec(
                 goal_detail=parsed.get("goal_detail", user_message),
                 success_metrics=parsed.get("success_metrics", []),
@@ -123,6 +131,8 @@ class IntentInterpreter:
                 constraints=parsed.get("constraints", []),
                 foreseen_risks=parsed.get("foreseen_risks", []),
                 fallback_plan=parsed.get("fallback_plan"),
+                # Wire 36: 把 LLM 给的 verification_specs 接进来
+                verification_specs=parsed.get("verification_specs", []),
             )
 
         log.info(

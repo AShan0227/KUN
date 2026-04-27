@@ -163,6 +163,7 @@ class Orchestrator:
         emergent_switch_manager: Any = None,
         value_gate: Any = None,
         structured_step_generator: Any = None,
+        verification_runner: Any = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -178,6 +179,7 @@ class Orchestrator:
         self.value_gate = value_gate
         # V2.2 §22 wire: hermes 结构化执行协议 generator (SMART/MAX 模式启用)
         self.structured_step_generator = structured_step_generator
+        self.verification_runner = verification_runner
         # 累计 step value history, 给 value_gate marginal_roi 用
         self._value_history: list[float] = []
 
@@ -1113,7 +1115,59 @@ class Orchestrator:
                     except Exception:
                         log.exception("value_gate.record_step_outcome failed (non-fatal)")
 
-            status = "done"
+            # V2.2 Wire 36 (BATCH4 C3 / T53): 标记 done 前跑 verification_specs
+            # task spec 有 verification_specs + 装了 VerificationRunner → 真验证
+            verification_failed = False
+            verification_results: list[Any] = []
+            if (
+                self.verification_runner is not None
+                and task_ref.spec is not None
+                and task_ref.spec.verification_specs
+            ):
+                final_artifact = answer if isinstance(answer, str) else str(answer)
+                for vspec in task_ref.spec.verification_specs:
+                    try:
+                        vresult = await self.verification_runner.verify(vspec, final_artifact)
+                    except Exception as exc:
+                        log.exception(
+                            "verification.verify_failed task=%s kind=%s",
+                            task_ref.meta.task_id,
+                            vspec.kind,
+                        )
+                        if vspec.required:
+                            verification_failed = True
+                        verification_results.append(
+                            {"kind": vspec.kind, "passed": False, "error": str(exc)}
+                        )
+                        continue
+                    verification_results.append(
+                        {
+                            "kind": vresult.kind,
+                            "passed": vresult.passed,
+                            "error_msg": vresult.error_msg,
+                        }
+                    )
+                    if vspec.required and not vresult.passed:
+                        verification_failed = True
+
+                yield OrchestratorEvent(
+                    kind="verification_done",
+                    data={
+                        "task_id": task_ref.meta.task_id,
+                        "results": verification_results,
+                        "failed": verification_failed,
+                    },
+                )
+
+            if verification_failed:
+                status = "failed"
+                log.warning(
+                    "verification.task_marked_failed task=%s results=%s",
+                    task_ref.meta.task_id,
+                    verification_results,
+                )
+            else:
+                status = "done"
         except TaskTimedOutError as exc:
             status = "failed"
             log.warning(
