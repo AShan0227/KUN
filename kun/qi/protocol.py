@@ -19,7 +19,8 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
+from typing import Protocol as TypingProtocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -138,7 +139,7 @@ class Protocol(BaseModel):
         return risk in self.trigger.risk_levels
 
 
-class ProtocolStorage(Protocol):
+class ProtocolStorage(TypingProtocol):
     """协议存取 — InMemory + SQL 双实现."""
 
     async def save(self, protocol: Protocol) -> None: ...
