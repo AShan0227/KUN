@@ -7,6 +7,7 @@ from kun.api.execution_mode_classifier import classify_execution_mode
 from kun.datamodel.soul_file import SoulFile
 from kun.engineering.precipitation import AssetUpdate
 from kun.lab import (
+    InMemoryLabRecipeStorage,
     LabRecipeEntry,
     LabRecipeRegistry,
     get_recipe_registry,
@@ -126,6 +127,43 @@ def test_registry_by_task_type_filters() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_registry_aupsert_persists_to_storage() -> None:
+    storage = InMemoryLabRecipeStorage()
+    reg = LabRecipeRegistry(storage=storage, tenant_id="t-1")
+    entry = LabRecipeEntry(
+        task_type="ad",
+        target_module="execution_mode_classifier",
+        strategy="tier_top_low_temp",
+        win_rate=0.8,
+        confidence=0.8,
+    )
+
+    assert await reg.aupsert(entry) is True
+    loaded = await storage.load_all("t-1")
+
+    assert loaded == [entry]
+
+
+@pytest.mark.asyncio
+async def test_registry_load_from_storage_restores_entries() -> None:
+    storage = InMemoryLabRecipeStorage()
+    entry = LabRecipeEntry(
+        task_type="copywriting",
+        target_module="hermes_prompt_template",
+        strategy="chain_of_thought",
+        win_rate=0.91,
+        confidence=0.91,
+    )
+    await storage.save("t-1", entry)
+
+    reg = LabRecipeRegistry(storage=storage, tenant_id="t-1")
+    loaded = await reg.load_from_storage()
+
+    assert loaded == 1
+    assert reg.get("copywriting", "hermes_prompt_template") == entry
+
+
 def test_registry_singleton_get_returns_same_instance() -> None:
     a = get_recipe_registry()
     b = get_recipe_registry()
@@ -147,6 +185,7 @@ async def test_apply_hook_writes_lab_update_to_registry() -> None:
         update_kind="update",
         payload={
             "source": "kun_lab",
+            "tenant_id": "t-1",
             "task_type": "ad",
             "strategy": "tier_top_low_temp",
             "win_rate": 0.85,

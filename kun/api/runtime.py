@@ -90,8 +90,9 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
             make_kp_adopter,
             make_registry_apply_hook,
         )
+        from kun.lab.recipe_registry import SqlLabRecipeStorage
 
-        lab_registry = get_recipe_registry()
+        lab_registry = get_recipe_registry(storage=SqlLabRecipeStorage())
         precipitation.register_asset_apply_hook(make_registry_apply_hook(lab_registry))
         precipitation.register_step(LabRecipePrecipitationStep())
         install_lab_adoption_step(adopter=make_kp_adopter(precipitation))
