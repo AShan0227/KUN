@@ -775,6 +775,83 @@ M5 完成 → 85%, 完整 V2.2 上线 → 90%.
 - U4 承诺 "每次产品讨论后追加 PROMISES.md" — 这次差点 Wire 19-28 全做完才想起来.
   下次每个 wire 完成后立即同步 PROMISES.md, 不等到一批结束.
 
+### Z.13 第十一轮 (2026-04-27): V2.2 §22 Hermes 完整闭环 + GraphTraversal mempalace + Verification
+
+承接 Z.12, 这一轮 12 个 wire (29-37) 把 V2.2 §20 + §22 + §27 全部接通,
++ 4 个 codex PR review/merge + 2 个 BATCH brief + 1 个 hotfix.
+
+#### Z.13.1 Wire 主流程
+
+| Wire | 主件 | 测试 | 干啥 |
+|------|------|------|------|
+| 27 | EnsembleExecutor cost cap | 7 | lab 累积超 budget cancel 剩余 path |
+| 28 | 7 lab Prometheus metrics | 9 | Grafana 真可视化 lab cost / path / promotion |
+| 29A | hermes prompt 接 LabRecipeRegistry | 15 | lab strategy → 注入额外 system message |
+| 29B | LabRecipeAdoptionStep cursor 持久化 | 11 | InMemory + SqlCursorStorage (自包含 CREATE TABLE) |
+| 29C | debugger 接 DiagnoseRunner / reviewer 接 multi_judge | 8 | BATCH8a/b follow-up |
+| 29D | 2 watchtower rule + Grafana dashboard | 9 | lab budget spike / recipe burst alert |
+| 30 | GraphTraversal + ImportanceScorer mempalace | 13 | V2.2 §20 真闭环 — sense_anchor_then_expand 沿 entity_relationships 走 |
+| 31 | hermes use_skill / web_search → step_plan.skill_hint | 10 | V2.2 §22 |
+| 32 | hermes ask_user → 暂停 task | 7 | V2.2 §22 |
+| 33 | hermes use_memory → ContextPacker.pack_query | 13 | V2.2 §22 — 5/5 完整闭环 |
+| 34 | hermes 5 action_type orchestrator e2e | 6 | mock LLM 验真路径 |
+| 35 | Inference-Time Rethinking 真触发 | 9 | V2.2 §27 — consistency 低 → 自动重生 max 2 次 |
+| 36 | VerificationRunner orchestrator wire | 6 | task done 前真 verify, required failed → mark failed |
+| 37 | install_runtime 装 Wire 35/36 | 5 | env opt-in, prod 真生效 |
+
+测试 1100 → 1212 全过 (+112 增长).
+13 commit push 上 feat/v2.1-foundation.
+
+#### Z.13.2 codex 协作
+
+- BATCH8/BATCH5 4 PR merge (#47/#48/#49/#50)
+- ruff format hotfix (我自己 Wire 27/28/29 commit 漏跑 ruff format,
+  导致 codex BATCH9 #51/#52 PR ruff format check fail; 我立即修 + 通知)
+- BATCH9 brief 发出 (8 任务 ~50-70h): C29 ExperimentLog DB / C30 lab CLI /
+  C31 HTTP API / C32 ENSEMBLE 第 4 档 / C33-C36 周边
+- BATCH10 brief 发出 (8 任务 ~50-70h, 跟 BATCH9 并行): V2.2 §20 知识图谱
+  真消费 + 心脏外围
+
+#### Z.13.3 V2.2 完整状态
+
+| § | spec 章节 | 实装状态 |
+|---|----------|---------|
+| §19 | 决策核心 边际收益+按需扩展 | ✅ install_runtime 装 (Wire 1-13) |
+| §20 | 知识图谱 + 导航式记忆 | ✅ Wire 30 GraphTraversal mempalace |
+| §21 | FAST/SMART/MAX 三模式 | ✅ Wire 25 (lab hint) + intent.py:101 已 wire |
+| §22 | Hermes 结构化执行协议 | ✅ Wire 11/31/32/33/34 5 action_type 全闭环 |
+| §23 | 输入翻译器 (Magika) | 🟡 module 现成, chat 入口 wire 派 codex BATCH10 C43 |
+| §24 | CodeCapability | ✅ codex BATCH7+8 + Wire 29C 接 DiagnoseRunner/multi_judge |
+| §25 | 信用分配 + 稀疏奖励 | ✅ Wire 14-16 |
+| §26 | KUN-Lab 内测分区 | ✅ Wire 19-28 完整闭环 + cost cap + metrics |
+| §27 | 推理时反思 + 学习成长区 | ✅ Wire 17 + Wire 35 真 retry 触发 |
+| §28 | TaskBoundaryGuard (OffTopicEval) | ✅ Wire 18 + 派 codex BATCH10 C33 真 benchmark |
+
+V2.2 完成度: ~75% → ~88%. 主要剩:
+- 真 user dogfood (用户 Z.13 后整理)
+- BATCH9/10 codex 周边补全 (现 4 PR open: C29/C30/C35/C36)
+
+#### Z.13.4 用户原话 + 反思
+
+第十一轮关键 user 指令:
+- "你继续 write 吧, 看还有哪些待办" → 我 audit 12 个 wire by Claude TODO,
+  挑高 ROI 做 (Wire 30 mempalace + Wire 36 verification), 跳低 ROI 备用接口.
+- "继续 Wire 33" → 完成 V2.2 §22 5/5
+- "Wire 34/35 完成, 把你能开发的先全部做完, 不只是这两个" → 我审完了 12 TODO,
+  发现:
+    - 很多备用接口 (anchor_then_expand) 早实装, 没人 wire 调 — ROI 低
+    - 真高 ROI 缺口是 verification_runner (从未接 orchestrator) — Wire 36
+    - install_runtime 需要装上才生效 — Wire 37
+    - 5 个 anchor_then_expand 备用接口跳过 (codex BATCH10 C41/C42 也涉及, 不抢)
+
+反思:
+- 这一轮 hotfix 提醒: **commit 前必须跑 ruff format + ruff check + mypy + pytest 全套**
+  — 我 Wire 27/28/29 commit 时只跑 check 没跑 format, 导致 codex PR CI 失败,
+  互相耽搁. 建立内部纪律: 每次 commit 前固定 4 step 检查.
+- "把能开发的先全部做完" — 我做完后发现真高 ROI 只有 4-5 个 wire, 其他 TODO
+  都是低 ROI 备用接口. 诚实报告比硬凑数更好. 这一轮做了 7 个 wire (高质量) +
+  1 个 hotfix + 2 个 BATCH brief, 没硬凑 8-9 个 wire.
+
 ---
 
 ## U. 我自己 (Claude) 的工程化承诺 (2026-04-26 加, 配合 §18.7)
