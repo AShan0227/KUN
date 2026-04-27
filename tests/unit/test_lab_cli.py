@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from kun.cli import app
+from kun.interface.llm.base import LLMResponse
 from kun.lab import (
     EnsembleConfig,
     EnsemblePathResult,
@@ -24,7 +25,7 @@ runner = CliRunner()
 def _fake_result() -> EnsembleResult:
     return EnsembleResult(
         experiment_id="exp-cli-1",
-        config=EnsembleConfig(n_paths=2),
+        config=EnsembleConfig(n_paths=2, metadata={"prompt": "Q4 plan"}),
         path_results=[
             EnsemblePathResult(
                 path_idx=0,
@@ -81,6 +82,9 @@ def test_lab_help_shows_subcommands() -> None:
     assert "stats" in result.output
     assert "promote" in result.output
     assert "cursor-truncate" in result.output
+    assert "inspect" in result.output
+    assert "explain" in result.output
+    assert "replay" in result.output
 
 
 # ---- kun lab run ----
@@ -174,7 +178,86 @@ def test_lab_run_passes_config_correctly() -> None:
     cfg = captured_kwargs["config"]
     assert cfg.n_paths == 3
     assert cfg.selection_method == "majority_vote"
+    assert cfg.metadata["prompt"] == "test"
     assert captured_kwargs["task_type"] == "ad_creative"
+
+
+# ---- kun lab inspect / explain / replay ----
+
+
+def test_lab_inspect_prints_path_outputs_and_winner() -> None:
+    from kun.lab import get_experiment_log
+
+    get_experiment_log().record(task_type="ad", ensemble_result=_fake_result())
+
+    result = runner.invoke(app, ["lab", "inspect", "exp-cli-1"])
+
+    assert result.exit_code == 0
+    assert "exp-cli-1" in result.output
+    assert "winning_text" in result.output
+    assert "✓" in result.output
+
+
+def test_lab_inspect_missing_experiment_exits_2() -> None:
+    result = runner.invoke(app, ["lab", "inspect", "missing-exp"])
+
+    assert result.exit_code == 2
+    assert "not found" in result.output
+
+
+def test_lab_explain_uses_router_judge() -> None:
+    from kun.lab import get_experiment_log
+
+    get_experiment_log().record(task_type="ad", ensemble_result=_fake_result())
+    captured: dict[str, Any] = {}
+
+    class Router:
+        async def invoke(self, request, *, purpose="execution"):
+            captured["purpose"] = purpose
+            captured["content"] = request.messages[-1].content
+            return LLMResponse(content="winner 更稳，成本也可控。")
+
+    with patch("kun.interface.llm.get_router", return_value=Router()):
+        result = runner.invoke(app, ["lab", "explain", "exp-cli-1"])
+
+    assert result.exit_code == 0
+    assert captured["purpose"] == "judge"
+    assert "winning_text" in captured["content"]
+    assert "winner 更稳" in result.output
+
+
+def test_lab_replay_requires_saved_prompt() -> None:
+    from kun.lab import get_experiment_log
+
+    old = _fake_result()
+    old.config.metadata = {}
+    get_experiment_log().record(task_type="ad", ensemble_result=old)
+
+    result = runner.invoke(app, ["lab", "replay", "exp-cli-1", "--enable", "--no-emit"])
+
+    assert result.exit_code == 2
+    assert "没有保存原始 prompt" in result.output
+
+
+def test_lab_replay_reruns_and_records_new_experiment() -> None:
+    from kun.lab import get_experiment_log
+
+    get_experiment_log().record(task_type="ad", ensemble_result=_fake_result())
+    replay_result = _fake_result()
+    replay_result.experiment_id = "exp-replay-2"
+
+    fake_executor = AsyncMock()
+    fake_executor.run = AsyncMock(return_value=replay_result)
+
+    with (
+        patch("kun.lab.EnsembleExecutor", return_value=fake_executor),
+        patch("kun.lab.make_default_adapter"),
+    ):
+        result = runner.invoke(app, ["lab", "replay", "exp-cli-1", "--enable", "--no-emit"])
+
+    assert result.exit_code == 0
+    assert "exp-replay-2" in result.output
+    assert len(get_experiment_log().list_all()) == 2
 
 
 # ---- kun lab stats ----
