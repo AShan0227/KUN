@@ -158,11 +158,12 @@ CandidateEnumerator = Callable[
 class StrategyMatcher:
     """主入口. 所有决策点走它."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, graph_traversal: Any | None = None) -> None:
         self._enumerators: dict[DecisionKind, CandidateEnumerator] = {}
         self._writeback_hooks: list[
             Callable[[StrategyDecision, dict[str, Any]], Awaitable[None]]
         ] = []
+        self._graph_traversal = graph_traversal
 
     def register(self, kind: DecisionKind, enum: CandidateEnumerator) -> None:
         """注册决策点的候选枚举器."""
@@ -250,6 +251,7 @@ class StrategyMatcher:
             raise ValueError(f"No enumerator registered for decision_kind={kind}")
 
         candidates = await self._enumerators[kind](signals, prev)
+        candidates = await self._with_transfer_confidence_candidates(candidates, signals)
         if not candidates:
             raise RuntimeError(
                 f"enumerate_candidates returned empty for {kind}. "
@@ -303,6 +305,7 @@ class StrategyMatcher:
             raise ValueError(f"No enumerator registered for decision_kind={kind}")
 
         candidates = await self._enumerators[kind](signals, prev)
+        candidates = await self._with_transfer_confidence_candidates(candidates, signals)
         if not candidates:
             raise RuntimeError(
                 f"enumerate_candidates returned empty for {kind}. "
@@ -335,6 +338,71 @@ class StrategyMatcher:
             max_rounds=max_rounds,
         ):
             yield item
+
+    async def _with_transfer_confidence_candidates(
+        self,
+        candidates: list[StrategyCandidate],
+        signals: SignalBundle,
+    ) -> list[StrategyCandidate]:
+        """Use graph transfer_confidence edges to add or boost strategy candidates."""
+        if self._graph_traversal is None or not candidates:
+            return candidates
+
+        anchor_id = _transfer_anchor_strategy_id(signals, candidates)
+        if not anchor_id:
+            return candidates
+
+        try:
+            neighbors = await self._graph_traversal.neighbors(
+                "strategy",
+                anchor_id,
+                hops=1,
+                relation_types=["transfer_confidence"],
+                limit_per_hop=12,
+            )
+        except Exception:
+            logger.debug("strategy_matcher.transfer_confidence_skipped", exc_info=True)
+            return candidates
+
+        if not neighbors:
+            return candidates
+
+        by_id = {candidate.candidate_id: candidate for candidate in candidates}
+        augmented = list(candidates)
+        template = by_id.get(anchor_id) or candidates[0]
+
+        for neighbor in neighbors:
+            if neighbor.entity_kind != "strategy":
+                continue
+            target_id = str(neighbor.entity_id)
+            confidence = float(neighbor.confidence)
+            metadata = {
+                "source": "transfer_confidence",
+                "anchor_strategy_id": anchor_id,
+                "relation_type": str(neighbor.relation_type),
+                "transfer_confidence": confidence,
+                "via_path": list(neighbor.via_path),
+            }
+            existing = by_id.get(target_id)
+            if existing is not None:
+                existing.expected_outcome = max(
+                    existing.expected_outcome,
+                    min(1.0, existing.expected_outcome + confidence * 0.1),
+                )
+                existing.metadata.update(metadata)
+                continue
+            candidate = StrategyCandidate(
+                candidate_id=target_id,
+                description=f"Transferred strategy from {anchor_id}: {target_id}",
+                expected_outcome=min(1.0, max(template.expected_outcome, confidence)),
+                expected_cost_usd=template.expected_cost_usd,
+                expected_latency_sec=template.expected_latency_sec,
+                risk_penalty=template.risk_penalty,
+                metadata=metadata,
+            )
+            by_id[target_id] = candidate
+            augmented.append(candidate)
+        return augmented
 
     async def writeback(
         self,
@@ -373,6 +441,23 @@ def reset_matcher() -> None:
     """测试用. 重置单例."""
     global _matcher
     _matcher = None
+
+
+def _transfer_anchor_strategy_id(
+    signals: SignalBundle,
+    candidates: list[StrategyCandidate],
+) -> str | None:
+    for source in (signals.task, signals.history, signals.meta):
+        for key in (
+            "anchor_strategy_id",
+            "strategy_id",
+            "last_successful_strategy_id",
+            "winner_strategy",
+        ):
+            value = source.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return candidates[0].candidate_id if candidates else None
 
 
 __all__ = [

@@ -213,11 +213,10 @@ class WeightTuneStep:
         self, event: PrecipitationEvent, context: dict[str, Any] | None = None
     ) -> list[AssetUpdate]:
         from kun.core.ids import new_id
+        from kun.datamodel.relationship import EntityRelationship
 
-        # 实际实现: 跑回归分析, 产出权重微调建议
-        # 这里 stub: 只发 audit, 不真改权重 (避免破坏稳定)
         payload = event.payload
-        return [
+        updates = [
             AssetUpdate(
                 update_id=new_id("score"),
                 asset_kind="weight_table",
@@ -230,6 +229,42 @@ class WeightTuneStep:
                 requires_approval=True,  # 权重改动需审批
             )
         ]
+
+        tenant_id = str(payload.get("tenant_id") or (context or {}).get("tenant_id") or "")
+        source_strategy = payload.get("source_strategy_id") or payload.get("anchor_strategy_id")
+        target_strategy = payload.get("target_strategy_id") or payload.get("winner_strategy")
+        confidence_raw = payload.get("transfer_confidence")
+        if tenant_id and isinstance(source_strategy, str) and isinstance(target_strategy, str):
+            confidence = _clamp_confidence(confidence_raw, default=0.3)
+            evidence_count = _positive_int(payload.get("evidence_count"), default=1)
+            relationship = EntityRelationship(
+                tenant_id=tenant_id,
+                source_entity_kind="strategy",
+                source_entity_id=source_strategy,
+                target_entity_kind="strategy",
+                target_entity_id=target_strategy,
+                relation_type="transfer_confidence",
+                confidence=confidence,
+                evidence_count=evidence_count,
+                metadata={
+                    "source": "WeightTuneStep",
+                    "decision_kind": payload.get("decision_kind"),
+                    "source_task_type": payload.get("source_task_type"),
+                    "target_task_type": payload.get("target_task_type"),
+                },
+            )
+            await _upsert_mined_relationship(relationship)
+            updates.append(
+                AssetUpdate(
+                    update_id=new_id("memory"),
+                    asset_kind="entity_relationship",
+                    asset_ref=relationship.relation_id,
+                    update_kind="create",
+                    payload=relationship.model_dump(mode="json"),
+                    confidence=relationship.confidence,
+                )
+            )
+        return updates
 
 
 class RuleEmergeStep:
@@ -479,6 +514,22 @@ def _extract_entity_refs(payload: dict[str, Any]) -> list[tuple[str, str]]:
         if kind and entity_id:
             entities.append((str(kind), str(entity_id)))
     return entities
+
+
+def _clamp_confidence(value: Any, *, default: float) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        confidence = default
+    return max(0.0, min(1.0, confidence))
+
+
+def _positive_int(value: Any, *, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, parsed)
 
 
 async def _upsert_mined_relationship(relationship: Any) -> None:
