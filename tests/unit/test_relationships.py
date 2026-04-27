@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from kun.core import db as db_module
+from kun.core.metrics import relationship_mine_step_throughput
 from kun.core.orm import EntityRelationshipRow
 from kun.datamodel.relationship import (
     EntityRelationship,
@@ -119,6 +120,16 @@ def _rel(
         confidence=confidence,
         evidence_count=evidence_count,
     )
+
+
+def _counter_value(counter, **labels: str) -> float:
+    for metric in counter.collect():
+        for sample in metric.samples:
+            if sample.name.endswith("_total") and all(
+                sample.labels.get(key) == value for key, value in labels.items()
+            ):
+                return float(sample.value)
+    return 0.0
 
 
 def test_relationship_model_defaults_and_keys() -> None:
@@ -272,6 +283,7 @@ async def test_relationship_mine_step_creates_co_occurrence_relationships(
     relationship_session: _RelationshipSession,
 ) -> None:
     del relationship_session
+    before = _counter_value(relationship_mine_step_throughput, relation_type="co_occurs")
     now = datetime.now(UTC)
     events = [
         PrecipitationEvent(
@@ -298,6 +310,8 @@ async def test_relationship_mine_step_creates_co_occurrence_relationships(
     assert any(rel.relation_type == "co_occurs" for rel in outgoing)
     assert outgoing[0].confidence == 0.7
     assert updates
+    after = _counter_value(relationship_mine_step_throughput, relation_type="co_occurs")
+    assert after >= before + 2
 
 
 @pytest.mark.asyncio

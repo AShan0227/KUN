@@ -1,0 +1,103 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Knowledge Graph (V2.2 §20) — relationship inventory, mining throughput, and traversal health.",
+  "editable": true,
+  "panels": [
+    {
+      "title": "关系总数 (by relation_type)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "sum by (relation_type) (kun_relationships_total)",
+          "legendFormat": "{{relation_type}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "title": "Confidence p50 (by relation_type)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "kun_relationships_confidence_p50",
+          "legendFormat": "{{relation_type}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "fieldConfig": {"defaults": {"min": 0, "max": 1}}
+    },
+    {
+      "title": "关系增长率 (RelationshipMineStep, 24h)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "sum by (relation_type) (increase(kun_relationship_mine_step_throughput[24h]))",
+          "legendFormat": "{{relation_type}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "title": "Top 10 most-connected entities",
+      "type": "table",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "topk(10, sum by (entity_kind, entity_id) (kun_relationship_entity_degree))",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    },
+    {
+      "title": "Traversal 邻居数 p95",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(kun_graph_traversal_neighbors_count_bucket[5m])))",
+          "legendFormat": "neighbors p95",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+    },
+    {
+      "title": "Traversal 调用量 (5min rate)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "sum(rate(kun_graph_traversal_neighbors_count_count[5m]))",
+          "legendFormat": "traversal calls",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+    }
+  ],
+  "schemaVersion": 38,
+  "tags": ["kun", "knowledge-graph", "v2.2"],
+  "title": "KUN Knowledge Graph (V2.2 §20)",
+  "uid": "kun-knowledge-graph",
+  "version": 1
+}
