@@ -109,6 +109,14 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         install_lab_adoption_step(adopter=make_kp_adopter(precipitation))
         app.state.lab_recipe_registry = lab_registry
 
+    # Batch9 C29: optional DB-backed ExperimentLog. The singleton factory still
+    # defaults to in-memory, but when env opts in we expose the installed log on
+    # app.state for CLI/API parity.
+    if _os.getenv("KUN_LAB_DB_BACKED", "0") == "1":
+        from kun.lab import get_experiment_log
+
+        app.state.lab_experiment_log = get_experiment_log()
+
     # V2.1 §10.6 / M3.2 提前: 傩诊断 runner + 5 类默认 fix handler
     diagnose_runner = DiagnoseRunner()
     register_default_fix_handlers(diagnose_runner)
