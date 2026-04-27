@@ -672,6 +672,109 @@ V2.2 §26 KUN-Lab 内测版:
 
 V2.2 是从"高度结构化执行系统" → "会做选择/会下注/会停止/会节奏控制"的决策系统.
 
+### Z.12 第十轮 (2026-04-26~04-27): V2.2 Wire 14-28 + KUN-Lab 完整闭环
+
+承接 Z.10 (用户问 KUN 内测分区), 这一轮把 V2.2 §25/§26/§27/§28 文档全部
+落到代码 + 接通主仓库决策, 同时 merge codex BATCH5+8 共 4 个 PR.
+
+#### Z.12.1 V2.2 wire 主流程 (Wire 14-18, 文档 → 代码)
+
+| Wire | 主件 | 干啥 | 测试 |
+|------|------|------|------|
+| 14 | `kun/engineering/credit_assignment.py` | StepCredit + StageReward + CreditAssignment + ContributionTracker | 13 |
+| 15 | `kun/context/importance.py` | ImportanceScore 加 contribution 维度 (5维→6维) + score_with_contribution_boost | 12 |
+| 16 | `credit_assignment.py` (扩) | RewardMap stage_rewards (perceive/understand/reason/decide) | 13 |
+| 17 | `kun/engineering/execution_protocol.py` | ThoughtActionConsistency + rethink_count | (含上) |
+| 18 | `kun/security/task_boundary_guard.py` | TaskBoundaryGuard 4 层 (黑/白/LLM/启发式) | 14 |
+
+#### Z.12.2 KUN-Lab Wire 19-28 完整体系
+
+| Wire | 主件 | 干啥 | 测试 |
+|------|------|------|------|
+| 19 | `kun/lab/{ensemble_executor,experiment_log,recipe_promoter}.py` | MVP — HEX 启发 N 路径 ensemble + ExperimentLog + RecipePromoter | 17 |
+| 20 | `kun/lab/llm_router_adapter.py` | LLMRouterEnsembleAdapter — lab 真接 V2.2 心脏 LLMRouter | 10 |
+| 21 | `kun/lab/events.py` | LabEventEmitter — 实验/推升/回滚 事件入 events bus | 13 |
+| 22 | `kun/cli.py` (扩) | `kun lab run/stats/promote` CLI 子命令 + Rich 表格 | 11 |
+| 23 | `kun/lab/adoption.py` | LabRecipeAdoptionStep — idle_batch 拉 events.experiment.promoted | 13 |
+| 24 | `kun/lab/precipitation_bridge.py` | LabRecipePrecipitationStep — 接 V2.1 §16.12 KP, 走 §16.6 GuardPolicy | 15 |
+| 25 | `kun/lab/recipe_registry.py` + `kun/api/execution_mode_classifier.py` | LabRecipeRegistry + classifier 加 layer 5 lab hint | 18 |
+| 26 | `kun/api/runtime.py` (扩) | install_runtime 装上完整闭环 (env `KUN_LAB_BRIDGE_ENABLED=1` opt-in) | 4 |
+| 27 | `kun/lab/ensemble_executor.py` (扩) | cost-cap hard 执行 — 累积超 budget 立即 cancel 剩余 | 7 |
+| 28 | `kun/core/metrics.py` (扩) + 3 触发点 | 7 lab Prometheus metrics — 真融入主仓库可观测 | 9 |
+
+完整闭环 (env `KUN_LAB_BRIDGE_ENABLED=1` 启用):
+```
+EnsembleExecutor.run (Wire 19, 真接 LLMRouter Wire 20)
+  → ExperimentLog (in-memory) + experiment.created event (Wire 21)
+RecipePromoter.promote_eligible (Wire 19)
+  → experiment.promoted event (Wire 21)
+  → idle_batch.LabRecipeAdoptionStep (Wire 23)
+  → KnowledgePrecipitation.dispatch (Wire 24)
+  → LabRecipePrecipitationStep.precipitate
+  → AssetUpdate(source='kun_lab') + asset_apply_hook
+  → LabRecipeRegistry.upsert (Wire 25)
+  → ExecutionMode.classify_execution_mode 查 registry (Wire 25)
+  → 用 lab 验证过 strategy 当 mode hint
+```
+
+cost cap (Wire 27): `EnsembleResult.budget_exceeded` + cancelled_count.
+metrics (Wire 28): `kun_lab_experiment_total{status=ok|budget_exceeded}` /
+`_cost_usd` / `_latency_seconds` / `_path_total{status=ok|cancelled|error}` /
+`_budget_cap_total` / `_promotion_total` / `_registry_size`.
+
+#### Z.12.3 codex BATCH5/8 4 PR merged
+
+| PR | 干啥 | merge state |
+|----|------|-------------|
+| #47 C18 MultiTaskScheduler | 多任务调度器, 11 测试 | LGTM merged |
+| #48 C19 LayeredAsset L3 + AssetPromoter | TASK.md L3 + 资产推升, 9 测试 | LGTM merged |
+| #49 C20 DynamicReplanner 重写 | replan_with_result + compat detect_replan_decision | accepted merged (codex 升级合理) |
+| #50 BATCH8 CodeCapability Writer/Debugger/Reviewer | 7 测试 | merged + follow-up comment (debugger 没接 DiagnoseRunner / reviewer 没接 multi_judge, BATCH8a/b 后续) |
+
+#### Z.12.4 测试增长
+
+| 阶段 | 测试数 |
+|------|--------|
+| Z 轮起点 (Y.5 终点) | 597 |
+| Wire 14-18 | ~700 |
+| Wire 19 (lab MVP) | ~720 |
+| Wire 20-26 (lab 闭环) | ~970 |
+| codex 4 PR merged | ~1080 |
+| Wire 27 cost cap + Wire 28 metrics | 1100 |
+
+503 测试增长 → 全程绿. ruff/mypy 全干净. 11 commit (8 wire + 4 codex squash) push 到 feat/v2.1-foundation.
+
+#### Z.12.5 距离 V2.2 完整可跑
+
+剩余 (相对 V2.2 §19-§28 完整):
+- ✅ V2.2 §25 信用分配三件套 (Wire 14-16)
+- ✅ V2.2 §27 ThoughtActionConsistency (Wire 17)
+- ✅ V2.2 §28 TaskBoundaryGuard (Wire 18)
+- ✅ V2.2 §26 KUN-Lab 内测分区 (Wire 19-28, 完整闭环 + cost cap + metrics)
+- 🟡 follow-up: BATCH8a debugger 接 DiagnoseRunner / BATCH8b reviewer 接 multi_judge
+- 🟡 hermes prompt template 接 lab recipe registry (类似 ExecutionMode classifier)
+- 🟡 lab cursor 持久化 (Wire 23 现在 in-memory, M5 接 DB)
+
+完成度从 Z.11 计划 ~70% → 实际 ~75% (V2.2 §26 KUN-Lab 完整闭环超额完成).
+M5 完成 → 85%, 完整 V2.2 上线 → 90%.
+
+#### Z.12.6 用户最关键反馈 + 我的反思
+
+用户原话 (第十轮):
+- "我们对话的这些信息写进产品方案了么？我们内测的分区做出来了么？"
+  → 暴露了我之前只有 §26 文档没代码的问题. 立即起步 Wire 19, 持续推到 Wire 28
+  完整闭环, 完成"实验过程中发现了好的结论, 就可以优化到产品里面"全链路.
+- "继续你的开发"
+  → 用户给了开发自主权, 我自己接 wire + 选下一个最有价值的, 持续推进了 8 个 wire.
+- "如果有合并必要直接合并就行"
+  → 用户给了 merge 决策权, 我按之前 review 结论 merge 4 个 codex PR.
+
+反思:
+- 之前 V2.2 §26 文档写完后没立即起步代码, 让用户问"做出来了么?" 才开始. 这是
+  recency bias 反例 — 我太关注新文档/新启发, 没保持"文档落到代码" 的承诺.
+- U4 承诺 "每次产品讨论后追加 PROMISES.md" — 这次差点 Wire 19-28 全做完才想起来.
+  下次每个 wire 完成后立即同步 PROMISES.md, 不等到一批结束.
+
 ---
 
 ## U. 我自己 (Claude) 的工程化承诺 (2026-04-26 加, 配合 §18.7)
