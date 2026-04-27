@@ -187,13 +187,21 @@ class ThoughtActionConsistency:
 class StructuredStepGenerator:
     """Generate Hermes execution steps.
 
-    # TODO: orchestrator + watchtower wire by Claude in V2.2
-    # orchestrator calls generator.generate() -> watchtower evaluate(step)
-    # -> decide block/replace/insert/observe.
+    Wire 11: 老接口 generate() 走 SMART/MAX 模式生成 ExecutionStep.
+    Wire 35 (V2.2 §27): 加 Inference-Time Rethinking — consistency 低 → 自动
+        重生最多 max_rethinks 次. 跟 ThoughtActionConsistency.needs_rethink 联动.
     """
 
-    def __init__(self, llm_router: Any) -> None:
+    def __init__(
+        self,
+        llm_router: Any,
+        *,
+        consistency_checker: ThoughtActionConsistency | None = None,
+        max_rethinks: int = 2,
+    ) -> None:
         self._router = llm_router
+        self._consistency = consistency_checker
+        self._max_rethinks = max(0, max_rethinks)
 
     async def generate(
         self,
@@ -206,13 +214,47 @@ class StructuredStepGenerator:
         if normalized_mode == "FAST":
             return _fallback_step(prompt, context=context, reason="fast_mode")
 
-        request = _build_request(prompt, context, normalized_mode)
-        response = await _invoke_router(self._router, request)
-        payload = _extract_payload(response)
-        if payload is None:
-            return _fallback_step(prompt, context=context, reason="unparseable_llm_response")
+        # Wire 35: rethink loop — consistency 不足 → 自动重生 (max N 次)
+        rethink_attempts = 0
+        prior_step: ExecutionStep | None = None
+        last_score = 1.0
+        while True:
+            request = _build_request(prompt, context, normalized_mode, prior_step=prior_step)
+            response = await _invoke_router(self._router, request)
+            payload = _extract_payload(response)
+            if payload is None:
+                return _fallback_step(prompt, context=context, reason="unparseable_llm_response")
 
-        return _coerce_step(payload, prompt=prompt, context=context)
+            step = _coerce_step(payload, prompt=prompt, context=context)
+            step.rethink_count = rethink_attempts
+
+            # 没装 consistency checker → Wire 17 行为, 直接返
+            if self._consistency is None:
+                return step
+
+            score, _reason = await self._consistency.check(step)
+            step.thought_action_consistency = score
+            last_score = score
+
+            if not self._consistency.needs_rethink(score):
+                return step
+
+            if rethink_attempts >= self._max_rethinks:
+                logger.info(
+                    "hermes.rethink_exhausted score=%.2f attempts=%d → 返最终 step (consistency 仍不足)",
+                    score,
+                    rethink_attempts,
+                )
+                return step
+
+            rethink_attempts += 1
+            prior_step = step
+            logger.info(
+                "hermes.rethink_triggered attempt=%d score=%.2f mode=%s",
+                rethink_attempts,
+                last_score,
+                normalized_mode,
+            )
 
 
 def _normalize_mode(mode: str) -> ExecutionMode:
@@ -222,7 +264,13 @@ def _normalize_mode(mode: str) -> ExecutionMode:
     return "SMART"
 
 
-def _build_request(prompt: str, context: dict[str, Any], mode: ExecutionMode) -> LLMRequest:
+def _build_request(
+    prompt: str,
+    context: dict[str, Any],
+    mode: ExecutionMode,
+    *,
+    prior_step: ExecutionStep | None = None,
+) -> LLMRequest:
     risk_level = str(context.get("risk_level", "low"))
     profile = TaskProfile(
         task_type="execution_protocol",
@@ -241,6 +289,17 @@ def _build_request(prompt: str, context: dict[str, Any], mode: ExecutionMode) ->
     extra_system = _maybe_lab_recipe_prompt_hint(context)
     if extra_system:
         messages.append(LLMMessage(role="system", content=extra_system, cache=False))
+    # Wire 35: rethink — 上轮 step thought 跟 action 不一致, 提示重生
+    if prior_step is not None:
+        rethink_hint = (
+            "RETHINK: 上一次的 thought 跟 action 不太一致. "
+            f"上次 thought={prior_step.thought!r}, action_type={prior_step.action_type}, "
+            f"consistency={prior_step.thought_action_consistency:.2f}. "
+            "请重新思考: 要么把 thought 写得跟 action_type 真匹配 "
+            "(use_skill 提工具 / use_memory 提记忆 / web_search 提查询 / ask_user 提问题), "
+            "要么换更合适的 action_type."
+        )
+        messages.append(LLMMessage(role="system", content=rethink_hint, cache=False))
     messages.append(LLMMessage(role="user", content=user_prompt))
     return LLMRequest(
         messages=messages,
