@@ -16,7 +16,11 @@ from kun.engineering.cron_scheduler import CronScheduler
 from kun.engineering.emergent_switch import EmergentSwitchManager
 from kun.engineering.execution_protocol import StructuredStepGenerator
 from kun.engineering.fast_path import FastPathRouter
-from kun.engineering.idle_batch import KnowledgePrecipitationStep, register_step
+from kun.engineering.idle_batch import (
+    IncidentLessonDistillStep,
+    KnowledgePrecipitationStep,
+    register_step,
+)
 from kun.engineering.marginal_roi import ModulePresets
 from kun.engineering.orchestrator import Orchestrator
 from kun.engineering.precipitation import (
@@ -35,6 +39,7 @@ from kun.engineering.safety_guards import (
 )
 from kun.security.diagnose_runner import DiagnoseRunner
 from kun.security.fix_handlers import register_default_fix_handlers
+from kun.security.incident_response import IncidentResponseEngine
 from kun.watchtower.engine import RuleEngine
 from kun.watchtower.value_estimators import ProductionValueEstimator
 from kun.watchtower.value_gate import ValueGate
@@ -57,6 +62,12 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     - task_timeout: §5.2.2 任务级超时
     - zero_telemetry: §11.5 零回传
     """
+    # V2.2 C44: watchtower fired rules → IncidentResponse → idle-batch lessons.
+    incident_response = IncidentResponseEngine()
+    rule_engine.set_incident_response(incident_response)
+    app.state.incident_response = incident_response
+    register_step(IncidentLessonDistillStep(incident_provider=lambda: app.state.incident_response))
+
     # V2.1 §5.8: 涌现方案库 + 切换管理器 (信号驱动, 真切给 M5)
     emergent_library = EmergentSolutionLibrary()
     emergent_switch_manager = EmergentSwitchManager(library=emergent_library)
@@ -237,6 +248,10 @@ def get_knowledge_precipitation(app: _AppWithState) -> KnowledgePrecipitation:
 
 def get_diagnose_runner(app: _AppWithState) -> DiagnoseRunner:
     return cast(DiagnoseRunner, app.state.diagnose_runner)
+
+
+def get_incident_response(app: _AppWithState) -> IncidentResponseEngine:
+    return cast(IncidentResponseEngine, app.state.incident_response)
 
 
 def get_cron_scheduler(app: _AppWithState) -> CronScheduler:

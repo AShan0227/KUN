@@ -181,9 +181,14 @@ def test_knowledge_precipitation_wired_into_idle_batch() -> None:
     - 把 KnowledgePrecipitationStep 注册到 idle_batch._steps
     """
     from fastapi import FastAPI
-    from kun.api.runtime import get_knowledge_precipitation
-    from kun.engineering.idle_batch import KnowledgePrecipitationStep, _steps
+    from kun.api.runtime import get_incident_response, get_knowledge_precipitation
+    from kun.engineering.idle_batch import (
+        IncidentLessonDistillStep,
+        KnowledgePrecipitationStep,
+        _steps,
+    )
     from kun.engineering.precipitation import KnowledgePrecipitation
+    from kun.security.incident_response import IncidentResponseEngine
 
     app = FastAPI()
     install_runtime(app, rule_engine=RuleEngine([]))
@@ -194,6 +199,9 @@ def test_knowledge_precipitation_wired_into_idle_batch() -> None:
 
     assert "knowledge_precipitation" in _steps
     assert isinstance(_steps["knowledge_precipitation"], KnowledgePrecipitationStep)
+    assert isinstance(get_incident_response(app), IncidentResponseEngine)
+    assert "incident_lessons" in _steps
+    assert isinstance(_steps["incident_lessons"], IncidentLessonDistillStep)
 
 
 def test_chat_fast_path_chitchat(runtime_app) -> None:
