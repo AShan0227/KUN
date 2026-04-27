@@ -1,9 +1,13 @@
-"""Wire 31: hermes ExecutionStep.action_type → step_plan.skill_hint 覆盖."""
+"""Wire 31/32: hermes ExecutionStep.action_type → step_plan.skill_hint 覆盖 +
+ask_user → question 抽取."""
 
 from __future__ import annotations
 
 from kun.engineering.execution_protocol import ExecutionStep
-from kun.engineering.orchestrator import _hermes_skill_from_action
+from kun.engineering.orchestrator import (
+    _hermes_question_from_step,
+    _hermes_skill_from_action,
+)
 
 
 def _make_step(action_type: str, payload: dict | None = None) -> ExecutionStep:
@@ -69,3 +73,65 @@ def test_skill_id_preferred_over_skill_alias() -> None:
     """两个都给, 用 skill_id."""
     step = _make_step("use_skill", {"skill_id": "primary", "skill": "alias"})
     assert _hermes_skill_from_action(step) == "primary"
+
+
+# ---- Wire 32: _hermes_question_from_step ----
+
+
+def test_question_from_payload_question_field() -> None:
+    step = _make_step("ask_user", {"question": "你确定要删除这个文件?"})
+    assert _hermes_question_from_step(step) == "你确定要删除这个文件?"
+
+
+def test_question_from_payload_prompt_alias() -> None:
+    step = _make_step("ask_user", {"prompt": "请提供 API key"})
+    assert _hermes_question_from_step(step) == "请提供 API key"
+
+
+def test_question_from_payload_ask_alias() -> None:
+    step = _make_step("ask_user", {"ask": "继续吗?"})
+    assert _hermes_question_from_step(step) == "继续吗?"
+
+
+def test_question_priority_question_over_prompt() -> None:
+    step = _make_step("ask_user", {"question": "primary", "prompt": "secondary"})
+    assert _hermes_question_from_step(step) == "primary"
+
+
+def test_question_falls_back_to_thought() -> None:
+    """payload 都空 → 用 thought 兜底."""
+    step = ExecutionStep(
+        step_id=1,
+        thought="我不太确定用户想要哪种格式",
+        action_type="ask_user",
+        action_payload={},
+        expected_outcome="user clarification",
+        confidence=0.4,
+    )
+    assert _hermes_question_from_step(step) == "我不太确定用户想要哪种格式"
+
+
+def test_question_blank_strings_falls_through() -> None:
+    """payload 字段都是空白 → fallback thought."""
+    step = ExecutionStep(
+        step_id=1,
+        thought="thought-fallback",
+        action_type="ask_user",
+        action_payload={"question": "   ", "prompt": ""},
+        expected_outcome="x",
+        confidence=0.5,
+    )
+    assert _hermes_question_from_step(step) == "thought-fallback"
+
+
+def test_question_all_empty_returns_default() -> None:
+    """payload + thought 都空 → 返默认提示."""
+    step = ExecutionStep(
+        step_id=1,
+        thought="",
+        action_type="ask_user",
+        action_payload={},
+        expected_outcome="",
+        confidence=0.5,
+    )
+    assert _hermes_question_from_step(step) == "需要您澄清"

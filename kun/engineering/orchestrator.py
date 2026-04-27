@@ -763,9 +763,9 @@ class Orchestrator:
                         log.exception("hermes_step.generate failed (non-fatal)")
 
                 # V2.2 §22 Wire 31: hermes ExecutionStep.action_type 真驱动 step 路径
-                # use_skill / web_search → 覆盖 step_plan.skill_hint, 让 _execute_step
-                # 走 hermes 选的路径 (而不是 planner 的默认推荐).
-                # ask_user 留给 Wire 32 (需要 PendingAction DB 写入 + runtime status mutation).
+                # use_skill / web_search → 覆盖 step_plan.skill_hint
+                # ask_user (Wire 32) → 暂停 task 等用户回复 (跟 ValueGate escalate 同模式)
+                # use_memory / direct_llm → 走现有路径
                 if _hermes_step is not None and _exec_mode != "FAST":
                     _hermes_override = _hermes_skill_from_action(_hermes_step)
                     if _hermes_override and _hermes_override != step_plan.skill_hint:
@@ -781,6 +781,26 @@ class Orchestrator:
                                 "reason": "hermes_executionstep",
                             },
                         )
+                    elif _hermes_step.action_type == "ask_user":
+                        # Wire 32: hermes 决定要问 user → 暂停 task, 把问题 emit 出去
+                        question = _hermes_question_from_step(_hermes_step)
+                        yield OrchestratorEvent(
+                            kind="hermes_ask_user",
+                            data={
+                                "step_id": step_plan.step_id,
+                                "question": question,
+                                "thought": _hermes_step.thought,
+                                "expected_outcome": _hermes_step.expected_outcome,
+                            },
+                        )
+                        log.info(
+                            "hermes.ask_user_pause task=%s step=%d question=%s",
+                            task_ref.meta.task_id,
+                            step_plan.step_id,
+                            question[:100],
+                        )
+                        status = "paused"
+                        break
 
                 if self.value_gate is not None and _exec_mode != "FAST":
                     try:
@@ -1432,6 +1452,19 @@ def _hermes_skill_from_action(hermes_step: Any) -> str | None:
     if action_type == "web_search":
         return "web_search"
     return None
+
+
+def _hermes_question_from_step(hermes_step: Any) -> str:
+    """V2.2 §22 Wire 32 helper: hermes ask_user → 抽问题文本.
+
+    优先级: payload.question > payload.prompt > thought 兜底.
+    """
+    payload = getattr(hermes_step, "action_payload", None) or {}
+    for key in ("question", "prompt", "ask"):
+        v = payload.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return str(getattr(hermes_step, "thought", "") or "需要您澄清")
 
 
 def _runtime_to_row(runtime: RuntimeState, tenant_id: str) -> RuntimeStateRow:
