@@ -11,8 +11,9 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Header, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from kun.api.input_payload import Attachment, translate_chat_input
 from kun.api.runtime import get_fast_path, get_orchestrator, get_token_meter
 from kun.core.tenancy import current_tenant
 from kun.engineering.orchestrator import TaskResult
@@ -22,6 +23,7 @@ router = APIRouter()
 
 class ChatRequest(BaseModel):
     message: str
+    attachments: list[Attachment] = Field(default_factory=list)
 
 
 class FastPathResult(BaseModel):
@@ -47,6 +49,8 @@ async def run_task(
     - 命中 → 直接返 FastPathResult (≤200ms)
     - 未命中 → 走完整 orchestrator 决策链
     """
+    translated = await translate_chat_input(req.message, req.attachments)
+    user_message = translated.message
     fast = get_fast_path(request.app)
     user_id = x_user_id or "u-anon"
     try:
@@ -57,8 +61,9 @@ async def run_task(
     # V2.1 §17.4a 快速路径
     fp_decision = fast.try_fast(
         task_meta={
-            "user_message": req.message,
+            "user_message": user_message,
             "task_type": "chat.unstructured",
+            "input_descriptors": translated.descriptors,
         },
         user_meta={
             "user_id": user_id,
@@ -76,7 +81,7 @@ async def run_task(
 
     # 完整决策链
     orchestrator = get_orchestrator(request.app)
-    result = await orchestrator.run(req.message, output_kind=output_kind)
+    result = await orchestrator.run(user_message, output_kind=output_kind)
 
     # V2.1 T46: 记 token 用量
     if user_id != "u-anon":
