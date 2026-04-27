@@ -90,6 +90,14 @@ class EnsembleResult(BaseModel):
     total_latency_sec: float = 0.0
     selection_reason: str = ""
     completed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    budget_exceeded: bool = Field(
+        default=False,
+        description="Wire 27: cost 累积超 cost_budget_total_usd, 剩余 path 被 cancel",
+    )
+    budget_cancelled_count: int = Field(
+        default=0,
+        description="Wire 27: 因 budget cap 被 cancel 的 path 数",
+    )
 
 
 # 默认 5 路径 (V2.2 §26.3)
@@ -177,12 +185,10 @@ class EnsembleExecutor:
         cfg = config or EnsembleConfig(n_paths=len(self._default_paths))
         paths = self._default_paths[: cfg.n_paths]
 
-        # 并发跑所有路径
-        tasks = [
-            self._run_one_path(prompt, path, idx, cfg.timeout_per_path_sec)
-            for idx, path in enumerate(paths)
-        ]
-        path_results: list[EnsemblePathResult] = await asyncio.gather(*tasks)
+        # Wire 27: 并发跑 + cost-cap hard 执行 (累积 cost 超预算 → cancel 剩余)
+        path_results, budget_exceeded, cancelled_count = await self._run_paths_with_budget(
+            prompt, paths, cfg
+        )
 
         # 评分
         if scoring_fn is not None:
@@ -203,12 +209,12 @@ class EnsembleExecutor:
         total_cost = sum(pr.cost_usd for pr in path_results)
         total_latency = max((pr.latency_sec for pr in path_results), default=0.0)
 
-        # 检查预算
-        if total_cost > cfg.cost_budget_total_usd:
+        if budget_exceeded:
             logger.warning(
-                "ensemble cost overrun: %.2f > %.2f budget",
+                "ensemble.budget.cap_triggered cost=%.4f budget=%.4f cancelled=%d",
                 total_cost,
                 cfg.cost_budget_total_usd,
+                cancelled_count,
             )
 
         result = EnsembleResult(
@@ -220,6 +226,8 @@ class EnsembleExecutor:
             total_cost_usd=total_cost,
             total_latency_sec=total_latency,
             selection_reason=winner_reason,
+            budget_exceeded=budget_exceeded,
+            budget_cancelled_count=cancelled_count,
         )
 
         # Wire 21: 把实验结果 emit 进 events bus (best-effort, 不阻塞主流程)
@@ -231,6 +239,77 @@ class EnsembleExecutor:
 
         return result
 
+    async def _run_paths_with_budget(
+        self,
+        prompt: str,
+        paths: list[PathConfig],
+        cfg: EnsembleConfig,
+    ) -> tuple[list[EnsemblePathResult], bool, int]:
+        """跑 N 路径并发, 累积 cost 超 budget 立即 cancel 剩余 (Wire 27).
+
+        Returns:
+            (path_results 按 idx 排, budget_exceeded, cancelled_count)
+        """
+        budget = cfg.cost_budget_total_usd
+        pending: dict[asyncio.Task[EnsemblePathResult], int] = {}
+        for idx, path in enumerate(paths):
+            t = asyncio.create_task(
+                self._run_one_path(prompt, path, idx, cfg.timeout_per_path_sec),
+                name=f"ensemble-path-{idx}",
+            )
+            pending[t] = idx
+
+        done_results: dict[int, EnsemblePathResult] = {}
+        running_cost = 0.0
+        budget_exceeded = False
+
+        while pending:
+            done, _ = await asyncio.wait(
+                list(pending.keys()), return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in done:
+                idx = pending.pop(t)
+                try:
+                    pr = await t
+                except asyncio.CancelledError:
+                    pr = EnsemblePathResult(
+                        path_idx=idx,
+                        config=self._dump_path_config(paths[idx]),
+                        error="cancelled_budget_exceeded",
+                    )
+                done_results[idx] = pr
+                running_cost += pr.cost_usd
+
+            if running_cost > budget and not budget_exceeded and pending:
+                # 累积 cost 超 budget → cancel 剩余 path
+                budget_exceeded = True
+                cancelled_idxs = list(pending.values())
+                for t in pending:
+                    t.cancel()
+                # 等所有 cancelled task 真结束
+                await asyncio.gather(*pending.keys(), return_exceptions=True)
+                for idx in cancelled_idxs:
+                    done_results[idx] = EnsemblePathResult(
+                        path_idx=idx,
+                        config=self._dump_path_config(paths[idx]),
+                        error="cancelled_budget_exceeded",
+                    )
+                pending.clear()
+
+        cancelled_count = sum(
+            1 for pr in done_results.values() if pr.error == "cancelled_budget_exceeded"
+        )
+        path_results = [done_results[i] for i in range(len(paths))]
+        return path_results, budget_exceeded, cancelled_count
+
+    @staticmethod
+    def _dump_path_config(path: PathConfig) -> dict[str, Any]:
+        return {
+            "strategy": path.strategy,
+            "tier": path.tier,
+            "temperature": path.temperature,
+        }
+
     async def _run_one_path(
         self,
         prompt: str,
@@ -239,11 +318,7 @@ class EnsembleExecutor:
         timeout_sec: int,
     ) -> EnsemblePathResult:
         """跑单条路径."""
-        config_dump = {
-            "strategy": path.strategy,
-            "tier": path.tier,
-            "temperature": path.temperature,
-        }
+        config_dump = self._dump_path_config(path)
         try:
             output, cost, latency = await asyncio.wait_for(
                 self._invoker(prompt, path), timeout=timeout_sec
