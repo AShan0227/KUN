@@ -19,11 +19,12 @@ Wire 24 把 lab promotion 经 KP 转成 AssetUpdate, 但 KP 的 _asset_apply_hoo
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from kun.engineering.precipitation import AssetUpdate
@@ -32,6 +33,10 @@ logger = logging.getLogger(__name__)
 
 
 MIN_CONFIDENCE_FOR_REGISTRY = 0.7
+
+
+def _json_dumps(value: dict[str, Any]) -> str:
+    return json.dumps(value, ensure_ascii=False)
 
 
 @dataclass
@@ -48,6 +53,118 @@ class LabRecipeEntry:
     extras: dict[str, Any] = field(default_factory=dict)
 
 
+class LabRecipeStorage(Protocol):
+    async def load_all(self, tenant_id: str) -> list[LabRecipeEntry]: ...
+    async def save(self, tenant_id: str, entry: LabRecipeEntry) -> None: ...
+    async def clear(self, tenant_id: str) -> None: ...
+
+
+class InMemoryLabRecipeStorage:
+    """Small async storage used by tests and as a no-DB fallback."""
+
+    def __init__(self) -> None:
+        self._store: dict[tuple[str, str, str], LabRecipeEntry] = {}
+
+    async def load_all(self, tenant_id: str) -> list[LabRecipeEntry]:
+        return [
+            entry
+            for (stored_tenant, _task_type, _target), entry in self._store.items()
+            if stored_tenant == tenant_id
+        ]
+
+    async def save(self, tenant_id: str, entry: LabRecipeEntry) -> None:
+        self._store[(tenant_id, entry.task_type, entry.target_module)] = entry
+
+    async def clear(self, tenant_id: str) -> None:
+        for key in [key for key in self._store if key[0] == tenant_id]:
+            del self._store[key]
+
+
+class SqlLabRecipeStorage:
+    """SQLAlchemy storage for lab_recipe_registry.
+
+    The schema is managed by alembic 0013_lab_recipe_registry.
+    """
+
+    def __init__(self, session_factory: Callable[..., Any] | None = None) -> None:
+        self._session_factory = session_factory
+
+    def _open_session(self, tenant_id: str) -> Any:
+        if self._session_factory is not None:
+            return self._session_factory(tenant_id=tenant_id)
+        from kun.core.db import session_scope
+
+        return session_scope(tenant_id=tenant_id)
+
+    async def load_all(self, tenant_id: str) -> list[LabRecipeEntry]:
+        from sqlalchemy import text
+
+        async with self._open_session(tenant_id) as session:
+            result = await session.execute(
+                text(
+                    "SELECT task_type, target_module, strategy, win_rate, confidence, "
+                    "promotion_id, extras, last_updated "
+                    "FROM lab_recipe_registry WHERE tenant_id = :tenant_id"
+                ),
+                {"tenant_id": tenant_id},
+            )
+            rows = result.all()
+        return [
+            LabRecipeEntry(
+                task_type=row.task_type,
+                target_module=row.target_module,
+                strategy=row.strategy,
+                win_rate=float(row.win_rate),
+                confidence=float(row.confidence),
+                promotion_id=row.promotion_id or "",
+                last_updated=row.last_updated,
+                extras=dict(row.extras or {}),
+            )
+            for row in rows
+        ]
+
+    async def save(self, tenant_id: str, entry: LabRecipeEntry) -> None:
+        from sqlalchemy import text
+
+        async with self._open_session(tenant_id) as session:
+            await session.execute(
+                text(
+                    "INSERT INTO lab_recipe_registry "
+                    "(tenant_id, task_type, target_module, strategy, win_rate, confidence, "
+                    "promotion_id, extras, last_updated) "
+                    "VALUES (:tenant_id, :task_type, :target_module, :strategy, :win_rate, "
+                    ":confidence, :promotion_id, CAST(:extras AS JSONB), :last_updated) "
+                    "ON CONFLICT (tenant_id, task_type, target_module) DO UPDATE SET "
+                    "strategy = EXCLUDED.strategy, "
+                    "win_rate = EXCLUDED.win_rate, "
+                    "confidence = EXCLUDED.confidence, "
+                    "promotion_id = EXCLUDED.promotion_id, "
+                    "extras = EXCLUDED.extras, "
+                    "last_updated = EXCLUDED.last_updated"
+                ),
+                {
+                    "tenant_id": tenant_id,
+                    "task_type": entry.task_type,
+                    "target_module": entry.target_module,
+                    "strategy": entry.strategy,
+                    "win_rate": entry.win_rate,
+                    "confidence": entry.confidence,
+                    "promotion_id": entry.promotion_id,
+                    "extras": _json_dumps(entry.extras),
+                    "last_updated": entry.last_updated,
+                },
+            )
+
+    async def clear(self, tenant_id: str) -> None:
+        from sqlalchemy import text
+
+        async with self._open_session(tenant_id) as session:
+            await session.execute(
+                text("DELETE FROM lab_recipe_registry WHERE tenant_id = :tenant_id"),
+                {"tenant_id": tenant_id},
+            )
+
+
 class LabRecipeRegistry:
     """In-memory 持久化 lab 推过来的有效 recipe.
 
@@ -57,9 +174,17 @@ class LabRecipeRegistry:
     线程安全: 单进程 asyncio 不需要锁 (idle_batch + classifier 都在主 loop).
     """
 
-    def __init__(self, *, min_confidence: float = MIN_CONFIDENCE_FOR_REGISTRY) -> None:
+    def __init__(
+        self,
+        *,
+        min_confidence: float = MIN_CONFIDENCE_FOR_REGISTRY,
+        tenant_id: str = "u-sylvan",
+        storage: LabRecipeStorage | None = None,
+    ) -> None:
         self._entries: dict[tuple[str, str], LabRecipeEntry] = {}
         self._min_confidence = min_confidence
+        self._tenant_id = tenant_id
+        self._storage = storage
 
     def upsert(self, entry: LabRecipeEntry) -> bool:
         """加 / 更新一条 recipe. confidence 不够 → 拒绝, 返 False."""
@@ -90,6 +215,21 @@ class LabRecipeRegistry:
             logger.debug("lab.registry.metric_skipped err=%s", exc)
         return True
 
+    async def aupsert(self, entry: LabRecipeEntry, *, tenant_id: str | None = None) -> bool:
+        ok = self.upsert(entry)
+        if ok and self._storage is not None:
+            await self._storage.save(tenant_id or self._tenant_id, entry)
+        return ok
+
+    async def load_from_storage(self, *, tenant_id: str | None = None) -> int:
+        if self._storage is None:
+            return 0
+        loaded = await self._storage.load_all(tenant_id or self._tenant_id)
+        for entry in loaded:
+            if entry.confidence >= self._min_confidence:
+                self._entries[(entry.task_type, entry.target_module)] = entry
+        return len(loaded)
+
     def get(self, task_type: str, target_module: str) -> LabRecipeEntry | None:
         return self._entries.get((task_type, target_module))
 
@@ -101,6 +241,11 @@ class LabRecipeRegistry:
 
     def clear(self) -> None:
         self._entries.clear()
+
+    async def aclear(self, *, tenant_id: str | None = None) -> None:
+        self.clear()
+        if self._storage is not None:
+            await self._storage.clear(tenant_id or self._tenant_id)
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -143,7 +288,10 @@ def make_registry_apply_hook(
                 "requires_approval": update.requires_approval,
             },
         )
-        registry.upsert(entry)
+        await registry.aupsert(
+            entry,
+            tenant_id=str(update.payload.get("tenant_id") or "u-sylvan"),
+        )
 
     return apply_hook
 
@@ -151,11 +299,15 @@ def make_registry_apply_hook(
 _registry_singleton: LabRecipeRegistry | None = None
 
 
-def get_recipe_registry() -> LabRecipeRegistry:
+def get_recipe_registry(
+    *,
+    storage: LabRecipeStorage | None = None,
+    tenant_id: str = "u-sylvan",
+) -> LabRecipeRegistry:
     """单例. 主仓库 ExecutionMode classifier / hermes 等都拉这个."""
     global _registry_singleton
     if _registry_singleton is None:
-        _registry_singleton = LabRecipeRegistry()
+        _registry_singleton = LabRecipeRegistry(storage=storage, tenant_id=tenant_id)
     return _registry_singleton
 
 
@@ -166,8 +318,11 @@ def reset_recipe_registry() -> None:
 
 __all__ = [
     "MIN_CONFIDENCE_FOR_REGISTRY",
+    "InMemoryLabRecipeStorage",
     "LabRecipeEntry",
     "LabRecipeRegistry",
+    "LabRecipeStorage",
+    "SqlLabRecipeStorage",
     "get_recipe_registry",
     "make_registry_apply_hook",
     "reset_recipe_registry",
