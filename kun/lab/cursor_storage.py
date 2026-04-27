@@ -6,8 +6,7 @@ in-memory — 进程重启会丢, 重启后 idle_batch 重 adopt 同一批 promo
 
 Wire 29B 加 CursorStorage 抽象:
     - InMemoryCursorStorage (默认): 现行为, 单元测试用
-    - SqlCursorStorage: 接 SQLAlchemy session, 自动 CREATE TABLE IF NOT EXISTS
-      (lab_adoption_cursor), upsert/load. 不依赖 alembic — 自包含
+    - SqlCursorStorage: 接 SQLAlchemy session, 读写 lab_adoption_cursor.
 
 LabRecipeAdoptionStep 接 storage 注入式 (向后兼容). 默认 InMemory; 真生产
 install_lab_adoption_step(storage=SqlCursorStorage(session_factory)).
@@ -20,8 +19,8 @@ install_lab_adoption_step(storage=SqlCursorStorage(session_factory)).
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
-Wire 30 / M5 后续: 接 alembic migration (替代 self-managed CREATE TABLE) +
-truncate adopted_ids 防表无限增长 (e.g. 只留最近 1000).
+Batch9 C36 起 lab_adoption_cursor 由 alembic 管理. 应用代码不再偷偷
+CREATE TABLE, 避免本地/生产 schema 漂移.
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
@@ -82,21 +81,11 @@ class InMemoryCursorStorage:
         self._store.clear()
 
 
-_CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS lab_adoption_cursor (
-    cursor_name VARCHAR(64) PRIMARY KEY,
-    last_adopted_at TIMESTAMPTZ NOT NULL,
-    adopted_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-
 SessionFactory = Callable[[], Any]  # 返 async context manager (session_scope)
 
 
 class SqlCursorStorage:
-    """SQLAlchemy 后端. 自动 CREATE TABLE IF NOT EXISTS — 不依赖 alembic.
+    """SQLAlchemy 后端. 表由 alembic 管理.
 
     Args:
         session_factory: callable() → async context manager. 默认拿
@@ -115,11 +104,9 @@ class SqlCursorStorage:
         self._table_ensured = False
 
     async def _ensure_table(self, session: AsyncSession) -> None:
-        if self._table_ensured:
-            return
-        from sqlalchemy import text
-
-        await session.execute(text(_CREATE_TABLE_SQL))
+        # Batch9 C36: lab_adoption_cursor now lives in alembic migration 0013.
+        # Keep this method as a compatibility hook for tests/old callers, but
+        # do not create schema at runtime.
         self._table_ensured = True
 
     async def _open_session(self) -> Any:
@@ -178,12 +165,41 @@ class SqlCursorStorage:
             )
 
 
+async def truncate_lab_adoption_cursors(
+    *,
+    older_than_days: int = 30,
+    session_factory: SessionFactory | None = None,
+    now: datetime | None = None,
+) -> int:
+    """Delete stale lab adoption cursor rows.
+
+    This is intentionally small and explicit: cursor rows are operational
+    bookkeeping, not product memory. Stale rows can be removed by cron without
+    touching experiment history or recipes.
+    """
+    from sqlalchemy import text
+
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=older_than_days)
+    if session_factory is None:
+        from kun.core.db import session_scope
+
+        session_factory = session_scope
+
+    async with session_factory() as session:
+        result = await session.execute(
+            text("DELETE FROM lab_adoption_cursor WHERE updated_at < :cutoff"),
+            {"cutoff": cutoff},
+        )
+        return int(getattr(result, "rowcount", 0) or 0)
+
+
 __all__ = [
     "CursorSnapshot",
     "CursorStorage",
     "InMemoryCursorStorage",
     "SessionFactory",
     "SqlCursorStorage",
+    "truncate_lab_adoption_cursors",
 ]
 
 

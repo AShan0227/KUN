@@ -37,6 +37,7 @@ from kun.lab.cursor_storage import (
     CursorStorage,
     InMemoryCursorStorage,
     SqlCursorStorage,
+    truncate_lab_adoption_cursors,
 )
 from kun.lab.ensemble_executor import (
     EnsembleConfig,
@@ -110,4 +111,5 @@ __all__ = [
     "run_benchmark_suite",
     "summarize_ensemble",
     "summarize_promotion",
+    "truncate_lab_adoption_cursors",
 ]

@@ -10,6 +10,8 @@ from kun.lab import (
     CursorSnapshot,
     InMemoryCursorStorage,
     LabRecipeAdoptionStep,
+    SqlCursorStorage,
+    truncate_lab_adoption_cursors,
 )
 
 
@@ -280,3 +282,53 @@ async def test_step_storage_save_failure_doesnt_break_run() -> None:
     step = LabRecipeAdoptionStep(event_fetcher=fetcher, cursor_storage=SaveFailingStorage())
     result = await step.run(tenant_id="u-test")
     assert result["adopted"] == 1  # adopt 成功 (in-memory)
+
+
+# ---- SqlCursorStorage / cron cleanup ----
+
+
+@pytest.mark.asyncio
+async def test_sql_cursor_storage_ensure_table_is_noop() -> None:
+    """Batch9 C36: schema 交给 alembic, runtime 不再偷偷 CREATE TABLE."""
+
+    class Session:
+        async def execute(self, *_args, **_kwargs):
+            raise AssertionError("_ensure_table must not execute SQL")
+
+    storage = SqlCursorStorage()
+    await storage._ensure_table(Session())
+    assert storage._table_ensured is True
+
+
+@pytest.mark.asyncio
+async def test_truncate_lab_adoption_cursors_deletes_rows_before_cutoff() -> None:
+    executed: list[tuple[str, dict[str, Any]]] = []
+
+    class Result:
+        rowcount = 3
+
+    class Session:
+        async def execute(self, statement, params):
+            executed.append((str(statement), params))
+            return Result()
+
+    class SessionCM:
+        async def __aenter__(self):
+            return Session()
+
+        async def __aexit__(self, *_exc):
+            return None
+
+    def session_factory():
+        return SessionCM()
+
+    now = datetime(2026, 5, 10, tzinfo=UTC)
+    deleted = await truncate_lab_adoption_cursors(
+        older_than_days=30,
+        session_factory=session_factory,
+        now=now,
+    )
+
+    assert deleted == 3
+    assert "DELETE FROM lab_adoption_cursor" in executed[0][0]
+    assert executed[0][1]["cutoff"] == datetime(2026, 4, 10, tzinfo=UTC)
