@@ -478,26 +478,43 @@ class ImportanceScorer:
         context_meta: dict[str, object] | None = None,
         max_rounds: int = 3,
         use_marginal_stop: bool = True,
+        graph_traversal: Any = None,
+        graph_hops: int = 1,
+        candidate_entity_kind: str = "asset",
     ) -> Any:
-        """V2.2 §19.3 + §20.3: 按需扩展式打分.
+        """V2.2 §19.3 + §20.3: 按需扩展式打分 + mempalace 路径走查 (Wire 30).
 
         不一次性打全部 K 个候选, 而是流式 yield (asset, score):
         1. 第 1 轮: yield 评分最高的 anchor
-        2. 后续轮次: yield 次高的, 调用方判断"够吗"决定继续/break
+        2. 后续轮次:
+           - 没 graph_traversal → yield 评分次高 (现有行为)
+           - 有 graph_traversal → 优先沿 anchor 的 entity_relationships 邻接展开
+             (mempalace 精髓: 沿 path 走, 不是"找最像的")
         3. ≤ max_rounds 个 (默认 3), marginal_roi 自动判停
 
-        用法:
+        用法 (V2.1 现有):
             async for asset, score in scorer.score_anchor_then_expand(candidates, ...):
                 use(asset)
                 if my_caller_satisfied: break
 
+        用法 (V2.2 §20 mempalace, Wire 30):
+            from kun.context.graph_traversal import GraphTraversal
+            traversal = GraphTraversal()
+            async for asset, score in scorer.score_anchor_then_expand(
+                candidates, graph_traversal=traversal, graph_hops=1,
+                candidate_entity_kind="asset",
+            ):
+                ...
+
+        Args:
+            graph_traversal: 可选 GraphTraversal 实例. 给了 → 沿 entity_relationships
+                              图扩展; None → 现有行为 (按 score 降序).
+            graph_hops: 图扩展跳数 (默认 1 = 直接邻居)
+            candidate_entity_kind: candidates 在 entity_relationships 表里的 kind
+                                    (默认 "asset"; capability_card / skill / soul_file 等)
+
         Returns:
             AsyncIterator[tuple[LayeredAsset, ImportanceScore]]
-
-        Note:
-            score 是 sync 函数, 但 anchor_expand iterator 是 async — 我们 wrap 成 async.
-            候选 list 全部预先 score 一遍 (这是 sync 内存操作, 快), 然后按 overall
-            降序流式 yield. 真正"省"的是: 调用方拿 anchor 后能 break, 不消费后续.
         """
         from kun.core.anchor_expand import AnchorExpandIterator
         from kun.engineering.marginal_roi import (
@@ -522,6 +539,9 @@ class ImportanceScorer:
             scored.append((asset, sc))
         scored.sort(key=lambda x: x[1].overall, reverse=True)
 
+        # asset_id → index in scored, 让 graph traversal 拿到 entity_id 后能反查
+        id_to_idx = {self._asset_entity_id(a): i for i, (a, _) in enumerate(scored)}
+
         async def anchor_fn() -> tuple[LayeredAsset, ImportanceScore]:
             if not scored:
                 raise StopAsyncIteration
@@ -531,10 +551,34 @@ class ImportanceScorer:
             anchor: tuple[LayeredAsset, ImportanceScore],
             prior: list[tuple[LayeredAsset, ImportanceScore]],
         ) -> tuple[LayeredAsset, ImportanceScore] | None:
-            idx = len(prior)
-            if idx >= len(scored):
-                return None
-            return scored[idx]
+            consumed_idxs = {id_to_idx.get(self._asset_entity_id(a)) for a, _ in prior}
+            consumed_idxs.add(0)  # anchor 是 index 0
+            consumed_idxs.discard(None)
+
+            # Wire 30: graph_traversal 给了 → 优先邻接
+            if graph_traversal is not None:
+                anchor_asset = anchor[0]
+                anchor_id = self._asset_entity_id(anchor_asset)
+                try:
+                    neighbors = await graph_traversal.neighbors(
+                        kind=candidate_entity_kind,
+                        entity_id=anchor_id,
+                        hops=graph_hops,
+                    )
+                except Exception:
+                    neighbors = []
+                for n in neighbors:
+                    nidx = id_to_idx.get(n.entity_id)
+                    if nidx is None or nidx in consumed_idxs:
+                        continue
+                    return scored[nidx]
+                # graph 没邻接 / 邻接全消费过 → fallback 按 score 降序
+
+            for nidx, _pair in enumerate(scored):
+                if nidx in consumed_idxs:
+                    continue
+                return scored[nidx]
+            return None
 
         criterion: MarginalROIStopCriterion | None = None
         estimator: ValueEstimator | None = None
@@ -551,6 +595,20 @@ class ImportanceScorer:
             stop_criterion=criterion,
             value_estimator=estimator,
         )
+
+    @staticmethod
+    def _asset_entity_id(asset: LayeredAsset) -> str:
+        """LayeredAsset → entity_relationships.entity_id 字符串.
+
+        优先级: l1_metadata['entity_id'] > l1_metadata['asset_id'] > id(asset).
+        Wire 30 graph traversal 用这个匹配 entity_relationships 表.
+        """
+        meta = getattr(asset, "l1_metadata", None) or {}
+        for key in ("entity_id", "asset_id", "ref"):
+            v = meta.get(key)
+            if isinstance(v, str) and v:
+                return v
+        return f"asset-{id(asset)}"
 
 
 def half_life_days(asset: LayeredAsset) -> float | None:
