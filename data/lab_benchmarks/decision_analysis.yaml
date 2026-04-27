@@ -1,0 +1,18 @@
+name: decision_analysis
+description: 15 decision-analysis prompts for KUN-Lab strategy comparison.
+items:
+  - {item_id: d01, task_type: decision.analysis, prompt: "评估是否该把免费版限制从 10 次改成 5 次", expected_keywords: ["收益", "留存"]}
+  - {item_id: d02, task_type: decision.analysis, prompt: "比较自建邮件系统和使用第三方邮件服务", expected_keywords: ["成本", "风险"]}
+  - {item_id: d03, task_type: decision.analysis, prompt: "判断一个功能是否应该放进 MVP", expected_keywords: ["用户", "优先级"]}
+  - {item_id: d04, task_type: decision.analysis, prompt: "分析是否应该给大客户做定制开发", expected_keywords: ["收入", "维护"]}
+  - {item_id: d05, task_type: decision.analysis, prompt: "比较月付订阅和按结果分成两种定价", expected_keywords: ["现金流", "风险"]}
+  - {item_id: d06, task_type: decision.analysis, prompt: "评估是否要推迟发布来补安全测试", expected_keywords: ["安全", "发布"]}
+  - {item_id: d07, task_type: decision.analysis, prompt: "判断是否应该从单体改成微服务", expected_keywords: ["复杂度", "团队"]}
+  - {item_id: d08, task_type: decision.analysis, prompt: "评估是否要接一个低价但高曝光客户", expected_keywords: ["曝光", "机会成本"]}
+  - {item_id: d09, task_type: decision.analysis, prompt: "比较内部招聘和外包开发的取舍", expected_keywords: ["质量", "速度"]}
+  - {item_id: d10, task_type: decision.analysis, prompt: "判断是否要为一个小需求增加新配置项", expected_keywords: ["复杂度", "维护"]}
+  - {item_id: d11, task_type: decision.analysis, prompt: "评估是否应优先做移动端适配", expected_keywords: ["用户", "场景"]}
+  - {item_id: d12, task_type: decision.analysis, prompt: "比较买现成 CRM 和自研 CRM", expected_keywords: ["成本", "集成"]}
+  - {item_id: d13, task_type: decision.analysis, prompt: "判断是否要开放第三方插件市场", expected_keywords: ["生态", "安全"]}
+  - {item_id: d14, task_type: decision.analysis, prompt: "评估是否降低模型档位以节省成本", expected_keywords: ["效果", "成本"]}
+  - {item_id: d15, task_type: decision.analysis, prompt: "比较先做企业版还是个人版", expected_keywords: ["付费", "获客"]}

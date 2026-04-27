@@ -1,0 +1,23 @@
+name: marketing_copy
+description: 20 short marketing-copy prompts for KUN-Lab strategy comparison.
+items:
+  - {item_id: m01, task_type: marketing.copy, prompt: "给一款 AI 会议纪要工具写一句广告语", expected_keywords: ["AI", "会议"]}
+  - {item_id: m02, task_type: marketing.copy, prompt: "给儿童牙刷写 30 字卖点", expected_keywords: ["儿童", "安全"]}
+  - {item_id: m03, task_type: marketing.copy, prompt: "给独立咖啡店写小红书标题", expected_keywords: ["咖啡", "标题"]}
+  - {item_id: m04, task_type: marketing.copy, prompt: "给健身 App 写付费转化文案", expected_keywords: ["健身", "付费"]}
+  - {item_id: m05, task_type: marketing.copy, prompt: "给 B2B CRM 写官网首屏副标题", expected_keywords: ["CRM", "客户"]}
+  - {item_id: m06, task_type: marketing.copy, prompt: "给宠物智能饮水机写三条卖点", expected_keywords: ["宠物", "饮水"]}
+  - {item_id: m07, task_type: marketing.copy, prompt: "给出海 SaaS 写 LinkedIn 广告", expected_keywords: ["SaaS", "团队"]}
+  - {item_id: m08, task_type: marketing.copy, prompt: "给在线课程写限时优惠短信", expected_keywords: ["课程", "优惠"]}
+  - {item_id: m09, task_type: marketing.copy, prompt: "给降噪耳机写电商详情页开头", expected_keywords: ["降噪", "耳机"]}
+  - {item_id: m10, task_type: marketing.copy, prompt: "给智能门锁写家庭安全文案", expected_keywords: ["门锁", "安全"]}
+  - {item_id: m11, task_type: marketing.copy, prompt: "给轻食沙拉店写外卖平台文案", expected_keywords: ["轻食", "沙拉"]}
+  - {item_id: m12, task_type: marketing.copy, prompt: "给企业培训服务写销售邮件开头", expected_keywords: ["培训", "企业"]}
+  - {item_id: m13, task_type: marketing.copy, prompt: "给旅行箱写短视频口播", expected_keywords: ["旅行", "箱"]}
+  - {item_id: m14, task_type: marketing.copy, prompt: "给记账 App 写应用商店描述", expected_keywords: ["记账", "支出"]}
+  - {item_id: m15, task_type: marketing.copy, prompt: "给新能源车充电桩写社区广告", expected_keywords: ["充电", "社区"]}
+  - {item_id: m16, task_type: marketing.copy, prompt: "给香氛蜡烛写节日礼物文案", expected_keywords: ["香氛", "礼物"]}
+  - {item_id: m17, task_type: marketing.copy, prompt: "给云存储服务写安全卖点", expected_keywords: ["云", "安全"]}
+  - {item_id: m18, task_type: marketing.copy, prompt: "给招聘平台写雇主端 slogan", expected_keywords: ["招聘", "人才"]}
+  - {item_id: m19, task_type: marketing.copy, prompt: "给睡眠监测手环写朋友圈文案", expected_keywords: ["睡眠", "手环"]}
+  - {item_id: m20, task_type: marketing.copy, prompt: "给低糖酸奶写新品上市文案", expected_keywords: ["低糖", "酸奶"]}
