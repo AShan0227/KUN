@@ -166,9 +166,10 @@ def _selected_step_names(enabled: set[str] | None) -> list[str]:
         "knowledge_conflict": 2,
         "methodology_distill": 3,
         "route_rule_mining": 4,
-        "ab_decision_roll_up": 5,
-        "consistency_test": 6,
-        "task_replay": 7,
+        "task_boundary_eval": 5,
+        "ab_decision_roll_up": 6,
+        "consistency_test": 7,
+        "task_replay": 8,
     }
     return sorted(names, key=lambda name: (priority.get(name, 99), name))
 
@@ -397,6 +398,36 @@ class RouteRuleMiningStep(IdleBatchStep):
         return {"logs": len(logs), "new_patterns": len(patterns), "patterns": patterns}
 
 
+class TaskBoundaryEvalStep(IdleBatchStep):
+    """Weekly OffTopicEval-compatible benchmark for TaskBoundaryGuard."""
+
+    step_id = "task_boundary_eval"
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        from kun.security.task_boundary_benchmark import (
+            BoundaryBenchmarkCase,
+            load_default_dataset,
+            run_benchmark,
+        )
+        from kun.security.task_boundary_guard import TaskBoundaryGuard
+
+        raw_cases = await _source_list("task_boundary_cases", tenant_id)
+        if raw_cases:
+            cases = [BoundaryBenchmarkCase.model_validate(item) for item in raw_cases]
+            dataset_name = "custom"
+        else:
+            bundle = load_default_dataset()
+            cases = bundle.cases
+            dataset_name = bundle.name
+
+        report = await run_benchmark(
+            TaskBoundaryGuard(),
+            cases,
+            dataset_name=dataset_name,
+        )
+        return report.model_dump(exclude={"results"})
+
+
 class KnowledgePrecipitationStep(IdleBatchStep):
     """V2.1 wire (§16.12): 跑 KnowledgePrecipitation hourly/daily/weekly 调度.
 
@@ -454,6 +485,7 @@ def register_default_steps() -> None:
         ABDecisionRollupStep(),
         HealthReportStep(),
         RouteRuleMiningStep(),
+        TaskBoundaryEvalStep(),
     ]:
         register_step(step)
 

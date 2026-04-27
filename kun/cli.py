@@ -234,6 +234,67 @@ def security_red_team(
     asyncio.run(_go())
 
 
+@security_app.command("task-boundary-benchmark")
+def security_task_boundary_benchmark(
+    dataset: Path | None = typer.Option(
+        None,
+        "--dataset",
+        help="OffTopicEval-compatible JSONL/JSON dataset. Default: bundled smoke dataset.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print full JSON report."),
+) -> None:
+    """Run TaskBoundaryGuard benchmark (OffTopicEval-compatible)."""
+    from kun.security.task_boundary_benchmark import (
+        load_dataset,
+        load_default_dataset,
+        run_benchmark,
+    )
+    from kun.security.task_boundary_guard import TaskBoundaryGuard
+
+    async def _go() -> None:
+        if dataset is None:
+            bundle = load_default_dataset()
+            dataset_name = bundle.name
+            cases = bundle.cases
+        else:
+            dataset_name = dataset.stem
+            cases = load_dataset(dataset)
+
+        report = await run_benchmark(
+            TaskBoundaryGuard(),
+            cases,
+            dataset_name=dataset_name,
+        )
+        if json_output:
+            console.print_json(report.model_dump_json())
+            return
+
+        table = Table(title=f"task-boundary benchmark — {report.dataset}")
+        table.add_column("total", justify="right")
+        table.add_column("accuracy", justify="right")
+        table.add_column("reject_rate", justify="right")
+        table.add_column("off_topic_reject", justify="right")
+        table.add_column("false_accept", justify="right")
+        table.add_column("false_reject", justify="right")
+        table.add_row(
+            str(report.total),
+            f"{report.accuracy:.2f}",
+            f"{report.reject_rate:.2f}",
+            f"{report.off_topic_reject_rate:.2f}",
+            str(report.false_accept_count),
+            str(report.false_reject_count),
+        )
+        console.print(table)
+        for result in report.results:
+            if not result.passed:
+                console.print(
+                    f"[red]{result.case_id}[/] expected={result.expected_in_scope} "
+                    f"actual={result.actual_in_scope} reason={result.reason}"
+                )
+
+    asyncio.run(_go())
+
+
 # =============== lab subcommands (Wire 22) ===============
 
 
