@@ -58,6 +58,7 @@ from kun.interface.llm import (
     LLMResponse,
     LLMRouter,
     TaskProfile,
+    UsageInfo,
     get_router,
 )
 from kun.interface.llm.router import TaskPurpose
@@ -610,9 +611,9 @@ class Orchestrator:
 
         # 7. Select candidate skills (L1 summary injected into step prompt)
         # V2.2 §21 wire: mode-driven context limit
-        # FAST 不查记忆 (limit=0), SMART 1 条, MAX 3 条
+        # FAST 不查记忆 (limit=0), SMART 1 条, MAX/ENSEMBLE 3 条
         _task_mode = getattr(task_ref.meta, "execution_mode", "FAST")
-        _context_limit = {"FAST": 0, "SMART": 1, "MAX": 3}.get(_task_mode, 1)
+        _context_limit = {"FAST": 0, "SMART": 1, "MAX": 3, "ENSEMBLE": 3}.get(_task_mode, 1)
         if _context_limit > 0:
             context_pack = await self.context_packer.pack(
                 task_ref,
@@ -736,9 +737,9 @@ class Orchestrator:
                 _exec_mode = getattr(task_ref.meta, "execution_mode", "FAST")
 
                 # V2.2 §22 wire: SMART/MAX 模式生成 hermes ExecutionStep, 让守望介入
-                # FAST 跳过 (节省一次 LLM call)
+                # FAST 跳过; ENSEMBLE 自己跑 5-path, 不再额外消耗 hermes call.
                 _hermes_step: Any = None
-                if self.structured_step_generator is not None and _exec_mode != "FAST":
+                if self.structured_step_generator is not None and _exec_mode in ("SMART", "MAX"):
                     try:
                         _hermes_step = await self.structured_step_generator.generate(
                             prompt=step_plan.description,
@@ -770,7 +771,7 @@ class Orchestrator:
                 # use_memory → 拉 query 相关 memory 加塞 step context (Wire 33)
                 # direct_llm → 走现有路径
                 step_context_summary = context_summary  # per-step 副本, hermes use_memory 可加塞
-                if _hermes_step is not None and _exec_mode != "FAST":
+                if _hermes_step is not None and _exec_mode in ("SMART", "MAX"):
                     _hermes_override = _hermes_skill_from_action(_hermes_step)
                     if _hermes_override and _hermes_override != step_plan.skill_hint:
                         old_hint = step_plan.skill_hint or ""
@@ -913,17 +914,30 @@ class Orchestrator:
                     step_span.set_attribute("kun.skill_hint", step_plan.skill_hint or "")
                     step_span.set_attribute("kun.audience", tenant.audience)
                     step_span.set_attribute("kun.force_fallback", force_fallback)
-                    answer, response = await self._execute_step(
-                        task_ref=task_ref,
-                        step_description=step_plan.description,
-                        purpose=choice.purpose,
-                        profile=exec_profile,
-                        skills_summary=self.skill_selector.summary(skill_candidates),
-                        skill_directive=skill_directive,
-                        context_summary=step_context_summary,
-                        prior_outputs=step_outputs,
-                        pre_dispatched_block=step_pre_dispatched,
-                    )
+                    if _exec_mode == "ENSEMBLE":
+                        answer, response, ensemble_payload = await self._execute_ensemble_step(
+                            task_ref=task_ref,
+                            step_description=step_plan.description,
+                            profile=exec_profile,
+                            skills_summary=self.skill_selector.summary(skill_candidates),
+                            skill_directive=skill_directive,
+                            context_summary=step_context_summary,
+                            prior_outputs=step_outputs,
+                            pre_dispatched_block=step_pre_dispatched,
+                        )
+                        yield OrchestratorEvent(kind="ensemble_result", data=ensemble_payload)
+                    else:
+                        answer, response = await self._execute_step(
+                            task_ref=task_ref,
+                            step_description=step_plan.description,
+                            purpose=choice.purpose,
+                            profile=exec_profile,
+                            skills_summary=self.skill_selector.summary(skill_candidates),
+                            skill_directive=skill_directive,
+                            context_summary=step_context_summary,
+                            prior_outputs=step_outputs,
+                            pre_dispatched_block=step_pre_dispatched,
+                        )
                     step_span.set_attribute("kun.provider", response.provider)
                     step_span.set_attribute("kun.model", response.model)
                     step_span.set_attribute("kun.tier", str(response.tier))
@@ -1513,6 +1527,124 @@ class Orchestrator:
             }
         )
         return loop_result.final_answer, aggregated
+
+    async def _execute_ensemble_step(
+        self,
+        *,
+        task_ref: TaskRef,
+        step_description: str,
+        profile: TaskProfile,
+        skills_summary: str = "",
+        skill_directive: str = "",
+        context_summary: str = "",
+        prior_outputs: list[tuple[int, str]] | None = None,
+        pre_dispatched_block: str = "",
+    ) -> tuple[str, LLMResponse, dict[str, Any]]:
+        """Execute one high-stakes step through the production ENSEMBLE path."""
+        from kun.engineering.multi_judge import jury_evaluate
+        from kun.lab import EnsembleConfig, EnsembleExecutor
+        from kun.lab.llm_router_adapter import LLMRouterEnsembleAdapter
+
+        audience = profile.audience if profile else "developer"
+        audience_directive = _AUDIENCE_DIRECTIVES.get(audience, _AUDIENCE_DIRECTIVES["developer"])
+        system_parts = [
+            "你是 KUN 系统里的执行角色. 按用户要求完成任务, 回答准确、可验证. "
+            "若需要外部数据, 说明需要什么. 不要编造.",
+            audience_directive,
+            "[ENSEMBLE] 这是高风险或高复杂任务。请给出完整、可验证、可交付的答案。",
+        ]
+        if skills_summary:
+            system_parts.append(skills_summary)
+        if skill_directive:
+            system_parts.append(skill_directive)
+        if context_summary:
+            system_parts.append(context_summary)
+        system_prompt = "\n\n".join(system_parts)
+        user_content = _execution_user_prompt(
+            task_ref,
+            step_description,
+            prior_outputs=prior_outputs or [],
+        )
+        if pre_dispatched_block:
+            user_content = user_content + pre_dispatched_block
+        ensemble_prompt = f"{system_prompt}\n\nUSER TASK:\n{user_content}"
+
+        async def _score(output_text: str, original_prompt: str) -> float:
+            try:
+                verdict = await jury_evaluate(
+                    artifact=output_text,
+                    rubric=(
+                        "根据原始任务判断这个候选答案是否准确、完整、可执行、没有编造。"
+                        f"\n原始任务:\n{original_prompt[:2000]}"
+                    ),
+                    judge_models=[
+                        "ensemble_judge_1",
+                        "ensemble_judge_2",
+                        "ensemble_judge_3",
+                    ],
+                    router=self.llm_router,
+                )
+                return verdict.avg_score if verdict.pass_ else min(verdict.avg_score, 0.49)
+            except Exception:
+                log.exception("ensemble.scoring_failed task=%s", task_ref.meta.task_id)
+                return 0.5
+
+        executor = EnsembleExecutor(
+            LLMRouterEnsembleAdapter(
+                self.llm_router,
+                task_type=f"production_ensemble.{task_ref.meta.task_type}",
+            ),
+            require_lab_mode=False,
+        )
+        budget = max(float(task_ref.meta.estimated_cost_usd or 0.0), 0.1)
+        result = await executor.run(
+            ensemble_prompt,
+            config=EnsembleConfig(
+                n_paths=5,
+                selection_method="judge_picks",
+                cost_budget_total_usd=budget,
+                metadata={
+                    "task_id": task_ref.meta.task_id,
+                    "execution_mode": "ENSEMBLE",
+                    "production": True,
+                },
+            ),
+            scoring_fn=_score,
+            task_type=task_ref.meta.task_type,
+        )
+        response = LLMResponse(
+            content=result.winning_output,
+            usage=UsageInfo(),
+            model="ensemble",
+            provider="kun-lab",
+            tier="top",
+            cost_usd_actual=result.total_cost_usd,
+            cost_usd_equivalent=result.total_cost_usd,
+            latency_ms=result.total_latency_sec * 1000.0,
+            raw={"ensemble_result": result.model_dump(mode="json")},
+        )
+        payload = {
+            "task_id": task_ref.meta.task_id,
+            "winner": result.winning_path_idx,
+            "selection_reason": result.selection_reason,
+            "total_cost_usd": result.total_cost_usd,
+            "total_latency_sec": result.total_latency_sec,
+            "budget_exceeded": result.budget_exceeded,
+            "paths": [
+                {
+                    "path_idx": path.path_idx,
+                    "strategy": path.config.get("strategy"),
+                    "tier": path.config.get("tier"),
+                    "score": path.score,
+                    "cost_usd": path.cost_usd,
+                    "latency_sec": path.latency_sec,
+                    "error": path.error,
+                    "output_preview": path.output[:300],
+                }
+                for path in result.path_results
+            ],
+        }
+        return result.winning_output, response, payload
 
 
 # =================== helpers ===================

@@ -173,6 +173,7 @@ class EnsembleExecutor:
         *,
         default_paths: list[PathConfig] | None = None,
         event_emitter: Any = None,
+        require_lab_mode: bool = True,
     ) -> None:
         """
         Args:
@@ -181,8 +182,12 @@ class EnsembleExecutor:
             event_emitter: 可选 async fn(EnsembleResult, *, task_type=None) → 任意.
                 Wire 21: 跑完 emit experiment.created 事件给主仓库 events bus.
                 None → 不 emit (lab 自治 / 单元测试场景)
+            require_lab_mode: 默认 True, 保持 KUN-Lab 隔离语义. 生产 ENSEMBLE
+                执行路径会显式传 False, 复用同一个 executor 但不要求
+                KUN_LAB_MODE=1.
         """
-        if not is_lab_enabled():
+        self._require_lab_mode = require_lab_mode
+        if self._require_lab_mode and not is_lab_enabled():
             logger.warning(
                 "EnsembleExecutor created with KUN_LAB_MODE=0; only effective when env enabled"
             )
@@ -208,7 +213,7 @@ class EnsembleExecutor:
         Returns:
             EnsembleResult 含所有路径结果 + 选出的 winner
         """
-        if not is_lab_enabled():
+        if self._require_lab_mode and not is_lab_enabled():
             raise RuntimeError(
                 "KUN-Lab disabled. Set KUN_LAB_MODE=1 to enable ensemble experiments."
             )

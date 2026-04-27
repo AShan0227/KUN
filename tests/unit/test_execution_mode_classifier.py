@@ -40,11 +40,26 @@ def test_task_meta_rejects_invalid_execution_mode():
 
 
 @pytest.mark.unit
+def test_task_meta_accepts_ensemble_execution_mode():
+    owner = Owner(tenant_id="t-1")
+    meta = TaskMeta(
+        fingerprint=TaskMeta.compute_fingerprint("x", owner),
+        task_type="decision.board",
+        owner=owner,
+        success_criteria_short="done",
+        execution_mode="ENSEMBLE",
+    )
+
+    assert meta.execution_mode == "ENSEMBLE"
+
+
+@pytest.mark.unit
 def test_soul_file_default_execution_mode_preference():
     soul = _soul()
 
     assert soul.execution_mode_preference == {
         "default_mode": "FAST",
+        "always_ensemble_kinds": [],
         "always_max_kinds": [],
         "always_fast_kinds": ["chitchat", "translate"],
     }
@@ -95,7 +110,7 @@ def test_complexity_above_point_seven_is_max():
 
 
 @pytest.mark.unit
-def test_critical_risk_forces_max():
+def test_critical_risk_forces_max_when_user_cannot_wait():
     mode, reason = classify_execution_mode(
         {"task_type": "translate.text", "risk_level": "critical", "complexity_score": 0.1},
         _soul(),
@@ -103,6 +118,38 @@ def test_critical_risk_forces_max():
 
     assert mode == "MAX"
     assert reason == "risk_level:critical"
+
+
+@pytest.mark.unit
+def test_critical_risk_with_wait_time_uses_ensemble():
+    mode, reason = classify_execution_mode(
+        {
+            "task_type": "decision.strategy",
+            "risk_level": "critical",
+            "complexity_score": 0.2,
+            "user_can_wait": True,
+        },
+        _soul(),
+    )
+
+    assert mode == "ENSEMBLE"
+    assert reason == "risk_level:critical:user_can_wait"
+
+
+@pytest.mark.unit
+def test_near_budget_high_complexity_uses_ensemble():
+    mode, reason = classify_execution_mode(
+        {
+            "task_type": "decision.strategy",
+            "risk_level": "high",
+            "complexity_score": 0.95,
+            "estimated_cost_usd": 8.5,
+        },
+        _soul(approval_threshold_money=10.0),
+    )
+
+    assert mode == "ENSEMBLE"
+    assert "complexity_score:0.95>0.9" in reason
 
 
 @pytest.mark.unit
@@ -142,6 +189,24 @@ def test_always_max_kind_forces_max():
 
     assert mode == "MAX"
     assert reason == "always_max_kind:deploy"
+
+
+@pytest.mark.unit
+def test_always_ensemble_kind_forces_ensemble():
+    mode, reason = classify_execution_mode(
+        {"task_kind": "board_decision", "risk_level": "low", "complexity_score": 0.1},
+        _soul(
+            execution_mode_preference={
+                "default_mode": "FAST",
+                "always_ensemble_kinds": ["board_decision"],
+                "always_max_kinds": [],
+                "always_fast_kinds": [],
+            }
+        ),
+    )
+
+    assert mode == "ENSEMBLE"
+    assert reason == "always_ensemble_kind:board_decision"
 
 
 @pytest.mark.unit

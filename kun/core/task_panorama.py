@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from kun.core.ids import new_id
 
 PanoramaTier = Literal["minimal", "light", "medium", "heavy", "full"]
-ExecutionMode = Literal["FAST", "SMART", "MAX"]
+ExecutionMode = Literal["FAST", "SMART", "MAX", "ENSEMBLE"]
 
 
 class ModuleResult(BaseModel):
@@ -220,13 +220,13 @@ def _execution_mode_from_tier(tier: PanoramaTier) -> ExecutionMode:
 
 def _execution_mode_from_ref(task_ref: Any) -> ExecutionMode | None:
     mode = _ref_value(task_ref, "execution_mode")
-    if mode in ("FAST", "SMART", "MAX"):
+    if mode in ("FAST", "SMART", "MAX", "ENSEMBLE"):
         return cast(ExecutionMode, mode)
     return None
 
 
 def _rounds_for_execution_mode(mode: ExecutionMode) -> int:
-    return {"FAST": 1, "SMART": 2, "MAX": 3}[mode]
+    return {"FAST": 1, "SMART": 2, "MAX": 3, "ENSEMBLE": 3}[mode]
 
 
 def _modules_for_rounds(

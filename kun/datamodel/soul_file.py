@@ -107,6 +107,7 @@ class SoulFile(BaseModel):
     execution_mode_preference: dict[str, Any] = Field(
         default_factory=lambda: {
             "default_mode": "FAST",
+            "always_ensemble_kinds": [],
             "always_max_kinds": [],
             "always_fast_kinds": ["chitchat", "translate"],
         }

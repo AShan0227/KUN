@@ -1,11 +1,11 @@
-"""Task execution mode classifier for FAST / SMART / MAX.
+"""Task execution mode classifier for FAST / SMART / MAX / ENSEMBLE.
 
 # TODO: orchestrator wire by Claude in V2.2
 # orchestrator 用 task_meta.execution_mode 决定:
 #   - panorama tier (FAST→minimal, SMART→light, MAX→full)
 #   - multi_judge_review 启用与否
 #   - 守望 ValueDecisionRule 启用与否
-#   - ImportanceScorer max_rounds (FAST 0, SMART 1, MAX 3)
+#   - ImportanceScorer max_rounds (FAST 0, SMART 1, MAX 3, ENSEMBLE 3)
 
 # V2.2 §26 Wire 25: lab recipe 推荐参与 (lab → 主仓库反哺最后一公里)
 # KUN-Lab 跑 ensemble 实验后 RecipePromoter → KP → LabRecipeRegistry 沉淀.
@@ -23,8 +23,8 @@ from kun.datamodel.soul_file import SoulFile
 
 logger = logging.getLogger(__name__)
 
-ExecutionMode = Literal["FAST", "SMART", "MAX"]
-_VALID_MODES: set[str] = {"FAST", "SMART", "MAX"}
+ExecutionMode = Literal["FAST", "SMART", "MAX", "ENSEMBLE"]
+_VALID_MODES: set[str] = {"FAST", "SMART", "MAX", "ENSEMBLE"}
 
 # Lab strategy → mode 推荐. tier_top_low_temp 验证有效 → MAX (慢但稳),
 # tier_cheap_high_temp → FAST (省 tokens), 中段 → SMART.
@@ -33,7 +33,7 @@ _LAB_STRATEGY_MODE_HINT: dict[str, ExecutionMode] = {
     "tier_strong_mid_temp": "SMART",
     "tier_cheap_high_temp": "FAST",
     "chain_of_thought": "MAX",
-    "diverse_perspective": "MAX",
+    "diverse_perspective": "ENSEMBLE",
 }
 
 
@@ -42,11 +42,13 @@ def classify_execution_mode(task_meta: dict[str, Any], soul_file: SoulFile) -> t
 
     Priority:
     1. ``task_meta.force_mode`` user explicit mode.
-    2. ``risk_level=critical`` or cost over approval threshold → MAX.
-    3. SoulFile kind preferences.
-    4. ``complexity_score > 0.7`` → MAX, ``> 0.3`` → SMART.
-    5. (V2.2 §26 / Wire 25) Lab recipe registry — validated strategy → mode hint.
-    6. SoulFile ``default_mode`` preference, falling back to FAST.
+    2. ``risk_level=critical`` + user can wait → ENSEMBLE.
+    3. Near-threshold high-complexity tasks → ENSEMBLE.
+    4. Other critical / cost-over-threshold tasks → MAX.
+    5. SoulFile kind preferences.
+    6. ``complexity_score > 0.7`` → MAX, ``> 0.3`` → SMART.
+    7. (V2.2 §26 / Wire 25) Lab recipe registry — validated strategy → mode hint.
+    8. SoulFile ``default_mode`` preference, falling back to FAST.
     """
 
     force_mode = _mode_or_none(task_meta.get("force_mode"))
@@ -54,13 +56,24 @@ def classify_execution_mode(task_meta: dict[str, Any], soul_file: SoulFile) -> t
         return force_mode, f"force_mode:{force_mode}"
 
     risk_level = str(task_meta.get("risk_level", "low")).lower()
-    if risk_level == "critical":
-        return "MAX", "risk_level:critical"
-
     estimated_cost = _float_or_default(
         task_meta.get("estimated_cost", task_meta.get("estimated_cost_usd")),
         0.0,
     )
+    complexity = _float_or_default(task_meta.get("complexity_score"), 0.0)
+
+    if risk_level == "critical" and _bool_or_default(task_meta.get("user_can_wait"), False):
+        return "ENSEMBLE", "risk_level:critical:user_can_wait"
+
+    if complexity > 0.9 and estimated_cost > soul_file.approval_threshold_money * 0.8:
+        return "ENSEMBLE", (
+            f"complexity_score:{complexity:g}>0.9+estimated_cost:{estimated_cost:g}>"
+            f"approval_threshold_money*0.8:{soul_file.approval_threshold_money * 0.8:g}"
+        )
+
+    if risk_level == "critical":
+        return "MAX", "risk_level:critical"
+
     if estimated_cost > soul_file.approval_threshold_money:
         return "MAX", (
             f"estimated_cost:{estimated_cost:g}>approval_threshold_money:"
@@ -70,13 +83,15 @@ def classify_execution_mode(task_meta: dict[str, Any], soul_file: SoulFile) -> t
     preference = soul_file.execution_mode_preference or {}
     task_kind = _task_kind(task_meta)
 
+    if task_kind in _string_list(preference.get("always_ensemble_kinds")):
+        return "ENSEMBLE", f"always_ensemble_kind:{task_kind}"
+
     if task_kind in _string_list(preference.get("always_fast_kinds")):
         return "FAST", f"always_fast_kind:{task_kind}"
 
     if task_kind in _string_list(preference.get("always_max_kinds")):
         return "MAX", f"always_max_kind:{task_kind}"
 
-    complexity = _float_or_default(task_meta.get("complexity_score"), 0.0)
     if complexity > 0.7:
         return "MAX", f"complexity_score:{complexity:g}>0.7"
     if complexity > 0.3:
@@ -131,6 +146,14 @@ def _float_or_default(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _bool_or_default(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return default
 
 
 def _string_list(value: Any) -> set[str]:
