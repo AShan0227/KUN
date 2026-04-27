@@ -16,6 +16,12 @@
 """
 
 from kun.qi.budget import QiBudgetExhaustedError, QiDailyBudget, get_qi_budget
+from kun.qi.darwin_godel import (
+    DarwinExplorationResult,
+    DarwinGodelLoop,
+    DarwinRound,
+    RoundRunner,
+)
 from kun.qi.pheromone import (
     PHEROMONE_BASE_FACTOR,
     PHEROMONE_DECAY_RATE,
@@ -63,6 +69,9 @@ from kun.qi.window import (
 )
 
 __all__ = [
+    "DarwinExplorationResult",
+    "DarwinGodelLoop",
+    "DarwinRound",
     "PHEROMONE_BASE_FACTOR",
     "PHEROMONE_DECAY_RATE",
     "PHEROMONE_MAX",
@@ -85,6 +94,7 @@ __all__ = [
     "ProtocolStorage",
     "ProtocolTrigger",
     "ProtocolVerificationSpec",
+    "RoundRunner",
     "QiBudgetExhaustedError",
     "QiDailyBudget",
     "QiWindowConfig",
