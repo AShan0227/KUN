@@ -33,6 +33,15 @@ type SideMsg = {
   at: string;
 };
 
+type GraphNeighbor = {
+  entity_kind: string;
+  entity_id: string;
+  relation_type: string;
+  confidence: number;
+  hops: number;
+  score: number;
+};
+
 const WS_URL = (() => {
   if (typeof window === "undefined") return "";
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -44,6 +53,10 @@ export default function Home() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [side, setSide] = useState<SideMsg[]>([]);
   const [input, setInput] = useState("");
+  const [graphKind, setGraphKind] = useState("task");
+  const [graphId, setGraphId] = useState("");
+  const [graphNeighbors, setGraphNeighbors] = useState<GraphNeighbor[]>([]);
+  const [graphError, setGraphError] = useState("");
   const [connected, setConnected] = useState(false);
   const [totalCost, setTotalCost] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
@@ -112,6 +125,32 @@ export default function Home() {
     setInput("");
   }, [input]);
 
+  const loadGraph = useCallback(async () => {
+    const kind = graphKind.trim();
+    const id = graphId.trim();
+    if (!kind || !id) return;
+    setGraphError("");
+    try {
+      const params = new URLSearchParams({
+        source_kind: kind,
+        source_id: id,
+        hops: "1",
+      });
+      const res = await fetch(`/api/graph/relationships?${params.toString()}`, {
+        headers: {
+          "X-Tenant-Id": "u-sylvan",
+          "X-User-Id": "sylvan",
+        },
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = (await res.json()) as GraphNeighbor[];
+      setGraphNeighbors(data);
+    } catch (err) {
+      setGraphNeighbors([]);
+      setGraphError(err instanceof Error ? err.message : "关系图查询失败");
+    }
+  }, [graphId, graphKind]);
+
   return (
     <div className="grid grid-cols-[1fr_360px] gap-4 p-4 h-full">
       {/* Main channel */}
@@ -172,6 +211,42 @@ export default function Home() {
           <span className="text-kun-accent">累计 ${totalCost.toFixed(4)}</span>
         </div>
         <div className="flex-1 space-y-2">
+          <div className="bg-white rounded p-2 border border-gray-200 text-xs space-y-2">
+            <div className="font-medium">关系图</div>
+            <div className="grid grid-cols-[88px_1fr] gap-2">
+              <input
+                className="border rounded px-2 py-1"
+                value={graphKind}
+                onChange={(e) => setGraphKind(e.target.value)}
+                aria-label="关系源类型"
+              />
+              <input
+                className="border rounded px-2 py-1"
+                placeholder="source id"
+                value={graphId}
+                onChange={(e) => setGraphId(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void loadGraph();
+                }}
+                aria-label="关系源 ID"
+              />
+            </div>
+            <button
+              className="border rounded px-2 py-1 text-xs hover:bg-gray-50"
+              onClick={() => void loadGraph()}
+            >
+              查询邻接
+            </button>
+            {graphError && <p className="text-kun-bad">{graphError.slice(0, 140)}</p>}
+            {graphNeighbors.slice(0, 6).map((n, i) => (
+              <div key={`${n.entity_kind}:${n.entity_id}:${i}`} className="border-t pt-1">
+                <div className="font-medium">{n.entity_kind}:{n.entity_id}</div>
+                <div className="text-gray-500">
+                  {n.relation_type} · {n.confidence.toFixed(2)}
+                </div>
+              </div>
+            ))}
+          </div>
           {side.length === 0 && (
             <p className="text-xs text-gray-500">系统消息会出现在这里 (费用 / 洞察 / 告警 / 批处理报告).</p>
           )}
