@@ -28,6 +28,7 @@ from kun.api.chat import router as chat_router
 from kun.api.diagnose import router as diagnose_router
 from kun.api.graph import router as graph_router
 from kun.api.health import router as health_router
+from kun.api.lab import router as lab_router
 from kun.api.nuo import router as nuo_router
 from kun.api.runtime import install_runtime
 from kun.api.task_control import router as task_control_router
@@ -272,6 +273,7 @@ app.include_router(blackboard_router)
 app.include_router(attention_pin_router)
 app.include_router(task_control_router)
 app.include_router(graph_router)
+app.include_router(lab_router)
 # V2.1 §10.6 / M3.2 提前: 傩诊断
 app.include_router(diagnose_router, prefix="/api/diagnose", tags=["diagnose"])
 
