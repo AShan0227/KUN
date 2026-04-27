@@ -25,6 +25,7 @@ EntityKind = Literal[
     "notification",  # nt-
     "rule",  # rl-
     "action",  # act-
+    "relationship",  # rel-
     # V2.1 additions
     "sd",  # StrategyDecision (§17.7)
     "tp",  # TaskPanorama (§13.8)
@@ -51,6 +52,7 @@ _PREFIX: Final[dict[EntityKind, str]] = {
     "notification": "nt",
     "rule": "rl",
     "action": "act",
+    "relationship": "rel",
     # V2.1
     "sd": "sd",
     "tp": "tp",
