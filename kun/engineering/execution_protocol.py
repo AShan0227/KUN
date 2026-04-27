@@ -12,6 +12,7 @@ import inspect
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel, field_validator
@@ -182,6 +183,46 @@ class ThoughtActionConsistency:
     def needs_rethink(self, score: float) -> bool:
         """consistency 低于阈值 → 需要 rethink."""
         return score < self.consistency_threshold
+
+
+def make_jury_consistency_judge(
+    router: Any,
+    *,
+    judge_count: int = 5,
+) -> Callable[[str, str], Awaitable[float]]:
+    """Wrap multi_judge as a ThoughtActionConsistency llm_judge callback.
+
+    Wire 35 owns the rethink loop inside StructuredStepGenerator. C34 only plugs
+    the heavier jury signal into ThoughtActionConsistency so the existing loop
+    can decide whether to regenerate.
+    """
+    normalized_count = max(3, min(5, judge_count))
+    judge_models = [f"consistency_judge_{idx}" for idx in range(1, normalized_count + 1)]
+
+    async def _judge(thought: str, action_type: str) -> float:
+        from kun.engineering.multi_judge import jury_evaluate
+
+        artifact = json.dumps(
+            {"thought": thought, "action_type": action_type},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        rubric = (
+            "判断 thought 和 action_type 是否一致。"
+            "如果 thought 明确支持这个 action_type，score 应接近 1；"
+            "如果 thought 在说一件事但 action_type 做另一件事，score 应低于 0.5。"
+        )
+        verdict = await jury_evaluate(
+            artifact=artifact,
+            rubric=rubric,
+            judge_models=judge_models,
+            router=router,
+        )
+        if verdict.pass_:
+            return verdict.avg_score
+        return min(verdict.avg_score, 0.49)
+
+    return _judge
 
 
 class StructuredStepGenerator:
