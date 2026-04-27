@@ -34,6 +34,7 @@ EntityKind = Literal[
     "patch",  # PanoramaPatch (§7.7)
     "diag",  # DiagnoseRun (§10.6)
     "anchor",  # alias for aa
+    "incident",  # IncidentResponse event
 ]
 
 _PREFIX: Final[dict[EntityKind, str]] = {
@@ -60,6 +61,7 @@ _PREFIX: Final[dict[EntityKind, str]] = {
     "patch": "pat",
     "diag": "diag",
     "anchor": "aa",
+    "incident": "inc",
 }
 
 

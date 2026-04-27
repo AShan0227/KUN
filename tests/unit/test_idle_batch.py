@@ -8,6 +8,7 @@ from kun.engineering.idle_batch import (
     ConsistencyTestStep,
     HealthReportStep,
     IdleBatchStep,
+    IncidentLessonDistillStep,
     KnowledgeConflictStep,
     MethodologyDistillStep,
     RouteRuleMiningStep,
@@ -171,6 +172,37 @@ async def test_route_rule_mining_step_surfaces_best_model_pattern() -> None:
 
     assert summary["new_patterns"] == 1
     assert summary["patterns"][0]["recommended_model"] == "strong"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_incident_lesson_step_distills_repeat_patterns() -> None:
+    from kun.security.incident_response import IncidentEvent, IncidentResponseEngine
+
+    engine = IncidentResponseEngine()
+    await engine.handle(
+        IncidentEvent(
+            incident_id="inc-1",
+            severity="L2",
+            category="security",
+            title="cross tenant",
+            affected_tenant_id="t-1",
+        )
+    )
+    await engine.handle(
+        IncidentEvent(
+            incident_id="inc-2",
+            severity="L2",
+            category="security",
+            title="cross tenant again",
+            affected_tenant_id="t-1",
+        )
+    )
+
+    summary = await IncidentLessonDistillStep(incident_provider=lambda: engine).run("t-1")
+
+    assert summary["incidents"] == 2
+    assert any(lesson["lesson_kind"] == "repeat_pattern" for lesson in summary["lessons"])
 
 
 @pytest.mark.unit

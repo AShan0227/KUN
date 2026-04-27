@@ -163,13 +163,14 @@ def _selected_step_names(enabled: set[str] | None) -> list[str]:
     priority = {
         "health_report": 0,
         "knowledge_precipitation": 1,
-        "knowledge_conflict": 2,
-        "methodology_distill": 3,
-        "route_rule_mining": 4,
-        "task_boundary_eval": 5,
-        "ab_decision_roll_up": 6,
-        "consistency_test": 7,
-        "task_replay": 8,
+        "incident_lessons": 2,
+        "knowledge_conflict": 3,
+        "methodology_distill": 4,
+        "route_rule_mining": 5,
+        "task_boundary_eval": 6,
+        "ab_decision_roll_up": 7,
+        "consistency_test": 8,
+        "task_replay": 9,
     }
     return sorted(names, key=lambda name: (priority.get(name, 99), name))
 
@@ -426,6 +427,56 @@ class TaskBoundaryEvalStep(IdleBatchStep):
             dataset_name=dataset_name,
         )
         return report.model_dump(exclude={"results"})
+
+
+class IncidentLessonDistillStep(IdleBatchStep):
+    """Distill IncidentResponse history into lessons for NUO/watchtower."""
+
+    step_id = "incident_lessons"
+
+    def __init__(self, incident_provider: Callable[[], Any] | None = None) -> None:
+        self._incident_provider = incident_provider
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        if self._incident_provider is None:
+            return {"incidents": 0, "lessons": [], "note": "no_provider"}
+        engine = self._incident_provider()
+        if engine is None:
+            return {"incidents": 0, "lessons": [], "note": "engine_none"}
+
+        history = [
+            (event, actions)
+            for event, actions in engine.get_history()
+            if event.affected_tenant_id in (None, tenant_id)
+        ]
+        lessons: list[dict[str, Any]] = []
+        grouped: dict[tuple[str, str], int] = {}
+        for event, actions in history:
+            key = (event.category, event.severity)
+            grouped[key] = grouped.get(key, 0) + 1
+            failed_actions = [action.action_kind for action in actions if not action.success]
+            if failed_actions:
+                lessons.append(
+                    {
+                        "incident_id": event.incident_id,
+                        "lesson_kind": "response_gap",
+                        "category": event.category,
+                        "severity": event.severity,
+                        "failed_actions": failed_actions,
+                    }
+                )
+
+        for (category, severity), count in sorted(grouped.items()):
+            if count >= 2:
+                lessons.append(
+                    {
+                        "lesson_kind": "repeat_pattern",
+                        "category": category,
+                        "severity": severity,
+                        "count": count,
+                    }
+                )
+        return {"incidents": len(history), "lessons": lessons[:20]}
 
 
 class KnowledgePrecipitationStep(IdleBatchStep):
