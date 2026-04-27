@@ -762,6 +762,26 @@ class Orchestrator:
                     except Exception:
                         log.exception("hermes_step.generate failed (non-fatal)")
 
+                # V2.2 §22 Wire 31: hermes ExecutionStep.action_type 真驱动 step 路径
+                # use_skill / web_search → 覆盖 step_plan.skill_hint, 让 _execute_step
+                # 走 hermes 选的路径 (而不是 planner 的默认推荐).
+                # ask_user 留给 Wire 32 (需要 PendingAction DB 写入 + runtime status mutation).
+                if _hermes_step is not None and _exec_mode != "FAST":
+                    _hermes_override = _hermes_skill_from_action(_hermes_step)
+                    if _hermes_override and _hermes_override != step_plan.skill_hint:
+                        old_hint = step_plan.skill_hint or ""
+                        step_plan.skill_hint = _hermes_override
+                        yield OrchestratorEvent(
+                            kind="hermes_skill_override",
+                            data={
+                                "step_id": step_plan.step_id,
+                                "from": old_hint,
+                                "to": _hermes_override,
+                                "action_type": _hermes_step.action_type,
+                                "reason": "hermes_executionstep",
+                            },
+                        )
+
                 if self.value_gate is not None and _exec_mode != "FAST":
                     try:
                         # 把 hermes ExecutionStep 的 cost_estimate / confidence 喂给 ValueGate
@@ -1392,6 +1412,26 @@ class Orchestrator:
 
 
 # =================== helpers ===================
+
+
+def _hermes_skill_from_action(hermes_step: Any) -> str | None:
+    """V2.2 §22 Wire 31 helper: hermes ExecutionStep.action_type → step_plan.skill_hint.
+
+    Returns:
+        skill_hint 字符串 (用 use_skill 的 payload.skill_id, 或 web_search 的内置)
+        None 表示没有覆盖建议 (use_memory / direct_llm / ask_user — 后两者跑 step
+        的默认路径或 Wire 32 单独 wire)
+    """
+    if hermes_step is None:
+        return None
+    action_type = getattr(hermes_step, "action_type", "")
+    if action_type == "use_skill":
+        payload = getattr(hermes_step, "action_payload", None) or {}
+        skill_id = str(payload.get("skill_id") or payload.get("skill") or "").strip()
+        return skill_id or None
+    if action_type == "web_search":
+        return "web_search"
+    return None
 
 
 def _runtime_to_row(runtime: RuntimeState, tenant_id: str) -> RuntimeStateRow:
