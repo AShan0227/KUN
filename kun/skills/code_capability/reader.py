@@ -289,7 +289,7 @@ def _basic_explanation(rel: str, content: str) -> str:
         return f"{rel}: Python file with syntax errors or partial code."
     functions = [node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
     classes = [node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
-    imports = [node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
+    imports = [node for node in ast.walk(tree) if isinstance(node, ast.Import | ast.ImportFrom)]
     parts = [f"{rel}: {len(content.splitlines())} lines"]
     if classes:
         parts.append(f"classes={', '.join(classes[:5])}")

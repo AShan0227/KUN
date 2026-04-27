@@ -81,7 +81,7 @@ class DynamicReplanner:
 
         budget = cycle.metadata.get("budget")
         spent = cycle.metadata.get("spent")
-        if isinstance(budget, (int, float)) and isinstance(spent, (int, float)) and spent > budget:
+        if isinstance(budget, int | float) and isinstance(spent, int | float) and spent > budget:
             return (True, "budget exceeded")
 
         return (False, "")

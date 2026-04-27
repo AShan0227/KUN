@@ -122,7 +122,7 @@ def _signals(asset: LayeredAsset) -> PromotionSignals:
 def _as_string_set(value: object) -> set[str]:
     if isinstance(value, str):
         return {value} if value else set()
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return {str(item) for item in value if str(item)}
     return set()
 

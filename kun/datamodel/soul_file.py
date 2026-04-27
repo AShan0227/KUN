@@ -113,6 +113,23 @@ class SoulFile(BaseModel):
         }
     )
 
+    # V2.3 Wire 38: 启 (Qi) 时间窗口 + 日预算
+    # 启是鲲的实验室模式 — 默认日常关闭, 只在 qi_window 内自动启动
+    qi_window: dict[str, Any] = Field(
+        default_factory=lambda: {
+            "enabled": False,  # 默认完全关闭, 用户显式打开
+            "start_hour": 2,  # 凌晨 2 点
+            "end_hour": 5,  # 5 点
+            "weekdays": [0, 1, 2, 3, 4, 5, 6],  # 0=Mon, 6=Sun
+            "timezone": "UTC",  # 简化, 默认 UTC
+        }
+    )
+    qi_daily_budget_usd: float = Field(
+        default=5.0,
+        description="启每日总预算上限 USD (跨所有实验). 超 → 启自动暂停.",
+        ge=0.0,
+    )
+
     # 工具偏好
     preferred_tools: list[dict[str, Any]] = Field(default_factory=list)
     pinned_assets: list[str] = Field(default_factory=list)
