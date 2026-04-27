@@ -1,0 +1,23 @@
+id: lab_recipe_promotion_burst
+kind: anomaly
+description: |
+  短时间多次 recipe 推送 (1h > 5 个) — 反映 lab 实验跑得太密 / 阈值太松
+  (min_total / min_winrate). recipe 推过来后 LabRecipeRegistry 会 upsert,
+  但太多 promote 可能让主仓库决策抖动.
+
+  ops 检查:
+    1. RecipePromoter.min_total / min_winrate 是否合适?
+    2. ExperimentLog 是否被 noisy 实验灌满?
+    3. LabRecipeRegistry 当前 size? (`kun_lab_registry_size` Prometheus gauge)
+trigger:
+  event_type: experiment.promoted
+  when: "True"
+severity: low
+cooldown_sec: 300
+actions:
+  - handler: notify_user
+    params:
+      title: "KUN-Lab recipe 推送"
+      body: "lab 推了一条新 recipe 给主仓库, 详见 LabRecipeRegistry."
+      kind: info
+      severity: info

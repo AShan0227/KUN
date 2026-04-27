@@ -1,10 +1,21 @@
-"""CodeDebugger — classify failures and produce deterministic fix hints."""
+"""CodeDebugger — classify failures and produce deterministic fix hints.
+
+Wire 29C (BATCH8a follow-up): 加 enrich_with_diagnose_runner — 启发式分析后
+可以经 V2.1 §10.6 DiagnoseRunner (含 5 类 fix handler chain) 跑深度诊断,
+拿到 plans / outcomes 并入 DebugFinding.fix_hint.
+"""
 
 from __future__ import annotations
 
+import logging
 import re
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from kun.security.diagnose_runner import DiagnoseRunner
+
+logger = logging.getLogger(__name__)
 
 DebugCategory = Literal[
     "syntax_error",
@@ -114,6 +125,69 @@ class CodeDebugger:
             path=location[0],
             line=location[1],
         )
+
+    async def enrich_with_diagnose_runner(
+        self,
+        finding: DebugFinding,
+        runner: DiagnoseRunner,
+        *,
+        output: str = "",
+        error: str = "",
+        user_id: str = "kun_lab",
+        tenant_id: str = "u-sylvan",
+    ) -> DebugFinding:
+        """Wire 29C (BATCH8a): 用 V2.1 §10.6 DiagnoseRunner 增强 fix_hint.
+
+        DiagnoseRunner 跑 5 步管道 (range / cause / plan / execute / verify) +
+        5 类 fix handler chain (clean/accelerate/failover/network_guard/privacy).
+        我们把 debugger 的 finding 喂进去, 让 runner 给出更具体的修复方案.
+
+        异常静默 (返原 finding) — debugger 不能因 runner 挂掉而失效.
+        """
+        from kun.core.ids import new_id
+        from kun.security.diagnose_runner import DiagnoseRequest
+
+        try:
+            hint_text = (
+                f"category={finding.category} summary={finding.summary} "
+                f"output={output[:500]} error={error[:500]}"
+            )
+            request = DiagnoseRequest(
+                request_id=new_id("diag"),
+                trigger="anomaly_detection",
+                user_id=user_id,
+                tenant_id=tenant_id,
+                hint_text=hint_text,
+            )
+            report = await runner.run(request)
+        except Exception as e:
+            logger.debug("debugger.diagnose_runner_skipped err=%s", e)
+            return finding
+
+        # 把 plan + outcome 摘要并入 fix_hint
+        plan_summary = _summarize_diagnose_report(report)
+        if not plan_summary:
+            return finding
+        enriched_hint = f"{finding.fix_hint} | DiagnoseRunner: {plan_summary}"
+        # confidence 提升 (有 runner 加持)
+        new_confidence = min(1.0, finding.confidence + 0.05)
+        return replace(finding, fix_hint=enriched_hint, confidence=new_confidence)
+
+
+def _summarize_diagnose_report(report: Any) -> str:
+    """把 DiagnoseReport 的 plans + outcomes 浓缩成一行."""
+    parts: list[str] = []
+    plans = getattr(report, "plans", []) or []
+    outcomes = getattr(report, "outcomes", []) or []
+    for plan in plans[:2]:
+        desc = getattr(plan, "description", "") or getattr(plan, "category", "")
+        if desc:
+            parts.append(f"plan={desc}")
+    for outcome in outcomes[:2]:
+        status = getattr(outcome, "status", "")
+        if status:
+            parts.append(f"outcome={status}")
+    return "; ".join(parts)
 
 
 def _extract_location(text: str) -> tuple[str | None, int | None]:

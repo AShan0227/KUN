@@ -1,11 +1,23 @@
-"""CodeReviewer — lightweight static review for code diffs and files."""
+"""CodeReviewer — lightweight static review for code diffs and files.
+
+Wire 29C (BATCH8b follow-up): 加 review_diff_with_jury — 启发式检查后可
+经 V2.1 §17.10 multi_judge (3-5 个 LLM judge 并发投票) 跑深度 review,
+拿到 JuryVerdict 跟启发式 ReviewResult 一起返.
+"""
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from kun.engineering.multi_judge import JuryVerdict
+    from kun.interface.llm import LLMRouter
+
+logger = logging.getLogger(__name__)
 
 Severity = Literal["info", "warning", "error"]
 
@@ -57,6 +69,52 @@ class CodeReviewer:
             elif new_line is not None:
                 new_line += 1
         return ReviewResult(ok=not any(f.severity == "error" for f in findings), findings=findings)
+
+    async def review_diff_with_jury(
+        self,
+        diff: str,
+        *,
+        router: LLMRouter,
+        judge_models: list[str] | None = None,
+        rubric: str | None = None,
+    ) -> tuple[ReviewResult, JuryVerdict | None]:
+        """Wire 29C (BATCH8b): 启发式 review + V2.1 §17.10 multi_judge 并行.
+
+        启发式 ReviewResult 永远返 (跟 review_diff 一致); jury 任何异常 → 第二
+        返 None, reviewer 不爆.
+
+        Args:
+            diff: unified diff 文本
+            router: LLMRouter (jury_evaluate 复用主仓库 LLMRouter)
+            judge_models: judge tier list, 默认 3 个 (top/strong/cheap)
+            rubric: 评分标准, 默认 "代码安全 + 可读性 + 副作用"
+
+        Returns:
+            (启发式 ReviewResult, multi_judge 结论 or None 失败时)
+        """
+        from kun.engineering.multi_judge import jury_evaluate
+
+        result = self.review_diff(diff)
+
+        models = judge_models or ["top", "strong", "cheap"]
+        review_rubric = rubric or (
+            "代码 diff review 标准: "
+            "(1) 是否引入安全风险 (eval/exec/shell=True/硬编码 secret)? "
+            "(2) 是否清晰易读? "
+            "(3) 是否有副作用 / breaking change? "
+            "pass=true 表示可合并; score 0-1 反映质量."
+        )
+        try:
+            verdict = await jury_evaluate(
+                artifact=diff,
+                rubric=review_rubric,
+                judge_models=models,
+                router=router,
+            )
+        except Exception as e:
+            logger.debug("reviewer.jury_skipped err=%s", e)
+            return result, None
+        return result, verdict
 
     def review_file(self, path: str | Path) -> ReviewResult:
         resolved = self._resolve_file(path)

@@ -57,7 +57,11 @@ async def _default_adopter(payload: dict[str, Any]) -> None:
 
 @dataclass
 class AdoptionState:
-    """In-memory cursor — 防重复消费同一 promotion."""
+    """In-memory cursor — 防重复消费同一 promotion (Wire 23 起).
+
+    Wire 29B 后 cursor 真持久化通过 CursorStorage; AdoptionState 仍是
+    runtime in-memory 视图 (load/save 跟 storage 同步).
+    """
 
     last_adopted_at: datetime = field(
         default_factory=lambda: datetime.fromtimestamp(0, tz=UTC)
@@ -79,6 +83,10 @@ class LabRecipeAdoptionStep(IdleBatchStep):
         event_fetcher: async callable(*, event_type, since) → list[dict].
                        默认从 kun.core.db 拉 events 表; 测试可注入 in-memory list.
         max_per_cycle: 单次 idle_batch 最多消费几条 (防 noisy promote 占用 cycle).
+        cursor_storage: Wire 29B — 持久化 cursor (last_adopted_at + adopted_ids).
+                       默认 InMemoryCursorStorage (跟 Wire 23 行为一致, 进程重启清).
+                       生产应注入 SqlCursorStorage(session_factory) 真持久化.
+        cursor_name: 多 tenant / 多 step 实例时区分 cursor (默认 "default").
     """
 
     step_id = "lab_recipe_adoption"
@@ -89,21 +97,58 @@ class LabRecipeAdoptionStep(IdleBatchStep):
         adopter: LabAdopter | None = None,
         event_fetcher: Callable[..., Awaitable[list[dict[str, Any]]]] | None = None,
         max_per_cycle: int = 50,
+        cursor_storage: Any = None,
+        cursor_name: str = "default",
     ) -> None:
+        from kun.lab.cursor_storage import InMemoryCursorStorage
+
         self._adopter = adopter or _default_adopter
         self._event_fetcher = event_fetcher
         self._max_per_cycle = max_per_cycle
+        self._cursor_storage = cursor_storage or InMemoryCursorStorage()
+        self._cursor_name = cursor_name
         self._state = AdoptionState()
+        self._cursor_loaded = False
 
     @property
     def state(self) -> AdoptionState:
         return self._state
 
     def reset(self) -> None:
-        """测试 / 重启用. 清掉 cursor."""
+        """测试 / 重启用. 清掉 cursor (in-memory). 不删 storage 持久化数据."""
         self._state = AdoptionState()
+        self._cursor_loaded = False
+
+    async def _ensure_cursor_loaded(self) -> None:
+        """Wire 29B: 第一次跑前从 storage load cursor."""
+        if self._cursor_loaded:
+            return
+        try:
+            snapshot = await self._cursor_storage.load(self._cursor_name)
+            self._state.last_adopted_at = snapshot.last_adopted_at
+            self._state.adopted_promotion_ids = set(snapshot.adopted_promotion_ids)
+        except Exception as e:
+            logger.debug("lab.adoption.cursor_load_failed err=%s — fallback empty cursor", e)
+        self._cursor_loaded = True
+
+    async def _persist_cursor(self) -> None:
+        """Wire 29B: cycle 跑完后 save cursor."""
+        from kun.lab.cursor_storage import CursorSnapshot
+
+        try:
+            await self._cursor_storage.save(
+                self._cursor_name,
+                CursorSnapshot(
+                    last_adopted_at=self._state.last_adopted_at,
+                    adopted_promotion_ids=list(self._state.adopted_promotion_ids),
+                ),
+            )
+        except Exception as e:
+            logger.debug("lab.adoption.cursor_save_failed err=%s", e)
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
+        await self._ensure_cursor_loaded()
+
         events = await self._fetch_events(tenant_id)
         if not events:
             return {"scanned": 0, "adopted": 0, "skipped": 0, "errors": 0}
@@ -134,6 +179,10 @@ class LabRecipeAdoptionStep(IdleBatchStep):
                     e,
                 )
                 errors += 1
+
+        # Wire 29B: cycle 末尾持久化 cursor (即使 errors > 0 也要持久, 因为
+        # adopted 部分已经 mark 进 state)
+        await self._persist_cursor()
 
         logger.info(
             "lab.recipe.adoption.cycle_done tenant=%s scanned=%d adopted=%d skipped=%d errors=%d",

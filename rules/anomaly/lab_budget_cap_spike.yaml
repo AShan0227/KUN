@@ -1,0 +1,23 @@
+id: lab_budget_cap_spike
+kind: anomaly
+description: |
+  KUN-Lab Wire 27 budget cap 触发频率 > 30% (rolling 1h) → 反映 lab 实验
+  cost 失控 (e.g. invoker 配错 / paths 量大). 需要 ops 看一下:
+    1. 是否最近改了 invoker / DEFAULT_PATHS 让单次成本变大?
+    2. cost_budget_total_usd 是否需要调高 (lab 单独预算)?
+    3. EnsembleConfig.n_paths 是否需要降?
+
+  跟 §16.6 cost_runaway 对应 — cost_runaway 是单任务级 (生产),
+  lab_budget_cap_spike 是 ensemble 实验级 (内测).
+trigger:
+  event_type: experiment.created
+  when: "event['payload'].get('budget_exceeded', False) is True"
+severity: medium
+cooldown_sec: 1800
+actions:
+  - handler: notify_user
+    params:
+      title: "KUN-Lab budget cap 触发"
+      body: "lab 实验 cost 累积超 budget, 路径已自动 cancel. 请 ops 检查 invoker / n_paths / cost_budget."
+      kind: alert
+      severity: warn

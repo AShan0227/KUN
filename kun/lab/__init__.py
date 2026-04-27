@@ -22,6 +22,12 @@ from kun.lab.adoption import (
     install_lab_adoption_step,
     reset_adoption_step,
 )
+from kun.lab.cursor_storage import (
+    CursorSnapshot,
+    CursorStorage,
+    InMemoryCursorStorage,
+    SqlCursorStorage,
+)
 from kun.lab.ensemble_executor import (
     EnsembleConfig,
     EnsembleExecutor,
@@ -55,12 +61,15 @@ from kun.lab.recipe_registry import (
 __all__ = [
     "HIGH_CONFIDENCE_WIN_RATE",
     "MIN_CONFIDENCE_FOR_REGISTRY",
+    "CursorSnapshot",
+    "CursorStorage",
     "EnsembleConfig",
     "EnsembleExecutor",
     "EnsemblePathResult",
     "EnsembleResult",
     "Experiment",
     "ExperimentLog",
+    "InMemoryCursorStorage",
     "LLMRouterEnsembleAdapter",
     "LabAdopter",
     "LabEventEmitter",
@@ -69,6 +78,7 @@ __all__ = [
     "LabRecipePrecipitationStep",
     "LabRecipeRegistry",
     "RecipePromoter",
+    "SqlCursorStorage",
     "get_adoption_step",
     "get_experiment_log",
     "get_recipe_registry",
