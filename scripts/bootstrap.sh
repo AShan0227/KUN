@@ -50,6 +50,16 @@ fi
 log "uv sync --extra dev (idempotent; safe after .venv cleanup)"
 uv sync --extra dev >/dev/null
 
+# Install pre-commit hooks (强制 ruff format / check / mypy 在 commit 前跑)
+# 防止再次出现 codex PR 因 ruff format check fail (Wire 27/28/29 hotfix 教训)
+if command -v pre-commit >/dev/null 2>&1 || uv run pre-commit --version >/dev/null 2>&1; then
+    log "pre-commit install (hooks: ruff / ruff-format / mypy / yaml etc.)"
+    uv run pre-commit install --install-hooks >/dev/null 2>&1 || \
+        log "warning: pre-commit install failed (non-fatal). 手动跑: uv run pre-commit install"
+else
+    log "warning: pre-commit 没安装. uv add --dev pre-commit + uv run pre-commit install"
+fi
+
 log "docker compose up -d"
 docker compose -f docker-compose.dev.yml up -d
 
