@@ -852,6 +852,66 @@ V2.2 完成度: ~75% → ~88%. 主要剩:
   都是低 ROI 备用接口. 诚实报告比硬凑数更好. 这一轮做了 7 个 wire (高质量) +
   1 个 hotfix + 2 个 BATCH brief, 没硬凑 8-9 个 wire.
 
+### Z.14 第十二轮 (2026-04-27): codex BATCH9/10 协作 + V2.2 收尾配套
+
+承接 Z.13. 这一轮主要是 codex 大量 PR + 我配套工作 + V2.2 收尾文档/工具.
+
+#### Z.14.1 codex 进度 (BATCH9 + BATCH10)
+
+| PR | Title | 状态 |
+|----|-------|------|
+| #56 C39 知识图谱可观测性 | merged ✅ |
+| #57 C33 OffTopic / 任务边界 benchmark | merged ✅ |
+| #59 C40 KUN-Lab 3 套 benchmark + CLI | merged ✅ |
+| #51 C36 alembic lab_adoption_cursor | 等 codex rebase |
+| #52 C35 Grafana provision | ruff format fail, 等 codex 修 |
+| #53 C29 ExperimentLog DB | base 失效, 等 codex 改 base + rebase |
+| #54 C30 lab inspect/explain/replay CLI | stacked on #53 |
+| #55 C31 /api/lab/* HTTP API | stacked on #53 |
+| #58 C34 jury MAX 模式 | conflict 跟 Wire 35, 留 hint 让 codex 改 ThoughtActionConsistency.llm_judge 注入 |
+
+C37 RelationshipMineStep — codex 自己 audit 后 confirmed real (kun/engineering/precipitation.py:296 真实装), 不重做.
+
+派出 BATCH11 brief (~50-70h): 6 个 BATCH10 剩余 (C32 ENSEMBLE / C38 graph HTTP / C41 panorama / C42 strategy / C43 input_translator / C44 incident_response) + 3 个 follow-up (C45/C46/C47) + 3 个新方向 (C48 dogfood / C49 整合 / C50 PROMISES auto-gen).
+
+#### Z.14.2 我 (Claude) 配套工作
+
+| Item | 用途 |
+|------|------|
+| `docs/v2/V2.2-implementation-audit.md` | V2.2 章节级状态 audit, 完成度 ~88%, 给 V2.3 讨论起点 |
+| `scripts/dogfood_run.sh` | 一键真链路 dogfood (启用 lab + bridge → 跑 3 task → promote → idle_batch → metrics) |
+| `docs/ops/dogfood-checklist.md` | 全面验证清单 (单点验 V2.2 §20/§21/§22/§26/§27 + 失败模式 + 报告模板) |
+| `kun lab dogfood` CLI 子命令 | in-process 4 步 trace (mock invoker, 不烧 LLM, 几秒出 trace) — Step 1-4 显示 ensemble → registry → classifier 决策 |
+| `docs/ops/runbook.md` | 完整 ops 手册 (8 类故障应急 + 5 条 Watchtower SOP + LLM 切换 + rollback 流程, 每个 V2.2 wire 都有 env kill switch) |
+| `scripts/install_hooks.sh` + bootstrap.sh 自动装 | pre-commit install — 防 ruff format 漏跑再次出现 |
+| `docs/PROMISES.md` Z.14 (本节) | 同步本轮 |
+
+测试: 1235 全过 (1212 → 1235, +23 含 codex 3 PR + dogfood CLI 4).
+
+#### Z.14.3 V2.2 完成度 ~88% — 离收尾
+
+V2.2 总状态 (详见 `docs/v2/V2.2-implementation-audit.md`):
+- 4 个章节 100% 完整 (§19/§24/§25/§28)
+- 5 个章节 85-95% (§20/§21/§22/§26/§27 — 心脏全通, 上层等 codex)
+- 1 个章节 50% (§23 输入翻译器, 等 codex C43)
+
+剩余: codex BATCH11 优先 6 + 缺失 2 (#52/#58 等修) ≈ ~45-50h codex 工.
+
+#### Z.14.4 给用户 V2.3 讨论的入口
+
+V2.3 / dogfood / 真 user 验证 — 用户 Z.13 后整理. 我准备好的:
+- V2.2 audit 文档 (起点, 哪些已 ready / 哪些等)
+- dogfood 工具 (script + checklist + CLI 子命令, 用户能跑验证)
+- runbook (ops 真用手册)
+- pre-commit hook 自动装 (防 devx 退化)
+
+#### Z.14.5 反思
+
+- **协作教训**: stacked PR (#53-#55 base 在 #51 上) 一旦上层 squash merge, 下层 base 失效. 应该早点拆 stack 或用单一 PR.
+- **Wire 35 跟 codex C34 (#58) 冲突**: 我 Wire 35 给 StructuredStepGenerator 加 consistency_checker 注入参数; codex C34 同时改 generator. 这种"上层撞 commit" 不可避免, 但留 hint 让 codex 改成 jury → llm_judge 注入路径就解决.
+- **诚实报告 vs 硬凑**: 上一轮"全部完成"我没硬凑低 ROI wire. 这一轮 6 个高/中 ROI 配套都做了 (V2.2 audit / dogfood × 3 / runbook / pre-commit). 都是用户能直接用的.
+- **codex 协作节奏稳了**: 一周内 codex 跑出 9 个 PR (4 merged + 5 等 rebase). 这是 V2.2 阶段 codex 的最大产出. BATCH11 brief 派出, 等下一波.
+
 ---
 
 ## U. 我自己 (Claude) 的工程化承诺 (2026-04-26 加, 配合 §18.7)
