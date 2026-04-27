@@ -16,6 +16,7 @@ from kun.core.config import settings
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 security_app = typer.Typer(add_completion=False, no_args_is_help=True)
+promises_app = typer.Typer(add_completion=False, no_args_is_help=True)
 lab_app = typer.Typer(
     add_completion=False, no_args_is_help=True, help="KUN-Lab 内测分区 (V2.2 §26)"
 )
@@ -24,6 +25,7 @@ lab_benchmark_app = typer.Typer(
 )
 console = Console()
 app.add_typer(security_app, name="security")
+app.add_typer(promises_app, name="promises")
 app.add_typer(lab_app, name="lab")
 lab_app.add_typer(lab_benchmark_app, name="benchmark")
 
@@ -169,6 +171,28 @@ def skills(
             r.manifest.description[:60],
         )
     console.print(table)
+
+
+@promises_app.command("generate")
+def promises_generate(
+    rev_range: str = typer.Option("HEAD~20..HEAD", "--range", help="git rev range"),
+    output: Path = typer.Option(Path("docs/PROMISES.md"), "--output"),
+    title: str = typer.Option("自动生成承诺更新", "--title"),
+    write: bool = typer.Option(False, "--write", help="追加写入 PROMISES.md；默认只打印"),
+) -> None:
+    """Generate a PROMISES.md section from git log subjects."""
+
+    from kun.engineering.promises_autogen import (
+        append_promises_section,
+        generate_promises_section,
+    )
+
+    section = generate_promises_section(rev_range=rev_range, cwd=Path.cwd(), title=title)
+    if write:
+        append_promises_section(output, section)
+        console.print(f"[green]PROMISES section appended[/]: {output}")
+        return
+    console.print(section)
 
 
 @app.command()
@@ -626,7 +650,7 @@ def lab_dogfood(
 
     async def _go() -> None:
         # 用 mock invoker — dogfood 不烧真 LLM
-        async def mock_invoker(prompt: str, path) -> tuple[str, float, float]:
+        async def mock_invoker(prompt: str, path: Any) -> tuple[str, float, float]:
             import asyncio
             import random
 
