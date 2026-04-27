@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -18,9 +19,13 @@ security_app = typer.Typer(add_completion=False, no_args_is_help=True)
 lab_app = typer.Typer(
     add_completion=False, no_args_is_help=True, help="KUN-Lab 内测分区 (V2.2 §26)"
 )
+lab_benchmark_app = typer.Typer(
+    add_completion=False, no_args_is_help=True, help="KUN-Lab benchmark suites"
+)
 console = Console()
 app.add_typer(security_app, name="security")
 app.add_typer(lab_app, name="lab")
+lab_app.add_typer(lab_benchmark_app, name="benchmark")
 
 
 @app.command()
@@ -425,6 +430,85 @@ def lab_promote(
         )
 
     asyncio.run(_go())
+
+
+@lab_benchmark_app.command("suite")
+def lab_benchmark_suite(
+    dataset_name: str = typer.Argument(..., help="Dataset name, e.g. marketing_copy"),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="只跑前 N 条，便于 smoke"),
+    paths: int = typer.Option(5, "--paths", "-n", min=2, max=10),
+    cost_budget: float = typer.Option(1.0, "--cost-budget", help="单题 lab 总预算 USD"),
+    enable: bool = typer.Option(False, "--enable", help="自动 set KUN_LAB_MODE=1"),
+) -> None:
+    """Run a benchmark suite and print strategy win rates."""
+    import os
+
+    if enable:
+        os.environ["KUN_LAB_MODE"] = "1"
+
+    from kun.lab import (
+        BenchmarkRunOptions,
+        EnsembleExecutor,
+        get_experiment_log,
+        load_benchmark_dataset,
+        make_default_adapter,
+        run_benchmark_suite,
+    )
+    from kun.lab.ensemble_executor import is_lab_enabled
+
+    if not is_lab_enabled():
+        console.print("[bold red]KUN-Lab 未启用[/]: export KUN_LAB_MODE=1, 或加 --enable flag")
+        raise typer.Exit(code=2)
+
+    async def _go() -> None:
+        dataset = load_benchmark_dataset(dataset_name)
+        executor = EnsembleExecutor(make_default_adapter(task_type=f"lab_benchmark.{dataset.name}"))
+        report = await run_benchmark_suite(
+            dataset,
+            executor=executor,
+            experiment_log=get_experiment_log(),
+            options=BenchmarkRunOptions(
+                limit=limit,
+                paths=paths,
+                cost_budget_total_usd=cost_budget,
+            ),
+        )
+        _print_benchmark_report(report)
+
+    asyncio.run(_go())
+
+
+@lab_benchmark_app.command("report")
+def lab_benchmark_report(
+    dataset: str = typer.Option(..., "--dataset", help="Dataset name, e.g. marketing_copy"),
+) -> None:
+    """Print in-process benchmark report from ExperimentLog."""
+    from kun.lab import benchmark_report_from_log, get_experiment_log
+
+    report = benchmark_report_from_log(get_experiment_log(), dataset)
+    _print_benchmark_report(report)
+
+
+def _print_benchmark_report(report: Any) -> None:
+    table = Table(title=f"lab benchmark — {report.dataset}")
+    table.add_column("strategy")
+    table.add_column("wins/total", justify="right")
+    table.add_column("win_rate", justify="right")
+    table.add_column("avg_score", justify="right")
+    table.add_column("avg_cost $", justify="right")
+    for stat in report.strategy_stats:
+        table.add_row(
+            stat.strategy,
+            f"{stat.wins}/{stat.total}",
+            f"{stat.win_rate:.2f}",
+            f"{stat.avg_score:.2f}",
+            f"{stat.avg_cost_usd:.4f}",
+        )
+    console.print(table)
+    console.print(
+        f"[dim]items={report.total_items} experiments={report.experiments} "
+        f"total_cost=${report.total_cost_usd:.4f}[/]"
+    )
 
 
 if __name__ == "__main__":

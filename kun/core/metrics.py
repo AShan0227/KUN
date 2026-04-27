@@ -136,6 +136,18 @@ lab_promotion_total = Counter(
     ["task_type", "target_module"],
 )
 
+lab_benchmark_run_total = Counter(
+    "kun_lab_benchmark_run_total",
+    "KUN-Lab benchmark suites executed",
+    ["dataset"],
+)
+
+lab_benchmark_winrate = Gauge(
+    "kun_lab_benchmark_winrate",
+    "KUN-Lab benchmark strategy win rate by dataset",
+    ["dataset", "strategy"],
+)
+
 lab_registry_size = Gauge(
     "kun_lab_registry_size",
     "LabRecipeRegistry current entry count (lab → main repo)",
