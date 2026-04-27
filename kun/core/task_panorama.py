@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
@@ -168,6 +168,9 @@ class TaskPanorama(BaseModel):
         *,
         execution_mode: ExecutionMode | None = None,
         max_rounds: int | None = None,
+        graph_traversal: Any | None = None,
+        graph_relation_types: Iterable[str] | None = None,
+        graph_limit_per_hop: int = 8,
     ) -> AsyncIterator[ModuleResult]:
         """Yield panorama modules in anchor-then-expand rounds.
 
@@ -175,7 +178,9 @@ class TaskPanorama(BaseModel):
         complexity modules. Round 3 adds heavy review modules. Callers may stop
         consuming at any point, including future marginal-ROI decisions.
 
-        TODO: wire by Claude in V2.2.
+        When graph_traversal is supplied, each module also pulls adjacent
+        entities from entity_relationships. This keeps the old module order as
+        the fallback, but lets panorama become a real graph-aware context map.
         """
 
         ref = task_ref if task_ref is not None else self
@@ -189,8 +194,21 @@ class TaskPanorama(BaseModel):
             mode_rounds = min(mode_rounds, max_rounds)
         effective_rounds = min(mode_rounds, 3)
 
+        graph_hops = _graph_hops_for_execution_mode(mode)
         for module in _modules_for_rounds(effective_rounds):
-            yield _build_module_result(module, ref, self)
+            result = _build_module_result(module, ref, self)
+            if graph_traversal is not None and graph_hops > 0:
+                neighbors = await _graph_neighbors_for_module(
+                    graph_traversal=graph_traversal,
+                    module_name=result.module_name,
+                    task_ref=ref,
+                    hops=graph_hops,
+                    relation_types=graph_relation_types,
+                    limit_per_hop=graph_limit_per_hop,
+                )
+                if neighbors:
+                    result.payload["graph_neighbors"] = neighbors
+            yield result
 
 
 __all__ = [
@@ -227,6 +245,10 @@ def _execution_mode_from_ref(task_ref: Any) -> ExecutionMode | None:
 
 def _rounds_for_execution_mode(mode: ExecutionMode) -> int:
     return {"FAST": 1, "SMART": 2, "MAX": 3, "ENSEMBLE": 3}[mode]
+
+
+def _graph_hops_for_execution_mode(mode: ExecutionMode) -> int:
+    return {"FAST": 0, "SMART": 1, "MAX": 2, "ENSEMBLE": 3}[mode]
 
 
 def _modules_for_rounds(
@@ -341,3 +363,59 @@ def _ref_value(task_ref: Any, key: str, default: Any = None) -> Any:
     if meta is not None and hasattr(meta, key):
         return getattr(meta, key)
     return default
+
+
+async def _graph_neighbors_for_module(
+    *,
+    graph_traversal: Any,
+    module_name: str,
+    task_ref: Any,
+    hops: int,
+    relation_types: Iterable[str] | None,
+    limit_per_hop: int,
+) -> list[dict[str, Any]]:
+    anchor_kind = str(_ref_value(task_ref, "panorama_anchor_kind", "panorama_module"))
+    anchor_id = _module_anchor_id(module_name, task_ref)
+    try:
+        neighbors = await graph_traversal.neighbors(
+            anchor_kind,
+            anchor_id,
+            hops=hops,
+            relation_types=relation_types,
+            limit_per_hop=limit_per_hop,
+        )
+    except Exception:
+        return []
+    return [_neighbor_to_payload(neighbor) for neighbor in neighbors]
+
+
+def _module_anchor_id(module_name: str, task_ref: Any) -> str:
+    explicit = _ref_value(task_ref, "panorama_anchor_id")
+    if explicit:
+        return str(explicit)
+    anchor_map = {
+        "intent_one_sentence": "task.intent",
+        "risk_summary": "task.risk",
+        "risk_assessment": "task.risk",
+        "complexity_score": "task.complexity",
+        "multi_judge_review": "task.validation",
+        "cross_check": "task.validation",
+        "alternative_paths": "task.alternatives",
+        "risk_graph": "task.risk_graph",
+    }
+    return anchor_map.get(module_name, module_name)
+
+
+def _neighbor_to_payload(neighbor: Any) -> dict[str, Any]:
+    return {
+        "entity_kind": str(neighbor.entity_kind),
+        "entity_id": str(neighbor.entity_id),
+        "relation_type": str(neighbor.relation_type),
+        "confidence": float(neighbor.confidence),
+        "hops": int(neighbor.hops),
+        "score": float(neighbor.score),
+        "via_path": [
+            {"entity_kind": str(kind), "entity_id": str(entity_id)}
+            for kind, entity_id in neighbor.via_path
+        ],
+    }
