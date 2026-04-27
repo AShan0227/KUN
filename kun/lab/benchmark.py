@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -43,6 +43,31 @@ class LabBenchmarkReport(BaseModel):
     experiments: int
     total_cost_usd: float
     strategy_stats: list[StrategyWinRate]
+
+
+class HistoricalTaskReplayTarget(BaseModel):
+    """A production task converted into a lab replay target."""
+
+    task_id: str
+    tenant_id: str = "u-sylvan"
+    task_type: str = "kun_lab.replay"
+    prompt: str
+    original_answer: str = ""
+    original_winning_strategy: str | None = None
+    result_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LabReplayReport(BaseModel):
+    """Replay result for one historical task."""
+
+    task_id: str
+    task_type: str
+    experiment_id: str
+    original_winning_strategy: str | None = None
+    replay_winning_strategy: str = ""
+    matches_original: bool | None = None
+    winning_output_preview: str = ""
+    total_cost_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -121,6 +146,100 @@ async def run_benchmark_suite(
     return report
 
 
+async def load_historical_task_for_replay(
+    task_id: str,
+    *,
+    tenant_id: str = "u-sylvan",
+) -> HistoricalTaskReplayTarget:
+    """Load a persisted task/result pair and turn it into a replay target."""
+
+    from sqlalchemy import select
+
+    from kun.core.db import session_scope
+    from kun.core.orm import TaskResultRow, TaskRow
+
+    async with session_scope(tenant_id=tenant_id) as session:
+        task = (
+            await session.execute(
+                select(TaskRow).where(
+                    TaskRow.tenant_id == tenant_id,
+                    TaskRow.task_id == task_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if task is None:
+            raise LookupError(f"task not found for replay: {tenant_id}/{task_id}")
+        result = (
+            await session.execute(
+                select(TaskResultRow).where(
+                    TaskResultRow.tenant_id == tenant_id,
+                    TaskResultRow.task_id == task_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    result_json = dict(result.result_json or {}) if result is not None else {}
+    answer = str(result.answer or "") if result is not None else ""
+    return HistoricalTaskReplayTarget(
+        task_id=task.task_id,
+        tenant_id=tenant_id,
+        task_type=task.task_type,
+        prompt=_prompt_from_task_row(task),
+        original_answer=answer,
+        original_winning_strategy=_extract_winning_strategy(result_json),
+        result_metadata=result_json,
+    )
+
+
+async def replay_historical_task(
+    task_id: str,
+    *,
+    tenant_id: str = "u-sylvan",
+    executor: EnsembleExecutor,
+    experiment_log: ExperimentLog | None = None,
+    options: BenchmarkRunOptions | None = None,
+    task_loader: Callable[..., Awaitable[HistoricalTaskReplayTarget]] | None = None,
+) -> LabReplayReport:
+    """Replay one historical task through lab ensemble and compare winners."""
+
+    opts = options or BenchmarkRunOptions()
+    loader = task_loader or load_historical_task_for_replay
+    target = await loader(task_id, tenant_id=tenant_id)
+    config = EnsembleConfig(
+        n_paths=opts.paths,
+        selection_method=opts.selection_method,
+        cost_budget_total_usd=opts.cost_budget_total_usd,
+        metadata={
+            "replay_task_id": target.task_id,
+            "replay_tenant_id": target.tenant_id,
+            "original_winning_strategy": target.original_winning_strategy or "",
+        },
+    )
+    result = await executor.run(
+        target.prompt,
+        config=config,
+        task_type=f"lab_replay.{target.task_type}",
+    )
+    if experiment_log is not None:
+        experiment_log.record(
+            task_type=f"lab_replay.{target.task_type}",
+            ensemble_result=result,
+            notes=f"replay_task_id={target.task_id}",
+        )
+    replay_strategy = _winning_strategy(result)
+    original = target.original_winning_strategy
+    return LabReplayReport(
+        task_id=target.task_id,
+        task_type=target.task_type,
+        experiment_id=result.experiment_id,
+        original_winning_strategy=original,
+        replay_winning_strategy=replay_strategy,
+        matches_original=None if original is None else replay_strategy == original,
+        winning_output_preview=result.winning_output[:240],
+        total_cost_usd=result.total_cost_usd,
+    )
+
+
 def benchmark_report_from_results(
     dataset_name: str,
     results: list[EnsembleResult],
@@ -172,6 +291,59 @@ def benchmark_report_from_log(log: ExperimentLog, dataset_name: str) -> LabBench
     )
 
 
+def _prompt_from_task_row(task: Any) -> str:
+    spec = task.spec_json or {}
+    if isinstance(spec, dict):
+        for key in ("goal_detail", "original_message", "prompt", "message"):
+            value = spec.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return str(task.success_criteria_short).strip()
+
+
+def _winning_strategy(result: EnsembleResult) -> str:
+    for path_result in result.path_results:
+        if path_result.path_idx == result.winning_path_idx:
+            return str(path_result.config.get("strategy") or "")
+    return ""
+
+
+def _extract_winning_strategy(payload: Any) -> str | None:
+    """Best-effort extraction from persisted task_result JSON."""
+
+    if isinstance(payload, dict):
+        for key in ("winning_strategy", "winner_strategy", "selected_strategy"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+        for key in ("ensemble_result", "lab", "result", "metadata"):
+            found = _extract_winning_strategy(payload.get(key))
+            if found:
+                return found
+        path_results = payload.get("path_results")
+        winner_idx = payload.get("winning_path_idx")
+        if isinstance(path_results, list) and isinstance(winner_idx, int):
+            for item in path_results:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("path_idx") == winner_idx:
+                    config = item.get("config")
+                    if isinstance(config, dict):
+                        strategy = config.get("strategy")
+                        if isinstance(strategy, str) and strategy:
+                            return strategy
+        for value in payload.values():
+            found = _extract_winning_strategy(value)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for item in payload:
+            found = _extract_winning_strategy(item)
+            if found:
+                return found
+    return None
+
+
 def _keyword_scorer(expected_keywords: list[str]) -> Callable[[str, str], Awaitable[float]]:
     async def score(output: str, _prompt: str) -> float:
         if not expected_keywords:
@@ -198,14 +370,18 @@ def _emit_benchmark_metrics(report: LabBenchmarkReport) -> None:
 
 __all__ = [
     "BenchmarkRunOptions",
+    "HistoricalTaskReplayTarget",
     "LabBenchmarkDataset",
     "LabBenchmarkItem",
     "LabBenchmarkReport",
+    "LabReplayReport",
     "StrategyWinRate",
     "benchmark_report_from_log",
     "benchmark_report_from_results",
     "dataset_path",
     "list_benchmark_datasets",
     "load_benchmark_dataset",
+    "load_historical_task_for_replay",
+    "replay_historical_task",
     "run_benchmark_suite",
 ]

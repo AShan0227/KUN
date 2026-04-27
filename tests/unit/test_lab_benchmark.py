@@ -15,9 +15,12 @@ from kun.lab import (
     EnsembleConfig,
     EnsemblePathResult,
     EnsembleResult,
+    HistoricalTaskReplayTarget,
+    LabReplayReport,
     get_experiment_log,
     list_benchmark_datasets,
     load_benchmark_dataset,
+    replay_historical_task,
     reset_experiment_log,
     run_benchmark_suite,
 )
@@ -183,6 +186,100 @@ def test_lab_benchmark_report_cli_reads_experiment_log() -> None:
     assert result.exit_code == 0
     assert "lab benchmark" in result.output
     assert "tier_top" in result.output
+
+
+@pytest.mark.asyncio
+async def test_replay_historical_task_compares_winner_strategy() -> None:
+    executor = _FakeExecutor()
+
+    async def fake_loader(task_id: str, *, tenant_id: str) -> HistoricalTaskReplayTarget:
+        return HistoricalTaskReplayTarget(
+            task_id=task_id,
+            tenant_id=tenant_id,
+            task_type="writing.creative",
+            prompt="write launch copy",
+            original_winning_strategy="tier_top_low_temp",
+        )
+
+    report = await replay_historical_task(
+        "task-1",
+        tenant_id="u-sylvan",
+        executor=executor,  # type: ignore[arg-type]
+        experiment_log=get_experiment_log(),
+        options=BenchmarkRunOptions(paths=2),
+        task_loader=fake_loader,
+    )
+
+    assert report.task_id == "task-1"
+    assert report.task_type == "writing.creative"
+    assert report.original_winning_strategy == "tier_top_low_temp"
+    assert report.replay_winning_strategy == "tier_top_low_temp"
+    assert report.matches_original is True
+    assert executor.calls[0]["prompt"] == "write launch copy"
+    assert executor.calls[0]["task_type"] == "lab_replay.writing.creative"
+    assert len(get_experiment_log().by_task_type("lab_replay.writing.creative")) == 1
+
+
+@pytest.mark.asyncio
+async def test_replay_historical_task_unknown_baseline_is_not_failure() -> None:
+    executor = _FakeExecutor()
+
+    async def fake_loader(task_id: str, *, tenant_id: str) -> HistoricalTaskReplayTarget:
+        return HistoricalTaskReplayTarget(
+            task_id=task_id,
+            tenant_id=tenant_id,
+            task_type="analysis",
+            prompt="analyze",
+            original_winning_strategy=None,
+        )
+
+    report = await replay_historical_task(
+        "task-2",
+        tenant_id="u-sylvan",
+        executor=executor,  # type: ignore[arg-type]
+        task_loader=fake_loader,
+    )
+
+    assert report.original_winning_strategy is None
+    assert report.matches_original is None
+
+
+def test_lab_benchmark_replay_cli_smoke() -> None:
+    async def fake_replay(*_args: Any, **_kwargs: Any) -> LabReplayReport:
+        return LabReplayReport(
+            task_id="task-1",
+            task_type="writing.creative",
+            experiment_id="exp-replay",
+            original_winning_strategy="tier_top_low_temp",
+            replay_winning_strategy="tier_top_low_temp",
+            matches_original=True,
+            winning_output_preview="ok",
+            total_cost_usd=0.04,
+        )
+
+    with (
+        patch("kun.lab.EnsembleExecutor", return_value=object()),
+        patch("kun.lab.make_default_adapter", return_value=object()),
+        patch("kun.lab.replay_historical_task", side_effect=fake_replay),
+    ):
+        result = CliRunner().invoke(
+            app,
+            [
+                "lab",
+                "benchmark",
+                "replay",
+                "--task-id",
+                "task-1",
+                "--enable",
+                "--paths",
+                "2",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert "lab replay" in result.output
+    assert "tier_top_low_temp" in result.output
+    assert "yes" in result.output
 
 
 def test_keyword_scorer_is_used_by_real_executor_path() -> None:
