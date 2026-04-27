@@ -15,11 +15,18 @@
 ./scripts/dogfood_run.sh
 ```
 
+不想连真实 LLM / DB 时，可以先跑 in-process demo（默认 5 类任务：写作 / 决策 / 编程 / 分析 / 创意），并输出报告文件：
+
+```bash
+uv run kun lab dogfood --enable --paths 3 --report-path .kun-dogfood-report.json
+```
+
 跑完看输出:
 - [ ] Step 1: 3 个 ensemble 都跑完, 看到 `winning_path_idx` + `total_cost_usd`
 - [ ] Step 2: `kun lab stats` 显示 3 条 experiment + recipe_stats 表
 - [ ] Step 3: `kun lab promote --apply` 推 ≥1 条 recipe
 - [ ] Step 5: Prometheus metrics 端点列出 7 个 lab 指标
+- [ ] 如用了 `--report-path`，报告里有 `experiment_count`、`top_recipes`、`registry`、`classifier_decisions`
 
 ## 单点验证 (深入跑各 wire)
 
