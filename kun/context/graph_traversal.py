@@ -110,15 +110,28 @@ class GraphTraversal:
         types_filter = tuple(relation_types) if relation_types else self._allowed_types
 
         try:
-            return await self._bfs(
+            neighbors = await self._bfs(
                 kind=kind,
                 entity_id=entity_id,
                 hops=hops,
                 relation_types=types_filter,
                 limit_per_hop=limit_per_hop,
             )
+            try:
+                from kun.core.metrics import graph_traversal_neighbors_count
+
+                graph_traversal_neighbors_count.observe(len(neighbors))
+            except Exception:
+                logger.debug("graph_traversal.metric_emit_skipped", exc_info=True)
+            return neighbors
         except Exception as e:
             logger.debug("graph_traversal.bfs_skipped err=%s", e)
+            try:
+                from kun.core.metrics import graph_traversal_neighbors_count
+
+                graph_traversal_neighbors_count.observe(0)
+            except Exception:
+                logger.debug("graph_traversal.metric_emit_skipped", exc_info=True)
             return []
 
     async def _bfs(

@@ -338,6 +338,7 @@ class RelationshipMineStep:
                             temporal_counts[(source, target)] += 1
 
         updates: list[AssetUpdate] = []
+        emitted_relationships: list[EntityRelationship] = []
         for (source, target), count in co_occurrence_counts.items():
             if count < 2:
                 continue
@@ -353,6 +354,7 @@ class RelationshipMineStep:
                 metadata={"source": "RelationshipMineStep", "window_hours": 24},
             )
             await _upsert_mined_relationship(relationship)
+            emitted_relationships.append(relationship)
             updates.append(
                 AssetUpdate(
                     update_id=new_id("memory"),
@@ -379,6 +381,7 @@ class RelationshipMineStep:
                 metadata={"source": "RelationshipMineStep", "window_hours": 24, "lag_hours": 1},
             )
             await _upsert_mined_relationship(relationship)
+            emitted_relationships.append(relationship)
             updates.append(
                 AssetUpdate(
                     update_id=new_id("memory"),
@@ -389,6 +392,14 @@ class RelationshipMineStep:
                     confidence=relationship.confidence,
                 )
             )
+
+        if emitted_relationships:
+            try:
+                from kun.context.graph_metrics import emit_relationship_mine_metrics
+
+                emit_relationship_mine_metrics(emitted_relationships)
+            except Exception:
+                logger.debug("relationship_mine.metrics_emit_skipped", exc_info=True)
 
         return updates
 

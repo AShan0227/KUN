@@ -141,6 +141,38 @@ lab_registry_size = Gauge(
     "LabRecipeRegistry current entry count (lab → main repo)",
 )
 
+# ============== Knowledge Graph (V2.2 §20) ==============
+
+relationships_total = Gauge(
+    "kun_relationships_total",
+    "Knowledge graph relationships observed by relation type",
+    ["relation_type"],
+)
+
+relationships_confidence_p50 = Gauge(
+    "kun_relationships_confidence_p50",
+    "Knowledge graph relationship confidence p50 by relation type",
+    ["relation_type"],
+)
+
+graph_traversal_neighbors_count = Histogram(
+    "kun_graph_traversal_neighbors_count",
+    "Neighbor count returned by knowledge graph traversal calls",
+    buckets=(0, 1, 2, 5, 10, 20, 50, 100),
+)
+
+relationship_mine_step_throughput = Counter(
+    "kun_relationship_mine_step_throughput",
+    "Relationships emitted by RelationshipMineStep",
+    ["relation_type"],
+)
+
+relationship_entity_degree = Gauge(
+    "kun_relationship_entity_degree",
+    "Observed knowledge graph entity degree by entity kind/id",
+    ["entity_kind", "entity_id"],
+)
+
 # ============== Task lifecycle ==============
 
 task_started_total = Counter(
