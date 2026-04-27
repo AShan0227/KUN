@@ -1,7 +1,7 @@
 """Add persistent lab recipe registry table.
 
 Revision ID: 0013_lab_recipe_registry
-Revises: 0012
+Revises: 0013
 Create Date: 2026-04-27
 """
 
@@ -14,7 +14,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0013_lab_recipe_registry"
-down_revision: Union[str, None] = "0012"
+down_revision: Union[str, None] = "0013"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
