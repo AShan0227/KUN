@@ -1,147 +1,104 @@
-"""DynamicReplanner — 任务中途局部重规划 (V2.2 §22 + BATCH5 C20).
+"""Dynamic local replanning for the outer OODA loop (C20).
 
-跟 OODA 外层循环 (kun/core/ooda_loop.py) 配套. 在 Reflect 阶段判断"当前 plan
-是否还成立", 不成立 → 从当前 step 之后重新规划, 保留前面 step 的 sunk work
-(不丢已完成的事).
-
-跟"完整重 plan" (重新走一遍 intent → planner) 区别:
-- 完整重 plan: 丢前面所有 step, 重新走一遍, 沉没成本 100%
-- 局部重 plan (本模块): 保留 step 0..N-1 已完成, 从 step N 开始重新规划
-
-核心 3 方法:
-- detect_replan_needed(cycle) → (bool, reason): 看 reflection 决定是否需要 replan
-- replan_from_step(original_plan, current_step_idx, new_observations) → Plan: 局部重规划
-- calculate_sunk_cost(original_plan, current_step_idx) → float: 沉没成本估算
-
-设计原则:
-- 不主动接 orchestrator (留 TODO, 现 step loop 没 mid-task replan 钩子)
-- 配 OODA: Reflect → detect → ADJUST → replan_from_step → DECIDE 走新 plan
-- 配 marginal_roi: replan 收益 vs 沉没成本 + replan 自身成本要 > 阈值才值得
-
-TODO: orchestrator wire by Claude (M5) — 需要 orchestrator step loop 加
-mid-task replan 钩子, 跟 OODA 状态机集成.
+This module is intentionally standalone. It does not call the orchestrator.
+It only decides whether a running plan should be locally replanned and builds
+a replacement tail while preserving already sunk work.
 """
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from pydantic import BaseModel, ConfigDict
+
+from kun.brain.planner import ExecutionPlan, PlanStep
+from kun.core.ooda_loop import OODACycle
+from kun.datamodel.runtime import validate_dag
+
+Plan = ExecutionPlan
 
 
-@dataclass
+@dataclass(frozen=True)
 class ReplanDecision:
-    """是否 replan 的决策结果."""
-
     needs_replan: bool
-    reason: str  # outcome_mismatch / step_failure_repeated / scope_drift / no_replan_needed
-    confidence: float = 0.5  # 0..1, 决策置信度
-    metadata: dict[str, Any] = field(default_factory=dict)
+    reason: str
+    confidence: float = 0.5
+    metadata: dict[str, Any] | None = None
 
 
-@dataclass
-class Plan:
-    """简化版 plan (实际生产用 brain.planner.Plan, 这里 stub for 测试)."""
-
-    steps: list[dict[str, Any]]
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
+@dataclass(frozen=True)
 class SunkCostEstimate:
-    """沉没成本估算."""
-
     completed_steps: int
     total_planned_steps: int
     completed_cost_usd: float
     completed_duration_sec: float
-    progress_ratio: float  # 0..1, 已完成 step / total
-    can_reuse_outputs: bool  # 前面 step 的 output 是否可作为新 plan 的 input
+    progress_ratio: float
+    can_reuse_outputs: bool
+
+
+class ReplanResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    plan: ExecutionPlan
+    preserved_step_ids: list[int]
+    replacement_step_ids: list[int]
+    reason: str
+    sunk_cost_usd: float
 
 
 class DynamicReplanner:
-    """任务中途局部重规划器.
+    """Detect and build local plan changes during an OODA cycle."""
 
-    用法:
-        replanner = DynamicReplanner()
-        decision = await replanner.detect_replan_needed(ooda_cycle)
-        if decision.needs_replan:
-            sunk = replanner.calculate_sunk_cost(original_plan, current_step_idx)
-            new_plan = await replanner.replan_from_step(
-                original_plan, current_step_idx, new_observations
-            )
-            # OODA cycle: ADJUST → DECIDE 走 new_plan
-
-    Args:
-        min_replan_confidence: 决策置信度下限 (默认 0.6)
-        max_step_failure_count: 同一 step 失败 N 次自动触发 replan (默认 2)
-        scope_drift_threshold: outcome 跟 expected 的 mismatch 比例 (默认 0.3)
-    """
-
-    def __init__(
-        self,
-        *,
-        min_replan_confidence: float = 0.6,
-        max_step_failure_count: int = 2,
-        scope_drift_threshold: float = 0.3,
-    ) -> None:
+    def __init__(self, *, min_replan_confidence: float = 0.6) -> None:
         self.min_replan_confidence = min_replan_confidence
-        self.max_step_failure_count = max_step_failure_count
-        self.scope_drift_threshold = scope_drift_threshold
 
-    async def detect_replan_needed(self, cycle: Any) -> ReplanDecision:
-        """检测当前 OODA cycle 是否需要 replan.
+    async def detect_replan_needed(self, cycle: OODACycle) -> tuple[bool, str]:
+        """Return whether current cycle needs local replanning plus a human reason."""
 
-        判断依据 (按优先级):
-        1. 最新 reflection.needs_adjust=True 且 reason 含 "scope_drift" → replan (高 confidence)
-        2. 同 step 连续失败 ≥ max_step_failure_count → replan (高 confidence)
-        3. action 跟 expected_outcome mismatch 比例 > threshold → replan (中 confidence)
-        4. 否则 no replan
-        """
-        reflections = getattr(cycle, "reflections", []) or []
-        actions = getattr(cycle, "actions_taken", []) or []
+        if cycle.metadata.get("replan_requested") is True:
+            return (True, str(cycle.metadata.get("replan_reason") or "manual replan requested"))
 
-        # 1. 最新 reflection 显式说要 adjust + scope_drift
-        if reflections:
-            latest = reflections[-1]
-            if latest.get("needs_adjust") and "scope_drift" in str(latest.get("reason", "")):
-                return ReplanDecision(
-                    needs_replan=True,
-                    reason="scope_drift",
-                    confidence=0.85,
-                    metadata={"reflection": latest},
+        for observation in reversed(cycle.observations):
+            requested = observation.get("replan") is True or observation.get("needs_replan") is True
+            if requested:
+                return (True, str(observation.get("reason") or "observation requested replan"))
+            if observation.get("status") in {"failed", "blocked", "stale"}:
+                return (
+                    True,
+                    str(observation.get("reason") or "observation status requires replan"),
                 )
 
-        # 2. 同 step 连续失败
-        if len(actions) >= self.max_step_failure_count:
-            recent = actions[-self.max_step_failure_count :]
-            failed = [a for a in recent if str(a.get("status", "")) in ("failed", "error")]
-            if len(failed) >= self.max_step_failure_count:
-                step_ids = {a.get("step_id") for a in failed}
-                # 同一 step 反复失败
-                if len(step_ids) <= 1:
-                    return ReplanDecision(
-                        needs_replan=True,
-                        reason="step_failure_repeated",
-                        confidence=0.90,
-                        metadata={"failed_step_id": next(iter(step_ids), None)},
-                    )
+        if cycle.reflections:
+            latest = cycle.reflections[-1]
+            if latest.get("needs_adjust") is True:
+                return (True, str(latest.get("reason") or "reflection requested adjustment"))
 
-        # 3. outcome mismatch
-        if reflections:
-            latest = reflections[-1]
-            mismatch = float(latest.get("outcome_mismatch_ratio", 0.0))
-            if mismatch > self.scope_drift_threshold:
-                return ReplanDecision(
-                    needs_replan=True,
-                    reason="outcome_mismatch",
-                    confidence=0.7,
-                    metadata={"mismatch_ratio": mismatch},
-                )
+        if cycle.actions_taken:
+            latest_action = cycle.actions_taken[-1]
+            if latest_action.get("status") in {"failed", "error", "cancelled"}:
+                return (True, str(latest_action.get("error") or "latest action failed"))
 
-        return ReplanDecision(needs_replan=False, reason="no_replan_needed", confidence=0.5)
+        budget = cycle.metadata.get("budget")
+        spent = cycle.metadata.get("spent")
+        if isinstance(budget, (int, float)) and isinstance(spent, (int, float)) and spent > budget:
+            return (True, "budget exceeded")
+
+        return (False, "")
+
+    async def detect_replan_decision(self, cycle: OODACycle) -> ReplanDecision:
+        """Compatibility wrapper for callers that want a scored decision object."""
+
+        yes, reason = await self.detect_replan_needed(cycle)
+        confidence = 0.8 if yes else 0.5
+        if reason in {"budget exceeded"} or "failed" in reason or "blocked" in reason:
+            confidence = 0.9
+        return ReplanDecision(
+            needs_replan=yes,
+            reason=reason or "no_replan_needed",
+            confidence=confidence,
+            metadata={"task_ref": cycle.task_ref},
+        )
 
     async def replan_from_step(
         self,
@@ -149,62 +106,93 @@ class DynamicReplanner:
         current_step_idx: int,
         new_observations: list[dict[str, Any]],
     ) -> Plan:
-        """从 current_step_idx 之后重新规划, 保留前面 step.
+        """Replan from the step after current_step_idx while preserving sunk work."""
 
-        简化实装: 把 original_plan.steps[:current_step_idx] 保留, 从
-        current_step_idx 开始, 用 new_observations 替换 metadata 后产新 step list.
+        if not original_plan.steps:
+            raise ValueError("cannot replan an empty plan")
+        if current_step_idx < 0 or current_step_idx >= len(original_plan.steps):
+            raise IndexError("current_step_idx is out of range")
 
-        生产实装 (M5): 调用 LLM planner 真重 plan, 把 "completed_steps_outputs"
-        作为 context 让 LLM 知道前面跑过啥.
-        """
-        if current_step_idx < 0 or current_step_idx > len(original_plan.steps):
-            raise ValueError(
-                f"current_step_idx out of range: {current_step_idx} "
-                f"(plan has {len(original_plan.steps)} steps)"
-            )
+        preserved = [
+            step.model_copy(deep=True) for step in original_plan.steps[: current_step_idx + 1]
+        ]
+        replacement = _replacement_steps_from_observations(new_observations)
+        if not replacement:
+            replacement = _fallback_replacement_steps(new_observations)
 
-        # 保留已完成 step
-        kept_steps = original_plan.steps[:current_step_idx]
-        # 从 current step 之后产新 step (简化 stub: 用 observations 替换 description)
-        new_steps: list[dict[str, Any]] = []
-        for i, obs in enumerate(new_observations):
-            new_steps.append(
-                {
-                    "step_id": current_step_idx + i + 1,
-                    "description": str(obs.get("intent", "replanned step")),
-                    "skill_hint": obs.get("skill_hint"),
-                    "replan_origin": "dynamic_replanner",
-                }
-            )
+        next_step_id = max(step.step_id for step in preserved) + 1
+        previous_dep = preserved[-1].step_id
+        rebuilt_tail: list[PlanStep] = []
+        for idx, step in enumerate(replacement):
+            new_step = step.model_copy(deep=True)
+            new_step.step_id = next_step_id + idx
+            new_step.depends_on = [previous_dep]
+            rebuilt_tail.append(new_step)
+            previous_dep = new_step.step_id
 
-        return Plan(
-            steps=kept_steps + new_steps,
-            metadata={
-                **original_plan.metadata,
-                "replanned_from_step": current_step_idx,
-                "kept_step_count": len(kept_steps),
-                "new_step_count": len(new_steps),
-            },
+        replanned = ExecutionPlan(
+            task_ref=original_plan.task_ref, steps=[*preserved, *rebuilt_tail]
+        )
+        _spread_remaining_estimates(
+            replanned,
+            sunk_cost=self.calculate_sunk_cost(original_plan, current_step_idx),
+            preserved_count=len(preserved),
+        )
+        validate_dag({step.step_id: step.depends_on for step in replanned.steps})
+        return replanned
+
+    def calculate_sunk_cost(self, original_plan: Plan, current_step_idx: int) -> float:
+        """Cost already spent through current_step_idx, inclusive."""
+
+        if current_step_idx < 0:
+            return 0.0
+        if current_step_idx >= len(original_plan.steps):
+            raise IndexError("current_step_idx is out of range")
+        return round(
+            sum(step.estimated_cost_usd for step in original_plan.steps[: current_step_idx + 1]),
+            6,
         )
 
-    def calculate_sunk_cost(self, original_plan: Plan, current_step_idx: int) -> SunkCostEstimate:
-        """沉没成本估算 (用户决策时知道损失多少)."""
-        completed = original_plan.steps[:current_step_idx]
-        total = len(original_plan.steps)
-        completed_cost = sum(float(s.get("cost_usd_estimate", 0.0)) for s in completed)
-        completed_duration = sum(float(s.get("duration_sec_estimate", 0.0)) for s in completed)
-        progress = current_step_idx / total if total > 0 else 0.0
+    def estimate_sunk_cost(self, original_plan: Plan, current_step_idx: int) -> SunkCostEstimate:
+        """Detailed sunk-cost estimate for UI and human approval prompts."""
 
-        # 简化判定 can_reuse_outputs: 看 step 是否有 output_ref
-        can_reuse = any(s.get("output_ref") for s in completed)
-
+        if current_step_idx < 0:
+            completed_steps: list[PlanStep] = []
+        elif current_step_idx >= len(original_plan.steps):
+            raise IndexError("current_step_idx is out of range")
+        else:
+            completed_steps = original_plan.steps[: current_step_idx + 1]
+        total_steps = len(original_plan.steps)
+        completed_cost = round(sum(step.estimated_cost_usd for step in completed_steps), 6)
+        completed_duration = round(sum(step.estimated_duration_sec for step in completed_steps), 6)
         return SunkCostEstimate(
-            completed_steps=current_step_idx,
-            total_planned_steps=total,
+            completed_steps=len(completed_steps),
+            total_planned_steps=total_steps,
             completed_cost_usd=completed_cost,
             completed_duration_sec=completed_duration,
-            progress_ratio=progress,
-            can_reuse_outputs=can_reuse,
+            progress_ratio=(len(completed_steps) / total_steps if total_steps else 0.0),
+            can_reuse_outputs=bool(completed_steps),
+        )
+
+    async def replan_with_result(
+        self,
+        original_plan: Plan,
+        current_step_idx: int,
+        new_observations: list[dict[str, Any]],
+        *,
+        reason: str,
+    ) -> ReplanResult:
+        """Convenience wrapper that returns bookkeeping for UI / audit logs."""
+
+        replanned = await self.replan_from_step(original_plan, current_step_idx, new_observations)
+        preserved = [step.step_id for step in replanned.steps[: current_step_idx + 1]]
+        replacement = [step.step_id for step in replanned.steps[current_step_idx + 1 :]]
+        return ReplanResult(
+            plan=replanned,
+            preserved_step_ids=preserved,
+            replacement_step_ids=replacement,
+            reason=reason,
+            sunk_cost_usd=self.calculate_sunk_cost(original_plan, current_step_idx),
         )
 
     def is_replan_worth_it(
@@ -214,32 +202,94 @@ class DynamicReplanner:
         *,
         replan_cost_estimate: float = 0.05,
     ) -> tuple[bool, str]:
-        """ROI 判断: replan 值得吗?
+        """Small deterministic ROI gate for optional human-facing replan prompts."""
 
-        简化公式:
-        - 如果 decision.confidence < min_replan_confidence → 不值
-        - 如果 progress > 80% (快做完了) → 不值, 沉没成本太高
-        - 如果 confidence ≥ 0.85 (强信号) → 值, 不管 progress
-        - 否则 confidence × (1 - progress) > 0.4 → 值
-
-        Returns:
-            (worth_it, reason)
-        """
+        if not decision.needs_replan:
+            return (False, "no_replan_needed")
         if decision.confidence < self.min_replan_confidence:
-            return False, f"confidence_below_threshold:{decision.confidence:.2f}"
+            return (False, f"confidence_below_threshold:{decision.confidence:.2f}")
         if decision.confidence >= 0.85:
-            return True, "high_confidence_signal"
+            return (True, "high_confidence_signal")
         if sunk_cost.progress_ratio > 0.8:
-            return False, f"too_much_progress:{sunk_cost.progress_ratio:.2f}"
-        score = decision.confidence * (1.0 - sunk_cost.progress_ratio)
-        if score > 0.4:
-            return True, f"roi_positive:{score:.2f}"
-        return False, f"roi_negative:{score:.2f}"
+            return (False, f"too_much_progress:{sunk_cost.progress_ratio:.2f}")
+        score = decision.confidence * (1.0 - sunk_cost.progress_ratio) - replan_cost_estimate
+        if score > 0.35:
+            return (True, f"roi_positive:{score:.2f}")
+        return (False, f"roi_negative:{score:.2f}")
+
+
+def _replacement_steps_from_observations(observations: list[dict[str, Any]]) -> list[PlanStep]:
+    for observation in reversed(observations):
+        raw_steps = observation.get("replacement_steps")
+        if not isinstance(raw_steps, list):
+            continue
+        steps: list[PlanStep] = []
+        for idx, item in enumerate(raw_steps, start=1):
+            if isinstance(item, str):
+                description = item.strip()
+                skill_hint = None
+            elif isinstance(item, dict):
+                description = str(item.get("description") or "").strip()
+                skill_hint = (
+                    str(item["skill_hint"]).strip()
+                    if item.get("skill_hint") not in {None, ""}
+                    else None
+                )
+            else:
+                continue
+            if not description:
+                continue
+            steps.append(PlanStep(step_id=idx, description=description, skill_hint=skill_hint))
+        if steps:
+            return steps
+    return []
+
+
+def _fallback_replacement_steps(observations: list[dict[str, Any]]) -> list[PlanStep]:
+    reason = _latest_reason(observations)
+    return [
+        PlanStep(
+            step_id=1,
+            description=f"根据新观察调整执行策略: {reason}",
+            skill_hint="task.replan",
+        ),
+        PlanStep(
+            step_id=2,
+            description="按最新观察重新验证结果并交付",
+            skill_hint="task.validation",
+        ),
+    ]
+
+
+def _latest_reason(observations: list[dict[str, Any]]) -> str:
+    for observation in reversed(observations):
+        reason = (
+            observation.get("reason") or observation.get("summary") or observation.get("status")
+        )
+        if reason:
+            return str(reason)
+    return "execution drift detected"
+
+
+def _spread_remaining_estimates(
+    plan: ExecutionPlan, *, sunk_cost: float, preserved_count: int
+) -> None:
+    total = max(plan.task_ref.meta.estimated_cost_usd - sunk_cost, 0.0)
+    # Keep existing estimates on preserved steps; assign remaining budget to rebuilt tail steps.
+    replacement_steps = plan.steps[preserved_count:]
+    if not replacement_steps:
+        return
+    each = total / len(replacement_steps) if replacement_steps else 0.0
+    duration_each = plan.task_ref.meta.estimated_duration_sec / max(len(plan.steps), 1)
+    for step in replacement_steps:
+        step.estimated_cost_usd = each
+        step.estimated_duration_sec = duration_each
 
 
 __all__ = [
     "DynamicReplanner",
     "Plan",
     "ReplanDecision",
+    "ReplanResult",
     "SunkCostEstimate",
 ]
