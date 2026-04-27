@@ -539,6 +539,28 @@ def lab_benchmark_suite(
     asyncio.run(_go())
 
 
+@lab_app.command("cursor-truncate")
+def lab_cursor_truncate(
+    older_than_days: int = typer.Option(
+        30,
+        "--older-than-days",
+        min=1,
+        help="删除 updated_at 早于 N 天的 lab adoption cursor 行",
+    ),
+) -> None:
+    """清理过期 lab adoption cursor 行.
+
+    Cursor 是调度书签, 不是长期记忆. 默认删 30 天前的行, 避免运维表无限长.
+    """
+    from kun.lab import truncate_lab_adoption_cursors
+
+    async def _go() -> None:
+        deleted = await truncate_lab_adoption_cursors(older_than_days=older_than_days)
+        console.print(f"[green]deleted[/] {deleted} stale lab adoption cursor rows")
+
+    asyncio.run(_go())
+
+
 @lab_benchmark_app.command("report")
 def lab_benchmark_report(
     dataset: str = typer.Option(..., "--dataset", help="Dataset name, e.g. marketing_copy"),

@@ -80,6 +80,7 @@ def test_lab_help_shows_subcommands() -> None:
     assert "run" in result.output
     assert "stats" in result.output
     assert "promote" in result.output
+    assert "cursor-truncate" in result.output
 
 
 # ---- kun lab run ----
@@ -271,3 +272,16 @@ def test_lab_promote_apply_invokes_emitter() -> None:
     assert "推升" in result.output or "promoted" in result.output.lower()
     # emit 至少 call 1 次
     assert fake_emit.await_count >= 1
+
+
+def test_lab_cursor_truncate_invokes_cleanup() -> None:
+    async def fake_truncate(**kwargs):
+        assert kwargs["older_than_days"] == 14
+        return 2
+
+    with patch("kun.lab.truncate_lab_adoption_cursors", side_effect=fake_truncate):
+        result = runner.invoke(app, ["lab", "cursor-truncate", "--older-than-days", "14"])
+
+    assert result.exit_code == 0
+    assert "deleted" in result.output
+    assert "2" in result.output
