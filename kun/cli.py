@@ -597,13 +597,18 @@ def _print_benchmark_report(report: Any) -> None:
 @lab_app.command("dogfood")
 def lab_dogfood(
     task_types: str = typer.Option(
-        "writing.creative,decision.product,coding.refactor",
+        "writing.creative,decision.product,coding.refactor,analysis.market,creative.ideation",
         "--types",
-        help="逗号分隔的 task_type 列表 (默认 3 种典型)",
+        help="逗号分隔的 task_type 列表 (默认 5 种典型: 写作/决策/编程/分析/创意)",
     ),
     paths: int = typer.Option(3, "--paths", "-n", min=2, max=10),
     enable: bool = typer.Option(False, "--enable", help="自动 set KUN_LAB_MODE=1"),
     tenant: str = typer.Option("u-sylvan", "--tenant"),
+    report_path: Path | None = typer.Option(
+        None,
+        "--report-path",
+        help="把 dogfood 汇总写成 JSON 文件，便于发给 PM/team 审核",
+    ),
 ) -> None:
     """跑 V2.2 §26 完整闭环 dogfood — 显示全链路 trace.
 
@@ -742,12 +747,52 @@ def lab_dogfood(
             decision_table.add_column("task_type")
             decision_table.add_column("mode", justify="center")
             decision_table.add_column("reason")
+            classifier_decisions: list[dict[str, Any]] = []
             for t in types:
                 mode, reason = classify_execution_mode({"task_type": t}, soul)
+                classifier_decisions.append({"task_type": t, "mode": mode, "reason": reason})
                 decision_table.add_row(t, f"[bold]{mode}[/]", reason[:60])
             console.print(decision_table)
             console.print("\n[dim]如 reason 含 'lab_recipe:tier_xxx' → V2.2 §26 闭环真生效 ✓[/]")
             console.print("[dim]如 mode=MAX 但 default=FAST → lab 推荐覆盖了 default[/]")
+
+        if report_path is not None:
+            report = {
+                "tenant": tenant,
+                "task_types": types,
+                "paths": paths,
+                "experiment_count": len(log.list_all()),
+                "total_lab_cost_usd": log.total_lab_cost_usd(),
+                "top_recipes": [
+                    {
+                        "task_type": s.task_type,
+                        "strategy": s.strategy,
+                        "win_count": s.win_count,
+                        "total_count": s.total_count,
+                        "win_rate": s.win_rate,
+                        "avg_score": s.avg_score,
+                        "avg_cost_usd": s.avg_cost_usd,
+                    }
+                    for s in stats[:20]
+                ],
+                "registry": [
+                    {
+                        "task_type": entry.task_type,
+                        "target_module": entry.target_module,
+                        "strategy": entry.strategy,
+                        "win_rate": entry.win_rate,
+                        "confidence": entry.confidence,
+                    }
+                    for entry in registry.all()
+                ],
+                "classifier_decisions": classifier_decisions,
+            }
+            await asyncio.to_thread(report_path.parent.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(
+                report_path.write_text,
+                json.dumps(report, ensure_ascii=False, indent=2),
+            )
+            console.print(f"\n[green]dogfood report written[/]: {report_path}")
 
         console.print("\n[bold green]═══ Dogfood 完成 ═══[/]")
         console.print(

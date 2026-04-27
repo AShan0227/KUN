@@ -52,6 +52,35 @@ def test_dogfood_with_enable_runs_full_loop() -> None:
     assert "classifier 决策" in result.output
 
 
+def test_dogfood_writes_report_json() -> None:
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            app,
+            [
+                "lab",
+                "dogfood",
+                "--enable",
+                "--paths",
+                "2",
+                "--types",
+                "test_a,test_b",
+                "--report-path",
+                "dogfood-report.json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "dogfood report written" in result.output
+
+        import json
+        from pathlib import Path
+
+        data = json.loads(Path("dogfood-report.json").read_text())
+        assert data["task_types"] == ["test_a", "test_b"]
+        assert data["experiment_count"] == 10
+        assert data["registry"]
+        assert data["classifier_decisions"]
+
+
 def test_dogfood_custom_task_types() -> None:
     """--types 多 task_type 都跑."""
     result = runner.invoke(
