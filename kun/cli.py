@@ -18,6 +18,7 @@ from kun.core.config import settings
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 security_app = typer.Typer(add_completion=False, no_args_is_help=True)
 promises_app = typer.Typer(add_completion=False, no_args_is_help=True)
+release_app = typer.Typer(add_completion=False, no_args_is_help=True)
 lab_app = typer.Typer(
     add_completion=False, no_args_is_help=True, help="KUN-Lab 内测分区 (V2.2 §26)"
 )
@@ -27,6 +28,7 @@ lab_benchmark_app = typer.Typer(
 console = Console()
 app.add_typer(security_app, name="security")
 app.add_typer(promises_app, name="promises")
+app.add_typer(release_app, name="release")
 app.add_typer(lab_app, name="lab")
 lab_app.add_typer(lab_benchmark_app, name="benchmark")
 
@@ -198,6 +200,25 @@ def promises_generate(
         console.print(f"[green]PROMISES section appended[/]: {output}")
         return
     console.print(section)
+
+
+@release_app.command("notes")
+def release_notes(
+    rev_range: str = typer.Option("v2.1.0..HEAD", "--range", help="git rev range"),
+    output: Path = typer.Option(Path("CHANGELOG-v2.2.md"), "--output"),
+    version: str = typer.Option("v2.2.0", "--version"),
+    stdout: bool = typer.Option(False, "--stdout", help="只打印，不写文件"),
+) -> None:
+    """Generate V2.2 release notes from git log subjects."""
+
+    from kun.engineering.promises_autogen import generate_release_notes
+
+    notes = generate_release_notes(rev_range=rev_range, cwd=Path.cwd(), version=version)
+    if stdout:
+        console.print(notes)
+        return
+    output.write_text(notes)
+    console.print(f"[green]Release notes written[/]: {output}")
 
 
 @app.command()
