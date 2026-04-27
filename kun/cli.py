@@ -596,6 +596,52 @@ def lab_benchmark_report(
     _print_benchmark_report(report)
 
 
+@lab_benchmark_app.command("replay")
+def lab_benchmark_replay(
+    task_id: str = typer.Option(..., "--task-id", help="Historical task_id to replay"),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+    paths: int = typer.Option(5, "--paths", "-n", min=2, max=10),
+    cost_budget: float = typer.Option(1.0, "--cost-budget", help="单题 lab 总预算 USD"),
+    enable: bool = typer.Option(False, "--enable", help="自动 set KUN_LAB_MODE=1"),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON report."),
+) -> None:
+    """Replay one historical task through lab ensemble and compare winner strategy."""
+    import os
+
+    if enable:
+        os.environ["KUN_LAB_MODE"] = "1"
+
+    from kun.core.tenancy import TenantContext, tenant_scope
+    from kun.lab import (
+        BenchmarkRunOptions,
+        EnsembleExecutor,
+        get_experiment_log,
+        make_default_adapter,
+        replay_historical_task,
+    )
+    from kun.lab.ensemble_executor import is_lab_enabled
+
+    if not is_lab_enabled():
+        console.print("[bold red]KUN-Lab 未启用[/]: export KUN_LAB_MODE=1, 或加 --enable flag")
+        raise typer.Exit(code=2)
+
+    async def _go() -> None:
+        with tenant_scope(TenantContext(tenant_id=tenant)):
+            report = await replay_historical_task(
+                task_id,
+                tenant_id=tenant,
+                executor=EnsembleExecutor(make_default_adapter(task_type="lab_replay")),
+                experiment_log=get_experiment_log(),
+                options=BenchmarkRunOptions(paths=paths, cost_budget_total_usd=cost_budget),
+            )
+        if json_output:
+            console.print_json(report.model_dump_json())
+            return
+        _print_replay_report(report)
+
+    asyncio.run(_go())
+
+
 def _print_benchmark_report(report: Any) -> None:
     table = Table(title=f"lab benchmark — {report.dataset}")
     table.add_column("strategy")
@@ -616,6 +662,26 @@ def _print_benchmark_report(report: Any) -> None:
         f"[dim]items={report.total_items} experiments={report.experiments} "
         f"total_cost=${report.total_cost_usd:.4f}[/]"
     )
+
+
+def _print_replay_report(report: Any) -> None:
+    table = Table(title=f"lab replay — {report.task_id}")
+    table.add_column("field")
+    table.add_column("value")
+    table.add_row("task_type", report.task_type)
+    table.add_row("experiment_id", report.experiment_id)
+    table.add_row("original_winner", report.original_winning_strategy or "-")
+    table.add_row("replay_winner", report.replay_winning_strategy or "-")
+    table.add_row(
+        "match",
+        "unknown"
+        if report.matches_original is None
+        else ("yes" if report.matches_original else "no"),
+    )
+    table.add_row("cost $", f"{report.total_cost_usd:.4f}")
+    console.print(table)
+    if report.winning_output_preview:
+        console.print(f"[bold green]winner preview[/]: {report.winning_output_preview!r}")
 
 
 @lab_app.command("dogfood")
