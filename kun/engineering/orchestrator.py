@@ -165,6 +165,8 @@ class Orchestrator:
         value_gate: Any = None,
         structured_step_generator: Any = None,
         verification_runner: Any = None,
+        prediction_provider: Any = None,
+        model_updater: Any = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -181,6 +183,9 @@ class Orchestrator:
         # V2.2 §22 wire: hermes 结构化执行协议 generator (SMART/MAX 模式启用)
         self.structured_step_generator = structured_step_generator
         self.verification_runner = verification_runner
+        # V2.3 Wire 41 Predictive Coding hook (插件式, None 时鲲行为完全不变)
+        self.prediction_provider = prediction_provider
+        self.model_updater = model_updater
         # 累计 step value history, 给 value_gate marginal_roi 用
         self._value_history: list[float] = []
 
@@ -732,6 +737,30 @@ class Orchestrator:
 
                 step_t0 = time.perf_counter()
 
+                # V2.3 Wire 41: Predictive Coding pre-step hook (插件式)
+                # prediction_provider == None → 鲲行为完全不变
+                _pc_expected: dict[str, Any] | None = None
+                if self.prediction_provider is not None:
+                    try:
+                        _pc_expected = await self.prediction_provider.predict(
+                            {
+                                "task_type": task_ref.meta.task_type,
+                                "step_id": step_plan.step_id,
+                                "skill_hint": step_plan.skill_hint or "",
+                                "complexity_score": task_ref.meta.complexity_score,
+                            }
+                        )
+                        yield OrchestratorEvent(
+                            kind="pc_expected",
+                            data={
+                                "step_id": step_plan.step_id,
+                                "expected": _pc_expected,
+                            },
+                        )
+                    except Exception:
+                        log.exception("predictive_coding.predict failed (non-fatal)")
+                        _pc_expected = None
+
                 # V2.2 §19.4 + §21 wire: 守望主决策 gate
                 # ExecutionMode 决定 ValueGate 启用 (FAST 跳过, SMART/MAX 启用)
                 _exec_mode = getattr(task_ref.meta, "execution_mode", "FAST")
@@ -960,6 +989,35 @@ class Orchestrator:
                     finished_at=datetime.now(UTC),
                 )
                 runtime.accumulate_step(step_record)
+
+                # V2.3 Wire 41: Predictive Coding post-step hook
+                # 算 actual + error, 喂 model_updater 让模型实时学
+                if self.model_updater is not None and _pc_expected is not None:
+                    try:
+                        _pc_actual = {
+                            "cost_usd": response.cost_usd_equivalent,
+                            "duration_sec": duration,
+                            "tokens": response.usage.input_tokens + response.usage.output_tokens,
+                        }
+                        _pc_error = {
+                            k: _pc_actual.get(k, 0) - _pc_expected.get(k, 0) for k in _pc_actual
+                        }
+                        await self.model_updater.record(
+                            step_id=step_plan.step_id,
+                            task_type=task_ref.meta.task_type,
+                            expected=_pc_expected,
+                            actual=_pc_actual,
+                            error=_pc_error,
+                        )
+                        yield OrchestratorEvent(
+                            kind="pc_error",
+                            data={
+                                "step_id": step_plan.step_id,
+                                "error": _pc_error,
+                            },
+                        )
+                    except Exception:
+                        log.exception("predictive_coding.record failed (non-fatal)")
 
                 # V2.2 Wire 9: skill 级 capability_card writeback
                 # 每 step 完后给 skill 写一条 outcome (除了 llm.direct, 那不是真 skill)

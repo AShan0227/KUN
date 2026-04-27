@@ -20,8 +20,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from kun.core.anchor_expand import AnchorExpandIterator
-
 logger = logging.getLogger(__name__)
 
 
@@ -205,9 +203,9 @@ class IncidentResponseEngine:
 
         默认不做累积升档, 避免调用方只是预览动作时污染 pattern_counts.
         真正执行仍走 ``handle``.
-
-        # TODO: wire by Claude in V2.2
         """
+        from kun.core.anchor_expand import AnchorExpandIterator  # lazy: 防 circular
+
         severity = self.upgrade_severity(event) if apply_upgrade else event.severity
         actions = self._build_actions_for(event, severity)
         if not actions:
