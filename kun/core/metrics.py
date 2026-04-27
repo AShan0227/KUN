@@ -76,6 +76,12 @@ quality_rubric_score_p50 = Gauge(
     ["task_type", "tenant_id"],
 )
 
+task_boundary_reject_rate = Gauge(
+    "kun_task_boundary_reject_rate",
+    "TaskBoundaryGuard benchmark reject rate by dataset",
+    ["dataset"],
+)
+
 # ============== Tenancy / Security ==============
 
 tenant_cross_access_attempt = Counter(
