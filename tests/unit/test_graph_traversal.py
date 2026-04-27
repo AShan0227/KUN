@@ -16,8 +16,12 @@ from kun.context.graph_traversal import (
 
 
 def test_neighbor_score_decays_with_hops() -> None:
-    near = NeighborEntity("asset", "a-2", "depends_on", 0.9, 1, (("asset", "a-1"), ("asset", "a-2")))
-    far = NeighborEntity("asset", "a-3", "depends_on", 0.9, 2, (("asset", "a-1"), ("asset", "a-2"), ("asset", "a-3")))
+    near = NeighborEntity(
+        "asset", "a-2", "depends_on", 0.9, 1, (("asset", "a-1"), ("asset", "a-2"))
+    )
+    far = NeighborEntity(
+        "asset", "a-3", "depends_on", 0.9, 2, (("asset", "a-1"), ("asset", "a-2"), ("asset", "a-3"))
+    )
     assert near.score > far.score
 
 
@@ -42,8 +46,18 @@ async def test_bfs_hop1_returns_direct_neighbors() -> None:
     tr = GraphTraversal()
     tr._fetch_edges = AsyncMock(  # type: ignore[method-assign]
         return_value=[
-            {"target_kind": "asset", "target_id": "a-2", "relation_type": "depends_on", "confidence": 0.9},
-            {"target_kind": "asset", "target_id": "a-3", "relation_type": "mentions", "confidence": 0.5},
+            {
+                "target_kind": "asset",
+                "target_id": "a-2",
+                "relation_type": "depends_on",
+                "confidence": 0.9,
+            },
+            {
+                "target_kind": "asset",
+                "target_id": "a-3",
+                "relation_type": "mentions",
+                "confidence": 0.5,
+            },
         ]
     )
     neighbors = await tr.neighbors("asset", "a-1", hops=1)
@@ -65,12 +79,27 @@ async def test_bfs_hop2_walks_two_levels_dedup() -> None:
         src_id = kwargs["source_id"]
         if src_id == "a-1":
             return [
-                {"target_kind": "asset", "target_id": "a-2", "relation_type": "depends_on", "confidence": 0.9},
+                {
+                    "target_kind": "asset",
+                    "target_id": "a-2",
+                    "relation_type": "depends_on",
+                    "confidence": 0.9,
+                },
             ]
         if src_id == "a-2":
             return [
-                {"target_kind": "asset", "target_id": "a-3", "relation_type": "depends_on", "confidence": 0.7},
-                {"target_kind": "asset", "target_id": "a-1", "relation_type": "depends_on", "confidence": 0.4},  # 回环
+                {
+                    "target_kind": "asset",
+                    "target_id": "a-3",
+                    "relation_type": "depends_on",
+                    "confidence": 0.7,
+                },
+                {
+                    "target_kind": "asset",
+                    "target_id": "a-1",
+                    "relation_type": "depends_on",
+                    "confidence": 0.4,
+                },  # 回环
             ]
         return []
 
@@ -321,7 +350,5 @@ def test_asset_entity_id_helper_priority() -> None:
     )
     assert ImportanceScorer._asset_entity_id(a2) == "asset-fallback"
 
-    a3 = LayeredAsset(
-        asset_id="x", asset_kind="memory", tenant_id="u-test", l1_metadata={}
-    )
+    a3 = LayeredAsset(asset_id="x", asset_kind="memory", tenant_id="u-test", l1_metadata={})
     assert ImportanceScorer._asset_entity_id(a3).startswith("asset-")

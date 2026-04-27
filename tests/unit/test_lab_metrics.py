@@ -47,9 +47,7 @@ async def test_experiment_total_increments_on_success() -> None:
 
     with patch.dict(os.environ, {"KUN_LAB_MODE": "1"}):
         ex = EnsembleExecutor(fake_invoker)
-        await ex.run(
-            "test", config=EnsembleConfig(n_paths=2), task_type="metrics_test"
-        )
+        await ex.run("test", config=EnsembleConfig(n_paths=2), task_type="metrics_test")
 
     after = _label_count(lab_experiment_total, task_type="metrics_test", status="ok")
     assert after == before + 1
@@ -57,9 +55,7 @@ async def test_experiment_total_increments_on_success() -> None:
 
 @pytest.mark.asyncio
 async def test_experiment_total_increments_on_budget_exceeded() -> None:
-    before = _label_count(
-        lab_experiment_total, task_type="budget_test", status="budget_exceeded"
-    )
+    before = _label_count(lab_experiment_total, task_type="budget_test", status="budget_exceeded")
 
     import asyncio
 
@@ -73,15 +69,11 @@ async def test_experiment_total_increments_on_budget_exceeded() -> None:
         ex = EnsembleExecutor(expensive)
         await ex.run(
             "test",
-            config=EnsembleConfig(
-                n_paths=3, cost_budget_total_usd=1.0, timeout_per_path_sec=10
-            ),
+            config=EnsembleConfig(n_paths=3, cost_budget_total_usd=1.0, timeout_per_path_sec=10),
             task_type="budget_test",
         )
 
-    after = _label_count(
-        lab_experiment_total, task_type="budget_test", status="budget_exceeded"
-    )
+    after = _label_count(lab_experiment_total, task_type="budget_test", status="budget_exceeded")
     assert after == before + 1
 
 
@@ -94,9 +86,7 @@ async def test_experiment_cost_accumulates() -> None:
 
     with patch.dict(os.environ, {"KUN_LAB_MODE": "1"}):
         ex = EnsembleExecutor(fake_invoker)
-        await ex.run(
-            "test", config=EnsembleConfig(n_paths=3), task_type="cost_test"
-        )
+        await ex.run("test", config=EnsembleConfig(n_paths=3), task_type="cost_test")
 
     after = _label_count(lab_experiment_cost_usd, task_type="cost_test")
     # 3 path × 0.10 = 0.30
@@ -105,9 +95,7 @@ async def test_experiment_cost_accumulates() -> None:
 
 @pytest.mark.asyncio
 async def test_path_total_increments_per_path() -> None:
-    before = _label_count(
-        lab_path_total, strategy="tier_top_low_temp", tier="top", status="ok"
-    )
+    before = _label_count(lab_path_total, strategy="tier_top_low_temp", tier="top", status="ok")
 
     async def fake_invoker(prompt, path):
         return ("ok", 0.01, 0.01)
@@ -116,9 +104,7 @@ async def test_path_total_increments_per_path() -> None:
         ex = EnsembleExecutor(fake_invoker)
         await ex.run("test", config=EnsembleConfig(n_paths=3))
 
-    after = _label_count(
-        lab_path_total, strategy="tier_top_low_temp", tier="top", status="ok"
-    )
+    after = _label_count(lab_path_total, strategy="tier_top_low_temp", tier="top", status="ok")
     # tier_top_low_temp 是 DEFAULT_PATHS[0] — 跑了 1 次
     assert after == before + 1
 
@@ -142,9 +128,7 @@ async def test_path_total_records_cancelled_status() -> None:
         ex = EnsembleExecutor(slow)
         await ex.run(
             "test",
-            config=EnsembleConfig(
-                n_paths=3, cost_budget_total_usd=1.0, timeout_per_path_sec=10
-            ),
+            config=EnsembleConfig(n_paths=3, cost_budget_total_usd=1.0, timeout_per_path_sec=10),
         )
 
     after = _label_count(
@@ -170,9 +154,7 @@ async def test_budget_cap_total_increments_on_trigger() -> None:
         ex = EnsembleExecutor(expensive)
         await ex.run(
             "test",
-            config=EnsembleConfig(
-                n_paths=2, cost_budget_total_usd=1.0, timeout_per_path_sec=10
-            ),
+            config=EnsembleConfig(n_paths=2, cost_budget_total_usd=1.0, timeout_per_path_sec=10),
             task_type="cap_test",
         )
 

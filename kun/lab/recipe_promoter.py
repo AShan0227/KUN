@@ -138,9 +138,7 @@ class RecipePromoter:
                 try:
                     await self._event_emitter(p)
                 except Exception:
-                    logger.exception(
-                        "recipe_promoter.event_emitter failed for %s", p.promotion_id
-                    )
+                    logger.exception("recipe_promoter.event_emitter failed for %s", p.promotion_id)
 
             # Wire 21: dispatcher 失败 → emit experiment.rolled_back
             if dispatch_error and self._rollback_emitter is not None:

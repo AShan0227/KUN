@@ -15,7 +15,9 @@ from kun.core.config import settings
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 security_app = typer.Typer(add_completion=False, no_args_is_help=True)
-lab_app = typer.Typer(add_completion=False, no_args_is_help=True, help="KUN-Lab 内测分区 (V2.2 §26)")
+lab_app = typer.Typer(
+    add_completion=False, no_args_is_help=True, help="KUN-Lab 内测分区 (V2.2 §26)"
+)
 console = Console()
 app.add_typer(security_app, name="security")
 app.add_typer(lab_app, name="lab")
@@ -275,9 +277,7 @@ def lab_run(
     from kun.lab.ensemble_executor import is_lab_enabled
 
     if not is_lab_enabled():
-        console.print(
-            "[bold red]KUN-Lab 未启用[/]: export KUN_LAB_MODE=1, 或加 --enable flag"
-        )
+        console.print("[bold red]KUN-Lab 未启用[/]: export KUN_LAB_MODE=1, 或加 --enable flag")
         raise typer.Exit(code=2)
 
     async def _go() -> None:
@@ -384,9 +384,7 @@ def lab_promote(
 
     log = get_experiment_log()
     if not log.list_all():
-        console.print(
-            "[yellow]ExperimentLog empty[/] (单进程 singleton; 先 `kun lab run` 跑实验)"
-        )
+        console.print("[yellow]ExperimentLog empty[/] (单进程 singleton; 先 `kun lab run` 跑实验)")
         return
 
     async def _go() -> None:

@@ -91,9 +91,7 @@ def classify_execution_mode(task_meta: dict[str, Any], soul_file: SoulFile) -> t
     return default_mode, f"default_mode:{default_mode}"
 
 
-def _lab_recipe_hint(
-    task_meta: dict[str, Any], task_kind: str
-) -> tuple[ExecutionMode, str] | None:
+def _lab_recipe_hint(task_meta: dict[str, Any], task_kind: str) -> tuple[ExecutionMode, str] | None:
     """查 LabRecipeRegistry 看 lab 是否对该 task_type 有 validated strategy.
 
     返 None → 无 hint 走 default. 返 (mode, reason) → 用 lab 推荐.

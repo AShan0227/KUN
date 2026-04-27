@@ -63,9 +63,7 @@ class AdoptionState:
     runtime in-memory 视图 (load/save 跟 storage 同步).
     """
 
-    last_adopted_at: datetime = field(
-        default_factory=lambda: datetime.fromtimestamp(0, tz=UTC)
-    )
+    last_adopted_at: datetime = field(default_factory=lambda: datetime.fromtimestamp(0, tz=UTC))
     adopted_promotion_ids: set[str] = field(default_factory=set)
 
     def mark(self, promotion_id: str, occurred_at: datetime) -> None:

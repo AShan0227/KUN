@@ -149,9 +149,7 @@ async def test_executor_calls_event_emitter_on_completion() -> None:
 
     with patch.dict(os.environ, {"KUN_LAB_MODE": "1"}):
         executor = EnsembleExecutor(fake_invoker, event_emitter=fake_emitter)
-        result = await executor.run(
-            "test", config=EnsembleConfig(n_paths=2), task_type="biz_plan"
-        )
+        result = await executor.run("test", config=EnsembleConfig(n_paths=2), task_type="biz_plan")
 
     assert len(captured) == 1
     captured_result, captured_tt = captured[0]
@@ -201,9 +199,7 @@ def _seed_log_for_promotion(log: ExperimentLog, *, count: int = 15) -> None:
             experiment_id=f"exp-{i}",
             config=EnsembleConfig(n_paths=2),
             path_results=[
-                EnsemblePathResult(
-                    path_idx=0, config={"strategy": "tier_top_low_temp"}, score=0.9
-                ),
+                EnsemblePathResult(path_idx=0, config={"strategy": "tier_top_low_temp"}, score=0.9),
             ],
             winning_path_idx=0,
         )

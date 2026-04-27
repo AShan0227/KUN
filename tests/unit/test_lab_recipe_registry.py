@@ -302,9 +302,7 @@ def test_classifier_lab_recipe_does_not_override_force_mode() -> None:
         )
     )
     soul = _make_soul()
-    mode, reason = classify_execution_mode(
-        {"task_type": "x", "force_mode": "FAST"}, soul
-    )
+    mode, reason = classify_execution_mode({"task_type": "x", "force_mode": "FAST"}, soul)
     assert mode == "FAST"
     assert "force_mode" in reason
 
@@ -322,9 +320,7 @@ def test_classifier_lab_recipe_does_not_override_complexity_high() -> None:
         )
     )
     soul = _make_soul()
-    mode, reason = classify_execution_mode(
-        {"task_type": "x", "complexity_score": 0.85}, soul
-    )
+    mode, reason = classify_execution_mode({"task_type": "x", "complexity_score": 0.85}, soul)
     assert mode == "MAX"
     assert "complexity" in reason
 

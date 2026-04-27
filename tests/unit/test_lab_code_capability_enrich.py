@@ -123,9 +123,7 @@ async def test_debugger_enrich_empty_report_returns_original() -> None:
     )
 
     fake_runner = AsyncMock()
-    fake_runner.run = AsyncMock(
-        return_value=type("R", (), {"plans": [], "outcomes": []})()
-    )
+    fake_runner.run = AsyncMock(return_value=type("R", (), {"plans": [], "outcomes": []})())
 
     debugger = CodeDebugger()
     result = await debugger.enrich_with_diagnose_runner(finding, fake_runner)
@@ -140,12 +138,7 @@ async def test_reviewer_jury_returns_both_static_and_jury() -> None:
     """启发式 ReviewResult + JuryVerdict 都返."""
     from unittest.mock import patch
 
-    diff = (
-        "+++ b/foo.py\n"
-        "@@ -1,3 +1,4 @@\n"
-        "+import subprocess\n"
-        "+subprocess.run(cmd, shell=True)\n"
-    )
+    diff = "+++ b/foo.py\n@@ -1,3 +1,4 @@\n+import subprocess\n+subprocess.run(cmd, shell=True)\n"
 
     fake_verdict = type(
         "V",
@@ -164,9 +157,7 @@ async def test_reviewer_jury_returns_both_static_and_jury() -> None:
 
     with patch("kun.engineering.multi_judge.jury_evaluate", new=fake_jury_evaluate):
         reviewer = CodeReviewer()
-        static_result, jury = await reviewer.review_diff_with_jury(
-            diff, router=AsyncMock()
-        )
+        static_result, jury = await reviewer.review_diff_with_jury(diff, router=AsyncMock())
 
     # 静态 review 应该捕获 shell=True
     assert static_result.ok is False
@@ -189,9 +180,7 @@ async def test_reviewer_jury_failure_returns_static_only() -> None:
 
     with patch("kun.engineering.multi_judge.jury_evaluate", new=crashing_jury):
         reviewer = CodeReviewer()
-        static_result, jury = await reviewer.review_diff_with_jury(
-            diff, router=AsyncMock()
-        )
+        static_result, jury = await reviewer.review_diff_with_jury(diff, router=AsyncMock())
 
     assert static_result.ok is True  # 这条 diff 干净
     assert jury is None
@@ -207,7 +196,9 @@ async def test_reviewer_jury_uses_default_judge_models() -> None:
     async def capture_jury(*, artifact, rubric, judge_models, router):
         captured.append({"models": judge_models, "rubric": rubric})
         return type(
-            "V", (), {"pass_": True, "avg_score": 0.9, "spread": 0.05, "ballots": [], "rationale": "ok"}
+            "V",
+            (),
+            {"pass_": True, "avg_score": 0.9, "spread": 0.05, "ballots": [], "rationale": "ok"},
         )()
 
     with patch("kun.engineering.multi_judge.jury_evaluate", new=capture_jury):
@@ -227,7 +218,9 @@ async def test_reviewer_jury_custom_models_and_rubric() -> None:
     async def capture_jury(*, artifact, rubric, judge_models, router):
         captured.append({"models": judge_models, "rubric": rubric, "artifact": artifact})
         return type(
-            "V", (), {"pass_": True, "avg_score": 1.0, "spread": 0.0, "ballots": [], "rationale": "x"}
+            "V",
+            (),
+            {"pass_": True, "avg_score": 1.0, "spread": 0.0, "ballots": [], "rationale": "x"},
         )()
 
     with patch("kun.engineering.multi_judge.jury_evaluate", new=capture_jury):

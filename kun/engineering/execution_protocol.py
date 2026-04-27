@@ -51,8 +51,7 @@ Do not include markdown fences or extra prose.
 # 跟 ENSEMBLE DEFAULT_PATHS 的 system_prompt_override 一致.
 _LAB_STRATEGY_PROMPT_HINT: dict[str, str] = {
     "chain_of_thought": (
-        "[Lab-validated recipe] Think step by step. "
-        "Show your reasoning briefly before the JSON."
+        "[Lab-validated recipe] Think step by step. Show your reasoning briefly before the JSON."
     ),
     "diverse_perspective": (
         "[Lab-validated recipe] Take a contrarian view first. "

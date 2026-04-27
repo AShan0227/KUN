@@ -106,9 +106,7 @@ def test_dashboard_has_budget_cap_alert_panel() -> None:
     """budget cap panel 应该带 alert (跟 watchtower rule 双保险)."""
     data = json.loads(DASHBOARD_PATH.read_text())
     panels = data["panels"]
-    budget_panel = next(
-        (p for p in panels if "budget cap" in p.get("title", "").lower()), None
-    )
+    budget_panel = next((p for p in panels if "budget cap" in p.get("title", "").lower()), None)
     assert budget_panel is not None
     assert "alert" in budget_panel
     assert budget_panel["alert"]["conditions"][0]["evaluator"]["params"][0] == 0.3

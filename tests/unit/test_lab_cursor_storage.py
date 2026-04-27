@@ -51,9 +51,7 @@ async def test_inmem_load_empty_returns_empty_snapshot() -> None:
 async def test_inmem_save_then_load_round_trip() -> None:
     storage = InMemoryCursorStorage()
     base = datetime(2026, 5, 1, tzinfo=UTC)
-    snap = CursorSnapshot(
-        last_adopted_at=base, adopted_promotion_ids=["p-1", "p-2", "p-3"]
-    )
+    snap = CursorSnapshot(last_adopted_at=base, adopted_promotion_ids=["p-1", "p-2", "p-3"])
     await storage.save("default", snap)
     loaded = await storage.load("default")
     assert loaded.last_adopted_at == base
@@ -154,7 +152,10 @@ async def test_step_simulated_restart_skips_already_adopted() -> None:
         captured_calls.append(payload["promotion_id"])
 
     base = datetime(2026, 5, 1, tzinfo=UTC)
-    events_round1 = [_ev("p-A", occurred_at=base), _ev("p-B", occurred_at=base + timedelta(hours=1))]
+    events_round1 = [
+        _ev("p-A", occurred_at=base),
+        _ev("p-B", occurred_at=base + timedelta(hours=1)),
+    ]
 
     async def fetcher_round1(**_kwargs):
         return events_round1
@@ -253,9 +254,7 @@ async def test_step_storage_load_failure_falls_back_empty() -> None:
     async def fetcher(**_kwargs):
         return []
 
-    step = LabRecipeAdoptionStep(
-        event_fetcher=fetcher, cursor_storage=FailingStorage()
-    )
+    step = LabRecipeAdoptionStep(event_fetcher=fetcher, cursor_storage=FailingStorage())
     result = await step.run(tenant_id="u-test")
     assert result["scanned"] == 0
     # state 是 empty cursor
@@ -278,8 +277,6 @@ async def test_step_storage_save_failure_doesnt_break_run() -> None:
     async def fetcher(**_kwargs):
         return [_ev("p-1")]
 
-    step = LabRecipeAdoptionStep(
-        event_fetcher=fetcher, cursor_storage=SaveFailingStorage()
-    )
+    step = LabRecipeAdoptionStep(event_fetcher=fetcher, cursor_storage=SaveFailingStorage())
     result = await step.run(tenant_id="u-test")
     assert result["adopted"] == 1  # adopt 成功 (in-memory)

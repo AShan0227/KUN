@@ -54,8 +54,10 @@ def _emit_ensemble_metrics(result: EnsembleResult, *, task_type: str | None) -> 
         if result.budget_exceeded:
             lab_budget_cap_total.labels(task_type=tt).inc()
         for pr in result.path_results:
-            path_status = "cancelled" if pr.error == "cancelled_budget_exceeded" else (
-                "error" if pr.error else "ok"
+            path_status = (
+                "cancelled"
+                if pr.error == "cancelled_budget_exceeded"
+                else ("error" if pr.error else "ok")
             )
             lab_path_total.labels(
                 strategy=str(pr.config.get("strategy", "unknown")),
@@ -298,9 +300,7 @@ class EnsembleExecutor:
         budget_exceeded = False
 
         while pending:
-            done, _ = await asyncio.wait(
-                list(pending.keys()), return_when=asyncio.FIRST_COMPLETED
-            )
+            done, _ = await asyncio.wait(list(pending.keys()), return_when=asyncio.FIRST_COMPLETED)
             for t in done:
                 idx = pending.pop(t)
                 try:

@@ -151,9 +151,7 @@ async def test_adoption_max_per_cycle_caps_processed() -> None:
     async def fake_fetcher(**_kwargs):
         return events
 
-    step = LabRecipeAdoptionStep(
-        adopter=fake_adopter, event_fetcher=fake_fetcher, max_per_cycle=5
-    )
+    step = LabRecipeAdoptionStep(adopter=fake_adopter, event_fetcher=fake_fetcher, max_per_cycle=5)
     result = await step.run(tenant_id="u-test")
 
     assert result["scanned"] == 5

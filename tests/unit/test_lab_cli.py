@@ -155,10 +155,16 @@ def test_lab_run_passes_config_correctly() -> None:
         result = runner.invoke(
             app,
             [
-                "lab", "run", "test", "--enable",
-                "--paths", "3",
-                "--selection", "majority_vote",
-                "--task-type", "ad_creative",
+                "lab",
+                "run",
+                "test",
+                "--enable",
+                "--paths",
+                "3",
+                "--selection",
+                "majority_vote",
+                "--task-type",
+                "ad_creative",
                 "--no-emit",
             ],
         )
@@ -225,9 +231,7 @@ def test_lab_promote_dry_run_no_emit() -> None:
             experiment_id=f"e{i}",
             config=EnsembleConfig(n_paths=2),
             path_results=[
-                EnsemblePathResult(
-                    path_idx=0, config={"strategy": "tier_top_low_temp"}, score=0.9
-                ),
+                EnsemblePathResult(path_idx=0, config={"strategy": "tier_top_low_temp"}, score=0.9),
             ],
             winning_path_idx=0,
         )
