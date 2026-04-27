@@ -572,5 +572,168 @@ def _print_benchmark_report(report: Any) -> None:
     )
 
 
+@lab_app.command("dogfood")
+def lab_dogfood(
+    task_types: str = typer.Option(
+        "writing.creative,decision.product,coding.refactor",
+        "--types",
+        help="逗号分隔的 task_type 列表 (默认 3 种典型)",
+    ),
+    paths: int = typer.Option(3, "--paths", "-n", min=2, max=10),
+    enable: bool = typer.Option(False, "--enable", help="自动 set KUN_LAB_MODE=1"),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+) -> None:
+    """跑 V2.2 §26 完整闭环 dogfood — 显示全链路 trace.
+
+    流程:
+      1. 跑 N 种 task 的 ensemble (mock invoker, 不烧真 LLM)
+      2. promote 推 recipe (低门槛让 recipe 真出来)
+      3. 显示 LabRecipeRegistry 状态
+      4. 显示 ExecutionMode classifier 对每个 task_type 的决策 (有 lab hint)
+
+    示例:
+        kun lab dogfood --enable --paths 3
+    """
+    import os
+
+    if enable:
+        os.environ["KUN_LAB_MODE"] = "1"
+
+    from kun.api.execution_mode_classifier import classify_execution_mode
+    from kun.core.tenancy import TenantContext, tenant_scope
+    from kun.datamodel.soul_file import SoulFile
+    from kun.lab import (
+        EnsembleConfig,
+        EnsembleExecutor,
+        LabRecipeEntry,
+        RecipePromoter,
+        get_experiment_log,
+        get_recipe_registry,
+        reset_recipe_registry,
+    )
+    from kun.lab.ensemble_executor import is_lab_enabled
+
+    if not is_lab_enabled():
+        console.print("[bold red]KUN-Lab 未启用[/]: 加 --enable flag")
+        raise typer.Exit(code=2)
+
+    types = [t.strip() for t in task_types.split(",") if t.strip()]
+    if not types:
+        console.print("[red]需要至少 1 个 task_type[/]")
+        raise typer.Exit(code=2)
+
+    reset_recipe_registry()
+
+    async def _go() -> None:
+        # 用 mock invoker — dogfood 不烧真 LLM
+        async def mock_invoker(prompt: str, path) -> tuple[str, float, float]:
+            import asyncio
+            import random
+
+            await asyncio.sleep(0.01)
+            # 模拟不同 strategy 不同效果: tier_top 总赢
+            quality = (
+                0.9
+                if path.tier == "top"
+                else (0.7 if path.tier == "strong" else 0.4 + random.random() * 0.3)
+            )
+            output = f"[{path.strategy}] 模拟回答 quality={quality:.2f}"
+            return (output, 0.01, 0.01)
+
+        async def mock_scorer(output: str, prompt: str) -> float:
+            # 摘 [strategy] 后的 quality 数字
+            import re
+
+            m = re.search(r"quality=([\d.]+)", output)
+            return float(m.group(1)) if m else 0.5
+
+        log = get_experiment_log()
+        registry = get_recipe_registry()
+
+        with tenant_scope(TenantContext(tenant_id=tenant)):
+            # ---- Step 1: 跑各 task_type 多次 ----
+            console.print("\n[bold cyan]═══ Step 1/4: 跑 ensemble dogfood ═══[/]\n")
+            for task_type in types:
+                executor = EnsembleExecutor(mock_invoker)
+                # 跑 5 次让 promote 有数据
+                for i in range(5):
+                    result = await executor.run(
+                        f"dogfood task {i} for {task_type}",
+                        config=EnsembleConfig(n_paths=paths, selection_method="best_score"),
+                        scoring_fn=mock_scorer,
+                        task_type=task_type,
+                    )
+                    log.record(task_type=task_type, ensemble_result=result)
+                console.print(f"  [green]✓[/] {task_type}: 跑 5 次 ensemble × {paths} path")
+
+            # ---- Step 2: lab stats ----
+            console.print("\n[bold cyan]═══ Step 2/4: ExperimentLog 累积 ═══[/]\n")
+            stats = log.recipe_stats(task_type=None)
+            stats.sort(key=lambda s: s.win_rate, reverse=True)
+            stats_table = Table(title="recipe_stats")
+            stats_table.add_column("task_type")
+            stats_table.add_column("strategy")
+            stats_table.add_column("wins/total", justify="right")
+            stats_table.add_column("win_rate", justify="right")
+            for s in stats[:8]:
+                stats_table.add_row(
+                    s.task_type,
+                    s.strategy[:18],
+                    f"{s.win_count}/{s.total_count}",
+                    f"{s.win_rate:.2f}",
+                )
+            console.print(stats_table)
+
+            # ---- Step 3: promote → registry (绕 events bus 直接 upsert) ----
+            console.print("\n[bold cyan]═══ Step 3/4: Promote 推 recipe → registry ═══[/]\n")
+            promoter = RecipePromoter(log, min_total=2, min_winrate=0.4)
+            eligible = promoter.find_eligible_recipes()
+            for s in eligible:
+                # 直接 upsert 到 registry (跳过 events bus, dogfood 简化)
+                target = (
+                    "execution_mode_classifier"
+                    if "tier_" in s.strategy
+                    else "hermes_prompt_template"
+                )
+                registry.upsert(
+                    LabRecipeEntry(
+                        task_type=s.task_type,
+                        target_module=target,
+                        strategy=s.strategy,
+                        win_rate=s.win_rate,
+                        confidence=min(1.0, s.win_rate),
+                    )
+                )
+                console.print(
+                    f"  [green]✓[/] {s.task_type} → {s.strategy} ({s.win_rate:.0%}) → registry"
+                )
+            console.print(f"\n  registry size now: [bold]{len(registry)}[/]")
+
+            # ---- Step 4: classifier 看 lab hint 真生效 ----
+            console.print("\n[bold cyan]═══ Step 4/4: ExecutionMode classifier 决策 ═══[/]\n")
+            soul = SoulFile(
+                user_id="dogfood",
+                approval_threshold_money=10.0,
+                execution_mode_preference={"default_mode": "FAST"},
+            )
+            decision_table = Table(title="classifier 决策 (default=FAST)")
+            decision_table.add_column("task_type")
+            decision_table.add_column("mode", justify="center")
+            decision_table.add_column("reason")
+            for t in types:
+                mode, reason = classify_execution_mode({"task_type": t}, soul)
+                decision_table.add_row(t, f"[bold]{mode}[/]", reason[:60])
+            console.print(decision_table)
+            console.print("\n[dim]如 reason 含 'lab_recipe:tier_xxx' → V2.2 §26 闭环真生效 ✓[/]")
+            console.print("[dim]如 mode=MAX 但 default=FAST → lab 推荐覆盖了 default[/]")
+
+        console.print("\n[bold green]═══ Dogfood 完成 ═══[/]")
+        console.print(
+            "[dim]这是 in-process dogfood (跳 events bus + DB). 真闭环验证看 ./scripts/dogfood_run.sh[/]"
+        )
+
+    asyncio.run(_go())
+
+
 if __name__ == "__main__":
     app()
