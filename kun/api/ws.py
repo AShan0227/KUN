@@ -32,8 +32,14 @@ import json
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
+from kun.api.input_payload import (
+    Attachment,
+    TranslatedInput,
+    translate_binary_input,
+    translate_chat_input,
+)
 from kun.api.runtime import get_kill_switch, get_orchestrator
 from kun.core.logging import get_logger
 from kun.core.tenancy import (
@@ -104,15 +110,25 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         with tenant_scope(ctx):
             while True:
                 current_task = _clear_finished_task(current_task)
-                raw = await ws.receive_text()
                 try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    await _send_json(ws, {"type": "error", "message": "invalid JSON"}, send_lock)
+                    msg, translated = await _receive_client_message(ws)
+                except ValueError as exc:
+                    await _send_json(ws, {"type": "error", "message": str(exc)}, send_lock)
+                    continue
+                except HTTPException as exc:
+                    await _send_json(ws, {"type": "error", "message": str(exc.detail)}, send_lock)
                     continue
 
                 mtype = msg.get("type", "user_message")
-                content = str(msg.get("content", ""))
+                content = (
+                    translated.message if translated is not None else str(msg.get("content", ""))
+                )
+                if translated is not None and translated.descriptors:
+                    await _send_json(
+                        ws,
+                        {"type": "input_detected", "descriptors": translated.descriptors},
+                        send_lock,
+                    )
 
                 if mtype == "user_message":
                     output_kind = str(msg.get("output_kind") or default_output_kind)
@@ -210,6 +226,37 @@ async def _run_task_stream(
         raise
     except Exception as e:
         await _send_json(ws, {"type": "error", "message": str(e)}, send_lock)
+
+
+async def _receive_client_message(
+    ws: WebSocket,
+) -> tuple[dict[str, Any], TranslatedInput | None]:
+    packet = await ws.receive()
+    if packet["type"] == "websocket.disconnect":
+        raise WebSocketDisconnect(code=packet.get("code", 1000))
+
+    raw_bytes = packet.get("bytes")
+    if raw_bytes is not None:
+        translated = await translate_binary_input(raw_bytes)
+        return {"type": "user_message", "content": translated.message}, translated
+
+    raw_text = packet.get("text")
+    if raw_text is None:
+        raise ValueError("unsupported websocket frame")
+
+    try:
+        msg = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("invalid JSON") from exc
+
+    attachments_raw = msg.get("attachments") or []
+    if not attachments_raw:
+        return msg, None
+
+    attachments = [Attachment.model_validate(item) for item in attachments_raw]
+    translated = await translate_chat_input(str(msg.get("content", "")), attachments)
+    msg["content"] = translated.message
+    return msg, translated
 
 
 def _event_to_wire(ev: OrchestratorEvent) -> dict[str, Any]:
