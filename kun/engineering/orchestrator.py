@@ -762,10 +762,12 @@ class Orchestrator:
                     except Exception:
                         log.exception("hermes_step.generate failed (non-fatal)")
 
-                # V2.2 §22 Wire 31: hermes ExecutionStep.action_type 真驱动 step 路径
-                # use_skill / web_search → 覆盖 step_plan.skill_hint
-                # ask_user (Wire 32) → 暂停 task 等用户回复 (跟 ValueGate escalate 同模式)
-                # use_memory / direct_llm → 走现有路径
+                # V2.2 §22 Wire 31/32/33: hermes ExecutionStep.action_type 真驱动 step
+                # use_skill / web_search → 覆盖 step_plan.skill_hint (Wire 31)
+                # ask_user → 暂停 task 等用户回复 (Wire 32)
+                # use_memory → 拉 query 相关 memory 加塞 step context (Wire 33)
+                # direct_llm → 走现有路径
+                step_context_summary = context_summary  # per-step 副本, hermes use_memory 可加塞
                 if _hermes_step is not None and _exec_mode != "FAST":
                     _hermes_override = _hermes_skill_from_action(_hermes_step)
                     if _hermes_override and _hermes_override != step_plan.skill_hint:
@@ -801,6 +803,34 @@ class Orchestrator:
                         )
                         status = "paused"
                         break
+                    elif _hermes_step.action_type == "use_memory":
+                        # Wire 33: hermes 主动拉相关 memory → 加塞进 step context_summary
+                        memory_query = _hermes_memory_query_from_step(_hermes_step, step_plan)
+                        if memory_query:
+                            try:
+                                extra_pack = await self.context_packer.pack_query(
+                                    memory_query,
+                                    tenant_id=tenant.tenant_id,
+                                    limit=3 if _exec_mode == "MAX" else 2,
+                                )
+                            except Exception:
+                                log.exception("hermes.use_memory pack_query failed")
+                                extra_pack = None
+                            if extra_pack and extra_pack.items:
+                                extra_summary = extra_pack.summary(max_chars=900)
+                                step_context_summary = (
+                                    f"{step_context_summary}\n\n[Hermes use_memory] "
+                                    f"额外拉的相关 memory:\n{extra_summary}"
+                                ).strip()
+                                yield OrchestratorEvent(
+                                    kind="hermes_memory_injected",
+                                    data={
+                                        "step_id": step_plan.step_id,
+                                        "query": memory_query,
+                                        "asset_ids": [it.asset_id for it in extra_pack.items],
+                                        "count": len(extra_pack.items),
+                                    },
+                                )
 
                 if self.value_gate is not None and _exec_mode != "FAST":
                     try:
@@ -888,7 +918,7 @@ class Orchestrator:
                         profile=exec_profile,
                         skills_summary=self.skill_selector.summary(skill_candidates),
                         skill_directive=skill_directive,
-                        context_summary=context_summary,
+                        context_summary=step_context_summary,
                         prior_outputs=step_outputs,
                         pre_dispatched_block=step_pre_dispatched,
                     )
@@ -1465,6 +1495,28 @@ def _hermes_question_from_step(hermes_step: Any) -> str:
         if isinstance(v, str) and v.strip():
             return v.strip()
     return str(getattr(hermes_step, "thought", "") or "需要您澄清")
+
+
+def _hermes_memory_query_from_step(hermes_step: Any, step_plan: Any) -> str:
+    """V2.2 §22 Wire 33 helper: hermes use_memory → 抽 query 字符串.
+
+    优先级: payload.query > payload.search > payload.topic > thought >
+            step description fallback.
+    返空字符串 → 不触发 pack_query (避免空 query 拉所有 asset).
+    """
+    payload = getattr(hermes_step, "action_payload", None) or {}
+    for key in ("query", "search", "topic", "keywords"):
+        v = payload.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        if isinstance(v, list) and v:
+            joined = " ".join(str(x) for x in v if x).strip()
+            if joined:
+                return joined
+    thought = getattr(hermes_step, "thought", "") or ""
+    if thought.strip():
+        return thought.strip()
+    return str(getattr(step_plan, "description", "") or "").strip()
 
 
 def _runtime_to_row(runtime: RuntimeState, tenant_id: str) -> RuntimeStateRow:

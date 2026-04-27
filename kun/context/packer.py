@@ -54,6 +54,60 @@ class ContextPacker:
     def __init__(self, store: AssetStore | None = None) -> None:
         self._store = store or get_store()
 
+    async def pack_query(
+        self,
+        query: str,
+        *,
+        tenant_id: str,
+        kinds: Iterable[AssetKind] | None = None,
+        limit: int = 3,
+    ) -> ContextPack:
+        """Wire 33: 按 query 字符串拉相关 context (不依赖 task_ref).
+
+        给 hermes ExecutionStep.action_type="use_memory" 用 — LLM 提供
+        payload.query, 我们拉 memory/knowledge 加塞进 step prompt.
+
+        异常 / 空 query → 返空 ContextPack (不爆 step 主流程).
+        """
+        query_terms = _terms(query)
+        if not query_terms:
+            return ContextPack()
+
+        import logging
+
+        logger = logging.getLogger(__name__)
+        candidates: list[LayeredAsset] = []
+        for kind in kinds or ("memory", "knowledge", "methodology"):
+            try:
+                candidates.extend(
+                    await self._store.list(tenant_id=tenant_id, asset_kind=kind, limit=100)
+                )
+            except Exception as exc:
+                logger.debug("packer.pack_query store_list_failed kind=%s err=%s", kind, exc)
+                continue
+
+        scored: list[tuple[float, LayeredAsset]] = []
+        for asset in candidates:
+            score = _score_asset(asset, query_terms)
+            if score > 0:
+                scored.append((score, asset))
+        scored.sort(key=lambda item: (-item[0], item[1].asset_id))
+        return ContextPack(
+            items=[
+                PackedContextItem(
+                    asset_id=asset.asset_id,
+                    asset_kind=asset.asset_kind,
+                    relevance_score=score,
+                    title=str(
+                        asset.l1_metadata.get("title") or asset.l1_metadata.get("name") or ""
+                    ),
+                    tags=asset.tags,
+                    summary=asset.l2_summary or _metadata_summary(asset),
+                )
+                for score, asset in scored[:limit]
+            ]
+        )
+
     async def pack(
         self,
         task_ref: TaskRef,

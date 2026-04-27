@@ -71,3 +71,79 @@ async def test_context_packer_keeps_tenant_boundary() -> None:
     pack = await ContextPacker(store).pack(_task(), tenant_id="u-sylvan")
 
     assert pack.items == []
+
+
+# ---- Wire 33: pack_query (hermes use_memory) ----
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pack_query_returns_relevant_assets() -> None:
+    """Wire 33: pack_query 用 query string 拉相关 memory."""
+    store = InMemoryAssetStore()
+    relevant = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "auth_service 架构"},
+        summary="JWT 认证服务的设计与实现",
+        tags=["auth", "jwt"],
+    )
+    irrelevant = LayeredAsset.build(
+        "knowledge",
+        "u-sylvan",
+        metadata={"title": "销售话术"},
+        summary="销售跟进套路",
+        tags=["sales"],
+    )
+    await store.put(relevant)
+    await store.put(irrelevant)
+
+    pack = await ContextPacker(store).pack_query("JWT 认证 实现", tenant_id="u-sylvan")
+
+    assert any(it.asset_id == relevant.asset_id for it in pack.items)
+    assert all(it.asset_id != irrelevant.asset_id for it in pack.items)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pack_query_empty_query_returns_empty() -> None:
+    store = InMemoryAssetStore()
+    pack = await ContextPacker(store).pack_query("", tenant_id="u-sylvan")
+    assert pack.items == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pack_query_respects_tenant() -> None:
+    store = InMemoryAssetStore()
+    await store.put(
+        LayeredAsset.build(
+            "memory",
+            "u-other",
+            metadata={"title": "other tenant note"},
+            summary="should not leak",
+            tags=["jwt"],
+        )
+    )
+
+    pack = await ContextPacker(store).pack_query("jwt", tenant_id="u-sylvan")
+    assert pack.items == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pack_query_respects_limit() -> None:
+    store = InMemoryAssetStore()
+    for i in range(5):
+        await store.put(
+            LayeredAsset.build(
+                "memory",
+                "u-sylvan",
+                metadata={"title": f"jwt note {i}"},
+                summary=f"about jwt content {i}",
+                tags=["jwt", "auth"],
+            )
+        )
+
+    pack = await ContextPacker(store).pack_query("jwt auth", tenant_id="u-sylvan", limit=2)
+    assert len(pack.items) == 2

@@ -1,10 +1,10 @@
-"""Wire 31/32: hermes ExecutionStep.action_type → step_plan.skill_hint 覆盖 +
-ask_user → question 抽取."""
+"""Wire 31/32/33: hermes action_type 全 wire 测试 (skill / question / memory query)."""
 
 from __future__ import annotations
 
 from kun.engineering.execution_protocol import ExecutionStep
 from kun.engineering.orchestrator import (
+    _hermes_memory_query_from_step,
     _hermes_question_from_step,
     _hermes_skill_from_action,
 )
@@ -135,3 +135,94 @@ def test_question_all_empty_returns_default() -> None:
         confidence=0.5,
     )
     assert _hermes_question_from_step(step) == "需要您澄清"
+
+
+# ---- Wire 33: _hermes_memory_query_from_step ----
+
+
+class _FakePlan:
+    """轻量 step_plan stub."""
+
+    def __init__(self, description: str = "") -> None:
+        self.description = description
+
+
+def test_memory_query_from_payload_query_field() -> None:
+    step = _make_step("use_memory", {"query": "Q4 营收数据"})
+    assert _hermes_memory_query_from_step(step, _FakePlan()) == "Q4 营收数据"
+
+
+def test_memory_query_from_payload_search_alias() -> None:
+    step = _make_step("use_memory", {"search": "auth_service.py"})
+    assert _hermes_memory_query_from_step(step, _FakePlan()) == "auth_service.py"
+
+
+def test_memory_query_from_payload_topic_alias() -> None:
+    step = _make_step("use_memory", {"topic": "登录接口"})
+    assert _hermes_memory_query_from_step(step, _FakePlan()) == "登录接口"
+
+
+def test_memory_query_priority_query_over_search() -> None:
+    step = _make_step("use_memory", {"query": "primary", "search": "secondary"})
+    assert _hermes_memory_query_from_step(step, _FakePlan()) == "primary"
+
+
+def test_memory_query_keywords_list_joined() -> None:
+    step = _make_step("use_memory", {"keywords": ["auth", "jwt", "session"]})
+    result = _hermes_memory_query_from_step(step, _FakePlan())
+    assert "auth" in result
+    assert "jwt" in result
+    assert "session" in result
+
+
+def test_memory_query_falls_back_to_thought() -> None:
+    """payload 都空 → 用 thought."""
+    step = ExecutionStep(
+        step_id=1,
+        thought="需要回顾之前讨论的架构",
+        action_type="use_memory",
+        action_payload={},
+        expected_outcome="x",
+        confidence=0.5,
+    )
+    assert _hermes_memory_query_from_step(step, _FakePlan()) == "需要回顾之前讨论的架构"
+
+
+def test_memory_query_falls_back_to_step_description() -> None:
+    """payload + thought 都空 → 用 step.description."""
+    step = ExecutionStep(
+        step_id=1,
+        thought="",
+        action_type="use_memory",
+        action_payload={},
+        expected_outcome="",
+        confidence=0.5,
+    )
+    plan = _FakePlan(description="step 描述兜底")
+    assert _hermes_memory_query_from_step(step, plan) == "step 描述兜底"
+
+
+def test_memory_query_all_empty_returns_empty_string() -> None:
+    """全空 → 返空字符串 (orchestrator 见到空就跳过 pack_query)."""
+    step = ExecutionStep(
+        step_id=1,
+        thought="",
+        action_type="use_memory",
+        action_payload={},
+        expected_outcome="",
+        confidence=0.5,
+    )
+    assert _hermes_memory_query_from_step(step, _FakePlan()) == ""
+
+
+def test_memory_query_blank_strings_falls_through() -> None:
+    """payload 字段都是空白 → fallback."""
+    step = ExecutionStep(
+        step_id=1,
+        thought="thought-fallback",
+        action_type="use_memory",
+        action_payload={"query": "   ", "search": ""},
+        expected_outcome="x",
+        confidence=0.5,
+    )
+    assert _hermes_memory_query_from_step(step, _FakePlan()) == "thought-fallback"
