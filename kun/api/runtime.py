@@ -120,18 +120,43 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     app.state.value_gate = value_gate
 
     # V2.2 §22 + Wire 3: hermes 结构化执行 generator (默认开, FAST 模式自动跳过)
+    # Wire 35: 加 ThoughtActionConsistency checker → 自动 rethink (max 2 次)
     structured_step_generator = None
     if _os.getenv("KUN_HERMES_ENABLED", "1") == "1":
+        from kun.engineering.execution_protocol import ThoughtActionConsistency
         from kun.interface.llm import get_router
 
-        structured_step_generator = StructuredStepGenerator(get_router())
+        consistency_threshold = float(_os.getenv("KUN_HERMES_CONSISTENCY_THRESHOLD", "0.5"))
+        max_rethinks = int(_os.getenv("KUN_HERMES_MAX_RETHINKS", "2"))
+        structured_step_generator = StructuredStepGenerator(
+            get_router(),
+            consistency_checker=ThoughtActionConsistency(
+                consistency_threshold=consistency_threshold
+            ),
+            max_rethinks=max_rethinks,
+        )
     app.state.structured_step_generator = structured_step_generator
+
+    # V2.2 Wire 36 (BATCH4 C3 / T53): VerificationRunner — task done 前真验证
+    # 默认开, env KUN_VERIFICATION_ENABLED=0 关
+    verification_runner = None
+    if _os.getenv("KUN_VERIFICATION_ENABLED", "1") == "1":
+        from kun.engineering.verification_runner import (
+            PendingActionApprovalStore,
+            VerificationRunner,
+        )
+
+        verification_runner = VerificationRunner(
+            approval_store=PendingActionApprovalStore(),
+        )
+    app.state.verification_runner = verification_runner
 
     orchestrator = Orchestrator(
         rule_engine=rule_engine,
         emergent_switch_manager=emergent_switch_manager,
         value_gate=value_gate,
         structured_step_generator=structured_step_generator,
+        verification_runner=verification_runner,
     )
     app.state.rule_engine = rule_engine
     app.state.orchestrator = orchestrator
