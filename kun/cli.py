@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,10 @@ app.add_typer(security_app, name="security")
 app.add_typer(promises_app, name="promises")
 app.add_typer(lab_app, name="lab")
 lab_app.add_typer(lab_benchmark_app, name="benchmark")
+
+
+def _hash_prompt(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:32]
 
 
 @app.command()
@@ -381,12 +386,17 @@ def lab_run(
             n_paths=paths,
             selection_method=selection,
             cost_budget_total_usd=cost_budget,
+            metadata={"prompt": task},
         )
 
         with tenant_scope(TenantContext(tenant_id=tenant)):
             result = await executor.run(task, config=cfg, task_type=task_type)
             # 同时记进 ExperimentLog 让 promote 子命令能看
-            get_experiment_log().record(task_type=task_type, ensemble_result=result)
+            get_experiment_log().record(
+                task_type=task_type,
+                ensemble_result=result,
+                prompt_hash=_hash_prompt(task),
+            )
 
         # 输出
         table = Table(title=f"实验 {result.experiment_id} — winner={result.winning_path_idx}")
@@ -455,6 +465,190 @@ def lab_stats(
         )
     console.print(table)
     console.print(f"[dim]total lab cost: ${log.total_lab_cost_usd():.4f}[/]")
+
+
+def _lab_find_experiment(experiment_id: str) -> Any:
+    from kun.lab import get_experiment_log
+
+    for exp in get_experiment_log().list_all():
+        if exp.experiment_id == experiment_id:
+            return exp
+    console.print(f"[bold red]experiment not found[/]: {experiment_id}")
+    raise typer.Exit(code=2)
+
+
+def _winner_score(result: Any) -> float:
+    winner_idx = result.winning_path_idx
+    for path in result.path_results:
+        if path.path_idx == winner_idx:
+            return float(path.score)
+    return 0.0
+
+
+@lab_app.command("inspect")
+def lab_inspect(
+    experiment_id: str = typer.Argument(..., help="Experiment id"),
+) -> None:
+    """查看一次 lab experiment 的完整路径输出."""
+    exp = _lab_find_experiment(experiment_id)
+    result = exp.ensemble_result
+
+    table = Table(title=f"experiment {exp.experiment_id} — task_type={exp.task_type}")
+    table.add_column("winner")
+    table.add_column("idx", justify="right")
+    table.add_column("strategy")
+    table.add_column("tier")
+    table.add_column("temp", justify="right")
+    table.add_column("score", justify="right")
+    table.add_column("cost $", justify="right")
+    table.add_column("error")
+    table.add_column("output")
+    for path in result.path_results:
+        table.add_row(
+            "✓" if path.path_idx == result.winning_path_idx else "",
+            str(path.path_idx),
+            str(path.config.get("strategy", "")),
+            str(path.config.get("tier", "")),
+            str(path.config.get("temperature", "")),
+            f"{path.score:.2f}",
+            f"{path.cost_usd:.4f}",
+            path.error,
+            path.output,
+        )
+    console.print(table)
+    console.print(
+        f"[dim]selection={result.selection_reason} cost=${result.total_cost_usd:.4f} "
+        f"latency={result.total_latency_sec:.2f}s budget_exceeded={result.budget_exceeded}[/]"
+    )
+    for path in result.path_results:
+        console.print(f"[bold]path {path.path_idx} output[/]\n{path.output}")
+
+
+@lab_app.command("explain")
+def lab_explain(
+    experiment_id: str = typer.Argument(..., help="Experiment id"),
+) -> None:
+    """用便宜 judge 模型解释为什么 winner 更好."""
+    from kun.interface.llm import get_router
+    from kun.interface.llm.base import LLMMessage, LLMRequest, TaskProfile
+
+    exp = _lab_find_experiment(experiment_id)
+    result = exp.ensemble_result
+    prompt = str(result.config.metadata.get("prompt", ""))
+    path_summary = [
+        {
+            "idx": p.path_idx,
+            "strategy": p.config.get("strategy", ""),
+            "score": p.score,
+            "cost_usd": p.cost_usd,
+            "error": p.error,
+            "output": p.output[:1200],
+            "winner": p.path_idx == result.winning_path_idx,
+        }
+        for p in result.path_results
+    ]
+
+    async def _go() -> None:
+        router = get_router()
+        req = LLMRequest(
+            messages=[
+                LLMMessage(
+                    role="system",
+                    content="你是 KUN-Lab 实验解释员，用中文大白话解释 winner 为什么更好。",
+                ),
+                LLMMessage(
+                    role="user",
+                    content=(
+                        f"用户原始 prompt:\n{prompt or '[旧实验未保存 prompt]'}\n\n"
+                        f"实验路径 JSON:\n{json.dumps(path_summary, ensure_ascii=False)}\n\n"
+                        "请输出一段 markdown，说明 winner 的优势、其他路径的问题、"
+                        "以及下次可复用的 recipe。"
+                    ),
+                ),
+            ],
+            temperature=0.2,
+            max_tokens=1200,
+            profile=TaskProfile(task_type="kun_lab.explain", prefer_speed=True),
+        )
+        resp = await router.invoke(req, purpose="judge")
+        console.print(resp.content)
+
+    asyncio.run(_go())
+
+
+@lab_app.command("replay")
+def lab_replay(
+    experiment_id: str = typer.Argument(..., help="Experiment id"),
+    enable: bool = typer.Option(
+        False,
+        "--enable",
+        help="自动 set KUN_LAB_MODE=1 (默认要求用户已 export)",
+    ),
+    no_emit: bool = typer.Option(False, "--no-emit", help="不 emit experiment.created 事件"),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+) -> None:
+    """用同 prompt + 同 EnsembleConfig 重跑一次 experiment."""
+    import os
+
+    if enable:
+        os.environ["KUN_LAB_MODE"] = "1"
+
+    from kun.core.tenancy import TenantContext, tenant_scope
+    from kun.lab import EnsembleExecutor, LabEventEmitter, get_experiment_log, make_default_adapter
+    from kun.lab.ensemble_executor import is_lab_enabled
+
+    if not is_lab_enabled():
+        console.print("[bold red]KUN-Lab 未启用[/]: export KUN_LAB_MODE=1, 或加 --enable flag")
+        raise typer.Exit(code=2)
+
+    exp = _lab_find_experiment(experiment_id)
+    prompt = str(exp.ensemble_result.config.metadata.get("prompt", "")).strip()
+    if not prompt:
+        console.print(
+            "[bold red]无法 replay[/]: 这条旧实验没有保存原始 prompt。"
+            "请用 C30 之后的 `kun lab run` 生成新实验。"
+        )
+        raise typer.Exit(code=2)
+
+    async def _go() -> None:
+        cfg = exp.ensemble_result.config.model_copy(deep=True)
+        cfg.metadata = {**cfg.metadata, "prompt": prompt, "replay_of": experiment_id}
+        adapter = make_default_adapter(task_type=exp.task_type)
+        emitter = None if no_emit else LabEventEmitter(task_type_default=exp.task_type)
+        executor = EnsembleExecutor(
+            adapter,
+            event_emitter=emitter.on_experiment_completed if emitter else None,
+        )
+
+        with tenant_scope(TenantContext(tenant_id=tenant)):
+            new_result = await executor.run(prompt, config=cfg, task_type=exp.task_type)
+            get_experiment_log().record(
+                task_type=exp.task_type,
+                ensemble_result=new_result,
+                prompt_hash=exp.prompt_hash,
+                notes=f"replay_of={experiment_id}",
+            )
+
+        old_score = _winner_score(exp.ensemble_result)
+        new_score = _winner_score(new_result)
+        table = Table(title=f"replay {experiment_id} → {new_result.experiment_id}")
+        table.add_column("metric")
+        table.add_column("old")
+        table.add_column("new")
+        table.add_row(
+            "winner_idx",
+            str(exp.ensemble_result.winning_path_idx),
+            str(new_result.winning_path_idx),
+        )
+        table.add_row("winner_score", f"{old_score:.2f}", f"{new_score:.2f}")
+        table.add_row(
+            "cost_usd",
+            f"{exp.ensemble_result.total_cost_usd:.4f}",
+            f"{new_result.total_cost_usd:.4f}",
+        )
+        console.print(table)
+
+    asyncio.run(_go())
 
 
 @lab_app.command("promote")
