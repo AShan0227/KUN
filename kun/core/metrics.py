@@ -97,6 +97,50 @@ events_published_total = Counter(
     ["event_type"],
 )
 
+# ============== KUN-Lab (V2.2 §26) ==============
+
+lab_experiment_total = Counter(
+    "kun_lab_experiment_total",
+    "KUN-Lab ensemble experiments executed",
+    ["task_type", "status"],  # status: ok | budget_exceeded | error
+)
+
+lab_experiment_cost_usd = Counter(
+    "kun_lab_experiment_cost_usd",
+    "Cumulative KUN-Lab cost (separate budget from production)",
+    ["task_type"],
+)
+
+lab_experiment_latency_seconds = Histogram(
+    "kun_lab_experiment_latency_seconds",
+    "Ensemble total latency (max across paths)",
+    ["task_type"],
+    buckets=(0.5, 1, 2.5, 5, 10, 30, 60, 120, 300),
+)
+
+lab_path_total = Counter(
+    "kun_lab_path_total",
+    "Individual ensemble paths run",
+    ["strategy", "tier", "status"],  # status: ok | error | cancelled
+)
+
+lab_budget_cap_total = Counter(
+    "kun_lab_budget_cap_total",
+    "Times Wire 27 cost cap triggered (cancelled paths)",
+    ["task_type"],
+)
+
+lab_promotion_total = Counter(
+    "kun_lab_promotion_total",
+    "RecipePromoter promotions emitted",
+    ["task_type", "target_module"],
+)
+
+lab_registry_size = Gauge(
+    "kun_lab_registry_size",
+    "LabRecipeRegistry current entry count (lab → main repo)",
+)
+
 # ============== Task lifecycle ==============
 
 task_started_total = Counter(

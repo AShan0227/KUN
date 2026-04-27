@@ -35,6 +35,37 @@ def is_lab_enabled() -> bool:
     return os.getenv("KUN_LAB_MODE", "0") == "1"
 
 
+def _emit_ensemble_metrics(result: EnsembleResult, *, task_type: str | None) -> None:
+    """Best-effort Prometheus metric emit (Wire 28). 不依赖 prom_client 安装."""
+    try:
+        from kun.core.metrics import (
+            lab_budget_cap_total,
+            lab_experiment_cost_usd,
+            lab_experiment_latency_seconds,
+            lab_experiment_total,
+            lab_path_total,
+        )
+
+        tt = task_type or "unspecified"
+        status = "budget_exceeded" if result.budget_exceeded else "ok"
+        lab_experiment_total.labels(task_type=tt, status=status).inc()
+        lab_experiment_cost_usd.labels(task_type=tt).inc(result.total_cost_usd)
+        lab_experiment_latency_seconds.labels(task_type=tt).observe(result.total_latency_sec)
+        if result.budget_exceeded:
+            lab_budget_cap_total.labels(task_type=tt).inc()
+        for pr in result.path_results:
+            path_status = "cancelled" if pr.error == "cancelled_budget_exceeded" else (
+                "error" if pr.error else "ok"
+            )
+            lab_path_total.labels(
+                strategy=str(pr.config.get("strategy", "unknown")),
+                tier=str(pr.config.get("tier", "unknown")),
+                status=path_status,
+            ).inc()
+    except Exception as e:
+        logger.debug("lab.metrics_skipped err=%s", e)
+
+
 PathStrategy = Literal[
     "tier_top_low_temp",  # tier=top + temp=0.1 (保守)
     "tier_strong_mid_temp",  # tier=strong + temp=0.5 (中性)
@@ -229,6 +260,9 @@ class EnsembleExecutor:
             budget_exceeded=budget_exceeded,
             budget_cancelled_count=cancelled_count,
         )
+
+        # Wire 28: Prometheus metrics (best-effort, 不依赖)
+        _emit_ensemble_metrics(result, task_type=task_type)
 
         # Wire 21: 把实验结果 emit 进 events bus (best-effort, 不阻塞主流程)
         if self._event_emitter is not None:

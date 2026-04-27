@@ -81,6 +81,13 @@ class LabRecipeRegistry:
             entry.strategy,
             entry.win_rate,
         )
+        # Wire 28: gauge 更新 (best-effort)
+        try:
+            from kun.core.metrics import lab_registry_size
+
+            lab_registry_size.set(len(self._entries))
+        except Exception as exc:
+            logger.debug("lab.registry.metric_skipped err=%s", exc)
         return True
 
     def get(self, task_type: str, target_module: str) -> LabRecipeEntry | None:

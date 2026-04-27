@@ -113,6 +113,17 @@ class RecipePromoter:
             promotions.append(p)
             self._promotions_history.append(p)
 
+            # Wire 28: Prometheus metric (best-effort)
+            try:
+                from kun.core.metrics import lab_promotion_total
+
+                lab_promotion_total.labels(
+                    task_type=p.task_type,
+                    target_module=p.target_module or "general",
+                ).inc()
+            except Exception as exc:
+                logger.debug("lab.promotion.metric_skipped err=%s", exc)
+
             # 推主仓库 (KnowledgePrecipitation)
             dispatch_error = ""
             if self._dispatcher is not None:
