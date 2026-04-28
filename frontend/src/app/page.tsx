@@ -42,12 +42,33 @@ type GraphNeighbor = {
   score: number;
 };
 
+const API_ORIGIN =
+  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_ORIGIN) || "";
+
 const WS_URL = (() => {
   if (typeof window === "undefined") return "";
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const host = window.location.host;
+  // 优先用 NEXT_PUBLIC_API_ORIGIN (跨 origin 部署时), 否则同源
+  const base = API_ORIGIN || `${window.location.protocol}//${window.location.host}`;
+  const proto = base.startsWith("https") ? "wss:" : "ws:";
+  const host = base.replace(/^https?:\/\//, "");
   return `${proto}//${host}/ws?tenant_id=u-sylvan&user_id=sylvan`;
 })();
+
+type QiStatus = {
+  window_active: boolean;
+  daily_limit_usd: number;
+  spent_today_usd: number;
+  remaining_usd: number;
+};
+
+type Protocol = {
+  protocol_id: string;
+  version: string;
+  status: string;
+  trigger: { task_type_pattern: string };
+  execution: { mode: string };
+  created_by: string;
+};
 
 export default function Home() {
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -59,7 +80,41 @@ export default function Home() {
   const [graphError, setGraphError] = useState("");
   const [connected, setConnected] = useState(false);
   const [totalCost, setTotalCost] = useState(0);
+  const [qiStatus, setQiStatus] = useState<QiStatus | null>(null);
+  const [protocols, setProtocols] = useState<Protocol[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
+
+  // V2.3 启状态 + 协议轮询 (每 30s 一次)
+  useEffect(() => {
+    let cancelled = false;
+    async function refresh() {
+      try {
+        const [qiRes, protoRes] = await Promise.all([
+          fetch(`${API_ORIGIN}/api/qi/status`, {
+            headers: { "X-Tenant-Id": "u-sylvan" },
+          }).catch(() => null),
+          fetch(`${API_ORIGIN}/api/protocols?tenant=u-sylvan`).catch(() => null),
+        ]);
+        if (cancelled) return;
+        if (qiRes && qiRes.ok) {
+          const data = await qiRes.json();
+          setQiStatus(data as QiStatus);
+        }
+        if (protoRes && protoRes.ok) {
+          const data = await protoRes.json();
+          setProtocols(data as Protocol[]);
+        }
+      } catch {
+        // ignore polling errors
+      }
+    }
+    void refresh();
+    const id = setInterval(refresh, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   useEffect(() => {
     if (!WS_URL) return;
@@ -211,6 +266,64 @@ export default function Home() {
           <span className="text-kun-accent">累计 ${totalCost.toFixed(4)}</span>
         </div>
         <div className="flex-1 space-y-2">
+          {/* V2.3: 启 (Qi) 状态卡 */}
+          <div className="bg-white rounded p-2 border border-gray-200 text-xs space-y-1">
+            <div className="font-medium flex justify-between">
+              <span>🌙 启 (Qi) 状态</span>
+              {qiStatus ? (
+                qiStatus.window_active ? (
+                  <span className="text-kun-good">● 活跃</span>
+                ) : (
+                  <span className="text-gray-500">○ 窗口外</span>
+                )
+              ) : (
+                <span className="text-gray-400">加载中...</span>
+              )}
+            </div>
+            {qiStatus && (
+              <div className="text-gray-500 space-y-0.5">
+                <div>今日花费: ${qiStatus.spent_today_usd.toFixed(4)}</div>
+                <div>
+                  剩余预算: ${qiStatus.remaining_usd.toFixed(2)} / $
+                  {qiStatus.daily_limit_usd.toFixed(2)}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* V2.3: 协议库卡片 */}
+          <div className="bg-white rounded p-2 border border-gray-200 text-xs space-y-1">
+            <div className="font-medium flex justify-between">
+              <span>📜 协议库 ({protocols.length})</span>
+              <span className="text-gray-400">stable+experimental</span>
+            </div>
+            {protocols.length === 0 && (
+              <p className="text-gray-500">没有协议. 跑 `kun protocol list` 自动 seed.</p>
+            )}
+            <div className="space-y-1 max-h-40 overflow-y-auto">
+              {protocols.map((p) => (
+                <div
+                  key={`${p.protocol_id}@${p.version}`}
+                  className="border-t pt-1"
+                >
+                  <div className="font-medium truncate">
+                    {p.protocol_id}
+                    <span className="text-gray-400 ml-1">@{p.version}</span>
+                  </div>
+                  <div className="text-gray-500 flex justify-between">
+                    <span>
+                      {p.status === "stable" ? "🟢" : "🟡"} {p.status}
+                    </span>
+                    <span>{p.execution.mode}</span>
+                    <span className="text-gray-400">
+                      {p.created_by === "qi" ? "🌙 涌现" : "🌱 seed"}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div className="bg-white rounded p-2 border border-gray-200 text-xs space-y-2">
             <div className="font-medium">关系图</div>
             <div className="grid grid-cols-[88px_1fr] gap-2">

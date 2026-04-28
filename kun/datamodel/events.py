@@ -77,6 +77,9 @@ EventKind = Literal[
     "qi.window.opened",
     "qi.window.closed",
     "qi.budget.exhausted",
+    "delivery.review_done",
+    "delivery.needs_review",
+    "delivery.failed",
 ]
 
 

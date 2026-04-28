@@ -1335,59 +1335,121 @@ class Orchestrator:
                     except Exception:
                         log.exception("value_gate.record_step_outcome failed (non-fatal)")
 
-            # V2.2 Wire 36 (BATCH4 C3 / T53): 标记 done 前跑 verification_specs
-            # task spec 有 verification_specs + 装了 VerificationRunner → 真验证
-            verification_failed = False
-            verification_results: list[Any] = []
-            if (
-                self.verification_runner is not None
-                and task_ref.spec is not None
-                and task_ref.spec.verification_specs
-            ):
+            # V2.3+ PreDeliverGate (产品级交付前审核, 取代裸 verification 调用)
+            # 跑 verification + AntiGaming + 自检 + 协议合规 → 综合 verdict
+            # KUN_PRE_DELIVER_GATE_ENABLED=0 → 跳过 (走旧路径, 直接 mark done)
+            from kun.engineering.pre_deliver_gate import PreDeliverGate
+
+            if PreDeliverGate.is_enabled():
+                gate = PreDeliverGate(
+                    verification_runner=self.verification_runner,
+                    anti_gaming_detector=self.anti_gaming_detector,
+                    active_protocol=active_protocol,
+                )
                 final_artifact = answer if isinstance(answer, str) else str(answer)
-                for vspec in task_ref.spec.verification_specs:
-                    try:
-                        vresult = await self.verification_runner.verify(vspec, final_artifact)
-                    except Exception as exc:
-                        log.exception(
-                            "verification.verify_failed task=%s kind=%s",
-                            task_ref.meta.task_id,
-                            vspec.kind,
-                        )
-                        if vspec.required:
-                            verification_failed = True
-                        verification_results.append(
-                            {"kind": vspec.kind, "passed": False, "error": str(exc)}
-                        )
-                        continue
-                    verification_results.append(
-                        {
-                            "kind": vresult.kind,
-                            "passed": vresult.passed,
-                            "error_msg": vresult.error_msg,
-                        }
+                verdict = await gate.review(
+                    answer=final_artifact,
+                    task_ref=task_ref,
+                    plan=plan,
+                    step_records=runtime.completed_steps,
+                )
+                # Backward compat: emit verification_done with V2.2 shape.
+                # failed=True 只在 *required* verification fail 时 (matches V2.2 semantics).
+                _verification_checks = [c for c in verdict.checks if c.name.startswith("verification.")]
+                _verification_results = [
+                    {
+                        "kind": c.name.replace("verification.", ""),
+                        "passed": c.passed,
+                        "error_msg": c.reason if not c.passed else "",
+                        # legacy V2.2: exception case used "error" key
+                        "error": c.reason if (not c.passed and "exception" in c.reason.lower()) else "",
+                    }
+                    for c in _verification_checks
+                ]
+                # required = severity high (我们 PreDeliverGate 把 required spec 标 high)
+                _verification_failed = any(
+                    (not c.passed) and c.severity == "high" for c in _verification_checks
+                )
+                if _verification_results:
+                    yield OrchestratorEvent(
+                        kind="verification_done",
+                        data={
+                            "task_id": task_ref.meta.task_id,
+                            "results": _verification_results,
+                            "failed": _verification_failed,
+                        },
                     )
-                    if vspec.required and not vresult.passed:
-                        verification_failed = True
 
                 yield OrchestratorEvent(
-                    kind="verification_done",
+                    kind="delivery.review_done",
                     data={
                         "task_id": task_ref.meta.task_id,
-                        "results": verification_results,
-                        "failed": verification_failed,
+                        "passed": verdict.passed,
+                        "final_status": verdict.final_status,
+                        "reason_summary": verdict.reason_summary,
+                        "checks": [
+                            {
+                                "name": c.name,
+                                "passed": c.passed,
+                                "severity": c.severity,
+                                "reason": c.reason,
+                            }
+                            for c in verdict.checks
+                        ],
                     },
                 )
-
-            if verification_failed:
-                status = "failed"
-                log.warning(
-                    "verification.task_marked_failed task=%s results=%s",
-                    task_ref.meta.task_id,
-                    verification_results,
-                )
+                async with session_scope() as s:
+                    await emit(
+                        s,
+                        Event.build(
+                            tenant_id=tenant.tenant_id,
+                            event_type="delivery.review_done",
+                            payload={
+                                "task_id": task_ref.meta.task_id,
+                                "passed": verdict.passed,
+                                "final_status": verdict.final_status,
+                                "reason_summary": verdict.reason_summary,
+                                "check_count": len(verdict.checks),
+                                "fail_count": sum(1 for c in verdict.checks if not c.passed),
+                            },
+                            task_ref=task_ref.meta.task_id,
+                        ),
+                    )
+                if verdict.final_status == "failed":
+                    status = "failed"
+                    log.warning(
+                        "pre_deliver_gate.failed task=%s reason=%s",
+                        task_ref.meta.task_id,
+                        verdict.reason_summary,
+                    )
+                elif verdict.final_status == "needs_review":
+                    # mapped to "paused" task status (用户 confirm 后可 resume)
+                    status = "paused"
+                    log.warning(
+                        "pre_deliver_gate.needs_review task=%s reason=%s",
+                        task_ref.meta.task_id,
+                        verdict.reason_summary,
+                    )
+                else:
+                    status = "done"
             else:
-                status = "done"
+                # legacy path (KUN_PRE_DELIVER_GATE_ENABLED=0)
+                verification_failed = False
+                if (
+                    self.verification_runner is not None
+                    and task_ref.spec is not None
+                    and task_ref.spec.verification_specs
+                ):
+                    final_artifact = answer if isinstance(answer, str) else str(answer)
+                    for vspec in task_ref.spec.verification_specs:
+                        try:
+                            vresult = await self.verification_runner.verify(vspec, final_artifact)
+                            if vspec.required and not vresult.passed:
+                                verification_failed = True
+                        except Exception:
+                            if vspec.required:
+                                verification_failed = True
+                status = "failed" if verification_failed else "done"
         except TaskTimedOutError as exc:
             status = "failed"
             log.warning(

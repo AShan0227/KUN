@@ -1,0 +1,148 @@
+"""V2.3 启 (Qi) HTTP API — status / start / stop / metrics.
+
+跟 `kun qi status` CLI 同等功能, 让前端 web UI 显示启状态.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+from fastapi import APIRouter, Request
+from pydantic import BaseModel
+
+from kun.core.tenancy import current_tenant
+
+router = APIRouter(prefix="/api/qi", tags=["qi"])
+
+
+class QiStatusResponse(BaseModel):
+    window_active: bool
+    daily_limit_usd: float
+    spent_today_usd: float
+    remaining_usd: float
+    qi_runtime_enabled: bool
+    qi_force_active: bool
+    protocol_count: int = 0
+    pheromone_strength: float = 0.0
+
+
+class QiActionResponse(BaseModel):
+    ok: bool
+    message: str
+
+
+def _qi_window_active(request: Request) -> bool:
+    if os.getenv("KUN_QI_FORCE_DISABLE") == "1":
+        return False
+    if os.getenv("KUN_QI_FORCE_ACTIVE") == "1":
+        return True
+    qi_window = getattr(request.app.state, "qi_window_config", None)
+    if qi_window is None:
+        return False
+    try:
+        from kun.qi.window import is_qi_window_active
+
+        return bool(is_qi_window_active(qi_window))
+    except Exception:
+        return False
+
+
+@router.get("/status", response_model=QiStatusResponse)
+async def qi_status(request: Request) -> QiStatusResponse:
+    tenant = current_tenant()
+    tenant_id = tenant.tenant_id
+
+    budget = getattr(request.app.state, "qi_budget", None)
+    if budget is not None:
+        spent = budget.get_today_spent(tenant_id)
+        remaining = budget.remaining_budget(tenant_id)
+        daily_limit = budget._daily_limit
+    else:
+        spent = 0.0
+        remaining = 0.0
+        daily_limit = 0.0
+
+    import contextlib
+
+    # 协议数 (cheap, 不阻塞)
+    proto_count = 0
+    registry = getattr(request.app.state, "protocol_registry", None)
+    if registry is not None:
+        with contextlib.suppress(Exception):
+            listed = await registry.list_all(tenant_id)
+            proto_count = len(listed)
+
+    # Pheromone 总强度
+    pher_total = 0.0
+    pher_storage = getattr(request.app.state, "pheromone_storage", None)
+    if pher_storage is not None and hasattr(pher_storage, "_edges"):
+        with contextlib.suppress(Exception):
+            pher_total = float(
+                sum(v for (t, *_), v in pher_storage._edges.items() if t == tenant_id)
+            )
+
+    return QiStatusResponse(
+        window_active=_qi_window_active(request),
+        daily_limit_usd=daily_limit,
+        spent_today_usd=spent,
+        remaining_usd=remaining,
+        qi_runtime_enabled=os.getenv("KUN_QI_RUNTIME_ENABLED", "1") == "1",
+        qi_force_active=os.getenv("KUN_QI_FORCE_ACTIVE", "0") == "1",
+        protocol_count=proto_count,
+        pheromone_strength=pher_total,
+    )
+
+
+@router.post("/force_active", response_model=QiActionResponse)
+async def qi_force_active(request: Request) -> QiActionResponse:
+    """临时强制启窗口活跃 (process env, 重启失效).
+
+    适合 dev / dogfood 场景, 不需等到 1-5 AM.
+    """
+    os.environ["KUN_QI_FORCE_ACTIVE"] = "1"
+    os.environ.pop("KUN_QI_FORCE_DISABLE", None)
+    return QiActionResponse(ok=True, message="启窗口已强制活跃 (此 process 内有效)")
+
+
+@router.post("/release", response_model=QiActionResponse)
+async def qi_release(request: Request) -> QiActionResponse:
+    """释放强制活跃, 回到时间窗口判断."""
+    os.environ.pop("KUN_QI_FORCE_ACTIVE", None)
+    return QiActionResponse(ok=True, message="启窗口强制活跃已释放, 回到正常窗口判断")
+
+
+class TriggerExploreRequest(BaseModel):
+    job: str = "darwin"  # darwin / ai_scientist / pc_train
+
+
+@router.post("/trigger_explore", response_model=dict[str, Any])
+async def qi_trigger_explore(
+    payload: TriggerExploreRequest, request: Request
+) -> dict[str, Any]:
+    """手动触发启窗口里的 cron job (Darwin / AI Scientist / PC train).
+
+    用户在前端按"立即跑一次探索"时调. 不阻塞: 跑完返结果摘要.
+    """
+    tenant = current_tenant()
+    tenant_id = tenant.tenant_id
+
+    if payload.job == "darwin":
+        from kun.qi.cron_jobs import _qi_darwin_godel_explore
+
+        await _qi_darwin_godel_explore(request.app, tenant_id)
+        return {"ok": True, "job": "darwin", "tenant": tenant_id, "note": "see backend logs for qi_darwin.done"}
+    if payload.job == "ai_scientist":
+        from kun.qi.cron_jobs import _qi_ai_scientist_explore
+
+        await _qi_ai_scientist_explore(request.app, tenant_id)
+        return {"ok": True, "job": "ai_scientist", "tenant": tenant_id}
+    if payload.job == "pc_train":
+        from kun.qi.cron_jobs import _qi_predictive_coding_train
+
+        await _qi_predictive_coding_train(request.app, tenant_id)
+        return {"ok": True, "job": "pc_train", "tenant": tenant_id}
+    return {"ok": False, "error": f"unknown job: {payload.job}"}
+
+
+__all__ = ["router"]
