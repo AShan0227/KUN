@@ -32,6 +32,16 @@ class CapabilityCardCache:
     def __init__(self, *, ttl_sec: float = 30.0) -> None:
         self._ttl_sec = ttl_sec
         self._cache: dict[tuple[str, EntityType, str], CachedCapabilityCard] = {}
+        # V2.3 metrics support: 简单 hit/miss 计数器 (per-tenant)
+        self._hits: dict[str, int] = {}
+        self._misses: dict[str, int] = {}
+
+    def hit_rate(self, tenant_id: str) -> float:
+        """简单 hit/miss 比率 (per tenant). 没记录 → 0."""
+        h = self._hits.get(tenant_id, 0)
+        m = self._misses.get(tenant_id, 0)
+        total = h + m
+        return (h / total) if total else 0.0
 
     def invalidate(
         self,
@@ -64,7 +74,9 @@ class CapabilityCardCache:
         now = time.monotonic()
         cached = self._cache.get(key)
         if cached is not None and cached.expires_at > now:
+            self._hits[tenant_id] = self._hits.get(tenant_id, 0) + 1
             return cached.card
+        self._misses[tenant_id] = self._misses.get(tenant_id, 0) + 1
 
         try:
             async with session_scope(tenant_id=tenant_id) as session:

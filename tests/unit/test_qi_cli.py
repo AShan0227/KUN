@@ -25,9 +25,7 @@ def test_qi_status_disabled_default() -> None:
 def test_qi_status_enabled_force_active() -> None:
     runner = CliRunner()
     reset_qi_budget()
-    with patch.dict(
-        os.environ, {"KUN_QI_ENABLED": "1", "KUN_QI_FORCE_ACTIVE": "1"}, clear=False
-    ):
+    with patch.dict(os.environ, {"KUN_QI_ENABLED": "1", "KUN_QI_FORCE_ACTIVE": "1"}, clear=False):
         result = runner.invoke(app, ["qi", "status"])
     assert result.exit_code == 0
     assert "yes" in result.output  # window_active = yes

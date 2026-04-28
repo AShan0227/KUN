@@ -459,9 +459,10 @@ class Orchestrator:
         # 找到 stable 协议 → 改 task_ref.meta.execution_mode (按 protocol.execution.mode)
         # 协议是 KUN 沉淀的 IP, 鲲消费协议 = "怎么做这个 task" 的标准说明书
         active_protocol: Any = None
-        if self.protocol_registry is not None and _os.getenv(
-            "KUN_PROTOCOL_CONSUME_ENABLED", "0"
-        ) == "1":
+        if (
+            self.protocol_registry is not None
+            and _os.getenv("KUN_PROTOCOL_CONSUME_ENABLED", "0") == "1"
+        ):
             try:
                 task_meta_dict = {
                     "task_type": task_ref.meta.task_type,
@@ -483,9 +484,7 @@ class Orchestrator:
                         existing_specs = list(task_ref.spec.verification_specs or [])
                         for pv in active_protocol.verification:
                             existing_specs.append(
-                                VerificationSpec(
-                                    kind=pv.kind, spec=pv.spec, required=pv.required
-                                )
+                                VerificationSpec(kind=pv.kind, spec=pv.spec, required=pv.required)
                             )
                         task_ref.spec.verification_specs = existing_specs
 
@@ -500,9 +499,7 @@ class Orchestrator:
                                     "protocol_id": active_protocol.protocol_id,
                                     "version": active_protocol.version,
                                     "applied_mode": active_protocol.execution.mode,
-                                    "addon_skills": [
-                                        s.skill for s in active_protocol.skill_chain
-                                    ],
+                                    "addon_skills": [s.skill for s in active_protocol.skill_chain],
                                     "addon_verifications": [
                                         v.kind for v in active_protocol.verification
                                     ],

@@ -157,6 +157,39 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         sched.register("kp_daily", "@daily", _daily_kp)
         sched.register("kp_weekly", "@weekly", _weekly_kp)
 
+        # V2.3: 启 (Qi) cron — 启窗口内自动跑探索 (Darwin / AI Scientist /
+        # PredictionTrainer). 默认装上 (KUN_QI_CRON_ENABLED=1), 但每次 tick 调用
+        # 前会 require_qi_active 守门, 窗口外 skip.
+        if (
+            os.getenv("KUN_QI_CRON_ENABLED", "1") == "1"
+            and getattr(app.state, "protocol_registry", None) is not None
+        ):
+            from kun.qi.cron_jobs import register_qi_cron_jobs
+
+            register_qi_cron_jobs(sched, app, default_tenant)
+
+        # V2.3: seed default protocols (5 stable starter protocols, 已存在则跳过)
+        if (
+            os.getenv("KUN_PROTOCOL_SEED_DEFAULTS", "1") == "1"
+            and getattr(app.state, "protocol_registry", None) is not None
+        ):
+            try:
+                from kun.qi.seed_protocols import seed_default_protocols
+
+                seeded = await seed_default_protocols(app.state.protocol_registry)
+                log.info("v23.protocol_seed.done", seeded=seeded)
+            except Exception:
+                log.exception("v23.protocol_seed.failed (non-fatal)")
+
+        # V2.3: gauge metrics collector — 30s tick set qi_window_active /
+        # pheromone_total_strength / capability_card_cache_hit_rate
+        if os.getenv("KUN_V23_METRICS_COLLECTOR_ENABLED", "1") == "1":
+            from kun.qi.metrics_collector import start_v23_metrics_collector
+
+            app.state.v23_metrics_task = asyncio.create_task(
+                start_v23_metrics_collector(app, default_tenant)
+            )
+
         app.state.cron_scheduler_task = asyncio.create_task(sched.run_forever())
         log.info("cron_scheduler.started", jobs=sched.list_jobs())
 
