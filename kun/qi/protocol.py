@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
 from typing import Protocol as TypingProtocol
@@ -384,6 +384,10 @@ class ProtocolRegistry:
         if protocol.status == "stable":
             self._cache[(protocol.tenant_id, protocol.protocol_id)] = protocol
 
+    async def get(self, tenant_id: str, protocol_id: str, version: str) -> Protocol | None:
+        """Return one exact protocol version."""
+        return await self._storage.get(tenant_id, protocol_id, version)
+
     async def get_active(
         self,
         tenant_id: str,
@@ -463,6 +467,12 @@ def get_protocol_registry() -> ProtocolRegistry:
     return _registry_singleton
 
 
+def set_protocol_registry(registry: ProtocolRegistry) -> None:
+    """Install a process-wide registry, usually from ``install_runtime``."""
+    global _registry_singleton
+    _registry_singleton = registry
+
+
 def reset_protocol_registry() -> None:
     """测试用."""
     global _registry_singleton
@@ -483,4 +493,5 @@ __all__ = [
     "SqlProtocolStorage",
     "get_protocol_registry",
     "reset_protocol_registry",
+    "set_protocol_registry",
 ]

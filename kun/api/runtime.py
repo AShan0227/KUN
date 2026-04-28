@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Protocol, cast
 
 from kun.core.emergent_solution import EmergentSolutionLibrary
+from kun.engineering.capability_cache import CapabilityCardCache
 from kun.engineering.cron_scheduler import CronScheduler
 from kun.engineering.emergent_switch import EmergentSwitchManager
 from kun.engineering.execution_protocol import StructuredStepGenerator
@@ -117,6 +118,49 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
 
         app.state.lab_experiment_log = get_experiment_log()
 
+    # BATCH13: 真安装 Wire 38-50 的启 runtime, 但默认关闭. 这是 opt-in:
+    # KUN_QI_RUNTIME_ENABLED=1 才把 ProtocolRegistry / pheromone / budget /
+    # capability cache 暴露到 app.state, 防止日常 API 意外接 DB 高成本路径.
+    if _os.getenv("KUN_QI_RUNTIME_ENABLED", "0") == "1":
+        from kun.engineering.capability_cache import (
+            CapabilityCardCache,
+            set_capability_card_cache,
+        )
+        from kun.qi import (
+            PheromoneStorage,
+            ProtocolRegistry,
+            SqlProtocolStorage,
+            get_pheromone_storage,
+            get_protocol_registry,
+            get_qi_budget,
+            set_pheromone_storage,
+            set_protocol_registry,
+        )
+
+        if _os.getenv("KUN_QI_PROTOCOL_DB_ENABLED", "0") == "1":
+            protocol_registry = ProtocolRegistry(SqlProtocolStorage())
+            set_protocol_registry(protocol_registry)
+        else:
+            protocol_registry = get_protocol_registry()
+        app.state.protocol_registry = protocol_registry
+
+        if _os.getenv("KUN_QI_PHEROMONE_DB_ENABLED", "0") == "1":
+            pheromone_storage = PheromoneStorage()
+            set_pheromone_storage(pheromone_storage)
+        else:
+            pheromone_storage = cast(Any, get_pheromone_storage())
+        app.state.pheromone_storage = pheromone_storage
+
+        qi_budget = get_qi_budget()
+        qi_budget.set_daily_limit(float(_os.getenv("KUN_QI_DAILY_BUDGET_USD", "5.0")))
+        app.state.qi_budget = qi_budget
+
+        capability_cache = CapabilityCardCache(
+            ttl_sec=float(_os.getenv("KUN_CAPABILITY_CACHE_TTL_SEC", "30"))
+        )
+        set_capability_card_cache(capability_cache)
+        app.state.capability_card_cache = capability_cache
+
     # V2.1 §10.6 / M3.2 提前: 傩诊断 runner + 5 类默认 fix handler
     diagnose_runner = DiagnoseRunner()
     register_default_fix_handlers(diagnose_runner)
@@ -146,6 +190,7 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         from kun.engineering.execution_protocol import (
             ThoughtActionConsistency,
             make_jury_consistency_judge,
+            make_lite_jury_consistency_judge,
         )
         from kun.interface.llm import get_router
 
@@ -154,16 +199,23 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         router = get_router()
         jury_enabled = _os.getenv("KUN_HERMES_CONSISTENCY_JURY_ENABLED", "1") == "1"
         jury_judge = None
+        lite_jury_judge = None
         if jury_enabled:
             jury_judge = make_jury_consistency_judge(
                 router,
                 judge_count=int(_os.getenv("KUN_HERMES_CONSISTENCY_JURY_JUDGES", "5")),
             )
+            if _os.getenv("KUN_HERMES_SMART_LITE_JURY_ENABLED", "1") == "1":
+                lite_jury_judge = make_lite_jury_consistency_judge(
+                    router,
+                    judge_count=int(_os.getenv("KUN_HERMES_SMART_LITE_JURY_JUDGES", "3")),
+                )
         structured_step_generator = StructuredStepGenerator(
             router,
             consistency_checker=ThoughtActionConsistency(
                 consistency_threshold=consistency_threshold,
                 llm_judge=jury_judge,
+                lite_llm_judge=lite_jury_judge,
             ),
             max_rethinks=max_rethinks,
         )
@@ -274,3 +326,19 @@ def get_value_gate(app: _AppWithState) -> ValueGate | None:
 def get_structured_step_generator(app: _AppWithState) -> StructuredStepGenerator | None:
     """V2.2 §22: hermes 结构化执行 generator. 默认开, env KUN_HERMES_ENABLED=0 关."""
     return getattr(app.state, "structured_step_generator", None)
+
+
+def get_protocol_registry_runtime(app: _AppWithState) -> Any:
+    return getattr(app.state, "protocol_registry", None)
+
+
+def get_pheromone_storage_runtime(app: _AppWithState) -> Any:
+    return getattr(app.state, "pheromone_storage", None)
+
+
+def get_qi_budget_runtime(app: _AppWithState) -> Any:
+    return getattr(app.state, "qi_budget", None)
+
+
+def get_capability_card_cache(app: _AppWithState) -> CapabilityCardCache | None:
+    return getattr(app.state, "capability_card_cache", None)

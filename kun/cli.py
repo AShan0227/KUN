@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import typer
 from rich.console import Console
@@ -19,6 +19,7 @@ app = typer.Typer(add_completion=False, no_args_is_help=True)
 security_app = typer.Typer(add_completion=False, no_args_is_help=True)
 promises_app = typer.Typer(add_completion=False, no_args_is_help=True)
 release_app = typer.Typer(add_completion=False, no_args_is_help=True)
+protocol_app = typer.Typer(add_completion=False, no_args_is_help=True)
 lab_app = typer.Typer(
     add_completion=False, no_args_is_help=True, help="KUN-Lab 内测分区 (V2.2 §26)"
 )
@@ -29,6 +30,7 @@ console = Console()
 app.add_typer(security_app, name="security")
 app.add_typer(promises_app, name="promises")
 app.add_typer(release_app, name="release")
+app.add_typer(protocol_app, name="protocol")
 app.add_typer(lab_app, name="lab")
 lab_app.add_typer(lab_benchmark_app, name="benchmark")
 
@@ -251,6 +253,137 @@ def idle_batch(
                 r.step_id, f"[{color}]{r.status}[/]", json.dumps(r.summary, ensure_ascii=False)[:80]
             )
         console.print(table)
+
+    asyncio.run(_go())
+
+
+@protocol_app.command("list")
+def protocol_list(
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+) -> None:
+    """List ProtocolRegistry entries for a tenant."""
+    from kun.qi import get_protocol_registry
+
+    async def _go() -> None:
+        protocols = await get_protocol_registry().list_all(tenant)
+        table = Table(title=f"protocols — {tenant}")
+        table.add_column("protocol_id")
+        table.add_column("version")
+        table.add_column("status")
+        table.add_column("pattern")
+        table.add_column("mode")
+        for p in protocols:
+            table.add_row(
+                p.protocol_id,
+                p.version,
+                p.status,
+                p.trigger.task_type_pattern,
+                p.execution.mode,
+            )
+        console.print(table)
+
+    asyncio.run(_go())
+
+
+@protocol_app.command("save")
+def protocol_save(
+    path: Path = typer.Argument(..., help="Protocol JSON file"),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+) -> None:
+    """Save a Protocol JSON file into the registry."""
+    from kun.qi import Protocol, get_protocol_registry
+
+    raw_protocol = path.read_text()
+
+    async def _go() -> None:
+        protocol = Protocol.model_validate_json(raw_protocol)
+        protocol = protocol.model_copy(update={"tenant_id": tenant})
+        await get_protocol_registry().save(protocol)
+        console.print(
+            f"[green]saved[/] {protocol.protocol_id}@{protocol.version} status={protocol.status}"
+        )
+
+    asyncio.run(_go())
+
+
+@protocol_app.command("get")
+def protocol_get(
+    protocol_id: str = typer.Argument(...),
+    version: str = typer.Argument(...),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+) -> None:
+    """Print one protocol as JSON."""
+    from kun.qi import get_protocol_registry
+
+    async def _go() -> None:
+        protocol = await get_protocol_registry().get(tenant, protocol_id, version)
+        if protocol is None:
+            console.print(f"[red]not found[/] {protocol_id}@{version}")
+            raise typer.Exit(code=2)
+        console.print_json(protocol.model_dump_json())
+
+    asyncio.run(_go())
+
+
+@protocol_app.command("promote")
+def protocol_promote(
+    protocol_id: str = typer.Argument(...),
+    version: str = typer.Argument(...),
+    status: str = typer.Argument(..., help="shadow | canary | stable | rolled_back"),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+) -> None:
+    """Promote a protocol through its lifecycle."""
+    from kun.qi import ProtocolStatus, get_protocol_registry
+
+    async def _go() -> None:
+        await get_protocol_registry().promote(
+            tenant, protocol_id, version, cast(ProtocolStatus, status)
+        )
+        console.print(f"[green]promoted[/] {protocol_id}@{version} → {status}")
+
+    asyncio.run(_go())
+
+
+@protocol_app.command("rollback")
+def protocol_rollback(
+    protocol_id: str = typer.Argument(...),
+    version: str = typer.Argument(...),
+    reason: str = typer.Option("", "--reason"),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+) -> None:
+    """Rollback a protocol version."""
+    from kun.qi import get_protocol_registry
+
+    async def _go() -> None:
+        await get_protocol_registry().rollback(tenant, protocol_id, version, reason=reason)
+        console.print(f"[yellow]rolled_back[/] {protocol_id}@{version}")
+
+    asyncio.run(_go())
+
+
+@protocol_app.command("match")
+def protocol_match(
+    task_type: str = typer.Argument(...),
+    complexity: float = typer.Option(0.5, "--complexity"),
+    risk: str = typer.Option("low", "--risk"),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+) -> None:
+    """Find the stable protocol that would handle a task."""
+    from kun.qi import get_protocol_registry
+
+    async def _go() -> None:
+        protocol = await get_protocol_registry().find_protocol_for(
+            {
+                "task_type": task_type,
+                "complexity_score": complexity,
+                "risk_level": risk,
+            },
+            tenant,
+        )
+        if protocol is None:
+            console.print("[yellow]no matching stable protocol[/]")
+            return
+        console.print_json(protocol.model_dump_json())
 
     asyncio.run(_go())
 

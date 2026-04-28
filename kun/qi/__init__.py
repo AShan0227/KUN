@@ -15,6 +15,13 @@
 - skill_pheromone    ← Pheromone 涌现的 skill 偏好
 """
 
+from kun.qi.ai_scientist import (
+    AIScientistTreeSearch,
+    CandidateGenerator,
+    ScientistTreeNode,
+    ScientistTreeSearchResult,
+    TreeRunner,
+)
 from kun.qi.budget import QiBudgetExhaustedError, QiDailyBudget, get_qi_budget
 from kun.qi.darwin_godel import (
     DarwinExplorationResult,
@@ -60,6 +67,7 @@ from kun.qi.protocol import (
     SqlProtocolStorage,
     get_protocol_registry,
     reset_protocol_registry,
+    set_protocol_registry,
 )
 from kun.qi.window import (
     QiWindowConfig,
@@ -69,13 +77,15 @@ from kun.qi.window import (
 )
 
 __all__ = [
-    "DarwinExplorationResult",
-    "DarwinGodelLoop",
-    "DarwinRound",
     "PHEROMONE_BASE_FACTOR",
     "PHEROMONE_DECAY_RATE",
     "PHEROMONE_MAX",
     "PHEROMONE_REINFORCE_INCREMENT",
+    "AIScientistTreeSearch",
+    "CandidateGenerator",
+    "DarwinExplorationResult",
+    "DarwinGodelLoop",
+    "DarwinRound",
     "InMemoryPheromoneStorage",
     "InMemoryPredictionLog",
     "InMemoryProtocolStorage",
@@ -94,12 +104,15 @@ __all__ = [
     "ProtocolStorage",
     "ProtocolTrigger",
     "ProtocolVerificationSpec",
-    "RoundRunner",
     "QiBudgetExhaustedError",
     "QiDailyBudget",
     "QiWindowConfig",
     "QiWindowError",
+    "RoundRunner",
+    "ScientistTreeNode",
+    "ScientistTreeSearchResult",
     "SqlProtocolStorage",
+    "TreeRunner",
     "get_pheromone_storage",
     "get_prediction_log",
     "get_protocol_registry",
@@ -113,4 +126,5 @@ __all__ = [
     "reset_protocol_registry",
     "save_model",
     "set_pheromone_storage",
+    "set_protocol_registry",
 ]

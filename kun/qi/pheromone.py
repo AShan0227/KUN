@@ -96,9 +96,9 @@ class PheromoneStorage:
                         "relation_id, tenant_id, source_entity_kind, source_entity_id, "
                         "target_entity_kind, target_entity_id, relation_type, "
                         "confidence, evidence_count, pheromone_strength, "
-                        "last_reinforced_at, last_reinforced_at) "
+                        "last_reinforced_at) "
                         "VALUES (:rid, :t, :sk, :sid, :tk, :tid, :rt, "
-                        ":conf, 1, :pheromone, :now, :now)"
+                        ":conf, 1, :pheromone, :now)"
                     ),
                     {
                         "rid": new_id("memory"),
@@ -143,7 +143,7 @@ class PheromoneStorage:
 
         async with self._open(tenant_id or "u-sylvan") as session:
             stmt = "UPDATE entity_relationships SET pheromone_strength = pheromone_strength * :rate WHERE pheromone_strength > 0.001"
-            params = {"rate": decay_rate}
+            params: dict[str, float | str] = {"rate": decay_rate}
             if tenant_id is not None:
                 stmt += " AND tenant_id = :t"
                 params["t"] = tenant_id
