@@ -183,12 +183,69 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         )
     app.state.verification_runner = verification_runner
 
+    # V2.3 Wire 41/42: Predictive Coding hook (插件式)
+    # 默认装 in-memory log + InMemoryUpdater. 启训完输出 prediction_model 后,
+    # prediction_provider 会 load model. 没装 → 鲲行为完全不变.
+    pc_provider = None
+    pc_updater = None
+    if _os.getenv("KUN_PREDICTIVE_CODING_ENABLED", "1") == "1":
+        from kun.qi.predictive_coding import (
+            PredictionLogModelUpdater,
+            get_prediction_log,
+        )
+
+        pc_log = get_prediction_log()
+        pc_updater = PredictionLogModelUpdater(pc_log)
+        # pc_provider 默认 None — 启训出 model 后, install_runtime 二次启动会 load
+        # 用户可 set KUN_PC_MODEL_PATH 指定 model file
+        model_path = _os.getenv("KUN_PC_MODEL_PATH")
+        if model_path:
+            try:
+                from kun.qi.predictive_coding import load_model
+
+                _model = load_model(model_path)
+                pc_provider = _model  # PredictionModel 实现 .predict
+            except Exception:
+                pass  # 没 model 文件就算了, hook 不破
+        app.state.predictive_coding_log = pc_log
+    app.state.predictive_coding_updater = pc_updater
+    app.state.predictive_coding_provider = pc_provider
+
+    # V2.3 Wire 39: ProtocolRegistry — KUN 协议核心 IP
+    if _os.getenv("KUN_PROTOCOL_REGISTRY_ENABLED", "1") == "1":
+        from kun.qi.protocol import get_protocol_registry
+
+        app.state.protocol_registry = get_protocol_registry()
+
+    # V2.3 Wire 43: Pheromone storage — 默认 InMemory (生产应 set SQL)
+    if _os.getenv("KUN_PHEROMONE_ENABLED", "1") == "1":
+        from kun.qi.pheromone import get_pheromone_storage
+
+        app.state.pheromone_storage = get_pheromone_storage()
+
+    # V2.3 Wire 49: Capability cache — 实时 hot path 优化
+    if _os.getenv("KUN_CAPABILITY_CACHE_ENABLED", "1") == "1":
+        from kun.engineering.capability_cache import get_capability_cache
+
+        app.state.capability_cache = get_capability_cache()
+
+    # V2.3 Wire 38: 启 (Qi) 时间窗口 + 日预算
+    if _os.getenv("KUN_QI_ENABLED", "0") == "1":
+        from kun.qi.budget import get_qi_budget
+        from kun.qi.window import QiWindowConfig
+
+        app.state.qi_budget = get_qi_budget()
+        # 用户应该通过 SoulFile 配置 qi_window; 这里只 init container.
+        app.state.qi_window_config = QiWindowConfig()
+
     orchestrator = Orchestrator(
         rule_engine=rule_engine,
         emergent_switch_manager=emergent_switch_manager,
         value_gate=value_gate,
         structured_step_generator=structured_step_generator,
         verification_runner=verification_runner,
+        prediction_provider=pc_provider,
+        model_updater=pc_updater,
     )
     app.state.rule_engine = rule_engine
     app.state.orchestrator = orchestrator

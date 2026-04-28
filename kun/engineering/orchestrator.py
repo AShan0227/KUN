@@ -1019,6 +1019,41 @@ class Orchestrator:
                     except Exception:
                         log.exception("predictive_coding.record failed (non-fatal)")
 
+                # V2.3 Wire 47: Pheromone reinforce — 走过 (prior_skill → this_skill) 路径加强
+                # 蚁群涌现: 多 task 走过的链路自然强化 → skill_selector 下次自动倾向
+                _prior_skill = (
+                    step_outputs[-2][0] if len(step_outputs) >= 2 else None
+                )  # 上一 step skill_id (用 step_id 占位; skill_used 更准 — 用 skill_used)
+                _this_skill = step_record.skill_used or ""
+                if _this_skill and _this_skill != "llm.direct" and step_plan.step_id > 1:
+                    try:
+                        from kun.qi.pheromone import get_pheromone_storage
+
+                        # 找上一 step 的 skill (prior_skill_used)
+                        prior_skill_used = ""
+                        for prior_id, _ in step_outputs[:-1][-1:]:
+                            # step_outputs 只存 (step_id, answer), 我们用 runtime 拿 step_records
+                            prior_records = (
+                                runtime.step_records[-2:-1]
+                                if len(runtime.step_records) >= 2
+                                else []
+                            )
+                            if prior_records:
+                                prior_skill_used = prior_records[0].skill_used or ""
+                            break
+                        if prior_skill_used and prior_skill_used != "llm.direct":
+                            storage = get_pheromone_storage()
+                            await storage.reinforce(
+                                tenant.tenant_id,
+                                source_kind="skill",
+                                source_id=prior_skill_used,
+                                target_kind="skill",
+                                target_id=_this_skill,
+                                relation_type="follows",
+                            )
+                    except Exception:
+                        log.debug("pheromone.reinforce_skipped", exc_info=True)
+
                 # V2.2 Wire 9: skill 级 capability_card writeback
                 # 每 step 完后给 skill 写一条 outcome (除了 llm.direct, 那不是真 skill)
                 if step_record.skill_used and step_record.skill_used != "llm.direct":

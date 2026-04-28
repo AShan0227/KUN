@@ -28,7 +28,13 @@ class SkillSelector:
     def __init__(self, registry: SkillRegistry | None = None) -> None:
         self._reg = registry or get_registry()
 
-    def select(self, task_ref: TaskRef, *, top_k: int = 3) -> list[SkillRecord]:
+    def select(
+        self,
+        task_ref: TaskRef,
+        *,
+        top_k: int = 3,
+        prior_skill: str | None = None,
+    ) -> list[SkillRecord]:
         # 1. Explicit required_skills from TaskSpec
         if task_ref.spec and task_ref.spec.required_skills:
             out: list[SkillRecord] = []
@@ -42,12 +48,34 @@ class SkillSelector:
         # 2. Heuristic substring match on task_type parts
         task_type = task_ref.meta.task_type
         parts = set(task_type.split("."))
-        scored: list[tuple[int, SkillRecord]] = []
+        scored: list[tuple[float, SkillRecord]] = []
         for rec in self._reg:
             name_parts = set(rec.skill_id.replace("_", "-").split("-"))
-            overlap = len(parts & name_parts)
+            overlap = float(len(parts & name_parts))
             if overlap > 0:
                 scored.append((overlap, rec))
+
+        # 3. V2.3 Wire 47: Pheromone 加成 — 上一 skill → this skill 走过路径强 → 加分
+        # 蚁群涌现: 多 task 走过的链路自然推上来 (无需手写 graph)
+        if prior_skill:
+            try:
+                from kun.qi.pheromone import get_pheromone_storage, neighbor_pheromone_score
+
+                storage = get_pheromone_storage()
+                tenant_id = task_ref.meta.owner.tenant_id if task_ref.meta.owner else "u-sylvan"
+                if hasattr(storage, "get_pheromone"):  # InMemory
+                    boosted = []
+                    for overlap, rec in scored:
+                        pheromone = storage.get_pheromone(
+                            tenant_id, "skill", prior_skill, "skill", rec.skill_id, "follows"
+                        )
+                        # base score (overlap) × pheromone_score
+                        boost = neighbor_pheromone_score(1.0, pheromone)
+                        boosted.append((overlap * boost, rec))
+                    scored = boosted
+            except Exception:
+                log.debug("skill_selector.pheromone_boost_skipped", exc_info=True)
+
         scored.sort(key=lambda t: (-t[0], t[1].skill_id))
         return [rec for _, rec in scored[:top_k]]
 
