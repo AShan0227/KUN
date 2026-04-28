@@ -527,6 +527,32 @@ class KnowledgePrecipitationStep(IdleBatchStep):
         return results
 
 
+class PheromoneDecayStep(IdleBatchStep):
+    """V2.3 Wire 43: Pheromone 每日衰减 (蚁群遗忘机制).
+
+    没人走的边 pheromone × 0.95 daily → ~30 天近零. 让 skill chain 自然衰退,
+    防陈旧路径堆积. KUN_PHEROMONE_DECAY_ENABLED=0 关闭.
+    """
+
+    step_id = "pheromone_decay"
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        import os
+
+        if os.getenv("KUN_PHEROMONE_DECAY_ENABLED", "1") != "1":
+            return {"skipped": True, "reason": "KUN_PHEROMONE_DECAY_ENABLED=0"}
+        try:
+            from kun.qi.pheromone import PHEROMONE_DECAY_RATE, get_pheromone_storage
+
+            storage = get_pheromone_storage()
+            decay_rate = float(os.getenv("KUN_PHEROMONE_DECAY_RATE", str(PHEROMONE_DECAY_RATE)))
+            affected = await storage.decay_all(decay_rate=decay_rate, tenant_id=tenant_id)
+            return {"affected": int(affected), "decay_rate": decay_rate}
+        except Exception as e:
+            log.exception("pheromone_decay_failed", error=str(e))
+            return {"affected": 0, "error": str(e)}
+
+
 def register_default_steps() -> None:
     for step in [
         TaskReplayStep(),
@@ -537,6 +563,7 @@ def register_default_steps() -> None:
         HealthReportStep(),
         RouteRuleMiningStep(),
         TaskBoundaryEvalStep(),
+        PheromoneDecayStep(),
     ]:
         register_step(step)
 
