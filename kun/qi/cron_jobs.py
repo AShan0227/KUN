@@ -12,6 +12,7 @@ cron, 启窗口打开了也"什么都不做", protocol 永远 0.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import Any
 
@@ -59,14 +60,13 @@ async def _qi_predictive_coding_train(app: Any, tenant_id: str) -> None:
 
 
 async def _qi_darwin_godel_explore(app: Any, tenant_id: str) -> None:
-    """启窗口里跑 Darwin Gödel 多轮探索. 当前 stub: 不真跑 LLM, 只 log.
+    """启窗口里跑 Darwin Gödel 多轮探索. 真接 LLM router (claude_code_cli / codex_mcp).
 
-    真跑需要:
-      1. 拉一些 task / prompt 作探索目标
-      2. 拿 LLM router 提供 round_runner
-      3. budget 守门 (启日预算上限)
+    每轮:
+      1. 用一个 探索目标 prompt (从 seed_prompts 拿)
+      2. 调 router.invoke → 拿 score (基于 response.content 长度/质量) + cost
+      3. budget 累计, 超 KUN_QI_DAILY_BUDGET_USD → 停
       4. 探索完 → 涌现 experimental protocol → registry.save
-    这一步留 V2.4 真接 LLM (现在没真 LLM key, 跑 mock 没意义).
     """
     if not _check_qi_active(app):
         log.debug("qi_darwin.skipped reason=window_inactive")
@@ -79,17 +79,65 @@ async def _qi_darwin_godel_explore(app: Any, tenant_id: str) -> None:
         if spent >= budget._daily_limit:
             log.info("qi_darwin.budget_exhausted", spent=spent)
             return
-        log.info(
-            "qi_darwin.placeholder_run",
-            tenant=tenant_id,
-            note="V2.4: 真接 LLM router 跑 explore",
+
+        from kun.interface.llm import get_router
+        from kun.interface.llm.base import LLMMessage, LLMRequest
+        from kun.qi.darwin_godel import DarwinGodelLoop
+
+        router = get_router()
+        explore_prompt = _pick_explore_prompt()
+
+        async def round_runner(prompt: str, strategy: dict[str, Any]) -> tuple[float, float]:
+            """单轮: 调 LLM, 返 (score, cost). score 基于 content 长度 + finish_reason."""
+            req = LLMRequest(
+                messages=[
+                    LLMMessage(role="system", content=strategy.get("system", "")),
+                    LLMMessage(role="user", content=prompt),
+                ],
+                temperature=float(strategy.get("temperature", 0.7)),
+                max_tokens=int(strategy.get("max_tokens", 512)),
+            )
+            try:
+                resp = await router.invoke(req, purpose="execution")
+                # 简单 score: 完成 + 内容长度合理 → 0.5-1.0
+                base = 0.5 if resp.finish_reason == "stop" else 0.2
+                length_bonus = min(0.5, len(resp.content) / 1000.0)
+                score = min(1.0, base + length_bonus)
+                cost = float(resp.cost_usd_equivalent or 0.0)
+                # 加进 budget (CLI OAuth 模式 cost 通常 = 0, 不会扣)
+                if cost > 0:
+                    with contextlib.suppress(Exception):
+                        budget.add_cost(tenant_id, cost)
+                return (score, cost)
+            except Exception as e:
+                log.warning("qi_darwin.round_failed", error=str(e))
+                return (0.0, 0.0)
+
+        loop = DarwinGodelLoop(
+            round_runner=round_runner,
+            max_rounds=int(os.getenv("KUN_QI_DARWIN_MAX_ROUNDS", "3")),
+            total_budget_usd=max(0.5, budget.remaining_budget(tenant_id)),
+            total_time_sec=float(os.getenv("KUN_QI_DARWIN_TIME_SEC", "120")),
         )
+        result = await loop.explore(explore_prompt)
+        log.info(
+            "qi_darwin.done",
+            tenant=tenant_id,
+            rounds=result.total_rounds,
+            best_score=result.best_score,
+            stopped=result.stopped_reason,
+            cost=result.total_cost_usd,
+        )
+
+        # 涌现 → 存 experimental protocol (基于 best round strategy)
+        if result.best_score >= 0.6:
+            await _emerge_protocol_from_darwin(app, tenant_id, explore_prompt, result)
     except Exception:
         log.exception("qi_darwin.failed (non-fatal)")
 
 
 async def _qi_ai_scientist_explore(app: Any, tenant_id: str) -> None:
-    """启窗口里跑 AIScientistTreeSearch. Stub 同 Darwin (V2.4 真接)."""
+    """启窗口里跑 AIScientistTreeSearch. 真接 LLM router."""
     if not _check_qi_active(app):
         log.debug("qi_ai_scientist.skipped reason=window_inactive")
         return
@@ -101,13 +149,148 @@ async def _qi_ai_scientist_explore(app: Any, tenant_id: str) -> None:
         if spent >= budget._daily_limit:
             log.info("qi_ai_scientist.budget_exhausted", spent=spent)
             return
+
+        # AI Scientist v2 的 API 跟 Darwin 略不同 (codex 写的 tree search), V2.4
+        # 真接前先简化复用 Darwin loop. 这里用 Darwin 跑一轮 + 标 ai_scientist source.
+        from kun.interface.llm import get_router
+        from kun.interface.llm.base import LLMMessage, LLMRequest
+        from kun.qi.darwin_godel import DarwinGodelLoop
+
+        router = get_router()
+        explore_prompt = _pick_explore_prompt(prefer="research")
+
+        async def round_runner(prompt: str, strategy: dict[str, Any]) -> tuple[float, float]:
+            req = LLMRequest(
+                messages=[
+                    LLMMessage(role="system", content=strategy.get("system", "")),
+                    LLMMessage(role="user", content=prompt),
+                ],
+                temperature=float(strategy.get("temperature", 0.5)),
+                max_tokens=int(strategy.get("max_tokens", 512)),
+            )
+            try:
+                resp = await router.invoke(req, purpose="execution")
+                base = 0.5 if resp.finish_reason == "stop" else 0.2
+                length_bonus = min(0.5, len(resp.content) / 1000.0)
+                score = min(1.0, base + length_bonus)
+                cost = float(resp.cost_usd_equivalent or 0.0)
+                if cost > 0:
+                    with contextlib.suppress(Exception):
+                        budget.add_cost(tenant_id, cost)
+                return (score, cost)
+            except Exception as e:
+                log.warning("qi_ai_scientist.round_failed", error=str(e))
+                return (0.0, 0.0)
+
+        loop = DarwinGodelLoop(
+            round_runner=round_runner,
+            max_rounds=int(os.getenv("KUN_QI_AISCI_MAX_ROUNDS", "2")),
+            total_budget_usd=max(0.5, budget.remaining_budget(tenant_id)),
+            total_time_sec=float(os.getenv("KUN_QI_AISCI_TIME_SEC", "90")),
+        )
+        result = await loop.explore(explore_prompt)
         log.info(
-            "qi_ai_scientist.placeholder_run",
+            "qi_ai_scientist.done",
             tenant=tenant_id,
-            note="V2.4: 真接 LLM router 跑 tree search",
+            rounds=result.total_rounds,
+            best_score=result.best_score,
+            stopped=result.stopped_reason,
         )
     except Exception:
         log.exception("qi_ai_scientist.failed (non-fatal)")
+
+
+_EXPLORE_PROMPTS = [
+    ("writing", "为新产品写一段 30 字 slogan"),
+    ("decision", "比较 Postgres vs MySQL 给一个 SaaS 产品做选型"),
+    ("research", "总结一下 LLM agent 框架最近 6 个月的趋势"),
+    ("coding", "解释 FastAPI 怎么实现 dependency injection"),
+]
+
+
+def _pick_explore_prompt(*, prefer: str | None = None) -> str:
+    """轮换 explore prompts. prefer 给个偏好类目."""
+    import random
+
+    if prefer:
+        candidates = [p for k, p in _EXPLORE_PROMPTS if k == prefer]
+        if candidates:
+            return random.choice(candidates)
+    return random.choice(_EXPLORE_PROMPTS)[1]
+
+
+async def _emerge_protocol_from_darwin(
+    app: Any, tenant_id: str, prompt: str, result: Any
+) -> None:
+    """Darwin 探索完 → 涌现 1 个 experimental protocol → registry.save.
+
+    简化: 不看 best_round.strategy 细节, 只把 task_type 推断出来 + 标 experimental.
+    这是 starter pack — V2.4 加更聪明的协议生成 (从 strategy 真提取 hermes prompt 等).
+    """
+    try:
+        from datetime import UTC, datetime
+
+        from kun.qi.protocol import (
+            Protocol,
+            ProtocolExecution,
+            ProtocolHermesTemplate,
+            ProtocolTrigger,
+        )
+
+        registry = getattr(app.state, "protocol_registry", None)
+        if registry is None:
+            return
+
+        # 推断 task_type — 简单版: 拿 prompt 关键词
+        task_type_pat = "*"
+        if "slogan" in prompt or "写" in prompt:
+            task_type_pat = "writing.*"
+        elif "比较" in prompt or "选型" in prompt:
+            task_type_pat = "decision.*"
+        elif "总结" in prompt or "趋势" in prompt:
+            task_type_pat = "research.*"
+        elif "代码" in prompt or "FastAPI" in prompt:
+            task_type_pat = "coding.*"
+
+        version = f"0.1.0-darwin-{datetime.now(UTC).strftime('%Y%m%d-%H%M')}"
+        proto = Protocol(
+            protocol_id=f"darwin.emergent.{task_type_pat.replace('.*', '').replace('*', 'general')}",
+            version=version,
+            tenant_id=tenant_id,
+            status="experimental",
+            trigger=ProtocolTrigger(
+                task_type_pattern=task_type_pat,
+                complexity_score_min=0.0,
+                complexity_score_max=1.0,
+            ),
+            execution=ProtocolExecution(
+                mode="SMART",
+                expected_cost_usd=result.total_cost_usd / max(1, result.total_rounds),
+            ),
+            hermes_template=ProtocolHermesTemplate(
+                system_prompt_addon=(
+                    f"基于 {result.total_rounds} 轮 Darwin Gödel 探索的最佳策略 "
+                    f"(score={result.best_score:.2f}). 这是涌现协议."
+                ),
+            ),
+            created_by="qi",
+            metadata={
+                "darwin_rounds": result.total_rounds,
+                "darwin_best_score": result.best_score,
+                "darwin_stopped_reason": result.stopped_reason,
+                "explore_prompt": prompt[:200],
+            },
+        )
+        await registry.save(proto)
+        log.info(
+            "qi_darwin.protocol_emerged",
+            tenant=tenant_id,
+            protocol_id=proto.protocol_id,
+            version=proto.version,
+            score=result.best_score,
+        )
+    except Exception:
+        log.exception("qi_darwin.protocol_emerge_failed (non-fatal)")
 
 
 def _check_qi_active(app: Any) -> bool:

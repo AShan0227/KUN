@@ -73,15 +73,33 @@ def run(
     tenant: str = typer.Option("u-sylvan", "--tenant"),
     user: str | None = typer.Option(None, "--user"),
 ) -> None:
-    """Run one task directly via the orchestrator (CLI client, no HTTP)."""
+    """Run one task directly via the orchestrator (CLI client, no HTTP).
+
+    V2.3 装上协议消费 + 反作弊 + Predictive Coding hook (走 install_runtime).
+    KUN_QI_RUNTIME_ENABLED=0 强制关闭整套.
+    """
+    from types import SimpleNamespace
+
+    from starlette.datastructures import State
+
+    from kun.api.runtime import install_runtime
     from kun.core.logging import configure_logging
     from kun.core.tenancy import TenantContext, tenant_scope
-    from kun.engineering.orchestrator import Orchestrator
+    from kun.watchtower.engine import RuleEngine
 
     configure_logging()
 
     async def _run() -> None:
-        orch = Orchestrator()
+        # 跟 server 同样初始化 — V2.3 协议消费 + 反作弊 + PC hook 全装上
+        app = SimpleNamespace(state=State())
+        install_runtime(app, rule_engine=RuleEngine([]))
+        orch = app.state.orchestrator
+        # CLI 模式跑前 seed 5 个 starter protocol (server 是 lifespan 里 seed)
+        registry = getattr(app.state, "protocol_registry", None)
+        if registry is not None:
+            from kun.qi.seed_protocols import seed_default_protocols
+
+            await seed_default_protocols(registry)
         with tenant_scope(TenantContext(tenant_id=tenant, user_id=user)):
             async for ev in orch.stream(message):
                 kind = ev.kind

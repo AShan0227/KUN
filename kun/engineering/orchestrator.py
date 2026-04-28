@@ -461,7 +461,7 @@ class Orchestrator:
         active_protocol: Any = None
         if (
             self.protocol_registry is not None
-            and _os.getenv("KUN_PROTOCOL_CONSUME_ENABLED", "0") == "1"
+            and _os.getenv("KUN_PROTOCOL_CONSUME_ENABLED", "1") == "1"
         ):
             try:
                 task_meta_dict = {
@@ -1139,7 +1139,7 @@ class Orchestrator:
                 # 不阻断流程 (let verification_runner 决定是否真 fail), 让 Watchtower 看
                 if (
                     self.anti_gaming_detector is not None
-                    and _os.getenv("KUN_ANTI_GAMING_ENABLED", "0") == "1"
+                    and _os.getenv("KUN_ANTI_GAMING_ENABLED", "1") == "1"
                 ):
                     try:
                         prior_answers = [out for _, out in step_outputs[:-1]]

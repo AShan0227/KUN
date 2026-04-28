@@ -118,10 +118,9 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
 
         app.state.lab_experiment_log = get_experiment_log()
 
-    # BATCH13: 真安装 Wire 38-50 的启 runtime, 但默认关闭. 这是 opt-in:
-    # KUN_QI_RUNTIME_ENABLED=1 才把 ProtocolRegistry / pheromone / budget /
-    # capability cache 暴露到 app.state, 防止日常 API 意外接 DB 高成本路径.
-    if _os.getenv("KUN_QI_RUNTIME_ENABLED", "0") == "1":
+    # V2.3: 启 runtime 默认 ON (内测阶段, KUN 还没真用户, 不需 backward-compat).
+    # KUN_QI_RUNTIME_ENABLED=0 强制关闭 (e.g. CI 或 minimal 测试).
+    if _os.getenv("KUN_QI_RUNTIME_ENABLED", "1") == "1":
         from kun.engineering.capability_cache import (
             CapabilityCardCache,
             set_capability_card_cache,
@@ -263,9 +262,10 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     app.state.predictive_coding_updater = pc_updater
     app.state.predictive_coding_provider = pc_provider
 
-    # V2.3 Wire 38: 启 (Qi) 时间窗口 (BATCH13 KUN_QI_RUNTIME_ENABLED 已装 budget)
+    # V2.3 Wire 38: 启 (Qi) 时间窗口默认 ON (内测).
     # qi_window_config 仍由 SoulFile 配置, 这里只 init container.
-    if _os.getenv("KUN_QI_ENABLED", "0") == "1":
+    # 真激活仍守门: 时间窗口 + KUN_QI_FORCE_ACTIVE 双重控制.
+    if _os.getenv("KUN_QI_ENABLED", "1") == "1":
         from kun.qi.window import QiWindowConfig
 
         app.state.qi_window_config = QiWindowConfig()
@@ -274,7 +274,7 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     # 都从 KUN_QI_RUNTIME_ENABLED block 装好的 app.state 拿; 没装 → None → 鲲行为不变.
     _protocol_registry_for_orch = getattr(app.state, "protocol_registry", None)
     _anti_gaming_for_orch: Any = None
-    if _os.getenv("KUN_ANTI_GAMING_ENABLED", "0") == "1":
+    if _os.getenv("KUN_ANTI_GAMING_ENABLED", "1") == "1":
         try:
             from kun.security.anti_gaming import AntiGamingDetector
 

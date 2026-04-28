@@ -21,9 +21,22 @@ def _app():
     return SimpleNamespace(state=State())
 
 
-def test_install_runtime_qi_disabled_by_default() -> None:
+def test_install_runtime_qi_enabled_by_default() -> None:
+    """V2.3: default ON (内测阶段)."""
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("KUN_QI_RUNTIME_ENABLED", None)
+        app = _app()
+        install_runtime(app, rule_engine=RuleEngine([]))
+
+    # default ON → 全装上
+    assert get_protocol_registry_runtime(app) is not None
+    assert get_pheromone_storage_runtime(app) is not None
+    assert isinstance(get_qi_budget_runtime(app), QiDailyBudget)
+
+
+def test_install_runtime_qi_disabled_explicit() -> None:
+    """KUN_QI_RUNTIME_ENABLED=0 强制关闭 (e.g. CI)."""
+    with patch.dict(os.environ, {"KUN_QI_RUNTIME_ENABLED": "0"}):
         app = _app()
         install_runtime(app, rule_engine=RuleEngine([]))
 
@@ -32,7 +45,7 @@ def test_install_runtime_qi_disabled_by_default() -> None:
     assert get_qi_budget_runtime(app) is None
 
 
-def test_install_runtime_qi_opt_in_installs_state() -> None:
+def test_install_runtime_qi_explicit_on_with_custom_budget() -> None:
     with patch.dict(
         os.environ,
         {
