@@ -33,14 +33,6 @@ def upgrade() -> None:
             server_default=sa.text("0.0"),
         ),
     )
-    op.add_column(
-        "entity_relationships",
-        sa.Column(
-            "last_reinforced_at",
-            sa.DateTime(timezone=True),
-            nullable=True,
-        ),
-    )
     op.create_check_constraint(
         "entity_relationship_pheromone_range",
         "entity_relationships",
@@ -50,5 +42,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_constraint("entity_relationship_pheromone_range", "entity_relationships")
-    op.drop_column("entity_relationships", "last_reinforced_at")
     op.drop_column("entity_relationships", "pheromone_strength")

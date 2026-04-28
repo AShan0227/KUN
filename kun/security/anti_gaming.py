@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any, Literal
@@ -268,7 +269,7 @@ class AntiGamingDetector:
     ) -> GamingFinding | None:
         """跑所有 pattern, 返第 1 个命中. None = 没作弊."""
         # 顺序: 高 severity 优先
-        checks = [
+        checks: list[Callable[[], GamingFinding | None]] = [
             lambda: detect_copy_prompt(
                 prompt=prompt, answer=answer, threshold=self.copy_prompt_threshold
             ),

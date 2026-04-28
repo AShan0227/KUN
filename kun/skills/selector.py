@@ -13,10 +13,11 @@ Later:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from kun.core.logging import get_logger
 from kun.datamodel.task import TaskRef
+from kun.engineering.capability_cache import CapabilityCardCache, get_capability_card_cache
 from kun.skills.loader import SkillRecord, SkillRegistry, get_registry
 
 log = get_logger("kun.skills.selector")
@@ -25,8 +26,16 @@ log = get_logger("kun.skills.selector")
 class SkillSelector:
     """Map a TaskRef → ordered list of SkillRecord candidates."""
 
-    def __init__(self, registry: SkillRegistry | None = None) -> None:
+    def __init__(
+        self,
+        registry: SkillRegistry | None = None,
+        *,
+        capability_cache: CapabilityCardCache | None = None,
+        graph_traversal: Any = None,
+    ) -> None:
         self._reg = registry or get_registry()
+        self._capability_cache = capability_cache or get_capability_card_cache()
+        self._graph_traversal = graph_traversal
 
     def select(
         self,
@@ -78,6 +87,59 @@ class SkillSelector:
 
         scored.sort(key=lambda t: (-t[0], t[1].skill_id))
         return [rec for _, rec in scored[:top_k]]
+
+    async def select_with_graph_and_capability(
+        self,
+        task_ref: TaskRef,
+        *,
+        top_k: int = 3,
+        tenant_id: str | None = None,
+        graph_hops: int = 1,
+    ) -> list[SkillRecord]:
+        """V2.3 Wire 47/49: use skill graph + realtime capability cache.
+
+        Base selection remains deterministic. When graph edges exist, selected
+        skills pull adjacent skill nodes into the candidate set. Then skill
+        capability cards boost candidates that have worked on this task_type.
+        """
+
+        base = self.select(task_ref, top_k=max(top_k, 3))
+        candidates: dict[str, tuple[float, SkillRecord]] = {
+            rec.skill_id: (1.0 - idx * 0.05, rec) for idx, rec in enumerate(base)
+        }
+        tenant = tenant_id or _current_tenant_id()
+
+        if graph_hops > 0:
+            traversal = self._graph_traversal or _default_graph_traversal()
+            if traversal is not None:
+                for rec in base:
+                    for neighbor in await _skill_neighbors(traversal, rec.skill_id, graph_hops):
+                        if neighbor.entity_kind != "skill":
+                            continue
+                        neighbor_rec = self._reg.get(neighbor.entity_id)
+                        if neighbor_rec is None:
+                            continue
+                        score = 0.65 + 0.35 * neighbor.score
+                        current = candidates.get(neighbor_rec.skill_id)
+                        if current is None or score > current[0]:
+                            candidates[neighbor_rec.skill_id] = (score, neighbor_rec)
+
+        rescored: list[tuple[float, SkillRecord]] = []
+        for base_score, rec in candidates.values():
+            cap_bonus = 0.0
+            if tenant is not None:
+                cap = await self._capability_cache.best_capability(
+                    tenant_id=tenant,
+                    entity_type="skill",
+                    entity_id=rec.skill_id,
+                    task_type=task_ref.meta.task_type,
+                )
+                if cap is not None:
+                    cap_bonus = 0.5 * cap.capability_score().value
+            rescored.append((base_score + cap_bonus, rec))
+
+        rescored.sort(key=lambda item: (-item[0], item[1].skill_id))
+        return [rec for _, rec in rescored[:top_k]]
 
     def summary(self, skills: list[SkillRecord]) -> str:
         """Produce a compact 'available skills' summary for the LLM prompt.
@@ -186,3 +248,31 @@ def get_selector() -> SkillSelector:
 def reset_selector() -> None:
     global _selector
     _selector = None
+
+
+def _current_tenant_id() -> str | None:
+    try:
+        from kun.core.tenancy import current_tenant
+
+        return current_tenant().tenant_id
+    except Exception:
+        return None
+
+
+def _default_graph_traversal() -> Any:
+    try:
+        from kun.context.graph_traversal import GraphTraversal
+
+        return GraphTraversal(relation_types=("similar_to", "co_occurs", "depends_on"))
+    except Exception:
+        return None
+
+
+async def _skill_neighbors(traversal: Any, skill_id: str, hops: int) -> list[Any]:
+    try:
+        return cast(
+            list[Any], await traversal.neighbors(kind="skill", entity_id=skill_id, hops=hops)
+        )
+    except Exception:
+        log.debug("skill_selector.graph_neighbors_skipped", skill_id=skill_id, exc_info=True)
+        return []

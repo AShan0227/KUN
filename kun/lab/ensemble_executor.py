@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -96,6 +97,13 @@ class EnsembleConfig(BaseModel):
     selection_method: Literal["best_score", "majority_vote", "judge_picks"] = "best_score"
     timeout_per_path_sec: int = 60
     cost_budget_total_usd: float = 1.0  # lab 预算上限 (高于生产)
+    non_best_exploration_rate: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Wire 52: 小流量故意走非最佳路径, 用来发现隐藏更优解. 默认关.",
+    )
+    exploration_seed: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -239,7 +247,12 @@ class EnsembleExecutor:
                         logger.exception("ensemble scoring_fn failed for path %d", pr.path_idx)
 
         # 选 winner
-        winner_idx, winner_reason = self._select_winner(path_results, cfg.selection_method)
+        winner_idx, winner_reason = self._select_winner_with_exploration(
+            path_results,
+            cfg.selection_method,
+            exploration_rate=cfg.non_best_exploration_rate,
+            seed=cfg.exploration_seed or prompt,
+        )
         winning_output = (
             path_results[winner_idx].output if 0 <= winner_idx < len(path_results) else ""
         )
@@ -410,6 +423,40 @@ class EnsembleExecutor:
         # judge_picks: 简化版 — 拿最高 score (实际生产用 multi_judge)
         best = max(valid, key=lambda r: r.score)
         return best.path_idx, "judge_picks_proxy"
+
+    @classmethod
+    def _select_winner_with_exploration(
+        cls,
+        results: list[EnsemblePathResult],
+        method: str,
+        *,
+        exploration_rate: float,
+        seed: str,
+    ) -> tuple[int, str]:
+        """Wire 52: with a tiny opt-in rate, choose a non-best valid path.
+
+        这不是生产默认行为, 默认 rate=0. 用在实验/启窗口里, 给 5% 流量
+        机会走"看起来不是第一名但也可用"的路线, 防止系统过早收敛。
+        """
+
+        winner_idx, reason = cls._select_winner(results, method)
+        if winner_idx < 0 or exploration_rate <= 0:
+            return winner_idx, reason
+
+        valid = [r for r in results if not r.error and r.output and r.path_idx != winner_idx]
+        if not valid:
+            return winner_idx, reason
+
+        rng = random.Random(f"{seed}:{method}:{len(results)}")
+        if rng.random() >= exploration_rate:
+            return winner_idx, reason
+
+        chosen = rng.choice(valid)
+        return (
+            chosen.path_idx,
+            f"non_best_exploration:original={winner_idx} chosen={chosen.path_idx} "
+            f"rate={exploration_rate:.2f} base={reason}",
+        )
 
 
 __all__ = [

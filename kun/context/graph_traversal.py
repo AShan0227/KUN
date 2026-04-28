@@ -56,12 +56,17 @@ class NeighborEntity:
     confidence: float
     hops: int  # 1 = 直接邻居, 2 = 邻居的邻居
     via_path: tuple[tuple[str, str], ...]  # (kind, id) 路径序列, 含 source
+    pheromone_strength: float | None = None
 
     @property
     def score(self) -> float:
-        """confidence × distance_decay (hops 越远越衰减)."""
+        """(confidence × pheromone boost) × distance_decay."""
+        from kun.qi.pheromone import neighbor_pheromone_score
+
         decay = 1.0 / (1.0 + 0.5 * (self.hops - 1))
-        return self.confidence * decay
+        if self.pheromone_strength is None:
+            return self.confidence * decay
+        return neighbor_pheromone_score(self.confidence, self.pheromone_strength) * decay
 
 
 class GraphTraversal:
@@ -170,6 +175,7 @@ class GraphTraversal:
                             entity_id=edge["target_id"],
                             relation_type=edge["relation_type"],
                             confidence=edge["confidence"],
+                            pheromone_strength=edge.get("pheromone_strength", 0.0),
                             hops=hop,
                             via_path=new_path,
                         )
@@ -228,6 +234,7 @@ class GraphTraversal:
                     "target_id": r.target_entity_id,
                     "relation_type": r.relation_type,
                     "confidence": r.confidence,
+                    "pheromone_strength": getattr(r, "pheromone_strength", 0.0),
                 }
                 for r in rows
             ]

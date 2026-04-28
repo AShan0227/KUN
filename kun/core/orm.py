@@ -347,6 +347,7 @@ class EntityRelationshipRow(Base):
     relation_type: Mapped[str] = mapped_column(String(32), nullable=False)
     confidence: Mapped[float] = mapped_column(nullable=False, default=0.3)
     evidence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    pheromone_strength: Mapped[float] = mapped_column(nullable=False, default=0.0)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         "metadata",
         JSONB,
@@ -368,6 +369,10 @@ class EntityRelationshipRow(Base):
         CheckConstraint(
             "evidence_count >= 0",
             name="entity_relationship_evidence_nonnegative",
+        ),
+        CheckConstraint(
+            "pheromone_strength >= 0 AND pheromone_strength <= 1",
+            name="entity_relationship_pheromone_range",
         ),
         CheckConstraint(
             "relation_type IN ("

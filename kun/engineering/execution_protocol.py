@@ -141,11 +141,13 @@ class ThoughtActionConsistency:
         *,
         consistency_threshold: float = 0.5,
         llm_judge: Any = None,  # async fn(thought, action_type) → float, 可选
+        lite_llm_judge: Any = None,  # SMART 模式用的轻量 jury, 可选
     ) -> None:
         self.consistency_threshold = consistency_threshold
         self._llm_judge = llm_judge
+        self._lite_llm_judge = lite_llm_judge
 
-    async def check(self, step: ExecutionStep) -> tuple[float, str]:
+    async def check(self, step: ExecutionStep, *, mode: str = "SMART") -> tuple[float, str]:
         """返 (consistency_score, reason)."""
         # 1. 启发式
         heuristic_score = self._heuristic_check(step.thought, step.action_type)
@@ -155,11 +157,19 @@ class ThoughtActionConsistency:
             return heuristic_score, f"heuristic_high:{heuristic_score:.2f}"
 
         # 3. 启发式低 + LLM judge 可用 → 调一次 LLM 兜底
-        if self._llm_judge is not None:
+        llm_judge = (
+            self._lite_llm_judge
+            if mode.upper() == "SMART" and self._lite_llm_judge is not None
+            else self._llm_judge
+        )
+        if llm_judge is not None:
             try:
-                llm_score = await self._llm_judge(step.thought, step.action_type)
+                llm_score = await llm_judge(step.thought, step.action_type)
                 final = max(heuristic_score, float(llm_score))
-                return final, f"llm_judge:{llm_score:.2f}"
+                judge_kind = (
+                    "lite_jury" if mode.upper() == "SMART" and self._lite_llm_judge else "llm_judge"
+                )
+                return final, f"{judge_kind}:{llm_score:.2f}"
             except Exception:
                 logger.exception("ThoughtActionConsistency llm_judge failed")
 
@@ -225,6 +235,43 @@ def make_jury_consistency_judge(
     return _judge
 
 
+def make_lite_jury_consistency_judge(
+    router: Any,
+    *,
+    judge_count: int = 3,
+) -> Callable[[str, str], Awaitable[float]]:
+    """SMART 模式轻量 jury.
+
+    Full jury 一次跑 3-5 个 judge; SMART 只需要便宜的早停版本。这里复用
+    ``jury_evaluate_anchor_then_expand``，通常 2 个 judge 意见一致就停。
+    """
+    normalized_count = max(2, min(3, judge_count))
+    judge_models = [f"lite_consistency_judge_{idx}" for idx in range(1, normalized_count + 1)]
+
+    async def _judge(thought: str, action_type: str) -> float:
+        from kun.engineering.multi_judge import jury_evaluate_anchor_then_expand
+
+        artifact = json.dumps(
+            {"thought": thought, "action_type": action_type},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        rubric = "轻量判断 thought 和 action_type 是否一致。明确支持给高分；明显不一致给低分。"
+        verdict = await jury_evaluate_anchor_then_expand(
+            artifact=artifact,
+            rubric=rubric,
+            judge_models=judge_models,
+            router=router,
+            max_rounds=normalized_count,
+            use_marginal_stop=True,
+        )
+        if verdict.pass_:
+            return verdict.avg_score
+        return min(verdict.avg_score, 0.49)
+
+    return _judge
+
+
 class StructuredStepGenerator:
     """Generate Hermes execution steps.
 
@@ -273,7 +320,7 @@ class StructuredStepGenerator:
             if self._consistency is None:
                 return step
 
-            score, _reason = await self._consistency.check(step)
+            score, _reason = await self._consistency.check(step, mode=normalized_mode)
             step.thought_action_consistency = score
             last_score = score
 

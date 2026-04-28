@@ -1,140 +1,138 @@
-"""V2.3 Wire 49 — Capability card 实时 cache (L5 缺口补齐).
+"""Realtime capability-card cache (V2.3 Wire 49).
 
-L5 缺口: capability_card writeback 已有, 但反馈到 router 慢 (idle_batch).
-读取 capability_card 每次查 DB → 短期没事, 长期累积偏差.
-
-V2.3 解决: in-memory hot cache.
-- record_outcome 写完同时更新 cache
-- get_cached_capability — 优先查 cache (≤5min new), miss → DB
-- TTL 控制 stale data: 默认 5 分钟 (符合 V2.3 §8 "5-10 分钟生效" 目标)
-
-跟 capability_writeback.py 的 record_outcome() 解耦 — 通过 hook 更新 cache.
+The DB row remains the source of truth. This cache is intentionally tiny and
+short-lived so hot runtime paths can read the newest capability card without
+waiting for idle-batch aggregation.
 """
 
 from __future__ import annotations
 
-import logging
 import time
 from dataclasses import dataclass
-from typing import Any
 
-logger = logging.getLogger(__name__)
+from sqlalchemy import select
 
+from kun.core.db import session_scope
+from kun.core.logging import get_logger
+from kun.core.orm import CapabilityCardRow
+from kun.datamodel.capability import Capability, CapabilityCard, EntityType
 
-CAPABILITY_CACHE_TTL_SEC = 300  # 5 分钟
-
-
-@dataclass
-class _CacheEntry:
-    """单条 cache."""
-
-    payload: dict[str, Any]
-    cached_at: float
-
-    def is_fresh(self, ttl: int = CAPABILITY_CACHE_TTL_SEC) -> bool:
-        return (time.time() - self.cached_at) < ttl
+log = get_logger("kun.engineering.capability_cache")
 
 
-class CapabilityCache:
-    """In-memory hot cache for capability_card lookups.
+@dataclass(frozen=True)
+class CachedCapabilityCard:
+    card: CapabilityCard
+    expires_at: float
 
-    Key: (tenant_id, entity_type, entity_id, task_type) → payload dict
-    """
 
-    def __init__(self, *, ttl_sec: int = CAPABILITY_CACHE_TTL_SEC) -> None:
-        self._cache: dict[tuple[str, str, str, str], _CacheEntry] = {}
-        self._ttl = ttl_sec
-        self._stats = {"hits": 0, "misses": 0, "writes": 0, "stale_evictions": 0}
+class CapabilityCardCache:
+    """Small TTL cache keyed by tenant + entity."""
 
-    def get(
-        self,
-        tenant_id: str,
-        entity_type: str,
-        entity_id: str,
-        task_type: str,
-    ) -> dict[str, Any] | None:
-        """查 cache. None = miss / expired."""
-        key = (tenant_id, entity_type, entity_id, task_type)
-        entry = self._cache.get(key)
-        if entry is None:
-            self._stats["misses"] += 1
-            return None
-        if not entry.is_fresh(self._ttl):
-            self._stats["stale_evictions"] += 1
-            del self._cache[key]
-            return None
-        self._stats["hits"] += 1
-        return entry.payload
-
-    def put(
-        self,
-        tenant_id: str,
-        entity_type: str,
-        entity_id: str,
-        task_type: str,
-        payload: dict[str, Any],
-    ) -> None:
-        """写 cache. 可在 record_outcome 后立即调."""
-        key = (tenant_id, entity_type, entity_id, task_type)
-        self._cache[key] = _CacheEntry(payload=dict(payload), cached_at=time.time())
-        self._stats["writes"] += 1
+    def __init__(self, *, ttl_sec: float = 30.0) -> None:
+        self._ttl_sec = ttl_sec
+        self._cache: dict[tuple[str, EntityType, str], CachedCapabilityCard] = {}
 
     def invalidate(
         self,
-        tenant_id: str,
-        entity_type: str | None = None,
+        *,
+        tenant_id: str | None = None,
+        entity_type: EntityType | None = None,
         entity_id: str | None = None,
-        task_type: str | None = None,
-    ) -> int:
-        """选择性 invalidate. 返删除条数. 全 None → 删该 tenant 所有."""
-        to_remove = []
-        for key in self._cache:
-            if key[0] != tenant_id:
+    ) -> None:
+        if tenant_id is None:
+            self._cache.clear()
+            return
+        for key in list(self._cache):
+            key_tenant, key_type, key_id = key
+            if key_tenant != tenant_id:
                 continue
-            if entity_type is not None and key[1] != entity_type:
+            if entity_type is not None and key_type != entity_type:
                 continue
-            if entity_id is not None and key[2] != entity_id:
+            if entity_id is not None and key_id != entity_id:
                 continue
-            if task_type is not None and key[3] != task_type:
-                continue
-            to_remove.append(key)
-        for key in to_remove:
-            del self._cache[key]
-        return len(to_remove)
+            self._cache.pop(key, None)
 
-    def stats(self) -> dict[str, int]:
-        return dict(self._stats)
+    async def get_card(
+        self,
+        *,
+        tenant_id: str,
+        entity_type: EntityType,
+        entity_id: str,
+    ) -> CapabilityCard | None:
+        key = (tenant_id, entity_type, entity_id)
+        now = time.monotonic()
+        cached = self._cache.get(key)
+        if cached is not None and cached.expires_at > now:
+            return cached.card
 
-    def hit_rate(self) -> float:
-        total = self._stats["hits"] + self._stats["misses"]
-        return self._stats["hits"] / total if total > 0 else 0.0
+        try:
+            async with session_scope(tenant_id=tenant_id) as session:
+                row = (
+                    await session.execute(
+                        select(CapabilityCardRow).where(
+                            CapabilityCardRow.tenant_id == tenant_id,
+                            CapabilityCardRow.entity_type == entity_type,
+                            CapabilityCardRow.entity_id == entity_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+        except Exception as exc:
+            log.debug("capability_cache.fetch_failed", entity_id=entity_id, error=str(exc))
+            return None
+        if row is None:
+            return None
 
-    def reset(self) -> None:
-        self._cache.clear()
-        self._stats = {"hits": 0, "misses": 0, "writes": 0, "stale_evictions": 0}
+        data = dict(row.card_json or {})
+        data.setdefault("entity_ref", {"entity_type": row.entity_type, "entity_id": row.entity_id})
+        data["version"] = row.version
+        data["maturity"] = row.maturity
+        data["overall_reliability"] = row.overall_reliability
+        card = CapabilityCard.model_validate(data)
+        self._cache[key] = CachedCapabilityCard(card=card, expires_at=now + self._ttl_sec)
+        return card
 
-    def __len__(self) -> int:
-        return len(self._cache)
+    async def best_capability(
+        self,
+        *,
+        tenant_id: str,
+        entity_type: EntityType,
+        entity_id: str,
+        task_type: str,
+    ) -> Capability | None:
+        card = await self.get_card(
+            tenant_id=tenant_id,
+            entity_type=entity_type,
+            entity_id=entity_id,
+        )
+        if card is None:
+            return None
+        return card.find_best_match(task_type)
 
 
-_cache_singleton: CapabilityCache | None = None
+_cache_singleton: CapabilityCardCache | None = None
 
 
-def get_capability_cache() -> CapabilityCache:
+def get_capability_card_cache() -> CapabilityCardCache:
     global _cache_singleton
     if _cache_singleton is None:
-        _cache_singleton = CapabilityCache()
+        _cache_singleton = CapabilityCardCache()
     return _cache_singleton
 
 
-def reset_capability_cache() -> None:
+def set_capability_card_cache(cache: CapabilityCardCache) -> None:
+    global _cache_singleton
+    _cache_singleton = cache
+
+
+def reset_capability_card_cache() -> None:
     global _cache_singleton
     _cache_singleton = None
 
 
 __all__ = [
-    "CAPABILITY_CACHE_TTL_SEC",
-    "CapabilityCache",
-    "get_capability_cache",
-    "reset_capability_cache",
+    "CapabilityCardCache",
+    "get_capability_card_cache",
+    "reset_capability_card_cache",
+    "set_capability_card_cache",
 ]
