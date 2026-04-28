@@ -126,18 +126,48 @@ class IntentInterpreter:
                 "verification_specs",
             )
         ):
-            spec = TaskSpec(
-                goal_detail=parsed.get("goal_detail", user_message),
-                success_metrics=parsed.get("success_metrics", []),
-                required_skills=parsed.get("required_skills", []),
-                required_tools=parsed.get("required_tools", []),
-                external_resources=parsed.get("external_resources", []),
-                constraints=parsed.get("constraints", []),
-                foreseen_risks=parsed.get("foreseen_risks", []),
-                fallback_plan=parsed.get("fallback_plan"),
-                # Wire 36: 把 LLM 给的 verification_specs 接进来
-                verification_specs=parsed.get("verification_specs", []),
-            )
+            # V2.3 fix: normalize LLM-emitted constraints — LLM 经常用自由 kind
+            # (e.g. "scope", "time_box", "non_destructive"), 不在 Constraint enum.
+            # 不合法的 kind 转 "custom" + 原 kind 加进 detail, 不抛 ValidationError.
+            _allowed_constraint_kinds = {
+                "no_external_paid_api",
+                "path_only",
+                "budget_cap",
+                "no_irreversible",
+                "custom",
+            }
+            raw_constraints = parsed.get("constraints", []) or []
+            normalized_constraints: list[dict[str, str]] = []
+            for c in raw_constraints:
+                if not isinstance(c, dict):
+                    continue
+                k = str(c.get("kind", "custom"))
+                d = str(c.get("detail", ""))
+                if k not in _allowed_constraint_kinds:
+                    d = f"[{k}] {d}".strip()
+                    k = "custom"
+                normalized_constraints.append({"kind": k, "detail": d})
+
+            try:
+                spec = TaskSpec(
+                    goal_detail=parsed.get("goal_detail", user_message),
+                    success_metrics=parsed.get("success_metrics", []),
+                    required_skills=parsed.get("required_skills", []),
+                    required_tools=parsed.get("required_tools", []),
+                    external_resources=parsed.get("external_resources", []),
+                    constraints=normalized_constraints,
+                    foreseen_risks=parsed.get("foreseen_risks", []),
+                    fallback_plan=parsed.get("fallback_plan"),
+                    # Wire 36: 把 LLM 给的 verification_specs 接进来
+                    verification_specs=parsed.get("verification_specs", []),
+                )
+            except Exception as e:
+                log.warning(
+                    "intent.taskspec_validation_failed_fallback_no_spec",
+                    error=str(e),
+                    task_id=meta.task_id,
+                )
+                spec = None
 
         log.info(
             "intent.parsed",

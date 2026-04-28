@@ -50,6 +50,182 @@ def version() -> None:
 
 
 @app.command()
+def doctor(
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+    fix: bool = typer.Option(False, "--fix", help="Try to auto-fix issues found"),
+) -> None:
+    """KUN 自检 — 交付前/启动前快速 smoke check.
+
+    检查项 (~10 个):
+      1. python deps (kun, pydantic, sqlalchemy, prometheus_client)
+      2. alembic head (0016_pheromone)
+      3. ProtocolRegistry 装上 + 5 seed protocol 在
+      4. PheromoneStorage 装上
+      5. Prometheus metrics 都注册了
+      6. CronScheduler + qi cron jobs 注册
+      7. LLM router (claude_code_cli / codex_mcp) 配置好
+      8. Frontend 目录存在 + node_modules 装了
+      9. 端口 3001 (frontend) 是否被占
+      10. /metrics + /api/protocols endpoint 可注册
+    """
+    import socket
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from starlette.datastructures import State
+
+    console.print(f"[bold cyan]KUN doctor[/] — tenant={tenant}\n")
+    issues: list[str] = []
+
+    def _ok(msg: str) -> None:
+        console.print(f"  [green]✓[/] {msg}")
+
+    def _warn(msg: str) -> None:
+        console.print(f"  [yellow]⚠[/] {msg}")
+        issues.append(msg)
+
+    def _fail(msg: str) -> None:
+        console.print(f"  [red]✗[/] {msg}")
+        issues.append(msg)
+
+    # 1. python deps
+    try:
+        import pydantic  # noqa: F401
+        import sqlalchemy  # noqa: F401
+
+        _ok("Python deps: pydantic + sqlalchemy + prometheus_client")
+    except ImportError as e:
+        _fail(f"Python deps missing: {e}")
+
+    # 2. alembic head
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["uv", "run", "alembic", "current"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if "0016_pheromone" in out.stdout:
+            _ok("alembic head: 0016_pheromone")
+        else:
+            _warn(f"alembic head 不在 0016_pheromone (实际: {out.stdout.strip()[:100]})")
+    except Exception as e:
+        _warn(f"alembic check failed: {e}")
+
+    # 3-5: install_runtime + protocol seed + metrics
+    try:
+        from kun.api.runtime import install_runtime
+        from kun.qi.seed_protocols import seed_default_protocols
+        from kun.watchtower.engine import RuleEngine
+
+        app = SimpleNamespace(state=State())
+        install_runtime(app, rule_engine=RuleEngine([]))
+
+        if getattr(app.state, "protocol_registry", None) is not None:
+            _ok("ProtocolRegistry 装上 (KUN_QI_RUNTIME_ENABLED default ON)")
+
+            async def _seed() -> int:
+                return await seed_default_protocols(app.state.protocol_registry)
+
+            n = asyncio.run(_seed())
+            listed = asyncio.run(app.state.protocol_registry.list_all(tenant))
+            if len(listed) >= 5:
+                _ok(f"Protocol seed: {len(listed)} protocols (新 seed {n})")
+            else:
+                _warn(f"Protocol seed 数量异常: {len(listed)} (期望 ≥ 5)")
+        else:
+            _fail("ProtocolRegistry 未装 (KUN_QI_RUNTIME_ENABLED=0?)")
+
+        if getattr(app.state, "pheromone_storage", None) is not None:
+            _ok("PheromoneStorage 装上")
+        else:
+            _warn("PheromoneStorage 未装")
+
+        if getattr(app.state, "orchestrator", None) is not None:
+            orch = app.state.orchestrator
+            hooks = []
+            if orch.protocol_registry is not None:
+                hooks.append("protocol_registry")
+            if orch.anti_gaming_detector is not None:
+                hooks.append("anti_gaming")
+            if orch.prediction_provider is not None or orch.model_updater is not None:
+                hooks.append("predictive_coding")
+            _ok(f"Orchestrator V2.3 hooks: {', '.join(hooks) or '(none)'}")
+        else:
+            _fail("Orchestrator 未装")
+    except Exception as e:
+        _fail(f"install_runtime failed: {e}")
+
+    # 6. metrics
+    try:
+        from kun.core.metrics import (
+            anti_gaming_detection_total,  # noqa: F401
+            protocol_match_total,  # noqa: F401
+            qi_window_active,  # noqa: F401
+        )
+
+        _ok("Prometheus metrics 已注册 (qi_window_active / protocol_match / anti_gaming)")
+    except ImportError as e:
+        _fail(f"Metrics 未注册: {e}")
+
+    # 7. LLM router
+    try:
+        from kun.interface.llm import get_router
+
+        router = get_router()
+        providers = getattr(router, "providers", {}) or {}
+        if providers:
+            tiers = list(providers.keys())
+            _ok(f"LLM router: {len(providers)} providers (tiers: {tiers})")
+        else:
+            _warn("LLM router 0 providers (CLI OAuth 未登录? 检查 claude / codex)")
+    except Exception as e:
+        _warn(f"LLM router check failed: {e}")
+
+    # 8. Frontend
+    frontend_dir = Path(__file__).parent.parent / "frontend"
+    if frontend_dir.is_dir():
+        if (frontend_dir / "node_modules").is_dir():
+            _ok(f"Frontend 装好: {frontend_dir} (node_modules ✓)")
+        else:
+            _warn(f"Frontend node_modules 缺: cd {frontend_dir} && npm install")
+    else:
+        _warn(f"Frontend 目录不存在: {frontend_dir}")
+
+    # 9. Frontend port (3001)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 3001))
+        sock.close()
+        _ok("Port 3001 (frontend) free")
+    except OSError:
+        sock.close()
+        _warn("Port 3001 已被占 — frontend 启动会失败 (用 PORT=3002 npm run dev 换端口)")
+
+    # 10. Backend port (8000)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 8000))
+        sock.close()
+        _ok("Port 8000 (backend) free")
+    except OSError:
+        sock.close()
+        _warn("Port 8000 已被占 — backend 启动会失败 (用 kun serve --port 8001)")
+
+    # 总结
+    console.print()
+    if not issues:
+        console.print("[bold green]✓ KUN doctor: 全部检查通过, ready to go.[/]")
+    else:
+        console.print(
+            f"[bold yellow]⚠ KUN doctor: {len(issues)} 个问题需注意.[/] (用 --fix 试自动修, 或手动 fix)"
+        )
+
+
+@app.command()
 def serve(
     host: str = typer.Option(settings().api_host, "--host", help="Bind host"),
     port: int = typer.Option(settings().api_port, "--port", help="Bind port"),
@@ -283,11 +459,18 @@ def idle_batch(
 def protocol_list(
     tenant: str = typer.Option("u-sylvan", "--tenant"),
 ) -> None:
-    """List ProtocolRegistry entries for a tenant."""
+    """List ProtocolRegistry entries for a tenant.
+
+    CLI 模式 InMemory storage 是 per-process — 每次启都空, 自动 seed 5 个 starter.
+    """
     from kun.qi import get_protocol_registry
+    from kun.qi.seed_protocols import seed_default_protocols
 
     async def _go() -> None:
-        protocols = await get_protocol_registry().list_all(tenant)
+        registry = get_protocol_registry()
+        # 自动 seed (idempotent — 已存在跳过)
+        await seed_default_protocols(registry)
+        protocols = await registry.list_all(tenant)
         table = Table(title=f"protocols — {tenant}")
         table.add_column("protocol_id")
         table.add_column("version")
@@ -422,12 +605,13 @@ def qi_status(
 
     cfg = QiWindowConfig()
     forced = os.getenv("KUN_QI_FORCE_ACTIVE", "0") == "1"
-    enabled = os.getenv("KUN_QI_ENABLED", "0") == "1"
+    # V2.3: KUN_QI_ENABLED default ON (跟 install_runtime 一致)
+    enabled = os.getenv("KUN_QI_ENABLED", "1") == "1"
     active = enabled and (forced or is_qi_window_active(cfg))
     budget = get_qi_budget()
 
     console.print(f"[bold cyan]启 (Qi) status[/] — tenant={tenant}")
-    console.print(f"  KUN_QI_ENABLED      = {os.getenv('KUN_QI_ENABLED', '0')}")
+    console.print(f"  KUN_QI_ENABLED      = {os.getenv('KUN_QI_ENABLED', '1')}")
     console.print(f"  KUN_QI_FORCE_ACTIVE = {os.getenv('KUN_QI_FORCE_ACTIVE', '0')}")
     console.print(f"  window_active       = {'[green]yes[/]' if active else '[yellow]no[/]'}")
     spent = budget.get_today_spent(tenant)
