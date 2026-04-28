@@ -1193,6 +1193,100 @@ V2.2 完整闭环: 10/10 章节 ≥85% 实装. 剩余只 4 个 PR rebase (codex 
 
 ---
 
+### Z.19 第十七轮 (2026-04-28): V2.3 真上线 wave — Claude 一次性完成 C71+C72+C73+CLI+V2.4 spec+release
+
+承接 Z.18 (Z.18 派 BATCH14 给 codex). 用户 push 改方向: "剩余的部分不用分给 codex 了, 全部你来完成, 你全盘审视下还有哪些遗漏, 一次性完成". Claude 全盘 audit + 一次性做完 V2.3 真上线最后一公里.
+
+**这一轮一次性完成 (commit e2ebe04 + 后续)**:
+
+#### 1. C71 — orchestrator 真消费 protocol (V2.3 真核心)
+
+| 件 | 实现 |
+|---|---|
+| Orchestrator 加 protocol_registry param | __init__ 新参数 |
+| plan 创建后 find_protocol_for(task_meta) | kun/engineering/orchestrator.py L457-510 |
+| 协议改 task_ref.meta.execution_mode | FAST/SMART/MAX/ENSEMBLE |
+| 协议 verification specs → task_ref.spec.verification_specs | 自动并存 (跟 LLM 提供的) |
+| emit protocol.applied event | Watchtower 看 |
+| metric kun_protocol_match_total | per protocol_id + hit |
+| KUN_PROTOCOL_CONSUME_ENABLED=0 (default) | 鲲行为完全不变 |
+| 7 测试 | test_orchestrator_protocol_consume.py |
+
+#### 2. C72 — AntiGamingDetector 接 orchestrator post-step
+
+| 件 | 实现 |
+|---|---|
+| Orchestrator 加 anti_gaming_detector param | __init__ 新参数 |
+| step 完后跑 7 套路 quick check | kun/engineering/orchestrator.py L1145-1195 |
+| 命中 → emit gaming.detected + log warning | event + metric |
+| 不阻断流程 | verification_runner 决定真 fail |
+| KUN_ANTI_GAMING_ENABLED=0 (default) | 鲲行为完全不变 |
+| 5 测试 | test_orchestrator_anti_gaming.py |
+
+#### 3. C73 — V2.3 Prometheus metrics + Grafana dashboard
+
+| metric | type |
+|---|---|
+| kun_qi_window_active | gauge |
+| kun_qi_daily_spent_usd | gauge |
+| kun_protocol_match_total | counter |
+| kun_protocol_promotion_total | counter (auto in registry.promote/rollback) |
+| kun_predictive_coding_error | histogram |
+| kun_pheromone_total_strength | gauge |
+| kun_pheromone_decay_step_total | counter (auto in PheromoneDecayStep) |
+| kun_anti_gaming_detection_total | counter (auto in orchestrator) |
+| kun_capability_card_cache_hit_rate | gauge |
+
++ kun/infra/grafana-dashboard-kun-v23.json (9 panel) + docs/ops/grafana-v23-dashboard.md.
+9 测试 in test_v23_metrics.py.
+
+#### 4. kun qi CLI 子命令 (BATCH13 漏的)
+
+- `kun qi status` — 显示窗口活跃 + 今日花费 + budget
+- `kun qi start --duration N --budget N` — 强制窗口活跃 N 分钟
+- `kun qi stop` — 关闭强制活跃
+- 5 测试 in test_qi_cli.py
+
+#### 5. EventType 加 V2.3 8 个
+
+kun/datamodel/events.py: protocol.applied/matched/promoted/rolled_back, gaming.detected, qi.window.opened/closed, qi.budget.exhausted
+
+#### 6. C75 — V2.4 spec 草稿
+
+`docs/v2/KUN-V2.4-spec.md` — 基于 V2.3 现状写的草稿. 等真 dogfood 数据后迭代. 主题: 真用户磨合 + 协议库丰富化 (50+) + 协议自动 promote + PC 自动训练 cron + Darwin 自动 strategy + AntiGaming 自学.
+
+#### 7. C77 — v2.3.0 release 准备
+
+- `CHANGELOG-v2.3.md` 写好 (草稿, 等真 dogfood 后定稿)
+- `docs/ops/release-checklist-v2.3.md` 写好
+
+**测试**: 1427 → 1453 (+26). ruff/mypy 干净. 单 head: 0016_pheromone.
+
+**V2.3 完成度推进**:
+
+| 阶段 | 完成度 |
+|---|---|
+| Z.16 心脏 wire 完 | ~75% |
+| Z.17 收尾 wire 完 | ~85% |
+| Z.18 BATCH13 codex 完 + Claude C64/C68 | ~95% |
+| **Z.19 真上线 wave (本轮)** | **~99%** |
+| 真用户跑 dogfood + tag v2.3.0 | 100% |
+
+**反思**:
+
+- **三轮一次性大开发**: Z.16 + Z.17 + Z.19 = 13 wire + install_runtime + 4 文档 + 22 个新测试. 测试 1302 → 1453 (+151). 节奏快, 但 Z.16-Z.18 都先派 codex 帮忙周边, Z.19 是 Claude 全自助 (用户拍板"不分给 codex 了"). 都过, 风险点 mid-way 没用户反馈.
+- **U2 用户原话优先**: 用户说"剩余的部分不用分给 codex 了" → 立即转向自助. 没继续派 BATCH14 给 codex. 顺.
+- **全盘 audit 价值**: 启动前用 Explore agent 全盘 audit V2.3 状态 → 找到 4 个遗漏 (orchestrator 协议消费 / AntiGaming wire / V2.3 metrics / qi CLI). 审完才动手.
+- **协议 IP 真上线了**: KUN_PROTOCOL_CONSUME_ENABLED=1 → orchestrator 真用. 这是 V2.3 跟 LangChain/Devin 等真差异化的最后一公里. 终于通.
+- **V2.3 默认 OFF 设计**: V2.3 大部分新功能默认 OFF (protocol consume / anti gaming / qi runtime), 用户必须 explicit 启用. 安全保留 (default 行为完全不变), 但需要用户花精力开. 接下来 dogfood + V2.4 看默认值要不要调.
+
+**V2.3 真上线下一步** (Claude 自助完成, 不再派 codex):
+1. 真 dogfood (用户给 LLM API key) → 跑 ./scripts/dogfood_v23.sh
+2. 看 dashboard 真有数据
+3. 修真问题 → 定 v2.3.0 tag
+
+---
+
 ## U. 我自己 (Claude) 的工程化承诺 (2026-04-26 加, 配合 §18.7)
 
 | # | 承诺 | 落点 |
