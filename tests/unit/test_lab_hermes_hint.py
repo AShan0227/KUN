@@ -11,16 +11,27 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from kun.datamodel.prompt_template import (
+    HERMES_PROMPT_TARGET,
+    InMemoryPromptTemplateStorage,
+    PromptTemplate,
+    PromptTemplateRegistry,
+    get_prompt_template_registry,
+    reset_prompt_template_registry,
+    upsert_prompt_template_from_lab_recipe,
+)
 from kun.engineering.execution_protocol import (
     ExecutionStep,
     StructuredStepGenerator,
     _build_request,
     _maybe_lab_recipe_prompt_hint,
 )
+from kun.engineering.precipitation import AssetUpdate
 from kun.interface.llm.base import LLMResponse, UsageInfo
 from kun.lab import (
     LabRecipeEntry,
     get_recipe_registry,
+    make_registry_apply_hook,
     reset_recipe_registry,
 )
 
@@ -28,8 +39,10 @@ from kun.lab import (
 @pytest.fixture(autouse=True)
 def _reset_registry():
     reset_recipe_registry()
+    reset_prompt_template_registry()
     yield
     reset_recipe_registry()
+    reset_prompt_template_registry()
 
 
 def _seed_registry(strategy: str, task_type: str = "ad_creative") -> None:
@@ -104,6 +117,92 @@ def test_hint_uses_task_kind_fallback() -> None:
     _seed_registry("chain_of_thought", task_type="biz_plan")
     hint = _maybe_lab_recipe_prompt_hint({"task_kind": "biz_plan"})
     assert hint is not None
+
+
+def test_hint_prefers_task_specific_prompt_template() -> None:
+    _seed_registry("chain_of_thought", task_type="biz_plan")
+    get_prompt_template_registry().upsert(
+        PromptTemplate(
+            tenant_id="u-sylvan",
+            task_type="biz_plan",
+            target_module=HERMES_PROMPT_TARGET,
+            strategy="chain_of_thought",
+            version=2,
+            source="kun_lab",
+            content="[Lab-validated recipe] Use the CFO planning frame.",
+        )
+    )
+
+    hint = _maybe_lab_recipe_prompt_hint({"task_type": "biz_plan"})
+    assert hint == "[Lab-validated recipe] Use the CFO planning frame."
+
+
+@pytest.mark.asyncio
+async def test_upsert_prompt_template_from_lab_recipe_versions_template() -> None:
+    storage = InMemoryPromptTemplateStorage()
+    registry = PromptTemplateRegistry(storage=storage, tenant_id="u-sylvan")
+
+    first = await upsert_prompt_template_from_lab_recipe(
+        task_type="biz_plan",
+        strategy="chain_of_thought",
+        tenant_id="u-sylvan",
+        content="[Lab-validated recipe] First custom template.",
+        registry=registry,
+    )
+    second = await upsert_prompt_template_from_lab_recipe(
+        task_type="biz_plan",
+        strategy="chain_of_thought",
+        tenant_id="u-sylvan",
+        content="[Lab-validated recipe] Second custom template.",
+        registry=registry,
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.version == 1
+    assert second.version == 2
+    picked = registry.get("biz_plan", HERMES_PROMPT_TARGET, "chain_of_thought")
+    assert picked is not None
+    assert picked.content.endswith("Second custom template.")
+    stored = await storage.load_all("u-sylvan")
+    assert len(stored) == 2
+    assert sum(1 for row in stored if row.active) == 1
+
+
+@pytest.mark.asyncio
+async def test_lab_registry_hook_persists_hermes_prompt_template() -> None:
+    storage = InMemoryPromptTemplateStorage()
+    prompt_registry = get_prompt_template_registry(storage=storage, tenant_id="u-sylvan")
+    registry = get_recipe_registry()
+    hook = make_registry_apply_hook(registry)
+
+    await hook(
+        AssetUpdate(
+            update_id="up-1",
+            asset_kind="recipe",
+            asset_ref=HERMES_PROMPT_TARGET,
+            update_kind="promote",
+            confidence=0.9,
+            payload={
+                "source": "kun_lab",
+                "tenant_id": "u-sylvan",
+                "task_type": "biz_plan",
+                "strategy": "chain_of_thought",
+                "win_rate": 0.86,
+                "promotion_id": "promo-1",
+                "prompt_template_content": "[Lab-validated recipe] Ask for constraints first.",
+            },
+        )
+    )
+
+    entry = registry.get("biz_plan", HERMES_PROMPT_TARGET)
+    assert entry is not None
+    template = prompt_registry.get("biz_plan", HERMES_PROMPT_TARGET, "chain_of_thought")
+    assert template is not None
+    assert template.version == 1
+    assert template.content == "[Lab-validated recipe] Ask for constraints first."
+    stored = await storage.load_all("u-sylvan")
+    assert len(stored) == 1
 
 
 # ---- _build_request 集成 ----
