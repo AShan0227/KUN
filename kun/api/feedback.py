@@ -90,6 +90,23 @@ async def submit_feedback(
         # 不阻塞用户 — 即使 events bus 挂了, 用户应该收到 200
         logger.exception("user.feedback emit failed task=%s err=%s", task_id, e)
 
+    # V2.4: 负面反馈 → 喂 AntiGamingLearner 收集潜在新套路
+    if payload.rating <= 2:
+        try:
+            from kun.core.tenancy import current_tenant
+            from kun.qi.anti_gaming_learner import get_anti_gaming_learner
+
+            tenant = current_tenant()
+            learner = get_anti_gaming_learner()
+            learner.record_negative_feedback(
+                tenant_id=tenant.tenant_id,
+                comment=payload.comment,
+                task_id=task_id,
+                rating=payload.rating,
+            )
+        except Exception:
+            logger.debug("anti_gaming_learner.record_failed", exc_info=True)
+
     return UserFeedbackResponse(received=True, task_id=task_id, rating=payload.rating)
 
 

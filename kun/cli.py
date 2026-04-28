@@ -221,8 +221,50 @@ def doctor(
         console.print("[bold green]✓ KUN doctor: 全部检查通过, ready to go.[/]")
     else:
         console.print(
-            f"[bold yellow]⚠ KUN doctor: {len(issues)} 个问题需注意.[/] (用 --fix 试自动修, 或手动 fix)"
+            f"[bold yellow]⚠ KUN doctor: {len(issues)} 个问题需注意.[/]"
         )
+        if fix:
+            console.print("[cyan]--fix 模式: 尝试自动修复...[/]")
+            # Auto-fix: alembic upgrade head (最常见问题)
+            for issue in issues:
+                if "alembic head" in issue:
+                    console.print("  [yellow]→[/] 跑 alembic upgrade head")
+                    try:
+                        out = subprocess.run(
+                            ["uv", "run", "alembic", "upgrade", "head"],  # noqa: S607
+                            capture_output=True,
+                            text=True,
+                            timeout=60,
+                            check=False,
+                        )
+                        if out.returncode == 0:
+                            console.print("    [green]✓ alembic upgraded[/]")
+                        else:
+                            console.print(f"    [red]✗ failed: {out.stderr[:200]}[/]")
+                    except Exception as e:
+                        console.print(f"    [red]✗ {e}[/]")
+                elif "node_modules" in issue:
+                    console.print("  [yellow]→[/] 跑 npm install in frontend/")
+                    try:
+                        frontend_dir = Path(__file__).parent.parent / "frontend"
+                        out = subprocess.run(
+                            ["npm", "install"],  # noqa: S607
+                            cwd=str(frontend_dir),
+                            capture_output=True,
+                            text=True,
+                            timeout=300,
+                            check=False,
+                        )
+                        if out.returncode == 0:
+                            console.print("    [green]✓ npm install OK[/]")
+                        else:
+                            console.print(f"    [red]✗ failed: {out.stderr[:200]}[/]")
+                    except Exception as e:
+                        console.print(f"    [red]✗ {e}[/]")
+                else:
+                    console.print(f"  [dim]- 不能自动修: {issue[:80]}[/]")
+        else:
+            console.print("[dim]提示: 加 --fix 让 KUN 自动修能修的 (alembic / npm install)[/]")
 
 
 @app.command()

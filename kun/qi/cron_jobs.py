@@ -312,8 +312,36 @@ def _check_qi_active(app: Any) -> bool:
         return False
 
 
+async def _qi_auto_promote(app: Any, tenant_id: str) -> None:
+    """V2.4: 自动 promote experimental → shadow → canary → stable."""
+    if not _check_qi_active(app):
+        return
+    try:
+        from kun.qi.auto_promote import auto_promote_protocols
+
+        result = await auto_promote_protocols(app, tenant_id)
+        log.info("qi_auto_promote.done", tenant=tenant_id, **result)
+    except Exception:
+        log.exception("qi_auto_promote.failed (non-fatal)")
+
+
+async def _qi_dogfood_long(app: Any, tenant_id: str) -> None:
+    """V2.4: dogfood 长期化 — 每天跑 3 个轻量 task 验全闭环.
+
+    简化: 现在只跑 1 次 darwin 探索 (有真 LLM call). V2.5 加多 task_type.
+    """
+    if not _check_qi_active(app):
+        return
+    try:
+        log.info("qi_dogfood_long.start", tenant=tenant_id)
+        await _qi_darwin_godel_explore(app, tenant_id)
+        log.info("qi_dogfood_long.done", tenant=tenant_id)
+    except Exception:
+        log.exception("qi_dogfood_long.failed (non-fatal)")
+
+
 def register_qi_cron_jobs(sched: Any, app: Any, tenant_id: str) -> None:
-    """注册 3 个启 cron job.
+    """注册启 cron jobs.
 
     cron 表达式: 默认每小时跑一次, 内部用 _check_qi_active 守门窗口外 skip.
     优势: 用户改 SoulFile.qi_window 时, cron 自动尊重新窗口 (不需重启).
@@ -328,10 +356,19 @@ def register_qi_cron_jobs(sched: Any, app: Any, tenant_id: str) -> None:
     async def _ai_scientist_job() -> None:
         await _qi_ai_scientist_explore(app, tenant_id)
 
-    # 每小时 tick 一次, 内部守门
+    async def _auto_promote_job() -> None:
+        await _qi_auto_promote(app, tenant_id)
+
+    async def _dogfood_long_job() -> None:
+        await _qi_dogfood_long(app, tenant_id)
+
+    # 每小时 tick 一次 (深夜窗口活跃 → 真跑; 窗口外 skip)
     sched.register("qi_pc_train_hourly", "@hourly", _pc_job)
     sched.register("qi_darwin_explore_hourly", "@hourly", _darwin_job)
     sched.register("qi_ai_scientist_hourly", "@hourly", _ai_scientist_job)
+    sched.register("qi_auto_promote_hourly", "@hourly", _auto_promote_job)
+    # dogfood 每天 3 AM 跑一次 (启窗口里)
+    sched.register("qi_dogfood_long_daily", "0 3 * * *", _dogfood_long_job)
 
 
 __all__ = ["register_qi_cron_jobs"]

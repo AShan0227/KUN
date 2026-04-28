@@ -121,6 +121,10 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     # V2.3: 启 runtime 默认 ON (内测阶段, KUN 还没真用户, 不需 backward-compat).
     # KUN_QI_RUNTIME_ENABLED=0 强制关闭 (e.g. CI 或 minimal 测试).
     if _os.getenv("KUN_QI_RUNTIME_ENABLED", "1") == "1":
+        # V2.3: SQL backend default ON (内测), 协议跨重启不丢.
+        # KUN_QI_PROTOCOL_DB_ENABLED=0 强制 InMemory (测试 / minimal 部署).
+        import logging as _logging
+
         from kun.engineering.capability_cache import (
             CapabilityCardCache,
             set_capability_card_cache,
@@ -136,16 +140,27 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
             set_protocol_registry,
         )
 
-        if _os.getenv("KUN_QI_PROTOCOL_DB_ENABLED", "0") == "1":
-            protocol_registry = ProtocolRegistry(SqlProtocolStorage())
-            set_protocol_registry(protocol_registry)
+        _local_log = _logging.getLogger("kun.api.runtime")
+        if _os.getenv("KUN_QI_PROTOCOL_DB_ENABLED", "1") == "1":
+            try:
+                protocol_registry = ProtocolRegistry(SqlProtocolStorage())
+                set_protocol_registry(protocol_registry)
+            except Exception:
+                # SQL 装失败 (e.g. DB 没启) → fallback InMemory
+                _local_log.exception("protocol.sql_storage_init_failed_fallback_inmemory")
+                protocol_registry = get_protocol_registry()
         else:
             protocol_registry = get_protocol_registry()
         app.state.protocol_registry = protocol_registry
 
-        if _os.getenv("KUN_QI_PHEROMONE_DB_ENABLED", "0") == "1":
-            pheromone_storage = PheromoneStorage()
-            set_pheromone_storage(pheromone_storage)
+        # V2.3: Pheromone SQL backend default ON (内测).
+        if _os.getenv("KUN_QI_PHEROMONE_DB_ENABLED", "1") == "1":
+            try:
+                pheromone_storage = PheromoneStorage()
+                set_pheromone_storage(pheromone_storage)
+            except Exception:
+                _local_log.exception("pheromone.sql_storage_init_failed_fallback_inmemory")
+                pheromone_storage = cast(Any, get_pheromone_storage())
         else:
             pheromone_storage = cast(Any, get_pheromone_storage())
         app.state.pheromone_storage = pheromone_storage

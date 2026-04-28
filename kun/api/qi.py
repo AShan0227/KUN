@@ -142,7 +142,69 @@ async def qi_trigger_explore(
 
         await _qi_predictive_coding_train(request.app, tenant_id)
         return {"ok": True, "job": "pc_train", "tenant": tenant_id}
+    if payload.job == "auto_promote":
+        from kun.qi.auto_promote import auto_promote_protocols
+
+        result = await auto_promote_protocols(request.app, tenant_id)
+        return {"ok": True, "job": "auto_promote", "tenant": tenant_id, **result}
     return {"ok": False, "error": f"unknown job: {payload.job}"}
+
+
+@router.get("/learner/patterns", response_model=dict[str, Any])
+async def qi_learner_patterns() -> dict[str, Any]:
+    """V2.4: AntiGaming Learner — 用户负面反馈聚合的"可能新套路"."""
+    tenant = current_tenant()
+    from kun.qi.anti_gaming_learner import get_anti_gaming_learner
+
+    learner = get_anti_gaming_learner()
+    items = learner.top_patterns(tenant.tenant_id, limit=10)
+    return {
+        "tenant": tenant.tenant_id,
+        "patterns": [
+            {
+                "pattern": p.pattern,
+                "count": p.count,
+                "examples": p.examples[:5],
+                "first_seen": p.first_seen.isoformat(),
+                "last_seen": p.last_seen.isoformat(),
+            }
+            for p in items
+        ],
+    }
+
+
+@router.get("/verify/auto_template", response_model=dict[str, Any])
+async def qi_verify_auto_template(task_type: str) -> dict[str, Any]:
+    """V2.4: 给定 task_type 返自动生成的 verification template 建议."""
+    from kun.qi.verification_auto_gen import get_verification_auto_gen
+
+    gen = get_verification_auto_gen()
+    template = gen.suggest(task_type)
+    return {
+        "task_type": template.task_type,
+        "sample_size": template.sample_size,
+        "suggested": template.suggested,
+    }
+
+
+@router.get("/windows", response_model=dict[str, Any])
+async def qi_windows() -> dict[str, Any]:
+    """V2.4: 列出当前所有启窗口 + 现在哪个活跃."""
+    from kun.qi.multi_window import get_active_windows, is_any_window_active
+
+    windows = get_active_windows()
+    return {
+        "any_active_now": is_any_window_active(),
+        "windows": [
+            {
+                "start_hour": w.start_hour,
+                "end_hour": w.end_hour,
+                "weekdays": list(w.weekdays),
+                "enabled": w.enabled,
+            }
+            for w in windows
+        ],
+    }
 
 
 __all__ = ["router"]

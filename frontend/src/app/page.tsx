@@ -266,7 +266,7 @@ export default function Home() {
           <span className="text-kun-accent">累计 ${totalCost.toFixed(4)}</span>
         </div>
         <div className="flex-1 space-y-2">
-          {/* V2.3: 启 (Qi) 状态卡 */}
+          {/* V2.3: 启 (Qi) 状态卡 + toggle 按钮 */}
           <div className="bg-white rounded p-2 border border-gray-200 text-xs space-y-1">
             <div className="font-medium flex justify-between">
               <span>🌙 启 (Qi) 状态</span>
@@ -281,13 +281,58 @@ export default function Home() {
               )}
             </div>
             {qiStatus && (
-              <div className="text-gray-500 space-y-0.5">
-                <div>今日花费: ${qiStatus.spent_today_usd.toFixed(4)}</div>
-                <div>
-                  剩余预算: ${qiStatus.remaining_usd.toFixed(2)} / $
-                  {qiStatus.daily_limit_usd.toFixed(2)}
+              <>
+                <div className="text-gray-500 space-y-0.5">
+                  <div>今日花费: ${qiStatus.spent_today_usd.toFixed(4)}</div>
+                  <div>
+                    剩余预算: ${qiStatus.remaining_usd.toFixed(2)} / $
+                    {qiStatus.daily_limit_usd.toFixed(2)}
+                  </div>
                 </div>
-              </div>
+                <div className="flex gap-1 pt-1">
+                  {qiStatus.window_active ? (
+                    <button
+                      className="border rounded px-2 py-0.5 hover:bg-gray-50 flex-1"
+                      onClick={async () => {
+                        await fetch(`${API_ORIGIN}/api/qi/release`, { method: "POST" });
+                        const r = await fetch(`${API_ORIGIN}/api/qi/status`);
+                        if (r.ok) setQiStatus(await r.json());
+                      }}
+                    >
+                      关闭
+                    </button>
+                  ) : (
+                    <button
+                      className="border rounded px-2 py-0.5 hover:bg-blue-50 bg-blue-50/30 flex-1"
+                      onClick={async () => {
+                        await fetch(`${API_ORIGIN}/api/qi/force_active`, { method: "POST" });
+                        const r = await fetch(`${API_ORIGIN}/api/qi/status`);
+                        if (r.ok) setQiStatus(await r.json());
+                      }}
+                    >
+                      强制启动
+                    </button>
+                  )}
+                  <button
+                    className="border rounded px-2 py-0.5 hover:bg-gray-50"
+                    title="跑一次 Darwin 探索 (30 秒, 真调 LLM)"
+                    onClick={async () => {
+                      const r = await fetch(`${API_ORIGIN}/api/qi/trigger_explore`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ job: "darwin" }),
+                      });
+                      const data = await r.json();
+                      alert(`Darwin 探索完成: ${JSON.stringify(data)}`);
+                      // 刷新协议库
+                      const pr = await fetch(`${API_ORIGIN}/api/protocols?tenant=u-sylvan`);
+                      if (pr.ok) setProtocols(await pr.json());
+                    }}
+                  >
+                    🔬 跑探索
+                  </button>
+                </div>
+              </>
             )}
           </div>
 
