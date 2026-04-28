@@ -701,4 +701,54 @@ V2.3 采纳:
 ---
 
 **修订日期**: 2026-04-27
-**下一步**: 用户 review 拍板 → 启动 V2.3 开发 → BATCH13 brief 派 codex
+**实装日期**: 2026-04-28 (2026-04-27 起步, 2026-04-28 心脏 wire 全完成)
+
+---
+
+## 16. 实装状态 (2026-04-28 update)
+
+### Wire 38-50 实装清单 (Claude 全做)
+
+| Wire | 主件 | 状态 | 测试数 |
+|------|------|------|------|
+| 38 | 启 V3 时间窗口 + 日预算 (`kun/qi/window.py` + `budget.py`) | ✅ | 27 |
+| 39 | ProtocolRegistry (alembic 0015 + Protocol schema + lifecycle) | ✅ | 21 |
+| 40 | Protocol HTTP API + CLI | ⏳ codex BATCH13 | - |
+| 41 | Predictive Coding hook (Orchestrator pre/post step) | ✅ | 6 |
+| 42 | PC 启训练 pipeline (`predictive_coding.py` + Trainer + save/load) | ✅ | (含 43) |
+| 43 | Pheromone (alembic 0016 + InMemory/SQL + decay) | ✅ | 22 |
+| 44 | AntiGamingDetector (7 套路) | ✅ | (含 50) |
+| 45 | lite_jury for SMART | ⏳ codex BATCH13 | - |
+| 46 | Verification 默认模板 | ✅ | (含 50) |
+| 47 | L4 Skill graph + Pheromone 联动 (skill_selector 用 pheromone) | ✅ | 5 |
+| 48 | 用户反馈 API | ✅ | (含 50) |
+| 49 | L5 capability_card 实时 cache | ✅ | 10 |
+| 50 | Darwin Gödel 多轮探索 | ✅ | 26 |
+| 51 | AI Scientist v2 树搜索 | ⏳ codex BATCH13 | - |
+| 52 | 5% 非最佳路径测试 | ⏳ codex BATCH13 | - |
+| install_runtime | V2.3 全套接生产 (Wire 38-50) | ✅ | 8 |
+| Pheromone reinforce hook in orchestrator | step 完成自动加强 chain | ✅ | (集成于上面) |
+
+**测试**: V2.3 共加 ~125 测试. 全套 1302 → 1427 全过.
+
+### 完成度: V2.3 心脏 ~85% (Claude 做完); 周边 ~50% (等 codex BATCH13)
+
+[实装: ✅ Wire 38-50 心脏全完, install_runtime 接生产 (env opt-in), Pheromone reinforce hook 在 orchestrator]
+
+### V2.3 启 V3 默认状态 (重要)
+- KUN_QI_ENABLED=0 (默认 disabled, 用户 explicit 启用)
+- 启不影响生产 KUN, 跟 V2.2 §26 KUN-Lab 共存
+- 用户用 `kun qi start` (待 BATCH13 加 CLI) 或 cron 定时启动
+- 启窗口外强制 off, 防误开烧钱
+
+### V2.3 协议 (Protocol) 状态
+- ProtocolRegistry 单例 install_runtime 装上
+- 全 lifecycle: experimental → shadow → canary → stable → rolled_back
+- 鲲消费: orchestrator 启动时 ProtocolRegistry.find_protocol_for(task_meta) (TODO Wire wire 进 orchestrator)
+- 启写入: 启窗口内探索完 → registry.save (待 Darwin Gödel 跑通后真用)
+
+### V2.3 跟 V2.2 共存
+- V2.2 KUN-Lab (kun/lab/) 仍可用, 跑 EnsembleExecutor / RecipePromoter / etc.
+- V2.3 启 (kun/qi/) 是 V3 升级版, 加时间窗口 + 日预算 + Darwin Gödel + 协议涌现
+- 共用 LLM router / Skill / DB / events bus
+- 协议 (V2.3) 跟 LabRecipeRegistry (V2.2) 并行存在; V2.3 ProtocolRegistry 是 V2.2 LabRecipeRegistry 的格局升级

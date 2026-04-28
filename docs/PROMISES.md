@@ -1053,6 +1053,67 @@ V2.2 完整闭环: 10/10 章节 ≥85% 实装. 剩余只 4 个 PR rebase (codex 
 
 ---
 
+### Z.17 第十五轮 (2026-04-28): V2.3 收尾 — Wire 47/49 + install_runtime + Pheromone hook + BATCH13 派发
+
+承接 Z.16 (V2.3 心脏 Wire 38-50). 用户拍板"你把你能做的一次性全部完成, 把 codex 的待办全部推过去, 今天要把完整的 V2.3 开发好" → Claude 把 Z.16 留的 5 项未做里 Claude 能做的 4 项一次性全做.
+
+**这一轮 V2.3 收尾 wire 一次性完成**:
+
+| Wire / 件 | 主件 | 测试 | commit |
+|---|---|---|---|
+| 47 | SkillSelector + Pheromone 联动 (`kun/skills/selector.py` 加 prior_skill 参数 + boost) | 5 | 097c0d0 |
+| 49 | CapabilityCache (`kun/engineering/capability_cache.py` 5min TTL + per-tenant invalidate) | 10 | 097c0d0 |
+| install_runtime V2.3 接生产 | 5 个 env opt-in (KUN_PREDICTIVE_CODING / PROTOCOL_REGISTRY / PHEROMONE / CAPABILITY_CACHE / QI_ENABLED) | 8 | 097c0d0 |
+| Pheromone reinforce hook in orchestrator | step 完成自动 reinforce(prior_skill, this_skill) → 蚁群涌现 | (集成于上面) | 097c0d0 |
+
+**测试**: 1404 → 1427 (+23). ruff/mypy 干净. 第二次"一次性多 wire"开发, 无 review 但 1427 全过.
+
+**剩余给 codex (BATCH13 brief 已派发)**:
+
+| C# | 任务 | h | 优先级 |
+|---|---|---|---|
+| C61 | ProtocolRegistry HTTP API + CLI | 6-8 | 第 1 周 |
+| C62 | AI Scientist v2 树搜索 | 6-8 | 第 2 周 |
+| C63 | 5% 非最佳路径测试 | 3-4 | 第 3 周 |
+| C64 | Pheromone daily decay cron | 2-3 | 第 1 周 |
+| C65 | lite_jury for SMART | 3-4 | 第 2 周 |
+| C66 | orchestrator 真消费 protocol (Wire 53) | 5-7 | 第 3 周 (用户拍板) |
+| C67 | AntiGamingDetector 接 orchestrator + jury | 4-6 | 第 4 周 |
+| C68 | V2.3 dogfood 真跑 | 4-6 | 第 4 周 |
+| C69 | V2.3 metrics + Grafana | 3-4 | 第 4 周 |
+| C70 | PROMISES.md auto-gen 跑一遍 (用 codex #71) | 1-2 | 后续 |
+
+**总量**: ~30-40h codex 工.
+
+**新写文档**:
+- `docs/codex/BATCH13.md` — 10 任务全 brief + 重要约束 + 排期建议
+- `docs/v2/V2.3-implementation-audit.md` — 章节级实装清单, V2.3 完成度 ~85%
+- `docs/v2/KUN-V2.3-spec.md` §16 — 实装状态表 (跟 spec 对照)
+
+**V2.3 完成度推进**:
+
+| 阶段 | 完成度 | 说明 |
+|---|---|---|
+| Z.16 心脏 wire 完 | ~75% | Wire 38-50 心脏 8 件 + alembic 0015/0016 |
+| Z.17 收尾 wire 完 | ~85% | + Wire 47/49 + install_runtime + Pheromone hook |
+| BATCH13 完 (~30-40h codex) | ~95% | + HTTP/CLI/dogfood/metrics/cron/lite_jury/AI Scientist v2 |
+| 真用户跑 + 反馈 | 100% | V2.4 起点 |
+
+**反思**:
+
+- **2 轮一次性大批量开发**: Z.16 + Z.17 = 10 wire + install_runtime + 4 文档 + BATCH13 brief 全自助完成. 测试 1302 → 1427 (+125) 全绿. 用户给 1 句拍板就跑完一整轮. 节奏快, 风险是没用户 mid-way feedback, 但 V2.3 spec 已审, 心脏接口稳定, 可接受.
+- **install_runtime opt-in 设计真有价值**: 5 个 env switch 让用户 / 测试 / dogfood 都能各自独立开关. 默认 4 个 ON (PC / Protocol / Pheromone / CapabilityCache 都不入侵, 安全可上线), 1 个 OFF (KUN_QI_ENABLED 启 V3 默认关, 用户 explicit 启用防误开烧钱).
+- **BATCH13 第三方接力清晰**: 心脏 (Claude 做) + 周边 (codex 做) 边界清楚, 不重叠. codex 拿到 brief 直接能跑.
+- **协议涌现 + Pheromone 蚁群 + Predictive Coding 三大差异化已落地**: 这是 V2.3 比 LangChain/Devin 等 agent 框架真差异化的核心. 心脏全通后, 等启窗口跑真任务, 协议涌现的 IP 就出来了.
+- **U2 (用户原话优先)**: 用户从未要求"鲲也做 5% 探索", 我严格守住"鲲 100% 稳定, 启 100% 探索". 启窗口外强制 off (KUN_QI_ENABLED 默认 0).
+
+**V2.3 真上线下一步**:
+1. codex 跑 C61 (HTTP/CLI) → 用户能看到协议
+2. codex 跑 C68 (dogfood) → 真任务跑出协议涌现
+3. 看真数据反推 V2.4 spec (基于真数据, 不基于猜想)
+
+---
+
 ## U. 我自己 (Claude) 的工程化承诺 (2026-04-26 加, 配合 §18.7)
 
 | # | 承诺 | 落点 |
