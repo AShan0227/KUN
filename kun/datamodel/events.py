@@ -68,6 +68,15 @@ EventKind = Literal[
     "user.message",
     "user.correction",
     "user.feedback",
+    # V2.3 启 (Qi)
+    "protocol.applied",
+    "protocol.matched",
+    "protocol.promoted",
+    "protocol.rolled_back",
+    "gaming.detected",
+    "qi.window.opened",
+    "qi.window.closed",
+    "qi.budget.exhausted",
 ]
 
 

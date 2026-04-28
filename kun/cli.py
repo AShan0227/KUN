@@ -20,6 +20,9 @@ security_app = typer.Typer(add_completion=False, no_args_is_help=True)
 promises_app = typer.Typer(add_completion=False, no_args_is_help=True)
 release_app = typer.Typer(add_completion=False, no_args_is_help=True)
 protocol_app = typer.Typer(add_completion=False, no_args_is_help=True)
+qi_app = typer.Typer(
+    add_completion=False, no_args_is_help=True, help="启 (Qi) — KUN 子模式: 探索/沉淀协议 (V2.3)"
+)
 lab_app = typer.Typer(
     add_completion=False, no_args_is_help=True, help="KUN-Lab 内测分区 (V2.2 §26)"
 )
@@ -31,6 +34,7 @@ app.add_typer(security_app, name="security")
 app.add_typer(promises_app, name="promises")
 app.add_typer(release_app, name="release")
 app.add_typer(protocol_app, name="protocol")
+app.add_typer(qi_app, name="qi")
 app.add_typer(lab_app, name="lab")
 lab_app.add_typer(lab_benchmark_app, name="benchmark")
 
@@ -386,6 +390,62 @@ def protocol_match(
         console.print_json(protocol.model_dump_json())
 
     asyncio.run(_go())
+
+
+@qi_app.command("status")
+def qi_status(
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+) -> None:
+    """Show 启 (Qi) window status + today's spend."""
+    import os
+
+    from kun.qi import get_qi_budget
+    from kun.qi.window import QiWindowConfig, is_qi_window_active
+
+    cfg = QiWindowConfig()
+    forced = os.getenv("KUN_QI_FORCE_ACTIVE", "0") == "1"
+    enabled = os.getenv("KUN_QI_ENABLED", "0") == "1"
+    active = enabled and (forced or is_qi_window_active(cfg))
+    budget = get_qi_budget()
+
+    console.print(f"[bold cyan]启 (Qi) status[/] — tenant={tenant}")
+    console.print(f"  KUN_QI_ENABLED      = {os.getenv('KUN_QI_ENABLED', '0')}")
+    console.print(f"  KUN_QI_FORCE_ACTIVE = {os.getenv('KUN_QI_FORCE_ACTIVE', '0')}")
+    console.print(f"  window_active       = {'[green]yes[/]' if active else '[yellow]no[/]'}")
+    spent = budget.get_today_spent(tenant)
+    remaining = budget.remaining_budget(tenant)
+    console.print(f"  daily_limit_usd     = {budget._daily_limit:.2f}")
+    console.print(f"  spent_today_usd     = {spent:.4f}")
+    console.print(f"  remaining_usd       = {remaining:.4f}")
+
+
+@qi_app.command("start")
+def qi_start(
+    duration_minutes: int = typer.Option(60, "--duration", help="Force active window length"),
+    daily_budget_usd: float = typer.Option(5.0, "--budget", help="Daily budget cap (USD)"),
+) -> None:
+    """Force 启 window active for N minutes (sets KUN_QI_FORCE_ACTIVE in process env)."""
+    import os
+
+    os.environ["KUN_QI_ENABLED"] = "1"
+    os.environ["KUN_QI_FORCE_ACTIVE"] = "1"
+    os.environ["KUN_QI_DAILY_BUDGET_USD"] = str(daily_budget_usd)
+    console.print(
+        f"[green]启 force-active[/] for {duration_minutes} min, budget={daily_budget_usd}USD"
+    )
+    console.print(
+        "[yellow]Note:[/] only this CLI process sees the env. For server, set env before `kun serve`."
+    )
+
+
+@qi_app.command("stop")
+def qi_stop() -> None:
+    """Stop 启 (Qi) — clear KUN_QI_FORCE_ACTIVE for this CLI process."""
+    import os
+
+    os.environ.pop("KUN_QI_FORCE_ACTIVE", None)
+    os.environ["KUN_QI_ENABLED"] = "0"
+    console.print("[green]启 stopped[/] for this CLI process.")
 
 
 @security_app.command("red-team")

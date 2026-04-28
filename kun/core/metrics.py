@@ -212,3 +212,60 @@ task_surprise_score = Histogram(
     ["task_type"],
     buckets=(0.1, 0.3, 0.5, 0.6, 0.8, 1.0),
 )
+
+# ============== V2.3 启 (Qi) — protocol / pheromone / PC / anti-gaming ==============
+
+qi_window_active = Gauge(
+    "kun_qi_window_active",
+    "Whether 启 (Qi) window is currently active (1=on, 0=off) per tenant",
+    ["tenant_id"],
+)
+
+qi_daily_spent_usd = Gauge(
+    "kun_qi_daily_spent_usd",
+    "启 daily exploration spend (USD) per tenant — reset daily",
+    ["tenant_id"],
+)
+
+protocol_match_total = Counter(
+    "kun_protocol_match_total",
+    "Times orchestrator matched a stable protocol for an incoming task",
+    ["protocol_id", "hit"],
+)
+
+protocol_promotion_total = Counter(
+    "kun_protocol_promotion_total",
+    "Protocol lifecycle promotion (experimental → shadow → canary → stable / rolled_back)",
+    ["protocol_id", "from_status", "to_status"],
+)
+
+predictive_coding_error = Histogram(
+    "kun_predictive_coding_error",
+    "Predictive Coding error per step (V2.3 §5)",
+    ["task_type"],
+    buckets=(0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0),
+)
+
+pheromone_total_strength = Gauge(
+    "kun_pheromone_total_strength",
+    "Sum of pheromone strength across the entity_relationships graph (per tenant)",
+    ["tenant_id"],
+)
+
+pheromone_decay_step_total = Counter(
+    "kun_pheromone_decay_step_total",
+    "Times PheromoneDecayStep ran via idle_batch",
+    ["tenant_id", "outcome"],
+)
+
+anti_gaming_detection_total = Counter(
+    "kun_anti_gaming_detection_total",
+    "AntiGamingDetector hits by pattern (V2.3 §7)",
+    ["pattern"],
+)
+
+capability_card_cache_hit_rate = Gauge(
+    "kun_capability_card_cache_hit_rate",
+    "CapabilityCardCache hit rate (Wire 49) per tenant",
+    ["tenant_id"],
+)

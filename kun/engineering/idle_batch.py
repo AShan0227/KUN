@@ -547,9 +547,21 @@ class PheromoneDecayStep(IdleBatchStep):
             storage = get_pheromone_storage()
             decay_rate = float(os.getenv("KUN_PHEROMONE_DECAY_RATE", str(PHEROMONE_DECAY_RATE)))
             affected = await storage.decay_all(decay_rate=decay_rate, tenant_id=tenant_id)
+            try:
+                from kun.core.metrics import pheromone_decay_step_total
+
+                pheromone_decay_step_total.labels(tenant_id=tenant_id, outcome="ok").inc()
+            except Exception:
+                pass
             return {"affected": int(affected), "decay_rate": decay_rate}
         except Exception as e:
             log.exception("pheromone_decay_failed", error=str(e))
+            try:
+                from kun.core.metrics import pheromone_decay_step_total
+
+                pheromone_decay_step_total.labels(tenant_id=tenant_id, outcome="error").inc()
+            except Exception:
+                pass
             return {"affected": 0, "error": str(e)}
 
 

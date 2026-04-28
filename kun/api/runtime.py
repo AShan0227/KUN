@@ -270,6 +270,18 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
 
         app.state.qi_window_config = QiWindowConfig()
 
+    # V2.3 Wire 53 (C71+C72): orchestrator 装 protocol_registry + anti_gaming_detector
+    # 都从 KUN_QI_RUNTIME_ENABLED block 装好的 app.state 拿; 没装 → None → 鲲行为不变.
+    _protocol_registry_for_orch = getattr(app.state, "protocol_registry", None)
+    _anti_gaming_for_orch: Any = None
+    if _os.getenv("KUN_ANTI_GAMING_ENABLED", "0") == "1":
+        try:
+            from kun.security.anti_gaming import AntiGamingDetector
+
+            _anti_gaming_for_orch = AntiGamingDetector()
+        except Exception:
+            pass
+
     orchestrator = Orchestrator(
         rule_engine=rule_engine,
         emergent_switch_manager=emergent_switch_manager,
@@ -278,6 +290,8 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         verification_runner=verification_runner,
         prediction_provider=pc_provider,
         model_updater=pc_updater,
+        protocol_registry=_protocol_registry_for_orch,
+        anti_gaming_detector=_anti_gaming_for_orch,
     )
     app.state.rule_engine = rule_engine
     app.state.orchestrator = orchestrator

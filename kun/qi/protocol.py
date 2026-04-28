@@ -438,6 +438,16 @@ class ProtocolRegistry:
         await self._storage.update_status(tenant_id, protocol_id, version, target_status)
         # invalidate cache
         self._cache.pop((tenant_id, protocol_id), None)
+        try:
+            from kun.core.metrics import protocol_promotion_total
+
+            protocol_promotion_total.labels(
+                protocol_id=protocol_id,
+                from_status=current.status,
+                to_status=target_status,
+            ).inc()
+        except Exception:
+            pass
 
     async def rollback(
         self,
@@ -448,10 +458,22 @@ class ProtocolRegistry:
         reason: str = "",
     ) -> None:
         """回退到 rolled_back 状态. 需要外部决定切到哪个老 stable 版本."""
+        current = await self._storage.get(tenant_id, protocol_id, version)
+        from_status = current.status if current is not None else "unknown"
         await self._storage.update_status(
             tenant_id, protocol_id, version, "rolled_back", rollback_reason=reason
         )
         self._cache.pop((tenant_id, protocol_id), None)
+        try:
+            from kun.core.metrics import protocol_promotion_total
+
+            protocol_promotion_total.labels(
+                protocol_id=protocol_id,
+                from_status=from_status,
+                to_status="rolled_back",
+            ).inc()
+        except Exception:
+            pass
 
     async def list_all(self, tenant_id: str) -> list[Protocol]:
         return await self._storage.list_all(tenant_id)

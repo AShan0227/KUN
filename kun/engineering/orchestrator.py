@@ -15,6 +15,7 @@ Pipeline (§5.1-5.3):
 
 from __future__ import annotations
 
+import os as _os
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -167,6 +168,8 @@ class Orchestrator:
         verification_runner: Any = None,
         prediction_provider: Any = None,
         model_updater: Any = None,
+        protocol_registry: Any = None,
+        anti_gaming_detector: Any = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -186,6 +189,12 @@ class Orchestrator:
         # V2.3 Wire 41 Predictive Coding hook (插件式, None 时鲲行为完全不变)
         self.prediction_provider = prediction_provider
         self.model_updater = model_updater
+        # V2.3 Wire 53 (C71): ProtocolRegistry — task 启动前 match → 改 ExecutionMode
+        # / hermes addon / verification specs. None 时鲲行为完全不变.
+        self.protocol_registry = protocol_registry
+        # V2.3 Wire 53 (C72): AntiGamingDetector — step 完后跑 quick check.
+        # None 时鲲行为完全不变.
+        self.anti_gaming_detector = anti_gaming_detector
         # 累计 step value history, 给 value_gate marginal_roi 用
         self._value_history: list[float] = []
 
@@ -445,6 +454,72 @@ class Orchestrator:
 
         # 3. Planning
         plan = await self.planner.plan(task_ref, router=self.llm_router)
+
+        # V2.3 Wire 53 (C71): ProtocolRegistry consume — task 启动前 match 协议
+        # 找到 stable 协议 → 改 task_ref.meta.execution_mode (按 protocol.execution.mode)
+        # 协议是 KUN 沉淀的 IP, 鲲消费协议 = "怎么做这个 task" 的标准说明书
+        active_protocol: Any = None
+        if self.protocol_registry is not None and _os.getenv(
+            "KUN_PROTOCOL_CONSUME_ENABLED", "0"
+        ) == "1":
+            try:
+                task_meta_dict = {
+                    "task_type": task_ref.meta.task_type,
+                    "complexity_score": task_ref.meta.complexity_score,
+                    "risk_level": task_ref.meta.risk_level,
+                }
+                active_protocol = await self.protocol_registry.find_protocol_for(
+                    task_meta_dict, tenant.tenant_id
+                )
+                if active_protocol is not None:
+                    # 改 execution_mode (协议优先于 router decision)
+                    if active_protocol.execution.mode in ("FAST", "SMART", "MAX", "ENSEMBLE"):
+                        task_ref.meta.execution_mode = active_protocol.execution.mode
+                    # 协议 hermes addon → 注入 step prompt (Wire 31 hermes 已 wire)
+                    # 协议 verification → 加到 task_ref.spec.verification_specs
+                    if active_protocol.verification and task_ref.spec is not None:
+                        from kun.datamodel.verification_spec import VerificationSpec
+
+                        existing_specs = list(task_ref.spec.verification_specs or [])
+                        for pv in active_protocol.verification:
+                            existing_specs.append(
+                                VerificationSpec(
+                                    kind=pv.kind, spec=pv.spec, required=pv.required
+                                )
+                            )
+                        task_ref.spec.verification_specs = existing_specs
+
+                    async with session_scope(tenant_id=tenant.tenant_id) as s:
+                        await emit(
+                            s,
+                            Event.build(
+                                tenant_id=tenant.tenant_id,
+                                event_type="protocol.applied",
+                                payload={
+                                    "task_id": task_ref.meta.task_id,
+                                    "protocol_id": active_protocol.protocol_id,
+                                    "version": active_protocol.version,
+                                    "applied_mode": active_protocol.execution.mode,
+                                    "addon_skills": [
+                                        s.skill for s in active_protocol.skill_chain
+                                    ],
+                                    "addon_verifications": [
+                                        v.kind for v in active_protocol.verification
+                                    ],
+                                },
+                                task_ref=task_ref.meta.task_id,
+                            ),
+                        )
+                    try:
+                        from kun.core.metrics import protocol_match_total
+
+                        protocol_match_total.labels(
+                            protocol_id=active_protocol.protocol_id, hit="true"
+                        ).inc()
+                    except Exception:
+                        pass
+            except Exception:
+                log.exception("protocol_consume.failed (non-fatal)")
 
         # V2.1 §5.8 wire: 注册任务到 EmergentSwitchManager (信号驱动, 零额外开销 90% 任务)
         if self.emergent_switch_manager is not None:
@@ -1061,6 +1136,58 @@ class Orchestrator:
                         )
                     except Exception:
                         log.exception("skill capability writeback failed (non-fatal)")
+
+                # V2.3 Wire 53 (C72): AntiGamingDetector — step 完后跑 7 套路 quick check
+                # 命中 → emit gaming.detected event + 标记 step_record.notes
+                # 不阻断流程 (let verification_runner 决定是否真 fail), 让 Watchtower 看
+                if (
+                    self.anti_gaming_detector is not None
+                    and _os.getenv("KUN_ANTI_GAMING_ENABLED", "0") == "1"
+                ):
+                    try:
+                        prior_answers = [out for _, out in step_outputs[:-1]]
+                        _step_answer = step_outputs[-1][1] if step_outputs else ""
+                        finding = self.anti_gaming_detector.check(
+                            prompt=step_plan.description,
+                            answer=_step_answer,
+                            prior_answers=prior_answers,
+                            planned_steps=len(plan.steps),
+                            actual_steps=step_plan.step_id,
+                            used_skills=[step_record.skill_used] if step_record.skill_used else [],
+                            has_assets=False,
+                            has_skill_traces=bool(step_record.skill_used),
+                        )
+                        if finding is not None:
+                            try:
+                                from kun.core.metrics import anti_gaming_detection_total
+
+                                anti_gaming_detection_total.labels(pattern=finding.pattern).inc()
+                            except Exception:
+                                pass
+                            async with session_scope() as s:
+                                await emit(
+                                    s,
+                                    Event.build(
+                                        tenant_id=tenant.tenant_id,
+                                        event_type="gaming.detected",
+                                        payload={
+                                            "task_id": task_ref.meta.task_id,
+                                            "step_id": step_plan.step_id,
+                                            "pattern": finding.pattern,
+                                            "severity": finding.severity,
+                                            "evidence": finding.evidence,
+                                        },
+                                        task_ref=task_ref.meta.task_id,
+                                    ),
+                                )
+                            log.warning(
+                                "anti_gaming.detected",
+                                task_id=task_ref.meta.task_id,
+                                pattern=finding.pattern,
+                                severity=finding.severity,
+                            )
+                    except Exception:
+                        log.debug("anti_gaming.check_skipped", exc_info=True)
 
                 # emit cost_tick
                 yield OrchestratorEvent(

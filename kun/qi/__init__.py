@@ -22,7 +22,7 @@ from kun.qi.ai_scientist import (
     ScientistTreeSearchResult,
     TreeRunner,
 )
-from kun.qi.budget import QiBudgetExhaustedError, QiDailyBudget, get_qi_budget
+from kun.qi.budget import QiBudgetExhaustedError, QiDailyBudget, get_qi_budget, reset_qi_budget
 from kun.qi.darwin_godel import (
     DarwinExplorationResult,
     DarwinGodelLoop,
@@ -124,6 +124,7 @@ __all__ = [
     "reset_pheromone_storage",
     "reset_prediction_log",
     "reset_protocol_registry",
+    "reset_qi_budget",
     "save_model",
     "set_pheromone_storage",
     "set_protocol_registry",
