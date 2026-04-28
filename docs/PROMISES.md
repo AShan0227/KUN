@@ -1114,6 +1114,85 @@ V2.2 完整闭环: 10/10 章节 ≥85% 实装. 剩余只 4 个 PR rebase (codex 
 
 ---
 
+### Z.18 第十六轮 (2026-04-28): codex BATCH13 PR #73 合 + Claude C64/C68 + BATCH14 派
+
+承接 Z.17 (Claude 派 BATCH13). codex 一天就把 BATCH13 全做完, PR #73 (1304+/31-, 26 文件) — 一个独立 PR 不动 main. Claude review + merge + 解决冲突.
+
+**这一轮汇总**:
+
+#### 1. codex BATCH13 PR #73 全做完
+
+| 项 | codex 实现 |
+|---|---|
+| C61 ProtocolRegistry HTTP API + CLI | `kun/api/protocols.py` + `kun/cli.py` 新增 protocol 子命令 |
+| C62 AI Scientist v2 树搜索 | `kun/qi/ai_scientist.py` (beam search + 预算 stop) |
+| C63 ENSEMBLE 5% 非最佳路径探索 | `kun/lab/ensemble_executor.py` (KUN_ENSEMBLE_NON_BEST_EXPLORATION_RATIO env, 默认 0) |
+| C65 SMART lite_jury | `kun/engineering/execution_protocol.py` (MAX 仍 full jury) |
+| Wire 47/49 (codex 版) | `select_with_graph_and_capability` (graph + CapabilityCardCache) |
+| install_runtime BATCH13 | `KUN_QI_RUNTIME_ENABLED=1` master switch (默认 OFF, 防误开烧钱) |
+| pheromone migration 修 | 修了 last_reinforced_at 重复字段 |
+
+#### 2. Claude PR #73 merge + 冲突解决 (commit 3a41096)
+
+3 文件冲突 (`runtime.py` / `capability_cache.py` / `selector.py`) — 我跟 codex 同时做了 Wire 47/49 + install_runtime 重叠.
+
+**让位决策**:
+- **Codex 的 `CapabilityCardCache` 替代我的 `CapabilityCache`** — codex 版用真 ORM + EntityType + CapabilityCard 数据模型, 30s TTL, 跟 V2.3 §8.5 spec 真对应. 我的通用 KV 让位.
+- **Codex 的 `KUN_QI_RUNTIME_ENABLED` master switch 替代我的 5 个独立 switch** — codex 默认 OFF 更保守 (防误开高成本路径). 我的 `KUN_PROTOCOL_REGISTRY_ENABLED` / `KUN_PHEROMONE_ENABLED` / `KUN_CAPABILITY_CACHE_ENABLED` 让位.
+- **保留我的 KUN_PREDICTIVE_CODING_ENABLED + pc_provider/updater** — codex 没动 PC, 这是 V2.3 §5 真核心.
+- **保留我的 orchestrator Pheromone reinforce hook** — codex 没接 orchestrator. 这是蚁群涌现的真闭环 (step 完后 reinforce).
+- **保留我的 selector.select(prior_skill=...)** — 跟 codex 的 `select_with_graph_and_capability` 共存 (我轻量, codex 完整).
+
+**删了重复测试**: `test_capability_cache.py` + `test_v23_install_runtime.py` (codex 已写对应版).
+
+#### 3. Claude C64 + C68 (commit 08e3ade, BATCH13 codex 没做的 2 件)
+
+| 件 | 实现 |
+|---|---|
+| C64 Pheromone daily decay step | `kun/engineering/idle_batch.py` 加 `PheromoneDecayStep` (KUN_PHEROMONE_DECAY_ENABLED default ON) + 5 测试 |
+| C68 V2.3 dogfood 脚本 | `scripts/dogfood_v23.sh` — 一键跑 V2.3 闭环 (KUN_QI_RUNTIME_ENABLED=1 + SMART lite_jury + ENSEMBLE 5% 探索 + idle_batch decay + protocol list) |
+
+#### 4. BATCH14 brief 派 (~25-35h codex 工)
+
+| C# | 任务 | h | 优先级 |
+|---|---|---|---|
+| C71 | Wire 53 orchestrator 真消费 protocol (V2.3 真核心) | 6-8 | 第 1 周 |
+| C72 | AntiGamingDetector 接 orchestrator + jury | 4-6 | 第 1 周 |
+| C73 | V2.3 Prometheus metrics + Grafana dashboard | 3-4 | 第 2 周 |
+| C74 | V2.3 dogfood 真跑 + 数据反推 | 3-4 | 第 2 周 |
+| C75 | V2.4 spec 草稿 (基于 dogfood 数据) | 4-6 | 第 3 周 |
+| C76 | PROMISES.md auto-gen 跑一遍 | 1-2 | 第 3 周 |
+| C77 | v2.3.0 release 准备 + tag | 3-4 | 第 3 周 |
+
+**测试**: 1422 (merge 后 - 5 删) → 1427 (+5 C64) 全过. ruff/mypy 干净.
+
+**V2.3 完成度推进**:
+
+| 阶段 | 完成度 |
+|---|---|
+| Z.16 心脏 wire 完 | ~75% |
+| Z.17 收尾 wire 完 | ~85% |
+| **Z.18 BATCH13 codex 完 + Claude C64/C68** | **~95%** |
+| BATCH14 完 | 100% (V2.3 真闭环) |
+| 真用户跑 + V2.4 起点 | V2.4 |
+
+**反思**:
+
+- **codex 一天把 BATCH13 ~30-40h 工做完且 CI 全过**: 比预期快. PR #73 是单独 PR 不动 main, codex 自己做了 base=feat/v2.1-foundation 的好习惯.
+- **同时开发的冲突管理**: Claude 跟 codex 一天内同时做 Wire 47/49 + install_runtime. 让位时, 我尊重 codex 设计 (CapabilityCardCache 真对应 V2.3 §8.5 / KUN_QI_RUNTIME_ENABLED 默认 OFF 更安全). 不抢功劳.
+- **不重复造轮子**: Claude 删自己 2 个测试文件 (test_capability_cache.py + test_v23_install_runtime.py), 因为 codex 已写对应版. 干净.
+- **互补设计**: codex 做 graph + capability_card cache (确定性), Claude 做 Pheromone (涌现性). 两套 wire 47 共存. SkillSelector.select(prior_skill=...) + select_with_graph_and_capability 都在.
+- **Pheromone reinforce hook 是关键**: codex 没做这块. 没有 orchestrator 接, Pheromone storage 永远是空的. 我的 commit 097c0d0 这部分救场.
+- **C68 dogfood 还没真跑**: 派 codex BATCH14 C74 跑.
+
+**V2.3 真上线下一步**:
+1. codex 跑 C71 (orchestrator 真消费 protocol) → 协议 IP 真用 (V2.3 差异化的最后一公里)
+2. codex 跑 C74 (dogfood 真跑 + 数据反推) → 看真涌现
+3. 基于真数据写 V2.4 spec (C75)
+4. tag v2.3.0 (C77)
+
+---
+
 ## U. 我自己 (Claude) 的工程化承诺 (2026-04-26 加, 配合 §18.7)
 
 | # | 承诺 | 落点 |
