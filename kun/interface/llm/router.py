@@ -1,8 +1,8 @@
 """LLM Router (§7.2 + ADR-002).
 
 调用顺序 (硬规则):
-  1. 默认走主力 Opus 4.7 (tier="top")
-  2. 识别为"代码密集" → 走 Codex 5.3 (tier="coding")
+  1. 默认走 Codex MCP / GPT-5.5 (ChatGPT 订阅链路)
+  2. 显式指定 Claude / Anthropic 时才走 Claude 家族
   3. 识别为"轻量决策 / 分类 / 简单判官" → 走便宜档 (tier="cheap")
   4. 任一路径不可用 → 自动降级 MiniMax fallback + 推送通知
   5. MiniMax 不可用 → 熔断, 排队, 问用户
@@ -403,12 +403,12 @@ _router: LLMRouter | None = None
 def get_router() -> LLMRouter:
     """Build (or return cached) router from environment.
 
-    Resolution priority (ADR-002, updated 2026-04-24 — user decision:
-    Claude/GPT via CLI OAuth, not API keys):
+    Resolution priority (ADR-002, updated 2026-04-29 — user decision:
+    Claude account is unavailable; default main chain is Codex MCP / GPT-5.5):
 
       top / strong / cheap:
-        1. If KUN_LLM_PRIMARY=codex: Codex MCP / Codex CLI
-        2. Claude Code CLI (OAuth subscription)
+        1. Codex MCP / Codex CLI (default; or KUN_LLM_PRIMARY=codex)
+        2. Claude Code CLI (only if KUN_LLM_PRIMARY=claude/anthropic or Codex unavailable)
         3. Anthropic API (if KUN_OFOX_API_KEY or ANTHROPIC_API_KEY set)
         4. MiniMax substitute (if MINIMAX_API_KEY)
         5. Stub (tests)
@@ -437,11 +437,11 @@ def get_router() -> LLMRouter:
 
     providers: dict[ModelTier, LLMProvider] = {}
 
-    primary_family = (os.getenv("KUN_LLM_PRIMARY") or "auto").strip().lower()
+    primary_family = (os.getenv("KUN_LLM_PRIMARY") or "codex").strip().lower()
     valid_primary_families = {"auto", "codex", "claude", "anthropic", "minimax", "stub"}
     if primary_family not in valid_primary_families:
-        log.warning("router.invalid_primary_family", value=primary_family, fallback="auto")
-        primary_family = "auto"
+        log.warning("router.invalid_primary_family", value=primary_family, fallback="codex")
+        primary_family = "codex"
 
     cli_disabled = os.getenv("KUN_DISABLE_CLI_OAUTH") == "1"
     claude_disabled = os.getenv("KUN_DISABLE_CLAUDE_CLI") == "1"

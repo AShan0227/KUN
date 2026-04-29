@@ -181,7 +181,7 @@ def test_get_router_can_force_codex_as_primary(monkeypatch):
 
 @pytest.mark.unit
 def test_get_router_can_disable_only_claude_cli(monkeypatch):
-    """只关 Claude CLI 时, Codex 仍然可以用于 coding."""
+    """默认主链路已经是 Codex; 只关 Claude CLI 不会把主链路打回 MiniMax."""
     from kun.interface.llm.claude_code_provider import ClaudeCodeProvider
     from kun.interface.llm.codex_cli_provider import CodexCliProvider
     from kun.interface.llm.codex_mcp_provider import CodexMcpProvider
@@ -201,7 +201,8 @@ def test_get_router_can_disable_only_claude_cli(monkeypatch):
 
     try:
         router = get_router()
-        assert router.providers["top"].name == "minimax"
+        assert router.providers["top"].name == "codex-mcp"
+        assert router.providers["top"].model_id == "gpt-5.5"
         assert router.providers["coding"].name == "codex-mcp"
     finally:
         reset_router()
