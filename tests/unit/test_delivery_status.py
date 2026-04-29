@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from kun.api.nuo.health_panel import router
-from kun.engineering.delivery_status import get_v3_delivery_status
+from kun.engineering.delivery_status import get_v3_delivery_status, validate_delivery_status
 
 
 def test_delivery_status_is_honest_about_incomplete_capabilities() -> None:
@@ -11,10 +11,12 @@ def test_delivery_status_is_honest_about_incomplete_capabilities() -> None:
 
     by_id = {item.capability_id: item for item in items}
     assert by_id["llm_provider"].status == "ready"
+    assert by_id["llm_provider"].can_claim_complete is True
     assert by_id["world_gateway"].status == "partial"
     assert by_id["production_deployment"].status == "not_ready"
     assert by_id["world_gateway"].can_claim_complete is False
     assert "local_file.write 可写入受控输出目录" in by_id["world_gateway"].done
+    assert validate_delivery_status(items) == []
 
 
 def test_delivery_status_endpoint() -> None:
@@ -28,4 +30,5 @@ def test_delivery_status_endpoint() -> None:
     body = resp.json()
     assert body["summary"]["ready"] >= 1
     assert body["summary"]["not_ready"] >= 1
+    assert body["validation_issues"] == []
     assert any(item["capability_id"] == "world_gateway" for item in body["items"])

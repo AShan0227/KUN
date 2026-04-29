@@ -49,10 +49,8 @@ def get_v3_delivery_status() -> list[DeliveryCapability]:
                 "本机已切到 gpt-5.5",
                 "保留 MiniMax fallback",
             ],
-            missing=[
-                "还没有按任务类型自动学习 gpt-5.5 / fallback 的最佳切换策略",
-            ],
             next_steps=[
+                "按任务类型自动学习 gpt-5.5 / fallback 的最佳切换策略",
                 "把模型结果继续写回 capability_card",
                 "让守望按真实成功率动态调整路由",
             ],
@@ -207,9 +205,30 @@ def delivery_status_summary() -> dict[str, int]:
     return counts
 
 
+def validate_delivery_status(items: list[DeliveryCapability] | None = None) -> list[str]:
+    """Return honest-status problems that should block review.
+
+    This is deliberately simple and deterministic. It catches the most common
+    product mistake: marking a capability `ready` while still listing missing
+    core pieces.
+    """
+    problems: list[str] = []
+    for item in items or get_v3_delivery_status():
+        if item.status == "ready" and item.missing:
+            problems.append(f"{item.capability_id}: ready capability still has missing items")
+        if item.status == "ready" and not item.done:
+            problems.append(f"{item.capability_id}: ready capability has no done evidence")
+        if item.status in {"partial", "audit_only", "not_ready"} and not item.missing:
+            problems.append(
+                f"{item.capability_id}: incomplete capability must explain missing items"
+            )
+    return problems
+
+
 __all__ = [
     "DeliveryCapability",
     "DeliveryStatus",
     "delivery_status_summary",
     "get_v3_delivery_status",
+    "validate_delivery_status",
 ]

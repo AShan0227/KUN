@@ -10,7 +10,11 @@ from sqlalchemy import func, select
 from kun.core.db import session_scope
 from kun.core.orm import EventRow, PendingActionRow, TaskRow
 from kun.core.tenancy import current_tenant
-from kun.engineering.delivery_status import delivery_status_summary, get_v3_delivery_status
+from kun.engineering.delivery_status import (
+    delivery_status_summary,
+    get_v3_delivery_status,
+    validate_delivery_status,
+)
 
 router = APIRouter()
 
@@ -64,6 +68,7 @@ async def health_summary() -> dict[str, Any]:
         "events_outbox_lag": int(lag),
         "pending_actions": int(pending_actions),
         "delivery_status": delivery_status_summary(),
+        "delivery_status_issues": validate_delivery_status(),
     }
 
 
@@ -73,4 +78,5 @@ async def delivery_status() -> dict[str, Any]:
     return {
         "items": [item.model_dump(mode="json") for item in get_v3_delivery_status()],
         "summary": delivery_status_summary(),
+        "validation_issues": validate_delivery_status(),
     }
