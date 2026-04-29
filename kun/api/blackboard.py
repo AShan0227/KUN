@@ -21,7 +21,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from kun.core.state_ledger import StateLedgerEntry
+from kun.core.state_ledger import StateLedgerEntry, StateLedgerHistory
 
 router = APIRouter(prefix="/api/blackboard", tags=["blackboard"])
 
@@ -169,6 +169,30 @@ async def get_state_ledger_list(
     return [StateLedgerEntry.model_validate(item) for item in items]
 
 
+@router.get("/state-ledger/history", response_model=StateLedgerHistory)
+async def get_state_ledger_history(
+    x_user_id: Annotated[str, Header(alias="X-User-Id")],
+    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
+    task_id: str | None = Query(default=None),
+    mission_id: str | None = Query(default=None),
+    limit: int = Query(100, ge=1, le=500),
+) -> StateLedgerHistory:
+    """长期事件账本: 从 EventRow 回放任务或 Mission 历史."""
+    fn = _data_sources.get("state_ledger_history")
+    if fn is None:
+        return StateLedgerHistory(tenant_id=x_tenant_id, task_id=task_id, mission_id=mission_id)
+    item = await _maybe_await(
+        fn(
+            tenant_id=x_tenant_id,
+            user_id=x_user_id,
+            task_id=task_id,
+            mission_id=mission_id,
+            limit=limit,
+        )
+    )
+    return StateLedgerHistory.model_validate(item)
+
+
 @router.get("/state-ledger/{task_id}", response_model=StateLedgerEntry)
 async def get_state_ledger_task(
     task_id: str,
@@ -183,6 +207,23 @@ async def get_state_ledger_task(
     if item is None:
         raise HTTPException(404, "state ledger not found")
     return StateLedgerEntry.model_validate(item)
+
+
+@router.get("/state-ledger/{task_id}/history", response_model=StateLedgerHistory)
+async def get_state_ledger_task_history(
+    task_id: str,
+    x_user_id: Annotated[str, Header(alias="X-User-Id")],
+    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
+    limit: int = Query(100, ge=1, le=500),
+) -> StateLedgerHistory:
+    """某个任务的长期事件账本."""
+    fn = _data_sources.get("state_ledger_history")
+    if fn is None:
+        return StateLedgerHistory(tenant_id=x_tenant_id, task_id=task_id)
+    item = await _maybe_await(
+        fn(tenant_id=x_tenant_id, user_id=x_user_id, task_id=task_id, limit=limit)
+    )
+    return StateLedgerHistory.model_validate(item)
 
 
 @router.get("/workspace/{task_id}", response_model=WorkspaceView)
@@ -234,6 +275,7 @@ async def get_full_for_agent(
     """对 agent: 完整 JSON dump (state + workspace + assets + events)."""
     state_fn = _data_sources.get("state")
     ledger_fn = _data_sources.get("state_ledger")
+    ledger_history_fn = _data_sources.get("state_ledger_history")
     ws_fn = _data_sources.get("workspace")
     assets_fn = _data_sources.get("assets")
     events_fn = _data_sources.get("events")
@@ -248,6 +290,18 @@ async def get_full_for_agent(
         "state_ledger": (
             await _maybe_await(ledger_fn(tenant_id=x_tenant_id, user_id=x_user_id, task_id=task_id))
             if ledger_fn
+            else {}
+        ),
+        "state_ledger_history": (
+            await _maybe_await(
+                ledger_history_fn(
+                    tenant_id=x_tenant_id,
+                    user_id=x_user_id,
+                    task_id=task_id,
+                    limit=100,
+                )
+            )
+            if ledger_history_fn
             else {}
         ),
         "workspace": (
@@ -270,6 +324,7 @@ __all__ = [
     "EventStreamItem",
     "GlobalStateView",
     "StateLedgerEntry",
+    "StateLedgerHistory",
     "TaskBoardItem",
     "WorkspaceView",
     "register_data_source",

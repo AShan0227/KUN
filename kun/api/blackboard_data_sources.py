@@ -6,15 +6,22 @@ V2.1 wire (W5): 把 blackboard.py 的 register_data_source hook 接到真实数�
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, or_, select
 
 from kun.api.blackboard import register_data_source
 from kun.core.db import session_scope
 from kun.core.orm import EventRow, RuntimeStateRow, TaskRow
-from kun.core.state_ledger import StateLedgerEntry, StateLedgerTrail, get_state_ledger
+from kun.core.state_ledger import (
+    StateLedgerEntry,
+    StateLedgerHistory,
+    StateLedgerHistoryEvent,
+    StateLedgerTrail,
+    get_state_ledger,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +35,7 @@ def install_blackboard_data_sources() -> None:
     register_data_source("events", _events_source)
     register_data_source("state", _state_source)
     register_data_source("state_ledger", _state_ledger_source)
+    register_data_source("state_ledger_history", _state_ledger_history_source)
     register_data_source("workspace", _workspace_source)
     register_data_source("assets", _assets_source)
 
@@ -223,6 +231,64 @@ async def _state_ledger_source_async(
         return None if task_id is not None else []
 
 
+async def _state_ledger_history_source(
+    *,
+    tenant_id: str,
+    user_id: str,
+    task_id: str | None = None,
+    mission_id: str | None = None,
+    limit: int = 100,
+    **_: Any,
+) -> dict[str, Any]:
+    return (
+        await _state_ledger_history_source_async(
+            tenant_id=tenant_id,
+            task_id=task_id,
+            mission_id=mission_id,
+            limit=limit,
+        )
+    ).model_dump(mode="json")
+
+
+async def _state_ledger_history_source_async(
+    *,
+    tenant_id: str,
+    task_id: str | None = None,
+    mission_id: str | None = None,
+    limit: int = 100,
+) -> StateLedgerHistory:
+    """Replay a durable ledger slice from append-only EventRow records."""
+
+    rows: list[EventRow] = []
+    try:
+        async with session_scope(tenant_id=tenant_id) as session:
+            stmt = (
+                select(EventRow)
+                .where(EventRow.tenant_id == tenant_id)
+                .order_by(desc(EventRow.occurred_at))
+                .limit(limit)
+            )
+            if task_id is not None:
+                stmt = stmt.where(
+                    or_(
+                        EventRow.task_ref == task_id,
+                        EventRow.payload.op("->>")("task_id") == task_id,
+                        EventRow.payload.op("->>")("task_ref") == task_id,
+                    )
+                )
+            if mission_id is not None:
+                stmt = stmt.where(EventRow.payload.op("->>")("mission_id") == mission_id)
+            rows = list((await session.execute(stmt)).scalars().all())
+    except Exception:
+        logger.exception("blackboard.state_ledger_history_source failed")
+    return _history_from_event_rows(
+        tenant_id=tenant_id,
+        rows=rows,
+        task_id=task_id,
+        mission_id=mission_id,
+    )
+
+
 async def _runtime_state_ledger_source(
     *,
     tenant_id: str,
@@ -256,6 +322,83 @@ async def _runtime_state_ledger_source(
     if task_id is not None:
         return entries[0] if entries else None
     return entries
+
+
+def _history_from_event_rows(
+    *,
+    tenant_id: str,
+    rows: list[EventRow],
+    task_id: str | None = None,
+    mission_id: str | None = None,
+) -> StateLedgerHistory:
+    events: list[StateLedgerHistoryEvent] = []
+    status_counts: Counter[str] = Counter()
+    recent_reasons: list[str] = []
+    checkpoints: list[dict[str, Any]] = []
+    total_actual = 0.0
+    total_equivalent = 0.0
+
+    for row in sorted(rows, key=lambda item: item.occurred_at):
+        payload = dict(row.payload or {})
+        event_task_id = _first_str(payload, "task_id", "task_ref") or row.task_ref
+        event_mission_id = _first_str(payload, "mission_id")
+        status = _first_str(payload, "status", "final_status", "runtime_status")
+        reason = _first_str(payload, "reason", "decision_reason", "blocked_by")
+        cost_actual = _first_float(payload, "cost_usd_actual", "cost_actual_usd")
+        cost_equivalent = _first_float(payload, "cost_usd_equivalent", "cost_equivalent_usd")
+        model = _first_str(payload, "model", "current_model", "selected_model")
+        skill = _first_str(payload, "skill", "skill_used", "current_skill")
+        checkpoint = _checkpoint_from_payload(payload)
+        if status:
+            status_counts[status] += 1
+        if reason:
+            recent_reasons.append(reason)
+            recent_reasons = recent_reasons[-10:]
+        if checkpoint:
+            checkpoints.append(
+                {
+                    "event_id": row.event_id,
+                    "event_type": row.event_type,
+                    "occurred_at": row.occurred_at.isoformat(),
+                    "checkpoint": checkpoint,
+                }
+            )
+            checkpoints = checkpoints[-20:]
+        total_actual += cost_actual
+        total_equivalent += cost_equivalent
+        events.append(
+            StateLedgerHistoryEvent(
+                event_id=row.event_id,
+                event_type=row.event_type,
+                subject=row.subject,
+                occurred_at=row.occurred_at,
+                task_id=event_task_id,
+                mission_id=event_mission_id,
+                status=status,
+                reason=reason,
+                cost_usd_actual=cost_actual,
+                cost_usd_equivalent=cost_equivalent,
+                model=model,
+                skill=skill,
+                checkpoint=checkpoint,
+                payload=payload,
+            )
+        )
+
+    return StateLedgerHistory(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        event_count=len(events),
+        first_event_at=events[0].occurred_at if events else None,
+        last_event_at=events[-1].occurred_at if events else None,
+        total_cost_usd_actual=round(total_actual, 6),
+        total_cost_usd_equivalent=round(total_equivalent, 6),
+        status_counts=dict(status_counts),
+        recent_reasons=recent_reasons,
+        checkpoints=checkpoints,
+        events=events,
+    )
 
 
 def _entry_from_runtime_rows(task: TaskRow, runtime: RuntimeStateRow) -> StateLedgerEntry:
@@ -292,6 +435,53 @@ def _entry_from_runtime_rows(task: TaskRow, runtime: RuntimeStateRow) -> StateLe
         ],
     )
     return entry
+
+
+def _first_str(payload: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for container_key in ("outcome", "result", "usage", "meta"):
+        nested = payload.get(container_key)
+        if isinstance(nested, dict):
+            value = _first_str(nested, *keys)
+            if value:
+                return value
+    return None
+
+
+def _first_float(payload: dict[str, Any], *keys: str) -> float:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, int | float):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                pass
+    for container_key in ("outcome", "result", "usage", "cost"):
+        nested = payload.get(container_key)
+        if isinstance(nested, dict):
+            value = _first_float(nested, *keys)
+            if value:
+                return value
+    return 0.0
+
+
+def _checkpoint_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    for key in ("checkpoint", "checkpoint_json", "last_blocked", "last_reaper"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            return dict(value)
+    for container_key in ("outcome", "result", "runtime", "mission_reaper", "mission_blocked"):
+        nested = payload.get(container_key)
+        if isinstance(nested, dict):
+            checkpoint = _checkpoint_from_payload(nested)
+            if checkpoint:
+                return checkpoint
+    return {}
 
 
 def _goal_from_task(task: TaskRow) -> str:

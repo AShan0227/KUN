@@ -33,6 +33,46 @@ class StateLedgerTrail(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class StateLedgerHistoryEvent(BaseModel):
+    """One durable event-store item projected into the long-term ledger."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    event_type: str
+    subject: str
+    occurred_at: datetime
+    task_id: str | None = None
+    mission_id: str | None = None
+    status: str | None = None
+    reason: str | None = None
+    cost_usd_actual: float = 0.0
+    cost_usd_equivalent: float = 0.0
+    model: str | None = None
+    skill: str | None = None
+    checkpoint: dict[str, Any] = Field(default_factory=dict)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class StateLedgerHistory(BaseModel):
+    """Replayable long-term ledger slice derived from durable EventRow data."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    task_id: str | None = None
+    mission_id: str | None = None
+    event_count: int = 0
+    first_event_at: datetime | None = None
+    last_event_at: datetime | None = None
+    total_cost_usd_actual: float = 0.0
+    total_cost_usd_equivalent: float = 0.0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    recent_reasons: list[str] = Field(default_factory=list)
+    checkpoints: list[dict[str, Any]] = Field(default_factory=list)
+    events: list[StateLedgerHistoryEvent] = Field(default_factory=list)
+
+
 class StateLedgerEntry(BaseModel):
     """Current readable state for one task."""
 

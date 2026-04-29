@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,6 +49,59 @@ from kun.core.tenancy import (
 from kun.watchtower.engine import RuleEngine, load_rules
 
 log = get_logger("kun.api.main")
+
+
+def register_mission_scheduler_jobs(sched: Any, app: FastAPI, default_tenant: str) -> None:
+    """Register Mission resume/reaper cron jobs on the shared scheduler."""
+    import os
+
+    if os.getenv("KUN_MISSION_SCHEDULER_ENABLED", "1") != "1":
+        return
+
+    from kun.api.runtime import get_mission_resume_worker
+    from kun.engineering.mission_control import reap_stale_mission_tasks, review_active_missions
+
+    async def _mission_resume_once() -> None:
+        await get_mission_resume_worker(app).run_once(
+            tenant_id=default_tenant,
+            limit=int(os.getenv("KUN_MISSION_RESUME_LIMIT", "5")),
+            max_attempts=int(os.getenv("KUN_MISSION_RESUME_MAX_ATTEMPTS", "3")),
+        )
+
+    async def _mission_reaper_once() -> None:
+        await reap_stale_mission_tasks(
+            tenant_id=default_tenant,
+            queued_stale_after_sec=int(os.getenv("KUN_MISSION_QUEUED_STALE_AFTER_SEC", "900")),
+            running_stale_after_sec=int(os.getenv("KUN_MISSION_RUNNING_STALE_AFTER_SEC", "3600")),
+            limit=int(os.getenv("KUN_MISSION_REAPER_LIMIT", "50")),
+        )
+
+    async def _mission_review_once() -> None:
+        await review_active_missions(
+            tenant_id=default_tenant,
+            limit=int(os.getenv("KUN_MISSION_REVIEW_LIMIT", "20")),
+            timeline_limit=int(os.getenv("KUN_MISSION_REVIEW_TIMELINE_LIMIT", "200")),
+            min_interval_sec=int(os.getenv("KUN_MISSION_REVIEW_MIN_INTERVAL_SEC", "3600")),
+        )
+
+    if os.getenv("KUN_MISSION_RESUME_WORKER_ENABLED", "1") == "1":
+        sched.register(
+            "mission_resume",
+            os.getenv("KUN_MISSION_RESUME_CRON", "* * * * *"),
+            _mission_resume_once,
+        )
+    if os.getenv("KUN_MISSION_REAPER_ENABLED", "1") == "1":
+        sched.register(
+            "mission_reaper",
+            os.getenv("KUN_MISSION_REAPER_CRON", "*/5 * * * *"),
+            _mission_reaper_once,
+        )
+    if os.getenv("KUN_MISSION_REVIEW_ENABLED", "1") == "1":
+        sched.register(
+            "mission_review",
+            os.getenv("KUN_MISSION_REVIEW_CRON", "@hourly"),
+            _mission_review_once,
+        )
 
 
 @asynccontextmanager
@@ -159,13 +213,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         sched.register("kp_daily", "@daily", _daily_kp)
         sched.register("kp_weekly", "@weekly", _weekly_kp)
 
-        if os.getenv("KUN_MISSION_RESUME_WORKER_ENABLED", "0") == "1":
-            from kun.api.runtime import get_mission_resume_worker
-
-            async def _mission_resume_once() -> None:
-                await get_mission_resume_worker(app).run_once(tenant_id=default_tenant)
-
-            sched.register("mission_resume_every_minute", "* * * * *", _mission_resume_once)
+        register_mission_scheduler_jobs(sched, app, default_tenant)
 
         # V2.3: 启 (Qi) cron — 启窗口内自动跑探索 (Darwin / AI Scientist /
         # PredictionTrainer). 默认装上 (KUN_QI_CRON_ENABLED=1), 但每次 tick 调用

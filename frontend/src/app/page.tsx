@@ -102,6 +102,15 @@ type GlobalState = {
   active_state_ledger: LedgerEntry[];
 };
 
+type StateLedgerHistory = {
+  task_id?: string | null;
+  event_count: number;
+  total_cost_usd_equivalent: number;
+  status_counts: Record<string, number>;
+  recent_reasons: string[];
+  last_event_at?: string | null;
+};
+
 type MissionSnapshot = {
   mission_id: string;
   title: string;
@@ -115,6 +124,7 @@ type MissionSnapshot = {
     sequence_no: number;
     status: string;
     resume_attempts: number;
+    checkpoint: Record<string, unknown>;
     last_resume_requested_at?: string | null;
   }>;
   milestones: Array<{ milestone_id: string; title: string; status: string }>;
@@ -131,6 +141,27 @@ type MissionResumeResult = {
     final_status: string;
     answer_preview: string;
   } | null;
+};
+
+type MissionExecutionSummary = {
+  mission_id: string;
+  status: string;
+  budget: {
+    budget_cap_usd: number;
+    spent_actual_usd: number;
+    spent_equivalent_usd: number;
+    remaining_equivalent_usd: number;
+    usage_fraction: number;
+  };
+  task_status_counts: Record<string, number>;
+  checkpoints: Array<{
+    task_id: string;
+    role: string;
+    status: string;
+    runtime_status?: string | null;
+    resume_attempts: number;
+    cost_usd_equivalent: number;
+  }>;
 };
 
 type PendingAction = {
@@ -171,7 +202,11 @@ export default function Home() {
   const [qiStatus, setQiStatus] = useState<QiStatus | null>(null);
   const [protocols, setProtocols] = useState<Protocol[]>([]);
   const [globalState, setGlobalState] = useState<GlobalState | null>(null);
+  const [ledgerHistories, setLedgerHistories] = useState<Record<string, StateLedgerHistory>>({});
   const [missions, setMissions] = useState<MissionSnapshot[]>([]);
+  const [missionSummaries, setMissionSummaries] = useState<Record<string, MissionExecutionSummary>>(
+    {},
+  );
   const [missionBusy, setMissionBusy] = useState(false);
   const [missionNotice, setMissionNotice] = useState("");
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
@@ -202,7 +237,32 @@ export default function Home() {
         },
       }).catch(() => null);
       if (!cancelledRef?.current && stateRes && stateRes.ok) {
-        setGlobalState((await stateRes.json()) as GlobalState);
+        const nextState = (await stateRes.json()) as GlobalState;
+        setGlobalState(nextState);
+        const histories = await Promise.all(
+          nextState.active_state_ledger.slice(0, 3).map(async (item) => {
+            const res = await fetch(
+              `${API_ORIGIN}/api/blackboard/state-ledger/${item.task_id}/history?limit=50`,
+              {
+                headers: {
+                  "X-Tenant-Id": "u-sylvan",
+                  "X-User-Id": "sylvan",
+                },
+              },
+            ).catch(() => null);
+            if (!res || !res.ok) return null;
+            return (await res.json()) as StateLedgerHistory;
+          }),
+        );
+        if (!cancelledRef?.current) {
+          setLedgerHistories(
+            Object.fromEntries(
+              histories
+                .filter((item): item is StateLedgerHistory => item !== null && !!item.task_id)
+                .map((item) => [item.task_id as string, item]),
+            ),
+          );
+        }
       }
       const missionRes = await fetch(`${API_ORIGIN}/api/missions?limit=5`, {
         headers: {
@@ -211,7 +271,29 @@ export default function Home() {
         },
       }).catch(() => null);
       if (!cancelledRef?.current && missionRes && missionRes.ok) {
-        setMissions((await missionRes.json()) as MissionSnapshot[]);
+        const nextMissions = (await missionRes.json()) as MissionSnapshot[];
+        setMissions(nextMissions);
+        const summaries = await Promise.all(
+          nextMissions.slice(0, 5).map(async (mission) => {
+            const res = await fetch(`${API_ORIGIN}/api/missions/${mission.mission_id}/summary`, {
+              headers: {
+                "X-Tenant-Id": "u-sylvan",
+                "X-User-Id": "sylvan",
+              },
+            }).catch(() => null);
+            if (!res || !res.ok) return null;
+            return (await res.json()) as MissionExecutionSummary;
+          }),
+        );
+        if (!cancelledRef?.current) {
+          setMissionSummaries(
+            Object.fromEntries(
+              summaries
+                .filter((item): item is MissionExecutionSummary => item !== null)
+                .map((item) => [item.mission_id, item]),
+            ),
+          );
+        }
       }
       const actionRes = await fetch(`${API_ORIGIN}/nuo/actions/pending?limit=3`, {
         headers: {
@@ -512,70 +594,103 @@ export default function Home() {
                   </div>
                 )}
                 <div className="space-y-2">
-                  {missions.slice(0, 3).map((mission) => (
-                    <div
-                      key={mission.mission_id}
-                      className="rounded border border-gray-100 bg-gray-50 px-2 py-1.5"
-                    >
-                      <div className="flex justify-between gap-2">
-                        <span className="truncate font-medium">{mission.title}</span>
-                        <span className={missionStatusClass(mission.status)}>
-                          {mission.status}
-                        </span>
-                      </div>
-                      <div className="mt-1 truncate text-gray-500">
-                        风险 {mission.risk_level} · 预算 ${mission.budget_cap_usd.toFixed(2)} ·
-                        任务 {mission.tasks.length} · 里程碑 {mission.milestones.length}
-                      </div>
-                      {mission.tasks.length > 0 && (
-                        <div className="mt-2 grid grid-cols-2 gap-1">
-                          {mission.tasks.slice(0, 4).map((task) => (
-                            <div
-                              key={task.task_id}
-                              className="rounded border border-white bg-white px-2 py-1"
-                            >
-                              <div className="flex items-center justify-between gap-1">
-                                <span className="truncate text-gray-600">{task.role}</span>
-                                <span className={missionStatusClass(task.status)}>
-                                  {task.status}
-                                </span>
-                              </div>
-                              <div className="mt-0.5 truncate text-[11px] text-gray-400">
-                                {task.task_id} · 尝试 {task.resume_attempts}
-                              </div>
-                            </div>
-                          ))}
+                  {missions.slice(0, 3).map((mission) => {
+                    const summary = missionSummaries[mission.mission_id];
+                    return (
+                      <div
+                        key={mission.mission_id}
+                        className="rounded border border-gray-100 bg-gray-50 px-2 py-1.5"
+                      >
+                        <div className="flex justify-between gap-2">
+                          <span className="truncate font-medium">{mission.title}</span>
+                          <span className={missionStatusClass(mission.status)}>
+                            {mission.status}
+                          </span>
                         </div>
-                      )}
-                    </div>
-                  ))}
+                        <div className="mt-1 truncate text-gray-500">
+                          风险 {mission.risk_level} · 预算 ${mission.budget_cap_usd.toFixed(2)} ·
+                          任务 {mission.tasks.length} · 里程碑 {mission.milestones.length}
+                        </div>
+                        {summary && (
+                          <div className="mt-1 truncate text-gray-500">
+                            已花 ${summary.budget.spent_equivalent_usd.toFixed(4)} · 剩余 $
+                            {summary.budget.remaining_equivalent_usd.toFixed(4)} · checkpoint{" "}
+                            {summary.checkpoints.length}
+                          </div>
+                        )}
+                        {mission.tasks.length > 0 && (
+                          <div className="mt-2 grid grid-cols-2 gap-1">
+                            {mission.tasks.slice(0, 4).map((task) => {
+                              const blockReason = missionTaskBlockReason(task.checkpoint);
+                              return (
+                                <div
+                                  key={task.task_id}
+                                  className="rounded border border-white bg-white px-2 py-1"
+                                >
+                                  <div className="flex items-center justify-between gap-1">
+                                    <span className="truncate text-gray-600">{task.role}</span>
+                                    <span className={missionStatusClass(task.status)}>
+                                      {task.status}
+                                    </span>
+                                  </div>
+                                  <div className="mt-0.5 truncate text-[11px] text-gray-400">
+                                    {task.task_id} · 尝试 {task.resume_attempts}
+                                  </div>
+                                  {blockReason && (
+                                    <div className="mt-0.5 truncate text-[11px] text-amber-700">
+                                      阻塞 {blockReason}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
-            {(globalState?.active_state_ledger ?? []).slice(0, 3).map((item) => (
-              <div
-                key={item.task_id}
-                className="rounded border border-gray-200 bg-white p-2 text-xs"
-              >
-                <div className="flex justify-between gap-2">
-                  <span className="truncate font-medium">{item.current_goal || item.task_id}</span>
-                  <span className="text-gray-500">{item.status}</span>
+            {(globalState?.active_state_ledger ?? []).slice(0, 3).map((item) => {
+              const history = ledgerHistories[item.task_id];
+              const latestReason = history
+                ? history.recent_reasons[history.recent_reasons.length - 1]
+                : "";
+              return (
+                <div
+                  key={item.task_id}
+                  className="rounded border border-gray-200 bg-white p-2 text-xs"
+                >
+                  <div className="flex justify-between gap-2">
+                    <span className="truncate font-medium">
+                      {item.current_goal || item.task_id}
+                    </span>
+                    <span className="text-gray-500">{item.status}</span>
+                  </div>
+                  <div className="mt-1 text-gray-500">
+                    第 {item.current_step}/{item.total_steps || 1} 步 · 风险 {item.current_risk} ·{" "}
+                    {item.execution_mode}
+                    {item.strategy_pack_id ? ` · 策略 ${item.strategy_pack_id}` : ""}
+                  </div>
+                  <div className="mt-1 truncate text-gray-500">
+                    {item.current_model || "未选模型"}
+                    {item.current_skill ? ` · ${item.current_skill}` : ""} · $
+                    {item.cost_so_far_usd.toFixed(4)}
+                  </div>
+                  {history && (
+                    <div className="mt-1 truncate text-gray-500">
+                      长期事件 {history.event_count} · 账本成本 $
+                      {history.total_cost_usd_equivalent.toFixed(4)}
+                      {latestReason ? ` · ${latestReason}` : ""}
+                    </div>
+                  )}
+                  {item.decision_reason && (
+                    <div className="mt-1 truncate text-gray-400">{item.decision_reason}</div>
+                  )}
                 </div>
-                <div className="mt-1 text-gray-500">
-                  第 {item.current_step}/{item.total_steps || 1} 步 · 风险 {item.current_risk} ·{" "}
-                  {item.execution_mode}
-                  {item.strategy_pack_id ? ` · 策略 ${item.strategy_pack_id}` : ""}
-                </div>
-                <div className="mt-1 truncate text-gray-500">
-                  {item.current_model || "未选模型"}
-                  {item.current_skill ? ` · ${item.current_skill}` : ""} · $
-                  {item.cost_so_far_usd.toFixed(4)}
-                </div>
-                {item.decision_reason && (
-                  <div className="mt-1 truncate text-gray-400">{item.decision_reason}</div>
-                )}
-              </div>
-            ))}
+              );
+            })}
             {globalState && globalState.active_state_ledger.length === 0 && (
               <div className="rounded border border-dashed border-gray-200 bg-white p-2 text-xs text-gray-500">
                 现在没有活跃任务。你可以直接在下面给鲲一个目标。
@@ -853,4 +968,11 @@ function missionStatusClass(status: string): string {
   if (status === "paused" || status === "blocked") return "shrink-0 text-amber-700";
   if (status === "running" || status === "queued") return "shrink-0 text-blue-700";
   return "shrink-0 text-gray-500";
+}
+
+function missionTaskBlockReason(checkpoint: Record<string, unknown> | undefined): string {
+  const lastBlocked = checkpoint?.last_blocked;
+  if (!lastBlocked || typeof lastBlocked !== "object") return "";
+  const reason = (lastBlocked as Record<string, unknown>).reason;
+  return typeof reason === "string" ? reason.replaceAll("_", " ") : "";
 }
