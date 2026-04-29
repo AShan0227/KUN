@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from kun.api.runtime import get_mission_resume_worker, get_orchestrator, install_runtime
-from kun.engineering.mission_worker import MissionResumeWorker
+from kun.engineering.mission_worker import MissionOrchestratorRunner, MissionResumeWorker
 from kun.watchtower.engine import RuleEngine
 from kun.watchtower.rules import GuardRule, RuleTrigger
 from starlette.datastructures import State
@@ -28,7 +28,9 @@ def test_install_runtime_reuses_loaded_rule_engine() -> None:
     assert get_orchestrator(app) is orchestrator
     assert orchestrator.rule_engine is rule_engine
     assert orchestrator.rule_engine.rules == [rule]
-    assert isinstance(get_mission_resume_worker(app), MissionResumeWorker)
+    worker = get_mission_resume_worker(app)
+    assert isinstance(worker, MissionResumeWorker)
+    assert isinstance(worker.runner, MissionOrchestratorRunner)
 
 
 def test_get_orchestrator_fails_before_lifespan_install() -> None:

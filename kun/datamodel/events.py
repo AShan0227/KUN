@@ -44,9 +44,12 @@ EventKind = Literal[
     "mission.cancelled",
     "mission.task.attached",
     "mission.task.resume_requested",
+    "mission.task.resume_completed",
     "mission.task.resume_dispatched",
     "mission.task.resume_skipped",
     "mission.task.resume_failed",
+    "mission.task.orchestrator_started",
+    "mission.task.orchestrator_finished",
     "mission.milestone.recorded",
     # Handoff
     "handoff.sent",

@@ -24,7 +24,7 @@ from kun.engineering.idle_batch import (
     register_step,
 )
 from kun.engineering.marginal_roi import ModulePresets
-from kun.engineering.mission_worker import MissionResumeWorker
+from kun.engineering.mission_worker import MissionOrchestratorRunner, MissionResumeWorker
 from kun.engineering.orchestrator import Orchestrator
 from kun.engineering.precipitation import (
     KnowledgePrecipitation,
@@ -240,11 +240,6 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     set_world_gateway(world_gateway)
     app.state.world_gateway = world_gateway
 
-    # V3 Mission: durable resume worker shell. It is installed but has no
-    # runner by default, so it can report "needs executor" without pretending
-    # long-horizon tasks are already auto-running.
-    app.state.mission_resume_worker = MissionResumeWorker()
-
     # V2.2 §22 + Wire 3: hermes 结构化执行 generator (默认开, FAST 模式自动跳过)
     # Wire 35: 加 ThoughtActionConsistency checker → 自动 rethink (max 2 次)
     structured_step_generator = None
@@ -363,6 +358,12 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     )
     app.state.rule_engine = rule_engine
     app.state.orchestrator = orchestrator
+    # V3 Mission: durable resume worker with a real Orchestrator runner. This
+    # turns queued mission tasks into actual execution attempts instead of a
+    # permanent "needs executor" shell.
+    app.state.mission_resume_worker = MissionResumeWorker(
+        runner=MissionOrchestratorRunner(orchestrator)
+    )
 
     # V2.1 safety singletons
     app.state.fast_path = FastPathRouter(

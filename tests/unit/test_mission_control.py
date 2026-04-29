@@ -38,5 +38,6 @@ def test_resumable_tasks_stmt_claims_queued_mission_tasks() -> None:
     assert "JOIN runtime_states" in sql
     assert "JOIN missions" in sql
     assert "runtime_states.status = 'queued'" in sql
+    assert "mission_tasks.status IN ('planned', 'queued', 'running', 'paused', 'blocked')" in sql
     assert "mission_tasks.resume_attempts < 3" in sql
     assert "FOR UPDATE SKIP LOCKED" in sql
