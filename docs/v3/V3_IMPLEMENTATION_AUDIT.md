@@ -48,6 +48,7 @@
 - 已接最近动作视图：`/nuo/actions/recent` 和 NUO 页面能展示最近外部动作的执行模式、是否外发、产物路径摘要。
 - 已接失败闭环：handler 抛错时 action 会明确标记为 `cancelled`，任务保持暂停，不会卡在用户看不见的 `approved` 状态。
 - 已接状态账本：审批执行结果会写入 `world.action.executed` trail，让黑板/任务卡能解释到底执行了 handler、生成了草稿，还是仍缺 handler。
+- 已接大白话能力边界：WorldGateway 结果会返回 `capability_status`、`user_summary`、`next_step`、`permissions_required`；NUO 和首页会展示“批准后到底发生什么”。
 - 诚实边界：没有 handler 的 action 继续标 `requires_handler=true`；草稿和 dry-run 不会假装真实外发；支付、公开发布、真实发信仍未接通。
 
 ## V3-6 统一评分系统

@@ -73,6 +73,7 @@ def get_v3_delivery_status() -> list[DeliveryCapability]:
                 "NUO 可查看最近外部动作执行记录和产物摘要",
                 "handler 执行失败会明确返回失败并保持任务暂停",
                 "不支持的 action_type 会明确 requires_handler=true",
+                "WorldGateway 会返回 user_summary / next_step / permissions_required，避免用户误解是否真实外发",
             ],
             missing=[
                 "真实邮件发送",

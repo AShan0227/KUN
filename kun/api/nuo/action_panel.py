@@ -294,8 +294,11 @@ async def _preview_for_row(
         return WorldGatewayResult(
             action_id=row.action_id,
             gateway_mode="preview_failed",
+            capability_status="preview_failed",
             requires_handler=False,
             audit={"error": str(exc), "action_type": row.action_type},
+            user_summary="这个动作预览失败，批准前需要人工检查。",
+            next_step="先修正动作参数或补齐 handler，再重新预览。",
             message=f"World Gateway preview failed: {exc}",
         )
 

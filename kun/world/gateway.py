@@ -14,7 +14,7 @@ import os
 from datetime import UTC, datetime
 from difflib import unified_diff
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
@@ -40,10 +40,21 @@ class WorldGatewayResult(BaseModel):
 
     action_id: str
     gateway_mode: str = "approval_gate"
+    capability_status: Literal[
+        "supported_execute",
+        "supported_draft",
+        "supported_dry_run",
+        "supported_plan",
+        "missing_handler",
+        "preview_failed",
+    ] = "missing_handler"
     external_dispatched: bool = False
     requires_handler: bool = True
     rendered_payload: str = ""
     audit: dict[str, Any] = Field(default_factory=dict)
+    user_summary: str = "这个动作还没有真实执行器。"
+    next_step: str = "先补 WorldGateway handler，或改成已有的低风险动作类型。"
+    permissions_required: list[str] = Field(default_factory=list)
     message: str = (
         "World Gateway recorded and authorized this action, but no external "
         "delivery handler is attached yet."
@@ -67,21 +78,31 @@ class WorldHandlerDescriptor(BaseModel):
 
     action_type: str
     handler_id: str
+    user_label: str
     mode: Literal["execute", "draft", "dry_run", "plan"]
     external_dispatched: bool = False
     artifact_kind: str = ""
     safety_note: str
+    approval_effect: str
+    cannot_do: list[str] = Field(default_factory=list)
+    permissions_required: list[str] = Field(default_factory=list)
+    next_step: str = ""
 
 
 class WorldActionHandler:
     """Base class for concrete WorldGateway handlers."""
 
-    action_type: str
-    handler_id: str
-    mode: Literal["execute", "draft", "dry_run", "plan"] = "dry_run"
-    external_dispatched: bool = False
-    artifact_kind: str = ""
-    safety_note: str = "Handled by World Gateway."
+    action_type: ClassVar[str]
+    handler_id: ClassVar[str]
+    mode: ClassVar[Literal["execute", "draft", "dry_run", "plan"]] = "dry_run"
+    external_dispatched: ClassVar[bool] = False
+    artifact_kind: ClassVar[str] = ""
+    safety_note: ClassVar[str] = "Handled by World Gateway."
+    user_label: ClassVar[str] = "外部动作"
+    approval_effect: ClassVar[str] = "批准后由 World Gateway 处理。"
+    cannot_do: ClassVar[list[str]] = []
+    permissions_required: ClassVar[list[str]] = []
+    next_step: ClassVar[str] = "查看执行结果和审计记录。"
 
     async def preview(self, action: WorldAction) -> WorldHandlerResult:
         """Return a no-side-effect preview for human approval."""
@@ -106,6 +127,11 @@ class LocalFileWriteHandler(WorldActionHandler):
     external_dispatched = True
     artifact_kind = "local_file"
     safety_note = "只允许写入 KUN 受控输出目录，禁止绝对路径和路径穿越。"
+    user_label = "写入本地文件"
+    approval_effect = "批准后会在 KUN 受控输出目录里写文件。"
+    cannot_do: ClassVar[list[str]] = ["不能写绝对路径", "不能写出受控输出目录"]
+    permissions_required: ClassVar[list[str]] = ["human_approval", "controlled_output_dir"]
+    next_step = "批准前先看 diff；批准后检查产物路径。"
 
     def __init__(self, output_root: str | Path) -> None:
         self.output_root = Path(output_root).expanduser().resolve()
@@ -194,6 +220,11 @@ class EmailDraftHandler(WorldActionHandler):
     external_dispatched = False
     artifact_kind = "email_draft"
     safety_note = "只生成邮件草稿文件，不会真实发送邮件。"
+    user_label = "生成邮件草稿"
+    approval_effect = "批准后只生成邮件草稿，不会发送。"
+    cannot_do: ClassVar[list[str]] = ["不能真实发送邮件", "不能调用邮箱服务"]
+    permissions_required: ClassVar[list[str]] = ["human_approval"]
+    next_step = "检查草稿内容，需要真实发送时再接 email.send handler。"
 
     def __init__(self, output_root: str | Path) -> None:
         self.draft_root = Path(output_root).expanduser().resolve() / "email_drafts"
@@ -257,6 +288,11 @@ class WebhookPostDryRunHandler(WorldActionHandler):
     external_dispatched = False
     artifact_kind = "http_request_preview"
     safety_note = "只渲染 POST 请求包，不会发起网络请求。"
+    user_label = "渲染 Webhook 请求"
+    approval_effect = "批准后只生成请求预览，不会联网。"
+    cannot_do: ClassVar[list[str]] = ["不能真实发起网络请求", "不能调用外部 API"]
+    permissions_required: ClassVar[list[str]] = ["human_approval"]
+    next_step = "确认请求包正确后，再接真实 API handler。"
 
     async def preview(self, action: WorldAction) -> WorldHandlerResult:
         request, parsed = self._request(action)
@@ -316,6 +352,11 @@ class BrowserPlanHandler(WorldActionHandler):
     external_dispatched = False
     artifact_kind = "browser_plan"
     safety_note = "只生成浏览器操作计划，不会真实点击或控制浏览器。"
+    user_label = "生成浏览器操作计划"
+    approval_effect = "批准后只生成浏览器计划，不会点击网页。"
+    cannot_do: ClassVar[list[str]] = ["不能真实打开浏览器", "不能提交表单", "不能点击网页"]
+    permissions_required: ClassVar[list[str]] = ["human_approval"]
+    next_step = "检查操作计划，需要真实浏览器执行时再接 browser.execute handler。"
 
     def __init__(self, output_root: str | Path) -> None:
         self.plan_root = Path(output_root).expanduser().resolve() / "browser_plans"
@@ -398,10 +439,15 @@ class WorldGateway:
             WorldHandlerDescriptor(
                 action_type=handler.action_type,
                 handler_id=handler.handler_id,
+                user_label=handler.user_label,
                 mode=handler.mode,
                 external_dispatched=handler.external_dispatched,
                 artifact_kind=handler.artifact_kind,
                 safety_note=handler.safety_note,
+                approval_effect=handler.approval_effect,
+                cannot_do=handler.cannot_do,
+                permissions_required=handler.permissions_required,
+                next_step=handler.next_step,
             )
             for handler in sorted(self.handlers.values(), key=lambda item: item.action_type)
         ]
@@ -415,6 +461,7 @@ class WorldGateway:
             return WorldGatewayResult(
                 action_id=action.action_id,
                 gateway_mode="missing_handler_preview",
+                capability_status="missing_handler",
                 rendered_payload=packet.rendered,
                 audit={
                     "prepared_at": now,
@@ -426,6 +473,11 @@ class WorldGateway:
                     "supported_action_types": self.supported_action_types(),
                     "reason": "no delivery handler registered for this action_type",
                 },
+                user_summary="这个动作目前没有执行器；批准后只会留下审计记录，不会真实外发。",
+                next_step=(
+                    "把动作改成已支持类型，或先补一个 WorldGateway handler，"
+                    "再让 KUN 执行真实外部动作。"
+                ),
                 message=(
                     "No World Gateway handler is attached for this action type. "
                     "Approval will only create an audit packet."
@@ -436,6 +488,7 @@ class WorldGateway:
         return WorldGatewayResult(
             action_id=action.action_id,
             gateway_mode="handler_preview",
+            capability_status=_capability_status(handler),
             external_dispatched=False,
             requires_handler=False,
             rendered_payload=handler_result.rendered_payload,
@@ -451,6 +504,9 @@ class WorldGateway:
                 "artifact_kind": handler.artifact_kind,
                 **handler_result.audit,
             },
+            user_summary=_preview_summary(handler),
+            next_step=handler.next_step,
+            permissions_required=handler.permissions_required,
             message=handler_result.message,
         )
 
@@ -468,6 +524,7 @@ class WorldGateway:
             return WorldGatewayResult(
                 action_id=action.action_id,
                 gateway_mode=f"handler_{handler_result.status}",
+                capability_status=_capability_status(handler),
                 external_dispatched=handler_result.external_dispatched,
                 requires_handler=False,
                 rendered_payload=handler_result.rendered_payload or packet.rendered,
@@ -483,11 +540,15 @@ class WorldGateway:
                     "artifact_ref": handler_result.artifact_ref,
                     **handler_result.audit,
                 },
+                user_summary=_execution_summary(handler),
+                next_step=handler.next_step,
+                permissions_required=handler.permissions_required,
                 message=handler_result.message,
             )
 
         return WorldGatewayResult(
             action_id=action.action_id,
+            capability_status="missing_handler",
             rendered_payload=packet.rendered,
             audit={
                 "prepared_at": now,
@@ -499,6 +560,11 @@ class WorldGateway:
                 "supported_action_types": self.supported_action_types(),
                 "reason": "no delivery handler registered for this action_type",
             },
+            user_summary="这个动作没有执行器；本次只记录审计，不会真实外发。",
+            next_step=(
+                "先补 action_type 对应的 WorldGateway handler，或改用 "
+                f"{', '.join(self.supported_action_types())}。"
+            ),
         )
 
     def _target_for(self, action_type: str) -> Literal["api", "external_agent", "human"]:
@@ -550,6 +616,43 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
 
 def _safe_artifact_name(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)[:80]
+
+
+def _capability_status(
+    handler: WorldActionHandler,
+) -> Literal[
+    "supported_execute",
+    "supported_draft",
+    "supported_dry_run",
+    "supported_plan",
+]:
+    if handler.mode == "execute":
+        return "supported_execute"
+    if handler.mode == "draft":
+        return "supported_draft"
+    if handler.mode == "dry_run":
+        return "supported_dry_run"
+    return "supported_plan"
+
+
+def _preview_summary(handler: WorldActionHandler) -> str:
+    if handler.mode == "execute":
+        return "这个动作已支持；批准后会执行受控动作。"
+    if handler.mode == "draft":
+        return "这个动作已支持；批准后只生成草稿，不会外发。"
+    if handler.mode == "dry_run":
+        return "这个动作已支持；批准后只生成 dry-run 请求包，不会联网。"
+    return "这个动作已支持；批准后只生成计划，不会真实操作。"
+
+
+def _execution_summary(handler: WorldActionHandler) -> str:
+    if handler.mode == "execute":
+        return "WorldGateway 已执行受控动作，并留下审计。"
+    if handler.mode == "draft":
+        return "WorldGateway 已生成草稿，没有真实外发。"
+    if handler.mode == "dry_run":
+        return "WorldGateway 已生成 dry-run 请求包，没有联网。"
+    return "WorldGateway 已生成操作计划，没有真实操作外部系统。"
 
 
 def _render_unified_diff(

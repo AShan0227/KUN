@@ -165,7 +165,10 @@ def test_row_to_item_embeds_gateway_preview() -> None:
     preview = WorldGatewayResult(
         action_id="a-1",
         gateway_mode="handler_preview",
+        capability_status="supported_execute",
         requires_handler=False,
+        user_summary="批准后会执行受控动作。",
+        next_step="批准前先看 diff。",
         audit={"handler_id": "local_file.write.v1"},
         message="Preview only",
     )
@@ -174,4 +177,6 @@ def test_row_to_item_embeds_gateway_preview() -> None:
 
     assert item.gateway_preview is not None
     assert item.gateway_preview["gateway_mode"] == "handler_preview"
+    assert item.gateway_preview["user_summary"] == "批准后会执行受控动作。"
+    assert item.gateway_preview["next_step"] == "批准前先看 diff。"
     assert item.gateway_preview["audit"]["handler_id"] == "local_file.write.v1"

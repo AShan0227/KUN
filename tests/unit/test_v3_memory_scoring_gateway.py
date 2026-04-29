@@ -237,6 +237,9 @@ async def test_world_gateway_records_audit_without_fake_external_dispatch() -> N
 
     assert result.external_dispatched is False
     assert result.requires_handler is True
+    assert result.capability_status == "missing_handler"
+    assert "记录审计" in result.user_summary
+    assert "WorldGateway handler" in result.next_step
     assert result.audit["target"] == "api"
     assert "no delivery handler" in result.audit["reason"]
 
@@ -259,6 +262,8 @@ async def test_world_gateway_local_file_write_handler(tmp_path) -> None:
 
     assert result.requires_handler is False
     assert result.external_dispatched is True
+    assert result.capability_status == "supported_execute"
+    assert "已执行受控动作" in result.user_summary
     assert result.gateway_mode == "handler_executed"
     path = tmp_path / "files" / "reports" / "hello.txt"
     assert path.read_text(encoding="utf-8") == "hello"
@@ -284,6 +289,8 @@ async def test_world_gateway_local_file_preview_diff_without_writing(tmp_path) -
     assert result.gateway_mode == "handler_preview"
     assert result.requires_handler is False
     assert result.external_dispatched is False
+    assert result.capability_status == "supported_execute"
+    assert "批准后会执行受控动作" in result.user_summary
     assert result.audit["handler_id"] == "local_file.write.v1"
     assert result.audit["would_create"] is True
     assert "+hello" in result.rendered_payload
@@ -298,7 +305,12 @@ def test_world_gateway_exposes_handler_registry(tmp_path) -> None:
 
     assert descriptors["local_file.write"].mode == "execute"
     assert descriptors["local_file.write"].external_dispatched is True
+    assert descriptors["local_file.write"].user_label == "写入本地文件"
+    assert "受控输出目录" in descriptors["local_file.write"].approval_effect
+    assert "不能写绝对路径" in descriptors["local_file.write"].cannot_do
     assert descriptors["email.draft"].mode == "draft"
+    assert descriptors["email.draft"].external_dispatched is False
+    assert "不能真实发送邮件" in descriptors["email.draft"].cannot_do
     assert descriptors["webhook.post_dry_run"].mode == "dry_run"
     assert descriptors["browser.plan"].mode == "plan"
 
@@ -341,6 +353,8 @@ async def test_world_gateway_email_draft_handler_does_not_send(tmp_path) -> None
 
     assert result.requires_handler is False
     assert result.external_dispatched is False
+    assert result.capability_status == "supported_draft"
+    assert "草稿" in result.user_summary
     assert result.gateway_mode == "handler_drafted"
     assert result.audit["sent"] is False
     assert result.audit["handler_id"] == "email.draft.v1"
@@ -364,6 +378,8 @@ async def test_world_gateway_webhook_dry_run_does_not_call_network(tmp_path) -> 
 
     assert result.requires_handler is False
     assert result.external_dispatched is False
+    assert result.capability_status == "supported_dry_run"
+    assert "dry-run" in result.user_summary
     assert result.gateway_mode == "handler_dry_run"
     assert result.audit["dry_run"] is True
     assert "example.com" in result.rendered_payload
@@ -387,6 +403,8 @@ async def test_world_gateway_browser_plan_does_not_control_browser(tmp_path) -> 
 
     assert result.requires_handler is False
     assert result.external_dispatched is False
+    assert result.capability_status == "supported_plan"
+    assert "操作计划" in result.user_summary
     assert result.gateway_mode == "handler_drafted"
     assert result.audit["executed"] is False
     assert result.audit["handler_id"] == "browser.plan.v1"

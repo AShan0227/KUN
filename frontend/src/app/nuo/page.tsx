@@ -52,9 +52,13 @@ type PendingAction = {
 
 type GatewayPreview = {
   gateway_mode?: string;
+  capability_status?: string;
   external_dispatched?: boolean;
   requires_handler?: boolean;
   rendered_payload?: string;
+  user_summary?: string;
+  next_step?: string;
+  permissions_required?: string[];
   message?: string;
   audit?: {
     handler_id?: string;
@@ -118,10 +122,15 @@ type DeliveryCapability = {
 type WorldHandler = {
   action_type: string;
   handler_id: string;
+  user_label: string;
   mode: "execute" | "draft" | "dry_run" | "plan";
   external_dispatched: boolean;
   artifact_kind: string;
   safety_note: string;
+  approval_effect: string;
+  cannot_do: string[];
+  permissions_required: string[];
+  next_step: string;
 };
 
 type WorldGatewayHandlers = {
@@ -136,8 +145,11 @@ type ActionDecisionResult = {
   message: string;
   gateway?: {
     gateway_mode?: string;
+    capability_status?: string;
     external_dispatched?: boolean;
     requires_handler?: boolean;
+    user_summary?: string;
+    next_step?: string;
     audit?: { artifact_ref?: string; handler_id?: string };
   } | null;
 };
@@ -363,10 +375,17 @@ export default function NuoDashboard() {
             {worldHandlers.map((handler) => (
               <div key={handler.action_type} className="border rounded p-3 text-sm">
                 <div className="flex justify-between gap-3">
-                  <span className="font-medium">{handler.action_type}</span>
+                  <span className="font-medium">{handler.user_label || handler.action_type}</span>
                   <span className="text-xs text-gray-500">{handler.mode}</span>
                 </div>
+                <div className="mt-1 text-xs text-gray-500">{handler.action_type}</div>
                 <p className="text-xs text-gray-500 mt-1">{handler.safety_note}</p>
+                <p className="text-xs text-gray-700 mt-2">{handler.approval_effect}</p>
+                {handler.cannot_do.length > 0 && (
+                  <p className="text-xs text-gray-400 mt-1">
+                    做不到：{handler.cannot_do.slice(0, 2).join("；")}
+                  </p>
+                )}
                 <p className="text-xs text-gray-400 mt-2">
                   {handler.handler_id} · {handler.artifact_kind} ·{" "}
                   {handler.external_dispatched ? "会产生受控本地产物" : "不会外发"}
@@ -453,7 +472,14 @@ export default function NuoDashboard() {
                     <div className="font-medium text-gray-700">
                       网关预览：{gatewayPreviewLabel(a.gateway_preview)}
                     </div>
-                    <div className="mt-1">{a.gateway_preview.message}</div>
+                    <div className="mt-1">
+                      {a.gateway_preview.user_summary || a.gateway_preview.message}
+                    </div>
+                    {a.gateway_preview.next_step && (
+                      <div className="mt-1 text-gray-500">
+                        下一步：{a.gateway_preview.next_step}
+                      </div>
+                    )}
                     {a.gateway_preview.audit?.relative_path && (
                       <div className="mt-1 text-gray-400">
                         文件：{a.gateway_preview.audit.relative_path}
@@ -630,6 +656,7 @@ function StatusPill({ status }: { status: DeliveryCapability["status"] }) {
 }
 
 function gatewayPreviewLabel(preview: GatewayPreview) {
+  if (preview.user_summary) return preview.user_summary;
   if (preview.gateway_mode === "preview_failed") return "预览失败，批准前需要人工检查";
   if (preview.requires_handler) return "没有执行器，只会记录审计，不会真实外发";
   const handler = preview.audit?.handler_id || "已注册 handler";
@@ -645,10 +672,14 @@ function actionGatewaySummary(action: PendingAction) {
   const audit = gateway.audit;
   const artifact =
     isRecord(audit) && typeof audit.artifact_ref === "string" ? audit.artifact_ref : "";
+  const summary = typeof gateway.user_summary === "string" ? gateway.user_summary : "";
+  const nextStep = typeof gateway.next_step === "string" ? gateway.next_step : "";
   const mode = typeof gateway.gateway_mode === "string" ? gateway.gateway_mode : "unknown";
   const dispatched =
     gateway.external_dispatched === true ? "已执行受控动作" : "未外发 / 草稿 / dry-run";
-  return artifact ? `${mode} · ${dispatched} · 产物：${artifact}` : `${mode} · ${dispatched}`;
+  const base = summary || `${mode} · ${dispatched}`;
+  const withArtifact = artifact ? `${base} · 产物：${artifact}` : base;
+  return nextStep ? `${withArtifact} · 下一步：${nextStep}` : withArtifact;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

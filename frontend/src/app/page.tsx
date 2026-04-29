@@ -147,9 +147,13 @@ type PendingAction = {
 
 type GatewayPreview = {
   gateway_mode?: string;
+  capability_status?: string;
   external_dispatched?: boolean;
   requires_handler?: boolean;
   rendered_payload?: string;
+  user_summary?: string;
+  next_step?: string;
+  permissions_required?: string[];
   message?: string;
   audit?: { handler_id?: string; relative_path?: string; artifact_kind?: string; error?: string };
 };
@@ -469,8 +473,15 @@ export default function Home() {
                       </div>
                       <div className="mt-1 truncate text-gray-500">任务 {action.task_ref}</div>
                       {action.gateway_preview && (
-                        <div className="mt-1 truncate text-gray-500">
-                          网关：{gatewayPreviewLabel(action.gateway_preview)}
+                        <div className="mt-1 text-gray-500">
+                          <div className="truncate">
+                            网关：{gatewayPreviewLabel(action.gateway_preview)}
+                          </div>
+                          {action.gateway_preview.next_step && (
+                            <div className="truncate text-gray-400">
+                              下一步：{action.gateway_preview.next_step}
+                            </div>
+                          )}
                         </div>
                       )}
                       <div className="mt-2 flex gap-2">
@@ -801,6 +812,7 @@ const ICONS: Record<string, string> = {
 };
 
 function gatewayPreviewLabel(preview: GatewayPreview) {
+  if (preview.user_summary) return preview.user_summary;
   if (preview.gateway_mode === "preview_failed") return "预览失败";
   if (preview.requires_handler) return "没有执行器，只审计";
   if (preview.external_dispatched) return "批准后会执行受控本地动作";
