@@ -106,6 +106,27 @@ def test_load_rules_from_disk(tmp_path):
 
 
 @pytest.mark.unit
+def test_load_rules_ignores_non_rule_yaml(tmp_path, caplog):
+    rules_dir = tmp_path / "rules" / "guard"
+    proactive_dir = tmp_path / "rules" / "proactive"
+    rules_dir.mkdir(parents=True)
+    proactive_dir.mkdir(parents=True)
+    (rules_dir / "demo.yaml").write_text(
+        "id: demo\ntrigger:\n  event_type: foo\n  when: 'True'\n",
+        encoding="utf-8",
+    )
+    (proactive_dir / "triggers.yaml").write_text(
+        "version: 1\ntriggers:\n  - skill_id: web-search\n",
+        encoding="utf-8",
+    )
+
+    rules = load_rules(tmp_path / "rules")
+
+    assert [r.id for r in rules] == ["demo"]
+    assert "rules.load_failed" not in caplog.text
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cost_rule_triggers_incident_response() -> None:
     from kun.security.incident_response import IncidentResponseEngine

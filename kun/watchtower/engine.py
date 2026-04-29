@@ -27,6 +27,8 @@ from kun.watchtower.rules import GuardRule, RuleKind
 
 log = get_logger("kun.watchtower.engine")
 
+_RULE_KIND_NAMES = {"guard", "validation", "ci", "anomaly", "cache"}
+
 
 def load_rules(
     root: str | Path = "rules",
@@ -44,6 +46,17 @@ def load_rules(
         try:
             data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
             if data is None:
+                continue
+            if not isinstance(data, dict):
+                log.warning(
+                    "rules.load_failed", path=str(yaml_path), error="yaml root must be a map"
+                )
+                continue
+            if (
+                yaml_path.parent.name not in _RULE_KIND_NAMES
+                and data.get("kind") not in _RULE_KIND_NAMES
+            ):
+                log.debug("rules.skipped_non_rule_yaml", path=str(yaml_path))
                 continue
             # Infer kind from parent directory if not in YAML
             if "kind" not in data:
