@@ -25,6 +25,7 @@ def test_routes_registered():
         "/ws",
         "/nuo/health/summary",
         "/nuo/health/delivery-status",
+        "/nuo/health/dogfood-scenarios",
         "/nuo/budget/summary",
         "/nuo/actions/pending",
         "/nuo/actions/{action_id}/decision",
