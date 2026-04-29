@@ -114,6 +114,21 @@ type MissionSnapshot = {
   updated_at: string;
 };
 
+type PendingAction = {
+  action_id: string;
+  task_ref: string;
+  action_type: string;
+  target_ref: string;
+  status: string;
+  risk_level: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
+type PendingActionPage = {
+  actions: PendingAction[];
+};
+
 export default function Home() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [side, setSide] = useState<SideMsg[]>([]);
@@ -128,57 +143,70 @@ export default function Home() {
   const [protocols, setProtocols] = useState<Protocol[]>([]);
   const [globalState, setGlobalState] = useState<GlobalState | null>(null);
   const [missions, setMissions] = useState<MissionSnapshot[]>([]);
+  const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+
+  const refreshDashboard = useCallback(async (cancelledRef?: { current: boolean }) => {
+    try {
+      const [qiRes, protoRes] = await Promise.all([
+        fetch(`${API_ORIGIN}/api/qi/status`, {
+          headers: { "X-Tenant-Id": "u-sylvan" },
+        }).catch(() => null),
+        fetch(`${API_ORIGIN}/api/protocols?tenant=u-sylvan`).catch(() => null),
+      ]);
+      if (cancelledRef?.current) return;
+      if (qiRes && qiRes.ok) {
+        const data = await qiRes.json();
+        setQiStatus(data as QiStatus);
+      }
+      if (protoRes && protoRes.ok) {
+        const data = await protoRes.json();
+        setProtocols(data as Protocol[]);
+      }
+      const stateRes = await fetch(`${API_ORIGIN}/api/blackboard/state`, {
+        headers: {
+          "X-Tenant-Id": "u-sylvan",
+          "X-User-Id": "sylvan",
+        },
+      }).catch(() => null);
+      if (!cancelledRef?.current && stateRes && stateRes.ok) {
+        setGlobalState((await stateRes.json()) as GlobalState);
+      }
+      const missionRes = await fetch(`${API_ORIGIN}/api/missions?limit=5`, {
+        headers: {
+          "X-Tenant-Id": "u-sylvan",
+          "X-User-Id": "sylvan",
+        },
+      }).catch(() => null);
+      if (!cancelledRef?.current && missionRes && missionRes.ok) {
+        setMissions((await missionRes.json()) as MissionSnapshot[]);
+      }
+      const actionRes = await fetch(`${API_ORIGIN}/nuo/actions/pending?limit=3`, {
+        headers: {
+          "X-Tenant-Id": "u-sylvan",
+          "X-User-Id": "sylvan",
+        },
+      }).catch(() => null);
+      if (!cancelledRef?.current && actionRes && actionRes.ok) {
+        const page = (await actionRes.json()) as PendingActionPage;
+        setPendingActions(page.actions ?? []);
+      }
+    } catch {
+      // ignore polling errors
+    }
+  }, []);
 
   // V2.3 启状态 + 协议轮询 (每 30s 一次)
   useEffect(() => {
-    let cancelled = false;
-    async function refresh() {
-      try {
-        const [qiRes, protoRes] = await Promise.all([
-          fetch(`${API_ORIGIN}/api/qi/status`, {
-            headers: { "X-Tenant-Id": "u-sylvan" },
-          }).catch(() => null),
-          fetch(`${API_ORIGIN}/api/protocols?tenant=u-sylvan`).catch(() => null),
-        ]);
-        if (cancelled) return;
-        if (qiRes && qiRes.ok) {
-          const data = await qiRes.json();
-          setQiStatus(data as QiStatus);
-        }
-        if (protoRes && protoRes.ok) {
-          const data = await protoRes.json();
-          setProtocols(data as Protocol[]);
-        }
-        const stateRes = await fetch(`${API_ORIGIN}/api/blackboard/state`, {
-          headers: {
-            "X-Tenant-Id": "u-sylvan",
-            "X-User-Id": "sylvan",
-          },
-        }).catch(() => null);
-        if (!cancelled && stateRes && stateRes.ok) {
-          setGlobalState((await stateRes.json()) as GlobalState);
-        }
-        const missionRes = await fetch(`${API_ORIGIN}/api/missions?limit=5`, {
-          headers: {
-            "X-Tenant-Id": "u-sylvan",
-            "X-User-Id": "sylvan",
-          },
-        }).catch(() => null);
-        if (!cancelled && missionRes && missionRes.ok) {
-          setMissions((await missionRes.json()) as MissionSnapshot[]);
-        }
-      } catch {
-        // ignore polling errors
-      }
-    }
-    void refresh();
-    const id = setInterval(refresh, 30_000);
+    const cancelledRef = { current: false };
+    void refreshDashboard(cancelledRef);
+    const id = setInterval(() => void refreshDashboard(cancelledRef), 30_000);
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
       clearInterval(id);
     };
-  }, []);
+  }, [refreshDashboard]);
 
   useEffect(() => {
     if (!WS_URL) return;
@@ -244,6 +272,55 @@ export default function Home() {
     ]);
     setInput("");
   }, [input]);
+
+  const decidePendingAction = useCallback(
+    async (actionId: string, decision: "approve" | "reject") => {
+      setActionBusy(actionId);
+      try {
+        const res = await fetch(`${API_ORIGIN}/nuo/actions/${actionId}/decision`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Tenant-Id": "u-sylvan",
+            "X-User-Id": "sylvan",
+          },
+          body: JSON.stringify({ decision }),
+        });
+        const payload = (await res.json().catch(() => ({}))) as WireMessage;
+        if (!res.ok) throw new Error(JSON.stringify(payload));
+        setSide((items) => [
+          ...items,
+          {
+            kind: "guard_intervention",
+            payload: {
+              type: "pending_action_decision",
+              action_id: actionId,
+              decision,
+              ...payload,
+            },
+            at: new Date().toISOString(),
+          },
+        ]);
+        await refreshDashboard();
+      } catch (err) {
+        setSide((items) => [
+          ...items,
+          {
+            kind: "alert",
+            payload: {
+              type: "pending_action_decision_failed",
+              action_id: actionId,
+              message: err instanceof Error ? err.message : "审批动作失败",
+            },
+            at: new Date().toISOString(),
+          },
+        ]);
+      } finally {
+        setActionBusy(null);
+      }
+    },
+    [refreshDashboard],
+  );
 
   const loadGraph = useCallback(async () => {
     const kind = graphKind.trim();
@@ -314,6 +391,46 @@ export default function Home() {
             />
           </div>
           <div className="mt-3 space-y-2">
+            {pendingActions.length > 0 && (
+              <div className="rounded border border-amber-200 bg-amber-50 p-2 text-xs">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="font-medium text-amber-900">待确认动作</span>
+                  <span className="text-amber-700">{pendingActions.length} 个</span>
+                </div>
+                <div className="space-y-2">
+                  {pendingActions.map((action) => (
+                    <div
+                      key={action.action_id}
+                      className="rounded border border-amber-100 bg-white px-2 py-1.5"
+                    >
+                      <div className="flex justify-between gap-2">
+                        <span className="truncate font-medium">
+                          {action.action_type} → {action.target_ref || action.task_ref}
+                        </span>
+                        <span className="text-amber-700">{action.risk_level}</span>
+                      </div>
+                      <div className="mt-1 truncate text-gray-500">任务 {action.task_ref}</div>
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          className="rounded border border-green-200 bg-green-50 px-2 py-1 text-green-700 disabled:opacity-50"
+                          disabled={actionBusy === action.action_id}
+                          onClick={() => void decidePendingAction(action.action_id, "approve")}
+                        >
+                          批准
+                        </button>
+                        <button
+                          className="rounded border border-red-200 bg-red-50 px-2 py-1 text-red-700 disabled:opacity-50"
+                          disabled={actionBusy === action.action_id}
+                          onClick={() => void decidePendingAction(action.action_id, "reject")}
+                        >
+                          拒绝
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {missions.length > 0 && (
               <div className="rounded border border-gray-200 bg-white p-2 text-xs">
                 <div className="mb-2 flex items-center justify-between">
