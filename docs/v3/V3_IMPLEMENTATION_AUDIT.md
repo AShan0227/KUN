@@ -15,8 +15,9 @@
 - 调用方：`Orchestrator.stream()` 在 task created / decision / plan / running / step / pause / finish 写入。
 - 影响决策：不直接改执行，只提供同一份当前状态给人和 LLM。
 - 消费者：`/api/blackboard/state`、`/api/blackboard/state-ledger`、`/api/blackboard/full/{task_id}`、前端首页。
+- 已接恢复视图：热账本为空时，黑板会从 `runtime_states + tasks` 恢复可读快照，避免 API 重启后状态面板直接空白。
 - 测试：`tests/unit/test_state_ledger.py`、`tests/unit/test_wave7.py`。
-- 诚实边界：当前是热视图，不替代持久 DB 账本。
+- 诚实边界：当前仍不是完整事件溯源账本；它能从 RuntimeState 恢复当前快照，但不能还原全部历史判断链。
 
 ## V3-3 Hermes 全链路
 
@@ -67,7 +68,17 @@
 - 影响决策：不直接改后端决策，但让用户看到任务状态、成本、风险、待确认。
 - 消费者：用户。
 - 测试：前端 typecheck / lint。
-- 诚实边界：节点图、高级拖拽编辑没有放到主入口。
+- 已接能力：首页现在展示长期 Mission、活跃 StateLedger 任务、待确认 pending action，并可直接批准 / 拒绝低风险网关动作。
+- 诚实边界：主入口仍不是完整任务详情页；节点图、高级拖拽编辑没有放到主入口。
+
+## V3-7b NUO 做减法
+
+- 调用方：`frontend/src/app/nuo/page.tsx`。
+- 影响决策：不直接改执行，但让用户优先看到健康、成本、权限、风险。
+- 消费者：用户。
+- 测试：前端 typecheck / lint。
+- 已接能力：能力边界、诊断面板、模型画像保留，但默认折叠到高级区，不再压过主信息。
+- 诚实边界：这只是前端信息层级调整；NUO 的权限策略和风险策略仍由后端模块执行。
 
 ## V3-8 伪功能审计
 

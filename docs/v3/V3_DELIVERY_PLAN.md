@@ -65,6 +65,7 @@ P5 生产级 dogfood 和部署
 
 - `KUN_LLM_PRIMARY=codex` 已可走 Codex MCP。
 - `gpt-5.5` 已实测能跑。
+- `get_router()` 默认也已改为 Codex/gpt-5.5 优先；即使 `.env` 缺省，也不会再优先探 Claude。
 - `/nuo/health/delivery-status` 已能显示能力边界。
 
 还要做：
@@ -141,6 +142,7 @@ P5 生产级 dogfood 和部署
 2. durable task resume worker：
    - 任务 crash 后可恢复。
    - paused / queued / running 状态一致。
+   - 当前已有 worker shell；没有真实 runner 时会明确 `skipped`，不会假装已恢复执行。
 3. checkpoint：
    - 每个长任务有阶段目标。
    - 每阶段有成功标准。
@@ -155,6 +157,7 @@ P5 生产级 dogfood 和部署
    - 热视图继续快。
    - 事件日志可回放。
    - 快照可恢复。
+   - 当前黑板已能从 `runtime_states + tasks` 恢复可读快照；完整事件溯源还没做。
 
 验收：
 
@@ -176,6 +179,12 @@ P5 生产级 dogfood 和部署
 - 当前成本。
 - 待确认动作。
 - 下一步。
+
+当前状态：
+
+- 首页已显示 Mission / 活跃任务 / 成本 / 风险 / 待确认。
+- 首页可直接批准或拒绝 pending action，走同一条 NUO 审批接口。
+- NUO 已把高级诊断、能力画像、能力边界折叠，不再作为第一层噪声。
 
 NUO 初期只保留 4 个主入口：
 
