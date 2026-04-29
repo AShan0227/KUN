@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import cast
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -12,6 +16,8 @@ from kun.api.blackboard import (
 from kun.api.blackboard import (
     router as bb_router,
 )
+from kun.api.blackboard_data_sources import _entry_from_runtime_rows
+from kun.core.orm import RuntimeStateRow, TaskRow
 from kun.engineering.budget_tracker import (
     BEHAVIOR_BY_LEVEL,
     BudgetTracker,
@@ -167,6 +173,56 @@ def test_blackboard_full_dump_for_agent(bb_client: TestClient) -> None:
     assert "state" in body
     assert body["state_ledger"]["task_id"] == "tk-1"
     assert "workspace" in body
+
+
+def test_state_ledger_entry_can_hydrate_from_durable_runtime_rows() -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    task = cast(
+        TaskRow,
+        SimpleNamespace(
+            task_id="tk-1",
+            tenant_id="tenant-a",
+            user_id="user-a",
+            project_id="proj-a",
+            task_type="product.ops",
+            success_criteria_short="推进商业化",
+            spec_json={"goal_detail": "运营产品拿到第一批客户"},
+            risk_level="medium",
+            complexity_score=0.7,
+            estimated_cost_usd=1.5,
+        ),
+    )
+    runtime = cast(
+        RuntimeStateRow,
+        SimpleNamespace(
+            task_ref="tk-1",
+            tenant_id="tenant-a",
+            status="running",
+            current_step=2,
+            total_planned_steps=5,
+            accumulated_cost_usd_equivalent=0.42,
+            accumulated_tokens=1200,
+            started_at=now,
+            last_updated=now,
+            finished_at=None,
+            blob={
+                "completed_steps": [
+                    {"description": "整理用户访谈名单"},
+                    {"skill_used": "lead_research"},
+                ]
+            },
+        ),
+    )
+
+    entry = _entry_from_runtime_rows(task, runtime)
+
+    assert entry.task_id == "tk-1"
+    assert entry.current_goal == "运营产品拿到第一批客户"
+    assert entry.status == "running"
+    assert entry.current_step == 2
+    assert entry.total_steps == 5
+    assert entry.current_action == "lead_research"
+    assert entry.recent_events[-1].kind == "state.hydrated"
 
 
 # ---- BudgetTracker ----

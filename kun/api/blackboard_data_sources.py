@@ -14,7 +14,7 @@ from sqlalchemy import desc, select
 from kun.api.blackboard import register_data_source
 from kun.core.db import session_scope
 from kun.core.orm import EventRow, RuntimeStateRow, TaskRow
-from kun.core.state_ledger import get_state_ledger
+from kun.core.state_ledger import StateLedgerEntry, StateLedgerTrail, get_state_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -165,13 +165,9 @@ async def _state_source_async(tenant_id: str, user_id: str) -> dict[str, Any]:
                 cost_today += float(cost or 0.0)
     except Exception:
         logger.exception("blackboard.state_source failed")
-    try:
-        ledger_entries = [
-            entry.model_dump(mode="json")
-            for entry in get_state_ledger().active_snapshots(tenant_id=tenant_id)
-        ]
-    except Exception:
-        logger.exception("blackboard.state_ledger_source failed")
+    ledger_data = await _state_ledger_source_async(tenant_id=tenant_id, task_id=None)
+    if isinstance(ledger_data, list):
+        ledger_entries = ledger_data
 
     health: str = "healthy"
     if running > 10:
@@ -213,14 +209,112 @@ async def _state_ledger_source_async(
         if task_id is not None:
             entry = ledger.snapshot(task_id)
             if entry is None or entry.tenant_id != tenant_id:
-                return None
+                return await _runtime_state_ledger_source(tenant_id=tenant_id, task_id=task_id)
             return entry.model_dump(mode="json")
-        return [
+        hot_entries = [
             entry.model_dump(mode="json") for entry in ledger.active_snapshots(tenant_id=tenant_id)
         ]
+        if hot_entries:
+            return hot_entries
+        fallback = await _runtime_state_ledger_source(tenant_id=tenant_id, task_id=None)
+        return fallback if isinstance(fallback, list) else []
     except Exception:
         logger.exception("blackboard.state_ledger_source failed")
         return None if task_id is not None else []
+
+
+async def _runtime_state_ledger_source(
+    *,
+    tenant_id: str,
+    task_id: str | None,
+) -> list[dict[str, Any]] | dict[str, Any] | None:
+    """Hydrate a readable ledger view from durable task/runtime snapshots.
+
+    Hot StateLedger stays in-memory so orchestration does not wait on I/O. This
+    fallback makes blackboard useful after API restarts by reading the durable
+    `runtime_states` table that the orchestrator already writes.
+    """
+    async with session_scope(tenant_id=tenant_id) as session:
+        stmt = (
+            select(TaskRow, RuntimeStateRow)
+            .join(RuntimeStateRow, RuntimeStateRow.task_ref == TaskRow.task_id)
+            .where(
+                TaskRow.tenant_id == tenant_id,
+                RuntimeStateRow.tenant_id == tenant_id,
+            )
+            .order_by(desc(RuntimeStateRow.last_updated))
+        )
+        if task_id is not None:
+            stmt = stmt.where(TaskRow.task_id == task_id).limit(1)
+        else:
+            stmt = stmt.where(RuntimeStateRow.status.in_(("queued", "running", "paused"))).limit(50)
+        rows = (await session.execute(stmt)).all()
+
+    entries = [
+        _entry_from_runtime_rows(task, runtime).model_dump(mode="json") for task, runtime in rows
+    ]
+    if task_id is not None:
+        return entries[0] if entries else None
+    return entries
+
+
+def _entry_from_runtime_rows(task: TaskRow, runtime: RuntimeStateRow) -> StateLedgerEntry:
+    blob = runtime.blob if isinstance(runtime.blob, dict) else {}
+    current_action = _last_step_summary(blob)
+    entry = StateLedgerEntry(
+        task_id=task.task_id,
+        tenant_id=task.tenant_id,
+        user_id=task.user_id,
+        project_id=task.project_id,
+        task_type=task.task_type,
+        title=task.success_criteria_short,
+        current_goal=_goal_from_task(task),
+        status=runtime.status,
+        current_step=runtime.current_step,
+        total_steps=runtime.total_planned_steps,
+        current_action=current_action,
+        current_risk=task.risk_level,
+        complexity_score=task.complexity_score,
+        execution_mode=str(blob.get("execution_mode") or "FAST"),
+        budget_estimated_usd=task.estimated_cost_usd,
+        cost_so_far_usd=runtime.accumulated_cost_usd_equivalent,
+        tokens_so_far=runtime.accumulated_tokens,
+        started_at=runtime.started_at,
+        updated_at=runtime.last_updated,
+        finished_at=runtime.finished_at,
+        recent_events=[
+            StateLedgerTrail(
+                at=runtime.last_updated,
+                kind="state.hydrated",
+                summary="从持久运行状态恢复视图",
+                data={"source": "runtime_states"},
+            )
+        ],
+    )
+    return entry
+
+
+def _goal_from_task(task: TaskRow) -> str:
+    spec = task.spec_json if isinstance(task.spec_json, dict) else {}
+    for key in ("goal_detail", "goal", "objective"):
+        value = spec.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return task.success_criteria_short
+
+
+def _last_step_summary(blob: dict[str, Any]) -> str:
+    steps = blob.get("completed_steps")
+    if not isinstance(steps, list) or not steps:
+        return ""
+    last = steps[-1]
+    if not isinstance(last, dict):
+        return ""
+    for key in ("description", "summary", "skill_used"):
+        value = last.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 async def _workspace_source(
