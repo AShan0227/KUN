@@ -21,6 +21,8 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from kun.core.state_ledger import StateLedgerEntry
+
 router = APIRouter(prefix="/api/blackboard", tags=["blackboard"])
 
 
@@ -56,6 +58,7 @@ class GlobalStateView(BaseModel):
     total_cost_remaining_budget_usd: float = 0.0
     health_indicator: Literal["healthy", "warn", "critical"] = "healthy"
     urgent_alert_count: int = 0
+    active_state_ledger: list[StateLedgerEntry] = Field(default_factory=list)
     last_update: str = ""
 
 
@@ -153,6 +156,35 @@ async def get_state(
     raise TypeError(f"state data source returned unexpected type {type(state)}")
 
 
+@router.get("/state-ledger", response_model=list[StateLedgerEntry])
+async def get_state_ledger_list(
+    x_user_id: Annotated[str, Header(alias="X-User-Id")],
+    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
+) -> list[StateLedgerEntry]:
+    """当前活跃任务状态账本."""
+    fn = _data_sources.get("state_ledger")
+    if fn is None:
+        return []
+    items = await _maybe_await(fn(tenant_id=x_tenant_id, user_id=x_user_id))
+    return [StateLedgerEntry.model_validate(item) for item in items]
+
+
+@router.get("/state-ledger/{task_id}", response_model=StateLedgerEntry)
+async def get_state_ledger_task(
+    task_id: str,
+    x_user_id: Annotated[str, Header(alias="X-User-Id")],
+    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
+) -> StateLedgerEntry:
+    """某个任务的状态账本快照."""
+    fn = _data_sources.get("state_ledger")
+    if fn is None:
+        raise HTTPException(404, "state ledger not found")
+    item = await _maybe_await(fn(tenant_id=x_tenant_id, user_id=x_user_id, task_id=task_id))
+    if item is None:
+        raise HTTPException(404, "state ledger not found")
+    return StateLedgerEntry.model_validate(item)
+
+
 @router.get("/workspace/{task_id}", response_model=WorkspaceView)
 async def get_workspace(
     task_id: str,
@@ -197,9 +229,11 @@ async def get_assets(
 async def get_full_for_agent(
     task_id: str,
     x_user_id: Annotated[str, Header(alias="X-User-Id")],
+    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
 ) -> dict[str, Any]:
     """对 agent: 完整 JSON dump (state + workspace + assets + events)."""
     state_fn = _data_sources.get("state")
+    ledger_fn = _data_sources.get("state_ledger")
     ws_fn = _data_sources.get("workspace")
     assets_fn = _data_sources.get("assets")
     events_fn = _data_sources.get("events")
@@ -207,7 +241,14 @@ async def get_full_for_agent(
         "rendered_for": "agent",
         "task_id": task_id,
         "state": (
-            await _maybe_await(state_fn(tenant_id="-", user_id=x_user_id)) if state_fn else {}
+            await _maybe_await(state_fn(tenant_id=x_tenant_id, user_id=x_user_id))
+            if state_fn
+            else {}
+        ),
+        "state_ledger": (
+            await _maybe_await(ledger_fn(tenant_id=x_tenant_id, user_id=x_user_id, task_id=task_id))
+            if ledger_fn
+            else {}
         ),
         "workspace": (
             await _maybe_await(ws_fn(task_id=task_id, user_id=x_user_id)) if ws_fn else {}
@@ -216,7 +257,7 @@ async def get_full_for_agent(
             await _maybe_await(assets_fn(task_id=task_id, user_id=x_user_id)) if assets_fn else {}
         ),
         "events": (
-            await _maybe_await(events_fn(tenant_id="-", user_id=x_user_id, limit=100))
+            await _maybe_await(events_fn(tenant_id=x_tenant_id, user_id=x_user_id, limit=100))
             if events_fn
             else []
         ),
@@ -228,6 +269,7 @@ __all__ = [
     "AssetPoolSliceView",
     "EventStreamItem",
     "GlobalStateView",
+    "StateLedgerEntry",
     "TaskBoardItem",
     "WorkspaceView",
     "register_data_source",

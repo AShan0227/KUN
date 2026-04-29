@@ -81,6 +81,15 @@ def test_blackboard_state_with_data_source(bb_client: TestClient) -> None:
             "total_cost_today_usd": 0.42,
             "health_indicator": "warn",
             "urgent_alert_count": 1,
+            "active_state_ledger": [
+                {
+                    "task_id": "tk-1",
+                    "tenant_id": kw["tenant_id"],
+                    "current_goal": "写一份方案",
+                    "status": "running",
+                    "decision_reason": "命中产品运营策略包",
+                }
+            ],
             "last_update": "2026-04-26T10:00:00Z",
         },
     )
@@ -90,6 +99,40 @@ def test_blackboard_state_with_data_source(bb_client: TestClient) -> None:
     )
     assert resp.status_code == 200
     assert resp.json()["task_count_running"] == 3
+    assert resp.json()["active_state_ledger"][0]["task_id"] == "tk-1"
+
+
+def test_blackboard_state_ledger_endpoints(bb_client: TestClient) -> None:
+    def source(**kw):
+        item = {
+            "task_id": "tk-1",
+            "tenant_id": kw["tenant_id"],
+            "user_id": kw["user_id"],
+            "current_goal": "帮用户完成任务",
+            "status": "running",
+            "current_step": 2,
+            "total_steps": 5,
+            "decision_reason": "命中通用策略包",
+        }
+        if kw.get("task_id"):
+            return item if kw["task_id"] == "tk-1" else None
+        return [item]
+
+    register_data_source("state_ledger", source)
+
+    resp = bb_client.get(
+        "/api/blackboard/state-ledger",
+        headers={"X-User-Id": "u-1", "X-Tenant-Id": "t-1"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()[0]["current_step"] == 2
+
+    one = bb_client.get(
+        "/api/blackboard/state-ledger/tk-1",
+        headers={"X-User-Id": "u-1", "X-Tenant-Id": "t-1"},
+    )
+    assert one.status_code == 200
+    assert one.json()["current_goal"] == "帮用户完成任务"
 
 
 def test_blackboard_workspace_default(bb_client: TestClient) -> None:
@@ -109,6 +152,10 @@ def test_blackboard_full_dump_for_agent(bb_client: TestClient) -> None:
         "state",
         lambda **kw: {"tenant_id": "-", "user_id": "u-1", "last_update": "x"},
     )
+    register_data_source(
+        "state_ledger",
+        lambda **kw: {"task_id": kw["task_id"], "tenant_id": kw["tenant_id"]},
+    )
     register_data_source("workspace", lambda **kw: {"task_id": "tk-1", "last_update": "x"})
     register_data_source("assets", lambda **kw: {"task_id": "tk-1"})
     register_data_source("events", lambda **kw: [])
@@ -118,6 +165,7 @@ def test_blackboard_full_dump_for_agent(bb_client: TestClient) -> None:
     assert body["rendered_for"] == "agent"
     assert body["task_id"] == "tk-1"
     assert "state" in body
+    assert body["state_ledger"]["task_id"] == "tk-1"
     assert "workspace" in body
 
 

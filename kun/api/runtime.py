@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Protocol, cast
 
 from kun.core.emergent_solution import EmergentSolutionLibrary
+from kun.core.state_ledger import get_state_ledger
 from kun.engineering.capability_cache import CapabilityCardCache
 from kun.engineering.cron_scheduler import CronScheduler
 from kun.engineering.emergent_switch import EmergentSwitchManager
@@ -41,6 +42,7 @@ from kun.engineering.safety_guards import (
 from kun.security.diagnose_runner import DiagnoseRunner
 from kun.security.fix_handlers import register_default_fix_handlers
 from kun.security.incident_response import IncidentResponseEngine
+from kun.watchtower.decision_plane import WatchtowerDecisionPlane
 from kun.watchtower.engine import RuleEngine
 from kun.watchtower.value_estimators import ProductionValueEstimator
 from kun.watchtower.value_gate import ValueGate
@@ -197,6 +199,21 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         )
     app.state.value_gate = value_gate
 
+    # V3: 守望决策层. 这是系统级 MoE 的第一刀:
+    # task → StrategyPack → execution_mode/context_limit/skill_hints/metric dimensions.
+    # 默认开, 但只产轻量 deterministic 决策, 不额外调用 LLM.
+    decision_plane = None
+    if _os.getenv("KUN_WATCHTOWER_DECISION_PLANE_ENABLED", "1") == "1":
+        decision_plane = WatchtowerDecisionPlane()
+    app.state.watchtower_decision_plane = decision_plane
+
+    # V3-2: State Ledger — 任务当前状态的热视图.
+    # RuntimeStateRow/EventRow 仍负责持久化; ledger 给 UI/LLM/黑板读当前快照.
+    state_ledger = None
+    if _os.getenv("KUN_STATE_LEDGER_ENABLED", "1") == "1":
+        state_ledger = get_state_ledger()
+    app.state.state_ledger = state_ledger
+
     # V2.2 §22 + Wire 3: hermes 结构化执行 generator (默认开, FAST 模式自动跳过)
     # Wire 35: 加 ThoughtActionConsistency checker → 自动 rethink (max 2 次)
     structured_step_generator = None
@@ -307,6 +324,8 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         model_updater=pc_updater,
         protocol_registry=_protocol_registry_for_orch,
         anti_gaming_detector=_anti_gaming_for_orch,
+        decision_plane=decision_plane,
+        state_ledger=state_ledger,
     )
     app.state.rule_engine = rule_engine
     app.state.orchestrator = orchestrator

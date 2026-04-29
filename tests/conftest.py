@@ -2,10 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
+from kun.core.db import dispose_engines
+from kun.core.state_ledger import reset_state_ledger
 from kun.interface.llm import LLMRouter
 from kun.interface.llm.router import reset_router, set_router
 from kun.interface.llm.stub_provider import StubProvider
+
+
+@pytest.fixture(autouse=True)
+async def clean_db_engines_between_tests() -> None:
+    """Keep global async DB pools from leaking across pytest event loops."""
+    await dispose_engines()
+    reset_state_ledger()
+    yield
+    await dispose_engines()
+    reset_state_ledger()
+    await asyncio.sleep(0)
 
 
 @pytest.fixture(autouse=True)

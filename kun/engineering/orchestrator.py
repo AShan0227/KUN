@@ -170,6 +170,8 @@ class Orchestrator:
         model_updater: Any = None,
         protocol_registry: Any = None,
         anti_gaming_detector: Any = None,
+        decision_plane: Any = None,
+        state_ledger: Any = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -195,6 +197,12 @@ class Orchestrator:
         # V2.3 Wire 53 (C72): AntiGamingDetector — step 完后跑 quick check.
         # None 时鲲行为完全不变.
         self.anti_gaming_detector = anti_gaming_detector
+        # V3: Watchtower Decision Plane — 守望统一产出策略单.
+        # 它不执行任务, 但策略单会被本 orchestrator 消费.
+        self.decision_plane = decision_plane
+        # V3-2: State Ledger — 当前状态账本. 它不替代 DB/EventRow,
+        # 只提供 UI/LLM/黑板读的热快照。
+        self.state_ledger = state_ledger
         # 累计 step value history, 给 value_gate marginal_roi 用
         self._value_history: list[float] = []
 
@@ -441,6 +449,12 @@ class Orchestrator:
             )
             return
 
+        self._record_state_ledger(
+            "record_task_created",
+            task_ref,
+            tenant_id=tenant.tenant_id,
+            status="queued",
+        )
         yield OrchestratorEvent(
             kind="action_plan",
             data={
@@ -452,9 +466,10 @@ class Orchestrator:
             },
         )
 
-        # 3. Planning
-        plan = await self.planner.plan(task_ref, router=self.llm_router)
-
+        # 3. Protocol + Watchtower pre-planning decision.
+        # 这一步必须在 Planning 前完成, 否则策略包补充的 skill_hints
+        # 只能影响 skill_selector, 不能影响 planner 生成的执行步骤。
+        #
         # V2.3 Wire 53 (C71): ProtocolRegistry consume — task 启动前 match 协议
         # 找到 stable 协议 → 改 task_ref.meta.execution_mode (按 protocol.execution.mode)
         # 协议是 KUN 沉淀的 IP, 鲲消费协议 = "怎么做这个 task" 的标准说明书
@@ -517,6 +532,56 @@ class Orchestrator:
                         pass
             except Exception:
                 log.exception("protocol_consume.failed (non-fatal)")
+
+        # V3: Watchtower Decision Plane consume — task 启动前选 StrategyPack,
+        # 并真实影响 execution_mode / context_limit / required_skills.
+        watchtower_decision: Any = None
+        if (
+            self.decision_plane is not None
+            and _os.getenv("KUN_WATCHTOWER_DECISION_PLANE_ENABLED", "1") == "1"
+        ):
+            try:
+                watchtower_decision = self.decision_plane.decide(
+                    task_ref,
+                    active_protocol=active_protocol,
+                )
+                self.decision_plane.apply(task_ref, watchtower_decision)
+                self._record_state_ledger(
+                    "record_decision",
+                    task_ref.meta.task_id,
+                    watchtower_decision,
+                )
+                async with session_scope(tenant_id=tenant.tenant_id) as s:
+                    await emit(
+                        s,
+                        Event.build(
+                            tenant_id=tenant.tenant_id,
+                            event_type="watchtower.decision_plan.created",
+                            payload={
+                                "task_id": task_ref.meta.task_id,
+                                **watchtower_decision.event_payload(),
+                            },
+                            task_ref=task_ref.meta.task_id,
+                        ),
+                    )
+                yield OrchestratorEvent(
+                    kind="action_plan",
+                    data={
+                        "stage": "watchtower_decision",
+                        "task_id": task_ref.meta.task_id,
+                        **watchtower_decision.event_payload(),
+                    },
+                )
+            except Exception:
+                log.exception("watchtower.decision_plane.failed (non-fatal)")
+
+        # 4. Planning
+        plan = await self.planner.plan(task_ref, router=self.llm_router)
+        self._record_state_ledger(
+            "record_plan",
+            task_ref.meta.task_id,
+            total_steps=len(plan.steps),
+        )
 
         # V2.1 §5.8 wire: 注册任务到 EmergentSwitchManager (信号驱动, 零额外开销 90% 任务)
         if self.emergent_switch_manager is not None:
@@ -613,6 +678,15 @@ class Orchestrator:
                 status="paused",
                 finished_at=datetime.now(UTC),
             )
+            self._record_state_ledger(
+                "record_paused",
+                task_ref.meta.task_id,
+                reason=answer,
+                pending_confirmations=[
+                    *[conflict.resource for conflict in pre_conflict_report.conflicts],
+                    *[action.action_type for action in pending_actions],
+                ],
+            )
             async with session_scope() as s:
                 await _persist_runtime_snapshot(s, paused_runtime, tenant.tenant_id)
                 await emit(
@@ -667,6 +741,7 @@ class Orchestrator:
             total_planned_steps=len(plan.steps),
             status="running",
         )
+        self._record_state_ledger("record_running", task_ref.meta.task_id, runtime=runtime)
         async with session_scope() as s:
             await _persist_runtime_snapshot(s, runtime, tenant.tenant_id)
             await emit(
@@ -690,7 +765,11 @@ class Orchestrator:
         # V2.2 §21 wire: mode-driven context limit
         # FAST 不查记忆 (limit=0), SMART 1 条, MAX/ENSEMBLE 3 条
         _task_mode = getattr(task_ref.meta, "execution_mode", "FAST")
-        _context_limit = {"FAST": 0, "SMART": 1, "MAX": 3, "ENSEMBLE": 3}.get(_task_mode, 1)
+        _context_limit = (
+            int(watchtower_decision.context_limit)
+            if watchtower_decision is not None
+            else {"FAST": 0, "SMART": 1, "MAX": 3, "ENSEMBLE": 3}.get(_task_mode, 1)
+        )
         if _context_limit > 0:
             context_pack = await self.context_packer.pack(
                 task_ref,
@@ -702,6 +781,11 @@ class Orchestrator:
 
             context_pack = ContextPack()  # FAST 模式跳过, 空 pack
         context_summary = context_pack.summary()
+        self._record_state_ledger(
+            "record_context",
+            task_ref.meta.task_id,
+            asset_ids=[item.asset_id for item in context_pack.items],
+        )
         if context_pack.items:
             yield OrchestratorEvent(
                 kind="action_plan",
@@ -711,7 +795,10 @@ class Orchestrator:
                 },
             )
 
-        skill_candidates = self.skill_selector.select(task_ref, top_k=3)
+        _skill_top_k = (
+            max(3, len(watchtower_decision.skill_hints)) if watchtower_decision is not None else 3
+        )
+        skill_candidates = self.skill_selector.select(task_ref, top_k=_skill_top_k)
         if skill_candidates:
             yield OrchestratorEvent(
                 kind="action_plan",
@@ -906,6 +993,12 @@ class Orchestrator:
                             question[:100],
                         )
                         status = "paused"
+                        self._record_state_ledger(
+                            "record_paused",
+                            task_ref.meta.task_id,
+                            reason=question,
+                            pending_confirmations=["user_input"],
+                        )
                         break
                     elif _hermes_step.action_type == "use_memory":
                         # Wire 33: hermes 主动拉相关 memory → 加塞进 step context_summary
@@ -952,6 +1045,10 @@ class Orchestrator:
                             _gate_ctx["hermes_confidence"] = _hermes_step.confidence
                             _gate_ctx["hermes_cost_estimate"] = _hermes_step.cost_estimate_usd
                             _gate_ctx["hermes_action_type"] = _hermes_step.action_type
+                        if watchtower_decision is not None:
+                            _gate_ctx["strategy_pack_id"] = watchtower_decision.strategy_pack_id
+                            _gate_ctx["metric_dimensions"] = watchtower_decision.metric_dimensions
+                            _gate_ctx["reward_weights"] = watchtower_decision.reward_weights
                         gate_decision = await self.value_gate.check_step(
                             task_ref=task_ref,
                             step_plan=step_plan,
@@ -970,6 +1067,13 @@ class Orchestrator:
                             )
                             # stop / escalate 都中止当前 step loop
                             status = "paused" if gate_decision.decision == "escalate" else "done"
+                            if status == "paused":
+                                self._record_state_ledger(
+                                    "record_paused",
+                                    task_ref.meta.task_id,
+                                    reason=gate_decision.reason,
+                                    pending_confirmations=["watchtower_escalation"],
+                                )
                             break
                         if gate_decision.decision == "skip":
                             yield OrchestratorEvent(
@@ -987,6 +1091,13 @@ class Orchestrator:
                 yield OrchestratorEvent(
                     kind="action",
                     data={"step_id": step_plan.step_id, "description": step_plan.description},
+                )
+                self._record_state_ledger(
+                    "record_current_action",
+                    task_ref.meta.task_id,
+                    step_id=step_plan.step_id,
+                    description=step_plan.description,
+                    skill_hint=step_plan.skill_hint,
                 )
 
                 # Build the per-step profile: thread the caller's audience
@@ -1061,6 +1172,15 @@ class Orchestrator:
                     finished_at=datetime.now(UTC),
                 )
                 runtime.accumulate_step(step_record)
+                self._record_state_ledger(
+                    "record_step_completed",
+                    task_ref.meta.task_id,
+                    runtime=runtime,
+                    step=step_record,
+                    provider=response.provider,
+                    model=response.model,
+                    tier=str(response.tier),
+                )
 
                 # V2.3 Wire 41: Predictive Coding post-step hook
                 # 算 actual + error, 喂 model_updater 让模型实时学
@@ -1355,14 +1475,18 @@ class Orchestrator:
                 )
                 # Backward compat: emit verification_done with V2.2 shape.
                 # failed=True 只在 *required* verification fail 时 (matches V2.2 semantics).
-                _verification_checks = [c for c in verdict.checks if c.name.startswith("verification.")]
+                _verification_checks = [
+                    c for c in verdict.checks if c.name.startswith("verification.")
+                ]
                 _verification_results = [
                     {
                         "kind": c.name.replace("verification.", ""),
                         "passed": c.passed,
                         "error_msg": c.reason if not c.passed else "",
                         # legacy V2.2: exception case used "error" key
-                        "error": c.reason if (not c.passed and "exception" in c.reason.lower()) else "",
+                        "error": c.reason
+                        if (not c.passed and "exception" in c.reason.lower())
+                        else "",
                     }
                     for c in _verification_checks
                 ]
@@ -1498,6 +1622,7 @@ class Orchestrator:
         runtime.status = status
         runtime.finished_at = datetime.now(UTC)
         total_duration = time.perf_counter() - t0
+        self._record_state_ledger("record_finished", task_ref.meta.task_id, runtime=runtime)
 
         async with session_scope() as s:
             await s.execute(
@@ -1687,6 +1812,15 @@ class Orchestrator:
         )
 
     # ---------------------------- helpers ----------------------------
+
+    def _record_state_ledger(self, method_name: str, *args: Any, **kwargs: Any) -> None:
+        if self.state_ledger is None:
+            return
+        try:
+            method = getattr(self.state_ledger, method_name)
+            method(*args, **kwargs)
+        except Exception:
+            log.exception("state_ledger.%s_failed (non-fatal)", method_name)
 
     async def _translate_answer(
         self,

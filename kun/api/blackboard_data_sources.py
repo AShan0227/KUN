@@ -14,6 +14,7 @@ from sqlalchemy import desc, select
 from kun.api.blackboard import register_data_source
 from kun.core.db import session_scope
 from kun.core.orm import EventRow, RuntimeStateRow, TaskRow
+from kun.core.state_ledger import get_state_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ def install_blackboard_data_sources() -> None:
     register_data_source("tasks", _tasks_source)
     register_data_source("events", _events_source)
     register_data_source("state", _state_source)
+    register_data_source("state_ledger", _state_ledger_source)
     register_data_source("workspace", _workspace_source)
     register_data_source("assets", _assets_source)
 
@@ -145,6 +147,7 @@ async def _state_source_async(tenant_id: str, user_id: str) -> dict[str, Any]:
     running = 0
     queued = 0
     cost_today = 0.0
+    ledger_entries: list[dict[str, Any]] = []
     try:
         async with session_scope(tenant_id=tenant_id) as session:
             stmt = (
@@ -162,6 +165,13 @@ async def _state_source_async(tenant_id: str, user_id: str) -> dict[str, Any]:
                 cost_today += float(cost or 0.0)
     except Exception:
         logger.exception("blackboard.state_source failed")
+    try:
+        ledger_entries = [
+            entry.model_dump(mode="json")
+            for entry in get_state_ledger().active_snapshots(tenant_id=tenant_id)
+        ]
+    except Exception:
+        logger.exception("blackboard.state_ledger_source failed")
 
     health: str = "healthy"
     if running > 10:
@@ -178,8 +188,39 @@ async def _state_source_async(tenant_id: str, user_id: str) -> dict[str, Any]:
         "total_cost_remaining_budget_usd": 0.0,  # M3.3 接 BudgetTracker
         "health_indicator": health,
         "urgent_alert_count": 0,  # M3.3 接 IncidentResponseEngine.history
+        "active_state_ledger": ledger_entries,
         "last_update": datetime.now(UTC).isoformat(),
     }
+
+
+async def _state_ledger_source(
+    *,
+    tenant_id: str,
+    user_id: str,
+    task_id: str | None = None,
+    **_: Any,
+) -> list[dict[str, Any]] | dict[str, Any] | None:
+    return await _state_ledger_source_async(tenant_id=tenant_id, task_id=task_id)
+
+
+async def _state_ledger_source_async(
+    *,
+    tenant_id: str,
+    task_id: str | None = None,
+) -> list[dict[str, Any]] | dict[str, Any] | None:
+    try:
+        ledger = get_state_ledger()
+        if task_id is not None:
+            entry = ledger.snapshot(task_id)
+            if entry is None or entry.tenant_id != tenant_id:
+                return None
+            return entry.model_dump(mode="json")
+        return [
+            entry.model_dump(mode="json") for entry in ledger.active_snapshots(tenant_id=tenant_id)
+        ]
+    except Exception:
+        logger.exception("blackboard.state_ledger_source failed")
+        return None if task_id is not None else []
 
 
 async def _workspace_source(

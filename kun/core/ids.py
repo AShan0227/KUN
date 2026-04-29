@@ -6,6 +6,7 @@ This module provides prefixed ULIDs for different entity types for readability.
 
 from __future__ import annotations
 
+from threading import Lock
 from typing import Final, Literal
 
 from ulid import ULID
@@ -65,6 +66,9 @@ _PREFIX: Final[dict[EntityKind, str]] = {
     "anchor": "aa",
     "incident": "inc",
 }
+_MAX_ULID_INT: Final[int] = (1 << 128) - 1
+_id_lock = Lock()
+_last_ulid_int_by_kind: dict[EntityKind, int] = {}
 
 
 def new_id(kind: EntityKind) -> str:
@@ -77,7 +81,19 @@ def new_id(kind: EntityKind) -> str:
     The prefix makes debugging much easier than raw UUIDs.
     """
     prefix = _PREFIX[kind]
-    return f"{prefix}-{ULID()}"
+    return f"{prefix}-{_monotonic_ulid(kind)}"
+
+
+def _monotonic_ulid(kind: EntityKind) -> ULID:
+    candidate = int(ULID())
+    with _id_lock:
+        previous = _last_ulid_int_by_kind.get(kind)
+        if previous is not None and candidate <= previous:
+            candidate = previous + 1
+        if candidate > _MAX_ULID_INT:
+            raise OverflowError("ULID space exhausted")
+        _last_ulid_int_by_kind[kind] = candidate
+        return ULID.from_int(candidate)
 
 
 def parse_kind(ident: str) -> EntityKind | None:

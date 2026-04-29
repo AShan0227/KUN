@@ -45,6 +45,7 @@ EventKind = Literal[
     "capability.updated",
     # Watchtower / Guard
     "watchtower.intervention",
+    "watchtower.decision_plan.created",
     "guard.budget.exceeded",
     "guard.anomaly.detected",
     # Context
