@@ -23,7 +23,7 @@ brew install uv        # 如未安装
 
 ```bash
 make install     # uv sync --extra dev
-cp .env.example .env && edit .env    # 填入 KUN_OFOX_API_KEY / MINIMAX_API_KEY
+cp .env.example .env && edit .env    # Claude 不可用时保留 KUN_LLM_PRIMARY=codex
 make up          # docker compose up -d (infra)
 make migrate     # alembic upgrade head
 make serve       # 启 API (autoreload)
@@ -34,6 +34,16 @@ Postgres 现在分两条连接：
 - `KUN_PG_ADMIN_DSN`：Alembic 迁移和系统级后台任务使用 admin。
 
 如果你已有旧 `.env`，确认把 `KUN_PG_DSN` 从 `kun:kun` 改成 `kun_app:kun_app`，并补上 `KUN_PG_ADMIN_DSN`。
+
+Claude 封号 / 不可用时，本机 LLM 推荐这样配：
+
+```bash
+KUN_LLM_PRIMARY=codex
+KUN_DISABLE_CLAUDE_CLI=1
+KUN_CODEX_MCP_MODEL=gpt-5.3-codex-spark
+```
+
+这会让普通执行、规划、判官和代码任务都优先走 `codex mcp-server`，不是只把 Codex 用在写代码档。
 
 ### 常用命令
 

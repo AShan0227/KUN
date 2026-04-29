@@ -407,10 +407,11 @@ def get_router() -> LLMRouter:
     Claude/GPT via CLI OAuth, not API keys):
 
       top / strong / cheap:
-        1. Claude Code CLI (OAuth subscription) ← PREFERRED
-        2. Anthropic API (if KUN_OFOX_API_KEY or ANTHROPIC_API_KEY set)
-        3. MiniMax substitute (if MINIMAX_API_KEY)
-        4. Stub (tests)
+        1. If KUN_LLM_PRIMARY=codex: Codex MCP / Codex CLI
+        2. Claude Code CLI (OAuth subscription)
+        3. Anthropic API (if KUN_OFOX_API_KEY or ANTHROPIC_API_KEY set)
+        4. MiniMax substitute (if MINIMAX_API_KEY)
+        5. Stub (tests)
 
       coding:
         1. Codex MCP-server (OAuth ChatGPT subscription, gpt-5.3-codex-spark) ← PREFERRED
@@ -426,6 +427,8 @@ def get_router() -> LLMRouter:
 
     Disable CLI probing by setting KUN_DISABLE_CLI_OAUTH=1.
     Disable only codex (keep Claude CLI): KUN_DISABLE_CODEX_CLI=1.
+    Disable only Claude CLI (keep Codex): KUN_DISABLE_CLAUDE_CLI=1.
+    Force one primary family with KUN_LLM_PRIMARY=auto|codex|claude|anthropic|minimax|stub.
     Override codex model id: KUN_CODEX_MCP_MODEL=gpt-5.3-codex-spark.
     """
     global _router
@@ -434,9 +437,16 @@ def get_router() -> LLMRouter:
 
     providers: dict[ModelTier, LLMProvider] = {}
 
+    primary_family = (os.getenv("KUN_LLM_PRIMARY") or "auto").strip().lower()
+    valid_primary_families = {"auto", "codex", "claude", "anthropic", "minimax", "stub"}
+    if primary_family not in valid_primary_families:
+        log.warning("router.invalid_primary_family", value=primary_family, fallback="auto")
+        primary_family = "auto"
+
     cli_disabled = os.getenv("KUN_DISABLE_CLI_OAUTH") == "1"
+    claude_disabled = os.getenv("KUN_DISABLE_CLAUDE_CLI") == "1"
     codex_disabled = os.getenv("KUN_DISABLE_CODEX_CLI") == "1"
-    has_claude_cli = ClaudeCodeProvider.available() and not cli_disabled
+    has_claude_cli = ClaudeCodeProvider.available() and not cli_disabled and not claude_disabled
     # Prefer MCP (works with ChatGPT accounts via gpt-5.3-codex-spark);
     # fall back to exec CLI only when the user has an OpenAI API key account.
     has_codex_mcp = CodexMcpProvider.available() and not cli_disabled and not codex_disabled
@@ -446,8 +456,88 @@ def get_router() -> LLMRouter:
     has_openai = bool(os.getenv("OPENAI_API_KEY"))
     has_minimax = bool(os.getenv("MINIMAX_API_KEY"))
 
+    def install_codex_family_for_main_tiers() -> bool:
+        if has_codex_mcp:
+            log.info(
+                "router.codex_mcp_primary",
+                hint="KUN_LLM_PRIMARY=codex: using codex mcp-server for top/strong/cheap",
+            )
+            providers["top"] = CodexMcpProvider(tier="top")
+            providers["strong"] = CodexMcpProvider(tier="strong")
+            providers["cheap"] = CodexMcpProvider(tier="cheap")
+            return True
+        if has_codex_cli:
+            log.info(
+                "router.codex_cli_primary",
+                hint="KUN_LLM_PRIMARY=codex: using codex exec for top/strong/cheap",
+            )
+            providers["top"] = CodexCliProvider(tier="top")
+            providers["strong"] = CodexCliProvider(tier="strong")
+            providers["cheap"] = CodexCliProvider(tier="cheap")
+            return True
+        log.warning(
+            "router.codex_primary_unavailable",
+            hint="KUN_LLM_PRIMARY=codex set but codex CLI/MCP is unavailable; falling through",
+        )
+        return False
+
+    def install_claude_family_for_main_tiers() -> bool:
+        if has_claude_cli:
+            log.info("router.claude_code_cli", hint="using logged-in claude CLI OAuth")
+            providers["top"] = ClaudeCodeProvider(tier="top")
+            providers["strong"] = ClaudeCodeProvider(tier="strong")
+            providers["cheap"] = ClaudeCodeProvider(tier="cheap")
+            return True
+        if has_ofox or has_anthropic:
+            providers["top"] = AnthropicProvider(model_id="claude-opus-4-7", tier="top")
+            providers["strong"] = AnthropicProvider(model_id="claude-sonnet-4-6", tier="strong")
+            providers["cheap"] = AnthropicProvider(
+                model_id="claude-haiku-4-5-20251001",
+                tier="cheap",
+            )
+            return True
+        log.warning(
+            "router.claude_primary_unavailable",
+            hint="Claude primary requested but no Claude CLI/API credential is available",
+        )
+        return False
+
+    def install_minimax_family_for_main_tiers() -> bool:
+        if not has_minimax:
+            return False
+        log.info(
+            "router.minimax_substitute",
+            hint="MiniMax used for top/strong/cheap",
+        )
+        providers["top"] = MiniMaxProvider(model_id="MiniMax-M2.7")
+        providers["top"].tier = "top"
+        providers["strong"] = MiniMaxProvider(model_id="MiniMax-M2.7")
+        providers["strong"].tier = "strong"
+        providers["cheap"] = MiniMaxProvider(model_id="MiniMax-M2.7")
+        providers["cheap"].tier = "cheap"
+        return True
+
+    def install_stub_family_for_main_tiers() -> None:
+        log.warning("router.no_creds", hint="falling back to stub for top/strong/cheap")
+        providers["top"] = StubProvider(model_id="stub-opus-4.7", tier="top")
+        providers["strong"] = StubProvider(model_id="stub-sonnet-4.6", tier="strong")
+        providers["cheap"] = StubProvider(model_id="stub-haiku-4.5", tier="cheap")
+
     # ---- top / strong / cheap ----
-    if has_claude_cli:
+    installed_main = False
+    if primary_family == "codex":
+        installed_main = install_codex_family_for_main_tiers()
+    elif primary_family in {"claude", "anthropic"}:
+        installed_main = install_claude_family_for_main_tiers()
+    elif primary_family == "minimax":
+        installed_main = install_minimax_family_for_main_tiers()
+    elif primary_family == "stub":
+        install_stub_family_for_main_tiers()
+        installed_main = True
+
+    if installed_main:
+        pass
+    elif has_claude_cli:
         log.info("router.claude_code_cli", hint="using logged-in claude CLI OAuth")
         providers["top"] = ClaudeCodeProvider(tier="top")
         providers["strong"] = ClaudeCodeProvider(tier="strong")
@@ -457,21 +547,9 @@ def get_router() -> LLMRouter:
         providers["strong"] = AnthropicProvider(model_id="claude-sonnet-4-6", tier="strong")
         providers["cheap"] = AnthropicProvider(model_id="claude-haiku-4-5-20251001", tier="cheap")
     elif has_minimax:
-        log.info(
-            "router.minimax_substitute",
-            hint="MiniMax used for top/strong/cheap (no Anthropic creds/CLI)",
-        )
-        providers["top"] = MiniMaxProvider(model_id="MiniMax-M2.7")
-        providers["top"].tier = "top"
-        providers["strong"] = MiniMaxProvider(model_id="MiniMax-M2.7")
-        providers["strong"].tier = "strong"
-        providers["cheap"] = MiniMaxProvider(model_id="MiniMax-M2.7")
-        providers["cheap"].tier = "cheap"
+        install_minimax_family_for_main_tiers()
     else:
-        log.warning("router.no_creds", hint="falling back to stub for top/strong/cheap")
-        providers["top"] = StubProvider(model_id="stub-opus-4.7", tier="top")
-        providers["strong"] = StubProvider(model_id="stub-sonnet-4.6", tier="strong")
-        providers["cheap"] = StubProvider(model_id="stub-haiku-4.5", tier="cheap")
+        install_stub_family_for_main_tiers()
 
     # ---- coding ----
     if has_codex_mcp:

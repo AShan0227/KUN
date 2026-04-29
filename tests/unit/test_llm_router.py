@@ -6,7 +6,9 @@ from kun.interface.llm import (
     LLMRequest,
     LLMRouter,
     TaskProfile,
+    get_router,
 )
+from kun.interface.llm.router import reset_router
 from kun.interface.llm.stub_provider import StubProvider
 
 
@@ -143,3 +145,61 @@ async def test_router_ab_ratio_clamped_to_unit_interval():
     assert router.ab_ratio == 1.0
     router2 = LLMRouter(providers, ab_ratio=-0.5)
     assert router2.ab_ratio == 0.0
+
+
+@pytest.mark.unit
+def test_get_router_can_force_codex_as_primary(monkeypatch):
+    """Claude 挂了时可以显式把 Codex MCP 设成主力档位."""
+    from kun.interface.llm.claude_code_provider import ClaudeCodeProvider
+    from kun.interface.llm.codex_cli_provider import CodexCliProvider
+    from kun.interface.llm.codex_mcp_provider import CodexMcpProvider
+
+    reset_router()
+    monkeypatch.setenv("KUN_LLM_PRIMARY", "codex")
+    monkeypatch.setenv("KUN_DISABLE_CLAUDE_CLI", "1")
+    monkeypatch.delenv("KUN_DISABLE_CLI_OAUTH", raising=False)
+    monkeypatch.delenv("KUN_DISABLE_CODEX_CLI", raising=False)
+    monkeypatch.delenv("KUN_OFOX_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    monkeypatch.setattr(ClaudeCodeProvider, "available", staticmethod(lambda: True))
+    monkeypatch.setattr(CodexMcpProvider, "available", staticmethod(lambda: True))
+    monkeypatch.setattr(CodexCliProvider, "available", staticmethod(lambda: False))
+
+    try:
+        router = get_router()
+        assert router.providers["top"].name == "codex-mcp"
+        assert router.providers["strong"].name == "codex-mcp"
+        assert router.providers["cheap"].name == "codex-mcp"
+        assert router.providers["coding"].name == "codex-mcp"
+    finally:
+        reset_router()
+
+
+@pytest.mark.unit
+def test_get_router_can_disable_only_claude_cli(monkeypatch):
+    """只关 Claude CLI 时, Codex 仍然可以用于 coding."""
+    from kun.interface.llm.claude_code_provider import ClaudeCodeProvider
+    from kun.interface.llm.codex_cli_provider import CodexCliProvider
+    from kun.interface.llm.codex_mcp_provider import CodexMcpProvider
+
+    reset_router()
+    monkeypatch.setenv("KUN_DISABLE_CLAUDE_CLI", "1")
+    monkeypatch.setenv("MINIMAX_API_KEY", "dummy")
+    monkeypatch.delenv("KUN_LLM_PRIMARY", raising=False)
+    monkeypatch.delenv("KUN_DISABLE_CLI_OAUTH", raising=False)
+    monkeypatch.delenv("KUN_DISABLE_CODEX_CLI", raising=False)
+    monkeypatch.delenv("KUN_OFOX_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(ClaudeCodeProvider, "available", staticmethod(lambda: True))
+    monkeypatch.setattr(CodexMcpProvider, "available", staticmethod(lambda: True))
+    monkeypatch.setattr(CodexCliProvider, "available", staticmethod(lambda: False))
+
+    try:
+        router = get_router()
+        assert router.providers["top"].name == "minimax"
+        assert router.providers["coding"].name == "codex-mcp"
+    finally:
+        reset_router()

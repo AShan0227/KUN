@@ -81,28 +81,38 @@ MINIMAX_API_URL=https://api.minimax.chat/v1
 MINIMAX_MODEL=MiniMax-M2.7
 ```
 
-**完整路由优先级** (kun/interface/llm/router.py, 2026-04-24 版):
+**完整路由优先级** (kun/interface/llm/router.py, 2026-04-29 版):
 
 ```
 top / strong / cheap:
-  1. Claude Code CLI (OAuth 订阅) ← 当前默认
-  2. Anthropic API (KUN_OFOX_API_KEY / ANTHROPIC_API_KEY)
-  3. MiniMax 替代 (MINIMAX_API_KEY)
-  4. Stub (测试)
+  1. 如果 KUN_LLM_PRIMARY=codex: Codex MCP / Codex CLI
+  2. Claude Code CLI (OAuth 订阅)
+  3. Anthropic API (KUN_OFOX_API_KEY / ANTHROPIC_API_KEY)
+  4. MiniMax 替代 (MINIMAX_API_KEY)
+  5. Stub (测试)
 
 coding:
-  1. Codex CLI (OAuth ChatGPT 订阅) ← 当前默认
-  2. OpenAI API
-  3. Claude Code CLI fallback
-  4. MiniMax 替代
-  5. Stub
+  1. Codex MCP-server (OAuth ChatGPT 订阅)
+  2. Codex exec CLI
+  3. OpenAI API
+  4. Claude Code CLI fallback
+  5. MiniMax 替代
+  6. Stub
 
 fallback (主链失败时):
   1. MiniMax (直连 API)
   2. Stub
 ```
 
-设 `KUN_DISABLE_CLI_OAUTH=1` 可强制跳过 CLI 探测. 所有档位都缺时一切走 Stub (确定性, 适合无网测试).
+Claude 不可用时推荐:
+
+```bash
+KUN_LLM_PRIMARY=codex
+KUN_DISABLE_CLAUDE_CLI=1
+KUN_CODEX_MCP_MODEL=gpt-5.3-codex-spark
+```
+
+设 `KUN_DISABLE_CLI_OAUTH=1` 可强制跳过全部 CLI 探测；设 `KUN_DISABLE_CLAUDE_CLI=1` 只跳过 Claude, 保留 Codex。所有档位都缺时一切走 Stub (确定性, 适合无网测试).
 
 ### 4. 起服务
 
