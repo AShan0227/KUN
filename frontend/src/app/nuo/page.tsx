@@ -299,6 +299,11 @@ export default function NuoDashboard() {
 
   const dayRatio = budget.day_equivalent_usd / Math.max(budget.budget_daily_usd, 1e-9);
   const monthRatio = budget.month_equivalent_usd / Math.max(budget.budget_monthly_usd, 1e-9);
+  const incompleteCapabilityCount = delivery.filter((item) => item.status !== "ready").length;
+  const pendingCount = health.pending_actions ?? actions.length;
+  const healthLabel = health.events_outbox_lag > 0 ? "需关注" : "正常";
+  const riskLabel =
+    incompleteCapabilityCount > 0 || health.events_outbox_lag > 0 ? "有边界" : "低";
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -310,17 +315,25 @@ export default function NuoDashboard() {
       </div>
 
       <section className="grid grid-cols-4 gap-4">
-        <Card title="任务总量" value={String(health.total_tasks)} />
         <Card
-          title="运行中"
-          value={String(health.tasks_by_status?.running ?? 0)}
-          hint={`排队 ${health.tasks_by_status?.queued ?? 0}`}
+          title="健康"
+          value={healthLabel}
+          hint={`任务 ${health.total_tasks} · 运行 ${health.tasks_by_status?.running ?? 0}`}
         />
-        <Card title="事件积压" value={String(health.events_outbox_lag)} />
         <Card
-          title="待审批"
-          value={String(health.pending_actions ?? actions.length)}
-          hint={actions.length > 0 ? "见下方" : "暂无"}
+          title="成本"
+          value={`$${budget.day_equivalent_usd.toFixed(4)}`}
+          hint={`今日上限 $${budget.budget_daily_usd.toFixed(2)}`}
+        />
+        <Card
+          title="权限"
+          value={String(pendingCount)}
+          hint={pendingCount > 0 ? "等你确认" : "暂无待确认"}
+        />
+        <Card
+          title="风险"
+          value={riskLabel}
+          hint={`事件积压 ${health.events_outbox_lag} · 边界 ${incompleteCapabilityCount}`}
         />
       </section>
 

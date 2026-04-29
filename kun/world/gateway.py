@@ -11,12 +11,19 @@ from __future__ import annotations
 
 import json
 import os
+import smtplib
+import ssl
+import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from difflib import unified_diff
+from email.message import EmailMessage
+from inspect import isawaitable
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 from urllib.parse import urlparse
 
+import httpx
 from pydantic import BaseModel, Field
 
 from kun.interface.hermes import DefaultHermesAdapter, HermesAdapter
@@ -407,6 +414,401 @@ class BrowserPlanHandler(WorldActionHandler):
         return plan
 
 
+class EmailSendHandler(WorldActionHandler):
+    """Send email through an explicitly configured SMTP account."""
+
+    action_type = "email.send"
+    handler_id = "email.send.smtp.v1"
+    mode = "execute"
+    external_dispatched = True
+    artifact_kind = "email_send_audit"
+    safety_note = "真实发送邮件。默认不启用；必须配置 KUN_WORLD_EMAIL_SEND_ENABLED=true 和 SMTP。"
+    user_label = "真实发送邮件"
+    approval_effect = "批准后会通过已配置 SMTP 账号真实发出邮件。"
+    cannot_do: ClassVar[list[str]] = ["不能自动撤回已成功送达的邮件"]
+    permissions_required: ClassVar[list[str]] = [
+        "human_approval",
+        "smtp_credentials",
+        "email_recipient_review",
+    ]
+    next_step = "批准前检查收件人、主题和正文；发送后只能补发更正邮件。"
+
+    def __init__(
+        self,
+        *,
+        output_root: str | Path,
+        smtp_host: str,
+        smtp_port: int,
+        smtp_username: str | None,
+        smtp_password: str | None,
+        smtp_from: str,
+        use_tls: bool = True,
+        sender: Callable[[EmailMessage], Awaitable[dict[str, Any]] | dict[str, Any]] | None = None,
+    ) -> None:
+        self.audit_root = Path(output_root).expanduser().resolve() / "email_sent"
+        self.audit_root.mkdir(parents=True, exist_ok=True)
+        self.smtp_host = smtp_host
+        self.smtp_port = smtp_port
+        self.smtp_username = smtp_username
+        self.smtp_password = smtp_password
+        self.smtp_from = smtp_from
+        self.use_tls = use_tls
+        self._sender = sender
+
+    @classmethod
+    def from_env(cls, output_root: str | Path) -> EmailSendHandler:
+        host = os.getenv("KUN_WORLD_SMTP_HOST", "").strip()
+        from_addr = os.getenv("KUN_WORLD_SMTP_FROM", "").strip()
+        if not host or not from_addr:
+            raise ValueError("email.send requires KUN_WORLD_SMTP_HOST and KUN_WORLD_SMTP_FROM")
+        return cls(
+            output_root=output_root,
+            smtp_host=host,
+            smtp_port=int(os.getenv("KUN_WORLD_SMTP_PORT", "587")),
+            smtp_username=_empty_to_none(os.getenv("KUN_WORLD_SMTP_USERNAME")),
+            smtp_password=_empty_to_none(os.getenv("KUN_WORLD_SMTP_PASSWORD")),
+            smtp_from=from_addr,
+            use_tls=_env_bool("KUN_WORLD_SMTP_TLS", default=True),
+        )
+
+    async def preview(self, action: WorldAction) -> WorldHandlerResult:
+        message, audit = self._message(action)
+        rendered = _render_email_preview(message)
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="preview",
+            external_dispatched=False,
+            rendered_payload=rendered,
+            audit={
+                **audit,
+                "sent": False,
+                "smtp_host": self.smtp_host,
+                "compensation": "cannot_recall_automatically; send follow-up correction if needed",
+            },
+            message="Preview only. Approval will send this email through the configured SMTP account.",
+        )
+
+    async def execute(self, action: WorldAction) -> WorldHandlerResult:
+        message, audit = self._message(action)
+        send_result = await self._send(message)
+        rendered = _render_email_preview(message)
+        path = self.audit_root / f"{_safe_artifact_name(action.action_id)}.json"
+        audit_payload = {
+            **audit,
+            **send_result,
+            "sent": True,
+            "smtp_host": self.smtp_host,
+            "compensation": "cannot_recall_automatically; send follow-up correction if needed",
+        }
+        path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="executed",
+            external_dispatched=True,
+            rendered_payload=rendered,
+            artifact_ref=str(path),
+            audit=audit_payload,
+            message="Email sent through the configured SMTP account. Audit artifact written.",
+        )
+
+    async def _send(self, message: EmailMessage) -> dict[str, Any]:
+        if self._sender is not None:
+            result = self._sender(message)
+            if isawaitable(result):
+                awaited = await result
+                return dict(awaited)
+            return result
+        return await _send_email_smtp(
+            message,
+            host=self.smtp_host,
+            port=self.smtp_port,
+            username=self.smtp_username,
+            password=self.smtp_password,
+            use_tls=self.use_tls,
+        )
+
+    def _message(self, action: WorldAction) -> tuple[EmailMessage, dict[str, Any]]:
+        to_values = _string_list(action.payload.get("to") or action.target_ref)
+        if not to_values:
+            raise ValueError("email.send requires payload.to or target_ref")
+        subject = str(action.payload.get("subject") or "").strip()
+        body = str(action.payload.get("body") or "").strip()
+        if not subject or not body:
+            raise ValueError("email.send requires subject and body")
+        cc_values = _string_list(action.payload.get("cc"))
+        bcc_values = _string_list(action.payload.get("bcc"))
+        message = EmailMessage()
+        message["From"] = self.smtp_from
+        message["To"] = ", ".join(to_values)
+        if cc_values:
+            message["Cc"] = ", ".join(cc_values)
+        if bcc_values:
+            message["Bcc"] = ", ".join(bcc_values)
+        message["Subject"] = subject
+        message["X-KUN-Action-Id"] = action.action_id
+        message.set_content(body)
+        return message, {
+            "to": to_values,
+            "cc": cc_values,
+            "bcc_count": len(bcc_values),
+            "subject": subject,
+            "body_bytes": len(body.encode("utf-8")),
+            "message_id": str(uuid.uuid4()),
+        }
+
+
+class EnterpriseApiPostHandler(WorldActionHandler):
+    """POST JSON to an allowlisted enterprise API host."""
+
+    action_type = "enterprise_api.post"
+    handler_id = "enterprise_api.post.v1"
+    mode = "execute"
+    external_dispatched = True
+    artifact_kind = "api_call_audit"
+    safety_note = (
+        "真实调用企业 API。默认不启用；只允许 HTTPS + KUN_WORLD_API_ALLOWED_HOSTS 白名单。"
+    )
+    user_label = "调用企业 API"
+    approval_effect = "批准后会向白名单企业 API 发起真实 POST 请求。"
+    cannot_do: ClassVar[list[str]] = ["不能自动撤销已被对方系统处理的请求"]
+    permissions_required: ClassVar[list[str]] = [
+        "human_approval",
+        "api_host_allowlist",
+        "api_credentials",
+    ]
+    next_step = "批准前检查 URL、JSON 和幂等键；失败时按对方系统规则补偿。"
+
+    def __init__(
+        self,
+        *,
+        output_root: str | Path,
+        allowed_hosts: set[str],
+        timeout_sec: float = 10.0,
+        auth_header: str | None = None,
+        auth_value: str | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        if not allowed_hosts:
+            raise ValueError("enterprise_api.post requires at least one allowed host")
+        self.audit_root = Path(output_root).expanduser().resolve() / "api_calls"
+        self.audit_root.mkdir(parents=True, exist_ok=True)
+        self.allowed_hosts = allowed_hosts
+        self.timeout_sec = timeout_sec
+        self.auth_header = auth_header
+        self.auth_value = auth_value
+        self._client = client
+
+    @classmethod
+    def from_env(cls, output_root: str | Path) -> EnterpriseApiPostHandler:
+        allowed_hosts = _csv_set(os.getenv("KUN_WORLD_API_ALLOWED_HOSTS", ""))
+        return cls(
+            output_root=output_root,
+            allowed_hosts=allowed_hosts,
+            timeout_sec=float(os.getenv("KUN_WORLD_API_TIMEOUT_SEC", "10")),
+            auth_header=_empty_to_none(os.getenv("KUN_WORLD_API_AUTH_HEADER")),
+            auth_value=_empty_to_none(os.getenv("KUN_WORLD_API_AUTH_VALUE")),
+        )
+
+    async def preview(self, action: WorldAction) -> WorldHandlerResult:
+        request = self._request(action)
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="preview",
+            external_dispatched=False,
+            rendered_payload=json.dumps(_redact_request(request), ensure_ascii=False, indent=2),
+            audit={
+                "url": request["url"],
+                "host": request["host"],
+                "would_post": True,
+                "allowed_hosts": sorted(self.allowed_hosts),
+                "compensation": "depends_on_remote_api; use idempotency key or follow-up reversal endpoint",
+            },
+            message="Preview only. Approval will POST JSON to the allowlisted enterprise API.",
+        )
+
+    async def execute(self, action: WorldAction) -> WorldHandlerResult:
+        request = self._request(action)
+        response_audit = await self._post(request)
+        path = self.audit_root / f"{_safe_artifact_name(action.action_id)}.json"
+        audit_payload = {
+            **response_audit,
+            "url": request["url"],
+            "host": request["host"],
+            "request_json_bytes": len(json.dumps(request["json"], ensure_ascii=False).encode()),
+            "compensation": "depends_on_remote_api; use idempotency key or follow-up reversal endpoint",
+        }
+        path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="executed",
+            external_dispatched=True,
+            rendered_payload=json.dumps(_redact_request(request), ensure_ascii=False, indent=2),
+            artifact_ref=str(path),
+            audit=audit_payload,
+            message="Enterprise API POST completed. Audit artifact written.",
+        )
+
+    async def _post(self, request: dict[str, Any]) -> dict[str, Any]:
+        client = self._client
+        if client is not None:
+            response = await client.post(
+                request["url"],
+                json=request["json"],
+                headers=request["headers"],
+                timeout=self.timeout_sec,
+            )
+        else:
+            async with httpx.AsyncClient(timeout=self.timeout_sec) as transient:
+                response = await transient.post(
+                    request["url"],
+                    json=request["json"],
+                    headers=request["headers"],
+                )
+        return {
+            "status_code": response.status_code,
+            "ok": 200 <= response.status_code < 300,
+            "response_bytes": len(response.content),
+            "response_preview": response.text[:1000],
+        }
+
+    def _request(self, action: WorldAction) -> dict[str, Any]:
+        url = str(action.payload.get("url") or action.target_ref or "").strip()
+        parsed = urlparse(url)
+        _assert_allowed_https_host(
+            parsed,
+            allowed_hosts=self.allowed_hosts,
+            action_type=self.action_type,
+        )
+        headers = _safe_api_headers(action.payload.get("headers"))
+        if self.auth_header and self.auth_value:
+            headers[self.auth_header] = self.auth_value
+        if "Idempotency-Key" not in headers:
+            headers["Idempotency-Key"] = action.action_id
+        return {
+            "method": "POST",
+            "url": url,
+            "host": parsed.hostname or "",
+            "headers": headers,
+            "json": action.payload.get("json", action.payload.get("body", {})),
+        }
+
+
+BrowserRunner = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
+class BrowserExecuteHandler(WorldActionHandler):
+    """Run a small allowlisted Playwright browser script."""
+
+    action_type = "browser.execute"
+    handler_id = "browser.execute.playwright.v1"
+    mode = "execute"
+    external_dispatched = True
+    artifact_kind = "browser_execution_audit"
+    safety_note = "真实控制浏览器。默认不启用；只允许白名单 HTTPS host 和有限 step 类型。"
+    user_label = "真实浏览器执行"
+    approval_effect = "批准后会打开浏览器并执行白名单步骤。"
+    cannot_do: ClassVar[list[str]] = ["不支持支付/提交敏感表单的自动确认", "不能绕过网站权限"]
+    permissions_required: ClassVar[list[str]] = [
+        "human_approval",
+        "browser_host_allowlist",
+        "browser_action_review",
+    ]
+    next_step = "批准前检查 URL 和步骤；执行后查看截图/审计记录。"
+    allowed_steps: ClassVar[set[str]] = {"goto", "click", "fill", "screenshot"}
+
+    def __init__(
+        self,
+        *,
+        output_root: str | Path,
+        allowed_hosts: set[str],
+        runner: BrowserRunner | None = None,
+    ) -> None:
+        if not allowed_hosts:
+            raise ValueError("browser.execute requires at least one allowed host")
+        self.audit_root = Path(output_root).expanduser().resolve() / "browser_runs"
+        self.audit_root.mkdir(parents=True, exist_ok=True)
+        self.allowed_hosts = allowed_hosts
+        self._runner = runner
+
+    @classmethod
+    def from_env(cls, output_root: str | Path) -> BrowserExecuteHandler:
+        return cls(
+            output_root=output_root,
+            allowed_hosts=_csv_set(os.getenv("KUN_WORLD_BROWSER_ALLOWED_HOSTS", "")),
+        )
+
+    async def preview(self, action: WorldAction) -> WorldHandlerResult:
+        plan = self._plan(action)
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="preview",
+            external_dispatched=False,
+            rendered_payload=json.dumps(plan, ensure_ascii=False, indent=2),
+            audit={
+                "url": plan["url"],
+                "host": plan["host"],
+                "step_count": len(plan["steps"]),
+                "would_control_browser": True,
+                "allowed_hosts": sorted(self.allowed_hosts),
+                "compensation": "browser side effects depend on website; manual reversal may be required",
+            },
+            message="Preview only. Approval will run browser automation against an allowlisted host.",
+        )
+
+    async def execute(self, action: WorldAction) -> WorldHandlerResult:
+        plan = self._plan(action)
+        runner = self._runner or _run_browser_plan_with_playwright
+        result = await runner({**plan, "artifact_root": str(self.audit_root)})
+        path = self.audit_root / f"{_safe_artifact_name(action.action_id)}.json"
+        audit_payload = {
+            **result,
+            "url": plan["url"],
+            "host": plan["host"],
+            "step_count": len(plan["steps"]),
+            "compensation": "browser side effects depend on website; manual reversal may be required",
+        }
+        path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="executed",
+            external_dispatched=True,
+            rendered_payload=json.dumps(plan, ensure_ascii=False, indent=2),
+            artifact_ref=str(path),
+            audit=audit_payload,
+            message="Browser automation completed. Audit artifact written.",
+        )
+
+    def _plan(self, action: WorldAction) -> dict[str, Any]:
+        url = str(action.payload.get("url") or action.target_ref or "").strip()
+        parsed = urlparse(url)
+        _assert_allowed_https_host(
+            parsed,
+            allowed_hosts=self.allowed_hosts,
+            action_type=self.action_type,
+        )
+        raw_steps = action.payload.get("steps", [])
+        if not isinstance(raw_steps, list) or not raw_steps:
+            raise ValueError("browser.execute requires a non-empty payload.steps list")
+        steps: list[dict[str, Any]] = []
+        for idx, raw in enumerate(raw_steps):
+            if not isinstance(raw, dict):
+                raise ValueError(f"browser.execute step {idx} must be an object")
+            kind = str(raw.get("kind") or raw.get("type") or "").strip()
+            if kind not in self.allowed_steps:
+                raise ValueError(f"browser.execute unsupported step kind: {kind}")
+            steps.append(
+                {k: v for k, v in raw.items() if k in {"kind", "type", "selector", "text", "path"}}
+            )
+        return {
+            "url": url,
+            "host": parsed.hostname or "",
+            "objective": action.payload.get("objective", ""),
+            "steps": steps,
+            "task_ref": action.task_ref,
+            "action_id": action.action_id,
+        }
+
+
 class WorldGateway:
     """Prepare and audit side-effect actions."""
 
@@ -575,12 +977,19 @@ class WorldGateway:
         return "human"
 
     def _default_handlers(self) -> list[WorldActionHandler]:
-        return [
+        handlers: list[WorldActionHandler] = [
             LocalFileWriteHandler(self.artifact_root / "files"),
             EmailDraftHandler(self.artifact_root),
             WebhookPostDryRunHandler(),
             BrowserPlanHandler(self.artifact_root),
         ]
+        if _env_bool("KUN_WORLD_EMAIL_SEND_ENABLED"):
+            handlers.append(EmailSendHandler.from_env(self.artifact_root))
+        if _env_bool("KUN_WORLD_API_POST_ENABLED"):
+            handlers.append(EnterpriseApiPostHandler.from_env(self.artifact_root))
+        if _env_bool("KUN_WORLD_BROWSER_EXECUTE_ENABLED"):
+            handlers.append(BrowserExecuteHandler.from_env(self.artifact_root))
+        return handlers
 
     async def _translate_packet(
         self,
@@ -616,6 +1025,151 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
 
 def _safe_artifact_name(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)[:80]
+
+
+def _empty_to_none(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _env_bool(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _csv_set(value: str) -> set[str]:
+    return {item.strip().lower() for item in value.split(",") if item.strip()}
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _render_email_preview(message: EmailMessage) -> str:
+    rendered = {
+        "from": message.get("From", ""),
+        "to": message.get("To", ""),
+        "cc": message.get("Cc", ""),
+        "bcc": "[redacted]" if message.get("Bcc") else "",
+        "subject": message.get("Subject", ""),
+        "body": message.get_content(),
+    }
+    return json.dumps(rendered, ensure_ascii=False, indent=2)
+
+
+async def _send_email_smtp(
+    message: EmailMessage,
+    *,
+    host: str,
+    port: int,
+    username: str | None,
+    password: str | None,
+    use_tls: bool,
+) -> dict[str, Any]:
+    def send() -> dict[str, Any]:
+        if use_tls:
+            context = ssl.create_default_context()
+            with smtplib.SMTP(host, port, timeout=20) as smtp:
+                smtp.starttls(context=context)
+                if username and password:
+                    smtp.login(username, password)
+                smtp.send_message(message)
+        else:
+            with smtplib.SMTP(host, port, timeout=20) as smtp:
+                if username and password:
+                    smtp.login(username, password)
+                smtp.send_message(message)
+        return {
+            "smtp_host": host,
+            "smtp_port": port,
+            "smtp_tls": use_tls,
+            "smtp_username_set": bool(username),
+        }
+
+    import asyncio
+
+    return await asyncio.to_thread(send)
+
+
+def _safe_api_headers(raw_headers: Any) -> dict[str, str]:
+    allowed = {"accept", "content-type", "idempotency-key", "x-request-id"}
+    headers: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
+    if isinstance(raw_headers, dict):
+        for key, value in raw_headers.items():
+            key_text = str(key).strip()
+            if key_text.lower() in allowed and str(value).strip():
+                headers[key_text] = str(value).strip()
+    return headers
+
+
+def _redact_request(request: dict[str, Any]) -> dict[str, Any]:
+    headers = dict(request.get("headers", {}))
+    for key in list(headers):
+        if key.lower() in {"authorization", "proxy-authorization", "x-api-key"}:
+            headers[key] = "[redacted]"
+    return {**request, "headers": headers}
+
+
+def _assert_allowed_https_host(
+    parsed: Any,
+    *,
+    allowed_hosts: set[str],
+    action_type: str,
+) -> None:
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not host:
+        raise ValueError(f"{action_type} requires an https URL")
+    if host not in allowed_hosts:
+        raise ValueError(f"{action_type} host is not allowlisted: {host}")
+
+
+async def _run_browser_plan_with_playwright(plan: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from playwright.async_api import async_playwright  # type: ignore[import-not-found]
+    except ImportError as exc:  # pragma: no cover - exercised only when real handler is enabled
+        raise RuntimeError(
+            "browser.execute requires playwright. Install it and run playwright install first."
+        ) from exc
+
+    screenshot_paths: list[str] = []
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page()
+        try:
+            await page.goto(str(plan["url"]), wait_until="networkidle")
+            for idx, step in enumerate(plan["steps"]):
+                kind = str(step.get("kind") or step.get("type"))
+                selector = str(step.get("selector") or "")
+                if kind == "goto":
+                    # URL is fixed by the allowlisted plan; step-level goto is intentionally ignored.
+                    continue
+                if kind == "click":
+                    await page.click(selector)
+                elif kind == "fill":
+                    await page.fill(selector, str(step.get("text") or ""))
+                elif kind == "screenshot":
+                    raw_path = str(step.get("path") or f"screenshot-{idx}.png")
+                    target = (
+                        Path(str(plan["artifact_root"])) / _safe_artifact_name(raw_path)
+                    ).resolve()
+                    await page.screenshot(path=str(target), full_page=True)
+                    screenshot_paths.append(str(target))
+        finally:
+            await browser.close()
+    return {
+        "executed": True,
+        "screenshot_paths": screenshot_paths,
+    }
 
 
 def _capability_status(
@@ -694,8 +1248,11 @@ def set_world_gateway(gateway: WorldGateway) -> None:
 
 
 __all__ = [
+    "BrowserExecuteHandler",
     "BrowserPlanHandler",
     "EmailDraftHandler",
+    "EmailSendHandler",
+    "EnterpriseApiPostHandler",
     "LocalFileWriteHandler",
     "WebhookPostDryRunHandler",
     "WorldAction",

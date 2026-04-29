@@ -79,8 +79,13 @@ type Protocol = {
 
 type LedgerEntry = {
   task_id: string;
+  tenant_id?: string;
+  user_id?: string;
+  title?: string;
+  task_type?: string;
   status: string;
   current_goal: string;
+  current_action?: string;
   current_step: number;
   total_steps: number;
   current_risk: string;
@@ -89,8 +94,19 @@ type LedgerEntry = {
   decision_reason?: string | null;
   current_model?: string | null;
   current_skill?: string | null;
+  budget_estimated_usd?: number;
   cost_so_far_usd: number;
+  tokens_so_far?: number;
   pending_confirmations: string[];
+  recent_events?: LedgerTrail[];
+  updated_at?: string;
+};
+
+type LedgerTrail = {
+  at?: string;
+  kind?: string;
+  summary?: string;
+  data?: Record<string, unknown>;
 };
 
 type GlobalState = {
@@ -162,6 +178,26 @@ type PendingActionPage = {
   actions: PendingAction[];
 };
 
+type TaskDetail = {
+  rendered_for?: string;
+  task_id: string;
+  state_ledger?: LedgerEntry | null;
+  workspace?: {
+    artifacts?: Array<Record<string, unknown>>;
+    handoff_packets?: Array<Record<string, unknown>>;
+    last_update?: string;
+  } | null;
+  assets?: Record<string, unknown> | null;
+  events?: Array<{
+    event_id?: string;
+    event_type?: string;
+    occurred_at?: string;
+    summary?: string;
+    severity?: string;
+  }>;
+  rendered_at?: string;
+};
+
 export default function Home() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [side, setSide] = useState<SideMsg[]>([]);
@@ -180,6 +216,10 @@ export default function Home() {
   const [missionNotice, setMissionNotice] = useState("");
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [taskDetail, setTaskDetail] = useState<TaskDetail | null>(null);
+  const [taskDetailLoading, setTaskDetailLoading] = useState(false);
+  const [taskDetailError, setTaskDetailError] = useState("");
   const wsRef = useRef<WebSocket | null>(null);
 
   const refreshDashboard = useCallback(async (cancelledRef?: { current: boolean }) => {
@@ -384,6 +424,29 @@ export default function Home() {
     }
   }, [refreshDashboard]);
 
+  const loadTaskDetail = useCallback(async (taskId: string) => {
+    const id = taskId.trim();
+    if (!id) return;
+    setSelectedTaskId(id);
+    setTaskDetailLoading(true);
+    setTaskDetailError("");
+    try {
+      const res = await fetch(`${API_ORIGIN}/api/blackboard/full/${encodeURIComponent(id)}`, {
+        headers: {
+          "X-Tenant-Id": "u-sylvan",
+          "X-User-Id": "sylvan",
+        },
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setTaskDetail((await res.json()) as TaskDetail);
+    } catch (err) {
+      setTaskDetail(null);
+      setTaskDetailError(err instanceof Error ? err.message : "任务详情加载失败");
+    } finally {
+      setTaskDetailLoading(false);
+    }
+  }, []);
+
   const loadGraph = useCallback(async () => {
     const kind = graphKind.trim();
     const id = graphId.trim();
@@ -575,9 +638,12 @@ export default function Home() {
               </div>
             )}
             {activeLedger.slice(0, 3).map((item) => (
-              <div
+              <button
                 key={item.task_id}
-                className="rounded border border-gray-200 bg-white p-2 text-xs"
+                className={`w-full rounded border bg-white p-2 text-left text-xs ${
+                  selectedTaskId === item.task_id ? "border-kun-accent" : "border-gray-200"
+                }`}
+                onClick={() => void loadTaskDetail(item.task_id)}
               >
                 <div className="flex justify-between gap-2">
                   <span className="truncate font-medium">{item.current_goal || item.task_id}</span>
@@ -596,8 +662,19 @@ export default function Home() {
                 {item.decision_reason && (
                   <div className="mt-1 truncate text-gray-400">{item.decision_reason}</div>
                 )}
-              </div>
+              </button>
             ))}
+            {(selectedTaskId || taskDetailLoading || taskDetailError) && (
+              <TaskDetailPanel
+                detail={taskDetail}
+                loading={taskDetailLoading}
+                error={taskDetailError}
+                selectedTaskId={selectedTaskId}
+                pendingActions={pendingActions.filter(
+                  (action) => action.task_ref === selectedTaskId,
+                )}
+              />
+            )}
             {globalState && activeLedger.length === 0 && (
               <div className="rounded border border-dashed border-gray-200 bg-white p-2 text-xs text-gray-500">
                 现在没有活跃任务。你可以直接在下面给鲲一个目标。
@@ -821,6 +898,125 @@ const ICONS: Record<string, string> = {
   idle_batch_report: "🌙",
   scorecard: "📊",
 };
+
+function TaskDetailPanel({
+  detail,
+  loading,
+  error,
+  selectedTaskId,
+  pendingActions,
+}: {
+  detail: TaskDetail | null;
+  loading: boolean;
+  error: string;
+  selectedTaskId: string;
+  pendingActions: PendingAction[];
+}) {
+  const ledger = detail?.state_ledger ?? null;
+  const artifacts = detail?.workspace?.artifacts ?? [];
+  const trails = ledger?.recent_events ?? [];
+
+  return (
+    <div className="rounded border border-kun-accent/30 bg-blue-50/30 p-3 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="font-medium">任务详情</div>
+          <div className="mt-0.5 text-gray-500">{selectedTaskId}</div>
+        </div>
+        {ledger && <span className={missionStatusClass(ledger.status)}>{ledger.status}</span>}
+      </div>
+
+      {loading && <div className="mt-3 text-gray-500">加载任务状态...</div>}
+      {error && <div className="mt-3 text-red-700">{error.slice(0, 220)}</div>}
+
+      {ledger && (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <DetailCell label="目标" value={ledger.current_goal || ledger.title || "未记录"} />
+          <DetailCell label="当前动作" value={ledger.current_action || "暂无"} />
+          <DetailCell
+            label="进度"
+            value={`第 ${ledger.current_step}/${ledger.total_steps || 1} 步`}
+          />
+          <DetailCell
+            label="预算"
+            value={`已用 $${ledger.cost_so_far_usd.toFixed(4)} / 预估 $${numberValue(
+              ledger.budget_estimated_usd,
+            ).toFixed(4)}`}
+          />
+          <DetailCell label="风险" value={ledger.current_risk || "unknown"} />
+          <DetailCell
+            label="模型/Skill"
+            value={`${ledger.current_model || "未记录"}${
+              ledger.current_skill ? ` · ${ledger.current_skill}` : ""
+            }`}
+          />
+          <DetailCell label="执行模式" value={ledger.execution_mode || "未记录"} />
+          <DetailCell
+            label="待确认"
+            value={
+              ledger.pending_confirmations.length > 0
+                ? ledger.pending_confirmations.join("，")
+                : pendingActions.length > 0
+                  ? `${pendingActions.length} 个待审批动作`
+                  : "暂无"
+            }
+          />
+        </div>
+      )}
+
+      {ledger?.decision_reason && (
+        <div className="mt-3 rounded bg-white p-2 text-gray-600">
+          <span className="font-medium text-gray-700">为什么这么做：</span>
+          {ledger.decision_reason}
+        </div>
+      )}
+
+      {pendingActions.length > 0 && (
+        <div className="mt-3 rounded bg-amber-50 p-2 text-amber-900">
+          <div className="font-medium">等你确认</div>
+          {pendingActions.map((action) => (
+            <div key={action.action_id} className="mt-1">
+              {action.action_type} → {action.target_ref || action.task_ref}（{action.risk_level}）
+            </div>
+          ))}
+        </div>
+      )}
+
+      {trails.length > 0 && (
+        <div className="mt-3">
+          <div className="font-medium">最近动作</div>
+          <div className="mt-1 space-y-1">
+            {trails.slice(0, 5).map((event, idx) => (
+              <div key={`${event.kind}-${idx}`} className="rounded bg-white px-2 py-1 text-gray-600">
+                <span className="text-gray-400">{event.kind || "event"}</span>
+                <span className="mx-1">·</span>
+                <span>{event.summary || "无摘要"}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {artifacts.length > 0 && (
+        <details className="mt-3">
+          <summary className="cursor-pointer text-gray-600">查看产物 / 工作区</summary>
+          <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-[11px] text-gray-600">
+            {JSON.stringify(artifacts.slice(0, 6), null, 2)}
+          </pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function DetailCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded bg-white px-2 py-1">
+      <div className="text-gray-400">{label}</div>
+      <div className="mt-0.5 truncate text-gray-700">{value}</div>
+    </div>
+  );
+}
 
 function gatewayPreviewLabel(preview: GatewayPreview) {
   if (preview.user_summary) return preview.user_summary;

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from email.message import EmailMessage
 from typing import Any
 
+import httpx
 import pytest
 from kun.context.packer import ContextPacker
 from kun.context.storage import InMemoryAssetStore
@@ -19,7 +21,13 @@ from kun.interface.llm.stub_provider import StubProvider
 from kun.memory.writeback import MemoryWriteback, MemoryWritebackResult
 from kun.watchtower.decision_plane import WatchtowerDecisionPlane
 from kun.watchtower.scoring import UnifiedScoringSystem
-from kun.world.gateway import WorldAction, WorldGateway
+from kun.world.gateway import (
+    BrowserExecuteHandler,
+    EmailSendHandler,
+    EnterpriseApiPostHandler,
+    WorldAction,
+    WorldGateway,
+)
 
 
 class _FakeSession:
@@ -313,6 +321,152 @@ def test_world_gateway_exposes_handler_registry(tmp_path) -> None:
     assert "不能真实发送邮件" in descriptors["email.draft"].cannot_do
     assert descriptors["webhook.post_dry_run"].mode == "dry_run"
     assert descriptors["browser.plan"].mode == "plan"
+
+
+@pytest.mark.unit
+def test_world_gateway_real_handlers_are_opt_in_by_default(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("KUN_WORLD_EMAIL_SEND_ENABLED", raising=False)
+    monkeypatch.delenv("KUN_WORLD_API_POST_ENABLED", raising=False)
+    monkeypatch.delenv("KUN_WORLD_BROWSER_EXECUTE_ENABLED", raising=False)
+
+    gateway = WorldGateway(artifact_root=tmp_path)
+
+    assert "email.send" not in gateway.supported_action_types()
+    assert "enterprise_api.post" not in gateway.supported_action_types()
+    assert "browser.execute" not in gateway.supported_action_types()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_email_send_handler_can_use_injected_sender(tmp_path) -> None:
+    sent: list[EmailMessage] = []
+
+    async def sender(message: EmailMessage) -> dict[str, Any]:
+        sent.append(message)
+        return {"provider_message_id": "smtp-1"}
+
+    gateway = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[
+            EmailSendHandler(
+                output_root=tmp_path,
+                smtp_host="smtp.example.com",
+                smtp_port=587,
+                smtp_username=None,
+                smtp_password=None,
+                smtp_from="kun@example.com",
+                sender=sender,
+            )
+        ],
+    )
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-email-send",
+            task_ref="task-1",
+            action_type="email.send",
+            target_ref="user@example.com",
+            risk_level="high",
+            payload={"subject": "Hi", "body": "Real send", "to": "user@example.com"},
+        )
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["To"] == "user@example.com"
+    assert result.external_dispatched is True
+    assert result.requires_handler is False
+    assert result.audit["provider_message_id"] == "smtp-1"
+    assert result.audit["compensation"].startswith("cannot_recall")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_enterprise_api_requires_allowlisted_https_host(tmp_path) -> None:
+    handler = EnterpriseApiPostHandler(
+        output_root=tmp_path,
+        allowed_hosts={"api.example.com"},
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"ok": True}))
+        ),
+    )
+    gateway = WorldGateway(artifact_root=tmp_path, handlers=[handler])
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-api",
+            task_ref="task-1",
+            action_type="enterprise_api.post",
+            target_ref="https://api.example.com/orders",
+            risk_level="high",
+            payload={"json": {"order_id": "o-1"}},
+        )
+    )
+
+    assert result.external_dispatched is True
+    assert result.audit["status_code"] == 200
+    assert result.audit["host"] == "api.example.com"
+
+    with pytest.raises(ValueError, match="not allowlisted"):
+        await gateway.preview(
+            WorldAction(
+                action_id="act-api-bad",
+                task_ref="task-1",
+                action_type="enterprise_api.post",
+                target_ref="https://evil.example.com/orders",
+                risk_level="high",
+                payload={"json": {"order_id": "o-1"}},
+            )
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_browser_execute_uses_injected_runner_and_allowlist(tmp_path) -> None:
+    async def runner(plan: dict[str, Any]) -> dict[str, Any]:
+        return {"executed": True, "steps_seen": len(plan["steps"])}
+
+    gateway = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[
+            BrowserExecuteHandler(
+                output_root=tmp_path,
+                allowed_hosts={"example.com"},
+                runner=runner,
+            )
+        ],
+    )
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-browser-exec",
+            task_ref="task-1",
+            action_type="browser.execute",
+            target_ref="https://example.com",
+            risk_level="high",
+            payload={
+                "steps": [
+                    {"kind": "click", "selector": "#start"},
+                    {"kind": "screenshot", "path": "done.png"},
+                ]
+            },
+        )
+    )
+
+    assert result.external_dispatched is True
+    assert result.audit["executed"] is True
+    assert result.audit["steps_seen"] == 2
+
+    with pytest.raises(ValueError, match="unsupported step kind"):
+        await gateway.preview(
+            WorldAction(
+                action_id="act-browser-bad",
+                task_ref="task-1",
+                action_type="browser.execute",
+                target_ref="https://example.com",
+                risk_level="high",
+                payload={"steps": [{"kind": "pay", "selector": "#pay"}]},
+            )
+        )
 
 
 @pytest.mark.unit

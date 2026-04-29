@@ -12,6 +12,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from kun.world.gateway import WorldGateway, WorldHandlerDescriptor, get_world_gateway
+
 DeliveryStatus = Literal["ready", "partial", "audit_only", "not_ready"]
 
 
@@ -32,12 +34,16 @@ class DeliveryCapability(BaseModel):
         return self.status == "ready" and not self.missing
 
 
-def get_v3_delivery_status() -> list[DeliveryCapability]:
+def get_v3_delivery_status(
+    *,
+    world_gateway: WorldGateway | None = None,
+) -> list[DeliveryCapability]:
     """Current V3 capability status.
 
     Keep this list brutally honest.  If a feature only emits events or writes a
     row but no real consumer acts on it, it must be `partial` or `audit_only`.
     """
+    world_gateway_item = _world_gateway_delivery_status(world_gateway=world_gateway)
     return [
         DeliveryCapability(
             capability_id="llm_provider",
@@ -55,39 +61,7 @@ def get_v3_delivery_status() -> list[DeliveryCapability]:
                 "让守望按真实成功率动态调整路由",
             ],
         ),
-        DeliveryCapability(
-            capability_id="world_gateway",
-            label="外部世界动作",
-            status="partial",
-            summary="低风险 handler 已可控执行；高风险外部动作仍只做审批、渲染和审计。",
-            done=[
-                "高风险动作进入 pending approval",
-                "审批后经 WorldGateway 生成 audit packet",
-                "local_file.write 可写入受控输出目录",
-                "email.draft 可生成草稿但不会发送",
-                "webhook.post_dry_run 可渲染请求但不会联网",
-                "browser.plan 可生成浏览器操作计划但不会真实点击",
-                "NUO 可查看当前 WorldGateway handler 支持状态",
-                "待审批动作会带 gateway_preview；local_file.write 可在批准前看到 diff",
-                "审批接口会返回 gateway 执行结果和产物路径",
-                "NUO 可查看最近外部动作执行记录和产物摘要",
-                "handler 执行失败会明确返回失败并保持任务暂停",
-                "不支持的 action_type 会明确 requires_handler=true",
-                "WorldGateway 会返回 user_summary / next_step / permissions_required，避免用户误解是否真实外发",
-            ],
-            missing=[
-                "真实邮件发送",
-                "真实浏览器操作",
-                "企业 API handler",
-                "handler 级权限、重试、补偿、回滚策略",
-                "外部系统密钥和审计隔离",
-                "支付 / 发布等高风险动作",
-            ],
-            next_steps=[
-                "把执行结果写入更完整的 StateLedger",
-                "再接真实 browser / 企业 API / email.send 审批链",
-            ],
-        ),
+        world_gateway_item,
         DeliveryCapability(
             capability_id="long_horizon_tasks",
             label="长周期任务能力",
@@ -203,6 +177,87 @@ def get_v3_delivery_status() -> list[DeliveryCapability]:
             ],
         ),
     ]
+
+
+def _world_gateway_delivery_status(
+    *,
+    world_gateway: WorldGateway | None,
+) -> DeliveryCapability:
+    try:
+        gateway = world_gateway or get_world_gateway()
+        descriptors = gateway.handler_descriptors()
+    except Exception as exc:
+        return DeliveryCapability(
+            capability_id="world_gateway",
+            label="外部世界动作",
+            status="partial",
+            summary="WorldGateway 已存在，但当前无法读取 handler 注册表。",
+            done=[
+                "高风险动作进入 pending approval",
+                "审批链不会把未知动作伪装成已执行",
+            ],
+            missing=[
+                f"handler 注册表读取失败: {type(exc).__name__}",
+                "真实邮件发送",
+                "真实浏览器操作",
+                "企业 API handler",
+            ],
+            next_steps=["修复 WorldGateway 注册表读取，再按 handler 自动生成能力边界"],
+        )
+
+    by_type = {item.action_type: item for item in descriptors}
+    done = [
+        "高风险动作进入 pending approval",
+        "审批后经 WorldGateway 生成 audit packet",
+        "NUO 可查看当前 WorldGateway handler 支持状态",
+        "待审批动作会带 gateway_preview；local_file.write 可在批准前看到 diff",
+        "审批接口会返回 gateway 执行结果和产物路径",
+        "NUO 可查看最近外部动作执行记录和产物摘要",
+        "handler 执行失败会明确返回失败并保持任务暂停",
+        "不支持的 action_type 会明确 requires_handler=true",
+        "WorldGateway 会返回 user_summary / next_step / permissions_required，避免用户误解是否真实外发",
+    ]
+    done.extend(_handler_done_line(item) for item in descriptors)
+
+    missing = []
+    if "email.send" not in by_type:
+        missing.append("真实邮件发送（email.send 未注册；需显式开启 SMTP env）")
+    if "browser.execute" not in by_type:
+        missing.append("真实浏览器操作（browser.execute 未注册；需显式开启 Playwright env）")
+    if "enterprise_api.post" not in by_type:
+        missing.append("企业 API handler（enterprise_api.post 未注册；需 HTTPS host 白名单）")
+    missing.extend(
+        [
+            "外部系统密钥轮换和租户级密钥隔离",
+            "支付 / 发布等更高风险动作",
+        ]
+    )
+
+    real_handlers = {"email.send", "browser.execute", "enterprise_api.post"} & set(by_type)
+    summary = (
+        f"已从 WorldGateway 注册表自动识别 {len(descriptors)} 个 handler；"
+        f"真实外部 handler 已启用 {len(real_handlers)} 个。"
+    )
+
+    return DeliveryCapability(
+        capability_id="world_gateway",
+        label="外部世界动作",
+        status="partial",
+        summary=summary,
+        done=done,
+        missing=missing,
+        next_steps=[
+            "按租户配置真实 email / browser / enterprise API handler",
+            "给每个真实 handler 补租户级密钥、重试、补偿、回滚演练",
+            "把执行结果写入更完整的 StateLedger",
+        ],
+    )
+
+
+def _handler_done_line(handler: WorldHandlerDescriptor) -> str:
+    if handler.external_dispatched:
+        return f"{handler.action_type} 已注册真实执行 handler：{handler.user_label}"
+    return f"{handler.action_type} 已注册低风险 handler：{handler.user_label}"
 
 
 def delivery_status_summary() -> dict[str, int]:
