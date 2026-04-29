@@ -12,6 +12,7 @@ from kun.watchtower.decision_plane import (
 from kun.watchtower.engine import RuleEngine, load_rules
 from kun.watchtower.handlers import register_handler
 from kun.watchtower.rules import GuardRule, RuleAction, RuleTrigger
+from kun.watchtower.scoring import StrategyScorecard, UnifiedScoringSystem
 
 __all__ = [
     "GuardRule",
@@ -19,6 +20,8 @@ __all__ = [
     "RuleEngine",
     "RuleTrigger",
     "StrategyPack",
+    "StrategyScorecard",
+    "UnifiedScoringSystem",
     "WatchtowerDecision",
     "WatchtowerDecisionPlane",
     "load_rules",

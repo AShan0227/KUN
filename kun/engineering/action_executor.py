@@ -22,6 +22,7 @@ from kun.core.events import emit
 from kun.core.orm import PendingActionRow, RuntimeStateRow, TaskResultRow
 from kun.datamodel.events import Event
 from kun.datamodel.runtime import TaskStatus
+from kun.world.gateway import WorldAction, WorldGatewayResult, get_world_gateway
 
 
 class ActionExecutionResult(BaseModel):
@@ -52,7 +53,17 @@ async def execute_approved_action_once(
             return None
 
         task_ref = str(action.task_ref)
-        action.payload = _executor_payload(action.payload, now)
+        gateway_result = await get_world_gateway().execute_approved(
+            WorldAction(
+                action_id=action.action_id,
+                task_ref=task_ref,
+                action_type=action.action_type,
+                target_ref=action.target_ref,
+                risk_level=action.risk_level,
+                payload=action.payload,
+            )
+        )
+        action.payload = _executor_payload(action.payload, now, gateway_result=gateway_result)
         action.status = "executed"
         action.executed_at = now
         action.updated_at = now
@@ -67,7 +78,8 @@ async def execute_approved_action_once(
                     "action_id": action.action_id,
                     "action_type": action.action_type,
                     "target_ref": action.target_ref,
-                    "executor_mode": "approval_gate",
+                    "executor_mode": gateway_result.gateway_mode,
+                    "external_dispatched": gateway_result.external_dispatched,
                 },
                 task_ref=task_ref,
             ),
@@ -170,13 +182,23 @@ def _mark_task_result_queued_stmt(tenant_id: str, task_ref: str, now: datetime) 
     )
 
 
-def _executor_payload(payload: dict[str, Any], now: datetime) -> dict[str, Any]:
+def _executor_payload(
+    payload: dict[str, Any],
+    now: datetime,
+    *,
+    gateway_result: WorldGatewayResult | None = None,
+) -> dict[str, Any]:
     merged = dict(payload)
+    gateway = gateway_result.model_dump(mode="json") if gateway_result is not None else {}
     merged["executor"] = {
         "mode": "approval_gate",
         "status": "executed",
         "executed_at": now.isoformat(),
-        "note": "External side-effect adapters are not attached yet; this releases the approval gate.",
+        "gateway": gateway,
+        "note": (
+            "World Gateway recorded the approved side-effect request. "
+            "No external delivery handler is attached yet; this releases the approval gate only."
+        ),
     }
     return merged
 

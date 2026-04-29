@@ -174,6 +174,8 @@ class Orchestrator:
         decision_plane: Any = None,
         state_ledger: Any = None,
         hermes_adapter: HermesAdapter | None = None,
+        memory_writeback: Any = None,
+        scoring_system: Any = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -208,6 +210,13 @@ class Orchestrator:
         # V3-3: Hermes full-chain adapter. 它把 LLM prompt / skill 输入输出 /
         # 外部对象格式统一成一层翻译契约, 避免各模块各说各话。
         self.hermes_adapter = hermes_adapter or DefaultHermesAdapter()
+        # V3-4: three-layer memory writeback.  Optional in tests, but the
+        # production runtime installs it so later ContextPacker calls can reuse
+        # result/process/meta-decision memories.
+        self.memory_writeback = memory_writeback
+        # V3-6: unified scorecard.  Its output feeds capability writeback and
+        # memory, so metrics are not just a side dashboard.
+        self.scoring_system = scoring_system
         # 累计 step value history, 给 value_gate marginal_roi 用
         self._value_history: list[float] = []
 
@@ -576,6 +585,11 @@ class Orchestrator:
                         "task_id": task_ref.meta.task_id,
                         **watchtower_decision.event_payload(),
                     },
+                )
+                await self._record_meta_decision_memory(
+                    tenant_id=tenant.tenant_id,
+                    task_ref=task_ref,
+                    decision=watchtower_decision,
                 )
             except Exception:
                 log.exception("watchtower.decision_plane.failed (non-fatal)")
@@ -1186,6 +1200,13 @@ class Orchestrator:
                     model=response.model,
                     tier=str(response.tier),
                 )
+                await self._record_process_memory(
+                    tenant_id=tenant.tenant_id,
+                    task_ref=task_ref,
+                    step=step_record,
+                    answer=answer,
+                    response=response,
+                )
 
                 # V2.3 Wire 41: Predictive Coding post-step hook
                 # 算 actual + error, 喂 model_updater 让模型实时学
@@ -1751,7 +1772,33 @@ class Orchestrator:
 
         # 7.5 Capability card writeback (ADR-018 §16.4 KnowledgePrecipitation)
         outcome: Outcome = validation_outcome
-        rubric_5 = validation_score * 5.0 if validation_score is not None else None
+        scorecard = None
+        if self.scoring_system is not None:
+            try:
+                scorecard = self.scoring_system.score_task(
+                    task_ref=task_ref,
+                    runtime=runtime,
+                    status=status,
+                    validation_outcome=validation_outcome,
+                    validation_score=validation_score,
+                    surprise_score=surprise,
+                    decision=watchtower_decision,
+                )
+                async with session_scope(tenant_id=tenant.tenant_id) as s:
+                    await emit(
+                        s,
+                        Event.build(
+                            tenant_id=tenant.tenant_id,
+                            event_type="scorecard.created",
+                            payload=scorecard.model_dump(mode="json"),
+                            task_ref=task_ref.meta.task_id,
+                        ),
+                    )
+                yield OrchestratorEvent(kind="scorecard", data=scorecard.model_dump(mode="json"))
+            except Exception as e:
+                log.warning("scorecard.create_failed", error=str(e))
+        rubric_source = scorecard.overall if scorecard is not None else validation_score
+        rubric_5 = rubric_source * 5.0 if rubric_source is not None else None
         try:
             await record_outcome(
                 tenant.tenant_id,
@@ -1783,6 +1830,18 @@ class Orchestrator:
         except Exception as e:
             # Writeback failure must not break the task.
             log.warning("capability.writeback_failed", error=str(e))
+
+        await self._record_result_memory(
+            tenant_id=tenant.tenant_id,
+            task_ref=task_ref,
+            status=status,
+            answer=answer,
+            runtime=runtime,
+            validation_outcome=validation_outcome,
+            validation_score=validation_score,
+            surprise_score=surprise,
+            score_overall=scorecard.overall if scorecard is not None else None,
+        )
 
         answer = await self._translate_answer(
             answer=answer,
@@ -1826,6 +1885,117 @@ class Orchestrator:
             method(*args, **kwargs)
         except Exception:
             log.exception("state_ledger.%s_failed (non-fatal)", method_name)
+
+    async def _record_meta_decision_memory(
+        self,
+        *,
+        tenant_id: str,
+        task_ref: TaskRef,
+        decision: Any,
+    ) -> None:
+        if self.memory_writeback is None:
+            return
+        try:
+            result = await self.memory_writeback.record_meta_decision(
+                tenant_id=tenant_id,
+                task_ref=task_ref,
+                decision=decision,
+            )
+            async with session_scope(tenant_id=tenant_id) as s:
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant_id,
+                        event_type="memory.writeback.recorded",
+                        payload={
+                            "task_id": task_ref.meta.task_id,
+                            **result.model_dump(mode="json"),
+                        },
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+        except Exception as e:
+            log.warning("memory.meta_decision_writeback_failed", error=str(e))
+
+    async def _record_process_memory(
+        self,
+        *,
+        tenant_id: str,
+        task_ref: TaskRef,
+        step: StepRecord,
+        answer: str,
+        response: LLMResponse,
+    ) -> None:
+        if self.memory_writeback is None:
+            return
+        try:
+            result = await self.memory_writeback.record_process_step(
+                tenant_id=tenant_id,
+                task_ref=task_ref,
+                step=step,
+                answer=answer,
+                provider=response.provider,
+                model=response.model,
+                tier=str(response.tier),
+            )
+            async with session_scope(tenant_id=tenant_id) as s:
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant_id,
+                        event_type="memory.writeback.recorded",
+                        payload={
+                            "task_id": task_ref.meta.task_id,
+                            **result.model_dump(mode="json"),
+                        },
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+        except Exception as e:
+            log.warning("memory.process_writeback_failed", error=str(e))
+
+    async def _record_result_memory(
+        self,
+        *,
+        tenant_id: str,
+        task_ref: TaskRef,
+        status: str,
+        answer: str,
+        runtime: RuntimeState,
+        validation_outcome: str,
+        validation_score: float | None,
+        surprise_score: float,
+        score_overall: float | None,
+    ) -> None:
+        if self.memory_writeback is None:
+            return
+        try:
+            result = await self.memory_writeback.record_task_result(
+                tenant_id=tenant_id,
+                task_ref=task_ref,
+                status=status,
+                answer=answer,
+                runtime=runtime,
+                validation_outcome=validation_outcome,
+                validation_score=validation_score,
+                surprise_score=surprise_score,
+                score_overall=score_overall,
+            )
+            async with session_scope(tenant_id=tenant_id) as s:
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant_id,
+                        event_type="memory.writeback.recorded",
+                        payload={
+                            "task_id": task_ref.meta.task_id,
+                            **result.model_dump(mode="json"),
+                        },
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+        except Exception as e:
+            log.warning("memory.result_writeback_failed", error=str(e))
 
     async def _translate_answer(
         self,

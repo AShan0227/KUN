@@ -40,13 +40,16 @@ from kun.engineering.safety_guards import (
     ZeroTelemetryEnforcer,
 )
 from kun.interface.hermes import DefaultHermesAdapter, NoopHermesAdapter
+from kun.memory.writeback import MemoryWriteback
 from kun.security.diagnose_runner import DiagnoseRunner
 from kun.security.fix_handlers import register_default_fix_handlers
 from kun.security.incident_response import IncidentResponseEngine
 from kun.watchtower.decision_plane import WatchtowerDecisionPlane
 from kun.watchtower.engine import RuleEngine
+from kun.watchtower.scoring import UnifiedScoringSystem
 from kun.watchtower.value_estimators import ProductionValueEstimator
 from kun.watchtower.value_gate import ValueGate
+from kun.world.gateway import WorldGateway, set_world_gateway
 
 
 class _AppWithState(Protocol):
@@ -215,6 +218,13 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         state_ledger = get_state_ledger()
     app.state.state_ledger = state_ledger
 
+    # V3-4 / V3-6: execution memories and scorecards.  Both are lightweight
+    # runtime services; they write through existing context/capability paths.
+    memory_writeback = MemoryWriteback()
+    scoring_system = UnifiedScoringSystem()
+    app.state.memory_writeback = memory_writeback
+    app.state.scoring_system = scoring_system
+
     # V3-3: Hermes full-chain adapter — LLM prompt / skill I/O / external
     # adapter formatting all pass through the same translation layer.
     hermes_adapter: DefaultHermesAdapter | NoopHermesAdapter
@@ -223,6 +233,11 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     else:
         hermes_adapter = NoopHermesAdapter()
     app.state.hermes_adapter = hermes_adapter
+
+    # V3-5: World Gateway — central side-effect preparation/audit.
+    world_gateway = WorldGateway(hermes_adapter=hermes_adapter)
+    set_world_gateway(world_gateway)
+    app.state.world_gateway = world_gateway
 
     # V2.2 §22 + Wire 3: hermes 结构化执行 generator (默认开, FAST 模式自动跳过)
     # Wire 35: 加 ThoughtActionConsistency checker → 自动 rethink (max 2 次)
@@ -337,6 +352,8 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         decision_plane=decision_plane,
         state_ledger=state_ledger,
         hermes_adapter=hermes_adapter,
+        memory_writeback=memory_writeback,
+        scoring_system=scoring_system,
     )
     app.state.rule_engine = rule_engine
     app.state.orchestrator = orchestrator

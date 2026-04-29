@@ -51,8 +51,10 @@ EventKind = Literal[
     # Context
     "context.updated",
     "context.forgotten",
+    "memory.writeback.recorded",
     # Evaluation / Validation
     "validation.run.completed",
+    "scorecard.created",
     "debate.triggered",
     "debate.concluded",
     # Evolution

@@ -28,7 +28,14 @@ type WireMessage = Record<string, unknown> & {
 };
 
 type SideMsg = {
-  kind: "cost_tick" | "insight" | "surprise" | "alert" | "guard_intervention" | "idle_batch_report";
+  kind:
+    | "cost_tick"
+    | "insight"
+    | "surprise"
+    | "alert"
+    | "guard_intervention"
+    | "idle_batch_report"
+    | "scorecard";
   payload: WireMessage;
   at: string;
 };
@@ -70,6 +77,31 @@ type Protocol = {
   created_by: string;
 };
 
+type LedgerEntry = {
+  task_id: string;
+  status: string;
+  current_goal: string;
+  current_step: number;
+  total_steps: number;
+  current_risk: string;
+  execution_mode: string;
+  strategy_pack_id?: string | null;
+  decision_reason?: string | null;
+  current_model?: string | null;
+  current_skill?: string | null;
+  cost_so_far_usd: number;
+  pending_confirmations: string[];
+};
+
+type GlobalState = {
+  task_count_running: number;
+  task_count_queued: number;
+  total_cost_today_usd: number;
+  health_indicator: string;
+  urgent_alert_count: number;
+  active_state_ledger: LedgerEntry[];
+};
+
 export default function Home() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [side, setSide] = useState<SideMsg[]>([]);
@@ -82,6 +114,7 @@ export default function Home() {
   const [totalCost, setTotalCost] = useState(0);
   const [qiStatus, setQiStatus] = useState<QiStatus | null>(null);
   const [protocols, setProtocols] = useState<Protocol[]>([]);
+  const [globalState, setGlobalState] = useState<GlobalState | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   // V2.3 启状态 + 协议轮询 (每 30s 一次)
@@ -103,6 +136,15 @@ export default function Home() {
         if (protoRes && protoRes.ok) {
           const data = await protoRes.json();
           setProtocols(data as Protocol[]);
+        }
+        const stateRes = await fetch(`${API_ORIGIN}/api/blackboard/state`, {
+          headers: {
+            "X-Tenant-Id": "u-sylvan",
+            "X-User-Id": "sylvan",
+          },
+        }).catch(() => null);
+        if (!cancelled && stateRes && stateRes.ok) {
+          setGlobalState((await stateRes.json()) as GlobalState);
         }
       } catch {
         // ignore polling errors
@@ -157,6 +199,7 @@ export default function Home() {
       case "alert":
       case "guard_intervention":
       case "idle_batch_report":
+      case "scorecard":
         setSide((s) => [...s, { kind: type, payload: msg, at }]);
         break;
       case "done":
@@ -211,7 +254,7 @@ export default function Home() {
       {/* Main channel */}
       <section className="bg-white rounded-lg shadow-sm flex flex-col min-h-[calc(100vh-100px)]">
         <header className="px-4 py-2 border-b text-sm text-gray-600 flex justify-between">
-          <span>主通道 · 对话</span>
+          <span>主通道 · 对话 + 任务看板</span>
           <span>
             {connected ? (
               <span className="text-kun-good">● 已连接</span>
@@ -220,6 +263,66 @@ export default function Home() {
             )}
           </span>
         </header>
+        <div className="border-b bg-gray-50 px-4 py-3">
+          <div className="grid grid-cols-4 gap-2 text-xs">
+            <MiniCard
+              label="运行中"
+              value={String(globalState?.task_count_running ?? 0)}
+              hint={`排队 ${globalState?.task_count_queued ?? 0}`}
+            />
+            <MiniCard
+              label="今日成本"
+              value={`$${(globalState?.total_cost_today_usd ?? totalCost).toFixed(4)}`}
+              hint="真实执行口径"
+            />
+            <MiniCard
+              label="风险"
+              value={globalState?.health_indicator ?? "unknown"}
+              hint={`告警 ${globalState?.urgent_alert_count ?? 0}`}
+            />
+            <MiniCard
+              label="待确认"
+              value={String(
+                globalState?.active_state_ledger.reduce(
+                  (sum, item) => sum + item.pending_confirmations.length,
+                  0,
+                ) ?? 0,
+              )}
+              hint="需要你拍板"
+            />
+          </div>
+          <div className="mt-3 space-y-2">
+            {(globalState?.active_state_ledger ?? []).slice(0, 3).map((item) => (
+              <div
+                key={item.task_id}
+                className="rounded border border-gray-200 bg-white p-2 text-xs"
+              >
+                <div className="flex justify-between gap-2">
+                  <span className="truncate font-medium">{item.current_goal || item.task_id}</span>
+                  <span className="text-gray-500">{item.status}</span>
+                </div>
+                <div className="mt-1 text-gray-500">
+                  第 {item.current_step}/{item.total_steps || 1} 步 · 风险 {item.current_risk} ·{" "}
+                  {item.execution_mode}
+                  {item.strategy_pack_id ? ` · 策略 ${item.strategy_pack_id}` : ""}
+                </div>
+                <div className="mt-1 truncate text-gray-500">
+                  {item.current_model || "未选模型"}
+                  {item.current_skill ? ` · ${item.current_skill}` : ""} · $
+                  {item.cost_so_far_usd.toFixed(4)}
+                </div>
+                {item.decision_reason && (
+                  <div className="mt-1 truncate text-gray-400">{item.decision_reason}</div>
+                )}
+              </div>
+            ))}
+            {globalState && globalState.active_state_ledger.length === 0 && (
+              <div className="rounded border border-dashed border-gray-200 bg-white p-2 text-xs text-gray-500">
+                现在没有活跃任务。你可以直接在下面给鲲一个目标。
+              </div>
+            )}
+          </div>
+        </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-2 text-sm">
           {messages.map((m, i) => (
             <div
@@ -434,7 +537,26 @@ const ICONS: Record<string, string> = {
   alert: "⚠️",
   guard_intervention: "🛡️",
   idle_batch_report: "🌙",
+  scorecard: "📊",
 };
+
+function MiniCard({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+}) {
+  return (
+    <div className="rounded border border-gray-200 bg-white px-3 py-2">
+      <div className="text-gray-500">{label}</div>
+      <div className="mt-1 text-lg font-semibold text-gray-900">{value}</div>
+      <div className="mt-1 text-gray-400">{hint}</div>
+    </div>
+  );
+}
 
 function formatMain(msg: WireMessage): string {
   if (msg.type === "thinking") return `思考中... (${stringValue(msg.stage)})`;
