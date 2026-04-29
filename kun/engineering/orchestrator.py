@@ -42,6 +42,7 @@ from kun.core.metrics import (
 from kun.core.orm import IdempotencyRow, RuntimeStateRow, TaskResultRow, TaskRow
 from kun.core.tenancy import current_tenant
 from kun.datamodel.events import Event
+from kun.datamodel.mission import ResumeRequest
 from kun.datamodel.notification import Notification
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
 from kun.datamodel.task import Owner, TaskMeta, TaskRef
@@ -231,6 +232,36 @@ class Orchestrator:
         if final is None:
             raise RuntimeError("orchestrator exited without a done event")
         return final
+
+    async def run_mission_continuation(
+        self,
+        request: ResumeRequest,
+        resume_prompt: str,
+        *,
+        output_kind: str = "mission_worker",
+    ) -> TaskResult:
+        """Start a continuation execution for a durable Mission task.
+
+        This does not execute the original TaskRow in-place. The Mission worker
+        links the returned continuation task back to the original mission task.
+        """
+        tenant = current_tenant()
+        async with session_scope(tenant_id=tenant.tenant_id) as s:
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant.tenant_id,
+                    event_type="task.resumed",
+                    payload={
+                        **request.model_dump(mode="json"),
+                        "mode": "mission_continuation_task",
+                        "source_task_id": request.task_id,
+                        "output_kind": output_kind,
+                    },
+                    task_ref=request.task_id,
+                ),
+            )
+        return await self.run(resume_prompt, output_kind=output_kind)
 
     async def stream(
         self,

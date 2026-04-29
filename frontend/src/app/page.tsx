@@ -109,9 +109,28 @@ type MissionSnapshot = {
   status: string;
   risk_level: string;
   budget_cap_usd: number;
-  tasks: Array<{ task_id: string; status: string }>;
+  tasks: Array<{
+    task_id: string;
+    role: string;
+    sequence_no: number;
+    status: string;
+    resume_attempts: number;
+    last_resume_requested_at?: string | null;
+  }>;
   milestones: Array<{ milestone_id: string; title: string; status: string }>;
   updated_at: string;
+};
+
+type MissionResumeResult = {
+  mission_id: string;
+  task_id: string;
+  status: string;
+  reason: string;
+  outcome?: {
+    executed_task_id?: string | null;
+    final_status: string;
+    answer_preview: string;
+  } | null;
 };
 
 type PendingAction = {
@@ -153,6 +172,8 @@ export default function Home() {
   const [protocols, setProtocols] = useState<Protocol[]>([]);
   const [globalState, setGlobalState] = useState<GlobalState | null>(null);
   const [missions, setMissions] = useState<MissionSnapshot[]>([]);
+  const [missionBusy, setMissionBusy] = useState(false);
+  const [missionNotice, setMissionNotice] = useState("");
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -332,6 +353,33 @@ export default function Home() {
     [refreshDashboard],
   );
 
+  const runMissionResume = useCallback(async () => {
+    setMissionBusy(true);
+    setMissionNotice("");
+    try {
+      const res = await fetch(`${API_ORIGIN}/api/missions/resume-worker/run-once?limit=5`, {
+        method: "POST",
+        headers: {
+          "X-Tenant-Id": "u-sylvan",
+          "X-User-Id": "sylvan",
+        },
+      });
+      const payload = (await res.json().catch(() => [])) as MissionResumeResult[];
+      if (!res.ok) throw new Error(JSON.stringify(payload));
+      const completed = payload.filter((item) => item.status === "completed").length;
+      const failed = payload.filter((item) => item.status === "failed").length;
+      const skipped = payload.filter((item) => item.status === "skipped").length;
+      setMissionNotice(
+        `推进 ${payload.length} 个任务：完成 ${completed}，失败 ${failed}，跳过 ${skipped}`,
+      );
+      await refreshDashboard();
+    } catch (err) {
+      setMissionNotice(err instanceof Error ? err.message : "Mission 推进失败");
+    } finally {
+      setMissionBusy(false);
+    }
+  }, [refreshDashboard]);
+
   const loadGraph = useCallback(async () => {
     const kind = graphKind.trim();
     const id = graphId.trim();
@@ -450,8 +498,19 @@ export default function Home() {
               <div className="rounded border border-gray-200 bg-white p-2 text-xs">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="font-medium">长期目标</span>
-                  <span className="text-gray-400">{missions.length} 个</span>
+                  <button
+                    className="rounded border border-gray-200 bg-gray-50 px-2 py-1 text-gray-700 disabled:opacity-50"
+                    disabled={missionBusy}
+                    onClick={() => void runMissionResume()}
+                  >
+                    {missionBusy ? "推进中" : `推进一次 · ${missions.length}`}
+                  </button>
                 </div>
+                {missionNotice && (
+                  <div className="mb-2 rounded border border-gray-100 bg-gray-50 px-2 py-1 text-gray-600">
+                    {missionNotice}
+                  </div>
+                )}
                 <div className="space-y-2">
                   {missions.slice(0, 3).map((mission) => (
                     <div
@@ -460,12 +519,34 @@ export default function Home() {
                     >
                       <div className="flex justify-between gap-2">
                         <span className="truncate font-medium">{mission.title}</span>
-                        <span className="text-gray-500">{mission.status}</span>
+                        <span className={missionStatusClass(mission.status)}>
+                          {mission.status}
+                        </span>
                       </div>
                       <div className="mt-1 truncate text-gray-500">
                         风险 {mission.risk_level} · 预算 ${mission.budget_cap_usd.toFixed(2)} ·
                         任务 {mission.tasks.length} · 里程碑 {mission.milestones.length}
                       </div>
+                      {mission.tasks.length > 0 && (
+                        <div className="mt-2 grid grid-cols-2 gap-1">
+                          {mission.tasks.slice(0, 4).map((task) => (
+                            <div
+                              key={task.task_id}
+                              className="rounded border border-white bg-white px-2 py-1"
+                            >
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="truncate text-gray-600">{task.role}</span>
+                                <span className={missionStatusClass(task.status)}>
+                                  {task.status}
+                                </span>
+                              </div>
+                              <div className="mt-0.5 truncate text-[11px] text-gray-400">
+                                {task.task_id} · 尝试 {task.resume_attempts}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -764,4 +845,12 @@ function stringValue(value: unknown): string {
 
 function numberValue(value: unknown): number {
   return typeof value === "number" ? value : 0;
+}
+
+function missionStatusClass(status: string): string {
+  if (status === "done") return "shrink-0 text-green-700";
+  if (status === "failed" || status === "cancelled") return "shrink-0 text-red-700";
+  if (status === "paused" || status === "blocked") return "shrink-0 text-amber-700";
+  if (status === "running" || status === "queued") return "shrink-0 text-blue-700";
+  return "shrink-0 text-gray-500";
 }

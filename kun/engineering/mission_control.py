@@ -347,6 +347,7 @@ def _resumable_tasks_stmt(tenant_id: str, limit: int, max_attempts: int) -> Any:
             RuntimeStateRow.tenant_id == tenant_id,
             MissionRow.tenant_id == tenant_id,
             MissionRow.status.in_(("planned", "running", "paused")),
+            MissionTaskRow.status.in_(("planned", "queued", "running", "paused", "blocked")),
             RuntimeStateRow.status == "queued",
             MissionTaskRow.resume_attempts < max_attempts,
         )
