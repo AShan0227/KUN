@@ -18,6 +18,7 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from kun.datamodel.task import ExecutionMode, TaskRef
+from kun.watchtower.memory_reuse import StrategyReuseHint
 
 BASE_METRICS = [
     "success_rate",
@@ -110,9 +111,21 @@ class WatchtowerDecisionPlane:
             self.packs = builtin_strategy_packs()
 
     def decide(
-        self, task_ref: TaskRef, *, active_protocol: Any | None = None
+        self,
+        task_ref: TaskRef,
+        *,
+        active_protocol: Any | None = None,
+        reuse_hint: StrategyReuseHint | None = None,
     ) -> WatchtowerDecision:
         pack, pack_score = self._select_pack(task_ref)
+        reuse_applied = False
+        if reuse_hint is not None and reuse_hint.confidence >= 0.55:
+            reuse_pack = self._pack_by_id(reuse_hint.recommended_strategy_pack_id)
+            if reuse_pack is not None and (
+                pack.pack_id == "default" or pack_score <= 0.85 or reuse_hint.confidence >= 0.78
+            ):
+                pack = reuse_pack
+                reuse_applied = True
         protocol_mode = _protocol_execution_mode(active_protocol)
         mode_source: Literal["watchtower", "protocol", "forced"] = "watchtower"
         if protocol_mode is not None:
@@ -144,6 +157,10 @@ class WatchtowerDecisionPlane:
             f"match_score={pack_score:.2f}; "
             f"mode={execution_mode}; context_limit={context_limit}"
         )
+        if reuse_hint is not None:
+            reason += f"; memory_reuse={reuse_hint.confidence:.2f}"
+            if reuse_applied:
+                reason += "; strategy_pack 来自历史经验复用"
         if mode_source == "protocol":
             reason += "; execution_mode 来自 active protocol"
 
@@ -152,7 +169,11 @@ class WatchtowerDecisionPlane:
             strategy_pack_name=pack.display_name,
             execution_mode=execution_mode,
             context_limit=context_limit,
-            skill_hints=_dedupe(pack.skill_hints + _protocol_skill_hints(active_protocol)),
+            skill_hints=_dedupe(
+                pack.skill_hints
+                + _protocol_skill_hints(active_protocol)
+                + (reuse_hint.skill_hints if reuse_hint is not None else [])
+            ),
             metric_dimensions=metric_dimensions,
             risk_watch=pack.risk_watch,
             reward_weights=reward_weights,
@@ -166,6 +187,9 @@ class WatchtowerDecisionPlane:
                 "task_type": task_ref.meta.task_type,
                 "risk_level": task_ref.meta.risk_level,
                 "complexity_score": task_ref.meta.complexity_score,
+                "memory_reuse": reuse_hint.model_dump(mode="json") if reuse_hint else None,
+                "reuse_asset_ids": reuse_hint.reuse_asset_ids if reuse_hint else [],
+                "reuse_applied": reuse_applied,
             },
         )
 
@@ -190,6 +214,11 @@ class WatchtowerDecisionPlane:
             default = next((pack for pack in self.packs if pack.pack_id == "default"), best)
             return default, 0.0
         return best, score
+
+    def _pack_by_id(self, pack_id: str | None) -> StrategyPack | None:
+        if not pack_id:
+            return None
+        return next((pack for pack in self.packs if pack.pack_id == pack_id), None)
 
     def _choose_execution_mode(self, task_ref: TaskRef, pack: StrategyPack) -> ExecutionMode:
         risk = task_ref.meta.risk_level
