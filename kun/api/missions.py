@@ -12,9 +12,12 @@ from kun.datamodel.mission import (
     MissionBlockedResult,
     MissionCreate,
     MissionExecutionSummary,
+    MissionLedgerAudit,
     MissionMilestone,
     MissionReaperResult,
+    MissionReview,
     MissionSnapshot,
+    MissionTimeline,
     ResumeRequest,
 )
 from kun.engineering import mission_control
@@ -112,6 +115,21 @@ async def block_exhausted_once(
     )
 
 
+@router.post("/review/run-once", response_model=list[MissionReview])
+async def run_review_once(
+    limit: int = Query(default=20, ge=1, le=200),
+    timeline_limit: int = Query(default=200, ge=1, le=500),
+    min_interval_sec: int = Query(default=3600, ge=0, le=604_800),
+) -> list[MissionReview]:
+    tenant = current_tenant()
+    return await mission_control.review_active_missions(
+        tenant_id=tenant.tenant_id,
+        limit=limit,
+        timeline_limit=timeline_limit,
+        min_interval_sec=min_interval_sec,
+    )
+
+
 @router.get("/{mission_id}", response_model=MissionSnapshot)
 async def get_mission(mission_id: str) -> MissionSnapshot:
     tenant = current_tenant()
@@ -134,6 +152,54 @@ async def get_mission_summary(mission_id: str) -> MissionExecutionSummary:
     if summary is None:
         raise HTTPException(status_code=404, detail="mission not found")
     return summary
+
+
+@router.get("/{mission_id}/timeline", response_model=MissionTimeline)
+async def get_mission_timeline(
+    mission_id: str,
+    limit: int = Query(default=200, ge=1, le=500),
+) -> MissionTimeline:
+    tenant = current_tenant()
+    timeline = await mission_control.get_mission_timeline(
+        tenant_id=tenant.tenant_id,
+        mission_id=mission_id,
+        limit=limit,
+    )
+    if timeline is None:
+        raise HTTPException(status_code=404, detail="mission not found")
+    return timeline
+
+
+@router.post("/{mission_id}/review", response_model=MissionReview)
+async def review_mission(
+    mission_id: str,
+    timeline_limit: int = Query(default=200, ge=1, le=500),
+) -> MissionReview:
+    tenant = current_tenant()
+    review = await mission_control.review_mission(
+        tenant_id=tenant.tenant_id,
+        mission_id=mission_id,
+        timeline_limit=timeline_limit,
+    )
+    if review is None:
+        raise HTTPException(status_code=404, detail="mission not found")
+    return review
+
+
+@router.get("/{mission_id}/audit", response_model=MissionLedgerAudit)
+async def audit_mission(
+    mission_id: str,
+    timeline_limit: int = Query(default=500, ge=1, le=1000),
+) -> MissionLedgerAudit:
+    tenant = current_tenant()
+    audit = await mission_control.audit_mission_ledger(
+        tenant_id=tenant.tenant_id,
+        mission_id=mission_id,
+        timeline_limit=timeline_limit,
+    )
+    if audit is None:
+        raise HTTPException(status_code=404, detail="mission not found")
+    return audit
 
 
 @router.post("/{mission_id}/tasks", response_model=MissionSnapshot)

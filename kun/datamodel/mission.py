@@ -26,6 +26,8 @@ MissionTaskStatus = Literal[
     "cancelled",
 ]
 MilestoneStatus = Literal["planned", "active", "done", "blocked", "cancelled"]
+MissionLedgerAuditStatus = Literal["pass", "warn", "fail"]
+MissionLedgerAuditSeverity = Literal["info", "warn", "error"]
 
 
 class MissionCreate(BaseModel):
@@ -148,6 +150,83 @@ class MissionExecutionSummary(BaseModel):
     updated_at: datetime
 
 
+class MissionTimelineEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    event_type: str
+    occurred_at: datetime
+    subject: str
+    mission_id: str | None = None
+    task_id: str | None = None
+    status: str | None = None
+    reason: str | None = None
+    cost_usd_actual: float = 0.0
+    cost_usd_equivalent: float = 0.0
+    checkpoint: dict[str, Any] = Field(default_factory=dict)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class MissionTimeline(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mission_id: str
+    tenant_id: str
+    event_count: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    recent_reasons: list[str] = Field(default_factory=list)
+    total_cost_usd_actual: float = 0.0
+    total_cost_usd_equivalent: float = 0.0
+    events: list[MissionTimelineEvent] = Field(default_factory=list)
+
+
+class MissionReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mission_id: str
+    tenant_id: str
+    milestone_id: str
+    status: MissionStatus
+    generated_at: datetime
+    budget: MissionBudgetSummary
+    task_status_counts: dict[str, int] = Field(default_factory=dict)
+    checkpoint_count: int = 0
+    timeline_event_count: int = 0
+    recent_reasons: list[str] = Field(default_factory=list)
+    risk_flags: list[str] = Field(default_factory=list)
+    next_checkpoint: str
+    checkpoint: dict[str, Any] = Field(default_factory=dict)
+
+
+class MissionLedgerAuditIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    severity: MissionLedgerAuditSeverity
+    message: str
+    task_id: str | None = None
+    event_id: str | None = None
+
+
+class MissionLedgerAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mission_id: str
+    tenant_id: str
+    status: MissionLedgerAuditStatus = "pass"
+    checked_at: datetime
+    summary_task_count: int = 0
+    checkpoint_count: int = 0
+    timeline_event_count: int = 0
+    review_event_count: int = 0
+    budget: MissionBudgetSummary
+    task_status_counts: dict[str, int] = Field(default_factory=dict)
+    event_status_counts: dict[str, int] = Field(default_factory=dict)
+    recent_reasons: list[str] = Field(default_factory=list)
+    issue_count: int = 0
+    issues: list[MissionLedgerAuditIssue] = Field(default_factory=list)
+
+
 class ResumeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -165,11 +244,18 @@ __all__ = [
     "MissionCheckpointSummary",
     "MissionCreate",
     "MissionExecutionSummary",
+    "MissionLedgerAudit",
+    "MissionLedgerAuditIssue",
+    "MissionLedgerAuditSeverity",
+    "MissionLedgerAuditStatus",
     "MissionMilestone",
     "MissionReaperResult",
+    "MissionReview",
     "MissionSnapshot",
     "MissionStatus",
     "MissionTaskLink",
     "MissionTaskStatus",
+    "MissionTimeline",
+    "MissionTimelineEvent",
     "ResumeRequest",
 ]

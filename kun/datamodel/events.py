@@ -53,6 +53,7 @@ EventKind = Literal[
     "mission.task.reaped",
     "mission.task.blocked",
     "mission.milestone.recorded",
+    "mission.review.recorded",
     # Handoff
     "handoff.sent",
     "handoff.received",

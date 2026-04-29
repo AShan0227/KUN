@@ -15,9 +15,12 @@ from kun.datamodel.mission import (
     MissionBudgetSummary,
     MissionCreate,
     MissionExecutionSummary,
+    MissionLedgerAudit,
     MissionMilestone,
     MissionReaperResult,
+    MissionReview,
     MissionSnapshot,
+    MissionTimeline,
     ResumeRequest,
 )
 from kun.engineering.mission_worker import MissionResumeResult
@@ -139,6 +142,33 @@ def test_resume_requests_route_is_not_treated_as_mission_id(monkeypatch) -> None
     assert response.status_code == 200
     assert response.json()[0]["task_id"] == "tk-1"
     assert response.json()[0]["reason"] == "u-sylvan:2:4"
+
+
+@pytest.mark.unit
+def test_mission_timeline_route_is_not_treated_as_mission_id(monkeypatch) -> None:
+    async def fake_timeline(*, tenant_id: str, mission_id: str, limit: int):
+        return MissionTimeline(
+            mission_id=mission_id,
+            tenant_id=tenant_id,
+            event_count=1,
+            events=[],
+        )
+
+    async def fake_get_mission(*_args, **_kwargs):
+        raise AssertionError("timeline should not call get_mission")
+
+    monkeypatch.setattr(mission_api.mission_control, "get_mission_timeline", fake_timeline)
+    monkeypatch.setattr(mission_api.mission_control, "get_mission", fake_get_mission)
+
+    app = FastAPI()
+    app.include_router(mission_api.router)
+    client = TestClient(app)
+
+    response = client.get("/api/missions/msn-1/timeline?limit=2")
+
+    assert response.status_code == 200
+    assert response.json()["mission_id"] == "msn-1"
+    assert response.json()["event_count"] == 1
 
 
 @pytest.mark.unit
@@ -292,6 +322,200 @@ async def test_get_mission_summary_returns_404_when_missing(monkeypatch) -> None
         pytest.raises(mission_api.HTTPException) as exc,
     ):
         await mission_api.get_mission_summary("msn-missing")
+
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_mission_timeline_returns_event_rollup(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_timeline(*, tenant_id: str, mission_id: str, limit: int):
+        captured.update({"tenant_id": tenant_id, "mission_id": mission_id, "limit": limit})
+        return MissionTimeline(
+            mission_id=mission_id,
+            tenant_id=tenant_id,
+            event_count=1,
+            status_counts={"done": 1},
+            total_cost_usd_equivalent=0.25,
+            events=[],
+        )
+
+    monkeypatch.setattr(mission_api.mission_control, "get_mission_timeline", fake_timeline)
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a")):
+        result = await mission_api.get_mission_timeline("msn-1", limit=25)
+
+    assert result.event_count == 1
+    assert result.status_counts == {"done": 1}
+    assert captured == {"tenant_id": "tenant-a", "mission_id": "msn-1", "limit": 25}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_mission_timeline_returns_404_when_missing(monkeypatch) -> None:
+    async def fake_timeline(*, tenant_id: str, mission_id: str, limit: int):
+        return None
+
+    monkeypatch.setattr(mission_api.mission_control, "get_mission_timeline", fake_timeline)
+
+    with (
+        tenant_scope(TenantContext(tenant_id="tenant-a")),
+        pytest.raises(mission_api.HTTPException) as exc,
+    ):
+        await mission_api.get_mission_timeline("msn-missing")
+
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_review_once_uses_tenant_and_limits(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    now = datetime.now(UTC)
+
+    async def fake_review_active(
+        *,
+        tenant_id: str,
+        limit: int,
+        timeline_limit: int,
+        min_interval_sec: int,
+    ):
+        captured.update(
+            {
+                "tenant_id": tenant_id,
+                "limit": limit,
+                "timeline_limit": timeline_limit,
+                "min_interval_sec": min_interval_sec,
+            }
+        )
+        return [
+            MissionReview(
+                mission_id="msn-1",
+                tenant_id=tenant_id,
+                milestone_id="mile-1",
+                status="running",
+                generated_at=now,
+                budget=MissionBudgetSummary(),
+                next_checkpoint="Continue scheduled resume and reaper loops.",
+            )
+        ]
+
+    monkeypatch.setattr(mission_api.mission_control, "review_active_missions", fake_review_active)
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a")):
+        result = await mission_api.run_review_once(
+            limit=3,
+            timeline_limit=25,
+            min_interval_sec=120,
+        )
+
+    assert result[0].milestone_id == "mile-1"
+    assert captured == {
+        "tenant_id": "tenant-a",
+        "limit": 3,
+        "timeline_limit": 25,
+        "min_interval_sec": 120,
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_review_mission_returns_recorded_review(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    now = datetime.now(UTC)
+
+    async def fake_review(*, tenant_id: str, mission_id: str, timeline_limit: int):
+        captured.update(
+            {"tenant_id": tenant_id, "mission_id": mission_id, "timeline_limit": timeline_limit}
+        )
+        return MissionReview(
+            mission_id=mission_id,
+            tenant_id=tenant_id,
+            milestone_id="mile-1",
+            status="running",
+            generated_at=now,
+            budget=MissionBudgetSummary(),
+            next_checkpoint="Continue scheduled resume and reaper loops.",
+        )
+
+    monkeypatch.setattr(mission_api.mission_control, "review_mission", fake_review)
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a")):
+        result = await mission_api.review_mission("msn-1", timeline_limit=25)
+
+    assert result.milestone_id == "mile-1"
+    assert captured == {
+        "tenant_id": "tenant-a",
+        "mission_id": "msn-1",
+        "timeline_limit": 25,
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_review_mission_returns_404_when_missing(monkeypatch) -> None:
+    async def fake_review(*, tenant_id: str, mission_id: str, timeline_limit: int):
+        return None
+
+    monkeypatch.setattr(mission_api.mission_control, "review_mission", fake_review)
+
+    with (
+        tenant_scope(TenantContext(tenant_id="tenant-a")),
+        pytest.raises(mission_api.HTTPException) as exc,
+    ):
+        await mission_api.review_mission("msn-missing")
+
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_audit_mission_returns_ledger_audit(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    now = datetime.now(UTC)
+
+    async def fake_audit(*, tenant_id: str, mission_id: str, timeline_limit: int):
+        captured.update(
+            {"tenant_id": tenant_id, "mission_id": mission_id, "timeline_limit": timeline_limit}
+        )
+        return MissionLedgerAudit(
+            mission_id=mission_id,
+            tenant_id=tenant_id,
+            status="warn",
+            checked_at=now,
+            budget=MissionBudgetSummary(),
+            timeline_event_count=1,
+        )
+
+    monkeypatch.setattr(mission_api.mission_control, "audit_mission_ledger", fake_audit)
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a")):
+        result = await mission_api.audit_mission("msn-1", timeline_limit=50)
+
+    assert result.status == "warn"
+    assert result.timeline_event_count == 1
+    assert captured == {
+        "tenant_id": "tenant-a",
+        "mission_id": "msn-1",
+        "timeline_limit": 50,
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_audit_mission_returns_404_when_missing(monkeypatch) -> None:
+    async def fake_audit(*, tenant_id: str, mission_id: str, timeline_limit: int):
+        return None
+
+    monkeypatch.setattr(mission_api.mission_control, "audit_mission_ledger", fake_audit)
+
+    with (
+        tenant_scope(TenantContext(tenant_id="tenant-a")),
+        pytest.raises(mission_api.HTTPException) as exc,
+    ):
+        await mission_api.audit_mission("msn-missing")
 
     assert exc.value.status_code == 404
 

@@ -59,7 +59,7 @@ def register_mission_scheduler_jobs(sched: Any, app: FastAPI, default_tenant: st
         return
 
     from kun.api.runtime import get_mission_resume_worker
-    from kun.engineering.mission_control import reap_stale_mission_tasks
+    from kun.engineering.mission_control import reap_stale_mission_tasks, review_active_missions
 
     async def _mission_resume_once() -> None:
         await get_mission_resume_worker(app).run_once(
@@ -76,6 +76,14 @@ def register_mission_scheduler_jobs(sched: Any, app: FastAPI, default_tenant: st
             limit=int(os.getenv("KUN_MISSION_REAPER_LIMIT", "50")),
         )
 
+    async def _mission_review_once() -> None:
+        await review_active_missions(
+            tenant_id=default_tenant,
+            limit=int(os.getenv("KUN_MISSION_REVIEW_LIMIT", "20")),
+            timeline_limit=int(os.getenv("KUN_MISSION_REVIEW_TIMELINE_LIMIT", "200")),
+            min_interval_sec=int(os.getenv("KUN_MISSION_REVIEW_MIN_INTERVAL_SEC", "3600")),
+        )
+
     if os.getenv("KUN_MISSION_RESUME_WORKER_ENABLED", "1") == "1":
         sched.register(
             "mission_resume",
@@ -87,6 +95,12 @@ def register_mission_scheduler_jobs(sched: Any, app: FastAPI, default_tenant: st
             "mission_reaper",
             os.getenv("KUN_MISSION_REAPER_CRON", "*/5 * * * *"),
             _mission_reaper_once,
+        )
+    if os.getenv("KUN_MISSION_REVIEW_ENABLED", "1") == "1":
+        sched.register(
+            "mission_review",
+            os.getenv("KUN_MISSION_REVIEW_CRON", "@hourly"),
+            _mission_review_once,
         )
 
 

@@ -32,27 +32,45 @@ async def test_register_mission_scheduler_jobs_wires_resume_and_reaper(monkeypat
         calls.append(("reaper_limit", tenant_id, limit, 0))
         return []
 
+    async def fake_review(
+        *,
+        tenant_id: str,
+        limit: int,
+        timeline_limit: int,
+        min_interval_sec: int,
+    ):
+        calls.append(("review", tenant_id, limit, timeline_limit))
+        calls.append(("review_interval", tenant_id, min_interval_sec, 0))
+        return []
+
     monkeypatch.setenv("KUN_MISSION_RESUME_LIMIT", "7")
     monkeypatch.setenv("KUN_MISSION_RESUME_MAX_ATTEMPTS", "4")
     monkeypatch.setenv("KUN_MISSION_REAPER_CRON", "* * * * *")
     monkeypatch.setenv("KUN_MISSION_QUEUED_STALE_AFTER_SEC", "120")
     monkeypatch.setenv("KUN_MISSION_RUNNING_STALE_AFTER_SEC", "240")
     monkeypatch.setenv("KUN_MISSION_REAPER_LIMIT", "11")
+    monkeypatch.setenv("KUN_MISSION_REVIEW_CRON", "* * * * *")
+    monkeypatch.setenv("KUN_MISSION_REVIEW_LIMIT", "9")
+    monkeypatch.setenv("KUN_MISSION_REVIEW_TIMELINE_LIMIT", "33")
+    monkeypatch.setenv("KUN_MISSION_REVIEW_MIN_INTERVAL_SEC", "77")
     monkeypatch.setattr("kun.api.runtime.get_mission_resume_worker", lambda _app: FakeWorker())
     monkeypatch.setattr("kun.engineering.mission_control.reap_stale_mission_tasks", fake_reaper)
+    monkeypatch.setattr("kun.engineering.mission_control.review_active_missions", fake_review)
 
     sched = CronScheduler()
     register_mission_scheduler_jobs(sched, FastAPI(), "tenant-a")
 
-    assert sched.list_jobs() == ["mission_reaper", "mission_resume"]
+    assert sched.list_jobs() == ["mission_reaper", "mission_resume", "mission_review"]
 
     fired = await sched.tick(now=datetime(2026, 4, 29, 10, 5, tzinfo=UTC))
     await asyncio.sleep(0.05)
 
-    assert fired == ["mission_resume", "mission_reaper"]
+    assert fired == ["mission_resume", "mission_reaper", "mission_review"]
     assert ("resume", "tenant-a", 7, 4) in calls
     assert ("reaper", "tenant-a", 120, 240) in calls
     assert ("reaper_limit", "tenant-a", 11, 0) in calls
+    assert ("review", "tenant-a", 9, 33) in calls
+    assert ("review_interval", "tenant-a", 77, 0) in calls
 
 
 @pytest.mark.unit
@@ -72,4 +90,4 @@ def test_register_mission_scheduler_jobs_allows_individual_job_disable(monkeypat
 
     register_mission_scheduler_jobs(sched, FastAPI(), "tenant-a")
 
-    assert sched.list_jobs() == ["mission_reaper"]
+    assert sched.list_jobs() == ["mission_reaper", "mission_review"]
