@@ -16,8 +16,8 @@ from kun.api.blackboard import (
 from kun.api.blackboard import (
     router as bb_router,
 )
-from kun.api.blackboard_data_sources import _entry_from_runtime_rows
-from kun.core.orm import RuntimeStateRow, TaskRow
+from kun.api.blackboard_data_sources import _entry_from_runtime_rows, _history_from_event_rows
+from kun.core.orm import EventRow, RuntimeStateRow, TaskRow
 from kun.engineering.budget_tracker import (
     BEHAVIOR_BY_LEVEL,
     BudgetTracker,
@@ -141,6 +141,44 @@ def test_blackboard_state_ledger_endpoints(bb_client: TestClient) -> None:
     assert one.json()["current_goal"] == "帮用户完成任务"
 
 
+def test_blackboard_state_ledger_history_endpoint(bb_client: TestClient) -> None:
+    register_data_source(
+        "state_ledger_history",
+        lambda **kw: {
+            "tenant_id": kw["tenant_id"],
+            "task_id": kw.get("task_id"),
+            "mission_id": kw.get("mission_id"),
+            "event_count": 1,
+            "total_cost_usd_equivalent": 0.25,
+            "status_counts": {"done": 1},
+            "events": [
+                {
+                    "event_id": "evt-1",
+                    "event_type": "task.done",
+                    "subject": "kun.t-1.task.task.done",
+                    "occurred_at": "2026-04-29T10:00:00Z",
+                    "task_id": kw.get("task_id"),
+                    "status": "done",
+                    "cost_usd_equivalent": 0.25,
+                    "payload": {"status": "done"},
+                }
+            ],
+        },
+    )
+
+    resp = bb_client.get(
+        "/api/blackboard/state-ledger/tk-1/history?limit=10",
+        headers={"X-User-Id": "u-1", "X-Tenant-Id": "t-1"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["task_id"] == "tk-1"
+    assert body["event_count"] == 1
+    assert body["status_counts"] == {"done": 1}
+    assert body["events"][0]["cost_usd_equivalent"] == 0.25
+
+
 def test_blackboard_workspace_default(bb_client: TestClient) -> None:
     resp = bb_client.get("/api/blackboard/workspace/tk-1", headers={"X-User-Id": "u-1"})
     assert resp.status_code == 200
@@ -162,6 +200,15 @@ def test_blackboard_full_dump_for_agent(bb_client: TestClient) -> None:
         "state_ledger",
         lambda **kw: {"task_id": kw["task_id"], "tenant_id": kw["tenant_id"]},
     )
+    register_data_source(
+        "state_ledger_history",
+        lambda **kw: {
+            "tenant_id": kw["tenant_id"],
+            "task_id": kw["task_id"],
+            "event_count": 0,
+            "events": [],
+        },
+    )
     register_data_source("workspace", lambda **kw: {"task_id": "tk-1", "last_update": "x"})
     register_data_source("assets", lambda **kw: {"task_id": "tk-1"})
     register_data_source("events", lambda **kw: [])
@@ -172,7 +219,70 @@ def test_blackboard_full_dump_for_agent(bb_client: TestClient) -> None:
     assert body["task_id"] == "tk-1"
     assert "state" in body
     assert body["state_ledger"]["task_id"] == "tk-1"
+    assert body["state_ledger_history"]["task_id"] == "tk-1"
     assert "workspace" in body
+
+
+def test_state_ledger_history_rolls_up_event_rows() -> None:
+    first = datetime(2026, 4, 29, 10, 0, tzinfo=UTC)
+    second = datetime(2026, 4, 29, 10, 1, tzinfo=UTC)
+    rows = [
+        cast(
+            EventRow,
+            SimpleNamespace(
+                event_id="evt-2",
+                tenant_id="tenant-a",
+                event_type="mission.task.resume_completed",
+                subject="kun.tenant-a.mission.mission.task.resume_completed",
+                payload={
+                    "mission_id": "msn-1",
+                    "task_id": "tk-1",
+                    "status": "done",
+                    "outcome": {
+                        "cost_usd_actual": 0.1,
+                        "cost_usd_equivalent": 0.25,
+                        "final_status": "done",
+                    },
+                },
+                occurred_at=second,
+                task_ref="tk-1",
+            ),
+        ),
+        cast(
+            EventRow,
+            SimpleNamespace(
+                event_id="evt-1",
+                tenant_id="tenant-a",
+                event_type="mission.task.blocked",
+                subject="kun.tenant-a.mission.mission.task.blocked",
+                payload={
+                    "mission_id": "msn-1",
+                    "task_id": "tk-1",
+                    "reason": "max_resume_attempts_exhausted",
+                    "status": "blocked",
+                    "checkpoint": {"resume_attempts": 3},
+                },
+                occurred_at=first,
+                task_ref="tk-1",
+            ),
+        ),
+    ]
+
+    history = _history_from_event_rows(
+        tenant_id="tenant-a",
+        rows=rows,
+        task_id="tk-1",
+        mission_id="msn-1",
+    )
+
+    assert history.event_count == 2
+    assert history.first_event_at == first
+    assert history.last_event_at == second
+    assert history.total_cost_usd_equivalent == 0.25
+    assert history.status_counts == {"blocked": 1, "done": 1}
+    assert history.recent_reasons == ["max_resume_attempts_exhausted"]
+    assert history.checkpoints[0]["checkpoint"] == {"resume_attempts": 3}
+    assert [event.event_id for event in history.events] == ["evt-1", "evt-2"]
 
 
 def test_state_ledger_entry_can_hydrate_from_durable_runtime_rows() -> None:

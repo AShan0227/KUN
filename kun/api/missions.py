@@ -8,7 +8,15 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from kun.core.tenancy import current_tenant
-from kun.datamodel.mission import MissionCreate, MissionMilestone, MissionSnapshot, ResumeRequest
+from kun.datamodel.mission import (
+    MissionBlockedResult,
+    MissionCreate,
+    MissionExecutionSummary,
+    MissionMilestone,
+    MissionReaperResult,
+    MissionSnapshot,
+    ResumeRequest,
+)
 from kun.engineering import mission_control
 from kun.engineering.mission_worker import MissionResumeResult, MissionResumeWorker
 
@@ -76,6 +84,34 @@ async def run_resume_worker_once(
     )
 
 
+@router.post("/reaper/run-once", response_model=list[MissionReaperResult])
+async def run_reaper_once(
+    queued_stale_after_sec: int = Query(default=900, ge=60, le=86_400),
+    running_stale_after_sec: int = Query(default=3600, ge=60, le=604_800),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[MissionReaperResult]:
+    tenant = current_tenant()
+    return await mission_control.reap_stale_mission_tasks(
+        tenant_id=tenant.tenant_id,
+        queued_stale_after_sec=queued_stale_after_sec,
+        running_stale_after_sec=running_stale_after_sec,
+        limit=limit,
+    )
+
+
+@router.post("/blocked/run-once", response_model=list[MissionBlockedResult])
+async def block_exhausted_once(
+    max_attempts: int = Query(default=3, ge=1, le=20),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[MissionBlockedResult]:
+    tenant = current_tenant()
+    return await mission_control.block_exhausted_mission_tasks(
+        tenant_id=tenant.tenant_id,
+        max_attempts=max_attempts,
+        limit=limit,
+    )
+
+
 @router.get("/{mission_id}", response_model=MissionSnapshot)
 async def get_mission(mission_id: str) -> MissionSnapshot:
     tenant = current_tenant()
@@ -86,6 +122,18 @@ async def get_mission(mission_id: str) -> MissionSnapshot:
     if mission is None:
         raise HTTPException(status_code=404, detail="mission not found")
     return mission
+
+
+@router.get("/{mission_id}/summary", response_model=MissionExecutionSummary)
+async def get_mission_summary(mission_id: str) -> MissionExecutionSummary:
+    tenant = current_tenant()
+    summary = await mission_control.summarize_mission(
+        tenant_id=tenant.tenant_id,
+        mission_id=mission_id,
+    )
+    if summary is None:
+        raise HTTPException(status_code=404, detail="mission not found")
+    return summary
 
 
 @router.post("/{mission_id}/tasks", response_model=MissionSnapshot)

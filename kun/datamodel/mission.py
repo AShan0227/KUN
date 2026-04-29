@@ -87,6 +87,67 @@ class MissionSnapshot(BaseModel):
     finished_at: datetime | None = None
 
 
+class MissionReaperResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mission_id: str
+    task_id: str
+    previous_status: str
+    status: MissionTaskStatus = "failed"
+    reason: str
+    stale_for_sec: int
+
+
+class MissionBlockedResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mission_id: str
+    task_id: str
+    previous_status: str
+    runtime_status: str
+    status: MissionTaskStatus = "blocked"
+    reason: str
+    resume_attempts: int
+    max_attempts: int
+
+
+class MissionBudgetSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    budget_cap_usd: float = 0.0
+    spent_actual_usd: float = 0.0
+    spent_equivalent_usd: float = 0.0
+    remaining_equivalent_usd: float = 0.0
+    usage_fraction: float = 0.0
+
+
+class MissionCheckpointSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    role: str
+    status: MissionTaskStatus
+    runtime_status: str | None = None
+    resume_attempts: int = 0
+    last_resume_requested_at: datetime | None = None
+    last_runtime_updated_at: datetime | None = None
+    cost_usd_actual: float = 0.0
+    cost_usd_equivalent: float = 0.0
+    checkpoint: dict[str, Any] = Field(default_factory=dict)
+
+
+class MissionExecutionSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mission_id: str
+    tenant_id: str
+    status: MissionStatus
+    budget: MissionBudgetSummary
+    task_status_counts: dict[str, int] = Field(default_factory=dict)
+    checkpoints: list[MissionCheckpointSummary] = Field(default_factory=list)
+    updated_at: datetime
+
+
 class ResumeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -99,8 +160,13 @@ class ResumeRequest(BaseModel):
 
 __all__ = [
     "MilestoneStatus",
+    "MissionBlockedResult",
+    "MissionBudgetSummary",
+    "MissionCheckpointSummary",
     "MissionCreate",
+    "MissionExecutionSummary",
     "MissionMilestone",
+    "MissionReaperResult",
     "MissionSnapshot",
     "MissionStatus",
     "MissionTaskLink",

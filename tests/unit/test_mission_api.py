@@ -10,7 +10,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from kun.api import missions as mission_api
 from kun.core.tenancy import TenantContext, tenant_scope
-from kun.datamodel.mission import MissionCreate, MissionMilestone, MissionSnapshot, ResumeRequest
+from kun.datamodel.mission import (
+    MissionBlockedResult,
+    MissionBudgetSummary,
+    MissionCreate,
+    MissionExecutionSummary,
+    MissionMilestone,
+    MissionReaperResult,
+    MissionSnapshot,
+    ResumeRequest,
+)
 from kun.engineering.mission_worker import MissionResumeResult
 
 
@@ -162,6 +171,129 @@ async def test_run_resume_worker_once_uses_installed_worker() -> None:
 
     assert result[0].status == "skipped"
     assert captured == {"tenant_id": "tenant-a", "limit": 4, "max_attempts": 5}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_reaper_once_uses_tenant_and_cutoffs(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_reaper(
+        *,
+        tenant_id: str,
+        queued_stale_after_sec: int,
+        running_stale_after_sec: int,
+        limit: int,
+    ):
+        captured.update(
+            {
+                "tenant_id": tenant_id,
+                "queued": queued_stale_after_sec,
+                "running": running_stale_after_sec,
+                "limit": limit,
+            }
+        )
+        return [
+            MissionReaperResult(
+                mission_id="msn-1",
+                task_id="tk-1",
+                previous_status="running",
+                reason="stale_running_runtime",
+                stale_for_sec=7200,
+            )
+        ]
+
+    monkeypatch.setattr(mission_api.mission_control, "reap_stale_mission_tasks", fake_reaper)
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a")):
+        result = await mission_api.run_reaper_once(
+            queued_stale_after_sec=120,
+            running_stale_after_sec=240,
+            limit=3,
+        )
+
+    assert result[0].task_id == "tk-1"
+    assert result[0].status == "failed"
+    assert captured == {"tenant_id": "tenant-a", "queued": 120, "running": 240, "limit": 3}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_block_exhausted_once_uses_tenant_and_max_attempts(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_blocked(*, tenant_id: str, max_attempts: int, limit: int):
+        captured.update({"tenant_id": tenant_id, "max_attempts": max_attempts, "limit": limit})
+        return [
+            MissionBlockedResult(
+                mission_id="msn-1",
+                task_id="tk-1",
+                previous_status="queued",
+                runtime_status="queued",
+                reason="max_resume_attempts_exhausted",
+                resume_attempts=3,
+                max_attempts=max_attempts,
+            )
+        ]
+
+    monkeypatch.setattr(mission_api.mission_control, "block_exhausted_mission_tasks", fake_blocked)
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a")):
+        result = await mission_api.block_exhausted_once(max_attempts=3, limit=8)
+
+    assert result[0].status == "blocked"
+    assert result[0].reason == "max_resume_attempts_exhausted"
+    assert captured == {"tenant_id": "tenant-a", "max_attempts": 3, "limit": 8}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_mission_summary_returns_budget_rollup(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    now = datetime.now(UTC)
+
+    async def fake_summary(*, tenant_id: str, mission_id: str):
+        captured.update({"tenant_id": tenant_id, "mission_id": mission_id})
+        return MissionExecutionSummary(
+            mission_id=mission_id,
+            tenant_id=tenant_id,
+            status="running",
+            budget=MissionBudgetSummary(
+                budget_cap_usd=10.0,
+                spent_actual_usd=1.25,
+                spent_equivalent_usd=2.5,
+                remaining_equivalent_usd=7.5,
+                usage_fraction=0.25,
+            ),
+            task_status_counts={"running": 1},
+            checkpoints=[],
+            updated_at=now,
+        )
+
+    monkeypatch.setattr(mission_api.mission_control, "summarize_mission", fake_summary)
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a")):
+        result = await mission_api.get_mission_summary("msn-1")
+
+    assert result.budget.spent_equivalent_usd == 2.5
+    assert captured == {"tenant_id": "tenant-a", "mission_id": "msn-1"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_mission_summary_returns_404_when_missing(monkeypatch) -> None:
+    async def fake_summary(*, tenant_id: str, mission_id: str):
+        return None
+
+    monkeypatch.setattr(mission_api.mission_control, "summarize_mission", fake_summary)
+
+    with (
+        tenant_scope(TenantContext(tenant_id="tenant-a")),
+        pytest.raises(mission_api.HTTPException) as exc,
+    ):
+        await mission_api.get_mission_summary("msn-missing")
+
+    assert exc.value.status_code == 404
 
 
 def _snapshot() -> MissionSnapshot:
