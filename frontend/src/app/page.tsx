@@ -410,6 +410,13 @@ export default function Home() {
     }
   }, [graphId, graphKind]);
 
+  const activeLedger = globalState?.active_state_ledger ?? [];
+  const ledgerPendingCount = activeLedger.reduce(
+    (sum, item) => sum + item.pending_confirmations.length,
+    0,
+  );
+  const pendingDecisionCount = Math.max(ledgerPendingCount, pendingActions.length);
+
   return (
     <div className="grid grid-cols-[1fr_360px] gap-4 p-4 h-full">
       {/* Main channel */}
@@ -443,12 +450,7 @@ export default function Home() {
             />
             <MiniCard
               label="待确认"
-              value={String(
-                globalState?.active_state_ledger.reduce(
-                  (sum, item) => sum + item.pending_confirmations.length,
-                  0,
-                ) ?? 0,
-              )}
+              value={String(pendingDecisionCount)}
               hint="需要你拍板"
             />
           </div>
@@ -572,7 +574,7 @@ export default function Home() {
                 </div>
               </div>
             )}
-            {(globalState?.active_state_ledger ?? []).slice(0, 3).map((item) => (
+            {activeLedger.slice(0, 3).map((item) => (
               <div
                 key={item.task_id}
                 className="rounded border border-gray-200 bg-white p-2 text-xs"
@@ -596,7 +598,7 @@ export default function Home() {
                 )}
               </div>
             ))}
-            {globalState && globalState.active_state_ledger.length === 0 && (
+            {globalState && activeLedger.length === 0 && (
               <div className="rounded border border-dashed border-gray-200 bg-white p-2 text-xs text-gray-500">
                 现在没有活跃任务。你可以直接在下面给鲲一个目标。
               </div>
