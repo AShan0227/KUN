@@ -15,6 +15,7 @@ from kun.engineering.delivery_status import (
     get_v3_delivery_status,
     validate_delivery_status,
 )
+from kun.engineering.ops_dogfood import dogfood_scenario_report
 
 router = APIRouter()
 
@@ -80,3 +81,10 @@ async def delivery_status() -> dict[str, Any]:
         "summary": delivery_status_summary(),
         "validation_issues": validate_delivery_status(),
     }
+
+
+@router.get("/dogfood-scenarios")
+async def dogfood_scenarios() -> dict[str, Any]:
+    """V3 operator dogfood scenarios and current blockers."""
+    report = dogfood_scenario_report()
+    return report.model_dump(mode="json")
