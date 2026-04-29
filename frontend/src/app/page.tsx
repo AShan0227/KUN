@@ -474,8 +474,17 @@ export default function Home() {
                       <div className="mt-1 truncate text-gray-500">任务 {action.task_ref}</div>
                       {action.gateway_preview && (
                         <div className="mt-1 text-gray-500">
-                          <div className="truncate">
-                            网关：{gatewayPreviewLabel(action.gateway_preview)}
+                          <div className="flex items-center gap-2">
+                            <span className="truncate">
+                              网关：{gatewayPreviewLabel(action.gateway_preview)}
+                            </span>
+                            <span
+                              className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${gatewayCapabilityClass(
+                                action.gateway_preview,
+                              )}`}
+                            >
+                              {gatewayCapabilityLabel(action.gateway_preview)}
+                            </span>
                           </div>
                           {action.gateway_preview.next_step && (
                             <div className="truncate text-gray-400">
@@ -817,6 +826,25 @@ function gatewayPreviewLabel(preview: GatewayPreview) {
   if (preview.requires_handler) return "没有执行器，只审计";
   if (preview.external_dispatched) return "批准后会执行受控本地动作";
   return "批准后只生成草稿 / dry-run";
+}
+
+function gatewayCapabilityLabel(preview: GatewayPreview) {
+  if (preview.capability_status === "preview_failed") return "先检查";
+  if (preview.capability_status === "missing_handler" || preview.requires_handler) return "只审计";
+  if (preview.capability_status === "supported_execute") return "会执行";
+  if (preview.capability_status === "supported_draft") return "草稿";
+  if (preview.capability_status === "supported_dry_run") return "dry-run";
+  if (preview.capability_status === "supported_plan") return "计划";
+  return "待确认";
+}
+
+function gatewayCapabilityClass(preview: GatewayPreview) {
+  if (preview.capability_status === "preview_failed") return "bg-red-50 text-red-700";
+  if (preview.capability_status === "missing_handler" || preview.requires_handler) {
+    return "bg-gray-100 text-gray-600";
+  }
+  if (preview.capability_status === "supported_execute") return "bg-green-50 text-green-700";
+  return "bg-blue-50 text-blue-700";
 }
 
 function MiniCard({

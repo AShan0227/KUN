@@ -470,7 +470,14 @@ export default function NuoDashboard() {
                 {a.gateway_preview && (
                   <div className="mt-2 rounded bg-gray-50 p-2 text-xs text-gray-600">
                     <div className="font-medium text-gray-700">
-                      网关预览：{gatewayPreviewLabel(a.gateway_preview)}
+                      <span>网关预览：{gatewayPreviewLabel(a.gateway_preview)}</span>
+                      <span
+                        className={`ml-2 rounded px-1.5 py-0.5 text-[11px] ${gatewayCapabilityClass(
+                          a.gateway_preview,
+                        )}`}
+                      >
+                        {gatewayCapabilityLabel(a.gateway_preview)}
+                      </span>
                     </div>
                     <div className="mt-1">
                       {a.gateway_preview.user_summary || a.gateway_preview.message}
@@ -662,6 +669,25 @@ function gatewayPreviewLabel(preview: GatewayPreview) {
   const handler = preview.audit?.handler_id || "已注册 handler";
   if (preview.external_dispatched) return `${handler} 会执行受控本地动作`;
   return `${handler} 会生成草稿 / dry-run 产物，不会外发`;
+}
+
+function gatewayCapabilityLabel(preview: GatewayPreview) {
+  if (preview.capability_status === "preview_failed") return "先检查";
+  if (preview.capability_status === "missing_handler" || preview.requires_handler) return "只审计";
+  if (preview.capability_status === "supported_execute") return "会执行";
+  if (preview.capability_status === "supported_draft") return "草稿";
+  if (preview.capability_status === "supported_dry_run") return "dry-run";
+  if (preview.capability_status === "supported_plan") return "计划";
+  return "待确认";
+}
+
+function gatewayCapabilityClass(preview: GatewayPreview) {
+  if (preview.capability_status === "preview_failed") return "bg-red-50 text-red-700";
+  if (preview.capability_status === "missing_handler" || preview.requires_handler) {
+    return "bg-gray-100 text-gray-600";
+  }
+  if (preview.capability_status === "supported_execute") return "bg-green-50 text-green-700";
+  return "bg-blue-50 text-blue-700";
 }
 
 function actionGatewaySummary(action: PendingAction) {
