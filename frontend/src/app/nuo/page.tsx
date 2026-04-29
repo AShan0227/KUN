@@ -68,6 +68,11 @@ type GatewayPreview = {
     would_overwrite?: boolean;
     diff_truncated?: boolean;
     error?: string;
+    policy?: {
+      allowed?: boolean;
+      block_reasons?: string[];
+      missing_permissions?: string[];
+    };
   };
 };
 
@@ -130,6 +135,10 @@ type WorldHandler = {
   approval_effect: string;
   cannot_do: string[];
   permissions_required: string[];
+  allowed_risk_levels?: string[];
+  requires_external_dispatch_confirmation?: boolean;
+  retry_policy?: string;
+  compensation_strategy?: string;
   next_step: string;
 };
 
@@ -235,10 +244,21 @@ export default function NuoDashboard() {
     async (actionId: string, decision: "approve" | "reject" | "cancel") => {
       setDecideBusy(actionId);
       try {
+        const action = actions.find((item) => item.action_id === actionId);
+        let externalDispatchConfirmed = false;
+        if (decision === "approve" && needsExternalDispatchConfirmation(action)) {
+          externalDispatchConfirmed = window.confirm(
+            "这个动作会真实影响外部世界。请确认你已经检查目标、内容、风险和补偿方式。",
+          );
+          if (!externalDispatchConfirmed) return;
+        }
         const result = await fetchJson<ActionDecisionResult>(`/nuo/actions/${actionId}/decision`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ decision }),
+          body: JSON.stringify({
+            decision,
+            external_dispatch_confirmed: externalDispatchConfirmed,
+          }),
         });
         const artifact = result.gateway?.audit?.artifact_ref;
         setActionNotice(
@@ -251,7 +271,7 @@ export default function NuoDashboard() {
         setDecideBusy(null);
       }
     },
-    [reload],
+    [actions, reload],
   );
 
   const loadMoreActions = useCallback(async () => {
@@ -399,6 +419,22 @@ export default function NuoDashboard() {
                     做不到：{handler.cannot_do.slice(0, 2).join("；")}
                   </p>
                 )}
+                {handler.requires_external_dispatch_confirmation && (
+                  <p className="text-xs text-kun-warn mt-1">真实外发前需要二次确认</p>
+                )}
+                {handler.allowed_risk_levels && handler.allowed_risk_levels.length > 0 && (
+                  <p className="text-xs text-gray-400 mt-1">
+                    风险范围：{handler.allowed_risk_levels.join(" / ")}
+                  </p>
+                )}
+                {handler.retry_policy && (
+                  <p className="text-xs text-gray-400 mt-1">重试：{handler.retry_policy}</p>
+                )}
+                {handler.compensation_strategy && (
+                  <p className="text-xs text-gray-400 mt-1">
+                    补偿：{handler.compensation_strategy}
+                  </p>
+                )}
                 <p className="text-xs text-gray-400 mt-2">
                   {handler.handler_id} · {handler.artifact_kind} ·{" "}
                   {handler.external_dispatched ? "会产生受控本地产物" : "不会外发"}
@@ -500,6 +536,18 @@ export default function NuoDashboard() {
                         下一步：{a.gateway_preview.next_step}
                       </div>
                     )}
+                    {a.gateway_preview.audit?.policy?.allowed === false && (
+                      <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-amber-900">
+                        策略拦截：
+                        {(a.gateway_preview.audit.policy.block_reasons || []).join("；")}
+                      </div>
+                    )}
+                    {a.gateway_preview.permissions_required &&
+                      a.gateway_preview.permissions_required.length > 0 && (
+                        <div className="mt-1 text-gray-500">
+                          需要权限：{a.gateway_preview.permissions_required.join(" / ")}
+                        </div>
+                      )}
                     {a.gateway_preview.audit?.relative_path && (
                       <div className="mt-1 text-gray-400">
                         文件：{a.gateway_preview.audit.relative_path}
@@ -719,6 +767,14 @@ function actionGatewaySummary(action: PendingAction) {
   const base = summary || `${mode} · ${dispatched}`;
   const withArtifact = artifact ? `${base} · 产物：${artifact}` : base;
   return nextStep ? `${withArtifact} · 下一步：${nextStep}` : withArtifact;
+}
+
+function needsExternalDispatchConfirmation(action?: PendingAction) {
+  if (!action?.gateway_preview) return false;
+  const permissions = action.gateway_preview.permissions_required || [];
+  if (permissions.includes("external_dispatch_confirmation")) return true;
+  const policy = action.gateway_preview.audit?.policy;
+  return (policy?.missing_permissions || []).includes("external_dispatch_confirmation");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
