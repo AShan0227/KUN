@@ -266,6 +266,19 @@ async def test_world_gateway_local_file_write_handler(tmp_path) -> None:
 
 
 @pytest.mark.unit
+def test_world_gateway_exposes_handler_registry(tmp_path) -> None:
+    gateway = WorldGateway(artifact_root=tmp_path)
+
+    descriptors = {item.action_type: item for item in gateway.handler_descriptors()}
+
+    assert descriptors["local_file.write"].mode == "execute"
+    assert descriptors["local_file.write"].external_dispatched is True
+    assert descriptors["email.draft"].mode == "draft"
+    assert descriptors["webhook.post_dry_run"].mode == "dry_run"
+    assert descriptors["browser.plan"].mode == "plan"
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_world_gateway_local_file_write_blocks_path_traversal(tmp_path) -> None:
     gateway = WorldGateway(artifact_root=tmp_path)

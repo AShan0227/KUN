@@ -24,6 +24,7 @@ EventKind = Literal[
     "task.pre_conflict_detected",
     "task.pending_actions.created",
     "task.pending_action.executed",
+    "task.pending_action.execution_failed",
     "task.paused",
     "task.paused.preflight",
     "task.resumed",

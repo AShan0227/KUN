@@ -67,6 +67,9 @@ def get_v3_delivery_status() -> list[DeliveryCapability]:
                 "email.draft 可生成草稿但不会发送",
                 "webhook.post_dry_run 可渲染请求但不会联网",
                 "browser.plan 可生成浏览器操作计划但不会真实点击",
+                "NUO 可查看当前 WorldGateway handler 支持状态",
+                "审批接口会返回 gateway 执行结果和产物路径",
+                "handler 执行失败会明确返回失败并保持任务暂停",
                 "不支持的 action_type 会明确 requires_handler=true",
             ],
             missing=[
@@ -79,7 +82,8 @@ def get_v3_delivery_status() -> list[DeliveryCapability]:
             ],
             next_steps=[
                 "把执行结果写入更完整的 StateLedger",
-                "再接 browser.plan / API dry-run / email.send 审批链",
+                "补 local_file.write 的写前 diff / preview",
+                "再接真实 browser / 企业 API / email.send 审批链",
             ],
         ),
         DeliveryCapability(

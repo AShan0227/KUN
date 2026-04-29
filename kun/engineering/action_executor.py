@@ -34,6 +34,7 @@ class ActionExecutionResult(BaseModel):
     action_status: str
     task_status: TaskStatus | None = None
     message: str
+    gateway_result: WorldGatewayResult | None = None
 
 
 async def execute_approved_action_once(
@@ -54,16 +55,49 @@ async def execute_approved_action_once(
             return None
 
         task_ref = str(action.task_ref)
-        gateway_result = await get_world_gateway().execute_approved(
-            WorldAction(
-                action_id=action.action_id,
-                task_ref=task_ref,
-                action_type=action.action_type,
-                target_ref=action.target_ref,
-                risk_level=action.risk_level,
-                payload=action.payload,
+        try:
+            gateway_result = await get_world_gateway().execute_approved(
+                WorldAction(
+                    action_id=action.action_id,
+                    task_ref=task_ref,
+                    action_type=action.action_type,
+                    target_ref=action.target_ref,
+                    risk_level=action.risk_level,
+                    payload=action.payload,
+                )
             )
-        )
+        except Exception as exc:
+            action.payload = _executor_error_payload(action.payload, now, exc)
+            action.status = "cancelled"
+            action.updated_at = now
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant_id,
+                    event_type="task.pending_action.execution_failed",
+                    payload={
+                        "task_id": task_ref,
+                        "action_id": action.action_id,
+                        "action_type": action.action_type,
+                        "target_ref": action.target_ref,
+                        "error": str(exc),
+                    },
+                    task_ref=task_ref,
+                ),
+            )
+            get_state_ledger().record_paused(
+                task_ref,
+                reason=f"外部动作执行失败：{exc}",
+                pending_confirmations=[action.action_id],
+            )
+            return ActionExecutionResult(
+                action_id=action_id,
+                task_ref=task_ref,
+                action_status="cancelled",
+                task_status="paused",
+                message=_execution_failed_message(exc),
+            )
+
         action.payload = _executor_payload(action.payload, now, gateway_result=gateway_result)
         action.status = "executed"
         action.executed_at = now
@@ -111,6 +145,7 @@ async def execute_approved_action_once(
                     "Action executed. Task is still paused because other pending actions "
                     "are not resolved yet."
                 ),
+                gateway_result=gateway_result,
             )
 
         unblocked = await s.execute(_unblock_paused_runtime_stmt(tenant_id, task_ref, now))
@@ -137,6 +172,7 @@ async def execute_approved_action_once(
             action_status="executed",
             task_status=task_status,
             message=_execution_message(task_status, gateway_result),
+            gateway_result=gateway_result,
         )
 
 
@@ -214,6 +250,22 @@ def _executor_payload(
     return merged
 
 
+def _executor_error_payload(
+    payload: dict[str, Any],
+    now: datetime,
+    exc: Exception,
+) -> dict[str, Any]:
+    merged = dict(payload)
+    merged["executor"] = {
+        "mode": "approval_gate",
+        "status": "failed",
+        "executed_at": now.isoformat(),
+        "error": str(exc),
+        "note": "World Gateway handler failed; task remains paused for human review.",
+    }
+    return merged
+
+
 def _executor_note(gateway_result: WorldGatewayResult | None) -> str:
     if gateway_result is None:
         return "World Gateway approval gate executed."
@@ -225,6 +277,10 @@ def _executor_note(gateway_result: WorldGatewayResult | None) -> str:
     if gateway_result.external_dispatched:
         return "World Gateway executed a registered low-risk delivery handler."
     return "World Gateway produced a registered draft or dry-run artifact; no external dispatch happened."
+
+
+def _execution_failed_message(exc: Exception) -> str:
+    return f"Action execution failed; task remains paused for review. Gateway error: {exc}"
 
 
 def _execution_message(

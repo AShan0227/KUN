@@ -97,6 +97,33 @@ type DeliveryCapability = {
   next_steps: string[];
 };
 
+type WorldHandler = {
+  action_type: string;
+  handler_id: string;
+  mode: "execute" | "draft" | "dry_run" | "plan";
+  external_dispatched: boolean;
+  artifact_kind: string;
+  safety_note: string;
+};
+
+type WorldGatewayHandlers = {
+  artifact_root: string;
+  handlers: WorldHandler[];
+  unsupported_policy: string;
+};
+
+type ActionDecisionResult = {
+  action_id: string;
+  status: string;
+  message: string;
+  gateway?: {
+    gateway_mode?: string;
+    external_dispatched?: boolean;
+    requires_handler?: boolean;
+    audit?: { artifact_ref?: string; handler_id?: string };
+  } | null;
+};
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -122,6 +149,10 @@ export default function NuoDashboard() {
   const [diagnoseHint, setDiagnoseHint] = useState("");
   const [capability, setCapability] = useState<CapabilitySnapshot[]>([]);
   const [delivery, setDelivery] = useState<DeliveryCapability[]>([]);
+  const [worldHandlers, setWorldHandlers] = useState<WorldHandler[]>([]);
+  const [worldArtifactRoot, setWorldArtifactRoot] = useState("");
+  const [unsupportedPolicy, setUnsupportedPolicy] = useState("");
+  const [actionNotice, setActionNotice] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [decideBusy, setDecideBusy] = useState<string | null>(null);
   const [expandBusy, setExpandBusy] = useState<string | null>(null);
@@ -136,8 +167,9 @@ export default function NuoDashboard() {
       ),
       fetchJson<{ snapshots: CapabilitySnapshot[] }>("/nuo/capability/summary"),
       fetchJson<{ items: DeliveryCapability[] }>("/nuo/health/delivery-status"),
+      fetchJson<WorldGatewayHandlers>("/nuo/actions/handlers"),
     ])
-      .then(([h, b, a, d, c, ds]) => {
+      .then(([h, b, a, d, c, ds, wg]) => {
         setHealth(h);
         setBudget(b);
         setActions(a.actions || []);
@@ -152,6 +184,9 @@ export default function NuoDashboard() {
         setFindingRound(d.round);
         setCapability(c.snapshots || []);
         setDelivery(ds.items || []);
+        setWorldHandlers(wg.handlers || []);
+        setWorldArtifactRoot(wg.artifact_root || "");
+        setUnsupportedPolicy(wg.unsupported_policy || "");
         setErr(null);
       })
       .catch((e) => setErr(String(e)));
@@ -167,11 +202,15 @@ export default function NuoDashboard() {
     async (actionId: string, decision: "approve" | "reject" | "cancel") => {
       setDecideBusy(actionId);
       try {
-        await fetchJson(`/nuo/actions/${actionId}/decision`, {
+        const result = await fetchJson<ActionDecisionResult>(`/nuo/actions/${actionId}/decision`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ decision }),
         });
+        const artifact = result.gateway?.audit?.artifact_ref;
+        setActionNotice(
+          artifact ? `${result.message} 产物：${artifact}` : result.message,
+        );
         reload();
       } catch (e) {
         setErr(String(e));
@@ -286,6 +325,36 @@ export default function NuoDashboard() {
           {budget.day_actual_usd.toFixed(4)} (ADR-008)
         </p>
       </section>
+
+      {actionNotice && (
+        <section className="bg-emerald-50 border border-emerald-100 rounded-lg p-3 text-sm text-emerald-900">
+          {actionNotice}
+        </section>
+      )}
+
+      {worldHandlers.length > 0 && (
+        <details className="bg-white rounded-lg shadow-sm p-4">
+          <summary className="cursor-pointer text-base font-medium">外部动作网关</summary>
+          <p className="text-xs text-gray-500 mt-2">
+            产物根目录：{worldArtifactRoot || "未配置"}。{unsupportedPolicy}
+          </p>
+          <div className="grid md:grid-cols-2 gap-3 mt-3">
+            {worldHandlers.map((handler) => (
+              <div key={handler.action_type} className="border rounded p-3 text-sm">
+                <div className="flex justify-between gap-3">
+                  <span className="font-medium">{handler.action_type}</span>
+                  <span className="text-xs text-gray-500">{handler.mode}</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">{handler.safety_note}</p>
+                <p className="text-xs text-gray-400 mt-2">
+                  {handler.handler_id} · {handler.artifact_kind} ·{" "}
+                  {handler.external_dispatched ? "会产生受控本地产物" : "不会外发"}
+                </p>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
 
       {actions.length > 0 && (
         <section className="bg-white rounded-lg shadow-sm p-4">

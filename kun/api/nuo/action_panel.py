@@ -15,6 +15,7 @@ from kun.core.orm import PendingActionRow
 from kun.core.tenancy import current_tenant
 from kun.datamodel.runtime import TaskStatus
 from kun.engineering.action_executor import ActionExecutionResult, execute_approved_action_once
+from kun.world.gateway import WorldHandlerDescriptor, get_world_gateway
 
 router = APIRouter()
 
@@ -55,6 +56,17 @@ class ActionDecisionResponse(BaseModel):
     message: str = ""
     task_ref: str | None = None
     task_status: TaskStatus | None = None
+    gateway: dict[str, Any] | None = None
+
+
+class WorldGatewayHandlersResponse(BaseModel):
+    tenant_id: str
+    artifact_root: str
+    handlers: list[WorldHandlerDescriptor]
+    unsupported_policy: str = (
+        "没有 handler 的 action 只会生成审计包，并明确 requires_handler=true；"
+        "不会假装已经真实外发。"
+    )
 
 
 @router.get("/pending", response_model=PendingActionList)
@@ -103,6 +115,18 @@ async def list_pending_actions(
         remaining=remaining if round_no < max_rounds else 0,
         round=round_no,
         max_rounds=max_rounds,
+    )
+
+
+@router.get("/handlers", response_model=WorldGatewayHandlersResponse)
+async def list_world_gateway_handlers() -> WorldGatewayHandlersResponse:
+    """Show which approved world actions can produce real controlled artifacts."""
+    tenant = current_tenant()
+    gateway = get_world_gateway()
+    return WorldGatewayHandlersResponse(
+        tenant_id=tenant.tenant_id,
+        artifact_root=str(gateway.artifact_root),
+        handlers=gateway.handler_descriptors(),
     )
 
 
@@ -160,6 +184,11 @@ async def decide_pending_action(
         message=execution.message if execution else _decision_message(new_status),
         task_ref=execution.task_ref if execution else None,
         task_status=execution.task_status if execution else None,
+        gateway=(
+            execution.gateway_result.model_dump(mode="json")
+            if execution and execution.gateway_result
+            else None
+        ),
     )
 
 

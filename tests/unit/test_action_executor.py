@@ -8,7 +8,9 @@ import pytest
 from kun.engineering.action_executor import (
     _claim_approved_action_stmt,
     _count_unresolved_actions_stmt,
+    _execution_failed_message,
     _execution_message,
+    _executor_error_payload,
     _executor_payload,
     _mark_task_result_queued_stmt,
     _unblock_paused_runtime_stmt,
@@ -112,6 +114,16 @@ def test_executor_payload_is_honest_when_handler_is_missing() -> None:
 
 
 @pytest.mark.unit
+def test_executor_error_payload_keeps_failure_visible() -> None:
+    now = datetime.now(UTC)
+    payload = _executor_error_payload({}, now, ValueError("bad path"))
+
+    assert payload["executor"]["status"] == "failed"
+    assert payload["executor"]["error"] == "bad path"
+    assert "remains paused" in payload["executor"]["note"]
+
+
+@pytest.mark.unit
 def test_execution_message_mentions_unblocked_queue() -> None:
     assert "unblocked to queued" in _execution_message("queued")
 
@@ -127,3 +139,8 @@ def test_execution_message_includes_gateway_message() -> None:
     )
 
     assert "Email draft created" in _execution_message("queued", gateway_result)
+
+
+@pytest.mark.unit
+def test_execution_failed_message_is_honest() -> None:
+    assert "remains paused" in _execution_failed_message(ValueError("bad path"))

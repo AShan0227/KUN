@@ -59,11 +59,26 @@ class WorldHandlerResult(BaseModel):
     message: str
 
 
+class WorldHandlerDescriptor(BaseModel):
+    """User-facing capability descriptor for one gateway handler."""
+
+    action_type: str
+    handler_id: str
+    mode: Literal["execute", "draft", "dry_run", "plan"]
+    external_dispatched: bool = False
+    artifact_kind: str = ""
+    safety_note: str
+
+
 class WorldActionHandler:
     """Base class for concrete WorldGateway handlers."""
 
     action_type: str
     handler_id: str
+    mode: Literal["execute", "draft", "dry_run", "plan"] = "dry_run"
+    external_dispatched: bool = False
+    artifact_kind: str = ""
+    safety_note: str = "Handled by World Gateway."
 
     async def execute(self, action: WorldAction) -> WorldHandlerResult:
         raise NotImplementedError
@@ -74,6 +89,10 @@ class LocalFileWriteHandler(WorldActionHandler):
 
     action_type = "local_file.write"
     handler_id = "local_file.write.v1"
+    mode = "execute"
+    external_dispatched = True
+    artifact_kind = "local_file"
+    safety_note = "只允许写入 KUN 受控输出目录，禁止绝对路径和路径穿越。"
 
     def __init__(self, output_root: str | Path) -> None:
         self.output_root = Path(output_root).expanduser().resolve()
@@ -122,6 +141,10 @@ class EmailDraftHandler(WorldActionHandler):
 
     action_type = "email.draft"
     handler_id = "email.draft.v1"
+    mode = "draft"
+    external_dispatched = False
+    artifact_kind = "email_draft"
+    safety_note = "只生成邮件草稿文件，不会真实发送邮件。"
 
     def __init__(self, output_root: str | Path) -> None:
         self.draft_root = Path(output_root).expanduser().resolve() / "email_drafts"
@@ -161,6 +184,10 @@ class WebhookPostDryRunHandler(WorldActionHandler):
 
     action_type = "webhook.post_dry_run"
     handler_id = "webhook.post_dry_run.v1"
+    mode = "dry_run"
+    external_dispatched = False
+    artifact_kind = "http_request_preview"
+    safety_note = "只渲染 POST 请求包，不会发起网络请求。"
 
     async def execute(self, action: WorldAction) -> WorldHandlerResult:
         url = str(action.payload.get("url") or action.target_ref or "").strip()
@@ -195,6 +222,10 @@ class BrowserPlanHandler(WorldActionHandler):
 
     action_type = "browser.plan"
     handler_id = "browser.plan.v1"
+    mode = "plan"
+    external_dispatched = False
+    artifact_kind = "browser_plan"
+    safety_note = "只生成浏览器操作计划，不会真实点击或控制浏览器。"
 
     def __init__(self, output_root: str | Path) -> None:
         self.plan_root = Path(output_root).expanduser().resolve() / "browser_plans"
@@ -252,6 +283,19 @@ class WorldGateway:
 
     def supported_action_types(self) -> list[str]:
         return sorted(self.handlers)
+
+    def handler_descriptors(self) -> list[WorldHandlerDescriptor]:
+        return [
+            WorldHandlerDescriptor(
+                action_type=handler.action_type,
+                handler_id=handler.handler_id,
+                mode=handler.mode,
+                external_dispatched=handler.external_dispatched,
+                artifact_kind=handler.artifact_kind,
+                safety_note=handler.safety_note,
+            )
+            for handler in sorted(self.handlers.values(), key=lambda item: item.action_type)
+        ]
 
     async def execute_approved(self, action: WorldAction) -> WorldGatewayResult:
         target = self._target_for(action.action_type)
@@ -362,6 +406,7 @@ __all__ = [
     "WorldActionHandler",
     "WorldGateway",
     "WorldGatewayResult",
+    "WorldHandlerDescriptor",
     "WorldHandlerResult",
     "get_world_gateway",
     "set_world_gateway",
