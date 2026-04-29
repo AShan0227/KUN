@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # Qdrant
-    qdrant_url: str = "http://localhost:16333"
+    qdrant_url: str = "http://127.0.0.1:16333"
     qdrant_api_key: str | None = None
 
     # NATS
