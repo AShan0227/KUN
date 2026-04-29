@@ -43,7 +43,9 @@
 - 测试：`tests/unit/test_v3_memory_scoring_gateway.py`、`tests/unit/test_action_executor.py`。
 - 已接低风险 handler：`local_file.write` 写入受控输出目录；`email.draft` 只生成草稿不发送；`webhook.post_dry_run` 只渲染请求不联网；`browser.plan` 只生成操作计划不真实点击。
 - 已接 handler registry：`/nuo/actions/handlers` 能列出当前支持的 action_type、handler_id、执行模式、产物类型和安全说明。
+- 已接审批前预览：`/nuo/actions/pending` 会返回 `gateway_preview`；`local_file.write` 会生成受控目录内的 unified diff，不会在预览阶段写文件。
 - 已接审批回执：`/nuo/actions/{action_id}/decision` 会返回 gateway 结果；NUO 页面会显示执行消息和产物路径。
+- 已接最近动作视图：`/nuo/actions/recent` 和 NUO 页面能展示最近外部动作的执行模式、是否外发、产物路径摘要。
 - 已接失败闭环：handler 抛错时 action 会明确标记为 `cancelled`，任务保持暂停，不会卡在用户看不见的 `approved` 状态。
 - 已接状态账本：审批执行结果会写入 `world.action.executed` trail，让黑板/任务卡能解释到底执行了 handler、生成了草稿，还是仍缺 handler。
 - 诚实边界：没有 handler 的 action 继续标 `requires_handler=true`；草稿和 dry-run 不会假装真实外发；支付、公开发布、真实发信仍未接通。

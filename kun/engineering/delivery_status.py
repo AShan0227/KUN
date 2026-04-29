@@ -68,7 +68,9 @@ def get_v3_delivery_status() -> list[DeliveryCapability]:
                 "webhook.post_dry_run 可渲染请求但不会联网",
                 "browser.plan 可生成浏览器操作计划但不会真实点击",
                 "NUO 可查看当前 WorldGateway handler 支持状态",
+                "待审批动作会带 gateway_preview；local_file.write 可在批准前看到 diff",
                 "审批接口会返回 gateway 执行结果和产物路径",
+                "NUO 可查看最近外部动作执行记录和产物摘要",
                 "handler 执行失败会明确返回失败并保持任务暂停",
                 "不支持的 action_type 会明确 requires_handler=true",
             ],
@@ -82,7 +84,6 @@ def get_v3_delivery_status() -> list[DeliveryCapability]:
             ],
             next_steps=[
                 "把执行结果写入更完整的 StateLedger",
-                "补 local_file.write 的写前 diff / preview",
                 "再接真实 browser / 企业 API / email.send 审批链",
             ],
         ),

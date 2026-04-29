@@ -266,6 +266,31 @@ async def test_world_gateway_local_file_write_handler(tmp_path) -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_local_file_preview_diff_without_writing(tmp_path) -> None:
+    gateway = WorldGateway(artifact_root=tmp_path)
+
+    result = await gateway.preview(
+        WorldAction(
+            action_id="act-file-preview",
+            task_ref="task-1",
+            action_type="local_file.write",
+            target_ref="reports/hello.txt",
+            risk_level="low",
+            payload={"content": "hello\n"},
+        )
+    )
+
+    assert result.gateway_mode == "handler_preview"
+    assert result.requires_handler is False
+    assert result.external_dispatched is False
+    assert result.audit["handler_id"] == "local_file.write.v1"
+    assert result.audit["would_create"] is True
+    assert "+hello" in result.rendered_payload
+    assert not (tmp_path / "files" / "reports" / "hello.txt").exists()
+
+
+@pytest.mark.unit
 def test_world_gateway_exposes_handler_registry(tmp_path) -> None:
     gateway = WorldGateway(artifact_root=tmp_path)
 

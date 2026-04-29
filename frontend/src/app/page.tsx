@@ -122,7 +122,17 @@ type PendingAction = {
   status: string;
   risk_level: string;
   payload: Record<string, unknown>;
+  gateway_preview?: GatewayPreview | null;
   created_at: string;
+};
+
+type GatewayPreview = {
+  gateway_mode?: string;
+  external_dispatched?: boolean;
+  requires_handler?: boolean;
+  rendered_payload?: string;
+  message?: string;
+  audit?: { handler_id?: string; relative_path?: string; artifact_kind?: string; error?: string };
 };
 
 type PendingActionPage = {
@@ -410,6 +420,11 @@ export default function Home() {
                         <span className="text-amber-700">{action.risk_level}</span>
                       </div>
                       <div className="mt-1 truncate text-gray-500">任务 {action.task_ref}</div>
+                      {action.gateway_preview && (
+                        <div className="mt-1 truncate text-gray-500">
+                          网关：{gatewayPreviewLabel(action.gateway_preview)}
+                        </div>
+                      )}
                       <div className="mt-2 flex gap-2">
                         <button
                           className="rounded border border-green-200 bg-green-50 px-2 py-1 text-green-700 disabled:opacity-50"
@@ -703,6 +718,13 @@ const ICONS: Record<string, string> = {
   idle_batch_report: "🌙",
   scorecard: "📊",
 };
+
+function gatewayPreviewLabel(preview: GatewayPreview) {
+  if (preview.gateway_mode === "preview_failed") return "预览失败";
+  if (preview.requires_handler) return "没有执行器，只审计";
+  if (preview.external_dispatched) return "批准后会执行受控本地动作";
+  return "批准后只生成草稿 / dry-run";
+}
 
 function MiniCard({
   label,

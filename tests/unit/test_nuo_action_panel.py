@@ -12,9 +12,11 @@ from kun.api.nuo.action_panel import (
     _decision_to_status,
     _decision_update_stmt,
     _page_actions_anchor,
+    _row_to_item,
     _sort_actions_for_anchor,
 )
 from kun.core.orm import PendingActionRow
+from kun.world.gateway import WorldGatewayResult
 from sqlalchemy.dialects import postgresql
 
 
@@ -61,8 +63,14 @@ def _action(
         PendingActionRow,
         SimpleNamespace(
             action_id=action_id,
+            task_ref="task-1",
+            action_type="local_file.write",
+            target_ref="reports/a.txt",
+            status="pending_approval",
             risk_level=risk_level,
+            payload={},
             created_at=datetime(2026, 1, 1, 0, minute, tzinfo=UTC),
+            updated_at=datetime(2026, 1, 1, 0, minute, tzinfo=UTC),
         ),
     )
 
@@ -150,3 +158,20 @@ def test_page_actions_anchor_rejects_unknown_cursor() -> None:
             expand_after="missing",
             max_rounds=3,
         )
+
+
+@pytest.mark.unit
+def test_row_to_item_embeds_gateway_preview() -> None:
+    preview = WorldGatewayResult(
+        action_id="a-1",
+        gateway_mode="handler_preview",
+        requires_handler=False,
+        audit={"handler_id": "local_file.write.v1"},
+        message="Preview only",
+    )
+
+    item = _row_to_item(_action("a-1", "low", 1), preview=preview)
+
+    assert item.gateway_preview is not None
+    assert item.gateway_preview["gateway_mode"] == "handler_preview"
+    assert item.gateway_preview["audit"]["handler_id"] == "local_file.write.v1"

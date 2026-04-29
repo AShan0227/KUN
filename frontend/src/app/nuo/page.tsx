@@ -46,7 +46,25 @@ type PendingAction = {
   status: string;
   risk_level: string;
   payload: Record<string, unknown>;
+  gateway_preview?: GatewayPreview | null;
   created_at: string;
+};
+
+type GatewayPreview = {
+  gateway_mode?: string;
+  external_dispatched?: boolean;
+  requires_handler?: boolean;
+  rendered_payload?: string;
+  message?: string;
+  audit?: {
+    handler_id?: string;
+    artifact_kind?: string;
+    relative_path?: string;
+    would_create?: boolean;
+    would_overwrite?: boolean;
+    diff_truncated?: boolean;
+    error?: string;
+  };
 };
 
 type AnchorPage<T> = {
@@ -137,6 +155,7 @@ export default function NuoDashboard() {
   const [health, setHealth] = useState<Health | null>(null);
   const [budget, setBudget] = useState<Budget | null>(null);
   const [actions, setActions] = useState<PendingAction[]>([]);
+  const [recentActions, setRecentActions] = useState<PendingAction[]>([]);
   const [actionCursor, setActionCursor] = useState<string | null>(null);
   const [actionHasMore, setActionHasMore] = useState(false);
   const [actionRemaining, setActionRemaining] = useState(0);
@@ -168,8 +187,9 @@ export default function NuoDashboard() {
       fetchJson<{ snapshots: CapabilitySnapshot[] }>("/nuo/capability/summary"),
       fetchJson<{ items: DeliveryCapability[] }>("/nuo/health/delivery-status"),
       fetchJson<WorldGatewayHandlers>("/nuo/actions/handlers"),
+      fetchJson<AnchorPage<PendingAction>>("/nuo/actions/recent?limit=5"),
     ])
-      .then(([h, b, a, d, c, ds, wg]) => {
+      .then(([h, b, a, d, c, ds, wg, recent]) => {
         setHealth(h);
         setBudget(b);
         setActions(a.actions || []);
@@ -187,6 +207,7 @@ export default function NuoDashboard() {
         setWorldHandlers(wg.handlers || []);
         setWorldArtifactRoot(wg.artifact_root || "");
         setUnsupportedPolicy(wg.unsupported_policy || "");
+        setRecentActions(recent.actions || []);
         setErr(null);
       })
       .catch((e) => setErr(String(e)));
@@ -353,6 +374,22 @@ export default function NuoDashboard() {
               </div>
             ))}
           </div>
+          {recentActions.length > 0 && (
+            <div className="mt-4 border-t pt-3">
+              <div className="text-sm font-medium">最近外部动作</div>
+              <div className="mt-2 space-y-2">
+                {recentActions.map((action) => (
+                  <div key={action.action_id} className="rounded border p-2 text-xs">
+                    <div className="flex justify-between gap-3">
+                      <span className="font-medium">{action.action_type}</span>
+                      <span className="text-gray-500">{action.status}</span>
+                    </div>
+                    <div className="mt-1 text-gray-500">{actionGatewaySummary(action)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </details>
       )}
 
@@ -411,6 +448,27 @@ export default function NuoDashboard() {
                 <div className="text-xs text-gray-400 mt-1">
                   task {a.task_ref.slice(0, 16)}... · {a.created_at}
                 </div>
+                {a.gateway_preview && (
+                  <div className="mt-2 rounded bg-gray-50 p-2 text-xs text-gray-600">
+                    <div className="font-medium text-gray-700">
+                      网关预览：{gatewayPreviewLabel(a.gateway_preview)}
+                    </div>
+                    <div className="mt-1">{a.gateway_preview.message}</div>
+                    {a.gateway_preview.audit?.relative_path && (
+                      <div className="mt-1 text-gray-400">
+                        文件：{a.gateway_preview.audit.relative_path}
+                      </div>
+                    )}
+                    {a.gateway_preview.rendered_payload && (
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-gray-500">查看预览内容</summary>
+                        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-[11px]">
+                          {a.gateway_preview.rendered_payload}
+                        </pre>
+                      </details>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -569,6 +627,32 @@ function StatusPill({ status }: { status: DeliveryCapability["status"] }) {
           ? "bg-gray-700 text-white"
           : "bg-kun-bad text-white";
   return <span className={`${color} rounded px-2 py-0.5 text-xs whitespace-nowrap`}>{label}</span>;
+}
+
+function gatewayPreviewLabel(preview: GatewayPreview) {
+  if (preview.gateway_mode === "preview_failed") return "预览失败，批准前需要人工检查";
+  if (preview.requires_handler) return "没有执行器，只会记录审计，不会真实外发";
+  const handler = preview.audit?.handler_id || "已注册 handler";
+  if (preview.external_dispatched) return `${handler} 会执行受控本地动作`;
+  return `${handler} 会生成草稿 / dry-run 产物，不会外发`;
+}
+
+function actionGatewaySummary(action: PendingAction) {
+  const executor = action.payload.executor;
+  if (!isRecord(executor)) return "尚无执行详情。";
+  const gateway = executor.gateway;
+  if (!isRecord(gateway)) return "尚无网关详情。";
+  const audit = gateway.audit;
+  const artifact =
+    isRecord(audit) && typeof audit.artifact_ref === "string" ? audit.artifact_ref : "";
+  const mode = typeof gateway.gateway_mode === "string" ? gateway.gateway_mode : "unknown";
+  const dispatched =
+    gateway.external_dispatched === true ? "已执行受控动作" : "未外发 / 草稿 / dry-run";
+  return artifact ? `${mode} · ${dispatched} · 产物：${artifact}` : `${mode} · ${dispatched}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function Bar({

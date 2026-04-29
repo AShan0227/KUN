@@ -15,7 +15,13 @@ from kun.core.orm import PendingActionRow
 from kun.core.tenancy import current_tenant
 from kun.datamodel.runtime import TaskStatus
 from kun.engineering.action_executor import ActionExecutionResult, execute_approved_action_once
-from kun.world.gateway import WorldHandlerDescriptor, get_world_gateway
+from kun.world.gateway import (
+    WorldAction,
+    WorldGateway,
+    WorldGatewayResult,
+    WorldHandlerDescriptor,
+    get_world_gateway,
+)
 
 router = APIRouter()
 
@@ -31,6 +37,7 @@ class PendingActionItem(BaseModel):
     status: ActionStatus
     risk_level: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    gateway_preview: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -107,9 +114,15 @@ async def list_pending_actions(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
+    gateway = get_world_gateway()
+    items: list[PendingActionItem] = []
+    for row in page:
+        preview = await _preview_for_row(row, gateway)
+        items.append(_row_to_item(row, preview=preview))
+
     return PendingActionList(
         tenant_id=tenant.tenant_id,
-        actions=[_row_to_item(row) for row in page],
+        actions=items,
         next_cursor=next_cursor,
         has_more=remaining > 0 and round_no < max_rounds,
         remaining=remaining if round_no < max_rounds else 0,
@@ -127,6 +140,32 @@ async def list_world_gateway_handlers() -> WorldGatewayHandlersResponse:
         tenant_id=tenant.tenant_id,
         artifact_root=str(gateway.artifact_root),
         handlers=gateway.handler_descriptors(),
+    )
+
+
+@router.get("/recent", response_model=PendingActionList)
+async def list_recent_actions(
+    limit: int = Query(default=5, ge=1, le=50),
+) -> PendingActionList:
+    """List recently decided/executed actions for human audit."""
+    tenant = current_tenant()
+    async with session_scope() as s:
+        result = await s.execute(
+            select(PendingActionRow)
+            .where(
+                PendingActionRow.tenant_id == tenant.tenant_id,
+                PendingActionRow.status.in_(("executed", "cancelled", "rejected")),
+            )
+            .order_by(PendingActionRow.updated_at.desc())
+            .limit(limit)
+        )
+        rows = list(result.scalars().all())
+
+    return PendingActionList(
+        tenant_id=tenant.tenant_id,
+        actions=[_row_to_item(row) for row in rows],
+        has_more=False,
+        remaining=0,
     )
 
 
@@ -236,7 +275,36 @@ def _decision_to_status(decision: ActionDecision) -> ActionStatus:
     return "cancelled"
 
 
-def _row_to_item(row: PendingActionRow) -> PendingActionItem:
+async def _preview_for_row(
+    row: PendingActionRow,
+    gateway: WorldGateway,
+) -> WorldGatewayResult:
+    try:
+        return await gateway.preview(
+            WorldAction(
+                action_id=row.action_id,
+                task_ref=row.task_ref,
+                action_type=row.action_type,
+                target_ref=row.target_ref,
+                risk_level=row.risk_level,
+                payload=row.payload,
+            )
+        )
+    except Exception as exc:
+        return WorldGatewayResult(
+            action_id=row.action_id,
+            gateway_mode="preview_failed",
+            requires_handler=False,
+            audit={"error": str(exc), "action_type": row.action_type},
+            message=f"World Gateway preview failed: {exc}",
+        )
+
+
+def _row_to_item(
+    row: PendingActionRow,
+    *,
+    preview: WorldGatewayResult | None = None,
+) -> PendingActionItem:
     return PendingActionItem(
         action_id=row.action_id,
         task_ref=row.task_ref,
@@ -245,6 +313,7 @@ def _row_to_item(row: PendingActionRow) -> PendingActionItem:
         status=cast(ActionStatus, row.status),
         risk_level=row.risk_level,
         payload=row.payload,
+        gateway_preview=preview.model_dump(mode="json") if preview else None,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

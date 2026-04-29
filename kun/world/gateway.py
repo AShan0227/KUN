@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, datetime
+from difflib import unified_diff
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -19,6 +20,8 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field
 
 from kun.interface.hermes import DefaultHermesAdapter, HermesAdapter
+
+_PREVIEW_MAX_CHARS = 12_000
 
 
 class WorldAction(BaseModel):
@@ -51,7 +54,7 @@ class WorldHandlerResult(BaseModel):
     """Result returned by a concrete low-risk world handler."""
 
     handler_id: str
-    status: Literal["executed", "drafted", "dry_run"]
+    status: Literal["executed", "drafted", "dry_run", "preview"]
     external_dispatched: bool = False
     rendered_payload: str = ""
     artifact_ref: str | None = None
@@ -80,6 +83,16 @@ class WorldActionHandler:
     artifact_kind: str = ""
     safety_note: str = "Handled by World Gateway."
 
+    async def preview(self, action: WorldAction) -> WorldHandlerResult:
+        """Return a no-side-effect preview for human approval."""
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="preview",
+            external_dispatched=False,
+            audit={"action_type": action.action_type},
+            message=self.safety_note,
+        )
+
     async def execute(self, action: WorldAction) -> WorldHandlerResult:
         raise NotImplementedError
 
@@ -98,26 +111,42 @@ class LocalFileWriteHandler(WorldActionHandler):
         self.output_root = Path(output_root).expanduser().resolve()
         self.output_root.mkdir(parents=True, exist_ok=True)
 
-    async def execute(self, action: WorldAction) -> WorldHandlerResult:
-        raw_path = str(
-            action.payload.get("relative_path")
-            or action.payload.get("path")
-            or action.target_ref
-            or ""
-        ).strip()
-        if not raw_path:
-            raise ValueError("local_file.write requires payload.path or target_ref")
-        if Path(raw_path).is_absolute():
-            raise ValueError("local_file.write only accepts relative paths")
-        target = (self.output_root / raw_path).resolve()
-        if not _is_relative_to(target, self.output_root):
-            raise ValueError("local_file.write path escapes output root")
-
-        content = action.payload.get("content", "")
-        if not isinstance(content, str):
-            content = json.dumps(content, ensure_ascii=False, indent=2)
-        target.parent.mkdir(parents=True, exist_ok=True)
+    async def preview(self, action: WorldAction) -> WorldHandlerResult:
+        target, content = self._resolve_target_and_content(action)
         existed_before = target.exists()
+        previous = target.read_text(encoding="utf-8") if existed_before else ""
+        relative_path = str(target.relative_to(self.output_root))
+        diff_text, truncated = _render_unified_diff(
+            previous=previous,
+            proposed=content,
+            fromfile=relative_path if existed_before else "/dev/null",
+            tofile=relative_path,
+        )
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="preview",
+            external_dispatched=False,
+            rendered_payload=diff_text,
+            audit={
+                "output_root": str(self.output_root),
+                "path": str(target),
+                "relative_path": relative_path,
+                "bytes": len(content.encode("utf-8")),
+                "existed_before": existed_before,
+                "would_create": not existed_before,
+                "would_overwrite": existed_before,
+                "diff_truncated": truncated,
+            },
+            message=(
+                "Preview only. Approval will write this file under the controlled "
+                "KUN output directory."
+            ),
+        )
+
+    async def execute(self, action: WorldAction) -> WorldHandlerResult:
+        target, content = self._resolve_target_and_content(action)
+        existed_before = target.exists()
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         return WorldHandlerResult(
             handler_id=self.handler_id,
@@ -135,6 +164,26 @@ class LocalFileWriteHandler(WorldActionHandler):
             message="Local file written under the controlled KUN output directory.",
         )
 
+    def _resolve_target_and_content(self, action: WorldAction) -> tuple[Path, str]:
+        raw_path = str(
+            action.payload.get("relative_path")
+            or action.payload.get("path")
+            or action.target_ref
+            or ""
+        ).strip()
+        if not raw_path:
+            raise ValueError("local_file.write requires payload.path or target_ref")
+        if Path(raw_path).is_absolute():
+            raise ValueError("local_file.write only accepts relative paths")
+        target = (self.output_root / raw_path).resolve()
+        if not _is_relative_to(target, self.output_root):
+            raise ValueError("local_file.write path escapes output root")
+
+        content = action.payload.get("content", "")
+        if not isinstance(content, str):
+            content = json.dumps(content, ensure_ascii=False, indent=2)
+        return target, content
+
 
 class EmailDraftHandler(WorldActionHandler):
     """Create an email draft artifact; never sends mail."""
@@ -150,17 +199,24 @@ class EmailDraftHandler(WorldActionHandler):
         self.draft_root = Path(output_root).expanduser().resolve() / "email_drafts"
         self.draft_root.mkdir(parents=True, exist_ok=True)
 
+    async def preview(self, action: WorldAction) -> WorldHandlerResult:
+        draft = self._draft(action)
+        rendered = json.dumps(draft, ensure_ascii=False, indent=2)
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="preview",
+            external_dispatched=False,
+            rendered_payload=rendered,
+            audit={
+                "sent": False,
+                "recipient": draft["to"],
+                "reason": "preview only; no email will be sent",
+            },
+            message="Preview only. Approval will create an email draft artifact; it will not send mail.",
+        )
+
     async def execute(self, action: WorldAction) -> WorldHandlerResult:
-        draft = {
-            "to": action.payload.get("to") or action.target_ref,
-            "subject": action.payload.get("subject", ""),
-            "body": action.payload.get("body", ""),
-            "cc": action.payload.get("cc", []),
-            "bcc": action.payload.get("bcc", []),
-            "sent": False,
-            "task_ref": action.task_ref,
-            "action_id": action.action_id,
-        }
+        draft = self._draft(action)
         path = self.draft_root / f"{_safe_artifact_name(action.action_id)}.json"
         path.write_text(json.dumps(draft, ensure_ascii=False, indent=2), encoding="utf-8")
         return WorldHandlerResult(
@@ -178,6 +234,19 @@ class EmailDraftHandler(WorldActionHandler):
             message="Email draft created. It was not sent.",
         )
 
+    def _draft(self, action: WorldAction) -> dict[str, Any]:
+        draft = {
+            "to": action.payload.get("to") or action.target_ref,
+            "subject": action.payload.get("subject", ""),
+            "body": action.payload.get("body", ""),
+            "cc": action.payload.get("cc", []),
+            "bcc": action.payload.get("bcc", []),
+            "sent": False,
+            "task_ref": action.task_ref,
+            "action_id": action.action_id,
+        }
+        return draft
+
 
 class WebhookPostDryRunHandler(WorldActionHandler):
     """Render a webhook POST request without sending it."""
@@ -189,7 +258,41 @@ class WebhookPostDryRunHandler(WorldActionHandler):
     artifact_kind = "http_request_preview"
     safety_note = "只渲染 POST 请求包，不会发起网络请求。"
 
+    async def preview(self, action: WorldAction) -> WorldHandlerResult:
+        request, parsed = self._request(action)
+        rendered = json.dumps(request, ensure_ascii=False, indent=2)
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="preview",
+            external_dispatched=False,
+            rendered_payload=rendered,
+            audit={
+                "url": request["url"],
+                "host": parsed.netloc,
+                "dry_run": True,
+                "reason": "preview only; no network call will be made",
+            },
+            message="Preview only. Approval will render this request in dry-run mode.",
+        )
+
     async def execute(self, action: WorldAction) -> WorldHandlerResult:
+        request, parsed = self._request(action)
+        rendered = json.dumps(request, ensure_ascii=False, indent=2)
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="dry_run",
+            external_dispatched=False,
+            rendered_payload=rendered,
+            audit={
+                "url": request["url"],
+                "host": parsed.netloc,
+                "dry_run": True,
+                "reason": "request rendered only; no network call was made",
+            },
+            message="Webhook request rendered in dry-run mode. No network call was made.",
+        )
+
+    def _request(self, action: WorldAction) -> tuple[dict[str, Any], Any]:
         url = str(action.payload.get("url") or action.target_ref or "").strip()
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -201,20 +304,7 @@ class WebhookPostDryRunHandler(WorldActionHandler):
             "json": action.payload.get("json", action.payload.get("body", {})),
             "dry_run": True,
         }
-        rendered = json.dumps(request, ensure_ascii=False, indent=2)
-        return WorldHandlerResult(
-            handler_id=self.handler_id,
-            status="dry_run",
-            external_dispatched=False,
-            rendered_payload=rendered,
-            audit={
-                "url": url,
-                "host": parsed.netloc,
-                "dry_run": True,
-                "reason": "request rendered only; no network call was made",
-            },
-            message="Webhook request rendered in dry-run mode. No network call was made.",
-        )
+        return request, parsed
 
 
 class BrowserPlanHandler(WorldActionHandler):
@@ -231,15 +321,23 @@ class BrowserPlanHandler(WorldActionHandler):
         self.plan_root = Path(output_root).expanduser().resolve() / "browser_plans"
         self.plan_root.mkdir(parents=True, exist_ok=True)
 
+    async def preview(self, action: WorldAction) -> WorldHandlerResult:
+        plan = self._plan(action)
+        rendered = json.dumps(plan, ensure_ascii=False, indent=2)
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="preview",
+            external_dispatched=False,
+            rendered_payload=rendered,
+            audit={
+                "executed": False,
+                "reason": "preview only; no browser automation will be run",
+            },
+            message="Preview only. Approval will create a browser plan artifact; it will not click.",
+        )
+
     async def execute(self, action: WorldAction) -> WorldHandlerResult:
-        plan = {
-            "url": action.payload.get("url") or action.target_ref,
-            "objective": action.payload.get("objective", ""),
-            "steps": action.payload.get("steps", []),
-            "executed": False,
-            "task_ref": action.task_ref,
-            "action_id": action.action_id,
-        }
+        plan = self._plan(action)
         path = self.plan_root / f"{_safe_artifact_name(action.action_id)}.json"
         path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
         return WorldHandlerResult(
@@ -255,6 +353,17 @@ class BrowserPlanHandler(WorldActionHandler):
             },
             message="Browser operation plan created. No browser action was executed.",
         )
+
+    def _plan(self, action: WorldAction) -> dict[str, Any]:
+        plan = {
+            "url": action.payload.get("url") or action.target_ref,
+            "objective": action.payload.get("objective", ""),
+            "steps": action.payload.get("steps", []),
+            "executed": False,
+            "task_ref": action.task_ref,
+            "action_id": action.action_id,
+        }
+        return plan
 
 
 class WorldGateway:
@@ -297,22 +406,60 @@ class WorldGateway:
             for handler in sorted(self.handlers.values(), key=lambda item: item.action_type)
         ]
 
+    async def preview(self, action: WorldAction) -> WorldGatewayResult:
+        target = self._target_for(action.action_type)
+        now = datetime.now(UTC).isoformat()
+        handler = self.handlers.get(action.action_type)
+        if handler is None:
+            packet = await self._translate_packet(action, target=target, gateway_mode="preview")
+            return WorldGatewayResult(
+                action_id=action.action_id,
+                gateway_mode="missing_handler_preview",
+                rendered_payload=packet.rendered,
+                audit={
+                    "prepared_at": now,
+                    "target": target,
+                    "risk_level": action.risk_level,
+                    "action_type": action.action_type,
+                    "external_dispatched": False,
+                    "requires_handler": True,
+                    "supported_action_types": self.supported_action_types(),
+                    "reason": "no delivery handler registered for this action_type",
+                },
+                message=(
+                    "No World Gateway handler is attached for this action type. "
+                    "Approval will only create an audit packet."
+                ),
+            )
+
+        handler_result = await handler.preview(action)
+        return WorldGatewayResult(
+            action_id=action.action_id,
+            gateway_mode="handler_preview",
+            external_dispatched=False,
+            requires_handler=False,
+            rendered_payload=handler_result.rendered_payload,
+            audit={
+                "prepared_at": now,
+                "target": target,
+                "risk_level": action.risk_level,
+                "action_type": action.action_type,
+                "external_dispatched": False,
+                "requires_handler": False,
+                "handler_id": handler_result.handler_id,
+                "handler_status": handler_result.status,
+                "artifact_kind": handler.artifact_kind,
+                **handler_result.audit,
+            },
+            message=handler_result.message,
+        )
+
     async def execute_approved(self, action: WorldAction) -> WorldGatewayResult:
         target = self._target_for(action.action_type)
-        packet = await self.hermes_adapter.translate_external(
+        packet = await self._translate_packet(
+            action,
             target=target,
-            payload={
-                "action_id": action.action_id,
-                "task_ref": action.task_ref,
-                "action_type": action.action_type,
-                "target_ref": action.target_ref,
-                "payload": action.payload,
-            },
-            context={
-                "risk_level": action.risk_level,
-                "gateway_mode": "approval_gate",
-                "method": "side_effect.prepare",
-            },
+            gateway_mode="approval_gate",
         )
         now = datetime.now(UTC).isoformat()
         handler = self.handlers.get(action.action_type)
@@ -369,6 +516,29 @@ class WorldGateway:
             BrowserPlanHandler(self.artifact_root),
         ]
 
+    async def _translate_packet(
+        self,
+        action: WorldAction,
+        *,
+        target: Literal["api", "external_agent", "human"],
+        gateway_mode: str,
+    ) -> Any:
+        return await self.hermes_adapter.translate_external(
+            target=target,
+            payload={
+                "action_id": action.action_id,
+                "task_ref": action.task_ref,
+                "action_type": action.action_type,
+                "target_ref": action.target_ref,
+                "payload": action.payload,
+            },
+            context={
+                "risk_level": action.risk_level,
+                "gateway_mode": gateway_mode,
+                "method": "side_effect.prepare",
+            },
+        )
+
 
 def _is_relative_to(path: Path, parent: Path) -> bool:
     try:
@@ -380,6 +550,29 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
 
 def _safe_artifact_name(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)[:80]
+
+
+def _render_unified_diff(
+    *,
+    previous: str,
+    proposed: str,
+    fromfile: str,
+    tofile: str,
+) -> tuple[str, bool]:
+    diff = "".join(
+        unified_diff(
+            previous.splitlines(keepends=True),
+            proposed.splitlines(keepends=True),
+            fromfile=fromfile,
+            tofile=tofile,
+            lineterm="",
+        )
+    )
+    if not diff:
+        diff = "(no content change)"
+    if len(diff) <= _PREVIEW_MAX_CHARS:
+        return diff, False
+    return diff[:_PREVIEW_MAX_CHARS] + "\n... diff truncated ...", True
 
 
 _gateway: WorldGateway | None = None
