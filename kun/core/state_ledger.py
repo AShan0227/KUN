@@ -230,6 +230,41 @@ class StateLedger:
                 {"pending_confirmations": entry.pending_confirmations},
             )
 
+    def record_world_action_executed(
+        self,
+        task_id: str,
+        *,
+        action_id: str,
+        action_type: str,
+        gateway_mode: str,
+        external_dispatched: bool,
+        requires_handler: bool,
+        handler_id: str | None = None,
+        artifact_ref: str | None = None,
+        message: str = "",
+    ) -> None:
+        with self._lock:
+            entry = self._ensure(task_id)
+            entry.pending_confirmations = [
+                item for item in entry.pending_confirmations if item != action_id
+            ]
+            entry.current_action = f"World action {action_type}: {gateway_mode}"
+            if message:
+                entry.pending_reason = message if requires_handler else ""
+            entry.add_trail(
+                "world.action.executed",
+                message or f"World action executed via {gateway_mode}",
+                {
+                    "action_id": action_id,
+                    "action_type": action_type,
+                    "gateway_mode": gateway_mode,
+                    "external_dispatched": external_dispatched,
+                    "requires_handler": requires_handler,
+                    "handler_id": handler_id or "",
+                    "artifact_ref": artifact_ref or "",
+                },
+            )
+
     def record_finished(self, task_id: str, *, runtime: RuntimeState) -> None:
         with self._lock:
             entry = self._ensure(task_id)

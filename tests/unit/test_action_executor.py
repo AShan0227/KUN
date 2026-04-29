@@ -13,6 +13,7 @@ from kun.engineering.action_executor import (
     _mark_task_result_queued_stmt,
     _unblock_paused_runtime_stmt,
 )
+from kun.world.gateway import WorldGatewayResult
 from sqlalchemy.dialects import postgresql
 
 
@@ -77,5 +78,52 @@ def test_executor_payload_records_audit_note() -> None:
 
 
 @pytest.mark.unit
+def test_executor_payload_embeds_gateway_handler_result() -> None:
+    now = datetime.now(UTC)
+    gateway_result = WorldGatewayResult(
+        action_id="act-1",
+        gateway_mode="handler_executed",
+        external_dispatched=True,
+        requires_handler=False,
+        audit={"handler_id": "local_file.write.v1"},
+    )
+
+    payload = _executor_payload({}, now, gateway_result=gateway_result)
+
+    assert payload["executor"]["gateway"]["gateway_mode"] == "handler_executed"
+    assert payload["executor"]["gateway"]["requires_handler"] is False
+    assert payload["executor"]["gateway"]["audit"]["handler_id"] == "local_file.write.v1"
+    assert "low-risk delivery handler" in payload["executor"]["note"]
+
+
+@pytest.mark.unit
+def test_executor_payload_is_honest_when_handler_is_missing() -> None:
+    now = datetime.now(UTC)
+    gateway_result = WorldGatewayResult(
+        action_id="act-1",
+        gateway_mode="approval_gate",
+        external_dispatched=False,
+        requires_handler=True,
+    )
+
+    payload = _executor_payload({}, now, gateway_result=gateway_result)
+
+    assert "no delivery handler" in payload["executor"]["note"]
+
+
+@pytest.mark.unit
 def test_execution_message_mentions_unblocked_queue() -> None:
     assert "unblocked to queued" in _execution_message("queued")
+
+
+@pytest.mark.unit
+def test_execution_message_includes_gateway_message() -> None:
+    gateway_result = WorldGatewayResult(
+        action_id="act-1",
+        gateway_mode="handler_drafted",
+        external_dispatched=False,
+        requires_handler=False,
+        message="Email draft created. It was not sent.",
+    )
+
+    assert "Email draft created" in _execution_message("queued", gateway_result)

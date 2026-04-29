@@ -222,7 +222,7 @@ async def test_orchestrator_consumes_memory_writeback_and_scorecard(monkeypatch)
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_world_gateway_records_audit_without_fake_external_dispatch() -> None:
-    gateway = WorldGateway()
+    gateway = WorldGateway(artifact_root="/tmp/kun-test-world")
 
     result = await gateway.execute_approved(
         WorldAction(
@@ -239,6 +239,119 @@ async def test_world_gateway_records_audit_without_fake_external_dispatch() -> N
     assert result.requires_handler is True
     assert result.audit["target"] == "api"
     assert "no delivery handler" in result.audit["reason"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_local_file_write_handler(tmp_path) -> None:
+    gateway = WorldGateway(artifact_root=tmp_path)
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-file",
+            task_ref="task-1",
+            action_type="local_file.write",
+            target_ref="reports/hello.txt",
+            risk_level="low",
+            payload={"content": "hello"},
+        )
+    )
+
+    assert result.requires_handler is False
+    assert result.external_dispatched is True
+    assert result.gateway_mode == "handler_executed"
+    path = tmp_path / "files" / "reports" / "hello.txt"
+    assert path.read_text(encoding="utf-8") == "hello"
+    assert result.audit["handler_id"] == "local_file.write.v1"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_local_file_write_blocks_path_traversal(tmp_path) -> None:
+    gateway = WorldGateway(artifact_root=tmp_path)
+
+    with pytest.raises(ValueError, match="escapes output root"):
+        await gateway.execute_approved(
+            WorldAction(
+                action_id="act-file-bad",
+                task_ref="task-1",
+                action_type="local_file.write",
+                target_ref="../escape.txt",
+                risk_level="low",
+                payload={"content": "bad"},
+            )
+        )
+
+    assert not (tmp_path / "escape.txt").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_email_draft_handler_does_not_send(tmp_path) -> None:
+    gateway = WorldGateway(artifact_root=tmp_path)
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-email",
+            task_ref="task-1",
+            action_type="email.draft",
+            target_ref="user@example.com",
+            risk_level="medium",
+            payload={"subject": "Hi", "body": "Draft only"},
+        )
+    )
+
+    assert result.requires_handler is False
+    assert result.external_dispatched is False
+    assert result.gateway_mode == "handler_drafted"
+    assert result.audit["sent"] is False
+    assert result.audit["handler_id"] == "email.draft.v1"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_webhook_dry_run_does_not_call_network(tmp_path) -> None:
+    gateway = WorldGateway(artifact_root=tmp_path)
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-webhook",
+            task_ref="task-1",
+            action_type="webhook.post_dry_run",
+            target_ref="https://example.com/hook",
+            risk_level="low",
+            payload={"json": {"ok": True}},
+        )
+    )
+
+    assert result.requires_handler is False
+    assert result.external_dispatched is False
+    assert result.gateway_mode == "handler_dry_run"
+    assert result.audit["dry_run"] is True
+    assert "example.com" in result.rendered_payload
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_browser_plan_does_not_control_browser(tmp_path) -> None:
+    gateway = WorldGateway(artifact_root=tmp_path)
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-browser",
+            task_ref="task-1",
+            action_type="browser.plan",
+            target_ref="https://example.com",
+            risk_level="medium",
+            payload={"objective": "检查首页", "steps": ["open page", "inspect hero"]},
+        )
+    )
+
+    assert result.requires_handler is False
+    assert result.external_dispatched is False
+    assert result.gateway_mode == "handler_drafted"
+    assert result.audit["executed"] is False
+    assert result.audit["handler_id"] == "browser.plan.v1"
 
 
 async def _identity_translator(**kwargs: object) -> str:

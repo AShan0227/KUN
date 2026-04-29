@@ -37,10 +37,12 @@
 ## V3-5 World Gateway
 
 - 调用方：`execute_approved_action_once()`。
-- 影响决策：所有已审批 side-effect action 先进入 World Gateway，生成审计包。
-- 消费者：pending action executor、NUO action panel。
+- 影响决策：所有已审批 side-effect action 先进入 World Gateway；支持的低风险 handler 会执行，其他动作生成审计包。
+- 消费者：pending action executor、StateLedger、NUO action panel。
 - 测试：`tests/unit/test_v3_memory_scoring_gateway.py`、`tests/unit/test_action_executor.py`。
-- 诚实边界：没有真实外部 handler 时不会假装已外发，payload 里标 `external_dispatched=false`。
+- 已接低风险 handler：`local_file.write` 写入受控输出目录；`email.draft` 只生成草稿不发送；`webhook.post_dry_run` 只渲染请求不联网；`browser.plan` 只生成操作计划不真实点击。
+- 已接状态账本：审批执行结果会写入 `world.action.executed` trail，让黑板/任务卡能解释到底执行了 handler、生成了草稿，还是仍缺 handler。
+- 诚实边界：没有 handler 的 action 继续标 `requires_handler=true`；草稿和 dry-run 不会假装真实外发；支付、公开发布、真实发信仍未接通。
 
 ## V3-6 统一评分系统
 

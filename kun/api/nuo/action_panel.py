@@ -113,8 +113,9 @@ async def decide_pending_action(
 ) -> ActionDecisionResponse:
     """Approve/reject/cancel a pending side-effect action.
 
-    This endpoint only changes the queue state. A future executor will pick up
-    approved actions and perform the external side effect behind its own guard.
+    Approve will immediately call the guarded pending-action executor when
+    possible. Supported low-risk WorldGateway handlers may produce artifacts;
+    unsupported action types stay honest through requires_handler metadata.
     """
     tenant = current_tenant()
     new_status = _decision_to_status(req.decision)
@@ -194,7 +195,7 @@ def _decision_update_stmt(
 
 def _decision_message(status: ActionStatus) -> str:
     if status == "approved":
-        return "Action approved. The side-effect executor will pick it up."
+        return "Action approved. KUN will execute the guarded approval gate when possible."
     return f"Action marked {status}."
 
 

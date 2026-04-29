@@ -20,6 +20,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from kun.core.db import session_scope
 from kun.core.events import emit
 from kun.core.orm import PendingActionRow, RuntimeStateRow, TaskResultRow
+from kun.core.state_ledger import get_state_ledger
 from kun.datamodel.events import Event
 from kun.datamodel.runtime import TaskStatus
 from kun.world.gateway import WorldAction, WorldGatewayResult, get_world_gateway
@@ -80,9 +81,22 @@ async def execute_approved_action_once(
                     "target_ref": action.target_ref,
                     "executor_mode": gateway_result.gateway_mode,
                     "external_dispatched": gateway_result.external_dispatched,
+                    "requires_handler": gateway_result.requires_handler,
+                    "handler_id": gateway_result.audit.get("handler_id"),
                 },
                 task_ref=task_ref,
             ),
+        )
+        get_state_ledger().record_world_action_executed(
+            task_ref,
+            action_id=action.action_id,
+            action_type=action.action_type,
+            gateway_mode=gateway_result.gateway_mode,
+            external_dispatched=gateway_result.external_dispatched,
+            requires_handler=gateway_result.requires_handler,
+            handler_id=_optional_str(gateway_result.audit.get("handler_id")),
+            artifact_ref=_optional_str(gateway_result.audit.get("artifact_ref")),
+            message=gateway_result.message,
         )
 
         unresolved = await s.execute(_count_unresolved_actions_stmt(tenant_id, task_ref))
@@ -122,7 +136,7 @@ async def execute_approved_action_once(
             task_ref=task_ref,
             action_status="executed",
             task_status=task_status,
-            message=_execution_message(task_status),
+            message=_execution_message(task_status, gateway_result),
         )
 
 
@@ -195,22 +209,45 @@ def _executor_payload(
         "status": "executed",
         "executed_at": now.isoformat(),
         "gateway": gateway,
-        "note": (
-            "World Gateway recorded the approved side-effect request. "
-            "No external delivery handler is attached yet; this releases the approval gate only."
-        ),
+        "note": _executor_note(gateway_result),
     }
     return merged
 
 
-def _execution_message(task_status: TaskStatus | None) -> str:
+def _executor_note(gateway_result: WorldGatewayResult | None) -> str:
+    if gateway_result is None:
+        return "World Gateway approval gate executed."
+    if gateway_result.requires_handler:
+        return (
+            "World Gateway recorded the approved side-effect request, but no delivery "
+            "handler is attached for this action type yet."
+        )
+    if gateway_result.external_dispatched:
+        return "World Gateway executed a registered low-risk delivery handler."
+    return "World Gateway produced a registered draft or dry-run artifact; no external dispatch happened."
+
+
+def _execution_message(
+    task_status: TaskStatus | None,
+    gateway_result: WorldGatewayResult | None = None,
+) -> str:
+    gateway_message = f" Gateway: {gateway_result.message}" if gateway_result else ""
     if task_status == "queued":
-        return "Action executed. All approvals are complete; task has been unblocked to queued."
-    return "Action executed. No paused runtime needed to be unblocked."
+        return (
+            "Action executed. All approvals are complete; task has been unblocked to queued."
+            f"{gateway_message}"
+        )
+    return f"Action executed. No paused runtime needed to be unblocked.{gateway_message}"
 
 
 def _rowcount(result: Any) -> int:
     return int(getattr(result, "rowcount", 0) or 0)
+
+
+def _optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)
 
 
 __all__ = ["ActionExecutionResult", "execute_approved_action_once"]

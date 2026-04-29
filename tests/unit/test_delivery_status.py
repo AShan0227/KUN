@@ -11,10 +11,10 @@ def test_delivery_status_is_honest_about_incomplete_capabilities() -> None:
 
     by_id = {item.capability_id: item for item in items}
     assert by_id["llm_provider"].status == "ready"
-    assert by_id["world_gateway"].status == "audit_only"
+    assert by_id["world_gateway"].status == "partial"
     assert by_id["production_deployment"].status == "not_ready"
     assert by_id["world_gateway"].can_claim_complete is False
-    assert "external_dispatched=false" in " ".join(by_id["world_gateway"].done)
+    assert "local_file.write 可写入受控输出目录" in by_id["world_gateway"].done
 
 
 def test_delivery_status_endpoint() -> None:
