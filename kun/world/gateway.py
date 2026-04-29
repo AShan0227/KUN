@@ -11,12 +11,19 @@ from __future__ import annotations
 
 import json
 import os
+import smtplib
+import ssl
+import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from difflib import unified_diff
+from email.message import EmailMessage
+from inspect import isawaitable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 from urllib.parse import urlparse
 
+import httpx
 from pydantic import BaseModel, Field
 
 from kun.interface.hermes import DefaultHermesAdapter, HermesAdapter
@@ -40,10 +47,21 @@ class WorldGatewayResult(BaseModel):
 
     action_id: str
     gateway_mode: str = "approval_gate"
+    capability_status: Literal[
+        "supported_execute",
+        "supported_draft",
+        "supported_dry_run",
+        "supported_plan",
+        "missing_handler",
+        "preview_failed",
+    ] = "missing_handler"
     external_dispatched: bool = False
     requires_handler: bool = True
     rendered_payload: str = ""
     audit: dict[str, Any] = Field(default_factory=dict)
+    user_summary: str = "这个动作还没有真实执行器。"
+    next_step: str = "先补 WorldGateway handler，或改成已有的低风险动作类型。"
+    permissions_required: list[str] = Field(default_factory=list)
     message: str = (
         "World Gateway recorded and authorized this action, but no external "
         "delivery handler is attached yet."
@@ -67,21 +85,51 @@ class WorldHandlerDescriptor(BaseModel):
 
     action_type: str
     handler_id: str
+    user_label: str
     mode: Literal["execute", "draft", "dry_run", "plan"]
     external_dispatched: bool = False
     artifact_kind: str = ""
     safety_note: str
+    approval_effect: str
+    cannot_do: list[str] = Field(default_factory=list)
+    permissions_required: list[str] = Field(default_factory=list)
+    allowed_risk_levels: list[str] = Field(default_factory=list)
+    requires_external_dispatch_confirmation: bool = False
+    retry_policy: str = ""
+    compensation_strategy: str = ""
+    next_step: str = ""
+
+
+class WorldPolicyDecision(BaseModel):
+    """Execution policy decision for one approved world action."""
+
+    allowed: bool
+    block_reasons: list[str] = Field(default_factory=list)
+    missing_permissions: list[str] = Field(default_factory=list)
+    allowed_risk_levels: list[str] = Field(default_factory=list)
+    requires_external_dispatch_confirmation: bool = False
+    retry_policy: str = ""
+    compensation_strategy: str = ""
 
 
 class WorldActionHandler:
     """Base class for concrete WorldGateway handlers."""
 
-    action_type: str
-    handler_id: str
-    mode: Literal["execute", "draft", "dry_run", "plan"] = "dry_run"
-    external_dispatched: bool = False
-    artifact_kind: str = ""
-    safety_note: str = "Handled by World Gateway."
+    action_type: ClassVar[str]
+    handler_id: ClassVar[str]
+    mode: ClassVar[Literal["execute", "draft", "dry_run", "plan"]] = "dry_run"
+    external_dispatched: ClassVar[bool] = False
+    artifact_kind: ClassVar[str] = ""
+    safety_note: ClassVar[str] = "Handled by World Gateway."
+    user_label: ClassVar[str] = "外部动作"
+    approval_effect: ClassVar[str] = "批准后由 World Gateway 处理。"
+    cannot_do: ClassVar[list[str]] = []
+    permissions_required: ClassVar[list[str]] = []
+    allowed_risk_levels: ClassVar[set[str]] = {"low", "medium", "high"}
+    requires_external_dispatch_confirmation: ClassVar[bool] = False
+    retry_policy: ClassVar[str] = "不自动重试；失败后重新走审批。"
+    compensation_strategy: ClassVar[str] = "需要人工确认补偿方式。"
+    next_step: ClassVar[str] = "查看执行结果和审计记录。"
 
     async def preview(self, action: WorldAction) -> WorldHandlerResult:
         """Return a no-side-effect preview for human approval."""
@@ -106,6 +154,13 @@ class LocalFileWriteHandler(WorldActionHandler):
     external_dispatched = True
     artifact_kind = "local_file"
     safety_note = "只允许写入 KUN 受控输出目录，禁止绝对路径和路径穿越。"
+    user_label = "写入本地文件"
+    approval_effect = "批准后会在 KUN 受控输出目录里写文件。"
+    cannot_do: ClassVar[list[str]] = ["不能写绝对路径", "不能写出受控输出目录"]
+    permissions_required: ClassVar[list[str]] = ["human_approval", "controlled_output_dir"]
+    retry_policy = "不自动重试；再次写入前重新生成 diff 并审批。"
+    compensation_strategy = "可通过再次写入旧内容人工恢复；KUN 不自动回滚文件。"
+    next_step = "批准前先看 diff；批准后检查产物路径。"
 
     def __init__(self, output_root: str | Path) -> None:
         self.output_root = Path(output_root).expanduser().resolve()
@@ -194,6 +249,13 @@ class EmailDraftHandler(WorldActionHandler):
     external_dispatched = False
     artifact_kind = "email_draft"
     safety_note = "只生成邮件草稿文件，不会真实发送邮件。"
+    user_label = "生成邮件草稿"
+    approval_effect = "批准后只生成邮件草稿，不会发送。"
+    cannot_do: ClassVar[list[str]] = ["不能真实发送邮件", "不能调用邮箱服务"]
+    permissions_required: ClassVar[list[str]] = ["human_approval"]
+    retry_policy = "不自动重试；草稿生成失败后可重新生成。"
+    compensation_strategy = "删除草稿文件即可撤回；没有外部影响。"
+    next_step = "检查草稿内容，需要真实发送时再接 email.send handler。"
 
     def __init__(self, output_root: str | Path) -> None:
         self.draft_root = Path(output_root).expanduser().resolve() / "email_drafts"
@@ -257,6 +319,13 @@ class WebhookPostDryRunHandler(WorldActionHandler):
     external_dispatched = False
     artifact_kind = "http_request_preview"
     safety_note = "只渲染 POST 请求包，不会发起网络请求。"
+    user_label = "渲染 Webhook 请求"
+    approval_effect = "批准后只生成请求预览，不会联网。"
+    cannot_do: ClassVar[list[str]] = ["不能真实发起网络请求", "不能调用外部 API"]
+    permissions_required: ClassVar[list[str]] = ["human_approval"]
+    retry_policy = "不自动重试；dry-run 失败后重新渲染请求包。"
+    compensation_strategy = "无外部影响；删除请求预览即可。"
+    next_step = "确认请求包正确后，再接真实 API handler。"
 
     async def preview(self, action: WorldAction) -> WorldHandlerResult:
         request, parsed = self._request(action)
@@ -316,6 +385,13 @@ class BrowserPlanHandler(WorldActionHandler):
     external_dispatched = False
     artifact_kind = "browser_plan"
     safety_note = "只生成浏览器操作计划，不会真实点击或控制浏览器。"
+    user_label = "生成浏览器操作计划"
+    approval_effect = "批准后只生成浏览器计划，不会点击网页。"
+    cannot_do: ClassVar[list[str]] = ["不能真实打开浏览器", "不能提交表单", "不能点击网页"]
+    permissions_required: ClassVar[list[str]] = ["human_approval"]
+    retry_policy = "不自动重试；计划生成失败后重新生成。"
+    compensation_strategy = "无外部影响；删除浏览器计划即可。"
+    next_step = "检查操作计划，需要真实浏览器执行时再接 browser.execute handler。"
 
     def __init__(self, output_root: str | Path) -> None:
         self.plan_root = Path(output_root).expanduser().resolve() / "browser_plans"
@@ -366,6 +442,410 @@ class BrowserPlanHandler(WorldActionHandler):
         return plan
 
 
+class EmailSendHandler(WorldActionHandler):
+    """Send email through an explicitly configured SMTP account."""
+
+    action_type = "email.send"
+    handler_id = "email.send.smtp.v1"
+    mode = "execute"
+    external_dispatched = True
+    artifact_kind = "email_send_audit"
+    safety_note = "真实发送邮件。默认不启用；必须配置 KUN_WORLD_EMAIL_SEND_ENABLED=true 和 SMTP。"
+    user_label = "真实发送邮件"
+    approval_effect = "批准后会通过已配置 SMTP 账号真实发出邮件。"
+    cannot_do: ClassVar[list[str]] = ["不能自动撤回已成功送达的邮件"]
+    permissions_required: ClassVar[list[str]] = [
+        "human_approval",
+        "smtp_credentials",
+        "email_recipient_review",
+    ]
+    requires_external_dispatch_confirmation = True
+    retry_policy = "不自动重试；SMTP 失败后人工确认是否重发，避免重复邮件。"
+    compensation_strategy = "无法自动撤回已送达邮件；只能发送更正邮件或人工跟进。"
+    next_step = "批准前检查收件人、主题和正文；发送后只能补发更正邮件。"
+
+    def __init__(
+        self,
+        *,
+        output_root: str | Path,
+        smtp_host: str,
+        smtp_port: int,
+        smtp_username: str | None,
+        smtp_password: str | None,
+        smtp_from: str,
+        use_tls: bool = True,
+        sender: Callable[[EmailMessage], Awaitable[dict[str, Any]] | dict[str, Any]] | None = None,
+    ) -> None:
+        self.audit_root = Path(output_root).expanduser().resolve() / "email_sent"
+        self.audit_root.mkdir(parents=True, exist_ok=True)
+        self.smtp_host = smtp_host
+        self.smtp_port = smtp_port
+        self.smtp_username = smtp_username
+        self.smtp_password = smtp_password
+        self.smtp_from = smtp_from
+        self.use_tls = use_tls
+        self._sender = sender
+
+    @classmethod
+    def from_env(cls, output_root: str | Path) -> EmailSendHandler:
+        host = os.getenv("KUN_WORLD_SMTP_HOST", "").strip()
+        from_addr = os.getenv("KUN_WORLD_SMTP_FROM", "").strip()
+        if not host or not from_addr:
+            raise ValueError("email.send requires KUN_WORLD_SMTP_HOST and KUN_WORLD_SMTP_FROM")
+        return cls(
+            output_root=output_root,
+            smtp_host=host,
+            smtp_port=int(os.getenv("KUN_WORLD_SMTP_PORT", "587")),
+            smtp_username=_empty_to_none(os.getenv("KUN_WORLD_SMTP_USERNAME")),
+            smtp_password=_empty_to_none(os.getenv("KUN_WORLD_SMTP_PASSWORD")),
+            smtp_from=from_addr,
+            use_tls=_env_bool("KUN_WORLD_SMTP_TLS", default=True),
+        )
+
+    async def preview(self, action: WorldAction) -> WorldHandlerResult:
+        message, audit = self._message(action)
+        rendered = _render_email_preview(message)
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="preview",
+            external_dispatched=False,
+            rendered_payload=rendered,
+            audit={
+                **audit,
+                "sent": False,
+                "smtp_host": self.smtp_host,
+                "compensation": "cannot_recall_automatically; send follow-up correction if needed",
+            },
+            message="Preview only. Approval will send this email through the configured SMTP account.",
+        )
+
+    async def execute(self, action: WorldAction) -> WorldHandlerResult:
+        message, audit = self._message(action)
+        send_result = await self._send(message)
+        rendered = _render_email_preview(message)
+        path = self.audit_root / f"{_safe_artifact_name(action.action_id)}.json"
+        audit_payload = {
+            **audit,
+            **send_result,
+            "sent": True,
+            "smtp_host": self.smtp_host,
+            "compensation": "cannot_recall_automatically; send follow-up correction if needed",
+        }
+        path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="executed",
+            external_dispatched=True,
+            rendered_payload=rendered,
+            artifact_ref=str(path),
+            audit=audit_payload,
+            message="Email sent through the configured SMTP account. Audit artifact written.",
+        )
+
+    async def _send(self, message: EmailMessage) -> dict[str, Any]:
+        if self._sender is not None:
+            result = self._sender(message)
+            if isawaitable(result):
+                awaited = await result
+                return dict(awaited)
+            return result
+        return await _send_email_smtp(
+            message,
+            host=self.smtp_host,
+            port=self.smtp_port,
+            username=self.smtp_username,
+            password=self.smtp_password,
+            use_tls=self.use_tls,
+        )
+
+    def _message(self, action: WorldAction) -> tuple[EmailMessage, dict[str, Any]]:
+        to_values = _string_list(action.payload.get("to") or action.target_ref)
+        if not to_values:
+            raise ValueError("email.send requires payload.to or target_ref")
+        subject = str(action.payload.get("subject") or "").strip()
+        body = str(action.payload.get("body") or "").strip()
+        if not subject or not body:
+            raise ValueError("email.send requires subject and body")
+        cc_values = _string_list(action.payload.get("cc"))
+        bcc_values = _string_list(action.payload.get("bcc"))
+        message = EmailMessage()
+        message["From"] = self.smtp_from
+        message["To"] = ", ".join(to_values)
+        if cc_values:
+            message["Cc"] = ", ".join(cc_values)
+        if bcc_values:
+            message["Bcc"] = ", ".join(bcc_values)
+        message["Subject"] = subject
+        message["X-KUN-Action-Id"] = action.action_id
+        message.set_content(body)
+        return message, {
+            "to": to_values,
+            "cc": cc_values,
+            "bcc_count": len(bcc_values),
+            "subject": subject,
+            "body_bytes": len(body.encode("utf-8")),
+            "message_id": str(uuid.uuid4()),
+        }
+
+
+class EnterpriseApiPostHandler(WorldActionHandler):
+    """POST JSON to an allowlisted enterprise API host."""
+
+    action_type = "enterprise_api.post"
+    handler_id = "enterprise_api.post.v1"
+    mode = "execute"
+    external_dispatched = True
+    artifact_kind = "api_call_audit"
+    safety_note = (
+        "真实调用企业 API。默认不启用；只允许 HTTPS + KUN_WORLD_API_ALLOWED_HOSTS 白名单。"
+    )
+    user_label = "调用企业 API"
+    approval_effect = "批准后会向白名单企业 API 发起真实 POST 请求。"
+    cannot_do: ClassVar[list[str]] = ["不能自动撤销已被对方系统处理的请求"]
+    permissions_required: ClassVar[list[str]] = [
+        "human_approval",
+        "api_host_allowlist",
+        "api_credentials",
+    ]
+    requires_external_dispatch_confirmation = True
+    retry_policy = "不自动重试；依赖 Idempotency-Key 和对方 API 语义人工确认。"
+    compensation_strategy = "取决于对方系统；优先使用撤销接口或补偿请求。"
+    next_step = "批准前检查 URL、JSON 和幂等键；失败时按对方系统规则补偿。"
+
+    def __init__(
+        self,
+        *,
+        output_root: str | Path,
+        allowed_hosts: set[str],
+        timeout_sec: float = 10.0,
+        auth_header: str | None = None,
+        auth_value: str | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        if not allowed_hosts:
+            raise ValueError("enterprise_api.post requires at least one allowed host")
+        self.audit_root = Path(output_root).expanduser().resolve() / "api_calls"
+        self.audit_root.mkdir(parents=True, exist_ok=True)
+        self.allowed_hosts = allowed_hosts
+        self.timeout_sec = timeout_sec
+        self.auth_header = auth_header
+        self.auth_value = auth_value
+        self._client = client
+
+    @classmethod
+    def from_env(cls, output_root: str | Path) -> EnterpriseApiPostHandler:
+        allowed_hosts = _csv_set(os.getenv("KUN_WORLD_API_ALLOWED_HOSTS", ""))
+        return cls(
+            output_root=output_root,
+            allowed_hosts=allowed_hosts,
+            timeout_sec=float(os.getenv("KUN_WORLD_API_TIMEOUT_SEC", "10")),
+            auth_header=_empty_to_none(os.getenv("KUN_WORLD_API_AUTH_HEADER")),
+            auth_value=_empty_to_none(os.getenv("KUN_WORLD_API_AUTH_VALUE")),
+        )
+
+    async def preview(self, action: WorldAction) -> WorldHandlerResult:
+        request = self._request(action)
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="preview",
+            external_dispatched=False,
+            rendered_payload=json.dumps(_redact_request(request), ensure_ascii=False, indent=2),
+            audit={
+                "url": request["url"],
+                "host": request["host"],
+                "would_post": True,
+                "allowed_hosts": sorted(self.allowed_hosts),
+                "compensation": "depends_on_remote_api; use idempotency key or follow-up reversal endpoint",
+            },
+            message="Preview only. Approval will POST JSON to the allowlisted enterprise API.",
+        )
+
+    async def execute(self, action: WorldAction) -> WorldHandlerResult:
+        request = self._request(action)
+        response_audit = await self._post(request)
+        path = self.audit_root / f"{_safe_artifact_name(action.action_id)}.json"
+        audit_payload = {
+            **response_audit,
+            "url": request["url"],
+            "host": request["host"],
+            "request_json_bytes": len(json.dumps(request["json"], ensure_ascii=False).encode()),
+            "compensation": "depends_on_remote_api; use idempotency key or follow-up reversal endpoint",
+        }
+        path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="executed",
+            external_dispatched=True,
+            rendered_payload=json.dumps(_redact_request(request), ensure_ascii=False, indent=2),
+            artifact_ref=str(path),
+            audit=audit_payload,
+            message="Enterprise API POST completed. Audit artifact written.",
+        )
+
+    async def _post(self, request: dict[str, Any]) -> dict[str, Any]:
+        client = self._client
+        if client is not None:
+            response = await client.post(
+                request["url"],
+                json=request["json"],
+                headers=request["headers"],
+                timeout=self.timeout_sec,
+            )
+        else:
+            async with httpx.AsyncClient(timeout=self.timeout_sec) as transient:
+                response = await transient.post(
+                    request["url"],
+                    json=request["json"],
+                    headers=request["headers"],
+                )
+        return {
+            "status_code": response.status_code,
+            "ok": 200 <= response.status_code < 300,
+            "response_bytes": len(response.content),
+            "response_preview": response.text[:1000],
+        }
+
+    def _request(self, action: WorldAction) -> dict[str, Any]:
+        url = str(action.payload.get("url") or action.target_ref or "").strip()
+        parsed = urlparse(url)
+        _assert_allowed_https_host(
+            parsed,
+            allowed_hosts=self.allowed_hosts,
+            action_type=self.action_type,
+        )
+        headers = _safe_api_headers(action.payload.get("headers"))
+        if self.auth_header and self.auth_value:
+            headers[self.auth_header] = self.auth_value
+        if "Idempotency-Key" not in headers:
+            headers["Idempotency-Key"] = action.action_id
+        return {
+            "method": "POST",
+            "url": url,
+            "host": parsed.hostname or "",
+            "headers": headers,
+            "json": action.payload.get("json", action.payload.get("body", {})),
+        }
+
+
+BrowserRunner = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
+class BrowserExecuteHandler(WorldActionHandler):
+    """Run a small allowlisted Playwright browser script."""
+
+    action_type = "browser.execute"
+    handler_id = "browser.execute.playwright.v1"
+    mode = "execute"
+    external_dispatched = True
+    artifact_kind = "browser_execution_audit"
+    safety_note = "真实控制浏览器。默认不启用；只允许白名单 HTTPS host 和有限 step 类型。"
+    user_label = "真实浏览器执行"
+    approval_effect = "批准后会打开浏览器并执行白名单步骤。"
+    cannot_do: ClassVar[list[str]] = ["不支持支付/提交敏感表单的自动确认", "不能绕过网站权限"]
+    permissions_required: ClassVar[list[str]] = [
+        "human_approval",
+        "browser_host_allowlist",
+        "browser_action_review",
+    ]
+    requires_external_dispatch_confirmation = True
+    retry_policy = "不自动重试；真实浏览器步骤失败后人工确认页面状态再继续。"
+    compensation_strategy = "浏览器副作用取决于网站；需要人工或网站内撤销流程。"
+    next_step = "批准前检查 URL 和步骤；执行后查看截图/审计记录。"
+    allowed_steps: ClassVar[set[str]] = {"goto", "click", "fill", "screenshot"}
+
+    def __init__(
+        self,
+        *,
+        output_root: str | Path,
+        allowed_hosts: set[str],
+        runner: BrowserRunner | None = None,
+    ) -> None:
+        if not allowed_hosts:
+            raise ValueError("browser.execute requires at least one allowed host")
+        self.audit_root = Path(output_root).expanduser().resolve() / "browser_runs"
+        self.audit_root.mkdir(parents=True, exist_ok=True)
+        self.allowed_hosts = allowed_hosts
+        self._runner = runner
+
+    @classmethod
+    def from_env(cls, output_root: str | Path) -> BrowserExecuteHandler:
+        return cls(
+            output_root=output_root,
+            allowed_hosts=_csv_set(os.getenv("KUN_WORLD_BROWSER_ALLOWED_HOSTS", "")),
+        )
+
+    async def preview(self, action: WorldAction) -> WorldHandlerResult:
+        plan = self._plan(action)
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="preview",
+            external_dispatched=False,
+            rendered_payload=json.dumps(plan, ensure_ascii=False, indent=2),
+            audit={
+                "url": plan["url"],
+                "host": plan["host"],
+                "step_count": len(plan["steps"]),
+                "would_control_browser": True,
+                "allowed_hosts": sorted(self.allowed_hosts),
+                "compensation": "browser side effects depend on website; manual reversal may be required",
+            },
+            message="Preview only. Approval will run browser automation against an allowlisted host.",
+        )
+
+    async def execute(self, action: WorldAction) -> WorldHandlerResult:
+        plan = self._plan(action)
+        runner = self._runner or _run_browser_plan_with_playwright
+        result = await runner({**plan, "artifact_root": str(self.audit_root)})
+        path = self.audit_root / f"{_safe_artifact_name(action.action_id)}.json"
+        audit_payload = {
+            **result,
+            "url": plan["url"],
+            "host": plan["host"],
+            "step_count": len(plan["steps"]),
+            "compensation": "browser side effects depend on website; manual reversal may be required",
+        }
+        path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="executed",
+            external_dispatched=True,
+            rendered_payload=json.dumps(plan, ensure_ascii=False, indent=2),
+            artifact_ref=str(path),
+            audit=audit_payload,
+            message="Browser automation completed. Audit artifact written.",
+        )
+
+    def _plan(self, action: WorldAction) -> dict[str, Any]:
+        url = str(action.payload.get("url") or action.target_ref or "").strip()
+        parsed = urlparse(url)
+        _assert_allowed_https_host(
+            parsed,
+            allowed_hosts=self.allowed_hosts,
+            action_type=self.action_type,
+        )
+        raw_steps = action.payload.get("steps", [])
+        if not isinstance(raw_steps, list) or not raw_steps:
+            raise ValueError("browser.execute requires a non-empty payload.steps list")
+        steps: list[dict[str, Any]] = []
+        for idx, raw in enumerate(raw_steps):
+            if not isinstance(raw, dict):
+                raise ValueError(f"browser.execute step {idx} must be an object")
+            kind = str(raw.get("kind") or raw.get("type") or "").strip()
+            if kind not in self.allowed_steps:
+                raise ValueError(f"browser.execute unsupported step kind: {kind}")
+            steps.append(
+                {k: v for k, v in raw.items() if k in {"kind", "type", "selector", "text", "path"}}
+            )
+        return {
+            "url": url,
+            "host": parsed.hostname or "",
+            "objective": action.payload.get("objective", ""),
+            "steps": steps,
+            "task_ref": action.task_ref,
+            "action_id": action.action_id,
+        }
+
+
 class WorldGateway:
     """Prepare and audit side-effect actions."""
 
@@ -398,10 +878,21 @@ class WorldGateway:
             WorldHandlerDescriptor(
                 action_type=handler.action_type,
                 handler_id=handler.handler_id,
+                user_label=handler.user_label,
                 mode=handler.mode,
                 external_dispatched=handler.external_dispatched,
                 artifact_kind=handler.artifact_kind,
                 safety_note=handler.safety_note,
+                approval_effect=handler.approval_effect,
+                cannot_do=handler.cannot_do,
+                permissions_required=handler.permissions_required,
+                allowed_risk_levels=sorted(handler.allowed_risk_levels),
+                requires_external_dispatch_confirmation=(
+                    handler.requires_external_dispatch_confirmation
+                ),
+                retry_policy=handler.retry_policy,
+                compensation_strategy=handler.compensation_strategy,
+                next_step=handler.next_step,
             )
             for handler in sorted(self.handlers.values(), key=lambda item: item.action_type)
         ]
@@ -415,6 +906,7 @@ class WorldGateway:
             return WorldGatewayResult(
                 action_id=action.action_id,
                 gateway_mode="missing_handler_preview",
+                capability_status="missing_handler",
                 rendered_payload=packet.rendered,
                 audit={
                     "prepared_at": now,
@@ -426,16 +918,23 @@ class WorldGateway:
                     "supported_action_types": self.supported_action_types(),
                     "reason": "no delivery handler registered for this action_type",
                 },
+                user_summary="这个动作目前没有执行器；批准后只会留下审计记录，不会真实外发。",
+                next_step=(
+                    "把动作改成已支持类型，或先补一个 WorldGateway handler，"
+                    "再让 KUN 执行真实外部动作。"
+                ),
                 message=(
                     "No World Gateway handler is attached for this action type. "
                     "Approval will only create an audit packet."
                 ),
             )
 
+        policy = self._policy_for(action, handler)
         handler_result = await handler.preview(action)
         return WorldGatewayResult(
             action_id=action.action_id,
             gateway_mode="handler_preview",
+            capability_status=_capability_status(handler),
             external_dispatched=False,
             requires_handler=False,
             rendered_payload=handler_result.rendered_payload,
@@ -449,8 +948,19 @@ class WorldGateway:
                 "handler_id": handler_result.handler_id,
                 "handler_status": handler_result.status,
                 "artifact_kind": handler.artifact_kind,
+                "policy": policy.model_dump(mode="json"),
                 **handler_result.audit,
             },
+            user_summary=(
+                _preview_summary(handler)
+                if policy.allowed
+                else "这个动作有执行器，但策略层还不允许真实执行。"
+            ),
+            next_step=_policy_next_step(policy, handler),
+            permissions_required=_merge_unique(
+                handler.permissions_required,
+                policy.missing_permissions,
+            ),
             message=handler_result.message,
         )
 
@@ -464,10 +974,38 @@ class WorldGateway:
         now = datetime.now(UTC).isoformat()
         handler = self.handlers.get(action.action_type)
         if handler is not None:
+            policy = self._policy_for(action, handler)
+            if not policy.allowed:
+                return WorldGatewayResult(
+                    action_id=action.action_id,
+                    gateway_mode="policy_blocked",
+                    capability_status=_capability_status(handler),
+                    external_dispatched=False,
+                    requires_handler=False,
+                    rendered_payload=packet.rendered,
+                    audit={
+                        "prepared_at": now,
+                        "target": target,
+                        "risk_level": action.risk_level,
+                        "action_type": action.action_type,
+                        "external_dispatched": False,
+                        "requires_handler": False,
+                        "handler_id": handler.handler_id,
+                        "policy": policy.model_dump(mode="json"),
+                    },
+                    user_summary="审批已记录，但守望策略层拦截了真实执行。",
+                    next_step=_policy_next_step(policy, handler),
+                    permissions_required=_merge_unique(
+                        handler.permissions_required,
+                        policy.missing_permissions,
+                    ),
+                    message="World Gateway policy blocked execution before any external side effect.",
+                )
             handler_result = await handler.execute(action)
             return WorldGatewayResult(
                 action_id=action.action_id,
                 gateway_mode=f"handler_{handler_result.status}",
+                capability_status=_capability_status(handler),
                 external_dispatched=handler_result.external_dispatched,
                 requires_handler=False,
                 rendered_payload=handler_result.rendered_payload or packet.rendered,
@@ -481,13 +1019,21 @@ class WorldGateway:
                     "handler_id": handler_result.handler_id,
                     "handler_status": handler_result.status,
                     "artifact_ref": handler_result.artifact_ref,
+                    "policy": policy.model_dump(mode="json"),
                     **handler_result.audit,
                 },
+                user_summary=_execution_summary(handler),
+                next_step=handler.next_step,
+                permissions_required=_merge_unique(
+                    handler.permissions_required,
+                    policy.missing_permissions,
+                ),
                 message=handler_result.message,
             )
 
         return WorldGatewayResult(
             action_id=action.action_id,
+            capability_status="missing_handler",
             rendered_payload=packet.rendered,
             audit={
                 "prepared_at": now,
@@ -499,6 +1045,11 @@ class WorldGateway:
                 "supported_action_types": self.supported_action_types(),
                 "reason": "no delivery handler registered for this action_type",
             },
+            user_summary="这个动作没有执行器；本次只记录审计，不会真实外发。",
+            next_step=(
+                "先补 action_type 对应的 WorldGateway handler，或改用 "
+                f"{', '.join(self.supported_action_types())}。"
+            ),
         )
 
     def _target_for(self, action_type: str) -> Literal["api", "external_agent", "human"]:
@@ -509,12 +1060,56 @@ class WorldGateway:
         return "human"
 
     def _default_handlers(self) -> list[WorldActionHandler]:
-        return [
+        handlers: list[WorldActionHandler] = [
             LocalFileWriteHandler(self.artifact_root / "files"),
             EmailDraftHandler(self.artifact_root),
             WebhookPostDryRunHandler(),
             BrowserPlanHandler(self.artifact_root),
         ]
+        if _env_bool("KUN_WORLD_EMAIL_SEND_ENABLED"):
+            handlers.append(EmailSendHandler.from_env(self.artifact_root))
+        if _env_bool("KUN_WORLD_API_POST_ENABLED"):
+            handlers.append(EnterpriseApiPostHandler.from_env(self.artifact_root))
+        if _env_bool("KUN_WORLD_BROWSER_EXECUTE_ENABLED"):
+            handlers.append(BrowserExecuteHandler.from_env(self.artifact_root))
+        return handlers
+
+    def _policy_for(
+        self,
+        action: WorldAction,
+        handler: WorldActionHandler,
+    ) -> WorldPolicyDecision:
+        risk = action.risk_level.strip().lower() or "medium"
+        block_reasons: list[str] = []
+        missing_permissions: list[str] = []
+
+        if risk not in handler.allowed_risk_levels:
+            block_reasons.append(
+                f"risk_level={risk} 不在该 handler 允许范围内: "
+                f"{', '.join(sorted(handler.allowed_risk_levels))}"
+            )
+            missing_permissions.append("risk_downgrade_or_manual_override")
+
+        if handler.requires_external_dispatch_confirmation and not _payload_truthy(
+            action.payload.get("external_dispatch_confirmed")
+        ):
+            block_reasons.append(
+                "真实外部动作缺少 external_dispatch_confirmed=true；"
+                "需要用户明确确认这一步会影响外部世界。"
+            )
+            missing_permissions.append("external_dispatch_confirmation")
+
+        return WorldPolicyDecision(
+            allowed=not block_reasons,
+            block_reasons=block_reasons,
+            missing_permissions=_merge_unique(missing_permissions),
+            allowed_risk_levels=sorted(handler.allowed_risk_levels),
+            requires_external_dispatch_confirmation=(
+                handler.requires_external_dispatch_confirmation
+            ),
+            retry_policy=handler.retry_policy,
+            compensation_strategy=handler.compensation_strategy,
+        )
 
     async def _translate_packet(
         self,
@@ -550,6 +1145,213 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
 
 def _safe_artifact_name(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)[:80]
+
+
+def _empty_to_none(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _env_bool(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _csv_set(value: str) -> set[str]:
+    return {item.strip().lower() for item in value.split(",") if item.strip()}
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _render_email_preview(message: EmailMessage) -> str:
+    rendered = {
+        "from": message.get("From", ""),
+        "to": message.get("To", ""),
+        "cc": message.get("Cc", ""),
+        "bcc": "[redacted]" if message.get("Bcc") else "",
+        "subject": message.get("Subject", ""),
+        "body": message.get_content(),
+    }
+    return json.dumps(rendered, ensure_ascii=False, indent=2)
+
+
+async def _send_email_smtp(
+    message: EmailMessage,
+    *,
+    host: str,
+    port: int,
+    username: str | None,
+    password: str | None,
+    use_tls: bool,
+) -> dict[str, Any]:
+    def send() -> dict[str, Any]:
+        if use_tls:
+            context = ssl.create_default_context()
+            with smtplib.SMTP(host, port, timeout=20) as smtp:
+                smtp.starttls(context=context)
+                if username and password:
+                    smtp.login(username, password)
+                smtp.send_message(message)
+        else:
+            with smtplib.SMTP(host, port, timeout=20) as smtp:
+                if username and password:
+                    smtp.login(username, password)
+                smtp.send_message(message)
+        return {
+            "smtp_host": host,
+            "smtp_port": port,
+            "smtp_tls": use_tls,
+            "smtp_username_set": bool(username),
+        }
+
+    import asyncio
+
+    return await asyncio.to_thread(send)
+
+
+def _safe_api_headers(raw_headers: Any) -> dict[str, str]:
+    allowed = {"accept", "content-type", "idempotency-key", "x-request-id"}
+    headers: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
+    if isinstance(raw_headers, dict):
+        for key, value in raw_headers.items():
+            key_text = str(key).strip()
+            if key_text.lower() in allowed and str(value).strip():
+                headers[key_text] = str(value).strip()
+    return headers
+
+
+def _redact_request(request: dict[str, Any]) -> dict[str, Any]:
+    headers = dict(request.get("headers", {}))
+    for key in list(headers):
+        if key.lower() in {"authorization", "proxy-authorization", "x-api-key"}:
+            headers[key] = "[redacted]"
+    return {**request, "headers": headers}
+
+
+def _assert_allowed_https_host(
+    parsed: Any,
+    *,
+    allowed_hosts: set[str],
+    action_type: str,
+) -> None:
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not host:
+        raise ValueError(f"{action_type} requires an https URL")
+    if host not in allowed_hosts:
+        raise ValueError(f"{action_type} host is not allowlisted: {host}")
+
+
+async def _run_browser_plan_with_playwright(plan: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from playwright.async_api import async_playwright  # type: ignore[import-not-found]
+    except ImportError as exc:  # pragma: no cover - exercised only when real handler is enabled
+        raise RuntimeError(
+            "browser.execute requires playwright. Install it and run playwright install first."
+        ) from exc
+
+    screenshot_paths: list[str] = []
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page()
+        try:
+            await page.goto(str(plan["url"]), wait_until="networkidle")
+            for idx, step in enumerate(plan["steps"]):
+                kind = str(step.get("kind") or step.get("type"))
+                selector = str(step.get("selector") or "")
+                if kind == "goto":
+                    # URL is fixed by the allowlisted plan; step-level goto is intentionally ignored.
+                    continue
+                if kind == "click":
+                    await page.click(selector)
+                elif kind == "fill":
+                    await page.fill(selector, str(step.get("text") or ""))
+                elif kind == "screenshot":
+                    raw_path = str(step.get("path") or f"screenshot-{idx}.png")
+                    target = (
+                        Path(str(plan["artifact_root"])) / _safe_artifact_name(raw_path)
+                    ).resolve()
+                    await page.screenshot(path=str(target), full_page=True)
+                    screenshot_paths.append(str(target))
+        finally:
+            await browser.close()
+    return {
+        "executed": True,
+        "screenshot_paths": screenshot_paths,
+    }
+
+
+def _capability_status(
+    handler: WorldActionHandler,
+) -> Literal[
+    "supported_execute",
+    "supported_draft",
+    "supported_dry_run",
+    "supported_plan",
+]:
+    if handler.mode == "execute":
+        return "supported_execute"
+    if handler.mode == "draft":
+        return "supported_draft"
+    if handler.mode == "dry_run":
+        return "supported_dry_run"
+    return "supported_plan"
+
+
+def _preview_summary(handler: WorldActionHandler) -> str:
+    if handler.mode == "execute":
+        return "这个动作已支持；批准后会执行受控动作。"
+    if handler.mode == "draft":
+        return "这个动作已支持；批准后只生成草稿，不会外发。"
+    if handler.mode == "dry_run":
+        return "这个动作已支持；批准后只生成 dry-run 请求包，不会联网。"
+    return "这个动作已支持；批准后只生成计划，不会真实操作。"
+
+
+def _execution_summary(handler: WorldActionHandler) -> str:
+    if handler.mode == "execute":
+        return "WorldGateway 已执行受控动作，并留下审计。"
+    if handler.mode == "draft":
+        return "WorldGateway 已生成草稿，没有真实外发。"
+    if handler.mode == "dry_run":
+        return "WorldGateway 已生成 dry-run 请求包，没有联网。"
+    return "WorldGateway 已生成操作计划，没有真实操作外部系统。"
+
+
+def _policy_next_step(policy: WorldPolicyDecision, handler: WorldActionHandler) -> str:
+    if policy.allowed:
+        return handler.next_step
+    return "；".join(policy.block_reasons) or handler.next_step
+
+
+def _merge_unique(*items: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in items:
+        for item in group:
+            if item not in seen:
+                merged.append(item)
+                seen.add(item)
+    return merged
+
+
+def _payload_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "confirmed"}
 
 
 def _render_unified_diff(
@@ -591,8 +1393,11 @@ def set_world_gateway(gateway: WorldGateway) -> None:
 
 
 __all__ = [
+    "BrowserExecuteHandler",
     "BrowserPlanHandler",
     "EmailDraftHandler",
+    "EmailSendHandler",
+    "EnterpriseApiPostHandler",
     "LocalFileWriteHandler",
     "WebhookPostDryRunHandler",
     "WorldAction",
@@ -601,6 +1406,7 @@ __all__ = [
     "WorldGatewayResult",
     "WorldHandlerDescriptor",
     "WorldHandlerResult",
+    "WorldPolicyDecision",
     "get_world_gateway",
     "set_world_gateway",
 ]

@@ -55,6 +55,7 @@ class PendingActionList(BaseModel):
 class ActionDecisionRequest(BaseModel):
     decision: ActionDecision
     reason: str | None = None
+    external_dispatch_confirmed: bool = False
 
 
 class ActionDecisionResponse(BaseModel):
@@ -192,6 +193,7 @@ async def decide_pending_action(
                 new_status=new_status,
                 now=now,
                 reason=req.reason,
+                external_dispatch_confirmed=req.external_dispatch_confirmed,
             )
         )
         updated = result.one_or_none()
@@ -238,16 +240,20 @@ def _decision_update_stmt(
     new_status: ActionStatus,
     now: datetime,
     reason: str | None = None,
+    external_dispatch_confirmed: bool = False,
 ) -> Any:
     values: dict[str, Any] = {
         "status": new_status,
         "updated_at": now,
         "decided_at": now,
     }
+    payload_patch: dict[str, Any] = {}
     if reason:
-        values["payload"] = PendingActionRow.payload.op("||")(
-            literal({"decision_reason": reason}, type_=JSONB)
-        )
+        payload_patch["decision_reason"] = reason
+    if new_status == "approved" and external_dispatch_confirmed:
+        payload_patch["external_dispatch_confirmed"] = True
+    if payload_patch:
+        values["payload"] = PendingActionRow.payload.op("||")(literal(payload_patch, type_=JSONB))
 
     return (
         update(PendingActionRow)
@@ -294,8 +300,11 @@ async def _preview_for_row(
         return WorldGatewayResult(
             action_id=row.action_id,
             gateway_mode="preview_failed",
+            capability_status="preview_failed",
             requires_handler=False,
             audit={"error": str(exc), "action_type": row.action_type},
+            user_summary="这个动作预览失败，批准前需要人工检查。",
+            next_step="先修正动作参数或补齐 handler，再重新预览。",
             message=f"World Gateway preview failed: {exc}",
         )
 

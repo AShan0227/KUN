@@ -52,9 +52,13 @@ type PendingAction = {
 
 type GatewayPreview = {
   gateway_mode?: string;
+  capability_status?: string;
   external_dispatched?: boolean;
   requires_handler?: boolean;
   rendered_payload?: string;
+  user_summary?: string;
+  next_step?: string;
+  permissions_required?: string[];
   message?: string;
   audit?: {
     handler_id?: string;
@@ -64,6 +68,11 @@ type GatewayPreview = {
     would_overwrite?: boolean;
     diff_truncated?: boolean;
     error?: string;
+    policy?: {
+      allowed?: boolean;
+      block_reasons?: string[];
+      missing_permissions?: string[];
+    };
   };
 };
 
@@ -118,10 +127,19 @@ type DeliveryCapability = {
 type WorldHandler = {
   action_type: string;
   handler_id: string;
+  user_label: string;
   mode: "execute" | "draft" | "dry_run" | "plan";
   external_dispatched: boolean;
   artifact_kind: string;
   safety_note: string;
+  approval_effect: string;
+  cannot_do: string[];
+  permissions_required: string[];
+  allowed_risk_levels?: string[];
+  requires_external_dispatch_confirmation?: boolean;
+  retry_policy?: string;
+  compensation_strategy?: string;
+  next_step: string;
 };
 
 type WorldGatewayHandlers = {
@@ -136,8 +154,11 @@ type ActionDecisionResult = {
   message: string;
   gateway?: {
     gateway_mode?: string;
+    capability_status?: string;
     external_dispatched?: boolean;
     requires_handler?: boolean;
+    user_summary?: string;
+    next_step?: string;
     audit?: { artifact_ref?: string; handler_id?: string };
   } | null;
 };
@@ -223,10 +244,21 @@ export default function NuoDashboard() {
     async (actionId: string, decision: "approve" | "reject" | "cancel") => {
       setDecideBusy(actionId);
       try {
+        const action = actions.find((item) => item.action_id === actionId);
+        let externalDispatchConfirmed = false;
+        if (decision === "approve" && needsExternalDispatchConfirmation(action)) {
+          externalDispatchConfirmed = window.confirm(
+            "这个动作会真实影响外部世界。请确认你已经检查目标、内容、风险和补偿方式。",
+          );
+          if (!externalDispatchConfirmed) return;
+        }
         const result = await fetchJson<ActionDecisionResult>(`/nuo/actions/${actionId}/decision`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ decision }),
+          body: JSON.stringify({
+            decision,
+            external_dispatch_confirmed: externalDispatchConfirmed,
+          }),
         });
         const artifact = result.gateway?.audit?.artifact_ref;
         setActionNotice(
@@ -239,7 +271,7 @@ export default function NuoDashboard() {
         setDecideBusy(null);
       }
     },
-    [reload],
+    [actions, reload],
   );
 
   const loadMoreActions = useCallback(async () => {
@@ -287,6 +319,11 @@ export default function NuoDashboard() {
 
   const dayRatio = budget.day_equivalent_usd / Math.max(budget.budget_daily_usd, 1e-9);
   const monthRatio = budget.month_equivalent_usd / Math.max(budget.budget_monthly_usd, 1e-9);
+  const incompleteCapabilityCount = delivery.filter((item) => item.status !== "ready").length;
+  const pendingCount = health.pending_actions ?? actions.length;
+  const healthLabel = health.events_outbox_lag > 0 ? "需关注" : "正常";
+  const riskLabel =
+    incompleteCapabilityCount > 0 || health.events_outbox_lag > 0 ? "有边界" : "低";
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -298,17 +335,25 @@ export default function NuoDashboard() {
       </div>
 
       <section className="grid grid-cols-4 gap-4">
-        <Card title="任务总量" value={String(health.total_tasks)} />
         <Card
-          title="运行中"
-          value={String(health.tasks_by_status?.running ?? 0)}
-          hint={`排队 ${health.tasks_by_status?.queued ?? 0}`}
+          title="健康"
+          value={healthLabel}
+          hint={`任务 ${health.total_tasks} · 运行 ${health.tasks_by_status?.running ?? 0}`}
         />
-        <Card title="事件积压" value={String(health.events_outbox_lag)} />
         <Card
-          title="待审批"
-          value={String(health.pending_actions ?? actions.length)}
-          hint={actions.length > 0 ? "见下方" : "暂无"}
+          title="成本"
+          value={`$${budget.day_equivalent_usd.toFixed(4)}`}
+          hint={`今日上限 $${budget.budget_daily_usd.toFixed(2)}`}
+        />
+        <Card
+          title="权限"
+          value={String(pendingCount)}
+          hint={pendingCount > 0 ? "等你确认" : "暂无待确认"}
+        />
+        <Card
+          title="风险"
+          value={riskLabel}
+          hint={`事件积压 ${health.events_outbox_lag} · 边界 ${incompleteCapabilityCount}`}
         />
       </section>
 
@@ -363,10 +408,33 @@ export default function NuoDashboard() {
             {worldHandlers.map((handler) => (
               <div key={handler.action_type} className="border rounded p-3 text-sm">
                 <div className="flex justify-between gap-3">
-                  <span className="font-medium">{handler.action_type}</span>
+                  <span className="font-medium">{handler.user_label || handler.action_type}</span>
                   <span className="text-xs text-gray-500">{handler.mode}</span>
                 </div>
+                <div className="mt-1 text-xs text-gray-500">{handler.action_type}</div>
                 <p className="text-xs text-gray-500 mt-1">{handler.safety_note}</p>
+                <p className="text-xs text-gray-700 mt-2">{handler.approval_effect}</p>
+                {handler.cannot_do.length > 0 && (
+                  <p className="text-xs text-gray-400 mt-1">
+                    做不到：{handler.cannot_do.slice(0, 2).join("；")}
+                  </p>
+                )}
+                {handler.requires_external_dispatch_confirmation && (
+                  <p className="text-xs text-kun-warn mt-1">真实外发前需要二次确认</p>
+                )}
+                {handler.allowed_risk_levels && handler.allowed_risk_levels.length > 0 && (
+                  <p className="text-xs text-gray-400 mt-1">
+                    风险范围：{handler.allowed_risk_levels.join(" / ")}
+                  </p>
+                )}
+                {handler.retry_policy && (
+                  <p className="text-xs text-gray-400 mt-1">重试：{handler.retry_policy}</p>
+                )}
+                {handler.compensation_strategy && (
+                  <p className="text-xs text-gray-400 mt-1">
+                    补偿：{handler.compensation_strategy}
+                  </p>
+                )}
                 <p className="text-xs text-gray-400 mt-2">
                   {handler.handler_id} · {handler.artifact_kind} ·{" "}
                   {handler.external_dispatched ? "会产生受控本地产物" : "不会外发"}
@@ -451,9 +519,35 @@ export default function NuoDashboard() {
                 {a.gateway_preview && (
                   <div className="mt-2 rounded bg-gray-50 p-2 text-xs text-gray-600">
                     <div className="font-medium text-gray-700">
-                      网关预览：{gatewayPreviewLabel(a.gateway_preview)}
+                      <span>网关预览：{gatewayPreviewLabel(a.gateway_preview)}</span>
+                      <span
+                        className={`ml-2 rounded px-1.5 py-0.5 text-[11px] ${gatewayCapabilityClass(
+                          a.gateway_preview,
+                        )}`}
+                      >
+                        {gatewayCapabilityLabel(a.gateway_preview)}
+                      </span>
                     </div>
-                    <div className="mt-1">{a.gateway_preview.message}</div>
+                    <div className="mt-1">
+                      {a.gateway_preview.user_summary || a.gateway_preview.message}
+                    </div>
+                    {a.gateway_preview.next_step && (
+                      <div className="mt-1 text-gray-500">
+                        下一步：{a.gateway_preview.next_step}
+                      </div>
+                    )}
+                    {a.gateway_preview.audit?.policy?.allowed === false && (
+                      <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-amber-900">
+                        策略拦截：
+                        {(a.gateway_preview.audit.policy.block_reasons || []).join("；")}
+                      </div>
+                    )}
+                    {a.gateway_preview.permissions_required &&
+                      a.gateway_preview.permissions_required.length > 0 && (
+                        <div className="mt-1 text-gray-500">
+                          需要权限：{a.gateway_preview.permissions_required.join(" / ")}
+                        </div>
+                      )}
                     {a.gateway_preview.audit?.relative_path && (
                       <div className="mt-1 text-gray-400">
                         文件：{a.gateway_preview.audit.relative_path}
@@ -630,11 +724,31 @@ function StatusPill({ status }: { status: DeliveryCapability["status"] }) {
 }
 
 function gatewayPreviewLabel(preview: GatewayPreview) {
+  if (preview.user_summary) return preview.user_summary;
   if (preview.gateway_mode === "preview_failed") return "预览失败，批准前需要人工检查";
   if (preview.requires_handler) return "没有执行器，只会记录审计，不会真实外发";
   const handler = preview.audit?.handler_id || "已注册 handler";
   if (preview.external_dispatched) return `${handler} 会执行受控本地动作`;
   return `${handler} 会生成草稿 / dry-run 产物，不会外发`;
+}
+
+function gatewayCapabilityLabel(preview: GatewayPreview) {
+  if (preview.capability_status === "preview_failed") return "先检查";
+  if (preview.capability_status === "missing_handler" || preview.requires_handler) return "只审计";
+  if (preview.capability_status === "supported_execute") return "会执行";
+  if (preview.capability_status === "supported_draft") return "草稿";
+  if (preview.capability_status === "supported_dry_run") return "dry-run";
+  if (preview.capability_status === "supported_plan") return "计划";
+  return "待确认";
+}
+
+function gatewayCapabilityClass(preview: GatewayPreview) {
+  if (preview.capability_status === "preview_failed") return "bg-red-50 text-red-700";
+  if (preview.capability_status === "missing_handler" || preview.requires_handler) {
+    return "bg-gray-100 text-gray-600";
+  }
+  if (preview.capability_status === "supported_execute") return "bg-green-50 text-green-700";
+  return "bg-blue-50 text-blue-700";
 }
 
 function actionGatewaySummary(action: PendingAction) {
@@ -645,10 +759,22 @@ function actionGatewaySummary(action: PendingAction) {
   const audit = gateway.audit;
   const artifact =
     isRecord(audit) && typeof audit.artifact_ref === "string" ? audit.artifact_ref : "";
+  const summary = typeof gateway.user_summary === "string" ? gateway.user_summary : "";
+  const nextStep = typeof gateway.next_step === "string" ? gateway.next_step : "";
   const mode = typeof gateway.gateway_mode === "string" ? gateway.gateway_mode : "unknown";
   const dispatched =
     gateway.external_dispatched === true ? "已执行受控动作" : "未外发 / 草稿 / dry-run";
-  return artifact ? `${mode} · ${dispatched} · 产物：${artifact}` : `${mode} · ${dispatched}`;
+  const base = summary || `${mode} · ${dispatched}`;
+  const withArtifact = artifact ? `${base} · 产物：${artifact}` : base;
+  return nextStep ? `${withArtifact} · 下一步：${nextStep}` : withArtifact;
+}
+
+function needsExternalDispatchConfirmation(action?: PendingAction) {
+  if (!action?.gateway_preview) return false;
+  const permissions = action.gateway_preview.permissions_required || [];
+  if (permissions.includes("external_dispatch_confirmation")) return true;
+  const policy = action.gateway_preview.audit?.policy;
+  return (policy?.missing_permissions || []).includes("external_dispatch_confirmation");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

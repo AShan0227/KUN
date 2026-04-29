@@ -50,6 +50,26 @@ def test_decision_update_is_atomic_pending_only() -> None:
 
 
 @pytest.mark.unit
+def test_decision_update_can_persist_external_dispatch_confirmation() -> None:
+    compiled = _decision_update_stmt(
+        tenant_id="u-sylvan",
+        action_id="act-1",
+        new_status="approved",
+        now=datetime.now(UTC),
+        reason="looks good",
+        external_dispatch_confirmed=True,
+    ).compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+    payload_patch = compiled.params["param_1"]
+
+    assert "pending_actions.payload || " in sql
+    assert payload_patch == {
+        "decision_reason": "looks good",
+        "external_dispatch_confirmed": True,
+    }
+
+
+@pytest.mark.unit
 def test_approved_decision_message_discloses_guarded_execution() -> None:
     assert "guarded approval gate" in _decision_message("approved")
 
@@ -165,7 +185,10 @@ def test_row_to_item_embeds_gateway_preview() -> None:
     preview = WorldGatewayResult(
         action_id="a-1",
         gateway_mode="handler_preview",
+        capability_status="supported_execute",
         requires_handler=False,
+        user_summary="批准后会执行受控动作。",
+        next_step="批准前先看 diff。",
         audit={"handler_id": "local_file.write.v1"},
         message="Preview only",
     )
@@ -174,4 +197,6 @@ def test_row_to_item_embeds_gateway_preview() -> None:
 
     assert item.gateway_preview is not None
     assert item.gateway_preview["gateway_mode"] == "handler_preview"
+    assert item.gateway_preview["user_summary"] == "批准后会执行受控动作。"
+    assert item.gateway_preview["next_step"] == "批准前先看 diff。"
     assert item.gateway_preview["audit"]["handler_id"] == "local_file.write.v1"

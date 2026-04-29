@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from email.message import EmailMessage
 from typing import Any
 
+import httpx
 import pytest
 from kun.context.packer import ContextPacker
 from kun.context.storage import InMemoryAssetStore
@@ -19,7 +21,13 @@ from kun.interface.llm.stub_provider import StubProvider
 from kun.memory.writeback import MemoryWriteback, MemoryWritebackResult
 from kun.watchtower.decision_plane import WatchtowerDecisionPlane
 from kun.watchtower.scoring import UnifiedScoringSystem
-from kun.world.gateway import WorldAction, WorldGateway
+from kun.world.gateway import (
+    BrowserExecuteHandler,
+    EmailSendHandler,
+    EnterpriseApiPostHandler,
+    WorldAction,
+    WorldGateway,
+)
 
 
 class _FakeSession:
@@ -237,6 +245,9 @@ async def test_world_gateway_records_audit_without_fake_external_dispatch() -> N
 
     assert result.external_dispatched is False
     assert result.requires_handler is True
+    assert result.capability_status == "missing_handler"
+    assert "记录审计" in result.user_summary
+    assert "WorldGateway handler" in result.next_step
     assert result.audit["target"] == "api"
     assert "no delivery handler" in result.audit["reason"]
 
@@ -259,6 +270,8 @@ async def test_world_gateway_local_file_write_handler(tmp_path) -> None:
 
     assert result.requires_handler is False
     assert result.external_dispatched is True
+    assert result.capability_status == "supported_execute"
+    assert "已执行受控动作" in result.user_summary
     assert result.gateway_mode == "handler_executed"
     path = tmp_path / "files" / "reports" / "hello.txt"
     assert path.read_text(encoding="utf-8") == "hello"
@@ -284,6 +297,8 @@ async def test_world_gateway_local_file_preview_diff_without_writing(tmp_path) -
     assert result.gateway_mode == "handler_preview"
     assert result.requires_handler is False
     assert result.external_dispatched is False
+    assert result.capability_status == "supported_execute"
+    assert "批准后会执行受控动作" in result.user_summary
     assert result.audit["handler_id"] == "local_file.write.v1"
     assert result.audit["would_create"] is True
     assert "+hello" in result.rendered_payload
@@ -298,9 +313,215 @@ def test_world_gateway_exposes_handler_registry(tmp_path) -> None:
 
     assert descriptors["local_file.write"].mode == "execute"
     assert descriptors["local_file.write"].external_dispatched is True
+    assert descriptors["local_file.write"].user_label == "写入本地文件"
+    assert "受控输出目录" in descriptors["local_file.write"].approval_effect
+    assert "不能写绝对路径" in descriptors["local_file.write"].cannot_do
     assert descriptors["email.draft"].mode == "draft"
+    assert descriptors["email.draft"].external_dispatched is False
+    assert "不能真实发送邮件" in descriptors["email.draft"].cannot_do
     assert descriptors["webhook.post_dry_run"].mode == "dry_run"
     assert descriptors["browser.plan"].mode == "plan"
+    assert descriptors["local_file.write"].retry_policy
+    assert descriptors["local_file.write"].compensation_strategy
+    assert descriptors["email.draft"].requires_external_dispatch_confirmation is False
+
+
+@pytest.mark.unit
+def test_world_gateway_real_handlers_are_opt_in_by_default(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("KUN_WORLD_EMAIL_SEND_ENABLED", raising=False)
+    monkeypatch.delenv("KUN_WORLD_API_POST_ENABLED", raising=False)
+    monkeypatch.delenv("KUN_WORLD_BROWSER_EXECUTE_ENABLED", raising=False)
+
+    gateway = WorldGateway(artifact_root=tmp_path)
+
+    assert "email.send" not in gateway.supported_action_types()
+    assert "enterprise_api.post" not in gateway.supported_action_types()
+    assert "browser.execute" not in gateway.supported_action_types()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_email_send_handler_can_use_injected_sender(tmp_path) -> None:
+    sent: list[EmailMessage] = []
+
+    async def sender(message: EmailMessage) -> dict[str, Any]:
+        sent.append(message)
+        return {"provider_message_id": "smtp-1"}
+
+    gateway = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[
+            EmailSendHandler(
+                output_root=tmp_path,
+                smtp_host="smtp.example.com",
+                smtp_port=587,
+                smtp_username=None,
+                smtp_password=None,
+                smtp_from="kun@example.com",
+                sender=sender,
+            )
+        ],
+    )
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-email-send",
+            task_ref="task-1",
+            action_type="email.send",
+            target_ref="user@example.com",
+            risk_level="high",
+            payload={
+                "subject": "Hi",
+                "body": "Real send",
+                "to": "user@example.com",
+                "external_dispatch_confirmed": True,
+            },
+        )
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["To"] == "user@example.com"
+    assert result.external_dispatched is True
+    assert result.requires_handler is False
+    assert result.audit["provider_message_id"] == "smtp-1"
+    assert result.audit["compensation"].startswith("cannot_recall")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_blocks_real_email_without_external_confirmation(tmp_path) -> None:
+    sent: list[EmailMessage] = []
+
+    async def sender(message: EmailMessage) -> dict[str, Any]:
+        sent.append(message)
+        return {"provider_message_id": "smtp-1"}
+
+    gateway = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[
+            EmailSendHandler(
+                output_root=tmp_path,
+                smtp_host="smtp.example.com",
+                smtp_port=587,
+                smtp_username=None,
+                smtp_password=None,
+                smtp_from="kun@example.com",
+                sender=sender,
+            )
+        ],
+    )
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-email-send-blocked",
+            task_ref="task-1",
+            action_type="email.send",
+            target_ref="user@example.com",
+            risk_level="high",
+            payload={"subject": "Hi", "body": "Real send", "to": "user@example.com"},
+        )
+    )
+
+    assert sent == []
+    assert result.gateway_mode == "policy_blocked"
+    assert result.external_dispatched is False
+    assert result.requires_handler is False
+    assert "external_dispatch_confirmation" in result.permissions_required
+    assert result.audit["policy"]["allowed"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_enterprise_api_requires_allowlisted_https_host(tmp_path) -> None:
+    handler = EnterpriseApiPostHandler(
+        output_root=tmp_path,
+        allowed_hosts={"api.example.com"},
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"ok": True}))
+        ),
+    )
+    gateway = WorldGateway(artifact_root=tmp_path, handlers=[handler])
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-api",
+            task_ref="task-1",
+            action_type="enterprise_api.post",
+            target_ref="https://api.example.com/orders",
+            risk_level="high",
+            payload={
+                "json": {"order_id": "o-1"},
+                "external_dispatch_confirmed": True,
+            },
+        )
+    )
+
+    assert result.external_dispatched is True
+    assert result.audit["status_code"] == 200
+    assert result.audit["host"] == "api.example.com"
+
+    with pytest.raises(ValueError, match="not allowlisted"):
+        await gateway.preview(
+            WorldAction(
+                action_id="act-api-bad",
+                task_ref="task-1",
+                action_type="enterprise_api.post",
+                target_ref="https://evil.example.com/orders",
+                risk_level="high",
+                payload={"json": {"order_id": "o-1"}},
+            )
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_browser_execute_uses_injected_runner_and_allowlist(tmp_path) -> None:
+    async def runner(plan: dict[str, Any]) -> dict[str, Any]:
+        return {"executed": True, "steps_seen": len(plan["steps"])}
+
+    gateway = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[
+            BrowserExecuteHandler(
+                output_root=tmp_path,
+                allowed_hosts={"example.com"},
+                runner=runner,
+            )
+        ],
+    )
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-browser-exec",
+            task_ref="task-1",
+            action_type="browser.execute",
+            target_ref="https://example.com",
+            risk_level="high",
+            payload={
+                "external_dispatch_confirmed": True,
+                "steps": [
+                    {"kind": "click", "selector": "#start"},
+                    {"kind": "screenshot", "path": "done.png"},
+                ],
+            },
+        )
+    )
+
+    assert result.external_dispatched is True
+    assert result.audit["executed"] is True
+    assert result.audit["steps_seen"] == 2
+
+    with pytest.raises(ValueError, match="unsupported step kind"):
+        await gateway.preview(
+            WorldAction(
+                action_id="act-browser-bad",
+                task_ref="task-1",
+                action_type="browser.execute",
+                target_ref="https://example.com",
+                risk_level="high",
+                payload={"steps": [{"kind": "pay", "selector": "#pay"}]},
+            )
+        )
 
 
 @pytest.mark.unit
@@ -341,6 +562,8 @@ async def test_world_gateway_email_draft_handler_does_not_send(tmp_path) -> None
 
     assert result.requires_handler is False
     assert result.external_dispatched is False
+    assert result.capability_status == "supported_draft"
+    assert "草稿" in result.user_summary
     assert result.gateway_mode == "handler_drafted"
     assert result.audit["sent"] is False
     assert result.audit["handler_id"] == "email.draft.v1"
@@ -364,6 +587,8 @@ async def test_world_gateway_webhook_dry_run_does_not_call_network(tmp_path) -> 
 
     assert result.requires_handler is False
     assert result.external_dispatched is False
+    assert result.capability_status == "supported_dry_run"
+    assert "dry-run" in result.user_summary
     assert result.gateway_mode == "handler_dry_run"
     assert result.audit["dry_run"] is True
     assert "example.com" in result.rendered_payload
@@ -387,6 +612,8 @@ async def test_world_gateway_browser_plan_does_not_control_browser(tmp_path) -> 
 
     assert result.requires_handler is False
     assert result.external_dispatched is False
+    assert result.capability_status == "supported_plan"
+    assert "操作计划" in result.user_summary
     assert result.gateway_mode == "handler_drafted"
     assert result.audit["executed"] is False
     assert result.audit["handler_id"] == "browser.plan.v1"
