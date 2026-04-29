@@ -321,6 +321,9 @@ def test_world_gateway_exposes_handler_registry(tmp_path) -> None:
     assert "不能真实发送邮件" in descriptors["email.draft"].cannot_do
     assert descriptors["webhook.post_dry_run"].mode == "dry_run"
     assert descriptors["browser.plan"].mode == "plan"
+    assert descriptors["local_file.write"].retry_policy
+    assert descriptors["local_file.write"].compensation_strategy
+    assert descriptors["email.draft"].requires_external_dispatch_confirmation is False
 
 
 @pytest.mark.unit
@@ -367,7 +370,12 @@ async def test_world_gateway_email_send_handler_can_use_injected_sender(tmp_path
             action_type="email.send",
             target_ref="user@example.com",
             risk_level="high",
-            payload={"subject": "Hi", "body": "Real send", "to": "user@example.com"},
+            payload={
+                "subject": "Hi",
+                "body": "Real send",
+                "to": "user@example.com",
+                "external_dispatch_confirmed": True,
+            },
         )
     )
 
@@ -377,6 +385,49 @@ async def test_world_gateway_email_send_handler_can_use_injected_sender(tmp_path
     assert result.requires_handler is False
     assert result.audit["provider_message_id"] == "smtp-1"
     assert result.audit["compensation"].startswith("cannot_recall")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_blocks_real_email_without_external_confirmation(tmp_path) -> None:
+    sent: list[EmailMessage] = []
+
+    async def sender(message: EmailMessage) -> dict[str, Any]:
+        sent.append(message)
+        return {"provider_message_id": "smtp-1"}
+
+    gateway = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[
+            EmailSendHandler(
+                output_root=tmp_path,
+                smtp_host="smtp.example.com",
+                smtp_port=587,
+                smtp_username=None,
+                smtp_password=None,
+                smtp_from="kun@example.com",
+                sender=sender,
+            )
+        ],
+    )
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-email-send-blocked",
+            task_ref="task-1",
+            action_type="email.send",
+            target_ref="user@example.com",
+            risk_level="high",
+            payload={"subject": "Hi", "body": "Real send", "to": "user@example.com"},
+        )
+    )
+
+    assert sent == []
+    assert result.gateway_mode == "policy_blocked"
+    assert result.external_dispatched is False
+    assert result.requires_handler is False
+    assert "external_dispatch_confirmation" in result.permissions_required
+    assert result.audit["policy"]["allowed"] is False
 
 
 @pytest.mark.unit
@@ -398,7 +449,10 @@ async def test_world_gateway_enterprise_api_requires_allowlisted_https_host(tmp_
             action_type="enterprise_api.post",
             target_ref="https://api.example.com/orders",
             risk_level="high",
-            payload={"json": {"order_id": "o-1"}},
+            payload={
+                "json": {"order_id": "o-1"},
+                "external_dispatch_confirmed": True,
+            },
         )
     )
 
@@ -444,10 +498,11 @@ async def test_world_gateway_browser_execute_uses_injected_runner_and_allowlist(
             target_ref="https://example.com",
             risk_level="high",
             payload={
+                "external_dispatch_confirmed": True,
                 "steps": [
                     {"kind": "click", "selector": "#start"},
                     {"kind": "screenshot", "path": "done.png"},
-                ]
+                ],
             },
         )
     )

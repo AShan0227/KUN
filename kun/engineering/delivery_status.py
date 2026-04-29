@@ -216,6 +216,8 @@ def _world_gateway_delivery_status(
         "handler 执行失败会明确返回失败并保持任务暂停",
         "不支持的 action_type 会明确 requires_handler=true",
         "WorldGateway 会返回 user_summary / next_step / permissions_required，避免用户误解是否真实外发",
+        "WorldGateway handler 注册表会暴露重试策略、补偿策略和风险范围",
+        "真实外部动作缺少 external_dispatch_confirmed=true 时会被策略层拦截",
     ]
     done.extend(_handler_done_line(item) for item in descriptors)
 

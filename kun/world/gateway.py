@@ -93,7 +93,23 @@ class WorldHandlerDescriptor(BaseModel):
     approval_effect: str
     cannot_do: list[str] = Field(default_factory=list)
     permissions_required: list[str] = Field(default_factory=list)
+    allowed_risk_levels: list[str] = Field(default_factory=list)
+    requires_external_dispatch_confirmation: bool = False
+    retry_policy: str = ""
+    compensation_strategy: str = ""
     next_step: str = ""
+
+
+class WorldPolicyDecision(BaseModel):
+    """Execution policy decision for one approved world action."""
+
+    allowed: bool
+    block_reasons: list[str] = Field(default_factory=list)
+    missing_permissions: list[str] = Field(default_factory=list)
+    allowed_risk_levels: list[str] = Field(default_factory=list)
+    requires_external_dispatch_confirmation: bool = False
+    retry_policy: str = ""
+    compensation_strategy: str = ""
 
 
 class WorldActionHandler:
@@ -109,6 +125,10 @@ class WorldActionHandler:
     approval_effect: ClassVar[str] = "批准后由 World Gateway 处理。"
     cannot_do: ClassVar[list[str]] = []
     permissions_required: ClassVar[list[str]] = []
+    allowed_risk_levels: ClassVar[set[str]] = {"low", "medium", "high"}
+    requires_external_dispatch_confirmation: ClassVar[bool] = False
+    retry_policy: ClassVar[str] = "不自动重试；失败后重新走审批。"
+    compensation_strategy: ClassVar[str] = "需要人工确认补偿方式。"
     next_step: ClassVar[str] = "查看执行结果和审计记录。"
 
     async def preview(self, action: WorldAction) -> WorldHandlerResult:
@@ -138,6 +158,8 @@ class LocalFileWriteHandler(WorldActionHandler):
     approval_effect = "批准后会在 KUN 受控输出目录里写文件。"
     cannot_do: ClassVar[list[str]] = ["不能写绝对路径", "不能写出受控输出目录"]
     permissions_required: ClassVar[list[str]] = ["human_approval", "controlled_output_dir"]
+    retry_policy = "不自动重试；再次写入前重新生成 diff 并审批。"
+    compensation_strategy = "可通过再次写入旧内容人工恢复；KUN 不自动回滚文件。"
     next_step = "批准前先看 diff；批准后检查产物路径。"
 
     def __init__(self, output_root: str | Path) -> None:
@@ -231,6 +253,8 @@ class EmailDraftHandler(WorldActionHandler):
     approval_effect = "批准后只生成邮件草稿，不会发送。"
     cannot_do: ClassVar[list[str]] = ["不能真实发送邮件", "不能调用邮箱服务"]
     permissions_required: ClassVar[list[str]] = ["human_approval"]
+    retry_policy = "不自动重试；草稿生成失败后可重新生成。"
+    compensation_strategy = "删除草稿文件即可撤回；没有外部影响。"
     next_step = "检查草稿内容，需要真实发送时再接 email.send handler。"
 
     def __init__(self, output_root: str | Path) -> None:
@@ -299,6 +323,8 @@ class WebhookPostDryRunHandler(WorldActionHandler):
     approval_effect = "批准后只生成请求预览，不会联网。"
     cannot_do: ClassVar[list[str]] = ["不能真实发起网络请求", "不能调用外部 API"]
     permissions_required: ClassVar[list[str]] = ["human_approval"]
+    retry_policy = "不自动重试；dry-run 失败后重新渲染请求包。"
+    compensation_strategy = "无外部影响；删除请求预览即可。"
     next_step = "确认请求包正确后，再接真实 API handler。"
 
     async def preview(self, action: WorldAction) -> WorldHandlerResult:
@@ -363,6 +389,8 @@ class BrowserPlanHandler(WorldActionHandler):
     approval_effect = "批准后只生成浏览器计划，不会点击网页。"
     cannot_do: ClassVar[list[str]] = ["不能真实打开浏览器", "不能提交表单", "不能点击网页"]
     permissions_required: ClassVar[list[str]] = ["human_approval"]
+    retry_policy = "不自动重试；计划生成失败后重新生成。"
+    compensation_strategy = "无外部影响；删除浏览器计划即可。"
     next_step = "检查操作计划，需要真实浏览器执行时再接 browser.execute handler。"
 
     def __init__(self, output_root: str | Path) -> None:
@@ -431,6 +459,9 @@ class EmailSendHandler(WorldActionHandler):
         "smtp_credentials",
         "email_recipient_review",
     ]
+    requires_external_dispatch_confirmation = True
+    retry_policy = "不自动重试；SMTP 失败后人工确认是否重发，避免重复邮件。"
+    compensation_strategy = "无法自动撤回已送达邮件；只能发送更正邮件或人工跟进。"
     next_step = "批准前检查收件人、主题和正文；发送后只能补发更正邮件。"
 
     def __init__(
@@ -576,6 +607,9 @@ class EnterpriseApiPostHandler(WorldActionHandler):
         "api_host_allowlist",
         "api_credentials",
     ]
+    requires_external_dispatch_confirmation = True
+    retry_policy = "不自动重试；依赖 Idempotency-Key 和对方 API 语义人工确认。"
+    compensation_strategy = "取决于对方系统；优先使用撤销接口或补偿请求。"
     next_step = "批准前检查 URL、JSON 和幂等键；失败时按对方系统规则补偿。"
 
     def __init__(
@@ -713,6 +747,9 @@ class BrowserExecuteHandler(WorldActionHandler):
         "browser_host_allowlist",
         "browser_action_review",
     ]
+    requires_external_dispatch_confirmation = True
+    retry_policy = "不自动重试；真实浏览器步骤失败后人工确认页面状态再继续。"
+    compensation_strategy = "浏览器副作用取决于网站；需要人工或网站内撤销流程。"
     next_step = "批准前检查 URL 和步骤；执行后查看截图/审计记录。"
     allowed_steps: ClassVar[set[str]] = {"goto", "click", "fill", "screenshot"}
 
@@ -849,6 +886,12 @@ class WorldGateway:
                 approval_effect=handler.approval_effect,
                 cannot_do=handler.cannot_do,
                 permissions_required=handler.permissions_required,
+                allowed_risk_levels=sorted(handler.allowed_risk_levels),
+                requires_external_dispatch_confirmation=(
+                    handler.requires_external_dispatch_confirmation
+                ),
+                retry_policy=handler.retry_policy,
+                compensation_strategy=handler.compensation_strategy,
                 next_step=handler.next_step,
             )
             for handler in sorted(self.handlers.values(), key=lambda item: item.action_type)
@@ -886,6 +929,7 @@ class WorldGateway:
                 ),
             )
 
+        policy = self._policy_for(action, handler)
         handler_result = await handler.preview(action)
         return WorldGatewayResult(
             action_id=action.action_id,
@@ -904,11 +948,19 @@ class WorldGateway:
                 "handler_id": handler_result.handler_id,
                 "handler_status": handler_result.status,
                 "artifact_kind": handler.artifact_kind,
+                "policy": policy.model_dump(mode="json"),
                 **handler_result.audit,
             },
-            user_summary=_preview_summary(handler),
-            next_step=handler.next_step,
-            permissions_required=handler.permissions_required,
+            user_summary=(
+                _preview_summary(handler)
+                if policy.allowed
+                else "这个动作有执行器，但策略层还不允许真实执行。"
+            ),
+            next_step=_policy_next_step(policy, handler),
+            permissions_required=_merge_unique(
+                handler.permissions_required,
+                policy.missing_permissions,
+            ),
             message=handler_result.message,
         )
 
@@ -922,6 +974,33 @@ class WorldGateway:
         now = datetime.now(UTC).isoformat()
         handler = self.handlers.get(action.action_type)
         if handler is not None:
+            policy = self._policy_for(action, handler)
+            if not policy.allowed:
+                return WorldGatewayResult(
+                    action_id=action.action_id,
+                    gateway_mode="policy_blocked",
+                    capability_status=_capability_status(handler),
+                    external_dispatched=False,
+                    requires_handler=False,
+                    rendered_payload=packet.rendered,
+                    audit={
+                        "prepared_at": now,
+                        "target": target,
+                        "risk_level": action.risk_level,
+                        "action_type": action.action_type,
+                        "external_dispatched": False,
+                        "requires_handler": False,
+                        "handler_id": handler.handler_id,
+                        "policy": policy.model_dump(mode="json"),
+                    },
+                    user_summary="审批已记录，但守望策略层拦截了真实执行。",
+                    next_step=_policy_next_step(policy, handler),
+                    permissions_required=_merge_unique(
+                        handler.permissions_required,
+                        policy.missing_permissions,
+                    ),
+                    message="World Gateway policy blocked execution before any external side effect.",
+                )
             handler_result = await handler.execute(action)
             return WorldGatewayResult(
                 action_id=action.action_id,
@@ -940,11 +1019,15 @@ class WorldGateway:
                     "handler_id": handler_result.handler_id,
                     "handler_status": handler_result.status,
                     "artifact_ref": handler_result.artifact_ref,
+                    "policy": policy.model_dump(mode="json"),
                     **handler_result.audit,
                 },
                 user_summary=_execution_summary(handler),
                 next_step=handler.next_step,
-                permissions_required=handler.permissions_required,
+                permissions_required=_merge_unique(
+                    handler.permissions_required,
+                    policy.missing_permissions,
+                ),
                 message=handler_result.message,
             )
 
@@ -990,6 +1073,43 @@ class WorldGateway:
         if _env_bool("KUN_WORLD_BROWSER_EXECUTE_ENABLED"):
             handlers.append(BrowserExecuteHandler.from_env(self.artifact_root))
         return handlers
+
+    def _policy_for(
+        self,
+        action: WorldAction,
+        handler: WorldActionHandler,
+    ) -> WorldPolicyDecision:
+        risk = action.risk_level.strip().lower() or "medium"
+        block_reasons: list[str] = []
+        missing_permissions: list[str] = []
+
+        if risk not in handler.allowed_risk_levels:
+            block_reasons.append(
+                f"risk_level={risk} 不在该 handler 允许范围内: "
+                f"{', '.join(sorted(handler.allowed_risk_levels))}"
+            )
+            missing_permissions.append("risk_downgrade_or_manual_override")
+
+        if handler.requires_external_dispatch_confirmation and not _payload_truthy(
+            action.payload.get("external_dispatch_confirmed")
+        ):
+            block_reasons.append(
+                "真实外部动作缺少 external_dispatch_confirmed=true；"
+                "需要用户明确确认这一步会影响外部世界。"
+            )
+            missing_permissions.append("external_dispatch_confirmation")
+
+        return WorldPolicyDecision(
+            allowed=not block_reasons,
+            block_reasons=block_reasons,
+            missing_permissions=_merge_unique(missing_permissions),
+            allowed_risk_levels=sorted(handler.allowed_risk_levels),
+            requires_external_dispatch_confirmation=(
+                handler.requires_external_dispatch_confirmation
+            ),
+            retry_policy=handler.retry_policy,
+            compensation_strategy=handler.compensation_strategy,
+        )
 
     async def _translate_packet(
         self,
@@ -1209,6 +1329,31 @@ def _execution_summary(handler: WorldActionHandler) -> str:
     return "WorldGateway 已生成操作计划，没有真实操作外部系统。"
 
 
+def _policy_next_step(policy: WorldPolicyDecision, handler: WorldActionHandler) -> str:
+    if policy.allowed:
+        return handler.next_step
+    return "；".join(policy.block_reasons) or handler.next_step
+
+
+def _merge_unique(*items: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in items:
+        for item in group:
+            if item not in seen:
+                merged.append(item)
+                seen.add(item)
+    return merged
+
+
+def _payload_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "confirmed"}
+
+
 def _render_unified_diff(
     *,
     previous: str,
@@ -1261,6 +1406,7 @@ __all__ = [
     "WorldGatewayResult",
     "WorldHandlerDescriptor",
     "WorldHandlerResult",
+    "WorldPolicyDecision",
     "get_world_gateway",
     "set_world_gateway",
 ]
