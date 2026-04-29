@@ -233,7 +233,7 @@ export default function NuoDashboard() {
       <div>
         <h1 className="text-xl font-semibold">傩 · 管家面板</h1>
         <p className="text-sm text-gray-500">
-          租户 {health.tenant_id} · KUN Agent OS 管家视图
+          租户 {health.tenant_id} · 先看健康、成本、权限、风险，高级诊断收在下面。
         </p>
       </div>
 
@@ -253,8 +253,8 @@ export default function NuoDashboard() {
       </section>
 
       {delivery.length > 0 && (
-        <section className="bg-white rounded-lg shadow-sm p-4">
-          <h2 className="text-base font-medium mb-2">能力边界</h2>
+        <details className="bg-white rounded-lg shadow-sm p-4">
+          <summary className="cursor-pointer text-base font-medium">高级 · 能力边界</summary>
           <p className="text-xs text-gray-500 mb-3">
             这里不讲愿景，只讲现在真实能做什么、哪里还没接通。
           </p>
@@ -274,7 +274,7 @@ export default function NuoDashboard() {
               </div>
             ))}
           </div>
-        </section>
+        </details>
       )}
 
       <section className="bg-white rounded-lg shadow-sm p-4">
@@ -357,8 +357,8 @@ export default function NuoDashboard() {
         </section>
       )}
 
-      <section className="bg-white rounded-lg shadow-sm p-4">
-        <h2 className="text-base font-medium mb-2">诊断面板</h2>
+      <details className="bg-white rounded-lg shadow-sm p-4">
+        <summary className="cursor-pointer text-base font-medium">高级 · 诊断面板</summary>
         <p className="text-xs text-gray-500 mb-3">
           先显示最严重的 3 条发现，需要再展开下一批。
         </p>
@@ -411,11 +411,11 @@ export default function NuoDashboard() {
             查看更多（还有 {findingRemaining} 条，第 {findingRound + 1} 轮，最多 3 轮）
           </button>
         )}
-      </section>
+      </details>
 
       {capability.length > 0 && (
-        <section className="bg-white rounded-lg shadow-sm p-4">
-          <h2 className="text-base font-medium mb-2">模型画像</h2>
+        <details className="bg-white rounded-lg shadow-sm p-4">
+          <summary className="cursor-pointer text-base font-medium">高级 · 模型画像</summary>
           <p className="text-xs text-gray-500 mb-3">
             实测每个模型在每种任务上的成功率、成本、耗时。手册（playbook.yaml）说&ldquo;应该这样&rdquo;，画像说&ldquo;实际这样&rdquo;。
           </p>
@@ -466,7 +466,7 @@ export default function NuoDashboard() {
               </div>
             ))}
           </div>
-        </section>
+        </details>
       )}
     </div>
   );
