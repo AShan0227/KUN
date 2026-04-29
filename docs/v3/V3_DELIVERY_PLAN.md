@@ -142,7 +142,8 @@ P5 生产级 dogfood 和部署
 2. durable task resume worker：
    - 任务 crash 后可恢复。
    - paused / queued / running 状态一致。
-   - 当前已有 worker shell；没有真实 runner 时会明确 `skipped`，不会假装已恢复执行。
+   - 已接共享 `Orchestrator` runner；worker 可以启动一个 mission continuation task，并把 outcome / checkpoint 写回 Mission。
+   - 诚实边界：这不是原 TaskRow 原地继续跑，而是续跑执行任务挂回 Mission。
 3. checkpoint：
    - 每个长任务有阶段目标。
    - 每阶段有成功标准。
@@ -162,7 +163,7 @@ P5 生产级 dogfood 和部署
 验收：
 
 - 一个 Mission 可以拆多个 Task。
-- Task 可以暂停、恢复、失败续跑。
+- Task 可以暂停、审批后进入 queued；Mission worker 可以发现 queued task 并推进一次 continuation run。
 - 中途重启 API 后，任务状态不丢。
 - 用户能看到 Mission 进展和下一步。
 
@@ -312,8 +313,8 @@ NUO 初期只保留 4 个主入口：
 ### Batch V3-B：Mission 长周期任务
 
 - Mission/Task/Action 收口。
-- resume worker。
-- checkpoint。
+- resume worker 已接 Orchestrator continuation runner。
+- checkpoint 已记录 continuation outcome。
 - scheduler。
 - failure reaper。
 

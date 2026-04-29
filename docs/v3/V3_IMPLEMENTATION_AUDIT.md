@@ -58,14 +58,14 @@
 - 测试：`tests/unit/test_v3_memory_scoring_gateway.py`。
 - 诚实边界：第一版是确定性评分；用户满意度先用中性默认值，后续要接真实反馈。
 
-## V3-9 Mission 长周期骨架
+## V3-9 Mission 长周期骨架 / 续跑第一版
 
-- 调用方：`/api/missions`、后续 Mission resume worker。
+- 调用方：`/api/missions`、`MissionResumeWorker`、`MissionOrchestratorRunner`。
 - 影响决策：长期目标不再只存在于对话里；Mission 可以持久化挂多个 Task、里程碑和 checkpoint。
-- 消费者：主任务看板、NUO 风险/成本视图、后续 Orchestrator resume worker。
-- 测试：`tests/unit/test_mission_control.py`、`tests/unit/test_mission_api.py`。
-- 已接能力：`missions`、`mission_tasks`、`mission_milestones` 三张表；Mission 创建/查询/挂任务/记录里程碑 API；`request_resumable_tasks()` 会扫描 queued runtime 并发 `mission.task.resume_requested`；`MissionResumeWorker` 可注入 runner，默认无 runner 时明确 `skipped`。
-- 诚实边界：默认 resume worker 不会假装任务已自动执行；跨天调度、失败续跑策略、Mission 级预算复盘还没接完。
+- 消费者：主任务看板、NUO 风险/成本视图、Orchestrator、State Ledger。
+- 测试：`tests/unit/test_mission_control.py`、`tests/unit/test_mission_api.py`、`tests/unit/test_mission_worker.py`、`tests/unit/test_api_runtime.py`。
+- 已接能力：`missions`、`mission_tasks`、`mission_milestones` 三张表；Mission 创建/查询/挂任务/记录里程碑 API；`request_resumable_tasks()` 会扫描 queued runtime 并发 `mission.task.resume_requested`；runtime 安装时会把 `MissionResumeWorker` 接到共享 `Orchestrator`；首页长期目标卡可以手动点“推进一次”；worker 会启动一个 mission continuation task，把 `executed_task_id`、outcome、checkpoint 和事件写回原 Mission task。
+- 诚实边界：这不是“原 TaskRow 原地继续跑”，而是创建一个续跑执行任务，再把结果挂回 Mission checkpoint；跨天策略、失败续跑策略、Mission 级预算复盘、完整事件溯源还没接完。
 
 ## V3-7 主交互入口
 
@@ -73,7 +73,7 @@
 - 影响决策：不直接改后端决策，但让用户看到任务状态、成本、风险、待确认。
 - 消费者：用户。
 - 测试：前端 typecheck / lint。
-- 已接能力：首页现在展示长期 Mission、活跃 StateLedger 任务、待确认 pending action，并可直接批准 / 拒绝低风险网关动作。
+- 已接能力：首页现在展示长期 Mission、Mission task 状态 / resume attempts、活跃 StateLedger 任务、待确认 pending action，并可直接推进一次 Mission worker、批准 / 拒绝低风险网关动作。
 - 诚实边界：主入口仍不是完整任务详情页；节点图、高级拖拽编辑没有放到主入口。
 
 ## V3-7b NUO 做减法
