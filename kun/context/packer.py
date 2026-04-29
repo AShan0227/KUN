@@ -115,9 +115,11 @@ class ContextPacker:
         tenant_id: str,
         kinds: Iterable[AssetKind] | None = None,
         limit: int = 5,
+        boost_asset_ids: Iterable[str] | None = None,
     ) -> ContextPack:
         query_terms = _task_terms(task_ref)
-        if not query_terms:
+        boost_ids = set(boost_asset_ids or [])
+        if not query_terms and not boost_ids:
             return ContextPack()
 
         candidates: list[LayeredAsset] = []
@@ -129,6 +131,8 @@ class ContextPacker:
         scored: list[tuple[float, LayeredAsset]] = []
         for asset in candidates:
             score = _score_asset(asset, query_terms)
+            if asset.asset_id in boost_ids:
+                score += 2.0
             if score > 0:
                 scored.append((score, asset))
 

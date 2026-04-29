@@ -73,6 +73,37 @@ async def test_context_packer_keeps_tenant_boundary() -> None:
     assert pack.items == []
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_boosts_reuse_asset_ids() -> None:
+    store = InMemoryAssetStore()
+    boosted = LayeredAsset.build(
+        "methodology",
+        "u-sylvan",
+        metadata={"title": "历史成功路径"},
+        summary="这条文字和当前任务不相似，但被记忆复用顾问点名。",
+        tags=["archived"],
+    )
+    relevant = LayeredAsset.build(
+        "knowledge",
+        "u-sylvan",
+        metadata={"title": "pytest 普通知识"},
+        summary="pytest 失败修复。",
+        tags=["pytest"],
+    )
+    await store.put(relevant)
+    await store.put(boosted)
+
+    pack = await ContextPacker(store).pack(
+        _task(),
+        tenant_id="u-sylvan",
+        limit=2,
+        boost_asset_ids=[boosted.asset_id],
+    )
+
+    assert [item.asset_id for item in pack.items] == [boosted.asset_id, relevant.asset_id]
+
+
 # ---- Wire 33: pack_query (hermes use_memory) ----
 
 

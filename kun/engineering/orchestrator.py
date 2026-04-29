@@ -67,6 +67,7 @@ from kun.interface.llm import (
 from kun.interface.llm.router import TaskPurpose
 from kun.skills.selector import get_selector as get_skill_selector
 from kun.watchtower.engine import RuleEngine
+from kun.watchtower.memory_reuse import MemoryReuseAdvisor
 
 log = get_logger("kun.engineering.orchestrator")
 
@@ -176,6 +177,7 @@ class Orchestrator:
         state_ledger: Any = None,
         hermes_adapter: HermesAdapter | None = None,
         memory_writeback: Any = None,
+        memory_reuse_advisor: Any = None,
         scoring_system: Any = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
@@ -215,6 +217,9 @@ class Orchestrator:
         # production runtime installs it so later ContextPacker calls can reuse
         # result/process/meta-decision memories.
         self.memory_writeback = memory_writeback
+        # V3: prior meta-decision / result memories now feed the next route and
+        # context ranking.  This keeps reuse out of UI-only dashboards.
+        self.memory_reuse_advisor = memory_reuse_advisor or MemoryReuseAdvisor()
         # V3-6: unified scorecard.  Its output feeds capability writeback and
         # memory, so metrics are not just a side dashboard.
         self.scoring_system = scoring_system
@@ -581,14 +586,24 @@ class Orchestrator:
         # V3: Watchtower Decision Plane consume — task 启动前选 StrategyPack,
         # 并真实影响 execution_mode / context_limit / required_skills.
         watchtower_decision: Any = None
+        memory_reuse_hint: Any = None
         if (
             self.decision_plane is not None
             and _os.getenv("KUN_WATCHTOWER_DECISION_PLANE_ENABLED", "1") == "1"
         ):
             try:
+                if (
+                    self.memory_reuse_advisor is not None
+                    and _os.getenv("KUN_MEMORY_REUSE_ENABLED", "1") == "1"
+                ):
+                    memory_reuse_hint = await self.memory_reuse_advisor.suggest(
+                        task_ref,
+                        tenant_id=tenant.tenant_id,
+                    )
                 watchtower_decision = self.decision_plane.decide(
                     task_ref,
                     active_protocol=active_protocol,
+                    reuse_hint=memory_reuse_hint,
                 )
                 self.decision_plane.apply(task_ref, watchtower_decision)
                 self._record_state_ledger(
@@ -605,6 +620,11 @@ class Orchestrator:
                             payload={
                                 "task_id": task_ref.meta.task_id,
                                 **watchtower_decision.event_payload(),
+                                "memory_reuse_hint": (
+                                    memory_reuse_hint.model_dump(mode="json")
+                                    if memory_reuse_hint is not None
+                                    else None
+                                ),
                             },
                             task_ref=task_ref.meta.task_id,
                         ),
@@ -615,6 +635,11 @@ class Orchestrator:
                         "stage": "watchtower_decision",
                         "task_id": task_ref.meta.task_id,
                         **watchtower_decision.event_payload(),
+                        "memory_reuse_hint": (
+                            memory_reuse_hint.model_dump(mode="json")
+                            if memory_reuse_hint is not None
+                            else None
+                        ),
                     },
                 )
                 await self._record_meta_decision_memory(
@@ -821,10 +846,19 @@ class Orchestrator:
             else {"FAST": 0, "SMART": 1, "MAX": 3, "ENSEMBLE": 3}.get(_task_mode, 1)
         )
         if _context_limit > 0:
+            reuse_asset_ids: list[str] = []
+            if watchtower_decision is not None:
+                raw_reuse_asset_ids = getattr(watchtower_decision, "metadata", {}).get(
+                    "reuse_asset_ids",
+                    [],
+                )
+                if isinstance(raw_reuse_asset_ids, list):
+                    reuse_asset_ids = [str(item) for item in raw_reuse_asset_ids if item]
             context_pack = await self.context_packer.pack(
                 task_ref,
                 tenant_id=tenant.tenant_id,
                 limit=_context_limit,
+                boost_asset_ids=reuse_asset_ids,
             )
         else:
             from kun.context.packer import ContextPack
