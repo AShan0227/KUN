@@ -24,6 +24,7 @@ from kun.engineering.idle_batch import (
     register_step,
 )
 from kun.engineering.marginal_roi import ModulePresets
+from kun.engineering.mission_worker import MissionResumeWorker
 from kun.engineering.orchestrator import Orchestrator
 from kun.engineering.precipitation import (
     KnowledgePrecipitation,
@@ -239,6 +240,11 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     set_world_gateway(world_gateway)
     app.state.world_gateway = world_gateway
 
+    # V3 Mission: durable resume worker shell. It is installed but has no
+    # runner by default, so it can report "needs executor" without pretending
+    # long-horizon tasks are already auto-running.
+    app.state.mission_resume_worker = MissionResumeWorker()
+
     # V2.2 §22 + Wire 3: hermes 结构化执行 generator (默认开, FAST 模式自动跳过)
     # Wire 35: 加 ThoughtActionConsistency checker → 自动 rethink (max 2 次)
     structured_step_generator = None
@@ -429,6 +435,10 @@ def get_incident_response(app: _AppWithState) -> IncidentResponseEngine:
 
 def get_cron_scheduler(app: _AppWithState) -> CronScheduler:
     return cast(CronScheduler, app.state.cron_scheduler)
+
+
+def get_mission_resume_worker(app: _AppWithState) -> MissionResumeWorker:
+    return cast(MissionResumeWorker, app.state.mission_resume_worker)
 
 
 def get_value_gate(app: _AppWithState) -> ValueGate | None:

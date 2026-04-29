@@ -94,11 +94,12 @@ def get_v3_delivery_status() -> list[DeliveryCapability]:
                 "Mission / MissionTask / MissionMilestone 数据模型已落库",
                 "Mission HTTP API 可创建 Mission、挂 Task、记录里程碑",
                 "resume request 扫描能找出 queued mission task 并发事件",
+                "MissionResumeWorker 已安装；无 runner 时会诚实返回 skipped",
                 "pending approval 通过后可解除任务暂停",
                 "idle-batch 有部分复盘和学习能力",
             ],
             missing=[
-                "resume request 后还没接真正任务执行 worker",
+                "resume worker 还没接真正 Orchestrator runner",
                 "失败续跑策略还只是尝试次数限制",
                 "跨天/跨周任务的预算、风险、里程碑管理",
                 "StateLedger 仍是热视图，不是长期持久化账本",

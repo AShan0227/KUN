@@ -159,6 +159,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         sched.register("kp_daily", "@daily", _daily_kp)
         sched.register("kp_weekly", "@weekly", _weekly_kp)
 
+        if os.getenv("KUN_MISSION_RESUME_WORKER_ENABLED", "0") == "1":
+            from kun.api.runtime import get_mission_resume_worker
+
+            async def _mission_resume_once() -> None:
+                await get_mission_resume_worker(app).run_once(tenant_id=default_tenant)
+
+            sched.register("mission_resume_every_minute", "* * * * *", _mission_resume_once)
+
         # V2.3: 启 (Qi) cron — 启窗口内自动跑探索 (Darwin / AI Scientist /
         # PredictionTrainer). 默认装上 (KUN_QI_CRON_ENABLED=1), 但每次 tick 调用
         # 前会 require_qi_active 守门, 窗口外 skip.

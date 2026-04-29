@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from kun.api import missions as mission_api
 from kun.core.tenancy import TenantContext, tenant_scope
 from kun.datamodel.mission import MissionCreate, MissionMilestone, MissionSnapshot, ResumeRequest
+from kun.engineering.mission_worker import MissionResumeResult
 
 
 @pytest.mark.unit
@@ -96,6 +98,38 @@ async def test_request_resume_uses_tenant(monkeypatch) -> None:
 
     assert result[0].task_id == "tk-1"
     assert captured == {"tenant_id": "tenant-a", "limit": 2, "max_attempts": 4}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_resume_worker_once_uses_installed_worker() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeWorker:
+        async def run_once(self, *, tenant_id: str, limit: int, max_attempts: int):
+            captured.update({"tenant_id": tenant_id, "limit": limit, "max_attempts": max_attempts})
+            return [
+                MissionResumeResult(
+                    mission_id="msn-1",
+                    task_id="tk-1",
+                    status="skipped",
+                    reason="no mission resume runner attached",
+                )
+            ]
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(mission_resume_worker=FakeWorker()))
+    )
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a")):
+        result = await mission_api.run_resume_worker_once(
+            request,
+            limit=4,
+            max_attempts=5,
+        )
+
+    assert result[0].status == "skipped"
+    assert captured == {"tenant_id": "tenant-a", "limit": 4, "max_attempts": 5}
 
 
 def _snapshot() -> MissionSnapshot:

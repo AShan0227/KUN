@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from kun.core.tenancy import current_tenant
 from kun.datamodel.mission import MissionCreate, MissionMilestone, MissionSnapshot, ResumeRequest
 from kun.engineering import mission_control
+from kun.engineering.mission_worker import MissionResumeResult, MissionResumeWorker
 
 router = APIRouter(prefix="/api/missions", tags=["missions"])
 
@@ -107,6 +108,24 @@ async def request_resume(
 ) -> list[ResumeRequest]:
     tenant = current_tenant()
     return await mission_control.request_resumable_tasks(
+        tenant_id=tenant.tenant_id,
+        limit=limit,
+        max_attempts=max_attempts,
+    )
+
+
+@router.post("/resume-worker/run-once", response_model=list[MissionResumeResult])
+async def run_resume_worker_once(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100),
+    max_attempts: int = Query(default=3, ge=1, le=20),
+) -> list[MissionResumeResult]:
+    tenant = current_tenant()
+    maybe_worker = getattr(request.app.state, "mission_resume_worker", None)
+    if maybe_worker is None:
+        raise HTTPException(status_code=503, detail="mission resume worker is not installed")
+    worker = cast(MissionResumeWorker, maybe_worker)
+    return await worker.run_once(
         tenant_id=tenant.tenant_id,
         limit=limit,
         max_attempts=max_attempts,
