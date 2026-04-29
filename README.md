@@ -40,7 +40,7 @@ Claude 封号 / 不可用时，本机 LLM 推荐这样配：
 ```bash
 KUN_LLM_PRIMARY=codex
 KUN_DISABLE_CLAUDE_CLI=1
-KUN_CODEX_MCP_MODEL=gpt-5.3-codex-spark
+KUN_CODEX_MCP_MODEL=gpt-5.5
 ```
 
 这会让普通执行、规划、判官和代码任务都优先走 `codex mcp-server`，不是只把 Codex 用在写代码档。

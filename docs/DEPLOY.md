@@ -109,7 +109,7 @@ Claude 不可用时推荐:
 ```bash
 KUN_LLM_PRIMARY=codex
 KUN_DISABLE_CLAUDE_CLI=1
-KUN_CODEX_MCP_MODEL=gpt-5.3-codex-spark
+KUN_CODEX_MCP_MODEL=gpt-5.5
 ```
 
 设 `KUN_DISABLE_CLI_OAUTH=1` 可强制跳过全部 CLI 探测；设 `KUN_DISABLE_CLAUDE_CLI=1` 只跳过 Claude, 保留 Codex。所有档位都缺时一切走 Stub (确定性, 适合无网测试).

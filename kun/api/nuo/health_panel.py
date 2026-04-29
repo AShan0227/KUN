@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from kun.core.db import session_scope
 from kun.core.orm import EventRow, PendingActionRow, TaskRow
 from kun.core.tenancy import current_tenant
+from kun.engineering.delivery_status import delivery_status_summary, get_v3_delivery_status
 
 router = APIRouter()
 
@@ -62,4 +63,14 @@ async def health_summary() -> dict[str, Any]:
         "tasks_by_status": task_by_status,
         "events_outbox_lag": int(lag),
         "pending_actions": int(pending_actions),
+        "delivery_status": delivery_status_summary(),
+    }
+
+
+@router.get("/delivery-status")
+async def delivery_status() -> dict[str, Any]:
+    """Honest list of what KUN can and cannot claim today."""
+    return {
+        "items": [item.model_dump(mode="json") for item in get_v3_delivery_status()],
+        "summary": delivery_status_summary(),
     }

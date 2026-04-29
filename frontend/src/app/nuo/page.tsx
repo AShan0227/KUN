@@ -87,6 +87,16 @@ type CapabilitySnapshot = {
   playbook_notes: string;
 };
 
+type DeliveryCapability = {
+  capability_id: string;
+  label: string;
+  status: "ready" | "partial" | "audit_only" | "not_ready";
+  summary: string;
+  done: string[];
+  missing: string[];
+  next_steps: string[];
+};
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -111,6 +121,7 @@ export default function NuoDashboard() {
   const [findingRound, setFindingRound] = useState(1);
   const [diagnoseHint, setDiagnoseHint] = useState("");
   const [capability, setCapability] = useState<CapabilitySnapshot[]>([]);
+  const [delivery, setDelivery] = useState<DeliveryCapability[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [decideBusy, setDecideBusy] = useState<string | null>(null);
   const [expandBusy, setExpandBusy] = useState<string | null>(null);
@@ -124,8 +135,9 @@ export default function NuoDashboard() {
         `/nuo/diagnose/findings?limit=3&hint_text=${encodeURIComponent(diagnoseHint)}`,
       ),
       fetchJson<{ snapshots: CapabilitySnapshot[] }>("/nuo/capability/summary"),
+      fetchJson<{ items: DeliveryCapability[] }>("/nuo/health/delivery-status"),
     ])
-      .then(([h, b, a, d, c]) => {
+      .then(([h, b, a, d, c, ds]) => {
         setHealth(h);
         setBudget(b);
         setActions(a.actions || []);
@@ -139,6 +151,7 @@ export default function NuoDashboard() {
         setFindingRemaining(d.remaining);
         setFindingRound(d.round);
         setCapability(c.snapshots || []);
+        setDelivery(ds.items || []);
         setErr(null);
       })
       .catch((e) => setErr(String(e)));
@@ -238,6 +251,31 @@ export default function NuoDashboard() {
           hint={actions.length > 0 ? "见下方" : "暂无"}
         />
       </section>
+
+      {delivery.length > 0 && (
+        <section className="bg-white rounded-lg shadow-sm p-4">
+          <h2 className="text-base font-medium mb-2">能力边界</h2>
+          <p className="text-xs text-gray-500 mb-3">
+            这里不讲愿景，只讲现在真实能做什么、哪里还没接通。
+          </p>
+          <div className="grid md:grid-cols-2 gap-3">
+            {delivery.map((item) => (
+              <div key={item.capability_id} className="border rounded p-3 text-sm">
+                <div className="flex justify-between gap-3">
+                  <span className="font-medium">{item.label}</span>
+                  <StatusPill status={item.status} />
+                </div>
+                <p className="text-xs text-gray-500 mt-1">{item.summary}</p>
+                {item.missing.length > 0 && (
+                  <p className="text-xs text-gray-400 mt-2">
+                    未完成：{item.missing.slice(0, 2).join("；")}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="bg-white rounded-lg shadow-sm p-4">
         <h2 className="text-base font-medium mb-2">预算 / 成本</h2>
@@ -442,6 +480,26 @@ function Card({ title, value, hint }: { title: string; value: string; hint?: str
       {hint && <div className="text-xs text-gray-400 mt-1">{hint}</div>}
     </div>
   );
+}
+
+function StatusPill({ status }: { status: DeliveryCapability["status"] }) {
+  const label =
+    status === "ready"
+      ? "可测"
+      : status === "partial"
+        ? "半闭环"
+        : status === "audit_only"
+          ? "仅审计"
+          : "未就绪";
+  const color =
+    status === "ready"
+      ? "bg-kun-good text-white"
+      : status === "partial"
+        ? "bg-kun-warn text-white"
+        : status === "audit_only"
+          ? "bg-gray-700 text-white"
+          : "bg-kun-bad text-white";
+  return <span className={`${color} rounded px-2 py-0.5 text-xs whitespace-nowrap`}>{label}</span>;
 }
 
 function Bar({

@@ -1,11 +1,11 @@
-"""Codex MCP-server adapter — the working path for ChatGPT-subscription gpt-5.3-codex-spark.
+"""Codex MCP-server adapter — the working path for ChatGPT-subscription GPT-5.5.
 
 Background (2026-04-24): the initial `codex exec` path (see CodexCliProvider)
 doesn't work with ChatGPT-account auth — that flow hits the OpenAI public
 API endpoint which rejects the codex-family model ids. The **MCP server**
-path routes through the same backend the Codex interactive UI uses, and the
-rate-limits it reports tell us the real model id is `gpt-5.3-codex-spark`
-(not the UI's "gpt-5.5" display name).
+path routes through the same backend the Codex interactive UI uses.  KUN now
+defaults to `gpt-5.5`; set KUN_CODEX_MCP_MODEL if a deployment needs to pin a
+different Codex-family model.
 
 Implementation shape:
   - one long-lived ``codex mcp-server`` subprocess per provider instance
@@ -43,8 +43,8 @@ log = get_logger("kun.llm.codex_mcp")
 
 # Default model id — GPT-5.5 since 2026-04-23 (OpenAI's current frontier; the
 # first fully-retrained base since GPT-4.5). Requires codex CLI ≥ 0.125.
-# Override via KUN_CODEX_MCP_MODEL (e.g. fall back to gpt-5.3-codex-spark
-# if you need to pin an older CLI).
+# Override via KUN_CODEX_MCP_MODEL (e.g. fall back to gpt-5.3-codex-spark if
+# an older account/CLI cannot use GPT-5.5 yet).
 _DEFAULT_MODEL = "gpt-5.5"
 
 # Default reasoning effort — "low" is a 3s-turnaround baseline. Override via

@@ -24,6 +24,7 @@ def test_routes_registered():
         "/api/lab/run",
         "/ws",
         "/nuo/health/summary",
+        "/nuo/health/delivery-status",
         "/nuo/budget/summary",
         "/nuo/actions/pending",
         "/nuo/actions/{action_id}/decision",

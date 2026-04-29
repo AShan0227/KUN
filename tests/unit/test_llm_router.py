@@ -157,6 +157,7 @@ def test_get_router_can_force_codex_as_primary(monkeypatch):
     reset_router()
     monkeypatch.setenv("KUN_LLM_PRIMARY", "codex")
     monkeypatch.setenv("KUN_DISABLE_CLAUDE_CLI", "1")
+    monkeypatch.setenv("KUN_CODEX_MCP_MODEL", "gpt-5.5")
     monkeypatch.delenv("KUN_DISABLE_CLI_OAUTH", raising=False)
     monkeypatch.delenv("KUN_DISABLE_CODEX_CLI", raising=False)
     monkeypatch.delenv("KUN_OFOX_API_KEY", raising=False)
@@ -170,6 +171,7 @@ def test_get_router_can_force_codex_as_primary(monkeypatch):
     try:
         router = get_router()
         assert router.providers["top"].name == "codex-mcp"
+        assert router.providers["top"].model_id == "gpt-5.5"
         assert router.providers["strong"].name == "codex-mcp"
         assert router.providers["cheap"].name == "codex-mcp"
         assert router.providers["coding"].name == "codex-mcp"

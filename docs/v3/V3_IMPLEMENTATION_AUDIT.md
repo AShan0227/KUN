@@ -65,3 +65,11 @@
 - 消费者：开发者、reviewer、后续 Claude/Codex 审查。
 - 测试：本文件本身不是自动化测试；它是 review 门禁。
 - 诚实边界：静态自动扫描还没做，先用人工审计清单防止继续堆空壳。
+
+## V3-9 能力边界账本
+
+- 调用方：`/nuo/health/summary`、`/nuo/health/delivery-status`。
+- 影响决策：不直接执行任务；它把“可测 / 半闭环 / 仅审计 / 未就绪”变成产品可见状态，避免把审计网关说成真实执行器。
+- 消费者：NUO 管家页、用户、开发者、reviewer。
+- 测试：`tests/unit/test_delivery_status.py`、`tests/integration/test_api_routes_boot.py`。
+- 诚实边界：这是当前人工维护的能力账本；后续要让 PROMISES / git / runtime telemetry 自动生成或校验它。

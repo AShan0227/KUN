@@ -414,7 +414,7 @@ def get_router() -> LLMRouter:
         5. Stub (tests)
 
       coding:
-        1. Codex MCP-server (OAuth ChatGPT subscription, gpt-5.3-codex-spark) ← PREFERRED
+        1. Codex MCP-server (OAuth ChatGPT subscription, GPT-5.5) ← PREFERRED
         2. Codex exec CLI (OpenAI API accounts only — ChatGPT accounts must use MCP)
         3. OpenAI API (if key)
         4. Claude Code CLI (fallback within OAuth family)
@@ -429,7 +429,7 @@ def get_router() -> LLMRouter:
     Disable only codex (keep Claude CLI): KUN_DISABLE_CODEX_CLI=1.
     Disable only Claude CLI (keep Codex): KUN_DISABLE_CLAUDE_CLI=1.
     Force one primary family with KUN_LLM_PRIMARY=auto|codex|claude|anthropic|minimax|stub.
-    Override codex model id: KUN_CODEX_MCP_MODEL=gpt-5.3-codex-spark.
+    Override codex model id: KUN_CODEX_MCP_MODEL=gpt-5.5.
     """
     global _router
     if _router is not None:
@@ -447,7 +447,7 @@ def get_router() -> LLMRouter:
     claude_disabled = os.getenv("KUN_DISABLE_CLAUDE_CLI") == "1"
     codex_disabled = os.getenv("KUN_DISABLE_CODEX_CLI") == "1"
     has_claude_cli = ClaudeCodeProvider.available() and not cli_disabled and not claude_disabled
-    # Prefer MCP (works with ChatGPT accounts via gpt-5.3-codex-spark);
+    # Prefer MCP (works with ChatGPT accounts; default model is GPT-5.5);
     # fall back to exec CLI only when the user has an OpenAI API key account.
     has_codex_mcp = CodexMcpProvider.available() and not cli_disabled and not codex_disabled
     has_codex_cli = CodexCliProvider.available() and not cli_disabled and not codex_disabled
@@ -555,7 +555,7 @@ def get_router() -> LLMRouter:
     if has_codex_mcp:
         log.info(
             "router.codex_mcp",
-            hint="using codex mcp-server (ChatGPT OAuth, gpt-5.3-codex-spark)",
+            hint="using codex mcp-server (ChatGPT OAuth, GPT-5.5)",
         )
         providers["coding"] = CodexMcpProvider(tier="coding")
     elif has_codex_cli:
