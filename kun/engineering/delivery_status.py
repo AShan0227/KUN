@@ -91,17 +91,21 @@ def get_v3_delivery_status() -> list[DeliveryCapability]:
             summary="已有任务状态、事件、恢复信号的基础，但还不能独立长期运营一个产品。",
             done=[
                 "RuntimeState / StateLedger / task events 已接入",
+                "Mission / MissionTask / MissionMilestone 数据模型已落库",
+                "Mission HTTP API 可创建 Mission、挂 Task、记录里程碑",
+                "resume request 扫描能找出 queued mission task 并发事件",
                 "pending approval 通过后可解除任务暂停",
                 "idle-batch 有部分复盘和学习能力",
             ],
             missing=[
-                "长期任务恢复和失败续跑策略",
-                "定时调度与阶段性目标复盘",
+                "resume request 后还没接真正任务执行 worker",
+                "失败续跑策略还只是尝试次数限制",
                 "跨天/跨周任务的预算、风险、里程碑管理",
+                "StateLedger 仍是热视图，不是长期持久化账本",
             ],
             next_steps=[
-                "做 durable task resume worker",
-                "给 TASK.md 工程对象补 milestone / checkpoint / owner",
+                "把 resume request 接到真实 Orchestrator worker",
+                "把 Mission 进展同步到主任务看板",
             ],
         ),
         DeliveryCapability(

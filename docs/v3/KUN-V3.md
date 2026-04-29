@@ -557,17 +557,17 @@ P5 生产级 dogfood 和部署
 
 交付内容：
 
-- Mission / Task / Action 数据模型收口。
-- durable task resume worker。
-- checkpoint / milestone。
-- scheduler。
+- Mission / Task / Action 数据模型收口。已落第一版 `missions`、`mission_tasks`、`mission_milestones`。
+- durable task resume worker。第一版先做 resume request 扫描，不假装自动执行。
+- checkpoint / milestone。第一版 milestone 已持久化，checkpoint 先进 JSONB。
+- scheduler。已有 cron scheduler，Mission 复盘 job 待接。
 - failure reaper。
 - State Ledger 持久化快照。
 
 验收：
 
-- 一个 Mission 能拆多个 Task。
-- Task 能暂停、恢复、失败续跑。
+- 一个 Mission 能挂多个 Task。
+- Task 能暂停、审批后恢复到 queued；Mission resume request 能发现 queued task。
 - API 重启后状态不丢。
 - 用户能看到 Mission 进展和下一步。
 

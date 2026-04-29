@@ -117,6 +117,138 @@ class TaskRow(Base):
     )
 
 
+# ============== MISSIONS ==============
+
+
+class MissionRow(Base):
+    """Long-horizon mission: one real-world goal spanning many tasks."""
+
+    __tablename__ = "missions"
+
+    mission_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned", index=True)
+    risk_level: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    budget_cap_usd: Mapped[float] = mapped_column(nullable=False, default=0.0)
+
+    success_metrics: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    strategy_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('planned', 'running', 'paused', 'done', 'failed', 'cancelled')",
+            name="mission_status_valid",
+        ),
+        CheckConstraint(
+            "risk_level IN ('low', 'medium', 'high', 'critical')",
+            name="mission_risk_level_valid",
+        ),
+        CheckConstraint("budget_cap_usd >= 0", name="mission_budget_nonnegative"),
+        CheckConstraint("length(title) > 0", name="mission_title_not_empty"),
+        CheckConstraint("length(objective) > 0", name="mission_objective_not_empty"),
+        Index("ix_missions_tenant_status", "tenant_id", "status"),
+        Index("ix_missions_tenant_project", "tenant_id", "project_id"),
+    )
+
+
+class MissionTaskRow(Base):
+    """Link table between a mission and durable tasks."""
+
+    __tablename__ = "mission_tasks"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    mission_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("missions.mission_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tasks.task_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="primary")
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned", index=True)
+    checkpoint_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    resume_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_resume_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('planned', 'queued', 'running', 'paused', 'blocked', 'done', "
+            "'failed', 'cancelled')",
+            name="mission_task_status_valid",
+        ),
+        CheckConstraint("sequence_no >= 0", name="mission_task_sequence_nonnegative"),
+        CheckConstraint("resume_attempts >= 0", name="mission_task_resume_attempts_nonnegative"),
+        Index("ix_mission_tasks_tenant_task", "tenant_id", "task_id"),
+        Index("ix_mission_tasks_tenant_status", "tenant_id", "mission_id", "status"),
+    )
+
+
+class MissionMilestoneRow(Base):
+    """Mission-level milestone or checkpoint visible to humans and KUN."""
+
+    __tablename__ = "mission_milestones"
+
+    milestone_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    mission_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("missions.mission_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned", index=True)
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    task_ref: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    checkpoint_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('planned', 'active', 'done', 'blocked', 'cancelled')",
+            name="mission_milestone_status_valid",
+        ),
+        CheckConstraint("sequence_no >= 0", name="mission_milestone_sequence_nonnegative"),
+        CheckConstraint("length(title) > 0", name="mission_milestone_title_not_empty"),
+        Index("ix_mission_milestones_tenant_mission", "tenant_id", "mission_id", "status"),
+    )
+
+
 # ============== RUNTIME STATE ==============
 
 

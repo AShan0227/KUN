@@ -37,6 +37,8 @@ EntityKind = Literal[
     "diag",  # DiagnoseRun (§10.6)
     "anchor",  # alias for aa
     "incident",  # IncidentResponse event
+    "mission",  # Long-horizon mission
+    "milestone",  # Mission milestone
 ]
 
 _PREFIX: Final[dict[EntityKind, str]] = {
@@ -65,6 +67,8 @@ _PREFIX: Final[dict[EntityKind, str]] = {
     "diag": "diag",
     "anchor": "aa",
     "incident": "inc",
+    "mission": "msn",
+    "milestone": "mile",
 }
 _MAX_ULID_INT: Final[int] = (1 << 128) - 1
 _id_lock = Lock()

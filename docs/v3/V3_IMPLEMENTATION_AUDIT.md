@@ -52,6 +52,15 @@
 - 测试：`tests/unit/test_v3_memory_scoring_gateway.py`。
 - 诚实边界：第一版是确定性评分；用户满意度先用中性默认值，后续要接真实反馈。
 
+## V3-9 Mission 长周期骨架
+
+- 调用方：`/api/missions`、后续 Mission resume worker。
+- 影响决策：长期目标不再只存在于对话里；Mission 可以持久化挂多个 Task、里程碑和 checkpoint。
+- 消费者：主任务看板、NUO 风险/成本视图、后续 Orchestrator resume worker。
+- 测试：`tests/unit/test_mission_control.py`、`tests/unit/test_mission_api.py`。
+- 已接能力：`missions`、`mission_tasks`、`mission_milestones` 三张表；Mission 创建/查询/挂任务/记录里程碑 API；`request_resumable_tasks()` 会扫描 queued runtime 并发 `mission.task.resume_requested`。
+- 诚实边界：resume request 现在只是恢复请求，不等于任务已自动执行；跨天调度、失败续跑策略、Mission 级预算复盘还没接完。
+
 ## V3-7 主交互入口
 
 - 调用方：`frontend/src/app/page.tsx`。

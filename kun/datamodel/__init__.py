@@ -18,6 +18,16 @@ from kun.datamodel.handoff import (
     HandoffL4,
     HandoffPacket,
 )
+from kun.datamodel.mission import (
+    MilestoneStatus,
+    MissionCreate,
+    MissionMilestone,
+    MissionSnapshot,
+    MissionStatus,
+    MissionTaskLink,
+    MissionTaskStatus,
+    ResumeRequest,
+)
 from kun.datamodel.notification import Notification, NotificationChannel, NotificationKind
 from kun.datamodel.relationship import EntityRelationship, RelationType
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
@@ -39,11 +49,19 @@ __all__ = [
     "HandoffL4",
     "HandoffPacket",
     "Maturity",
+    "MilestoneStatus",
+    "MissionCreate",
+    "MissionMilestone",
+    "MissionSnapshot",
+    "MissionStatus",
+    "MissionTaskLink",
+    "MissionTaskStatus",
     "Notification",
     "NotificationChannel",
     "NotificationKind",
     "QualityMetrics",
     "RelationType",
+    "ResumeRequest",
     "RiskLevel",
     "RuntimeState",
     "Stats",
