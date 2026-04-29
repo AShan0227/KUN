@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from kun.core.logging import get_logger
+from kun.interface.hermes import HermesAdapter
 from kun.interface.llm.base import LLMMessage, LLMRequest, LLMResponse
 from kun.interface.llm.router import LLMRouter, TaskPurpose
 from kun.skills.dispatcher import dispatch as skill_dispatch
@@ -155,6 +156,15 @@ def format_tool_results(results: list[dict[str, Any]]) -> str:
             if len(rendered) > 2000:
                 rendered = rendered[:2000] + "\n... (truncated)"
             parts.append(f"- output:\n```json\n{rendered}\n```")
+        metadata = r.get("metadata")
+        if metadata:
+            try:
+                rendered_meta = json.dumps(metadata, ensure_ascii=False, indent=2)
+            except (TypeError, ValueError):
+                rendered_meta = str(metadata)
+            if len(rendered_meta) > 800:
+                rendered_meta = rendered_meta[:800] + "\n... (truncated)"
+            parts.append(f"- metadata:\n```json\n{rendered_meta}\n```")
     parts.append("\n请基于以上结果继续。如果还需要调工具就再发一个 <skill> 块, 否则给出最终答案。")
     return "\n".join(parts)
 
@@ -165,6 +175,8 @@ async def run_agent_loop(
     purpose: TaskPurpose,
     initial_request: LLMRequest,
     max_iterations: int = 3,
+    hermes_adapter: HermesAdapter | None = None,
+    hermes_context: dict[str, Any] | None = None,
 ) -> AgentLoopResult:
     """Drive a multi-turn ReAct conversation until the LLM stops calling skills.
 
@@ -202,8 +214,22 @@ async def run_agent_loop(
         # Dispatch each call and gather results
         tool_results: list[dict[str, Any]] = []
         for call in skill_calls:
-            result = await skill_dispatch(call.name, call.params)
-            tool_results.append(result.model_dump(mode="json"))
+            dispatch_params = call.params
+            if hermes_adapter is not None:
+                dispatch_params = await hermes_adapter.adapt_skill_input(
+                    skill_id=call.name,
+                    params=call.params,
+                    context=hermes_context,
+                )
+            result = await skill_dispatch(call.name, dispatch_params)
+            result_payload = result.model_dump(mode="json")
+            if hermes_adapter is not None:
+                result_payload = await hermes_adapter.adapt_skill_result(
+                    skill_id=call.name,
+                    result=result_payload,
+                    context=hermes_context,
+                )
+            tool_results.append(result_payload)
         step.skill_results = tool_results
 
         # Continue the conversation: assistant said its piece, now feed

@@ -39,6 +39,7 @@ from kun.engineering.safety_guards import (
     TokenMeter,
     ZeroTelemetryEnforcer,
 )
+from kun.interface.hermes import DefaultHermesAdapter, NoopHermesAdapter
 from kun.security.diagnose_runner import DiagnoseRunner
 from kun.security.fix_handlers import register_default_fix_handlers
 from kun.security.incident_response import IncidentResponseEngine
@@ -214,6 +215,15 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         state_ledger = get_state_ledger()
     app.state.state_ledger = state_ledger
 
+    # V3-3: Hermes full-chain adapter — LLM prompt / skill I/O / external
+    # adapter formatting all pass through the same translation layer.
+    hermes_adapter: DefaultHermesAdapter | NoopHermesAdapter
+    if _os.getenv("KUN_HERMES_ADAPTER_ENABLED", "1") == "1":
+        hermes_adapter = DefaultHermesAdapter()
+    else:
+        hermes_adapter = NoopHermesAdapter()
+    app.state.hermes_adapter = hermes_adapter
+
     # V2.2 §22 + Wire 3: hermes 结构化执行 generator (默认开, FAST 模式自动跳过)
     # Wire 35: 加 ThoughtActionConsistency checker → 自动 rethink (max 2 次)
     structured_step_generator = None
@@ -326,6 +336,7 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         anti_gaming_detector=_anti_gaming_for_orch,
         decision_plane=decision_plane,
         state_ledger=state_ledger,
+        hermes_adapter=hermes_adapter,
     )
     app.state.rule_engine = rule_engine
     app.state.orchestrator = orchestrator

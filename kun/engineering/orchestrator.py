@@ -53,6 +53,7 @@ from kun.engineering.concurrency import (
 )
 from kun.engineering.validation import ValidationPipeline, pick_tier
 from kun.interface.adapters import translate_for
+from kun.interface.hermes import DefaultHermesAdapter, HermesAdapter
 from kun.interface.llm import (
     LLMMessage,
     LLMRequest,
@@ -172,6 +173,7 @@ class Orchestrator:
         anti_gaming_detector: Any = None,
         decision_plane: Any = None,
         state_ledger: Any = None,
+        hermes_adapter: HermesAdapter | None = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -203,6 +205,9 @@ class Orchestrator:
         # V3-2: State Ledger — 当前状态账本. 它不替代 DB/EventRow,
         # 只提供 UI/LLM/黑板读的热快照。
         self.state_ledger = state_ledger
+        # V3-3: Hermes full-chain adapter. 它把 LLM prompt / skill 输入输出 /
+        # 外部对象格式统一成一层翻译契约, 避免各模块各说各话。
+        self.hermes_adapter = hermes_adapter or DefaultHermesAdapter()
         # 累计 step value history, 给 value_gate marginal_roi 用
         self._value_history: list[float] = []
 
@@ -1888,13 +1893,19 @@ class Orchestrator:
         system_prompt = "\n\n".join(system_parts)
         # User-turn body: standard execution prompt + any proactive tool
         # prefetch results (proactive_tools.py layer 1).
-        user_content = _execution_user_prompt(
+        base_user_prompt = _execution_user_prompt(
             task_ref,
             step_description,
             prior_outputs=prior_outputs or [],
         )
-        if pre_dispatched_block:
-            user_content = user_content + pre_dispatched_block
+        user_content = self.hermes_adapter.render_llm_step_prompt(
+            base_prompt=base_user_prompt,
+            task_id=task_ref.meta.task_id,
+            task_type=task_ref.meta.task_type,
+            risk_level=task_ref.meta.risk_level,
+            step_description=step_description,
+            pre_dispatched_block=pre_dispatched_block,
+        )
         request = LLMRequest(
             messages=[
                 LLMMessage(role="system", content=system_prompt, cache=True),
@@ -1911,6 +1922,13 @@ class Orchestrator:
             purpose=purpose,
             initial_request=request,
             max_iterations=3,
+            hermes_adapter=self.hermes_adapter,
+            hermes_context={
+                "task_id": task_ref.meta.task_id,
+                "task_type": task_ref.meta.task_type,
+                "risk_level": task_ref.meta.risk_level,
+                "step_description": step_description,
+            },
         )
         # Roll iteration cost / tokens back into a single LLMResponse so the
         # rest of orchestrator (StepRecord, capability writeback, NUO panel)
@@ -1962,13 +1980,19 @@ class Orchestrator:
         if context_summary:
             system_parts.append(context_summary)
         system_prompt = "\n\n".join(system_parts)
-        user_content = _execution_user_prompt(
+        base_user_prompt = _execution_user_prompt(
             task_ref,
             step_description,
             prior_outputs=prior_outputs or [],
         )
-        if pre_dispatched_block:
-            user_content = user_content + pre_dispatched_block
+        user_content = self.hermes_adapter.render_llm_step_prompt(
+            base_prompt=base_user_prompt,
+            task_id=task_ref.meta.task_id,
+            task_type=task_ref.meta.task_type,
+            risk_level=task_ref.meta.risk_level,
+            step_description=step_description,
+            pre_dispatched_block=pre_dispatched_block,
+        )
         ensemble_prompt = f"{system_prompt}\n\nUSER TASK:\n{user_content}"
 
         async def _score(output_text: str, original_prompt: str) -> float:
