@@ -102,6 +102,18 @@ type GlobalState = {
   active_state_ledger: LedgerEntry[];
 };
 
+type MissionSnapshot = {
+  mission_id: string;
+  title: string;
+  objective: string;
+  status: string;
+  risk_level: string;
+  budget_cap_usd: number;
+  tasks: Array<{ task_id: string; status: string }>;
+  milestones: Array<{ milestone_id: string; title: string; status: string }>;
+  updated_at: string;
+};
+
 export default function Home() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [side, setSide] = useState<SideMsg[]>([]);
@@ -115,6 +127,7 @@ export default function Home() {
   const [qiStatus, setQiStatus] = useState<QiStatus | null>(null);
   const [protocols, setProtocols] = useState<Protocol[]>([]);
   const [globalState, setGlobalState] = useState<GlobalState | null>(null);
+  const [missions, setMissions] = useState<MissionSnapshot[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
 
   // V2.3 启状态 + 协议轮询 (每 30s 一次)
@@ -145,6 +158,15 @@ export default function Home() {
         }).catch(() => null);
         if (!cancelled && stateRes && stateRes.ok) {
           setGlobalState((await stateRes.json()) as GlobalState);
+        }
+        const missionRes = await fetch(`${API_ORIGIN}/api/missions?limit=5`, {
+          headers: {
+            "X-Tenant-Id": "u-sylvan",
+            "X-User-Id": "sylvan",
+          },
+        }).catch(() => null);
+        if (!cancelled && missionRes && missionRes.ok) {
+          setMissions((await missionRes.json()) as MissionSnapshot[]);
         }
       } catch {
         // ignore polling errors
@@ -292,6 +314,31 @@ export default function Home() {
             />
           </div>
           <div className="mt-3 space-y-2">
+            {missions.length > 0 && (
+              <div className="rounded border border-gray-200 bg-white p-2 text-xs">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="font-medium">长期目标</span>
+                  <span className="text-gray-400">{missions.length} 个</span>
+                </div>
+                <div className="space-y-2">
+                  {missions.slice(0, 3).map((mission) => (
+                    <div
+                      key={mission.mission_id}
+                      className="rounded border border-gray-100 bg-gray-50 px-2 py-1.5"
+                    >
+                      <div className="flex justify-between gap-2">
+                        <span className="truncate font-medium">{mission.title}</span>
+                        <span className="text-gray-500">{mission.status}</span>
+                      </div>
+                      <div className="mt-1 truncate text-gray-500">
+                        风险 {mission.risk_level} · 预算 ${mission.budget_cap_usd.toFixed(2)} ·
+                        任务 {mission.tasks.length} · 里程碑 {mission.milestones.length}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {(globalState?.active_state_ledger ?? []).slice(0, 3).map((item) => (
               <div
                 key={item.task_id}

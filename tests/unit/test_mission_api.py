@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from kun.api import missions as mission_api
 from kun.core.tenancy import TenantContext, tenant_scope
 from kun.datamodel.mission import MissionCreate, MissionMilestone, MissionSnapshot, ResumeRequest
@@ -98,6 +100,36 @@ async def test_request_resume_uses_tenant(monkeypatch) -> None:
 
     assert result[0].task_id == "tk-1"
     assert captured == {"tenant_id": "tenant-a", "limit": 2, "max_attempts": 4}
+
+
+@pytest.mark.unit
+def test_resume_requests_route_is_not_treated_as_mission_id(monkeypatch) -> None:
+    async def fake_resume(*, tenant_id: str, limit: int, max_attempts: int):
+        return [
+            ResumeRequest(
+                mission_id="msn-1",
+                task_id="tk-1",
+                runtime_status="queued",
+                resume_attempts=1,
+                reason=f"{tenant_id}:{limit}:{max_attempts}",
+            )
+        ]
+
+    async def fake_get_mission(*_args, **_kwargs):
+        raise AssertionError("resume-requests should not call get_mission")
+
+    monkeypatch.setattr(mission_api.mission_control, "request_resumable_tasks", fake_resume)
+    monkeypatch.setattr(mission_api.mission_control, "get_mission", fake_get_mission)
+
+    app = FastAPI()
+    app.include_router(mission_api.router)
+    client = TestClient(app)
+
+    response = client.post("/api/missions/resume-requests?limit=2&max_attempts=4")
+
+    assert response.status_code == 200
+    assert response.json()[0]["task_id"] == "tk-1"
+    assert response.json()[0]["reason"] == "u-sylvan:2:4"
 
 
 @pytest.mark.unit
