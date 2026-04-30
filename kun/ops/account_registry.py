@@ -493,7 +493,8 @@ async def accept_tenant_member_invite(
         status="active",
         honest_limits=[
             "这是邀请接受账本流程，不是邮件邀请系统。",
-            "当前使用全局邀请码守门；后续需要 per-invite token、过期时间和邮件发送。",
+            "支持一次性邀请 token 和过期时间；没有传 token 时仍可用全局邀请码兜底。",
+            "邮件发送和邀请链接点击追踪仍未完成。",
         ],
     )
 
