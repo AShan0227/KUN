@@ -13,6 +13,7 @@ from kun.engineering.mission_worker import (
     MissionResumeResult,
     MissionResumeWorker,
     MissionRunnerOutcome,
+    _mission_strategy_context_lines,
 )
 from kun.engineering.orchestrator import Orchestrator, TaskResult
 
@@ -188,3 +189,28 @@ def _request() -> ResumeRequest:
         resume_attempts=1,
         reason="runtime_state_queued",
     )
+
+
+def test_mission_strategy_context_lines_include_review_and_next_step() -> None:
+    lines = _mission_strategy_context_lines(
+        {
+            "last_review": {
+                "summary": "上一轮发现用户获取成本太高，要先缩小渠道。",
+                "budget_notes": "暂停高成本投放。",
+                "risk_notes": "避免真实外发。",
+            },
+            "strategy_notes": "优先做低风险验证。",
+        },
+        {
+            "summary": "先生成下一个获客实验方案。",
+            "reason": "预算有限，先小样本验证。",
+            "action_type": "continue",
+        },
+    )
+
+    joined = "\n".join(lines)
+    assert "上一轮发现用户获取成本太高" in joined
+    assert "暂停高成本投放" in joined
+    assert "避免真实外发" in joined
+    assert "先生成下一个获客实验方案" in joined
+    assert "优先做低风险验证" in joined

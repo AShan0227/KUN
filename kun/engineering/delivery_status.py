@@ -88,6 +88,7 @@ def get_v3_delivery_status(
                 "Mission 级预算已滚动汇总并可超预算暂停",
                 "Mission reaper 可处理 queued/running 卡死任务",
                 "Mission 可记录下一步和复盘摘要",
+                "Mission 续跑 prompt 会带上最近复盘、预算提醒、风险提醒和下一步动作",
             ],
             evidence_refs=[
                 "kun/engineering/mission_worker.py",
@@ -102,10 +103,10 @@ def get_v3_delivery_status(
             missing=[
                 "续跑还不是原 TaskRow 原地恢复，而是 continuation task 挂回 Mission",
                 "StateLedger 还不是完整事件溯源重建器，暂时只做历史事件回放",
-                "Mission 复盘还需要接入自动策略调整，而不是只记录 review",
+                "Mission 复盘已影响下一次续跑 prompt，但还没自动改写守望策略权重",
             ],
             next_steps=[
-                "让 Mission review 结果反向影响 Watchtower Decision Plane",
+                "让 Mission review 结果进一步反向影响 Watchtower Decision Plane 权重",
                 "补跨周运营策略模板和真实 dogfood 运营任务",
             ],
         ),

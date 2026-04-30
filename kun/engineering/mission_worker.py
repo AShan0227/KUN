@@ -197,6 +197,10 @@ async def _build_orchestrator_resume_prompt(tenant_id: str, request: ResumeReque
     constraints = spec.get("constraints") or []
     required_skills = spec.get("required_skills") or []
     required_tools = spec.get("required_tools") or []
+    mission_context_lines = _mission_strategy_context_lines(
+        mission.strategy_json or {},
+        mission.next_step_json or {},
+    )
 
     return "\n".join(
         [
@@ -207,6 +211,8 @@ async def _build_orchestrator_resume_prompt(tenant_id: str, request: ResumeReque
             f"Mission objective: {mission.objective}",
             f"Mission risk: {mission.risk_level}",
             f"Mission budget cap USD: {mission.budget_cap_usd}",
+            f"Mission budget used USD: {mission.budget_used_usd}",
+            *mission_context_lines,
             "",
             f"Original task ID: {task.task_id}",
             f"Original task type: {task.task_type}",
@@ -229,6 +235,46 @@ async def _build_orchestrator_resume_prompt(tenant_id: str, request: ResumeReque
             "- Return a concise execution result and the next recommended checkpoint.",
         ]
     )
+
+
+def _mission_strategy_context_lines(
+    strategy_json: dict[str, object],
+    next_step_json: dict[str, object],
+) -> list[str]:
+    """Build compact Mission review hints for the continuation prompt.
+
+    Mission review is not allowed to pretend it executed work, but it must
+    influence the next continuation. These lines are the honest bridge:
+    review state → next Orchestrator run.
+    """
+    lines: list[str] = []
+    last_review = strategy_json.get("last_review")
+    if isinstance(last_review, dict):
+        summary = str(last_review.get("summary") or "").strip()
+        budget_notes = str(last_review.get("budget_notes") or "").strip()
+        risk_notes = str(last_review.get("risk_notes") or "").strip()
+        if summary:
+            lines.append(f"Last mission review summary: {summary}")
+        if budget_notes:
+            lines.append(f"Last mission budget notes: {budget_notes}")
+        if risk_notes:
+            lines.append(f"Last mission risk notes: {risk_notes}")
+
+    if next_step_json:
+        summary = str(next_step_json.get("summary") or "").strip()
+        reason = str(next_step_json.get("reason") or "").strip()
+        action_type = str(next_step_json.get("action_type") or "continue").strip()
+        if summary:
+            lines.append(f"Mission next step: {summary}")
+        if reason:
+            lines.append(f"Mission next step reason: {reason}")
+        if action_type:
+            lines.append(f"Mission next step action_type: {action_type}")
+
+    strategy_notes = strategy_json.get("strategy_notes")
+    if isinstance(strategy_notes, str) and strategy_notes.strip():
+        lines.append(f"Mission strategy notes: {strategy_notes.strip()}")
+    return lines
 
 
 async def _mark_execution_started(tenant_id: str, request: ResumeRequest) -> None:
@@ -467,4 +513,5 @@ __all__ = [
     "MissionResumeStatus",
     "MissionResumeWorker",
     "MissionRunnerOutcome",
+    "_mission_strategy_context_lines",
 ]
