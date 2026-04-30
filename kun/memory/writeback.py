@@ -173,7 +173,9 @@ class MemoryWriteback:
         score_overall: float | None = None,
         decision_tickets: list[DecisionTicket] | None = None,
     ) -> MemoryWritebackResult:
-        ticket_refs = [ticket.ref().model_dump(mode="json") for ticket in decision_tickets or []]
+        tickets = list(decision_tickets or [])
+        ticket_refs = [ticket.ref().model_dump(mode="json") for ticket in tickets]
+        path = _execution_path_from_tickets(tickets)
         summary = (
             f"任务结果: status={status}; outcome={validation_outcome}; "
             f"score={score_overall if score_overall is not None else validation_score}; "
@@ -196,10 +198,18 @@ class MemoryWriteback:
                 "tokens": runtime.accumulated_tokens,
                 "step_count": len(runtime.completed_steps),
                 "decision_tickets": ticket_refs,
+                **path,
             },
             summary=summary,
             layer=AssetLayer.L2_PROJECT if status == "done" else AssetLayer.L1_TASK,
-            tags=["v3", "task_result", task_ref.meta.task_type, status, validation_outcome],
+            tags=[
+                "v3",
+                "task_result",
+                task_ref.meta.task_type,
+                status,
+                validation_outcome,
+                *_path_tags(path),
+            ],
         )
         await self._put(asset)
         return MemoryWritebackResult(
@@ -219,6 +229,80 @@ def _preview(text: str, max_chars: int) -> str:
     if len(compact) <= max_chars:
         return compact
     return compact[: max_chars - 3].rstrip() + "..."
+
+
+def _execution_path_from_tickets(tickets: list[DecisionTicket]) -> dict[str, Any]:
+    strategy_pack_id = ""
+    execution_mode = ""
+    protocol_id = ""
+    model_routes: list[str] = []
+    skill_ids: list[str] = []
+    context_asset_ids: list[str] = []
+    decision_path: list[dict[str, str]] = []
+    for ticket in tickets:
+        decision_path.append(
+            {
+                "ticket_id": ticket.ticket_id,
+                "phase": ticket.phase,
+                "decision_point": ticket.decision_point,
+                "selected_action": ticket.selected_action,
+                "status": ticket.status,
+            }
+        )
+        if ticket.decision_point == "strategy_selected":
+            strategy_pack_id = str(ticket.metadata.get("strategy_pack_id") or strategy_pack_id)
+            execution_mode = str(ticket.metadata.get("execution_mode") or execution_mode)
+        elif ticket.decision_point == "protocol_applied":
+            protocol_id = str(ticket.metadata.get("protocol_id") or protocol_id)
+            # Protocol can be a strategy on its own when Watchtower did not
+            # choose a pack.  Keep both fields so later credit attribution can
+            # distinguish “protocol won” from “strategy pack won”.
+            strategy_pack_id = strategy_pack_id or protocol_id
+            execution_mode = str(ticket.metadata.get("execution_mode") or execution_mode)
+        elif ticket.decision_point == "llm_model_selected":
+            _append_unique(model_routes, ticket.selected_action)
+        elif ticket.decision_point == "skill_selected":
+            values = ticket.metadata.get("skill_ids")
+            if isinstance(values, list):
+                for value in values:
+                    _append_unique(skill_ids, value)
+            elif ticket.selected_action and ticket.selected_action != "none":
+                for value in ticket.selected_action.split(","):
+                    _append_unique(skill_ids, value)
+        elif ticket.decision_point == "context_selected":
+            values = ticket.metadata.get("asset_ids")
+            if isinstance(values, list):
+                for value in values:
+                    _append_unique(context_asset_ids, value)
+            elif ticket.selected_action and ticket.selected_action != "none":
+                for value in ticket.selected_action.split(","):
+                    _append_unique(context_asset_ids, value)
+        elif ticket.decision_point == "validation_tier_selected":
+            execution_mode = str(ticket.metadata.get("execution_mode") or execution_mode)
+    return {
+        "strategy_pack_id": strategy_pack_id or None,
+        "execution_mode": execution_mode or None,
+        "protocol_id": protocol_id or None,
+        "model_routes": model_routes,
+        "skill_ids": skill_ids,
+        "context_asset_ids": context_asset_ids,
+        "decision_path": decision_path,
+    }
+
+
+def _path_tags(path: dict[str, Any]) -> list[str]:
+    tags: list[str] = []
+    for key in ("strategy_pack_id", "execution_mode", "protocol_id"):
+        value = path.get(key)
+        if isinstance(value, str) and value:
+            tags.append(value)
+    return tags
+
+
+def _append_unique(items: list[str], value: object) -> None:
+    text = str(value).strip() if value is not None else ""
+    if text and text not in items:
+        items.append(text)
 
 
 __all__ = ["MemoryWriteback", "MemoryWritebackResult"]

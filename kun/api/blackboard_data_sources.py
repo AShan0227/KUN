@@ -9,12 +9,17 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, or_, select
 
 from kun.api.blackboard import register_data_source
 from kun.core.db import session_scope
 from kun.core.orm import EventRow, RuntimeStateRow, TaskRow
-from kun.core.state_ledger import StateLedgerEntry, StateLedgerTrail, get_state_ledger
+from kun.core.state_ledger import (
+    StateLedgerEntry,
+    StateLedgerTrail,
+    get_state_ledger,
+    replay_state_ledger_story,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +253,7 @@ async def _state_ledger_history_source(
 ) -> list[dict[str, Any]]:
     return await _state_ledger_history_source_async(
         tenant_id=tenant_id,
+        user_id=user_id,
         task_id=task_id,
         limit=limit,
     )
@@ -256,6 +262,7 @@ async def _state_ledger_history_source(
 async def _state_ledger_history_source_async(
     *,
     tenant_id: str,
+    user_id: str | None = None,
     task_id: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
@@ -268,35 +275,22 @@ async def _state_ledger_history_source_async(
         async with session_scope(tenant_id=tenant_id) as session:
             stmt = (
                 select(EventRow)
+                .outerjoin(
+                    TaskRow,
+                    (TaskRow.tenant_id == EventRow.tenant_id)
+                    & (TaskRow.task_id == EventRow.task_ref),
+                )
                 .where(EventRow.tenant_id == tenant_id)
                 .order_by(desc(EventRow.occurred_at))
                 .limit(limit)
             )
             if task_id is not None:
                 stmt = stmt.where(EventRow.task_ref == task_id)
+            if user_id and user_id != "u-anon":
+                stmt = stmt.where(or_(EventRow.task_ref.is_(None), TaskRow.user_id == user_id))
             rows = list((await session.execute(stmt)).scalars().all())
         for row in rows:
-            payload = row.payload if isinstance(row.payload, dict) else {}
-            ticket = payload.get("decision_ticket")
-            if isinstance(ticket, dict):
-                decision_ticket_id = ticket.get("ticket_id")
-                reason = str(ticket.get("reason") or "")
-            else:
-                decision_ticket_id = None
-                reason = str(payload.get("reason") or payload.get("message") or "")
-            out.append(
-                {
-                    "event_id": row.event_id,
-                    "event_type": row.event_type,
-                    "occurred_at": row.occurred_at.isoformat(),
-                    "task_id": row.task_ref,
-                    "summary": row.subject[:200],
-                    "reason": reason,
-                    "cost_usd": _event_cost(payload),
-                    "decision_ticket_id": decision_ticket_id,
-                    "payload": payload,
-                }
-            )
+            out.append(_state_ledger_history_item_from_event(row))
     except Exception:
         logger.exception("blackboard.state_ledger_history_source failed")
     return out
@@ -312,22 +306,16 @@ async def _state_ledger_story_source(
 ) -> dict[str, Any]:
     history = await _state_ledger_history_source_async(
         tenant_id=tenant_id,
+        user_id=user_id,
         task_id=task_id,
         limit=limit,
     )
-    timeline = sorted(history, key=lambda item: str(item.get("occurred_at") or ""))
-    latest = timeline[-1] if timeline else None
-    return {
-        "task_id": task_id,
-        "event_count": len(timeline),
-        "decision_count": sum(1 for item in timeline if item.get("decision_ticket_id")),
-        "total_cost_usd": round(sum(float(item.get("cost_usd") or 0.0) for item in timeline), 4),
-        "first_seen_at": timeline[0]["occurred_at"] if timeline else None,
-        "last_seen_at": latest["occurred_at"] if latest else None,
-        "latest_event_type": str(latest.get("event_type") or "") if latest else "",
-        "latest_reason": str(latest.get("reason") or "") if latest else "",
-        "timeline": timeline[-20:],
-    }
+    return replay_state_ledger_story(
+        task_id,
+        history,
+        timeline_limit=20,
+        history_limit_reached=len(history) >= limit,
+    )
 
 
 async def _runtime_state_ledger_source(
@@ -424,14 +412,75 @@ def _last_step_summary(blob: dict[str, Any]) -> str:
     return ""
 
 
-def _event_cost(payload: dict[str, Any]) -> float:
-    for key in ("cost_usd", "cost_usd_equivalent", "cost_usd_actual"):
+def _state_ledger_history_item_from_event(row: EventRow) -> dict[str, Any]:
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    ticket = _decision_ticket_payload(payload)
+    reason = _event_reason(payload, ticket)
+    return {
+        "event_id": row.event_id,
+        "event_type": row.event_type,
+        "occurred_at": row.occurred_at.isoformat(),
+        "task_id": row.task_ref,
+        "summary": row.subject[:200],
+        "reason": reason,
+        "cost_usd": _event_cost(str(row.event_type), payload, ticket),
+        "decision_ticket_id": _optional_str(ticket.get("ticket_id")),
+        "decision_point": str(ticket.get("decision_point") or ""),
+        "phase": str(ticket.get("phase") or ""),
+        "selected_action": str(ticket.get("selected_action") or ""),
+        "decision_status": str(ticket.get("status") or ""),
+        "payload": payload,
+    }
+
+
+def _decision_ticket_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    nested = payload.get("decision_ticket")
+    if isinstance(nested, dict):
+        return nested
+    if payload.get("ticket_id") and payload.get("decision_point"):
+        return payload
+    return {}
+
+
+def _event_reason(payload: dict[str, Any], ticket: dict[str, Any]) -> str:
+    for value in (
+        ticket.get("reason"),
+        payload.get("reason"),
+        payload.get("message"),
+        payload.get("reason_summary"),
+        payload.get("error"),
+    ):
+        if value is not None and str(value).strip():
+            return str(value)
+    return ""
+
+
+def _event_cost(
+    event_type: str,
+    payload: dict[str, Any],
+    ticket: dict[str, Any] | None = None,
+) -> float:
+    # `accumulated_cost_usd` is a running total.  It is useful for a single
+    # event, but summing it across a story double-counts. Prefer per-event
+    # deltas/actual costs when available.
+    for key in ("cost_delta_usd", "cost_usd", "cost_usd_equivalent", "cost_usd_actual"):
         value = payload.get(key)
         try:
             if value is not None:
                 return round(float(value), 6)
         except (TypeError, ValueError):
             continue
+    if ticket:
+        for source in (ticket, ticket.get("metadata"), ticket.get("evidence")):
+            if not isinstance(source, dict):
+                continue
+            for key in ("cost_estimate_usd", "cost_usd", "used_usd"):
+                value = source.get(key)
+                try:
+                    if value is not None:
+                        return round(float(value), 6)
+                except (TypeError, ValueError):
+                    continue
     runtime = payload.get("runtime")
     if isinstance(runtime, dict):
         for key in ("accumulated_cost_usd_equivalent", "accumulated_cost_usd_actual"):
@@ -441,7 +490,21 @@ def _event_cost(payload: dict[str, Any]) -> float:
                     return round(float(value), 6)
             except (TypeError, ValueError):
                 continue
+    if event_type in {"task.done", "task.failed", "task.timed_out"}:
+        value = payload.get("accumulated_cost_usd")
+        try:
+            if value is not None:
+                return round(float(value), 6)
+        except (TypeError, ValueError):
+            return 0.0
     return 0.0
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
 
 
 async def _workspace_source(

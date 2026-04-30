@@ -221,17 +221,34 @@ type StateLedgerHistoryItem = {
   reason?: string;
   cost_usd?: number;
   decision_ticket_id?: string | null;
+  decision_point?: string;
+  phase?: string;
+  selected_action?: string;
+  decision_status?: string;
 };
 
 type StateLedgerStory = {
   task_id: string;
   event_count: number;
   decision_count: number;
+  world_action_count?: number;
+  external_action_count?: number;
   total_cost_usd: number;
   first_seen_at?: string | null;
   last_seen_at?: string | null;
   latest_event_type?: string;
   latest_reason?: string;
+  status?: string;
+  current_action?: string;
+  pending_confirmations?: string[];
+  risk_flags?: string[];
+  open_questions?: string[];
+  decision_ticket_ids?: string[];
+  model_routes?: string[];
+  skill_refs?: string[];
+  context_asset_ids?: string[];
+  reconstruction_confidence?: number;
+  gaps?: string[];
   timeline: StateLedgerHistoryItem[];
 };
 
@@ -1105,8 +1122,31 @@ function TaskDetailPanel({
               {numberValue(story.total_cost_usd).toFixed(4)}
             </span>
           </div>
+          <div className="mt-1 flex flex-wrap gap-1 text-gray-500">
+            {story.status && <span>推断状态：{story.status}</span>}
+            {story.world_action_count ? <span>· 外部动作 {story.world_action_count}</span> : null}
+            {story.external_action_count ? (
+              <span>· 真实外发 {story.external_action_count}</span>
+            ) : null}
+            {typeof story.reconstruction_confidence === "number" ? (
+              <span>· 可信度 {Math.round(story.reconstruction_confidence * 100)}%</span>
+            ) : null}
+          </div>
           {story.latest_reason && (
             <div className="mt-1 truncate">最近原因：{story.latest_reason}</div>
+          )}
+          {story.current_action && (
+            <div className="mt-1 truncate">当前推断动作：{story.current_action}</div>
+          )}
+          {(story.open_questions?.length ?? 0) > 0 && (
+            <div className="mt-1 truncate text-amber-700">
+              待处理：{story.open_questions?.slice(0, 2).join("；")}
+            </div>
+          )}
+          {(story.gaps?.length ?? 0) > 0 && (
+            <div className="mt-1 truncate text-gray-400">
+              账本缺口：{story.gaps?.slice(0, 3).join("，")}
+            </div>
           )}
           <div className="mt-1 text-gray-400">
             {story.first_seen_at ? `开始 ${formatTime(story.first_seen_at)}` : "开始时间未知"}

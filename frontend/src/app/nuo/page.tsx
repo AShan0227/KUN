@@ -148,6 +148,27 @@ type WorldGatewayHandlers = {
   unsupported_policy: string;
 };
 
+type WorldHandlerHealth = {
+  action_type: string;
+  handler_id?: string;
+  status: string;
+  registered: boolean;
+  configured: boolean;
+  external_dispatched: boolean;
+  has_compensation: boolean;
+  control_status: "enabled" | "quarantined" | "disabled";
+  control_reason?: string;
+  failure_rate: number;
+  total_seen: number;
+  recommendation: string;
+  issues: string[];
+};
+
+type WorldGatewayHandlerHealthResponse = {
+  summary: Record<string, number>;
+  handlers: WorldHandlerHealth[];
+};
+
 type ActionDecisionResult = {
   action_id: string;
   status: string;
@@ -190,6 +211,8 @@ export default function NuoDashboard() {
   const [capability, setCapability] = useState<CapabilitySnapshot[]>([]);
   const [delivery, setDelivery] = useState<DeliveryCapability[]>([]);
   const [worldHandlers, setWorldHandlers] = useState<WorldHandler[]>([]);
+  const [worldHealth, setWorldHealth] = useState<WorldHandlerHealth[]>([]);
+  const [worldHealthSummary, setWorldHealthSummary] = useState<Record<string, number>>({});
   const [worldArtifactRoot, setWorldArtifactRoot] = useState("");
   const [unsupportedPolicy, setUnsupportedPolicy] = useState("");
   const [actionNotice, setActionNotice] = useState("");
@@ -208,9 +231,10 @@ export default function NuoDashboard() {
       fetchJson<{ snapshots: CapabilitySnapshot[] }>("/nuo/capability/summary"),
       fetchJson<{ items: DeliveryCapability[] }>("/nuo/health/delivery-status"),
       fetchJson<WorldGatewayHandlers>("/nuo/actions/handlers"),
+      fetchJson<WorldGatewayHandlerHealthResponse>("/nuo/actions/handler-health"),
       fetchJson<AnchorPage<PendingAction>>("/nuo/actions/recent?limit=5"),
     ])
-      .then(([h, b, a, d, c, ds, wg, recent]) => {
+      .then(([h, b, a, d, c, ds, wg, wh, recent]) => {
         setHealth(h);
         setBudget(b);
         setActions(a.actions || []);
@@ -226,6 +250,8 @@ export default function NuoDashboard() {
         setCapability(c.snapshots || []);
         setDelivery(ds.items || []);
         setWorldHandlers(wg.handlers || []);
+        setWorldHealth(wh.handlers || []);
+        setWorldHealthSummary(wh.summary || {});
         setWorldArtifactRoot(wg.artifact_root || "");
         setUnsupportedPolicy(wg.unsupported_policy || "");
         setRecentActions(recent.actions || []);
@@ -404,6 +430,14 @@ export default function NuoDashboard() {
           <p className="text-xs text-gray-500 mt-2">
             产物根目录：{worldArtifactRoot || "未配置"}。{unsupportedPolicy}
           </p>
+          {Object.keys(worldHealthSummary).length > 0 && (
+            <p className="text-xs text-gray-500 mt-1">
+              体检：
+              {Object.entries(worldHealthSummary)
+                .map(([key, value]) => `${key} ${value}`)
+                .join(" · ")}
+            </p>
+          )}
           <div className="grid md:grid-cols-2 gap-3 mt-3">
             {worldHandlers.map((handler) => (
               <div key={handler.action_type} className="border rounded p-3 text-sm">
@@ -411,6 +445,9 @@ export default function NuoDashboard() {
                   <span className="font-medium">{handler.user_label || handler.action_type}</span>
                   <span className="text-xs text-gray-500">{handler.mode}</span>
                 </div>
+                <HandlerHealthLine
+                  card={worldHealth.find((item) => item.action_type === handler.action_type)}
+                />
                 <div className="mt-1 text-xs text-gray-500">{handler.action_type}</div>
                 <p className="text-xs text-gray-500 mt-1">{handler.safety_note}</p>
                 <p className="text-xs text-gray-700 mt-2">{handler.approval_effect}</p>
@@ -721,6 +758,31 @@ function StatusPill({ status }: { status: DeliveryCapability["status"] }) {
           ? "bg-gray-700 text-white"
           : "bg-kun-bad text-white";
   return <span className={`${color} rounded px-2 py-0.5 text-xs whitespace-nowrap`}>{label}</span>;
+}
+
+function HandlerHealthLine({ card }: { card?: WorldHandlerHealth }) {
+  if (!card) {
+    return <div className="mt-1 text-xs text-gray-400">体检：暂无数据</div>;
+  }
+  const cls =
+    card.status === "ready"
+      ? "text-kun-good"
+      : card.status === "blocked" || card.control_status !== "enabled"
+        ? "text-kun-bad"
+        : "text-kun-warn";
+  const control =
+    card.control_status === "enabled"
+      ? ""
+      : ` · ${card.control_status}${card.control_reason ? `：${card.control_reason}` : ""}`;
+  const issues = card.issues.length > 0 ? ` · ${card.issues.slice(0, 2).join("；")}` : "";
+  return (
+    <div className={`mt-1 text-xs ${cls}`}>
+      体检：{card.status} · 配置{card.configured ? "已就绪" : "缺失"} · 补偿
+      {card.has_compensation ? "有" : "缺"} · 失败率 {(card.failure_rate * 100).toFixed(0)}%
+      {control}
+      {issues}
+    </div>
+  );
 }
 
 function gatewayPreviewLabel(preview: GatewayPreview) {

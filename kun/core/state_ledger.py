@@ -12,6 +12,7 @@ served by blackboard_data_sources from EventRow; this hot ledger only answers
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from threading import RLock
 from typing import Any
@@ -473,6 +474,156 @@ def reset_state_ledger() -> None:
     _default_ledger.clear()
 
 
+def replay_state_ledger_story(
+    task_id: str,
+    history: Sequence[Mapping[str, Any]],
+    *,
+    timeline_limit: int = 20,
+    history_limit_reached: bool = False,
+) -> dict[str, Any]:
+    """Reconstruct a compact durable task story from append-only events.
+
+    This is deliberately conservative. EventRow is the durable fact source, but
+    older events do not always carry every field StateLedger wants.  Instead of
+    pretending we rebuilt a perfect snapshot, this function returns the facts it
+    can prove plus `gaps` and a confidence score.
+    """
+
+    timeline = sorted(
+        [dict(item) for item in history],
+        key=lambda item: str(item.get("occurred_at") or ""),
+    )
+    status = "unknown"
+    current_action = ""
+    latest_reason = ""
+    decision_ids: list[str] = []
+    model_routes: list[str] = []
+    skill_refs: list[str] = []
+    context_asset_ids: list[str] = []
+    pending_confirmations: list[str] = []
+    risk_flags: list[str] = []
+    open_questions: list[str] = []
+    world_action_count = 0
+    external_action_count = 0
+    total_cost = 0.0
+    saw_task_created = False
+    saw_terminal = False
+    saw_runtime_cost = False
+
+    for item in timeline:
+        event_type = str(item.get("event_type") or "")
+        payload = _dict_or_empty(item.get("payload"))
+        ticket = _story_decision_ticket(payload)
+        reason = _first_non_empty(
+            item.get("reason"),
+            payload.get("reason"),
+            payload.get("message"),
+            ticket.get("reason"),
+            item.get("summary"),
+        )
+        if reason:
+            latest_reason = reason
+        current_action = _event_action(event_type, payload, ticket, reason) or current_action
+
+        cost = _story_event_cost(item, payload, ticket)
+        if cost:
+            saw_runtime_cost = True
+        total_cost += cost
+
+        status = _status_after_event(event_type, payload, ticket, status)
+        saw_task_created = saw_task_created or event_type == "task.created"
+        saw_terminal = saw_terminal or status in {"done", "failed", "cancelled"}
+
+        ticket_id = _first_non_empty(item.get("decision_ticket_id"), ticket.get("ticket_id"))
+        if ticket_id:
+            _append_unique(decision_ids, ticket_id)
+            _apply_decision_ticket_replay(
+                ticket,
+                model_routes=model_routes,
+                skill_refs=skill_refs,
+                context_asset_ids=context_asset_ids,
+                risk_flags=risk_flags,
+            )
+
+        if event_type == "task.pending_actions.created":
+            actions = payload.get("actions")
+            if isinstance(actions, list):
+                for action in actions:
+                    if isinstance(action, dict):
+                        _append_unique(
+                            pending_confirmations,
+                            _first_non_empty(action.get("action_id"), action.get("action_type")),
+                        )
+            if pending_confirmations:
+                status = "paused"
+                _append_unique(open_questions, "等待外部动作审批")
+        elif event_type in {
+            "task.pending_action.executed",
+            "task.pending_action.blocked",
+            "task.pending_action.execution_failed",
+        }:
+            world_action_count += 1
+            action_id = _first_non_empty(payload.get("action_id"), payload.get("action_type"))
+            if action_id:
+                _remove_value(pending_confirmations, action_id)
+            action_type = _first_non_empty(payload.get("action_type"), action_id)
+            if action_type:
+                _remove_value(pending_confirmations, action_type)
+            if bool(payload.get("external_dispatched")):
+                external_action_count += 1
+            if event_type != "task.pending_action.executed":
+                status = "paused"
+                _append_unique(risk_flags, event_type)
+                _append_unique(open_questions, reason or "外部动作未完成")
+        elif event_type == "task.resumed":
+            pending_confirmations.clear()
+            open_questions = [item for item in open_questions if item not in {"等待外部动作审批"}]
+
+        if _event_is_risky(event_type, payload, ticket):
+            _append_unique(risk_flags, event_type)
+
+    gaps = _story_gaps(
+        timeline=timeline,
+        saw_task_created=saw_task_created,
+        saw_terminal=saw_terminal,
+        saw_runtime_cost=saw_runtime_cost,
+        decision_count=len(decision_ids),
+        history_limit_reached=history_limit_reached,
+    )
+    confidence = _story_confidence(
+        event_count=len(timeline),
+        saw_task_created=saw_task_created,
+        saw_terminal=saw_terminal,
+        decision_count=len(decision_ids),
+        gaps=gaps,
+    )
+    latest = timeline[-1] if timeline else None
+    return {
+        "task_id": task_id,
+        "event_count": len(timeline),
+        "decision_count": len(decision_ids),
+        "world_action_count": world_action_count,
+        "external_action_count": external_action_count,
+        "total_cost_usd": round(total_cost, 4),
+        "first_seen_at": timeline[0].get("occurred_at") if timeline else None,
+        "last_seen_at": latest.get("occurred_at") if latest else None,
+        "latest_event_type": str(latest.get("event_type") or "") if latest else "",
+        "latest_reason": latest_reason,
+        "status": status,
+        "current_action": current_action,
+        "pending_confirmations": pending_confirmations,
+        "risk_flags": risk_flags[-20:],
+        "open_questions": [item for item in open_questions if item][-20:],
+        "decision_ticket_ids": decision_ids[-50:],
+        "model_routes": model_routes[-20:],
+        "skill_refs": skill_refs[-30:],
+        "context_asset_ids": context_asset_ids[-50:],
+        "reconstruction_confidence": confidence,
+        "gaps": gaps,
+        "timeline": timeline[-timeline_limit:],
+    }
+
+
 def _apply_runtime(entry: StateLedgerEntry, runtime: RuntimeState) -> None:
     entry.status = runtime.status
     entry.current_step = runtime.current_step
@@ -518,3 +669,237 @@ def _float_dict(value: object) -> dict[str, float]:
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _dict_or_empty(value: object) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _first_non_empty(*values: object) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _append_unique(items: list[str], value: object) -> None:
+    text = str(value).strip() if value is not None else ""
+    if text and text not in items:
+        items.append(text)
+
+
+def _remove_value(items: list[str], value: object) -> None:
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        return
+    items[:] = [item for item in items if item != text]
+
+
+def _story_event_cost(
+    item: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    ticket: Mapping[str, Any],
+) -> float:
+    for source in (item, payload, ticket.get("metadata"), ticket.get("evidence")):
+        if not isinstance(source, Mapping):
+            continue
+        for key in (
+            "cost_delta_usd",
+            "cost_usd",
+            "cost_estimate_usd",
+            "cost_usd_equivalent",
+            "cost_usd_actual",
+            "used_usd",
+        ):
+            try:
+                value = source.get(key)
+                if value is not None:
+                    return round(float(value), 6)
+            except (TypeError, ValueError):
+                continue
+    runtime = payload.get("runtime")
+    if isinstance(runtime, Mapping):
+        for key in ("accumulated_cost_usd_equivalent", "accumulated_cost_usd_actual"):
+            try:
+                value = runtime.get(key)
+                if value is not None:
+                    return round(float(value), 6)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+def _story_decision_ticket(payload: Mapping[str, Any]) -> dict[str, Any]:
+    nested = payload.get("decision_ticket")
+    if isinstance(nested, dict):
+        return dict(nested)
+    if payload.get("ticket_id") and payload.get("decision_point"):
+        return dict(payload)
+    return {}
+
+
+def _status_after_event(
+    event_type: str,
+    payload: Mapping[str, Any],
+    ticket: Mapping[str, Any],
+    current: str,
+) -> str:
+    if event_type == "task.created":
+        return "queued"
+    if event_type in {"task.started", "mission.task.orchestrator_started"}:
+        return "running"
+    if event_type in {
+        "task.paused",
+        "task.paused.preflight",
+        "task.pending_actions.created",
+        "delivery.needs_review",
+    }:
+        return "paused"
+    if event_type in {"task.resumed", "mission.task.resume_requested"}:
+        return "queued"
+    if event_type in {"task.done", "mission.task.resume_completed"}:
+        payload_status = _first_non_empty(payload.get("status"), payload.get("final_status"))
+        return payload_status or "done"
+    if event_type in {
+        "task.failed",
+        "task.timed_out",
+        "task.budget_exceeded",
+        "mission.task.resume_failed",
+    }:
+        return "failed"
+    if event_type == "task.cancelled":
+        return "cancelled"
+    ticket_status = str(ticket.get("status") or "")
+    if ticket_status in {"blocked", "needs_review", "escalated", "failed"}:
+        return "paused" if ticket_status != "failed" else "failed"
+    return current
+
+
+def _event_action(
+    event_type: str,
+    payload: Mapping[str, Any],
+    ticket: Mapping[str, Any],
+    reason: str,
+) -> str:
+    if ticket:
+        point = _first_non_empty(ticket.get("decision_point"), ticket.get("phase"))
+        selected = _first_non_empty(ticket.get("selected_action"))
+        if point or selected:
+            return f"{point}: {selected}".strip(": ")
+    if event_type == "task.step.completed":
+        step_id = _first_non_empty(payload.get("step_id"))
+        return f"完成第 {step_id} 步" if step_id else "完成一个执行步骤"
+    if event_type.startswith("task.pending_action"):
+        action_type = _first_non_empty(payload.get("action_type"), payload.get("action_id"))
+        return f"外部动作 {action_type}: {event_type}" if action_type else event_type
+    return reason or event_type
+
+
+def _apply_decision_ticket_replay(
+    ticket: Mapping[str, Any],
+    *,
+    model_routes: list[str],
+    skill_refs: list[str],
+    context_asset_ids: list[str],
+    risk_flags: list[str],
+) -> None:
+    point = str(ticket.get("decision_point") or "")
+    selected = _first_non_empty(ticket.get("selected_action"))
+    metadata = _dict_or_empty(ticket.get("metadata"))
+    evidence = _dict_or_empty(ticket.get("evidence"))
+    if point == "llm_model_selected":
+        provider = _first_non_empty(metadata.get("provider"), evidence.get("provider"))
+        model = _first_non_empty(metadata.get("model"), evidence.get("model"))
+        route = selected or ":".join(part for part in (provider, model) if part)
+        _append_unique(model_routes, route)
+    elif point == "skill_selected":
+        skill_ids = metadata.get("skill_ids")
+        if isinstance(skill_ids, list):
+            for skill_id in skill_ids:
+                _append_unique(skill_refs, skill_id)
+        elif selected and selected != "none":
+            for skill_id in selected.split(","):
+                _append_unique(skill_refs, skill_id)
+    elif point == "context_selected":
+        asset_ids = metadata.get("asset_ids")
+        if isinstance(asset_ids, list):
+            for asset_id in asset_ids:
+                _append_unique(context_asset_ids, asset_id)
+        elif selected and selected != "none":
+            for asset_id in selected.split(","):
+                _append_unique(context_asset_ids, asset_id)
+    if str(ticket.get("status") or "") in {"blocked", "failed", "needs_review", "escalated"}:
+        _append_unique(risk_flags, f"decision.{point}.{ticket.get('status')}")
+
+
+def _event_is_risky(
+    event_type: str,
+    payload: Mapping[str, Any],
+    ticket: Mapping[str, Any],
+) -> bool:
+    risky_terms = (
+        "failed",
+        "timed_out",
+        "budget_exceeded",
+        "blocked",
+        "pre_conflict",
+        "gaming.detected",
+        "security.",
+        "redteam",
+        "needs_review",
+    )
+    if any(term in event_type for term in risky_terms):
+        return True
+    if str(payload.get("risk_level") or "") in {"high", "critical"}:
+        return True
+    return str(ticket.get("risk_level") or "") in {"high", "critical"}
+
+
+def _story_gaps(
+    *,
+    timeline: list[dict[str, Any]],
+    saw_task_created: bool,
+    saw_terminal: bool,
+    saw_runtime_cost: bool,
+    decision_count: int,
+    history_limit_reached: bool,
+) -> list[str]:
+    gaps: list[str] = []
+    if not timeline:
+        return ["no_events"]
+    if history_limit_reached:
+        gaps.append("history_may_be_truncated")
+    if not saw_task_created:
+        gaps.append("missing_task_created_event")
+    if not saw_terminal:
+        gaps.append("missing_terminal_status_event")
+    if decision_count == 0:
+        gaps.append("missing_decision_ticket_events")
+    if not saw_runtime_cost:
+        gaps.append("missing_cost_fields")
+    return gaps
+
+
+def _story_confidence(
+    *,
+    event_count: int,
+    saw_task_created: bool,
+    saw_terminal: bool,
+    decision_count: int,
+    gaps: list[str],
+) -> float:
+    if event_count == 0:
+        return 0.0
+    score = 0.45
+    if saw_task_created:
+        score += 0.15
+    if saw_terminal:
+        score += 0.15
+    if decision_count:
+        score += 0.15
+    score += min(event_count, 10) * 0.01
+    score -= min(len(gaps), 5) * 0.04
+    return round(max(0.1, min(score, 0.95)), 2)

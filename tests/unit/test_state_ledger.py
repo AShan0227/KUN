@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from kun.context.packer import ContextPack, PackedContextItem
-from kun.core.state_ledger import StateLedger
+from kun.core.state_ledger import StateLedger, replay_state_ledger_story
 from kun.datamodel.decision_ticket import (
     ticket_from_budget_policy,
     ticket_from_context_selection,
@@ -320,6 +320,106 @@ def test_state_ledger_records_missing_world_handler_as_pending_reason() -> None:
     assert snapshot is not None
     assert snapshot.pending_reason == "No handler is attached yet."
     assert snapshot.recent_events[-1].data["requires_handler"] is True
+
+
+def test_state_ledger_replay_reconstructs_task_story_from_durable_events() -> None:
+    story = replay_state_ledger_story(
+        "task-1",
+        [
+            {
+                "event_id": "evt-1",
+                "event_type": "task.created",
+                "occurred_at": "2026-04-30T08:00:00Z",
+                "task_id": "task-1",
+                "summary": "created",
+                "payload": {"task_id": "task-1"},
+            },
+            {
+                "event_id": "evt-2",
+                "event_type": "llm.model_route.selected",
+                "occurred_at": "2026-04-30T08:01:00Z",
+                "task_id": "task-1",
+                "summary": "model route",
+                "cost_usd": 0.02,
+                "decision_ticket_id": "decision-1",
+                "payload": {
+                    "ticket_id": "decision-1",
+                    "decision_point": "llm_model_selected",
+                    "phase": "step",
+                    "selected_action": "codex-mcp:gpt-5.5:top",
+                    "status": "applied",
+                    "reason": "purpose=execution",
+                    "metadata": {"provider": "codex-mcp", "model": "gpt-5.5"},
+                },
+            },
+            {
+                "event_id": "evt-3",
+                "event_type": "task.pending_actions.created",
+                "occurred_at": "2026-04-30T08:02:00Z",
+                "task_id": "task-1",
+                "summary": "approval",
+                "payload": {
+                    "actions": [
+                        {"action_id": "act-1", "action_type": "email.send"},
+                    ]
+                },
+            },
+            {
+                "event_id": "evt-4",
+                "event_type": "task.pending_action.executed",
+                "occurred_at": "2026-04-30T08:03:00Z",
+                "task_id": "task-1",
+                "summary": "world action",
+                "payload": {
+                    "action_id": "act-1",
+                    "action_type": "email.send",
+                    "external_dispatched": True,
+                },
+            },
+            {
+                "event_id": "evt-5",
+                "event_type": "task.done",
+                "occurred_at": "2026-04-30T08:04:00Z",
+                "task_id": "task-1",
+                "summary": "done",
+                "cost_usd": 0.03,
+                "payload": {"status": "done"},
+            },
+        ],
+    )
+
+    assert story["status"] == "done"
+    assert story["decision_count"] == 1
+    assert story["world_action_count"] == 1
+    assert story["external_action_count"] == 1
+    assert story["pending_confirmations"] == []
+    assert story["model_routes"] == ["codex-mcp:gpt-5.5:top"]
+    assert story["total_cost_usd"] == 0.05
+    assert story["reconstruction_confidence"] > 0.7
+    assert "missing_terminal_status_event" not in story["gaps"]
+
+
+def test_state_ledger_replay_is_honest_about_missing_facts() -> None:
+    story = replay_state_ledger_story(
+        "task-2",
+        [
+            {
+                "event_id": "evt-1",
+                "event_type": "task.step.completed",
+                "occurred_at": "2026-04-30T08:00:00Z",
+                "task_id": "task-2",
+                "summary": "step",
+                "payload": {"step_id": 1, "cost_delta_usd": 0.01},
+            }
+        ],
+        history_limit_reached=True,
+    )
+
+    assert story["status"] == "unknown"
+    assert "history_may_be_truncated" in story["gaps"]
+    assert "missing_task_created_event" in story["gaps"]
+    assert "missing_terminal_status_event" in story["gaps"]
+    assert "missing_decision_ticket_events" in story["gaps"]
 
 
 def _task_ref(owner: Owner, title: str) -> TaskRef:

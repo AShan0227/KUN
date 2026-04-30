@@ -85,6 +85,7 @@ def get_v3_delivery_status(
                 "pending approval 通过后可解除任务暂停",
                 "StateLedger history 可从 EventRow 回放长期事件",
                 "StateLedger story 可把某个任务的事件历史压成可读时间线、成本和决策摘要",
+                "StateLedger replay 会从 EventRow 重建推断状态、外部动作、模型/skill/context 路径、风险和账本缺口",
                 "idle-batch 有部分复盘和学习能力",
                 "Mission 级预算已滚动汇总并可超预算暂停",
                 "Mission reaper 可处理 queued/running 卡死任务",
@@ -106,7 +107,7 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "续跑还不是原 TaskRow 原地恢复，而是 continuation task 挂回 Mission",
-                "StateLedger 还不是完整事件溯源重建器，暂时只做历史事件回放",
+                "StateLedger 还不是完整确定性快照重建器；目前能重建任务故事和缺口，但不能还原每个运行时字段",
                 "Mission 复盘和 continuation 摘要只做轻量权重/档位 nudging，还没训练长期策略模型",
                 "还没有跑跨周真实产品运营 dogfood",
             ],
@@ -158,6 +159,7 @@ def get_v3_delivery_status(
                 "WorldGateway 拦截/失败会进入启的问题队列，作为后续优化输入",
                 "NUO 可把 WorldGateway handler 持久化 quarantined/disabled/enabled，执行器会消费这个状态",
                 "NUO 可根据 handler 失败率、补偿缺口、配置缺口生成自动 quarantine 决策；默认 dry-run，确认后才写入",
+                "idle-batch 会定期跑 WorldGateway handler 自动 quarantine 建议，默认只报告不静默改控制",
             ],
             evidence_refs=[
                 "kun/api/nuo/health_panel.py",
@@ -172,11 +174,11 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "定期 NUO 体检已进入当前状态账本，但还没做浏览器/移动端主动推送",
-                "handler 自动 quarantine 已有 dry-run/执行入口，但还没接入定时体检自动触发",
+                "handler 自动 quarantine 已接入定时体检 dry-run，但真实自动执行仍需用户/运维确认",
             ],
             next_steps=[
                 "把高风险 NUO finding 推送到用户看板 / StateLedger 当前快照",
-                "把 auto-quarantine 接入 idle-batch/NUO 定期体检，并对真实外发默认只建议不自动执行",
+                "把 auto-quarantine 高风险建议推送到主看板，并保持真实外发默认人工确认",
             ],
         ),
         DeliveryCapability(
@@ -207,6 +209,7 @@ def get_v3_delivery_status(
                 "NUO / CLI 可查看 resource_credit_stats 里的 top 贡献资源，避免信用只停留在流水账",
                 "相似任务的结果记忆 / 元决策记忆会召回成小证据包，接入 Watchtower Decision Plane",
                 "启的问题信号可持久化到 qi_problem_signals，重启后不会全部丢失",
+                "任务结果记忆会携带 strategy_pack / execution_mode / skill / context / decision_path，供相似召回和信用分配复用",
             ],
             evidence_refs=[
                 "kun/memory/writeback.py",

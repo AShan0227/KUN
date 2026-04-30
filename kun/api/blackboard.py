@@ -22,7 +22,7 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from kun.core.config import settings
-from kun.core.state_ledger import StateLedgerEntry
+from kun.core.state_ledger import StateLedgerEntry, replay_state_ledger_story
 from kun.core.tenancy import current_tenant
 
 router = APIRouter(prefix="/api/blackboard", tags=["blackboard"])
@@ -60,6 +60,10 @@ class StateLedgerHistoryItem(BaseModel):
     reason: str = ""
     cost_usd: float = 0.0
     decision_ticket_id: str | None = None
+    decision_point: str = ""
+    phase: str = ""
+    selected_action: str = ""
+    decision_status: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -69,11 +73,24 @@ class StateLedgerStory(BaseModel):
     task_id: str
     event_count: int = 0
     decision_count: int = 0
+    world_action_count: int = 0
+    external_action_count: int = 0
     total_cost_usd: float = 0.0
     first_seen_at: str | None = None
     last_seen_at: str | None = None
     latest_event_type: str = ""
     latest_reason: str = ""
+    status: str = "unknown"
+    current_action: str = ""
+    pending_confirmations: list[str] = Field(default_factory=list)
+    risk_flags: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    decision_ticket_ids: list[str] = Field(default_factory=list)
+    model_routes: list[str] = Field(default_factory=list)
+    skill_refs: list[str] = Field(default_factory=list)
+    context_asset_ids: list[str] = Field(default_factory=list)
+    reconstruction_confidence: float = 0.0
+    gaps: list[str] = Field(default_factory=list)
     timeline: list[StateLedgerHistoryItem] = Field(default_factory=list)
 
 
@@ -400,18 +417,12 @@ def _story_from_history(
     task_id: str,
     history: list[StateLedgerHistoryItem],
 ) -> StateLedgerStory:
-    timeline = sorted(history, key=lambda item: item.occurred_at)
-    latest = timeline[-1] if timeline else None
-    return StateLedgerStory(
-        task_id=task_id,
-        event_count=len(timeline),
-        decision_count=sum(1 for item in timeline if item.decision_ticket_id),
-        total_cost_usd=round(sum(item.cost_usd for item in timeline), 4),
-        first_seen_at=timeline[0].occurred_at if timeline else None,
-        last_seen_at=latest.occurred_at if latest else None,
-        latest_event_type=latest.event_type if latest else "",
-        latest_reason=latest.reason if latest else "",
-        timeline=timeline[-20:],
+    return StateLedgerStory.model_validate(
+        replay_state_ledger_story(
+            task_id,
+            [item.model_dump(mode="json") for item in history],
+            timeline_limit=20,
+        )
     )
 
 

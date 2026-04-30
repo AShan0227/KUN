@@ -163,7 +163,8 @@ def _selected_step_names(enabled: set[str] | None) -> list[str]:
     names = [n for n in list_steps() if enabled is None or n in enabled]
     priority = {
         "health_report": 0,
-        "knowledge_precipitation": 1,
+        "world_handler_auto_quarantine": 1,
+        "knowledge_precipitation": 2,
         "incident_lessons": 2,
         "knowledge_conflict": 3,
         "methodology_distill": 4,
@@ -372,6 +373,21 @@ class HealthReportStep(IdleBatchStep):
             )
 
         return summary
+
+
+class WorldHandlerAutoQuarantineStep(IdleBatchStep):
+    """Ask NUO to review unsafe WorldGateway handlers during idle time."""
+
+    step_id = "world_handler_auto_quarantine"
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        from kun.world.handler_auto_control import run_world_handler_auto_quarantine
+
+        # Default to dry-run. Real quarantine can block real-world actions, so
+        # overnight NUO initially reports recommendations instead of silently
+        # changing controls.
+        report = await run_world_handler_auto_quarantine(tenant_id=tenant_id, dry_run=True)
+        return report.model_dump(mode="json")
 
 
 class RouteRuleMiningStep(IdleBatchStep):
@@ -583,6 +599,7 @@ def register_default_steps() -> None:
         KnowledgeConflictStep(),
         ABDecisionRollupStep(),
         HealthReportStep(),
+        WorldHandlerAutoQuarantineStep(),
         RouteRuleMiningStep(),
         TaskBoundaryEvalStep(),
         PheromoneDecayStep(),

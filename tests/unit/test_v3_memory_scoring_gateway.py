@@ -5,13 +5,19 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from email.message import EmailMessage
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 from kun.context.packer import ContextPacker
 from kun.context.storage import InMemoryAssetStore
-from kun.datamodel.decision_ticket import ticket_from_protocol_applied
+from kun.datamodel.decision_ticket import (
+    ticket_from_context_selection,
+    ticket_from_protocol_applied,
+    ticket_from_skill_selection,
+    ticket_from_watchtower_decision,
+)
 from kun.datamodel.runtime import RuntimeState, StepRecord
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
 from kun.engineering.orchestrator import Orchestrator
@@ -181,6 +187,88 @@ async def test_memory_writeback_assets_are_retrievable_by_context_packer() -> No
     assert {item.asset_kind for item in pack.items} == {"memory"}
     assert any("任务结果" in item.summary for item in pack.items)
     assert any("执行过程" in item.summary for item in pack.items)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_task_result_memory_records_execution_path_for_strategy_reuse() -> None:
+    store = InMemoryAssetStore()
+    writeback = MemoryWriteback(store=store)
+    task_ref = _task_ref()
+    runtime = RuntimeState(task_ref=task_ref.meta.task_id, status="done")
+    runtime.accumulate_step(StepRecord(step_id=1, skill_used="lesson_planner"))
+    watchtower_ticket = ticket_from_watchtower_decision(
+        tenant_id="tenant-v3",
+        task_id=task_ref.meta.task_id,
+        risk_level=task_ref.meta.risk_level,
+        estimated_cost_usd=task_ref.meta.estimated_cost_usd,
+        decision=SimpleNamespace(
+            strategy_pack_id="education",
+            strategy_pack_name="Education",
+            execution_mode="SMART",
+            reason="命中教育任务策略",
+            confidence=0.8,
+            context_limit=3,
+            skill_hints=["lesson_planner"],
+            metric_dimensions=["success_rate"],
+            reward_weights={"success_rate": 1.0},
+            risk_watch=[],
+            alert_flags=[],
+        ),
+    )
+    context_ticket = ticket_from_context_selection(
+        tenant_id="tenant-v3",
+        task_id=task_ref.meta.task_id,
+        risk_level=task_ref.meta.risk_level,
+        execution_mode="SMART",
+        context_limit=3,
+        context_pack=SimpleNamespace(
+            items=[
+                SimpleNamespace(
+                    asset_id="memory-1",
+                    asset_kind="memory",
+                    relevance_score=0.9,
+                )
+            ]
+        ),
+    )
+    skill_ticket = ticket_from_skill_selection(
+        tenant_id="tenant-v3",
+        task_id=task_ref.meta.task_id,
+        risk_level=task_ref.meta.risk_level,
+        top_k=1,
+        skills=[
+            SimpleNamespace(
+                skill_id="lesson_planner",
+                manifest=SimpleNamespace(description="Plan lesson", maturity="stable"),
+            )
+        ],
+    )
+
+    await writeback.record_task_result(
+        tenant_id="tenant-v3",
+        task_ref=task_ref,
+        status="done",
+        answer="学习计划已完成。",
+        runtime=runtime,
+        validation_outcome="pass",
+        validation_score=0.9,
+        surprise_score=0.2,
+        score_overall=0.88,
+        decision_tickets=[watchtower_ticket, context_ticket, skill_ticket],
+    )
+    assets = await store.list(tenant_id="tenant-v3", asset_kind="memory")
+    result_asset = next(
+        asset for asset in assets if asset.l1_metadata["memory_layer"] == "task_result"
+    )
+
+    assert result_asset.l1_metadata["strategy_pack_id"] == "education"
+    assert result_asset.l1_metadata["execution_mode"] == "SMART"
+    assert result_asset.l1_metadata["skill_ids"] == ["lesson_planner"]
+    assert result_asset.l1_metadata["context_asset_ids"] == ["memory-1"]
+    assert result_asset.l1_metadata["decision_path"][0]["decision_point"] == "strategy_selected"
+    assert "education" in result_asset.tags
+    assert "SMART" in result_asset.tags
 
 
 @pytest.mark.unit
