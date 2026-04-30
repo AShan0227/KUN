@@ -11,6 +11,10 @@ from kun.context.maintenance import ContextMaintenanceReport, run_context_mainte
 from kun.core.db import session_scope
 from kun.core.orm import EventRow, PendingActionRow, TaskRow
 from kun.core.tenancy import current_tenant
+from kun.engineering.credit_assignment import (
+    ResourceCreditSummary,
+    load_top_resource_credit,
+)
 from kun.engineering.delivery_status import (
     delivery_status_summary,
     get_v3_delivery_status,
@@ -90,6 +94,27 @@ async def system_health_report() -> dict[str, Any]:
     tenant = current_tenant()
     report = await collect_system_health_report(tenant_id=tenant.tenant_id)
     return report.model_dump(mode="json")
+
+
+@router.get("/resource-credit", response_model=list[ResourceCreditSummary])
+async def resource_credit_report(
+    kind: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[ResourceCreditSummary]:
+    """Top resources that actually earned durable MoE credit.
+
+    This is NUO's "which strategy pieces are really helping" view.  It covers
+    memory, skill, model, role_template, world_action, decision_ticket and other
+    resource kinds once they are written into ``resource_credit_stats``.
+    """
+    tenant = current_tenant()
+    async with session_scope(tenant_id=tenant.tenant_id) as s:
+        return await load_top_resource_credit(
+            s,
+            tenant_id=tenant.tenant_id,
+            resource_kind=kind,
+            limit=limit,
+        )
 
 
 @router.post("/context-maintenance/run", response_model=ContextMaintenanceReport)

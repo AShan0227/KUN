@@ -569,6 +569,49 @@ def ops_delivery_status(
         raise typer.Exit(code=3)
 
 
+@ops_app.command("credit-report")
+def ops_credit_report(
+    tenant: str = typer.Option("u-sylvan", "--tenant", help="租户 ID"),
+    kind: str | None = typer.Option(None, "--kind", help="memory/skill/model 等资源类型过滤"),
+    limit: int = typer.Option(20, "--limit", min=1, max=100),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+) -> None:
+    """查看哪些 memory / skill / model / 决策资源真的贡献过结果。"""
+
+    from kun.core.db import session_scope
+    from kun.engineering.credit_assignment import load_top_resource_credit
+
+    async def _load() -> list[dict[str, Any]]:
+        async with session_scope(tenant_id=tenant) as s:
+            rows = await load_top_resource_credit(
+                s,
+                tenant_id=tenant,
+                resource_kind=kind,
+                limit=limit,
+            )
+        return [item.model_dump(mode="json") for item in rows]
+
+    rows = asyncio.run(_load())
+    if json_output:
+        console.print_json(data={"items": rows})
+        return
+    table = Table(title=f"KUN resource credit — {tenant}")
+    table.add_column("score")
+    table.add_column("kind")
+    table.add_column("resource")
+    table.add_column("used/pass/critical")
+    table.add_column("credit")
+    for row in rows:
+        table.add_row(
+            f"{float(row['contribution_score']):.2f}",
+            str(row["resource_kind"]),
+            str(row["resource_id"]),
+            f"{row['used_count']}/{row['pass_count']}/{row['critical_count']}",
+            f"{float(row['credit_total']):.2f}",
+        )
+    console.print(table)
+
+
 @ops_app.command("onboard-tenant")
 def ops_onboard_tenant(
     tenant: str = typer.Option(..., "--tenant", help="租户 ID"),

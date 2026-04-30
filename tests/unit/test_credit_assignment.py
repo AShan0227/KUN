@@ -16,6 +16,7 @@ from kun.engineering.credit_assignment import (
     make_resource_key,
     persist_resource_credit_report,
     reset_contribution_tracker,
+    resource_credit_summaries_from_rows,
     split_resource_key,
 )
 from sqlalchemy.dialects import postgresql
@@ -169,6 +170,24 @@ def test_contribution_tracker_updates_from_deltas() -> None:
         }
     )
     assert tracker.contribution_score("m1", "memory") == 0.75
+
+
+def test_resource_credit_summaries_are_human_readable() -> None:
+    class Row:
+        resource_key = "skill:writer"
+        resource_kind = "skill"
+        resource_id = "writer"
+        used_count = 4
+        pass_count = 3
+        critical_count = 2
+        credit_total = 2.34567
+        last_seen_at = None
+
+    summaries = resource_credit_summaries_from_rows([Row()])
+
+    assert summaries[0].resource_key == "skill:writer"
+    assert summaries[0].contribution_score == 0.625
+    assert summaries[0].credit_total == 2.3457
 
 
 def test_resource_key_helpers_and_score_clamp() -> None:

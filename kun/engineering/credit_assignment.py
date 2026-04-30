@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from time import monotonic
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -119,6 +119,28 @@ class ResourceCreditDelta(BaseModel):
     pass_count: int = 0
     critical_count: int = 0
     credit_total: float = 0.0
+
+
+class ResourceCreditSummary(BaseModel):
+    """Human/NUO-facing durable resource credit row.
+
+    This turns the raw ``resource_credit_stats`` counters into an inspectable
+    scorecard: what resource was used, how often it helped, and whether it sat
+    on the critical path.  It is intentionally compact so it can be shown in
+    NUO and CLI without exposing all task internals.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    resource_key: str
+    resource_kind: str
+    resource_id: str
+    contribution_score: float
+    used_count: int
+    pass_count: int
+    critical_count: int
+    credit_total: float
+    last_seen_at: datetime | None = None
 
 
 class CreditAssignment:
@@ -536,6 +558,56 @@ async def load_resource_credit_scores(
     return scores
 
 
+async def load_top_resource_credit(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    resource_kind: str | None = None,
+    limit: int = 20,
+) -> list[ResourceCreditSummary]:
+    """Load the strongest durable MoE/resource contributors for NUO/CLI."""
+
+    safe_limit = max(1, min(int(limit), 100))
+    stmt = (
+        select(ResourceCreditRow)
+        .where(ResourceCreditRow.tenant_id == tenant_id)
+        .order_by(ResourceCreditRow.credit_total.desc(), ResourceCreditRow.updated_at.desc())
+        .limit(safe_limit)
+    )
+    if resource_kind:
+        stmt = stmt.where(ResourceCreditRow.resource_kind == resource_kind)
+    result = await session.execute(stmt)
+    return resource_credit_summaries_from_rows(result.scalars().all())
+
+
+def resource_credit_summaries_from_rows(rows: Iterable[Any]) -> list[ResourceCreditSummary]:
+    """Convert ORM-ish rows to compact resource credit summaries."""
+
+    summaries: list[ResourceCreditSummary] = []
+    for row in rows:
+        summaries.append(
+            ResourceCreditSummary(
+                resource_key=str(row.resource_key),
+                resource_kind=str(row.resource_kind),
+                resource_id=str(row.resource_id),
+                contribution_score=round(
+                    contribution_score_from_counts(
+                        used_count=int(row.used_count),
+                        pass_count=int(row.pass_count),
+                        critical_count=int(row.critical_count),
+                    ),
+                    4,
+                ),
+                used_count=int(row.used_count),
+                pass_count=int(row.pass_count),
+                critical_count=int(row.critical_count),
+                credit_total=round(float(row.credit_total), 4),
+                last_seen_at=getattr(row, "last_seen_at", None),
+            )
+        )
+    return summaries
+
+
 async def hydrate_contribution_tracker_from_db(
     session: AsyncSession,
     *,
@@ -604,6 +676,7 @@ __all__ = [
     "ContributionTracker",
     "CreditAssignment",
     "ResourceCreditDelta",
+    "ResourceCreditSummary",
     "StageKind",
     "StageReward",
     "StepCredit",
@@ -614,8 +687,10 @@ __all__ = [
     "hydrate_contribution_tracker_from_db",
     "llm_reflector_factory",
     "load_resource_credit_scores",
+    "load_top_resource_credit",
     "make_resource_key",
     "persist_resource_credit_report",
     "reset_contribution_tracker",
+    "resource_credit_summaries_from_rows",
     "split_resource_key",
 ]
