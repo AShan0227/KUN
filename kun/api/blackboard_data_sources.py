@@ -148,22 +148,35 @@ async def _state_source_async(tenant_id: str, user_id: str) -> dict[str, Any]:
     running = 0
     queued = 0
     cost_today = 0.0
+    remaining_budget = 0.0
     ledger_entries: list[dict[str, Any]] = []
     try:
         async with session_scope(tenant_id=tenant_id) as session:
             stmt = (
-                select(RuntimeStateRow.status, RuntimeStateRow.accumulated_cost_usd_actual)
+                select(
+                    RuntimeStateRow.status,
+                    RuntimeStateRow.accumulated_cost_usd_actual,
+                    RuntimeStateRow.accumulated_cost_usd_equivalent,
+                    TaskRow.estimated_cost_usd,
+                )
                 .join(TaskRow, TaskRow.task_id == RuntimeStateRow.task_ref)
                 .where(TaskRow.tenant_id == tenant_id)
                 .order_by(desc(TaskRow.created_at))
                 .limit(200)
             )
-            for status, cost in (await session.execute(stmt)).all():
+            for status, actual_cost, equivalent_cost, estimated_cost in (
+                await session.execute(stmt)
+            ).all():
                 if status == "running":
                     running += 1
                 elif status == "queued":
                     queued += 1
-                cost_today += float(cost or 0.0)
+                cost_today += float(actual_cost or 0.0)
+                if status in {"queued", "running", "paused"}:
+                    remaining_budget += max(
+                        0.0,
+                        float(estimated_cost or 0.0) - float(equivalent_cost or 0.0),
+                    )
     except Exception:
         logger.exception("blackboard.state_source failed")
     ledger_data = await _state_ledger_source_async(tenant_id=tenant_id, task_id=None)
@@ -182,7 +195,7 @@ async def _state_source_async(tenant_id: str, user_id: str) -> dict[str, Any]:
         "task_count_running": running,
         "task_count_queued": queued,
         "total_cost_today_usd": round(cost_today, 4),
-        "total_cost_remaining_budget_usd": 0.0,  # M3.3 接 BudgetTracker
+        "total_cost_remaining_budget_usd": round(remaining_budget, 4),
         "health_indicator": health,
         "urgent_alert_count": 0,  # M3.3 接 IncidentResponseEngine.history
         "active_state_ledger": ledger_entries,
