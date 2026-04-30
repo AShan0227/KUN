@@ -110,6 +110,7 @@ def test_blackboard_state_default_empty(bb_client: TestClient) -> None:
     body = resp.json()
     assert body["user_id"] == "u-1"
     assert body["health_indicator"] == "healthy"
+    assert body["system_findings"] == []
 
 
 def test_blackboard_state_with_data_source(bb_client: TestClient) -> None:
@@ -122,6 +123,16 @@ def test_blackboard_state_with_data_source(bb_client: TestClient) -> None:
             "total_cost_today_usd": 0.42,
             "health_indicator": "warn",
             "urgent_alert_count": 1,
+            "system_findings": [
+                {
+                    "finding_id": "world:email.send",
+                    "severity": "error",
+                    "subsystem": "world_gateway",
+                    "title": "邮件执行器缺少补偿",
+                    "detail": "真实外发风险高",
+                    "suggested_action": "先补补偿策略再开放。",
+                }
+            ],
             "active_state_ledger": [
                 {
                     "task_id": "tk-1",
@@ -140,6 +151,7 @@ def test_blackboard_state_with_data_source(bb_client: TestClient) -> None:
     )
     assert resp.status_code == 200
     assert resp.json()["task_count_running"] == 3
+    assert resp.json()["system_findings"][0]["finding_id"] == "world:email.send"
     assert resp.json()["active_state_ledger"][0]["task_id"] == "tk-1"
 
 

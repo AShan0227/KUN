@@ -156,6 +156,8 @@ async def _state_source_async(tenant_id: str, user_id: str) -> dict[str, Any]:
     cost_today = 0.0
     remaining_budget = 0.0
     ledger_entries: list[dict[str, Any]] = []
+    system_findings: list[dict[str, Any]] = []
+    urgent_alert_count = 0
     try:
         async with session_scope(tenant_id=tenant_id) as session:
             stmt = (
@@ -198,6 +200,31 @@ async def _state_source_async(tenant_id: str, user_id: str) -> dict[str, Any]:
         health = "warn"
     if cost_today > 100.0:
         health = "warn"
+    try:
+        from kun.engineering.nuo_system_health import collect_system_health_report
+
+        report = await collect_system_health_report(tenant_id=tenant_id)
+        system_findings = [
+            {
+                "finding_id": finding.finding_id,
+                "severity": finding.severity,
+                "subsystem": finding.subsystem,
+                "title": finding.title,
+                "detail": finding.detail,
+                "suggested_action": finding.suggested_action,
+            }
+            for finding in report.findings
+            if finding.severity in {"warn", "error", "critical"}
+        ][:5]
+        urgent_alert_count = sum(
+            1 for finding in report.findings if finding.severity in {"error", "critical"}
+        )
+        if report.worst_severity == "critical":
+            health = "critical"
+        elif urgent_alert_count > 0 or report.worst_severity in {"warn", "error"}:
+            health = "warn"
+    except Exception:
+        logger.exception("blackboard.state_source health report failed")
 
     return {
         "tenant_id": tenant_id,
@@ -207,7 +234,8 @@ async def _state_source_async(tenant_id: str, user_id: str) -> dict[str, Any]:
         "total_cost_today_usd": round(cost_today, 4),
         "total_cost_remaining_budget_usd": round(remaining_budget, 4),
         "health_indicator": health,
-        "urgent_alert_count": 0,  # M3.3 接 IncidentResponseEngine.history
+        "urgent_alert_count": urgent_alert_count,
+        "system_findings": system_findings,
         "active_state_ledger": ledger_entries,
         "last_update": datetime.now(UTC).isoformat(),
     }

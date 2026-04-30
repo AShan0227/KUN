@@ -116,6 +116,14 @@ type GlobalState = {
   total_cost_remaining_budget_usd?: number;
   health_indicator: string;
   urgent_alert_count: number;
+  system_findings?: Array<{
+    finding_id: string;
+    severity: string;
+    subsystem: string;
+    title: string;
+    detail: string;
+    suggested_action: string;
+  }>;
   active_state_ledger: LedgerEntry[];
 };
 
@@ -677,6 +685,7 @@ export default function Home() {
     (deliverySummary?.not_ready ?? 0);
   const visibleDeliveryGaps =
     deliveryStatus?.items.filter((item) => item.user_visible && item.status !== "ready") ?? [];
+  const systemFindings = globalState?.system_findings ?? [];
 
   return (
     <div className="grid grid-cols-[1fr_360px] gap-4 p-4 h-full">
@@ -716,6 +725,31 @@ export default function Home() {
             />
           </div>
           <div className="mt-3 space-y-2">
+            {systemFindings.length > 0 && (
+              <div className="rounded border border-amber-200 bg-amber-50 p-2 text-xs">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="font-medium text-amber-900">傩发现的系统风险</span>
+                  <a href="/nuo" className="text-amber-700 hover:underline">
+                    去傩处理
+                  </a>
+                </div>
+                <div className="space-y-1">
+                  {systemFindings.slice(0, 3).map((finding) => (
+                    <div key={finding.finding_id} className="rounded bg-white px-2 py-1">
+                      <div className="flex justify-between gap-2">
+                        <span className="truncate font-medium">
+                          {finding.title || finding.finding_id}
+                        </span>
+                        <span className="shrink-0 text-amber-700">{finding.severity}</span>
+                      </div>
+                      <div className="mt-0.5 truncate text-gray-500">
+                        {finding.suggested_action || finding.detail}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {pendingActions.length > 0 && (
               <div className="rounded border border-amber-200 bg-amber-50 p-2 text-xs">
                 <div className="mb-2 flex items-center justify-between">

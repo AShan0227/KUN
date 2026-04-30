@@ -105,6 +105,7 @@ class GlobalStateView(BaseModel):
     total_cost_remaining_budget_usd: float = 0.0
     health_indicator: Literal["healthy", "warn", "critical"] = "healthy"
     urgent_alert_count: int = 0
+    system_findings: list[dict[str, Any]] = Field(default_factory=list)
     active_state_ledger: list[StateLedgerEntry] = Field(default_factory=list)
     last_update: str = ""
 
