@@ -569,6 +569,42 @@ def ops_delivery_status(
         raise typer.Exit(code=3)
 
 
+@ops_app.command("secret-audit")
+def ops_secret_audit(
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+    fail_on_blocker: bool = typer.Option(
+        True,
+        "--fail-on-blocker/--no-fail-on-blocker",
+        help="发现生产级 blocker 时返回非零退出码",
+    ),
+) -> None:
+    """检查密钥、默认账号、真实外部 handler 配置是否安全。"""
+
+    from kun.ops.secret_audit import audit_runtime_secrets
+
+    report = audit_runtime_secrets()
+    if json_output:
+        console.print_json(data=report.model_dump(mode="json"))
+    else:
+        table = Table(title=f"KUN secret/config audit — {report.status}")
+        table.add_column("severity")
+        table.add_column("area")
+        table.add_column("finding")
+        table.add_column("action")
+        color = {"ok": "green", "warn": "yellow", "blocker": "red"}
+        for item in report.items:
+            table.add_row(
+                f"[{color[item.severity]}]{item.severity}[/]",
+                item.area,
+                item.title,
+                item.suggested_action or "-",
+            )
+        console.print(table)
+        console.print("[dim]summary: " + json.dumps(report.summary, ensure_ascii=False) + "[/]")
+    if fail_on_blocker and report.status == "block":
+        raise typer.Exit(code=2)
+
+
 @ops_app.command("credit-report")
 def ops_credit_report(
     tenant: str = typer.Option("u-sylvan", "--tenant", help="租户 ID"),

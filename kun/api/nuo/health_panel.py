@@ -21,6 +21,7 @@ from kun.engineering.delivery_status import (
     validate_delivery_status,
 )
 from kun.engineering.nuo_system_health import collect_system_health_report
+from kun.ops.secret_audit import SecretAuditReport, audit_runtime_secrets
 
 router = APIRouter()
 
@@ -94,6 +95,12 @@ async def system_health_report() -> dict[str, Any]:
     tenant = current_tenant()
     report = await collect_system_health_report(tenant_id=tenant.tenant_id)
     return report.model_dump(mode="json")
+
+
+@router.get("/secret-audit", response_model=SecretAuditReport)
+async def secret_audit() -> SecretAuditReport:
+    """NUO view of unsafe defaults, missing secrets and half-enabled handlers."""
+    return audit_runtime_secrets()
 
 
 @router.get("/resource-credit", response_model=list[ResourceCreditSummary])

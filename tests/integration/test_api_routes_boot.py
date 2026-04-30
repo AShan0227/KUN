@@ -28,6 +28,7 @@ def test_routes_registered():
         "/ws",
         "/nuo/health/summary",
         "/nuo/health/delivery-status",
+        "/nuo/health/secret-audit",
         "/nuo/health/resource-credit",
         "/nuo/budget/summary",
         "/nuo/actions/pending",

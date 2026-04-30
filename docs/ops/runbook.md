@@ -34,6 +34,8 @@ curl http://localhost:8000/healthz
 ```bash
 uv run kun ops preflight
 uv run kun ops preflight --json
+uv run kun ops secret-audit
+uv run kun ops secret-audit --json
 ```
 
 它检查的是“能不能安全上线”，不是产品宣传：
@@ -42,6 +44,7 @@ uv run kun ops preflight --json
 - `KUN_AUTH_SECRET` 或 `KUN_AUTH_SECRETS` 必须至少包含一个足够长的 secret
 - `KUN_PG_DSN` 必须用 `kun_app` 这种非管理员应用账号
 - S3/MinIO 不能用默认密钥
+- `secret-audit` 会展开看默认数据库密码、单密钥轮换风险、半启用外部 handler、企业 API 认证头缺失
 - alembic 必须单 head
 - 备份脚本和恢复 smoke 脚本必须存在
 - delivery status 不能把没接入主流程的能力标成 ready

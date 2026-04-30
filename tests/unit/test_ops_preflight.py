@@ -9,6 +9,7 @@ from kun.core.config import Settings
 from kun.ops import dogfood as dogfood_module
 from kun.ops.dogfood import run_v4_dogfood
 from kun.ops.preflight import run_preflight
+from kun.ops.secret_audit import audit_runtime_secrets
 from kun.ops.tenant_onboarding import create_tenant_onboarding_pack
 from kun.security.auth import verify_bearer_token
 from typer.testing import CliRunner
@@ -18,9 +19,13 @@ def _safe_prod_settings() -> Settings:
     return Settings(
         env="production",
         default_tenant_id=None,
-        auth_secret="x" * 40,
-        pg_dsn="postgresql+asyncpg://kun_app:kun_app@localhost:55432/kun",
-        pg_admin_dsn="postgresql+asyncpg://kun:kun@localhost:55432/kun",
+        auth_secret=None,
+        auth_secrets=(
+            "new-prod-key-7f1b9c2d4e6a8b0c9d3e5f7a," "old-prod-key-8a2c4e6f0b1d3f5a7c9e0d2b"
+        ),
+        pg_dsn="postgresql+asyncpg://kun_app:prod-app-pw@db.internal:5432/kun",
+        pg_admin_dsn="postgresql+asyncpg://kun_admin:prod-admin-pw@db.internal:5432/kun",
+        s3_endpoint="https://objects.internal",
         s3_access_key="prod-access",
         s3_secret_key="prod-secret",
     )
@@ -42,6 +47,7 @@ def test_preflight_blocks_unsafe_production_config(tmp_path: Path) -> None:
     assert "KUN_AUTH_SECRET" in details
     assert "KUN_PG_DSN" in details
     assert any(check.check_id == "backup_script" for check in report.blockers)
+    assert any(check.check_id.startswith("secret_audit:") for check in report.blockers)
 
 
 @pytest.mark.unit
@@ -70,7 +76,9 @@ def test_preflight_accepts_auth_secret_rotation_list(tmp_path: Path) -> None:
     cfg = _safe_prod_settings().model_copy(
         update={
             "auth_secret": None,
-            "auth_secrets": "new-" + "x" * 40 + ",old-" + "y" * 40,
+            "auth_secrets": (
+                "new-prod-key-7f1b9c2d4e6a8b0c9d3e5f7a," "old-prod-key-8a2c4e6f0b1d3f5a7c9e0d2b"
+            ),
         }
     )
 
@@ -129,6 +137,47 @@ def test_preflight_accepts_enabled_world_gateway_handler_with_required_env(
     assert any(
         check.check_id == "world_handler_config:email.send" and check.severity == "ok"
         for check in report.checks
+    )
+
+
+@pytest.mark.unit
+def test_secret_audit_blocks_default_database_credentials() -> None:
+    cfg = Settings(
+        env="production",
+        default_tenant_id=None,
+        auth_secret=None,
+        auth_secrets=(
+            "new-prod-key-7f1b9c2d4e6a8b0c9d3e5f7a," "old-prod-key-8a2c4e6f0b1d3f5a7c9e0d2b"
+        ),
+        pg_dsn="postgresql+asyncpg://kun_app:kun_app@db.internal:5432/kun",
+        pg_admin_dsn="postgresql+asyncpg://kun:kun@db.internal:5432/kun",
+        s3_endpoint="https://objects.internal",
+        s3_access_key="prod-access",
+        s3_secret_key="prod-secret",
+    )
+
+    report = audit_runtime_secrets(cfg=cfg, environ={})
+
+    assert report.status == "block"
+    ids = {item.item_id for item in report.blockers}
+    assert "database.app_default_credential" in ids
+    assert "database.admin_default_credential" in ids
+
+
+@pytest.mark.unit
+def test_secret_audit_detects_partial_enterprise_api_auth() -> None:
+    report = audit_runtime_secrets(
+        cfg=_safe_prod_settings(),
+        environ={
+            "KUN_WORLD_API_POST_ENABLED": "true",
+            "KUN_WORLD_API_ALLOWED_HOSTS": "api.example.com",
+            "KUN_WORLD_API_AUTH_HEADER": "Authorization",
+        },
+    )
+
+    assert report.status == "block"
+    assert any(
+        item.item_id == "world_gateway.enterprise_api.partial_auth" for item in report.blockers
     )
 
 
@@ -301,3 +350,20 @@ def test_ops_delivery_status_can_fail_release_gate_on_not_ready() -> None:
 
     assert result.exit_code == 3
     assert "KUN delivery status" in result.output
+
+
+@pytest.mark.unit
+def test_ops_secret_audit_cli_outputs_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KUN_ENV", "dev")
+    monkeypatch.delenv("KUN_AUTH_SECRET", raising=False)
+    monkeypatch.delenv("KUN_AUTH_SECRETS", raising=False)
+
+    result = CliRunner().invoke(
+        app,
+        ["ops", "secret-audit", "--json", "--no-fail-on-blocker"],
+        env={**os.environ, "KUN_ENV": "dev"},
+    )
+
+    assert result.exit_code == 0
+    assert '"status"' in result.output
+    assert '"items"' in result.output

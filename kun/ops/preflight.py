@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kun.core.config import Settings, settings
 from kun.engineering.delivery_status import delivery_status_summary, validate_delivery_status
+from kun.ops.secret_audit import audit_runtime_secrets
 from kun.world.handler_health import EXPECTED_REAL_WORLD_HANDLERS
 
 PreflightSeverity = Literal["ok", "warn", "blocker"]
@@ -69,6 +70,7 @@ def run_preflight(
     root = repo_root or Path.cwd()
     checks: list[PreflightCheck] = []
     checks.extend(_config_checks(active))
+    checks.extend(_secret_audit_checks(active))
     checks.extend(_world_gateway_config_checks())
     checks.extend(_tooling_checks(root, run_alembic_heads=run_alembic_heads))
     checks.extend(_delivery_honesty_checks())
@@ -117,6 +119,26 @@ def _config_checks(cfg: Settings) -> list[PreflightCheck]:
                 title="当前不是 production 模式",
                 detail=f"KUN_ENV={cfg.env}，只能说明本地/预发可跑，不能代表正式上线。",
                 suggested_action="正式部署前用 KUN_ENV=production 重跑 preflight。",
+            )
+        )
+    return checks
+
+
+def _secret_audit_checks(cfg: Settings) -> list[PreflightCheck]:
+    """Expose NUO's deeper secret/config audit in the release preflight."""
+
+    report = audit_runtime_secrets(cfg=cfg)
+    checks: list[PreflightCheck] = []
+    for item in report.items:
+        # Keep the legacy production_config check as the short summary, and
+        # add the detailed audit rows under a dedicated namespace.
+        checks.append(
+            PreflightCheck(
+                check_id=f"secret_audit:{item.item_id}",
+                severity=item.severity,
+                title=item.title,
+                detail=item.detail,
+                suggested_action=item.suggested_action,
             )
         )
     return checks
