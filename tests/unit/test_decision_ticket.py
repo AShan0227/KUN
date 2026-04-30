@@ -4,6 +4,7 @@ from typing import ClassVar
 
 from kun.datamodel.decision_ticket import (
     ticket_from_delivery_review,
+    ticket_from_llm_route,
     ticket_from_route_choice,
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
@@ -95,6 +96,26 @@ def test_route_choice_ticket_wraps_role_and_model_purpose() -> None:
     assert ticket.decision_point == "role_model_selected"
     assert ticket.selected_action == "rt-coder:coding"
     assert ticket.metadata["purpose"] == "coding"
+
+
+def test_llm_route_ticket_wraps_actual_model_choice() -> None:
+    ticket = ticket_from_llm_route(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        step_id=2,
+        purpose="execution",
+        provider="codex-mcp",
+        model="gpt-5.5",
+        tier="top",
+        cost_usd=0.12,
+        risk_level="medium",
+    )
+
+    assert ticket.phase == "step"
+    assert ticket.decision_point == "llm_model_selected"
+    assert ticket.selected_action == "codex-mcp:gpt-5.5:top"
+    assert ticket.evidence["provider"] == "codex-mcp"
+    assert ticket.metadata["step_id"] == 2
 
 
 def test_world_policy_ticket_blocks_missing_handler() -> None:

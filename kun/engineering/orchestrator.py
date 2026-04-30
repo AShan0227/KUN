@@ -44,6 +44,7 @@ from kun.core.tenancy import current_tenant
 from kun.datamodel.decision_ticket import (
     DecisionTicket,
     ticket_from_delivery_review,
+    ticket_from_llm_route,
     ticket_from_route_choice,
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
@@ -1369,6 +1370,30 @@ class Orchestrator:
                     model=response.model,
                     tier=str(response.tier),
                 )
+                llm_route_ticket = ticket_from_llm_route(
+                    tenant_id=tenant.tenant_id,
+                    task_id=task_ref.meta.task_id,
+                    step_id=step_plan.step_id,
+                    purpose=choice.purpose,
+                    provider=response.provider,
+                    model=response.model,
+                    tier=str(response.tier),
+                    cost_usd=response.cost_usd_equivalent,
+                    risk_level=task_ref.meta.risk_level,
+                    mission_id=_mission_id_from_task(task_ref),
+                )
+                decision_tickets.append(llm_route_ticket)
+                self._record_state_ledger("record_decision_ticket", llm_route_ticket)
+                async with session_scope(tenant_id=tenant.tenant_id) as s:
+                    await emit(
+                        s,
+                        Event.build(
+                            tenant_id=tenant.tenant_id,
+                            event_type="llm.model_route.selected",
+                            payload=llm_route_ticket.event_payload(),
+                            task_ref=task_ref.meta.task_id,
+                        ),
+                    )
                 self._record_step_credit(
                     task_ref=task_ref,
                     step=step_record,

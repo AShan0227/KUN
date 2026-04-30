@@ -63,6 +63,7 @@ EventKind = Literal[
     # LLM / Router
     "llm.call.started",
     "llm.call.completed",
+    "llm.model_route.selected",
     "llm.fallback.triggered",
     # Capability card
     "capability.updated",

@@ -35,6 +35,7 @@ DecisionPoint = Literal[
     "protocol_applied",
     "strategy_selected",
     "role_model_selected",
+    "llm_model_selected",
     "context_selected",
     "skill_selected",
     "value_gate",
@@ -240,6 +241,45 @@ def ticket_from_route_choice(
     )
 
 
+def ticket_from_llm_route(
+    *,
+    tenant_id: str,
+    task_id: str,
+    step_id: int,
+    purpose: str,
+    provider: str,
+    model: str,
+    tier: str,
+    cost_usd: float,
+    risk_level: str = "low",
+    mission_id: str | None = None,
+) -> DecisionTicket:
+    """Wrap the actual LLM provider/model selected for one execution step."""
+
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="step",
+        decision_point="llm_model_selected",
+        source_module="interface.llm.router",
+        selected_action=f"{provider}:{model}:{tier}",
+        status="applied",
+        reason=f"purpose={purpose}; actual_provider={provider}; tier={tier}",
+        confidence=0.75,
+        risk_level=risk_level,
+        cost_estimate_usd=cost_usd,
+        inputs_summary={"step_id": step_id, "purpose": purpose},
+        evidence={
+            "provider": provider,
+            "model": model,
+            "tier": tier,
+            "cost_usd_equivalent": cost_usd,
+        },
+        metadata={"step_id": step_id, "purpose": purpose, "provider": provider, "model": model},
+    )
+
+
 def ticket_from_delivery_review(
     *,
     tenant_id: str,
@@ -359,6 +399,7 @@ __all__ = [
     "DecisionTicket",
     "DecisionTicketRef",
     "ticket_from_delivery_review",
+    "ticket_from_llm_route",
     "ticket_from_route_choice",
     "ticket_from_value_gate_decision",
     "ticket_from_watchtower_decision",
