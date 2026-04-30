@@ -18,6 +18,10 @@ from kun.core.tenancy import current_tenant, require_scope
 from kun.datamodel.runtime import TaskStatus
 from kun.engineering.action_executor import ActionExecutionResult, execute_approved_action_once
 from kun.engineering.pending_task_resume import resume_unblocked_task_once
+from kun.world.action_reliability import (
+    WorldActionReliabilityItem,
+    collect_world_action_reliability,
+)
 from kun.world.gateway import (
     WorldAction,
     WorldGateway,
@@ -94,6 +98,12 @@ class WorldGatewayHandlerHealthResponse(BaseModel):
     tenant_id: str
     summary: dict[str, int]
     handlers: list[WorldHandlerHealthCard]
+
+
+class WorldActionReliabilityResponse(BaseModel):
+    tenant_id: str
+    summary: dict[str, int]
+    items: list[WorldActionReliabilityItem]
 
 
 class HandlerControlRequest(BaseModel):
@@ -183,6 +193,21 @@ async def list_world_gateway_handler_health() -> WorldGatewayHandlerHealthRespon
         tenant_id=tenant.tenant_id,
         summary=summarize_handler_health(cards),
         handlers=cards,
+    )
+
+
+@router.get("/execution-reliability", response_model=WorldActionReliabilityResponse)
+async def list_world_action_execution_reliability(
+    limit: int = Query(default=20, ge=1, le=200),
+) -> WorldActionReliabilityResponse:
+    """Show retry/compensation risks from the durable world-action ledger."""
+
+    tenant = current_tenant()
+    report = await collect_world_action_reliability(tenant_id=tenant.tenant_id, limit=limit)
+    return WorldActionReliabilityResponse(
+        tenant_id=report.tenant_id,
+        summary=report.summary,
+        items=report.items,
     )
 
 

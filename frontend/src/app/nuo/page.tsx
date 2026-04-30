@@ -197,6 +197,28 @@ type WorldHandlerAutoReport = {
   applied_count: number;
 };
 
+type WorldActionReliabilityItem = {
+  action_id: string;
+  task_ref: string;
+  action_type: string;
+  status: string;
+  attempt_count: number;
+  external_dispatched: boolean;
+  can_auto_retry: boolean;
+  recommended_action: string;
+  reason: string;
+  compensation_status: string;
+  retry_status: string;
+  idempotency_status: string;
+  last_error: string;
+};
+
+type WorldActionReliabilityResponse = {
+  tenant_id: string;
+  summary: Record<string, number>;
+  items: WorldActionReliabilityItem[];
+};
+
 type ActionDecisionResult = {
   action_id: string;
   status: string;
@@ -241,6 +263,10 @@ export default function NuoDashboard() {
   const [worldHandlers, setWorldHandlers] = useState<WorldHandler[]>([]);
   const [worldHealth, setWorldHealth] = useState<WorldHandlerHealth[]>([]);
   const [worldHealthSummary, setWorldHealthSummary] = useState<Record<string, number>>({});
+  const [worldReliability, setWorldReliability] = useState<WorldActionReliabilityItem[]>([]);
+  const [worldReliabilitySummary, setWorldReliabilitySummary] = useState<Record<string, number>>(
+    {},
+  );
   const [worldArtifactRoot, setWorldArtifactRoot] = useState("");
   const [unsupportedPolicy, setUnsupportedPolicy] = useState("");
   const [autoControlReport, setAutoControlReport] = useState<WorldHandlerAutoReport | null>(null);
@@ -263,8 +289,9 @@ export default function NuoDashboard() {
       fetchJson<WorldGatewayHandlers>("/nuo/actions/handlers"),
       fetchJson<WorldGatewayHandlerHealthResponse>("/nuo/actions/handler-health"),
       fetchJson<AnchorPage<PendingAction>>("/nuo/actions/recent?limit=5"),
+      fetchJson<WorldActionReliabilityResponse>("/nuo/actions/execution-reliability?limit=8"),
     ])
-      .then(([h, b, a, d, c, ds, wg, wh, recent]) => {
+      .then(([h, b, a, d, c, ds, wg, wh, recent, reliability]) => {
         setHealth(h);
         setBudget(b);
         setActions(a.actions || []);
@@ -285,6 +312,8 @@ export default function NuoDashboard() {
         setWorldArtifactRoot(wg.artifact_root || "");
         setUnsupportedPolicy(wg.unsupported_policy || "");
         setRecentActions(recent.actions || []);
+        setWorldReliability(reliability.items || []);
+        setWorldReliabilitySummary(reliability.summary || {});
         setErr(null);
       })
       .catch((e) => setErr(String(e)));
@@ -601,6 +630,39 @@ export default function NuoDashboard() {
               </div>
             </div>
           )}
+          {worldReliability.length > 0 && (
+            <div className="mt-4 border-t pt-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-sm font-medium">外部执行可靠性</div>
+                <div className="text-xs text-gray-400">
+                  需看重试 {worldReliabilitySummary.needs_retry_review || 0} · 需看补偿{" "}
+                  {worldReliabilitySummary.needs_compensation_review || 0}
+                </div>
+              </div>
+              <div className="mt-2 space-y-2">
+                {worldReliability.map((item) => (
+                  <div key={item.action_id} className="rounded border p-2 text-xs">
+                    <div className="flex justify-between gap-3">
+                      <span className="font-medium">{item.action_type}</span>
+                      <span
+                        className={
+                          item.recommended_action === "none" ? "text-gray-400" : "text-kun-warn"
+                        }
+                      >
+                        {worldReliabilityLabel(item)}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-gray-500">{item.reason}</div>
+                    <div className="mt-1 text-gray-400">
+                      {item.status} · 尝试 {item.attempt_count} 次 ·{" "}
+                      {item.external_dispatched ? "已影响外部" : "未外发"} ·{" "}
+                      {item.idempotency_status}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </details>
       )}
 
@@ -912,6 +974,14 @@ function autoDecisionRiskSummary(decision: WorldHandlerAutoDecision) {
   }
   if (decision.data_quality === "partial") items.push("部分数据拿不到");
   return items.join(" · ");
+}
+
+function worldReliabilityLabel(item: WorldActionReliabilityItem) {
+  if (item.can_auto_retry) return "可安全重试";
+  if (item.recommended_action === "review_retry") return "看是否重试";
+  if (item.recommended_action === "review_compensation") return "看补偿";
+  if (item.recommended_action === "investigate") return "要排查";
+  return "正常";
 }
 
 function gatewayPreviewLabel(preview: GatewayPreview) {

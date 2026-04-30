@@ -355,6 +355,7 @@ def _world_gateway_delivery_status(
         "WorldGateway 执行结果会回写 world_action / world_handler / world_policy 决策票据信用",
         "真实 handler 执行时可按租户读取 SMTP / 企业 API / 浏览器白名单覆盖配置",
         "傩体检、secret audit、preflight 已识别 KUN_TENANT_<TENANT>_* 租户级外部动作配置",
+        "傩可从 world_action_executions 账本识别重试/补偿/缺幂等风险，不会默认重复真实外发",
     ]
     done.extend(_handler_done_line(item) for item in descriptors)
 
