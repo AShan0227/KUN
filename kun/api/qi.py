@@ -87,19 +87,18 @@ async def qi_status(request: Request) -> QiStatusResponse:
     problem_signal_count = 0
     top_problem = ""
     with contextlib.suppress(Exception):
-        from kun.qi.problem_queue import get_qi_problem_queue, get_sql_qi_problem_queue
+        from kun.qi.problem_queue import get_configured_qi_problem_queue, get_qi_problem_queue
 
         queue = getattr(request.app.state, "qi_problem_queue", None)
-        if queue is None and _qi_problem_queue_db_enabled():
-            queue = get_sql_qi_problem_queue()
         if queue is None:
-            queue = get_qi_problem_queue()
+            queue = get_configured_qi_problem_queue()
             request.app.state.qi_problem_queue = queue
         try:
             problems = await _queue_list(queue, tenant_id, limit=1)
             problem_signal_count = len(await _queue_list(queue, tenant_id, limit=1000))
         except Exception:
             fallback_queue = get_qi_problem_queue()
+            request.app.state.qi_problem_queue = fallback_queue
             problems = fallback_queue.list(tenant_id, limit=1)
             problem_signal_count = len(fallback_queue.list(tenant_id, limit=1000))
         if problems:

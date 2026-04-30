@@ -92,3 +92,55 @@ def test_system_health_surfaces_coordination_issues() -> None:
     )
 
     assert any(item.finding_id == "coordination:paused_without_gate:task-1" for item in findings)
+
+
+def test_system_health_surfaces_state_ledger_drift() -> None:
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        resumable_mission_task_count=0,
+        mission_resume_worker_enabled=True,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[],
+        world_handlers=[],
+        state_ledger_audit_summary={
+            "checked": 3,
+            "missing_history": 0,
+            "status_drift": 1,
+            "cost_drift": 1,
+            "history_gap": 0,
+            "drift": 1,
+        },
+    )
+
+    assert any(item.finding_id == "state_ledger_drift" for item in findings)
+    assert (
+        next(item for item in findings if item.finding_id == "state_ledger_drift").severity
+        == "error"
+    )
+
+
+def test_system_health_surfaces_state_ledger_missing_history() -> None:
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        resumable_mission_task_count=0,
+        mission_resume_worker_enabled=True,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[],
+        world_handlers=[],
+        state_ledger_audit_summary={
+            "checked": 2,
+            "missing_history": 1,
+            "status_drift": 0,
+            "cost_drift": 0,
+            "history_gap": 0,
+            "drift": 0,
+        },
+    )
+
+    assert any(item.finding_id == "state_ledger_missing_history" for item in findings)

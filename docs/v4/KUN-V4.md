@@ -967,6 +967,9 @@ V4 继续坚持：
 - `/nuo/health/resource-credit` 和 `kun ops credit-report`：可查看 memory / skill / model / decision 等资源的持久贡献信用。
 - `/api/blackboard/state-ledger/{task_id}/story`：可把某个任务的长期事件历史压成可读故事线。
 - `/api/blackboard/state-ledger/{task_id}/audit`：可对比当前快照和 EventRow 回放故事，标出状态/成本漂移和历史缺口。
+- NATS subscriber 嵌入 API 时复用已加载 Watchtower RuleEngine，独立进程也会加载 `rules/`，不再用空规则引擎假装订阅成功。
+- 启的问题队列启动时统一安装到 `app.state.qi_problem_queue`，SQL 队列开启时状态页和夜间探索消费同一份真实问题。
+- Context / Memory 资产 store 启动时可按 `KUN_CONTEXT_STORE_BACKEND=auto|redis|memory` 安装 Redis 持久 store；Redis 不可用时诚实降级为 memory。
 - 主工作区已经显示能力边界数量和 top 用户可见缺口，避免用户把 partial / audit_only 当成 ready。
 - 傩系统体检的 warn/error/critical finding 已进入黑板全局状态，主工作区可看到系统风险并跳转到傩处理。
 - `POST /api/auth/signup`：默认关闭的邀请码注册入口，可创建租户账本、owner 和 access+refresh 会话；这不是密码登录 / OAuth。

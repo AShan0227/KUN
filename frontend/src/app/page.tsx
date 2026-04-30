@@ -271,6 +271,7 @@ type TaskDetail = {
   state_ledger?: LedgerEntry | null;
   state_ledger_history?: StateLedgerHistoryItem[];
   state_ledger_story?: StateLedgerStory | null;
+  state_ledger_audit?: StateLedgerAudit | null;
   workspace?: {
     artifacts?: Array<Record<string, unknown>>;
     handoff_packets?: Array<Record<string, unknown>>;
@@ -342,6 +343,27 @@ type StateLedgerStory = {
   reconstruction_confidence?: number;
   gaps?: string[];
   timeline: StateLedgerHistoryItem[];
+};
+
+type StateLedgerAudit = {
+  task_id: string;
+  tenant_id?: string;
+  snapshot_source?: string;
+  snapshot_found: boolean;
+  replay_found: boolean;
+  snapshot_status: string;
+  replay_status: string;
+  status_matches: boolean;
+  snapshot_updated_at?: string | null;
+  replay_last_seen_at?: string | null;
+  event_count: number;
+  decision_count: number;
+  snapshot_cost_usd: number;
+  replay_cost_usd: number;
+  cost_delta_usd: number;
+  reconstruction_confidence?: number;
+  drift_detected: boolean;
+  issues: string[];
 };
 
 export default function Home() {
@@ -489,18 +511,54 @@ export default function Home() {
     }
   };
 
-  const send = useCallback(() => {
+  const send = useCallback(async () => {
     const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const content = input.trim();
     if (!content) return;
-    ws.send(JSON.stringify({ type: "user_message", content }));
     setMessages((m) => [
       ...m,
       { kind: "user", text: content, at: new Date().toISOString() },
     ]);
     setInput("");
-  }, [input]);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "user_message", content }));
+      return;
+    }
+    setMessages((m) => [
+      ...m,
+      {
+        kind: "thinking",
+        text: "WebSocket 未连接，已改走 HTTP 执行。",
+        at: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const res = await apiFetch("/api/chat/run", {
+        method: "POST",
+        body: JSON.stringify({ message: content }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const payload = (await res.json()) as WireMessage;
+      setMessages((m) => [
+        ...m,
+        {
+          kind: "answer",
+          text: formatHttpTaskResult(payload),
+          at: new Date().toISOString(),
+        },
+      ]);
+      await refreshDashboard();
+    } catch (err) {
+      setMessages((m) => [
+        ...m,
+        {
+          kind: "error",
+          text: err instanceof Error ? err.message : "HTTP 执行失败",
+          at: new Date().toISOString(),
+        },
+      ]);
+    }
+  }, [input, refreshDashboard]);
 
   const decidePendingAction = useCallback(
     async (actionId: string, decision: "approve" | "reject") => {
@@ -718,7 +776,16 @@ export default function Home() {
     try {
       const res = await apiFetch(`/api/blackboard/full/${encodeURIComponent(id)}`);
       if (!res.ok) throw new Error(await res.text());
-      setTaskDetail((await res.json()) as TaskDetail);
+      const detail = (await res.json()) as TaskDetail;
+      if (!detail.state_ledger_audit) {
+        const auditRes = await apiFetch(
+          `/api/blackboard/state-ledger/${encodeURIComponent(id)}/audit`,
+        ).catch(() => null);
+        if (auditRes?.ok) {
+          detail.state_ledger_audit = (await auditRes.json()) as StateLedgerAudit;
+        }
+      }
+      setTaskDetail(detail);
       void loadTaskControlStatus(id);
     } catch (err) {
       setTaskDetail(null);
@@ -1562,6 +1629,13 @@ function TaskDetailPanel({
   const trails = ledger?.recent_events ?? [];
   const history = detail?.state_ledger_history ?? [];
   const story = detail?.state_ledger_story ?? null;
+  const audit =
+    detail?.state_ledger_audit ??
+    buildStateLedgerAudit({
+      taskId: selectedTaskId,
+      ledger,
+      story,
+    });
 
   return (
     <div className="rounded border border-kun-accent/30 bg-blue-50/30 p-3 text-xs">
@@ -1615,6 +1689,54 @@ function TaskDetailPanel({
         <div className="mt-3 rounded bg-white p-2 text-gray-600">
           <span className="font-medium text-gray-700">为什么这么做：</span>
           {ledger.decision_reason}
+        </div>
+      )}
+
+      {audit && (
+        <div className="mt-3 rounded bg-white p-2 text-gray-600">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium text-gray-700">账本审计</span>
+            <span
+              className={
+                audit.drift_detected || audit.issues.length > 0
+                  ? "text-amber-700"
+                  : "text-green-700"
+              }
+            >
+              issues {audit.issues.length}
+            </span>
+          </div>
+          <div className="mt-2 grid grid-cols-3 gap-2">
+            <AuditCell
+              label="状态漂移"
+              value={auditStatusDriftLabel(audit)}
+              tone={auditStatusDriftTone(audit)}
+            />
+            <AuditCell
+              label="成本漂移"
+              value={Math.abs(audit.cost_delta_usd) > 0.01 ? "有" : "无"}
+              tone={Math.abs(audit.cost_delta_usd) > 0.01 ? "warn" : "good"}
+            />
+            <AuditCell
+              label="issues"
+              value={String(audit.issues.length)}
+              tone={audit.issues.length > 0 ? "warn" : "good"}
+            />
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-gray-400">
+            <span>
+              状态 {audit.snapshot_status} / {audit.replay_status}
+            </span>
+            <span>成本 Δ ${audit.cost_delta_usd.toFixed(4)}</span>
+            <span>
+              事件 {audit.event_count} · 决策 {audit.decision_count}
+            </span>
+          </div>
+          {audit.issues.length > 0 && (
+            <div className="mt-1 truncate text-amber-700">
+              {audit.issues.map(auditIssueLabel).join("，")}
+            </div>
+          )}
         </div>
       )}
 
@@ -1798,6 +1920,97 @@ function DetailCell({ label, value }: { label: string; value: string }) {
   );
 }
 
+function AuditCell({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "good" | "warn" | "muted";
+}) {
+  const toneClass =
+    tone === "good" ? "text-green-700" : tone === "warn" ? "text-amber-700" : "text-gray-500";
+  return (
+    <div className="rounded border border-gray-100 bg-gray-50 px-2 py-1">
+      <div className="text-gray-400">{label}</div>
+      <div className={`mt-0.5 font-medium ${toneClass}`}>{value}</div>
+    </div>
+  );
+}
+
+function buildStateLedgerAudit({
+  taskId,
+  ledger,
+  story,
+}: {
+  taskId: string;
+  ledger: LedgerEntry | null;
+  story: StateLedgerStory | null;
+}): StateLedgerAudit | null {
+  if (!ledger && !story) return null;
+  const snapshotFound = Boolean(ledger);
+  const replayFound = numberValue(story?.event_count) > 0;
+  const snapshotStatus = ledger?.status ?? "missing";
+  const replayStatus = story?.status || "unknown";
+  const canCompareStatus = snapshotFound && replayFound && replayStatus !== "unknown";
+  const statusMatches = canCompareStatus && snapshotStatus === replayStatus;
+  const snapshotCost = numberValue(ledger?.cost_so_far_usd);
+  const replayCost = numberValue(story?.total_cost_usd);
+  const costDelta = roundMoney(snapshotCost - replayCost);
+  const issues: string[] = [];
+  if (!snapshotFound) issues.push("missing_current_snapshot");
+  if (!replayFound) issues.push("missing_durable_history");
+  if (canCompareStatus && !statusMatches) issues.push("status_drift");
+  if (Math.abs(costDelta) > 0.01) issues.push("cost_drift");
+  for (const gap of story?.gaps ?? []) {
+    if (gap) issues.push(gap);
+  }
+  return {
+    task_id: taskId,
+    tenant_id: ledger?.tenant_id,
+    snapshot_source: snapshotFound ? "frontend_snapshot" : "missing",
+    snapshot_found: snapshotFound,
+    replay_found: replayFound,
+    snapshot_status: snapshotStatus,
+    replay_status: replayStatus,
+    status_matches: statusMatches,
+    snapshot_updated_at: ledger?.updated_at ?? null,
+    replay_last_seen_at: story?.last_seen_at ?? null,
+    event_count: numberValue(story?.event_count),
+    decision_count: numberValue(story?.decision_count),
+    snapshot_cost_usd: snapshotCost,
+    replay_cost_usd: replayCost,
+    cost_delta_usd: costDelta,
+    reconstruction_confidence: numberValue(story?.reconstruction_confidence),
+    drift_detected: issues.some((issue) => issue.endsWith("_drift")),
+    issues,
+  };
+}
+
+function auditStatusDriftLabel(audit: StateLedgerAudit): string {
+  if (!audit.snapshot_found || !audit.replay_found || audit.replay_status === "unknown") {
+    return "未知";
+  }
+  return audit.status_matches ? "无" : "有";
+}
+
+function auditStatusDriftTone(audit: StateLedgerAudit): "good" | "warn" | "muted" {
+  if (!audit.snapshot_found || !audit.replay_found || audit.replay_status === "unknown") {
+    return "muted";
+  }
+  return audit.status_matches ? "good" : "warn";
+}
+
+function auditIssueLabel(issue: string): string {
+  if (issue === "status_drift") return "状态漂移";
+  if (issue === "cost_drift") return "成本漂移";
+  if (issue === "missing_current_snapshot") return "缺当前快照";
+  if (issue === "missing_durable_history") return "缺长期历史";
+  if (issue === "missing_task_created_event") return "缺任务创建事件";
+  return issue;
+}
+
 function gatewayPreviewLabel(preview: GatewayPreview) {
   if (preview.user_summary) return preview.user_summary;
   if (preview.gateway_mode === "preview_failed") return "预览失败";
@@ -1878,6 +2091,20 @@ function formatMain(msg: WireMessage): string {
   return JSON.stringify(msg);
 }
 
+function formatHttpTaskResult(payload: WireMessage): string {
+  if (typeof payload.answer === "string") return payload.answer;
+  if (typeof payload.content === "string") return payload.content;
+  if (payload.fast_path && typeof payload.payload === "object") {
+    return `快速路径完成：${JSON.stringify(payload.payload)}`;
+  }
+  const taskId = stringValue(payload.task_id);
+  const finalStatus = stringValue(payload.final_status);
+  if (taskId || finalStatus) {
+    return `任务已提交${taskId ? `：${taskId}` : ""}${finalStatus ? `（${finalStatus}）` : ""}`;
+  }
+  return JSON.stringify(payload);
+}
+
 function stringValue(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -1886,6 +2113,10 @@ function stringValue(value: unknown): string {
 
 function numberValue(value: unknown): number {
   return typeof value === "number" ? value : 0;
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
 }
 
 function formatTime(value: string): string {

@@ -23,8 +23,10 @@ from kun.core.orm import (
     MissionTaskRow,
     PendingActionRow,
     RuntimeStateRow,
+    StateLedgerEntryRow,
     TaskRow,
 )
+from kun.core.state_ledger import replay_state_ledger_story
 from kun.engineering.concurrency import scan_active_resource_conflicts
 from kun.engineering.delivery_status import get_v3_delivery_status, validate_delivery_status
 from kun.engineering.system_coordination import (
@@ -75,6 +77,7 @@ class SystemHealthReport(BaseModel):
     secret_audit_items: list[SecretAuditItem] = Field(default_factory=list)
     world_handler_summary: dict[str, int] = Field(default_factory=dict)
     world_handlers: list[WorldHandlerHealthCard] = Field(default_factory=list)
+    state_ledger_audit_summary: dict[str, int] = Field(default_factory=dict)
     coordination_summary: dict[str, int] = Field(default_factory=dict)
     coordination_issues: list[CoordinationIssue] = Field(default_factory=list)
     findings: list[SystemHealthFinding] = Field(default_factory=list)
@@ -180,6 +183,7 @@ async def collect_system_health_report(
     delivery_issues = validate_delivery_status(get_v3_delivery_status())
     secret_audit = audit_runtime_secrets()
     world_handlers = await collect_world_handler_health(tenant_id=tenant_id)
+    state_ledger_audit_summary = await _collect_state_ledger_audit_summary(tenant_id=tenant_id)
     coordination_issues = await collect_coordination_issues(tenant_id=tenant_id)
     findings = _findings(
         outbox_lag=outbox_lag,
@@ -191,6 +195,7 @@ async def collect_system_health_report(
         delivery_issues=delivery_issues,
         secret_audit_items=secret_audit.items,
         world_handlers=world_handlers,
+        state_ledger_audit_summary=state_ledger_audit_summary,
         coordination_issues=coordination_issues,
     )
     return SystemHealthReport(
@@ -209,6 +214,7 @@ async def collect_system_health_report(
         secret_audit_items=secret_audit.items,
         world_handler_summary=summarize_handler_health(world_handlers),
         world_handlers=world_handlers,
+        state_ledger_audit_summary=state_ledger_audit_summary,
         coordination_summary=summarize_coordination_issues(coordination_issues),
         coordination_issues=coordination_issues,
         findings=findings,
@@ -224,6 +230,7 @@ def _findings(
     delivery_issues: list[str],
     secret_audit_items: list[SecretAuditItem],
     world_handlers: list[WorldHandlerHealthCard],
+    state_ledger_audit_summary: dict[str, int] | None = None,
     coordination_issues: list[CoordinationIssue] | None = None,
     resumable_mission_task_count: int = 0,
     mission_resume_worker_enabled: bool = False,
@@ -337,6 +344,40 @@ def _findings(
                     suggested_action=card.recommendation,
                 )
             )
+    audit_summary = state_ledger_audit_summary or {}
+    drift_count = int(audit_summary.get("drift", 0) or 0)
+    missing_history = int(audit_summary.get("missing_history", 0) or 0)
+    if drift_count > 0:
+        findings.append(
+            SystemHealthFinding(
+                finding_id="state_ledger_drift",
+                severity="error",
+                subsystem="state_ledger",
+                title="状态账本快照和事件回放不一致",
+                detail=(
+                    f"抽检 {audit_summary.get('checked', 0)} 个任务，"
+                    f"{drift_count} 个出现状态或成本漂移。"
+                ),
+                suggested_action=(
+                    "打开 /api/blackboard/state-ledger/{task_id}/audit 定位漂移；"
+                    "必要时用 EventRow 回放修正当前快照。"
+                ),
+            )
+        )
+    elif missing_history > 0:
+        findings.append(
+            SystemHealthFinding(
+                finding_id="state_ledger_missing_history",
+                severity="warn",
+                subsystem="state_ledger",
+                title="部分状态账本缺少可回放历史",
+                detail=(
+                    f"抽检 {audit_summary.get('checked', 0)} 个任务，"
+                    f"{missing_history} 个当前快照没有对应 EventRow 历史。"
+                ),
+                suggested_action="检查事件写入链路，避免只有当前状态、没有长期审计依据。",
+            )
+        )
     for coordination_issue in coordination_issues or []:
         findings.append(
             SystemHealthFinding(
@@ -349,6 +390,116 @@ def _findings(
             )
         )
     return findings
+
+
+async def _collect_state_ledger_audit_summary(
+    *,
+    tenant_id: str,
+    limit: int = 20,
+    history_limit: int = 100,
+) -> dict[str, int]:
+    """Sample persisted current snapshots and compare them with EventRow replay.
+
+    傩体检不在这里做完整事件溯源，只做低成本抽检：当前快照是否还有
+    对应事件、状态/成本有没有明显漂移、回放是否有缺口。
+    """
+
+    summary = {
+        "checked": 0,
+        "missing_history": 0,
+        "status_drift": 0,
+        "cost_drift": 0,
+        "history_gap": 0,
+        "drift": 0,
+    }
+    try:
+        async with session_scope(tenant_id=tenant_id) as s:
+            rows = (
+                (
+                    await s.execute(
+                        select(StateLedgerEntryRow)
+                        .where(
+                            StateLedgerEntryRow.tenant_id == tenant_id,
+                            StateLedgerEntryRow.status.in_(("queued", "running", "paused")),
+                        )
+                        .order_by(StateLedgerEntryRow.updated_at.desc())
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for row in rows:
+                events = (
+                    (
+                        await s.execute(
+                            select(EventRow)
+                            .where(
+                                EventRow.tenant_id == tenant_id,
+                                EventRow.task_ref == row.task_id,
+                            )
+                            .order_by(EventRow.occurred_at.desc())
+                            .limit(history_limit)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                summary["checked"] += 1
+                story = replay_state_ledger_story(
+                    row.task_id,
+                    [_event_history_item(event) for event in events],
+                    history_limit_reached=len(events) >= history_limit,
+                )
+                if not story.get("event_count"):
+                    summary["missing_history"] += 1
+                    continue
+                row_status = str(row.status or "")
+                replay_status = str(story.get("status") or "")
+                drifted = False
+                if (
+                    row_status
+                    and replay_status
+                    and replay_status != "unknown"
+                    and row_status != replay_status
+                ):
+                    summary["status_drift"] += 1
+                    drifted = True
+                snapshot = row.snapshot_json if isinstance(row.snapshot_json, dict) else {}
+                snapshot_cost = _float_value(snapshot.get("cost_so_far_usd"))
+                replay_cost = _float_value(story.get("total_cost_usd"))
+                if abs(snapshot_cost - replay_cost) > 0.01:
+                    summary["cost_drift"] += 1
+                    drifted = True
+                gaps = story.get("gaps")
+                if isinstance(gaps, list) and gaps:
+                    summary["history_gap"] += 1
+                if drifted:
+                    summary["drift"] += 1
+    except Exception:
+        # NUO 体检不能因为审计失败拖垮主健康面板；真正异常会进日志。
+        return summary
+    return summary
+
+
+def _event_history_item(event: EventRow) -> dict[str, object]:
+    return {
+        "event_id": event.event_id,
+        "event_type": event.event_type,
+        "occurred_at": event.occurred_at.isoformat(),
+        "task_id": event.task_ref,
+        "summary": event.subject[:200],
+        "payload": event.payload if isinstance(event.payload, dict) else {},
+    }
+
+
+def _float_value(value: object) -> float:
+    try:
+        if isinstance(value, int | float | str):
+            return round(float(value), 6)
+        return 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _world_handler_needs_finding(card: WorldHandlerHealthCard) -> bool:

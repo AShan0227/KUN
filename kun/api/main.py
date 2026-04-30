@@ -61,6 +61,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Load rules into a shared engine; orchestrator reuses it
     rules = load_rules("rules")
     rule_engine = RuleEngine(rules)
+    try:
+        from kun.context.storage import configure_store_from_settings
+
+        context_store_backend = await configure_store_from_settings()
+        app.state.context_store_backend = context_store_backend
+        log.info("context.store.ready", backend=context_store_backend)
+    except Exception as e:
+        app.state.context_store_backend = "memory"
+        log.warning("context.store.configure_failed", error=str(e))
     install_runtime(app, rule_engine=rule_engine)
     log.info("rules.ready", count=len(rules))
 
@@ -114,12 +123,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     import os as _os
 
     if _os.getenv("KUN_NATS_SUBSCRIBER_ENABLED", "1") == "1":
-        from kun.core.nats_subscriber import subscriber_worker
+        from kun.core.nats_subscriber import make_watchtower_handler, subscriber_worker
 
         app.state.nats_subscriber_task = asyncio.create_task(
             subscriber_worker(
                 subject_pattern=_os.getenv("KUN_NATS_SUBSCRIBE_SUBJECT", "kun.>"),
                 queue=_os.getenv("KUN_NATS_QUEUE_GROUP", "kun-watchtower"),
+                handlers=[make_watchtower_handler(rule_engine)],
             )
         )
         log.info("nats_subscriber.scheduled")

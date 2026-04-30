@@ -199,6 +199,14 @@ def get_sql_qi_problem_queue() -> SqlQiProblemQueue:
     return _sql_queue
 
 
+def get_configured_qi_problem_queue() -> QiProblemQueue | SqlQiProblemQueue:
+    """Return the queue Qi producers and consumers should share."""
+
+    if _durable_problem_queue_enabled():
+        return get_sql_qi_problem_queue()
+    return get_qi_problem_queue()
+
+
 def reset_qi_problem_queue() -> None:
     global _queue, _sql_queue
     _queue = None
@@ -343,6 +351,7 @@ __all__ = [
     "QiProblemSignal",
     "SqlQiProblemQueue",
     "collect_problem_signals",
+    "get_configured_qi_problem_queue",
     "get_qi_problem_queue",
     "get_sql_qi_problem_queue",
     "persist_problem_signals",

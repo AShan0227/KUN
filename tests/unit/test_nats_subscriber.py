@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 import pytest
-from kun.core.nats_subscriber import dispatch_event_to_handlers
+from kun.core.nats_subscriber import dispatch_event_to_handlers, make_watchtower_handler
 from kun.core.orm import EventRow
 
 
@@ -18,6 +18,15 @@ def _fake_event(event_id: str = "evt-1") -> EventRow:
         payload={"foo": "bar"},
         task_ref="task-001",
     )
+
+
+class _FakeRuleEngine:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def evaluate(self, event_type: str, *, namespace: dict[str, object]) -> list[str]:
+        self.calls.append((event_type, namespace))
+        return ["rule-1"]
 
 
 @pytest.mark.unit
@@ -92,3 +101,32 @@ async def test_dispatch_signature_matches_handler_protocol() -> None:
         return fake
 
     await dispatch_event_to_handlers("evt-1", [callable_obj], fetcher=fetcher)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_watchtower_handler_factory_uses_injected_loaded_engine() -> None:
+    engine = _FakeRuleEngine()
+    handler = make_watchtower_handler(engine)
+    row = EventRow(
+        event_id="evt-2",
+        tenant_id="t-test",
+        event_type="custom.event",
+        subject="kun.t-test.custom",
+        payload={"risk": "high"},
+        task_ref="task-002",
+    )
+
+    await handler(row)
+
+    assert engine.calls == [
+        (
+            "custom.event",
+            {
+                "event_type": "custom.event",
+                "tenant_id": "t-test",
+                "task_ref": "task-002",
+                "payload": {"risk": "high"},
+            },
+        )
+    ]

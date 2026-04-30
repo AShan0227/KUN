@@ -11,6 +11,7 @@ All stores are async and tenant-scoped.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Protocol
 
 import redis.asyncio as aioredis
@@ -84,6 +85,9 @@ class RedisAssetStore:
 
     def __init__(self, redis: Any) -> None:
         self._r = redis
+
+    async def ping(self) -> None:
+        await self._r.ping()
 
     @staticmethod
     def _key(tenant_id: str, asset_kind: str) -> str:
@@ -189,6 +193,36 @@ async def build_redis_store() -> RedisAssetStore:
     """Helper to construct a Redis-backed store from settings."""
     client = aioredis.from_url(settings().redis_url, decode_responses=True)
     return RedisAssetStore(client)
+
+
+async def configure_store_from_settings() -> str:
+    """Install the configured process-level asset store.
+
+    `auto` tries Redis and falls back to memory. This keeps local/dev startup
+    usable while making the memory store's durability boundary explicit.
+    """
+
+    backend = os.getenv("KUN_CONTEXT_STORE_BACKEND", "auto").strip().lower()
+    if backend in {"memory", "inmemory", "in-memory"}:
+        set_store(InMemoryAssetStore())
+        return "memory"
+    if backend not in {"auto", "redis"}:
+        log.warning("asset_store.unknown_backend", backend=backend)
+        set_store(InMemoryAssetStore())
+        return "memory"
+    try:
+        store = await build_redis_store()
+        await store.ping()
+        set_store(store)
+        log.info("asset_store.redis.ready", url=settings().redis_url)
+        return "redis"
+    except Exception as exc:
+        if backend == "redis":
+            log.error("asset_store.redis_unavailable", error=str(exc))
+        else:
+            log.warning("asset_store.redis_fallback_memory", error=str(exc))
+        set_store(InMemoryAssetStore())
+        return "memory"
 
 
 def _noop_use() -> None:

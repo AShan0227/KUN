@@ -32,6 +32,7 @@ def test_install_runtime_qi_enabled_by_default() -> None:
     assert get_protocol_registry_runtime(app) is not None
     assert get_pheromone_storage_runtime(app) is not None
     assert isinstance(get_qi_budget_runtime(app), QiDailyBudget)
+    assert app.state.qi_problem_queue is not None
 
 
 def test_install_runtime_qi_disabled_explicit() -> None:

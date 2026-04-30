@@ -147,6 +147,7 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
             set_pheromone_storage,
             set_protocol_registry,
         )
+        from kun.qi.problem_queue import get_configured_qi_problem_queue
 
         _local_log = _logging.getLogger("kun.api.runtime")
         if _os.getenv("KUN_QI_PROTOCOL_DB_ENABLED", "1") == "1":
@@ -176,6 +177,7 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         qi_budget = get_qi_budget()
         qi_budget.set_daily_limit(float(_os.getenv("KUN_QI_DAILY_BUDGET_USD", "5.0")))
         app.state.qi_budget = qi_budget
+        app.state.qi_problem_queue = get_configured_qi_problem_queue()
 
         capability_cache = CapabilityCardCache(
             ttl_sec=float(_os.getenv("KUN_CAPABILITY_CACHE_TTL_SEC", "30"))

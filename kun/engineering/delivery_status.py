@@ -89,6 +89,7 @@ def get_v3_delivery_status(
                 "Mission story 可把一个长期目标下的多个 task 账本聚合成总故事线、成本、决策数和下一步",
                 "StateLedger replay 会从 EventRow 重建推断状态、外部动作、模型/skill/context 路径、风险和账本缺口",
                 "StateLedger audit 可对比当前快照和 EventRow 回放故事，标出状态漂移、成本漂移和历史缺口",
+                "傩深度体检会抽检 StateLedger 当前快照和 EventRow 回放，发现状态/成本漂移会生成 finding",
                 "idle-batch 有部分复盘和学习能力",
                 "Mission 级预算已滚动汇总并可超预算暂停",
                 "Mission reaper 可处理 queued/running 卡死任务",
@@ -139,6 +140,8 @@ def get_v3_delivery_status(
                 "主工作区会显示傩发现的系统风险，避免风险只躲在 NUO 高级页",
                 "长期目标卡片可按需展开 Mission 故事线，查看跨 task 的事件数、决策数、成本、原因和下一步",
                 "长期目标卡片展开后可轻量调整下一步，走 Mission API 持久化，不需要进高级节点图",
+                "任务详情会显示账本审计，能看出当前快照和长期事件回放是否漂移",
+                "WebSocket 未连接时，对话主入口会降级到 /api/chat/run HTTP 执行并提示用户",
             ],
             evidence_refs=[
                 "frontend/src/app/page.tsx",
@@ -239,6 +242,8 @@ def get_v3_delivery_status(
                 "required_skills / Watchtower skill_hints 是强信号，但不再绕过贡献信用和能力卡排序",
                 "ValueGate 会把 task_type / execution_mode / strategy_pack / step skill 写入贡献信用",
                 "ProductionValueEstimator 会读取 ValueGate 历史信用，让同类任务的过往效果影响是否继续投入",
+                "Context/Memory 资产启动时可按 KUN_CONTEXT_STORE_BACKEND=auto/redis 装 Redis 持久 store，Redis 不可用时诚实降级为 memory",
+                "傩深度体检会把 StateLedger 漂移/缺历史暴露成 finding，避免账本漂移只藏在 API 里",
             ],
             evidence_refs=[
                 "kun/memory/writeback.py",

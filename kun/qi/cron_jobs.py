@@ -224,14 +224,18 @@ async def _pick_explore_prompt(
         try:
             from kun.qi.problem_queue import (
                 collect_problem_signals,
-                get_qi_problem_queue,
+                get_configured_qi_problem_queue,
                 prompt_for_problem,
             )
 
-            queue = getattr(app.state, "qi_problem_queue", None) or get_qi_problem_queue()
+            queue = (
+                getattr(app.state, "qi_problem_queue", None) or get_configured_qi_problem_queue()
+            )
             app.state.qi_problem_queue = queue
-            queue.enqueue_many(await collect_problem_signals(tenant_id))
-            signal = queue.pick(tenant_id)
+            signals = await collect_problem_signals(tenant_id)
+            if _is_custom_problem_queue(app, queue):
+                await _queue_enqueue_many(queue, signals)
+            signal = await _queue_pick(queue, tenant_id)
             if signal is not None:
                 return prompt_for_problem(signal)
         except Exception:
@@ -242,6 +246,28 @@ async def _pick_explore_prompt(
         if candidates:
             return random.choice(candidates)
     return random.choice(_EXPLORE_PROMPTS)[1]
+
+
+def _is_custom_problem_queue(app: Any, queue: Any) -> bool:
+    from kun.qi.problem_queue import QiProblemQueue, SqlQiProblemQueue
+
+    return getattr(app.state, "qi_problem_queue", None) is queue and not isinstance(
+        queue,
+        QiProblemQueue | SqlQiProblemQueue,
+    )
+
+
+async def _queue_enqueue_many(queue: Any, signals: list[Any]) -> None:
+    result = queue.enqueue_many(signals)
+    if hasattr(result, "__await__"):
+        await result
+
+
+async def _queue_pick(queue: Any, tenant_id: str) -> Any:
+    result = queue.pick(tenant_id)
+    if hasattr(result, "__await__"):
+        return await result
+    return result
 
 
 async def _emerge_protocol_from_darwin(app: Any, tenant_id: str, prompt: str, result: Any) -> None:

@@ -8,6 +8,7 @@ from kun.qi.problem_queue import (
     QiProblemSignal,
     SqlQiProblemQueue,
     _upsert_problem_signal_stmt,
+    get_configured_qi_problem_queue,
     get_qi_problem_queue,
     prompt_for_problem,
     reset_qi_problem_queue,
@@ -166,3 +167,44 @@ async def test_qi_prompt_prefers_real_problem_signal(monkeypatch: pytest.MonkeyP
 def test_sql_problem_queue_is_explicitly_async() -> None:
     queue = SqlQiProblemQueue()
     assert hasattr(queue.enqueue_many, "__call__")
+
+
+def test_configured_problem_queue_uses_sql_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KUN_QI_PROBLEM_QUEUE_DB_ENABLED", "1")
+
+    assert isinstance(get_configured_qi_problem_queue(), SqlQiProblemQueue)
+
+
+@pytest.mark.asyncio
+async def test_qi_prompt_can_consume_async_problem_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAsyncQueue:
+        def __init__(self) -> None:
+            self.signals: list[QiProblemSignal] = []
+
+        async def enqueue_many(self, signals: list[QiProblemSignal]) -> int:
+            self.signals.extend(signals)
+            return len(signals)
+
+        async def pick(self, tenant_id: str) -> QiProblemSignal | None:
+            return self.signals[0] if self.signals and tenant_id == "u-test" else None
+
+    signal = QiProblemSignal.build(
+        tenant_id="u-test",
+        category="runtime",
+        severity="error",
+        summary="SQL 队列里的真实问题",
+        source="test",
+    )
+    queue = FakeAsyncQueue()
+    app = SimpleNamespace(state=SimpleNamespace(qi_problem_queue=queue))
+
+    async def _collect(_tenant_id: str) -> list[QiProblemSignal]:
+        return [signal]
+
+    monkeypatch.setattr("kun.qi.problem_queue.collect_problem_signals", _collect)
+
+    prompt = await _pick_explore_prompt(app=app, tenant_id="u-test")
+
+    assert "SQL 队列里的真实问题" in prompt

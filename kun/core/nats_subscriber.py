@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kun.core.events import close_nats, connect_nats
 from kun.core.logging import get_logger
@@ -32,6 +32,8 @@ log = get_logger("kun.nats_subscriber")
 
 EventHandler = Callable[[EventRow], Awaitable[None]]
 EventFetcher = Callable[[str], Awaitable[EventRow | None]]
+
+_standalone_rule_engine: Any | None = None
 
 
 async def _default_fetcher(event_id: str) -> EventRow | None:
@@ -71,20 +73,49 @@ async def dispatch_event_to_handlers(
 
 
 async def watchtower_handler(row: EventRow) -> None:
-    """默认 handler: 把事件类型喂给 watchtower RuleEngine."""
-    from kun.watchtower.engine import RuleEngine
-    from kun.watchtower.handlers import handle_tool_skipped
+    """默认 handler: 把事件类型喂给已加载规则的 Watchtower RuleEngine."""
 
-    if row.event_type == "task.tool_skipped":
-        await handle_tool_skipped(row)
-    engine = RuleEngine()
-    namespace = {
-        "event_type": row.event_type,
-        "tenant_id": row.tenant_id,
-        "task_ref": row.task_ref,
-        "payload": row.payload or {},
-    }
-    await engine.evaluate(row.event_type, namespace=namespace)
+    handler = make_watchtower_handler(_get_standalone_rule_engine())
+    await handler(row)
+
+
+def make_watchtower_handler(rule_engine: Any) -> EventHandler:
+    """Build a Watchtower event handler from a shared loaded RuleEngine.
+
+    FastAPI startup already loads YAML rules and wires IncidentResponse into a
+    shared engine.  The embedded NATS subscriber must reuse that engine instead
+    of creating an empty RuleEngine per event.
+    """
+
+    async def _handler(row: EventRow) -> None:
+        from kun.watchtower.handlers import handle_tool_skipped
+
+        if row.event_type == "task.tool_skipped":
+            await handle_tool_skipped(row)
+        namespace = {
+            "event_type": row.event_type,
+            "tenant_id": row.tenant_id,
+            "task_ref": row.task_ref,
+            "payload": row.payload or {},
+        }
+        await rule_engine.evaluate(row.event_type, namespace=namespace)
+
+    _handler.__name__ = "watchtower_handler"
+    return _handler
+
+
+def _get_standalone_rule_engine() -> Any:
+    """Lazy standalone engine for `python -m kun.core.nats_subscriber`."""
+
+    global _standalone_rule_engine
+    if _standalone_rule_engine is None:
+        from kun.security.incident_response import IncidentResponseEngine
+        from kun.watchtower.engine import RuleEngine, load_rules
+
+        engine = RuleEngine(load_rules("rules"))
+        engine.set_incident_response(IncidentResponseEngine())
+        _standalone_rule_engine = engine
+    return _standalone_rule_engine
 
 
 async def subscribe_to_events(
@@ -171,6 +202,7 @@ __all__ = [
     "EventFetcher",
     "EventHandler",
     "dispatch_event_to_handlers",
+    "make_watchtower_handler",
     "subscribe_to_events",
     "subscriber_worker",
     "watchtower_handler",
