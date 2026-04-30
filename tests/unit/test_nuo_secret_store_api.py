@@ -4,6 +4,7 @@ import json
 
 import pytest
 from fastapi import HTTPException
+from kun.api.nuo import health_panel
 from kun.api.nuo.health_panel import SecretStoreSetRequest, set_secret_store_value
 from kun.core.tenancy import TenantContext, tenant_scope
 from kun.ops.secret_store import SECRET_STORE_FILE_ENV
@@ -71,3 +72,36 @@ async def test_nuo_secret_store_set_rejects_non_world_key(
 
     assert exc.value.status_code == 422
     assert "KUN_WORLD" in str(exc.value.detail)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_nuo_readiness_uses_current_tenant_and_light_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_readiness(**kwargs):
+        calls.append(kwargs)
+        return {"status": "warn", "tenant_id": kwargs["tenant_id"]}
+
+    monkeypatch.setattr(health_panel, "run_readiness_report", fake_readiness)
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a", user_id="owner-a")):
+        result = await health_panel.readiness_report(
+            include_dogfood=False,
+            include_db_mission=False,
+            include_db_account=False,
+            run_alembic_heads=False,
+        )
+
+    assert result == {"status": "warn", "tenant_id": "tenant-a"}
+    assert calls == [
+        {
+            "tenant_id": "tenant-a",
+            "include_dogfood": False,
+            "include_db_mission": False,
+            "include_db_account": False,
+            "run_alembic_heads": False,
+        }
+    ]

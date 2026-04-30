@@ -25,6 +25,7 @@ from kun.engineering.delivery_status import (
     validate_delivery_status,
 )
 from kun.engineering.nuo_system_health import collect_system_health_report
+from kun.ops.readiness import ReadinessReport, run_readiness_report
 from kun.ops.secret_audit import SecretAuditReport, audit_runtime_secrets
 from kun.ops.secret_store import (
     SECRET_STORE_FILE_ENV,
@@ -121,6 +122,28 @@ async def delivery_status() -> dict[str, Any]:
         "summary": delivery_status_summary(),
         "validation_issues": validate_delivery_status(),
     }
+
+
+@router.get("/readiness", response_model=ReadinessReport)
+async def readiness_report(
+    include_dogfood: bool = Query(default=False),
+    include_db_mission: bool = Query(default=False),
+    include_db_account: bool = Query(default=False),
+    run_alembic_heads: bool = Query(default=False),
+) -> ReadinessReport:
+    """NUO API view of the formal testing readiness report.
+
+    Defaults are intentionally light for UI usage. Operators can opt into
+    dogfood/database/alembic checks when they want a stricter release gate.
+    """
+    tenant = current_tenant()
+    return await run_readiness_report(
+        tenant_id=tenant.tenant_id,
+        include_dogfood=include_dogfood,
+        include_db_mission=include_db_mission,
+        include_db_account=include_db_account,
+        run_alembic_heads=run_alembic_heads,
+    )
 
 
 @router.get("/report")
