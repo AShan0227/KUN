@@ -129,6 +129,7 @@ async def readiness_report(
     include_dogfood: bool = Query(default=False),
     include_db_mission: bool = Query(default=False),
     include_db_account: bool = Query(default=False),
+    include_db_state_ledger_repair: bool = Query(default=False),
     run_alembic_heads: bool = Query(default=False),
     include_db_long_horizon_drill: bool = Query(default=False),
 ) -> ReadinessReport:
@@ -143,6 +144,7 @@ async def readiness_report(
         include_dogfood=include_dogfood,
         include_db_mission=include_db_mission,
         include_db_account=include_db_account,
+        include_db_state_ledger_repair=include_db_state_ledger_repair,
         include_db_long_horizon_drill=include_db_long_horizon_drill,
         run_alembic_heads=run_alembic_heads,
     )

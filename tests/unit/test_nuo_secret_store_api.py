@@ -92,6 +92,7 @@ async def test_nuo_readiness_uses_current_tenant_and_light_defaults(
             include_dogfood=False,
             include_db_mission=False,
             include_db_account=False,
+            include_db_state_ledger_repair=False,
             include_db_long_horizon_drill=False,
             run_alembic_heads=False,
         )
@@ -103,6 +104,7 @@ async def test_nuo_readiness_uses_current_tenant_and_light_defaults(
             "include_dogfood": False,
             "include_db_mission": False,
             "include_db_account": False,
+            "include_db_state_ledger_repair": False,
             "include_db_long_horizon_drill": False,
             "run_alembic_heads": False,
         }
