@@ -322,6 +322,59 @@ def test_state_ledger_records_missing_world_handler_as_pending_reason() -> None:
     assert snapshot.recent_events[-1].data["requires_handler"] is True
 
 
+def test_state_ledger_records_blocked_world_action_as_current_risk() -> None:
+    ledger = StateLedger()
+    owner = Owner(tenant_id="tenant-a", user_id="user-a")
+    task = _task_ref(owner, "发送邮件")
+    ledger.record_task_created(task, tenant_id=owner.tenant_id)
+
+    ledger.record_world_action_blocked(
+        task.meta.task_id,
+        action_id="act-1",
+        action_type="email.send",
+        gateway_mode="missing_idempotency_key",
+        external_dispatched=False,
+        requires_handler=False,
+        capability_status="supported_execute",
+        message="真实外发缺少幂等键，任务继续暂停。",
+    )
+
+    snapshot = ledger.snapshot(task.meta.task_id)
+
+    assert snapshot is not None
+    assert snapshot.status == "paused"
+    assert snapshot.current_action == "World action email.send: blocked by missing_idempotency_key"
+    assert snapshot.pending_confirmations == ["act-1"]
+    assert snapshot.pending_reason == "真实外发缺少幂等键，任务继续暂停。"
+    assert "world_action_blocked:email.send" in snapshot.alert_flags
+    assert snapshot.recent_events[-1].kind == "world.action.blocked"
+    assert snapshot.recent_events[-1].data["capability_status"] == "supported_execute"
+
+
+def test_state_ledger_records_failed_world_action_as_current_risk() -> None:
+    ledger = StateLedger()
+    owner = Owner(tenant_id="tenant-a", user_id="user-a")
+    task = _task_ref(owner, "调用外部 API")
+    ledger.record_task_created(task, tenant_id=owner.tenant_id)
+
+    ledger.record_world_action_failed(
+        task.meta.task_id,
+        action_id="act-2",
+        action_type="enterprise_api.post",
+        error="timeout",
+    )
+
+    snapshot = ledger.snapshot(task.meta.task_id)
+
+    assert snapshot is not None
+    assert snapshot.status == "paused"
+    assert snapshot.current_action == "World action enterprise_api.post: execution failed"
+    assert snapshot.pending_confirmations == ["act-2"]
+    assert snapshot.pending_reason == "外部动作执行失败：timeout"
+    assert "world_action_failed:enterprise_api.post" in snapshot.alert_flags
+    assert snapshot.recent_events[-1].kind == "world.action.failed"
+
+
 def test_state_ledger_replay_reconstructs_task_story_from_durable_events() -> None:
     story = replay_state_ledger_story(
         "task-1",

@@ -357,6 +357,87 @@ class StateLedger:
                     entry.decision_ticket_ids = entry.decision_ticket_ids[-30:]
                 entry.latest_decision_ticket = decision_ticket.event_payload()
 
+    def record_world_action_blocked(
+        self,
+        task_id: str,
+        *,
+        action_id: str,
+        action_type: str,
+        gateway_mode: str,
+        external_dispatched: bool,
+        requires_handler: bool,
+        capability_status: str = "",
+        message: str = "",
+        decision_ticket: DecisionTicket | None = None,
+    ) -> None:
+        """Keep blocked external actions visible in the hot ledger.
+
+        A blocked action is not "done"; it is a state humans and LLMs need to
+        see immediately: what was blocked, why, and what confirmation/config is
+        still needed.  Durable EventRow remains the audit source of truth.
+        """
+        with self._lock:
+            entry = self._ensure(task_id)
+            entry.status = "paused"
+            entry.current_action = f"World action {action_type}: blocked by {gateway_mode}"
+            entry.pending_reason = message or "外部动作被守望/网关拦截"
+            if action_id not in entry.pending_confirmations:
+                entry.pending_confirmations.append(action_id)
+                entry.pending_confirmations = entry.pending_confirmations[-20:]
+            flag = f"world_action_blocked:{action_type}"
+            if flag not in entry.alert_flags:
+                entry.alert_flags.append(flag)
+                entry.alert_flags = entry.alert_flags[-20:]
+            entry.add_trail(
+                "world.action.blocked",
+                entry.pending_reason,
+                {
+                    "action_id": action_id,
+                    "action_type": action_type,
+                    "gateway_mode": gateway_mode,
+                    "external_dispatched": external_dispatched,
+                    "requires_handler": requires_handler,
+                    "capability_status": capability_status,
+                    "decision_ticket_id": decision_ticket.ticket_id if decision_ticket else "",
+                },
+            )
+            if decision_ticket is not None:
+                if decision_ticket.ticket_id not in entry.decision_ticket_ids:
+                    entry.decision_ticket_ids.append(decision_ticket.ticket_id)
+                    entry.decision_ticket_ids = entry.decision_ticket_ids[-30:]
+                entry.latest_decision_ticket = decision_ticket.event_payload()
+
+    def record_world_action_failed(
+        self,
+        task_id: str,
+        *,
+        action_id: str,
+        action_type: str,
+        error: str,
+    ) -> None:
+        """Keep handler execution failures visible in the hot ledger."""
+        with self._lock:
+            entry = self._ensure(task_id)
+            entry.status = "paused"
+            entry.current_action = f"World action {action_type}: execution failed"
+            entry.pending_reason = f"外部动作执行失败：{error}"
+            if action_id not in entry.pending_confirmations:
+                entry.pending_confirmations.append(action_id)
+                entry.pending_confirmations = entry.pending_confirmations[-20:]
+            flag = f"world_action_failed:{action_type}"
+            if flag not in entry.alert_flags:
+                entry.alert_flags.append(flag)
+                entry.alert_flags = entry.alert_flags[-20:]
+            entry.add_trail(
+                "world.action.failed",
+                entry.pending_reason,
+                {
+                    "action_id": action_id,
+                    "action_type": action_type,
+                    "error": error,
+                },
+            )
+
     def record_system_health_report(self, report: Any) -> StateLedgerEntry:
         """Expose NUO system findings in the current-state view.
 

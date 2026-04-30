@@ -150,10 +150,16 @@ async def execute_approved_action_once(
                 gateway_result=gateway_result,
                 decision_ticket=world_ticket,
             )
-            get_state_ledger().record_paused(
+            get_state_ledger().record_world_action_blocked(
                 task_ref,
-                reason=_execution_blocked_message(gateway_result),
-                pending_confirmations=[action.action_id],
+                action_id=action.action_id,
+                action_type=action.action_type,
+                gateway_mode=gateway_result.gateway_mode,
+                external_dispatched=False,
+                requires_handler=False,
+                capability_status=gateway_result.capability_status,
+                message=_execution_blocked_message(gateway_result),
+                decision_ticket=world_ticket,
             )
             await _enqueue_world_action_problem(
                 tenant_id=tenant_id,
@@ -254,10 +260,16 @@ async def execute_approved_action_once(
                 gateway_result=gateway_result,
                 decision_ticket=world_ticket,
             )
-            get_state_ledger().record_paused(
+            get_state_ledger().record_world_action_blocked(
                 task_ref,
-                reason=_execution_blocked_message(gateway_result),
-                pending_confirmations=[action.action_id],
+                action_id=action.action_id,
+                action_type=action.action_type,
+                gateway_mode=gateway_result.gateway_mode,
+                external_dispatched=False,
+                requires_handler=True,
+                capability_status=gateway_result.capability_status,
+                message=_execution_blocked_message(gateway_result),
+                decision_ticket=world_ticket,
             )
             await _enqueue_world_action_problem(
                 tenant_id=tenant_id,
@@ -309,10 +321,11 @@ async def execute_approved_action_once(
                     task_ref=task_ref,
                 ),
             )
-            get_state_ledger().record_paused(
+            get_state_ledger().record_world_action_failed(
                 task_ref,
-                reason=f"外部动作执行失败：{exc}",
-                pending_confirmations=[action.action_id],
+                action_id=action.action_id,
+                action_type=action.action_type,
+                error=str(exc),
             )
             await _enqueue_world_action_problem(
                 tenant_id=tenant_id,
@@ -388,10 +401,16 @@ async def execute_approved_action_once(
                 gateway_result=gateway_result,
                 decision_ticket=world_ticket,
             )
-            get_state_ledger().record_paused(
+            get_state_ledger().record_world_action_blocked(
                 task_ref,
-                reason=_execution_blocked_message(gateway_result),
-                pending_confirmations=[action.action_id],
+                action_id=action.action_id,
+                action_type=action.action_type,
+                gateway_mode=gateway_result.gateway_mode,
+                external_dispatched=gateway_result.external_dispatched,
+                requires_handler=gateway_result.requires_handler,
+                capability_status=gateway_result.capability_status,
+                message=_execution_blocked_message(gateway_result),
+                decision_ticket=world_ticket,
             )
             await _enqueue_world_action_problem(
                 tenant_id=tenant_id,
