@@ -141,7 +141,7 @@ def _next_steps(
     steps = ["可以进入人工 dogfood，但必须带着 warnings 清单测试。"]
     if dogfood is None:
         steps.append(
-            "如需更真实验收，加 --include-dogfood；本地有数据库再加 --include-db-mission。"
+            "如需更真实验收，加 --include-dogfood；本地有数据库再加 --include-db-mission / --include-db-account。"
         )
     if warnings:
         steps.append("不要把 partial/not_ready 能力对用户说成已完成。")
