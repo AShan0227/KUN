@@ -274,6 +274,7 @@ def get_v3_delivery_status(
                 "ops preflight CLI 可在上线前检查配置、迁移、备份脚本和能力边界诚实性",
                 "ops secret-audit / NUO secret-audit 可检查默认密码、缺失密钥和半启用外部 handler",
                 "支持 KUN_SECRET_STORE_FILE 外部 JSON secret store，WorldGateway 租户级密钥不再只能散落在 env",
+                "ops secret-store-set 可把 KUN_WORLD_* 租户外部动作配置写入本地 JSON secret store，输出不会回显密钥值",
                 "ops onboard-tenant CLI 可生成租户启动 token、权限 scope 和 smoke curl",
                 "ops account-bootstrap CLI 可把租户、owner 成员、token 签发记录写入持久账本",
                 "production API 会检查账号账本里的 revoked token，已撤销 token 会被拒绝",

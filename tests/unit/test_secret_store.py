@@ -10,6 +10,7 @@ from kun.ops.secret_store import (
     secret_for_tenant,
     secret_store_has_required,
     secret_store_status,
+    upsert_secret_store_value,
 )
 from kun.world.gateway import BrowserExecuteHandler, EnterpriseApiPostHandler, WorldAction
 from kun.world.tenant_env import env_for_tenant, missing_required_world_env
@@ -45,6 +46,42 @@ def test_secret_store_reads_tenant_scoped_values(tmp_path: Path) -> None:
         "kun@tenant-a.example.com"
     )
     assert env_for_tenant("tenant-a", "KUN_WORLD_SMTP_PORT", env=env) == "2525"
+
+
+@pytest.mark.unit
+def test_secret_store_set_writes_tenant_value_without_returning_secret(tmp_path: Path) -> None:
+    store = tmp_path / "secrets.json"
+
+    result = upsert_secret_store_value(
+        path=store,
+        tenant_id="tenant-a",
+        name="KUN_WORLD_SMTP_PASSWORD",
+        value="super-secret",
+    )
+
+    assert result.tenant_id == "tenant-a"
+    assert result.name == "KUN_WORLD_SMTP_PASSWORD"
+    assert "super-secret" not in repr(result)
+    assert (
+        secret_for_tenant(
+            "tenant-a",
+            "KUN_WORLD_SMTP_PASSWORD",
+            env={SECRET_STORE_FILE_ENV: str(store)},
+        )
+        == "super-secret"
+    )
+    assert oct(store.stat().st_mode & 0o777) == "0o600"
+
+
+@pytest.mark.unit
+def test_secret_store_set_rejects_non_world_keys(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="KUN_WORLD"):
+        upsert_secret_store_value(
+            path=tmp_path / "secrets.json",
+            tenant_id="tenant-a",
+            name="KUN_AUTH_SECRET",
+            value="s" * 40,
+        )
 
 
 @pytest.mark.unit

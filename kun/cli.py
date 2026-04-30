@@ -605,6 +605,64 @@ def ops_secret_audit(
         raise typer.Exit(code=2)
 
 
+@ops_app.command("secret-store-set")
+def ops_secret_store_set(
+    name: str = typer.Option(..., "--name", help="只允许 KUN_WORLD_* 配置名"),
+    value: str = typer.Option(..., "--value", help="要写入的密钥/配置值；不会在输出中回显"),
+    tenant: str = typer.Option("", "--tenant", help="租户 ID；为空则写 global"),
+    store_file: Path | None = typer.Option(
+        None,
+        "--file",
+        help="secret store JSON 路径；默认读取 KUN_SECRET_STORE_FILE",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+) -> None:
+    """写入本地 JSON secret store。
+
+    这是 file-backed 桥，不是云 KMS；只用于 WorldGateway 的 KUN_WORLD_* 配置。
+    """
+
+    import os
+
+    from kun.ops.secret_store import SECRET_STORE_FILE_ENV, upsert_secret_store_value
+
+    path = store_file
+    if path is None:
+        raw = os.environ.get(SECRET_STORE_FILE_ENV, "").strip()
+        if raw:
+            path = Path(raw)
+    if path is None:
+        console.print("[red]需要 --file 或 KUN_SECRET_STORE_FILE[/]")
+        raise typer.Exit(code=2)
+    try:
+        result = upsert_secret_store_value(
+            path=path,
+            tenant_id=tenant,
+            name=name,
+            value=value,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2) from exc
+    payload = {
+        "path": result.path,
+        "scope": result.scope,
+        "tenant_id": result.tenant_id,
+        "name": result.name,
+        "tenant_count": result.tenant_count,
+        "global_key_count": result.global_key_count,
+        "honest_limits": list(result.honest_limits),
+    }
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        console.print(
+            f"[green]secret store updated[/]: {result.scope} {result.tenant_id or 'global'} "
+            f"{result.name} -> {result.path}"
+        )
+        console.print("[dim]value hidden; this is not cloud KMS or automatic rotation.[/]")
+
+
 @ops_app.command("readiness")
 def ops_readiness(
     tenant: str = typer.Option("u-sylvan", "--tenant", help="租户 ID"),

@@ -18,6 +18,8 @@ Expected JSON shape:
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +36,25 @@ class SecretStoreStatus:
     tenant_count: int = 0
     global_key_count: int = 0
     error: str = ""
+
+
+@dataclass(frozen=True)
+class SecretStoreWriteResult:
+    """Result of a local file-backed secret-store update.
+
+    Values are intentionally not included so CLI/API output cannot leak them.
+    """
+
+    path: str
+    scope: str
+    name: str
+    tenant_id: str = ""
+    tenant_count: int = 0
+    global_key_count: int = 0
+    honest_limits: tuple[str, ...] = (
+        "这是本地 JSON secret store 写入工具，不是云 KMS 或托管 Secret Manager。",
+        "文件会设置为 0600，但加密、轮换、访问审计仍需后续生产级密钥系统。",
+    )
 
 
 def secret_for_tenant(
@@ -110,6 +131,48 @@ def secret_store_has_required(
     )
 
 
+def upsert_secret_store_value(
+    *,
+    path: Path,
+    name: str,
+    value: str,
+    tenant_id: str = "",
+) -> SecretStoreWriteResult:
+    """Write/update one WorldGateway secret value in a local JSON store."""
+
+    cleaned_name = name.strip()
+    cleaned_value = value.strip()
+    cleaned_tenant = tenant_id.strip()
+    if not cleaned_name:
+        raise ValueError("secret name is required")
+    if not cleaned_name.startswith("KUN_WORLD_"):
+        raise ValueError("only KUN_WORLD_* keys may be written through this helper")
+    if not cleaned_value:
+        raise ValueError("secret value is required")
+    target = path.expanduser()
+    data = _load_from_path(target) if target.exists() else {}
+    global_values = _dict(data.get("global"))
+    tenants = _dict(data.get("tenants"))
+    if cleaned_tenant:
+        tenant_values = _dict(tenants.get(cleaned_tenant))
+        tenant_values[cleaned_name] = cleaned_value
+        tenants[cleaned_tenant] = tenant_values
+        scope = "tenant"
+    else:
+        global_values[cleaned_name] = cleaned_value
+        scope = "global"
+    payload = {"global": global_values, "tenants": tenants}
+    _atomic_write_json(target, payload)
+    return SecretStoreWriteResult(
+        path=str(target),
+        scope=scope,
+        name=cleaned_name,
+        tenant_id=cleaned_tenant,
+        tenant_count=len(tenants),
+        global_key_count=len(global_values),
+    )
+
+
 def has_any_tenant_secret_prefix(
     tenant_id: str,
     prefix: str,
@@ -172,6 +235,21 @@ def _load_from_path(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+            tmp.write(raw)
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, path)
+        os.chmod(path, 0o600)
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+
+
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -186,10 +264,12 @@ def _empty_to_none(value: Any) -> str | None:
 __all__ = [
     "SECRET_STORE_FILE_ENV",
     "SecretStoreStatus",
+    "SecretStoreWriteResult",
     "has_any_scoped_secret",
     "has_any_tenant_secret_prefix",
     "has_secret_store",
     "secret_for_tenant",
     "secret_store_has_required",
     "secret_store_status",
+    "upsert_secret_store_value",
 ]

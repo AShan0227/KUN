@@ -670,6 +670,35 @@ def test_ops_secret_audit_cli_outputs_json(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.unit
+def test_ops_secret_store_set_cli_writes_without_echoing_secret(tmp_path: Path) -> None:
+    store = tmp_path / "secrets.json"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "ops",
+            "secret-store-set",
+            "--file",
+            str(store),
+            "--tenant",
+            "tenant-a",
+            "--name",
+            "KUN_WORLD_SMTP_PASSWORD",
+            "--value",
+            "super-secret",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "KUN_WORLD_SMTP_PASSWORD" in result.output
+    assert "super-secret" not in result.output
+    payload = json.loads(result.output)
+    assert payload["tenant_id"] == "tenant-a"
+    assert store.exists()
+
+
+@pytest.mark.unit
 def test_ops_readiness_cli_outputs_aggregate_report(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("KUN_ENV", "dev")
     monkeypatch.delenv("KUN_AUTH_SECRET", raising=False)

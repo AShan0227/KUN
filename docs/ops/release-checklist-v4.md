@@ -32,6 +32,17 @@ uv run kun ops release-check --tag v4.0.0 --require-ready
 
 不开放注册时，保持 `KUN_SELF_SIGNUP_ENABLED=false`。
 
+## 2.6 Secret Store
+
+本地测试可用 file-backed secret store：
+
+```bash
+export KUN_SECRET_STORE_FILE=.kun/secrets.json
+uv run kun ops secret-store-set --tenant <tenant> --name KUN_WORLD_SMTP_HOST --value <smtp-host>
+```
+
+这个工具只允许写 `KUN_WORLD_*`，并且不会回显密钥值。它不是云 KMS；生产环境仍要补托管 Secret Manager、轮换和审计。
+
 发布前建议额外跑：
 
 ```bash
