@@ -376,6 +376,13 @@ export default function Home() {
   const [missionStoryById, setMissionStoryById] = useState<Record<string, MissionStory>>({});
   const [missionStoryBusyId, setMissionStoryBusyId] = useState("");
   const [missionStoryErrorById, setMissionStoryErrorById] = useState<Record<string, string>>({});
+  const [missionNextStepDraftById, setMissionNextStepDraftById] = useState<
+    Record<string, string>
+  >({});
+  const [missionNextStepBusyId, setMissionNextStepBusyId] = useState("");
+  const [missionNextStepNoticeById, setMissionNextStepNoticeById] = useState<
+    Record<string, string>
+  >({});
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState("");
@@ -604,6 +611,55 @@ export default function Home() {
       setMissionStoryBusyId("");
     }
   }, [expandedMissionId, missionStoryById]);
+
+  const submitMissionNextStep = useCallback(
+    async (mission: MissionSnapshot) => {
+      const id = mission.mission_id;
+      const summary = (
+        missionNextStepDraftById[id] ??
+        mission.next_step?.summary ??
+        ""
+      ).trim();
+      if (!summary) {
+        setMissionNextStepNoticeById((items) => ({ ...items, [id]: "请先写一句下一步。" }));
+        return;
+      }
+      setMissionNextStepBusyId(id);
+      setMissionNextStepNoticeById((items) => ({ ...items, [id]: "正在更新下一步..." }));
+      try {
+        const res = await fetch(`${API_ORIGIN}/api/missions/${encodeURIComponent(id)}/next-step`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Tenant-Id": "u-sylvan",
+            "X-User-Id": "sylvan",
+          },
+          body: JSON.stringify({
+            summary,
+            reason: "user_updated_from_main_workspace",
+            action_type: "continue",
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        setMissionNextStepDraftById((items) => ({ ...items, [id]: "" }));
+        setMissionStoryById((items) => {
+          const next = { ...items };
+          delete next[id];
+          return next;
+        });
+        setMissionNextStepNoticeById((items) => ({ ...items, [id]: "下一步已更新。" }));
+        await refreshDashboard();
+      } catch (err) {
+        setMissionNextStepNoticeById((items) => ({
+          ...items,
+          [id]: err instanceof Error ? err.message : "下一步更新失败",
+        }));
+      } finally {
+        setMissionNextStepBusyId("");
+      }
+    },
+    [missionNextStepDraftById, refreshDashboard],
+  );
 
   const runMissionResume = useCallback(async () => {
     setMissionBusy(true);
@@ -981,6 +1037,47 @@ export default function Home() {
                       {expandedMissionId === mission.mission_id &&
                         missionStoryById[mission.mission_id] && (
                           <MissionStoryPanel story={missionStoryById[mission.mission_id]} />
+                      )}
+                      {expandedMissionId === mission.mission_id && (
+                        <div className="mt-2 rounded border border-gray-100 bg-white p-2">
+                          <label
+                            className="block text-[11px] font-medium text-gray-500"
+                            htmlFor={`mission-next-step-${mission.mission_id}`}
+                          >
+                            轻量调整下一步
+                          </label>
+                          <div className="mt-1 flex gap-2">
+                            <input
+                              id={`mission-next-step-${mission.mission_id}`}
+                              className="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-xs outline-none focus:border-kun-accent"
+                              value={
+                                missionNextStepDraftById[mission.mission_id] ??
+                                mission.next_step?.summary ??
+                                ""
+                              }
+                              onChange={(event) =>
+                                setMissionNextStepDraftById((items) => ({
+                                  ...items,
+                                  [mission.mission_id]: event.target.value,
+                                }))
+                              }
+                              placeholder="例如：先整理 3 个真实客户访谈问题"
+                            />
+                            <button
+                              type="button"
+                              className="shrink-0 rounded border border-kun-accent/30 bg-blue-50 px-2 py-1 text-xs text-kun-accent disabled:opacity-50"
+                              disabled={missionNextStepBusyId === mission.mission_id}
+                              onClick={() => void submitMissionNextStep(mission)}
+                            >
+                              {missionNextStepBusyId === mission.mission_id ? "保存中" : "保存"}
+                            </button>
+                          </div>
+                          {missionNextStepNoticeById[mission.mission_id] && (
+                            <div className="mt-1 truncate text-[11px] text-gray-400">
+                              {missionNextStepNoticeById[mission.mission_id]}
+                            </div>
+                          )}
+                        </div>
                       )}
                       {mission.tasks.length > 0 && (
                         <div className="mt-2 grid grid-cols-2 gap-1">
