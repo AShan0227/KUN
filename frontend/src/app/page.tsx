@@ -113,6 +113,7 @@ type GlobalState = {
   task_count_running: number;
   task_count_queued: number;
   total_cost_today_usd: number;
+  total_cost_remaining_budget_usd?: number;
   health_indicator: string;
   urgent_alert_count: number;
   active_state_ledger: LedgerEntry[];
@@ -194,6 +195,7 @@ type TaskDetail = {
   task_id: string;
   state_ledger?: LedgerEntry | null;
   state_ledger_history?: StateLedgerHistoryItem[];
+  state_ledger_story?: StateLedgerStory | null;
   workspace?: {
     artifacts?: Array<Record<string, unknown>>;
     handoff_packets?: Array<Record<string, unknown>>;
@@ -219,6 +221,18 @@ type StateLedgerHistoryItem = {
   reason?: string;
   cost_usd?: number;
   decision_ticket_id?: string | null;
+};
+
+type StateLedgerStory = {
+  task_id: string;
+  event_count: number;
+  decision_count: number;
+  total_cost_usd: number;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  latest_event_type?: string;
+  latest_reason?: string;
+  timeline: StateLedgerHistoryItem[];
 };
 
 export default function Home() {
@@ -527,7 +541,7 @@ export default function Home() {
             <MiniCard
               label="今日成本"
               value={`$${(globalState?.total_cost_today_usd ?? totalCost).toFixed(4)}`}
-              hint="真实执行口径"
+              hint={`剩余 $${numberValue(globalState?.total_cost_remaining_budget_usd).toFixed(4)}`}
             />
             <MiniCard
               label="风险"
@@ -956,6 +970,7 @@ function TaskDetailPanel({
   const artifacts = detail?.workspace?.artifacts ?? [];
   const trails = ledger?.recent_events ?? [];
   const history = detail?.state_ledger_history ?? [];
+  const story = detail?.state_ledger_story ?? null;
 
   return (
     <div className="rounded border border-kun-accent/30 bg-blue-50/30 p-3 text-xs">
@@ -1012,6 +1027,25 @@ function TaskDetailPanel({
         </div>
       )}
 
+      {story && story.event_count > 0 && (
+        <div className="mt-3 rounded bg-white p-2 text-gray-600">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium text-gray-700">状态账本</span>
+            <span className="text-gray-400">
+              事件 {story.event_count} · 决策 {story.decision_count} · $
+              {numberValue(story.total_cost_usd).toFixed(4)}
+            </span>
+          </div>
+          {story.latest_reason && (
+            <div className="mt-1 truncate">最近原因：{story.latest_reason}</div>
+          )}
+          <div className="mt-1 text-gray-400">
+            {story.first_seen_at ? `开始 ${formatTime(story.first_seen_at)}` : "开始时间未知"}
+            {story.last_seen_at ? ` · 最近 ${formatTime(story.last_seen_at)}` : ""}
+          </div>
+        </div>
+      )}
+
       {pendingActions.length > 0 && (
         <div className="mt-3 rounded bg-amber-50 p-2 text-amber-900">
           <div className="font-medium">等你确认</div>
@@ -1040,9 +1074,9 @@ function TaskDetailPanel({
 
       {history.length > 0 && (
         <div className="mt-3">
-          <div className="font-medium">长期记录</div>
+          <div className="font-medium">关键时间线</div>
           <div className="mt-1 space-y-1">
-            {history.slice(0, 5).map((event) => (
+            {(story?.timeline?.length ? [...story.timeline].reverse() : history).slice(0, 5).map((event) => (
               <div key={event.event_id} className="rounded bg-white px-2 py-1 text-gray-600">
                 <div className="flex justify-between gap-2">
                   <span className="truncate text-gray-500">{event.event_type}</span>
@@ -1145,6 +1179,12 @@ function stringValue(value: unknown): string {
 
 function numberValue(value: unknown): number {
   return typeof value === "number" ? value : 0;
+}
+
+function formatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
 }
 
 function missionStatusClass(status: string): string {
