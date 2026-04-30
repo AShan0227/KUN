@@ -284,6 +284,31 @@ type ActionDecisionResult = {
   } | null;
 };
 
+type SecretStoreSetResponse = {
+  path: string;
+  scope: "tenant" | "global" | string;
+  tenant_id: string;
+  name: string;
+  tenant_count: number;
+  global_key_count: number;
+  honest_limits: string[];
+  message: string;
+};
+
+const WORLD_SECRET_OPTIONS = [
+  "KUN_WORLD_EMAIL_SEND_ENABLED",
+  "KUN_WORLD_SMTP_HOST",
+  "KUN_WORLD_SMTP_PORT",
+  "KUN_WORLD_SMTP_FROM",
+  "KUN_WORLD_SMTP_USERNAME",
+  "KUN_WORLD_SMTP_PASSWORD",
+  "KUN_WORLD_BROWSER_EXECUTE_ENABLED",
+  "KUN_WORLD_BROWSER_ALLOWED_HOSTS",
+  "KUN_WORLD_ENTERPRISE_API_POST_ENABLED",
+  "KUN_WORLD_ENTERPRISE_API_BASE_URL",
+  "KUN_WORLD_ENTERPRISE_API_TOKEN",
+] as const;
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await apiFetch(path, init);
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
@@ -327,6 +352,13 @@ export default function NuoDashboard() {
   const [decideBusy, setDecideBusy] = useState<string | null>(null);
   const [expandBusy, setExpandBusy] = useState<string | null>(null);
   const [autoControlBusy, setAutoControlBusy] = useState<"check" | "apply" | null>(null);
+  const [secretName, setSecretName] = useState<(typeof WORLD_SECRET_OPTIONS)[number]>(
+    "KUN_WORLD_SMTP_HOST",
+  );
+  const [secretValue, setSecretValue] = useState("");
+  const [secretScope, setSecretScope] = useState<"tenant" | "global">("tenant");
+  const [secretBusy, setSecretBusy] = useState(false);
+  const [secretNotice, setSecretNotice] = useState("");
 
   const reload = useCallback(() => {
     Promise.all([
@@ -490,6 +522,32 @@ export default function NuoDashboard() {
     },
     [reload],
   );
+
+  const saveWorldSecret = useCallback(async () => {
+    const value = secretValue.trim();
+    if (!value) {
+      setSecretNotice("先填一个值。这个值不会被 API 回显。");
+      return;
+    }
+    setSecretBusy(true);
+    setSecretNotice("");
+    try {
+      const result = await fetchJson<SecretStoreSetResponse>("/nuo/health/secret-store/set", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: secretName, value, scope: secretScope }),
+      });
+      setSecretValue("");
+      setSecretNotice(
+        `${result.name} 已写入 ${result.scope === "tenant" ? "当前租户" : "全局"} secret store。${result.message}`,
+      );
+      reload();
+    } catch (e) {
+      setSecretNotice(`写入失败：${String(e)}`);
+    } finally {
+      setSecretBusy(false);
+    }
+  }, [reload, secretName, secretScope, secretValue]);
 
   if (err) return <div className="p-6 text-kun-bad">{err}</div>;
   if (!health || !budget) return <div className="p-6 text-gray-500">加载中...</div>;
@@ -750,6 +808,59 @@ export default function NuoDashboard() {
                 ))}
               </div>
             )}
+          </div>
+          <div className="mt-3 rounded border border-gray-200 bg-gray-50 p-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium">外部动作配置</div>
+                <p className="text-xs text-gray-500 mt-1">
+                  这里只写入 KUN_WORLD_* 配置，用来给邮件、浏览器、企业 API
+                  这些 handler 补密钥或开关。值不会回显；这还是本地 JSON secret store，
+                  不是云 KMS、自动轮换或完整租户密钥平台。
+                </p>
+              </div>
+              <span className="rounded bg-yellow-50 px-2 py-1 text-xs text-yellow-700">
+                高级入口
+              </span>
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-[1.5fr_1fr_1fr_auto]">
+              <select
+                className="rounded border px-2 py-1.5 text-sm"
+                value={secretName}
+                onChange={(event) =>
+                  setSecretName(event.target.value as (typeof WORLD_SECRET_OPTIONS)[number])
+                }
+              >
+                {WORLD_SECRET_OPTIONS.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+              <input
+                className="rounded border px-2 py-1.5 text-sm"
+                placeholder="值，不会回显"
+                type="password"
+                value={secretValue}
+                onChange={(event) => setSecretValue(event.target.value)}
+              />
+              <select
+                className="rounded border px-2 py-1.5 text-sm"
+                value={secretScope}
+                onChange={(event) => setSecretScope(event.target.value as "tenant" | "global")}
+              >
+                <option value="tenant">当前租户</option>
+                <option value="global">全局默认</option>
+              </select>
+              <button
+                className="rounded bg-gray-900 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+                disabled={secretBusy}
+                onClick={saveWorldSecret}
+              >
+                {secretBusy ? "写入中" : "写入"}
+              </button>
+            </div>
+            {secretNotice && <p className="mt-2 text-xs text-gray-600">{secretNotice}</p>}
           </div>
           <div className="grid md:grid-cols-2 gap-3 mt-3">
             {worldHandlers.map((handler) => (
