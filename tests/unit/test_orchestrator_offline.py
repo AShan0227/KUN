@@ -85,6 +85,14 @@ def _exec_builder(request):
     )
 
 
+def _costly_exec_builder(request):
+    return LLMResponse(
+        content="Hello, world!",
+        usage=UsageInfo(input_tokens=10, output_tokens=4),
+        cost_usd_equivalent=0.03,
+    )
+
+
 def _judge_builder(request):
     return LLMResponse(
         content='{"pass": true, "score": 0.9, "reason": "ok"}',
@@ -105,6 +113,16 @@ class _RoutingStub(StubProvider):
         else:
             self._builder = _exec_builder  # type: ignore[assignment]
         return await super().invoke(request)
+
+
+class _CostlyRoutingStub(_RoutingStub):
+    async def invoke(self, request):
+        sys_text = " ".join(m.content for m in request.messages if m.role == "system")
+        if "意图理解层" in sys_text:
+            self._builder = _intent_builder  # type: ignore[assignment]
+        else:
+            self._builder = _costly_exec_builder  # type: ignore[assignment]
+        return await StubProvider.invoke(self, request)
 
 
 class _PlanningRoutingStub(StubProvider):
@@ -227,6 +245,28 @@ async def test_orchestrator_run_returns_result():
     assert result.answer == "Hello, world!"
     assert result.task_id.startswith("tk-")
     assert result.cost_usd_equivalent == 0.0  # stub has zero prices
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_emits_budget_policy_when_task_cost_crosses_warning():
+    providers = {
+        "top": _CostlyRoutingStub(tier="top"),
+        "cheap": _CostlyRoutingStub(tier="cheap"),
+        "coding": _CostlyRoutingStub(tier="coding"),
+        "fallback": _CostlyRoutingStub(tier="fallback"),
+    }
+    set_router(LLMRouter(providers))
+
+    events = []
+    async for ev in Orchestrator(output_translator=_identity_translator).stream("Say hi"):
+        events.append(ev)
+
+    budget_events = [ev for ev in events if ev.data.get("stage") == "budget_policy"]
+
+    assert budget_events
+    assert budget_events[0].data["level"] == "CRITICAL"
+    assert budget_events[0].data["decision_ticket"]["decision_point"] == "budget_policy"
 
 
 @pytest.mark.unit

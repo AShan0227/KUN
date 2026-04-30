@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from kun.context.packer import ContextPack, PackedContextItem
 from kun.core.state_ledger import StateLedger
 from kun.datamodel.decision_ticket import (
+    ticket_from_budget_policy,
     ticket_from_context_selection,
     ticket_from_llm_route,
     ticket_from_protocol_applied,
@@ -204,6 +205,32 @@ def test_state_ledger_applies_context_and_skill_selection_tickets() -> None:
     assert snapshot.context_asset_ids == ["asset-1"]
     assert snapshot.skill_hints == ["lesson_planner"]
     assert snapshot.decision_ticket_ids == [context_ticket.ticket_id, skill_ticket.ticket_id]
+
+
+def test_state_ledger_applies_budget_policy_ticket_to_cost_view() -> None:
+    ledger = StateLedger()
+    owner = Owner(tenant_id="tenant-a", user_id="user-a")
+    task = _task_ref(owner, "预算控制")
+    ledger.record_task_created(task, tenant_id=owner.tenant_id)
+
+    ticket = ticket_from_budget_policy(
+        tenant_id=owner.tenant_id,
+        task_id=task.meta.task_id,
+        risk_level="medium",
+        level="CRITICAL",
+        used_usd=1.2,
+        limit_usd=1.0,
+        behavior={"exploration": "halt"},
+        hard_break=True,
+    )
+    ledger.record_decision_ticket(ticket)
+
+    snapshot = ledger.snapshot(task.meta.task_id)
+
+    assert snapshot is not None
+    assert snapshot.cost_so_far_usd == 1.2
+    assert snapshot.decision_reason.startswith("Budget level CRITICAL")
+    assert snapshot.latest_decision_ticket["decision_point"] == "budget_policy"
 
 
 def test_state_ledger_records_world_action_execution() -> None:

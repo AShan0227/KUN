@@ -39,6 +39,7 @@ DecisionPoint = Literal[
     "context_selected",
     "skill_selected",
     "value_gate",
+    "budget_policy",
     "world_policy",
     "delivery_review",
     "validation_tier_selected",
@@ -344,6 +345,59 @@ def ticket_from_skill_selection(
     )
 
 
+def ticket_from_budget_policy(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    level: str,
+    used_usd: float,
+    limit_usd: float,
+    behavior: dict[str, Any],
+    hard_break: bool = False,
+    mission_id: str | None = None,
+) -> DecisionTicket:
+    """Wrap BudgetTracker runtime policy as a V4 decision ticket."""
+
+    usage_ratio = used_usd / max(limit_usd, 1e-6)
+    status: DecisionStatus = (
+        "blocked" if hard_break else "escalated" if level in {"LOW", "CRITICAL"} else "allowed"
+    )
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="watchtower",
+        decision_point="budget_policy",
+        source_module="engineering.budget_tracker",
+        selected_action=level,
+        status=status,
+        reason=(
+            f"Budget level {level}: used ${used_usd:.4f} of ${limit_usd:.4f} ({usage_ratio:.0%})"
+        ),
+        confidence=0.9,
+        risk_level=risk_level,
+        cost_estimate_usd=used_usd,
+        inputs_summary={
+            "used_usd": used_usd,
+            "limit_usd": limit_usd,
+            "usage_ratio": usage_ratio,
+        },
+        evidence={
+            "level": level,
+            "behavior": dict(behavior),
+            "hard_break": hard_break,
+        },
+        metadata={
+            "budget_level": level,
+            "used_usd": used_usd,
+            "limit_usd": limit_usd,
+            "usage_ratio": usage_ratio,
+            "hard_break": hard_break,
+        },
+    )
+
+
 def ticket_from_llm_route(
     *,
     tenant_id: str,
@@ -632,6 +686,7 @@ __all__ = [
     "DecisionStatus",
     "DecisionTicket",
     "DecisionTicketRef",
+    "ticket_from_budget_policy",
     "ticket_from_context_selection",
     "ticket_from_delivery_review",
     "ticket_from_llm_route",

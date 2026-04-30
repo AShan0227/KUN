@@ -19,7 +19,7 @@ import os as _os
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
@@ -43,6 +43,7 @@ from kun.core.orm import IdempotencyRow, MissionRow, RuntimeStateRow, TaskResult
 from kun.core.tenancy import current_tenant
 from kun.datamodel.decision_ticket import (
     DecisionTicket,
+    ticket_from_budget_policy,
     ticket_from_context_selection,
     ticket_from_delivery_review,
     ticket_from_llm_route,
@@ -58,6 +59,7 @@ from kun.datamodel.mission import ResumeRequest
 from kun.datamodel.notification import Notification
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
+from kun.engineering.budget_tracker import HARD_BREAK_RATIO_TASK, BudgetTracker
 from kun.engineering.capability_writeback import Outcome, TaskOutcome, record_outcome
 from kun.engineering.concurrency import (
     enqueue_pending_actions,
@@ -142,6 +144,16 @@ class TaskTimedOutError(RuntimeError):
         self.cap_sec = cap_sec
 
 
+class TaskBudgetExceededError(RuntimeError):
+    """Raised when a task exceeds its hard budget cap."""
+
+    def __init__(self, task_id: str, used_usd: float, limit_usd: float) -> None:
+        super().__init__(f"task {task_id} exceeded budget cap: ${used_usd:.4f} > ${limit_usd:.4f}")
+        self.task_id = task_id
+        self.used_usd = used_usd
+        self.limit_usd = limit_usd
+
+
 class TaskResult(BaseModel):
     """Final result surfaced to the API / WebSocket."""
 
@@ -197,6 +209,7 @@ class Orchestrator:
         memory_writeback: Any = None,
         scoring_system: Any = None,
         credit_assignment: CreditAssignment | None = None,
+        budget_tracker: BudgetTracker | None = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -246,6 +259,13 @@ class Orchestrator:
                 if _os.getenv("KUN_CREDIT_ASSIGNMENT_ENABLED", "1") == "1"
                 else None
             )
+        )
+        self.budget_tracker = (
+            budget_tracker
+            if budget_tracker is not None
+            else BudgetTracker()
+            if _os.getenv("KUN_BUDGET_TRACKER_ENABLED", "1") == "1"
+            else None
         )
         # 累计 step value history, 给 value_gate marginal_roi 用
         self._value_history: list[float] = []
@@ -563,6 +583,12 @@ class Orchestrator:
                 "estimated_duration_sec": task_ref.meta.estimated_duration_sec,
             },
         )
+        if self.budget_tracker is not None:
+            self.budget_tracker.register_budget(
+                "task",
+                task_ref.meta.task_id,
+                max(float(task_ref.meta.estimated_cost_usd), 0.000001),
+            )
 
         # 3. Protocol + Watchtower pre-planning decision.
         # 这一步必须在 Planning 前完成, 否则策略包补充的 skill_hints
@@ -1669,6 +1695,68 @@ class Orchestrator:
                         data={"rules_fired": fired},
                     )
 
+                if self.budget_tracker is not None:
+                    budget_level = self.budget_tracker.consume(
+                        "task",
+                        task_ref.meta.task_id,
+                        response.cost_usd_equivalent,
+                    )
+                    budget_state = self.budget_tracker.get_state("task", task_ref.meta.task_id)
+                    if budget_state is not None:
+                        budget_usage_ratio = budget_state.used_usd / max(
+                            budget_state.limit_usd, 1e-6
+                        )
+                        budget_hard_break = budget_usage_ratio >= HARD_BREAK_RATIO_TASK
+                        if budget_level != "HIGH" or budget_hard_break:
+                            budget_ticket = ticket_from_budget_policy(
+                                tenant_id=tenant.tenant_id,
+                                task_id=task_ref.meta.task_id,
+                                risk_level=task_ref.meta.risk_level,
+                                level=budget_level,
+                                used_usd=budget_state.used_usd,
+                                limit_usd=budget_state.limit_usd,
+                                behavior=self.budget_tracker.get_behavior(budget_level),
+                                hard_break=budget_hard_break,
+                                mission_id=_mission_id_from_task(task_ref),
+                            )
+                            decision_tickets.append(budget_ticket)
+                            self._record_state_ledger("record_decision_ticket", budget_ticket)
+                            budget_event_type: Literal[
+                                "task.budget_exceeded", "task.budget_warn"
+                            ] = "task.budget_exceeded" if budget_hard_break else "task.budget_warn"
+                            async with session_scope(tenant_id=tenant.tenant_id) as s:
+                                await emit(
+                                    s,
+                                    Event.build(
+                                        tenant_id=tenant.tenant_id,
+                                        event_type=budget_event_type,
+                                        payload=budget_ticket.event_payload(),
+                                        task_ref=task_ref.meta.task_id,
+                                    ),
+                                )
+                            yield OrchestratorEvent(
+                                kind="guard_intervention"
+                                if budget_level in {"LOW", "CRITICAL"} or budget_hard_break
+                                else "insight",
+                                data={
+                                    "stage": "budget_policy",
+                                    "level": budget_level,
+                                    "used_usd": budget_state.used_usd,
+                                    "limit_usd": budget_state.limit_usd,
+                                    "hard_break": budget_hard_break,
+                                    "decision_ticket": budget_ticket.event_payload(),
+                                },
+                            )
+                            if (
+                                budget_hard_break
+                                and _os.getenv("KUN_TASK_BUDGET_HARD_BREAK_ENABLED", "0") == "1"
+                            ):
+                                raise TaskBudgetExceededError(
+                                    task_ref.meta.task_id,
+                                    budget_state.used_usd,
+                                    budget_state.limit_usd,
+                                )
+
                 # V2.1 §5.8 wire: step 完, 让 EmergentSwitchManager 检测信号 (M5 真切, 现在只 emit)
                 if self.emergent_switch_manager is not None:
                     try:
@@ -1923,6 +2011,27 @@ class Orchestrator:
                         task_ref=task_ref.meta.task_id,
                     ),
                 )
+        except TaskBudgetExceededError as exc:
+            status = "failed"
+            log.warning(
+                "orchestrator.budget_exceeded",
+                task_id=exc.task_id,
+                used_usd=exc.used_usd,
+                limit_usd=exc.limit_usd,
+            )
+            answer = (
+                f"任务预算已超限，已强制结束（已用 ${exc.used_usd:.4f}，"
+                f"预算 ${exc.limit_usd:.4f}）。"
+            )
+            yield OrchestratorEvent(
+                kind="error",
+                data={
+                    "message": "task_budget_exceeded",
+                    "task_id": exc.task_id,
+                    "used_usd": exc.used_usd,
+                    "limit_usd": exc.limit_usd,
+                },
+            )
         except Exception as exc:
             status = "failed"
             log.exception("orchestrator.failed", error=str(exc))

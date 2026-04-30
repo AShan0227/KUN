@@ -180,6 +180,11 @@ class StateLedger:
                 if isinstance(skill_ids, list):
                     entry.skill_hints = [str(skill_id) for skill_id in skill_ids]
                 entry.decision_reason = ticket.reason or entry.decision_reason
+            elif ticket.decision_point == "budget_policy":
+                used = ticket.metadata.get("used_usd")
+                if isinstance(used, int | float):
+                    entry.cost_so_far_usd = float(used)
+                entry.decision_reason = ticket.reason or entry.decision_reason
             elif ticket.decision_point == "protocol_applied":
                 entry.decision_reason = ticket.reason or entry.decision_reason
                 entry.execution_mode = str(

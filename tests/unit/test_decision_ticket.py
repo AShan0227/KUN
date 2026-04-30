@@ -5,6 +5,7 @@ from typing import ClassVar
 
 from kun.context.packer import ContextPack, PackedContextItem
 from kun.datamodel.decision_ticket import (
+    ticket_from_budget_policy,
     ticket_from_context_selection,
     ticket_from_delivery_review,
     ticket_from_llm_route,
@@ -150,6 +151,25 @@ def test_context_selection_ticket_records_selected_assets() -> None:
     assert ticket.status == "selected"
     assert ticket.metadata["asset_ids"] == ["asset-1"]
     assert ticket.evidence["asset_kinds"] == ["memory"]
+
+
+def test_budget_policy_ticket_records_runtime_budget_level() -> None:
+    ticket = ticket_from_budget_policy(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        risk_level="high",
+        level="LOW",
+        used_usd=0.9,
+        limit_usd=1.0,
+        behavior={"exploration": "converge_verified_only"},
+        hard_break=False,
+    )
+
+    assert ticket.phase == "watchtower"
+    assert ticket.decision_point == "budget_policy"
+    assert ticket.selected_action == "LOW"
+    assert ticket.status == "escalated"
+    assert ticket.metadata["usage_ratio"] == 0.9
 
 
 def test_skill_selection_ticket_records_candidate_skills() -> None:
