@@ -23,6 +23,10 @@ from kun.world.gateway import (
     WorldHandlerDescriptor,
     get_world_gateway,
 )
+from kun.world.handler_auto_control import (
+    WorldHandlerAutoControlReport,
+    run_world_handler_auto_quarantine,
+)
 from kun.world.handler_control import WorldHandlerControl, set_world_handler_control
 from kun.world.handler_health import (
     WorldHandlerHealthCard,
@@ -177,6 +181,25 @@ async def list_world_gateway_handler_health() -> WorldGatewayHandlerHealthRespon
         tenant_id=tenant.tenant_id,
         summary=summarize_handler_health(cards),
         handlers=cards,
+    )
+
+
+@router.post("/handler-control/auto-quarantine/run", response_model=WorldHandlerAutoControlReport)
+async def run_world_gateway_handler_auto_quarantine(
+    dry_run: bool = Query(default=True),
+    min_seen: int = Query(default=3, ge=1, le=100),
+    failure_threshold: float = Query(default=0.25, ge=0.0, le=1.0),
+) -> WorldHandlerAutoControlReport:
+    """Ask NUO to recommend/apply persistent handler quarantine."""
+
+    tenant = current_tenant()
+    if not dry_run:
+        _require_scope_when_enforced("world:dispatch")
+    return await run_world_handler_auto_quarantine(
+        tenant_id=tenant.tenant_id,
+        dry_run=dry_run,
+        min_seen=min_seen,
+        failure_threshold=failure_threshold,
     )
 
 

@@ -157,10 +157,12 @@ def get_v3_delivery_status(
                 "Pending action executor 会消费 WorldGateway handler 体检，缺配置/缺补偿/blocked 时拦截真实外发",
                 "WorldGateway 拦截/失败会进入启的问题队列，作为后续优化输入",
                 "NUO 可把 WorldGateway handler 持久化 quarantined/disabled/enabled，执行器会消费这个状态",
+                "NUO 可根据 handler 失败率、补偿缺口、配置缺口生成自动 quarantine 决策；默认 dry-run，确认后才写入",
             ],
             evidence_refs=[
                 "kun/api/nuo/health_panel.py",
                 "kun/api/nuo/action_panel.py",
+                "kun/world/handler_auto_control.py",
                 "kun/world/handler_control.py",
                 "kun/engineering/nuo_system_health.py",
                 "kun/engineering/action_executor.py",
@@ -170,11 +172,11 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "定期 NUO 体检已进入当前状态账本，但还没做浏览器/移动端主动推送",
-                "handler 已有持久化隔离/恢复，但还没做基于失败率的自动 quarantine 策略",
+                "handler 自动 quarantine 已有 dry-run/执行入口，但还没接入定时体检自动触发",
             ],
             next_steps=[
                 "把高风险 NUO finding 推送到用户看板 / StateLedger 当前快照",
-                "让 NUO 定期体检在失败率破阈值时自动建议或执行 quarantine",
+                "把 auto-quarantine 接入 idle-batch/NUO 定期体检，并对真实外发默认只建议不自动执行",
             ],
         ),
         DeliveryCapability(
