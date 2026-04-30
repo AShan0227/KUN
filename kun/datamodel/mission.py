@@ -114,6 +114,72 @@ class MissionSnapshot(BaseModel):
     last_reviewed_at: datetime | None = None
 
 
+class MissionStoryEvent(BaseModel):
+    """One durable event in a mission-level story line."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    event_type: str
+    occurred_at: datetime
+    task_id: str | None = None
+    summary: str = ""
+    reason: str = ""
+    cost_usd: float = 0.0
+
+
+class MissionTaskStory(BaseModel):
+    """Compact replay summary for one task inside a Mission."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    role: str = "primary"
+    status: MissionTaskStatus = "planned"
+    resume_attempts: int = 0
+    event_count: int = 0
+    decision_count: int = 0
+    world_action_count: int = 0
+    external_action_count: int = 0
+    total_cost_usd: float = 0.0
+    latest_reason: str = ""
+    current_action: str = ""
+    reconstruction_confidence: float = 0.0
+    gaps: list[str] = Field(default_factory=list)
+
+
+class MissionStory(BaseModel):
+    """Mission-level long-horizon story, replayed from task/event history."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mission_id: str
+    title: str
+    objective: str
+    status: MissionStatus
+    risk_level: RiskLevel
+    task_count: int = 0
+    done_task_count: int = 0
+    blocked_task_count: int = 0
+    event_count: int = 0
+    decision_count: int = 0
+    world_action_count: int = 0
+    external_action_count: int = 0
+    total_event_cost_usd: float = 0.0
+    budget_used_usd: float = 0.0
+    budget_cap_usd: float = 0.0
+    latest_reason: str = ""
+    current_action: str = ""
+    pending_confirmations: list[str] = Field(default_factory=list)
+    risk_flags: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    reconstruction_confidence: float = 0.0
+    history_limit_reached: bool = False
+    next_step: MissionNextStep | None = None
+    tasks: list[MissionTaskStory] = Field(default_factory=list)
+    timeline: list[MissionStoryEvent] = Field(default_factory=list)
+
+
 class ResumeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -132,7 +198,10 @@ __all__ = [
     "MissionReview",
     "MissionSnapshot",
     "MissionStatus",
+    "MissionStory",
+    "MissionStoryEvent",
     "MissionTaskLink",
     "MissionTaskStatus",
+    "MissionTaskStory",
     "ResumeRequest",
 ]

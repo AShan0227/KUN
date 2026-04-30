@@ -15,6 +15,7 @@ from kun.datamodel.mission import (
     MissionNextStep,
     MissionReview,
     MissionSnapshot,
+    MissionStory,
     ResumeRequest,
 )
 from kun.engineering import mission_control
@@ -110,6 +111,22 @@ async def get_mission(mission_id: str) -> MissionSnapshot:
     if mission is None:
         raise HTTPException(status_code=404, detail="mission not found")
     return mission
+
+
+@router.get("/{mission_id}/story", response_model=MissionStory)
+async def get_mission_story(
+    mission_id: str,
+    history_limit_per_task: int = Query(default=100, ge=1, le=500),
+) -> MissionStory:
+    tenant = current_tenant()
+    story = await mission_control.get_mission_story(
+        tenant_id=tenant.tenant_id,
+        mission_id=mission_id,
+        history_limit_per_task=history_limit_per_task,
+    )
+    if story is None:
+        raise HTTPException(status_code=404, detail="mission not found")
+    return story
 
 
 @router.post("/{mission_id}/tasks", response_model=MissionSnapshot)

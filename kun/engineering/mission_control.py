@@ -11,18 +11,20 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Select, desc, func, select
+from sqlalchemy import Select, desc, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from kun.core.db import session_scope
 from kun.core.events import emit
 from kun.core.ids import new_id
 from kun.core.orm import (
+    EventRow,
     MissionMilestoneRow,
     MissionRow,
     MissionTaskRow,
     RuntimeStateRow,
 )
+from kun.core.state_ledger import replay_state_ledger_story
 from kun.datamodel.events import Event
 from kun.datamodel.mission import (
     MissionCreate,
@@ -30,7 +32,10 @@ from kun.datamodel.mission import (
     MissionNextStep,
     MissionReview,
     MissionSnapshot,
+    MissionStory,
+    MissionStoryEvent,
     MissionTaskLink,
+    MissionTaskStory,
     ResumeRequest,
 )
 
@@ -105,6 +110,67 @@ async def get_mission(*, tenant_id: str, mission_id: str) -> MissionSnapshot | N
         if row is None or row.tenant_id != tenant_id:
             return None
         return await _snapshot_from_session(s, tenant_id=tenant_id, mission_id=mission_id)
+
+
+async def get_mission_story(
+    *,
+    tenant_id: str,
+    mission_id: str,
+    history_limit_per_task: int = 100,
+) -> MissionStory | None:
+    """Replay a Mission-level story from durable task links and EventRow history."""
+
+    async with session_scope(tenant_id=tenant_id) as s:
+        mission = await s.get(MissionRow, mission_id)
+        if mission is None or mission.tenant_id != tenant_id:
+            return None
+        snapshot = await _snapshot_from_session(s, tenant_id=tenant_id, mission_id=mission_id)
+        task_ids = [task.task_id for task in snapshot.tasks]
+        histories: dict[str, list[dict[str, Any]]] = {task_id: [] for task_id in task_ids}
+        mission_events: list[dict[str, Any]] = []
+        if task_ids:
+            event_limit = min(2000, max(100, history_limit_per_task * len(task_ids) + 100))
+            stmt = (
+                select(EventRow)
+                .where(
+                    EventRow.tenant_id == tenant_id,
+                    or_(EventRow.task_ref.in_(task_ids), EventRow.task_ref.is_(None)),
+                )
+                .order_by(desc(EventRow.occurred_at))
+                .limit(event_limit)
+            )
+            rows = list((await s.execute(stmt)).scalars().all())
+        else:
+            rows = list(
+                (
+                    await s.execute(
+                        select(EventRow)
+                        .where(EventRow.tenant_id == tenant_id, EventRow.task_ref.is_(None))
+                        .order_by(desc(EventRow.occurred_at))
+                        .limit(100)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+    for row in rows:
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        item = _mission_event_item_from_row(row)
+        if row.task_ref in histories:
+            bucket = histories[str(row.task_ref)]
+            if len(bucket) < history_limit_per_task:
+                bucket.append(item)
+            continue
+        if payload.get("mission_id") == mission_id:
+            mission_events.append(item)
+
+    return _build_mission_story(
+        snapshot,
+        histories=histories,
+        mission_events=mission_events,
+        history_limit_per_task=history_limit_per_task,
+    )
 
 
 async def attach_task_to_mission(
@@ -619,6 +685,218 @@ def _mission_next_step(raw: dict[str, Any] | None) -> MissionNextStep | None:
         )
 
 
+def _build_mission_story(
+    snapshot: MissionSnapshot,
+    *,
+    histories: dict[str, list[dict[str, Any]]],
+    mission_events: list[dict[str, Any]],
+    history_limit_per_task: int,
+) -> MissionStory:
+    task_stories: list[MissionTaskStory] = []
+    all_events: list[MissionStoryEvent] = [
+        MissionStoryEvent(
+            event_id=str(item.get("event_id") or ""),
+            event_type=str(item.get("event_type") or ""),
+            occurred_at=_parse_event_time(item.get("occurred_at")),
+            task_id=item.get("task_id") if isinstance(item.get("task_id"), str) else None,
+            summary=str(item.get("summary") or ""),
+            reason=str(item.get("reason") or ""),
+            cost_usd=_float_value(item.get("cost_usd")),
+        )
+        for item in mission_events
+    ]
+    total_cost = sum(event.cost_usd for event in all_events)
+    decision_count = 0
+    world_action_count = 0
+    external_action_count = 0
+    risk_flags: list[str] = []
+    open_questions: list[str] = []
+    pending_confirmations: list[str] = []
+    confidences: list[float] = []
+    history_limit_reached = False
+    latest_reason = ""
+    current_action = ""
+
+    for task in snapshot.tasks:
+        task_history = histories.get(task.task_id, [])
+        if len(task_history) >= history_limit_per_task:
+            history_limit_reached = True
+        replayed = replay_state_ledger_story(
+            task.task_id,
+            task_history,
+            timeline_limit=10,
+            history_limit_reached=len(task_history) >= history_limit_per_task,
+        )
+        task_story = MissionTaskStory(
+            task_id=task.task_id,
+            role=task.role,
+            status=task.status,
+            resume_attempts=task.resume_attempts,
+            event_count=int(replayed.get("event_count") or 0),
+            decision_count=int(replayed.get("decision_count") or 0),
+            world_action_count=int(replayed.get("world_action_count") or 0),
+            external_action_count=int(replayed.get("external_action_count") or 0),
+            total_cost_usd=_float_value(replayed.get("total_cost_usd")),
+            latest_reason=str(replayed.get("latest_reason") or ""),
+            current_action=str(replayed.get("current_action") or ""),
+            reconstruction_confidence=_float_value(replayed.get("reconstruction_confidence")),
+            gaps=[str(item) for item in replayed.get("gaps", []) if item],
+        )
+        task_stories.append(task_story)
+        total_cost += task_story.total_cost_usd
+        decision_count += task_story.decision_count
+        world_action_count += task_story.world_action_count
+        external_action_count += task_story.external_action_count
+        risk_flags.extend(str(item) for item in replayed.get("risk_flags", []) if item)
+        open_questions.extend(str(item) for item in replayed.get("open_questions", []) if item)
+        pending_confirmations.extend(
+            str(item) for item in replayed.get("pending_confirmations", []) if item
+        )
+        if task_story.reconstruction_confidence:
+            confidences.append(task_story.reconstruction_confidence)
+        if not latest_reason and task_story.latest_reason:
+            latest_reason = task_story.latest_reason
+        if not current_action and task_story.current_action:
+            current_action = task_story.current_action
+        for item in task_history[:5]:
+            all_events.append(
+                MissionStoryEvent(
+                    event_id=str(item.get("event_id") or ""),
+                    event_type=str(item.get("event_type") or ""),
+                    occurred_at=_parse_event_time(item.get("occurred_at")),
+                    task_id=item.get("task_id")
+                    if isinstance(item.get("task_id"), str)
+                    else task.task_id,
+                    summary=str(item.get("summary") or ""),
+                    reason=str(item.get("reason") or ""),
+                    cost_usd=_float_value(item.get("cost_usd")),
+                )
+            )
+
+    all_events.sort(key=lambda item: item.occurred_at, reverse=True)
+    if not latest_reason:
+        latest_reason = next(
+            (
+                event.reason or event.summary
+                for event in all_events
+                if event.reason or event.summary
+            ),
+            "",
+        )
+    if not current_action and snapshot.next_step is not None:
+        current_action = snapshot.next_step.summary
+    return MissionStory(
+        mission_id=snapshot.mission_id,
+        title=snapshot.title,
+        objective=snapshot.objective,
+        status=snapshot.status,
+        risk_level=snapshot.risk_level,
+        task_count=len(snapshot.tasks),
+        done_task_count=sum(1 for task in snapshot.tasks if task.status == "done"),
+        blocked_task_count=sum(
+            1 for task in snapshot.tasks if task.status in {"blocked", "paused"}
+        ),
+        event_count=len(mission_events) + sum(item.event_count for item in task_stories),
+        decision_count=decision_count,
+        world_action_count=world_action_count,
+        external_action_count=external_action_count,
+        total_event_cost_usd=round(total_cost, 6),
+        budget_used_usd=snapshot.budget_used_usd,
+        budget_cap_usd=snapshot.budget_cap_usd,
+        latest_reason=latest_reason,
+        current_action=current_action,
+        pending_confirmations=_dedupe(pending_confirmations)[:10],
+        risk_flags=_dedupe(risk_flags)[:10],
+        open_questions=_dedupe(open_questions)[:10],
+        reconstruction_confidence=round(sum(confidences) / len(confidences), 3)
+        if confidences
+        else (0.4 if snapshot.tasks and all_events else 0.0),
+        history_limit_reached=history_limit_reached,
+        next_step=snapshot.next_step,
+        tasks=task_stories,
+        timeline=all_events[:20],
+    )
+
+
+def _mission_event_item_from_row(row: EventRow) -> dict[str, Any]:
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    ticket = payload.get("decision_ticket")
+    if not isinstance(ticket, dict):
+        ticket = payload if payload.get("ticket_id") and payload.get("decision_point") else {}
+    return {
+        "event_id": row.event_id,
+        "event_type": row.event_type,
+        "occurred_at": row.occurred_at.isoformat(),
+        "task_id": row.task_ref,
+        "summary": row.subject[:200],
+        "reason": _first_text(
+            ticket.get("reason") if isinstance(ticket, dict) else None,
+            payload.get("reason"),
+            payload.get("message"),
+            payload.get("reason_summary"),
+            payload.get("error"),
+        ),
+        "cost_usd": _event_cost(payload, ticket if isinstance(ticket, dict) else {}),
+        "decision_ticket_id": ticket.get("ticket_id") if isinstance(ticket, dict) else None,
+        "decision_point": ticket.get("decision_point") if isinstance(ticket, dict) else "",
+        "phase": ticket.get("phase") if isinstance(ticket, dict) else "",
+        "selected_action": ticket.get("selected_action") if isinstance(ticket, dict) else "",
+        "decision_status": ticket.get("status") if isinstance(ticket, dict) else "",
+        "payload": payload,
+    }
+
+
+def _event_cost(payload: dict[str, Any], ticket: dict[str, Any]) -> float:
+    for source in (payload, ticket, ticket.get("metadata"), ticket.get("evidence")):
+        if not isinstance(source, dict):
+            continue
+        for key in ("cost_delta_usd", "cost_usd", "cost_usd_actual"):
+            try:
+                value = source.get(key)
+                if value is not None:
+                    return round(float(value), 6)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        if value is not None and str(value).strip():
+            return str(value)
+    return ""
+
+
+def _float_value(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _parse_event_time(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        except ValueError:
+            return datetime.now(UTC)
+    return datetime.now(UTC)
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
 async def count_active_missions(*, tenant_id: str) -> int:
     async with session_scope(tenant_id=tenant_id) as s:
         value = await s.execute(
@@ -638,6 +916,7 @@ __all__ = [
     "create_mission",
     "derive_mission_status",
     "get_mission",
+    "get_mission_story",
     "list_missions",
     "record_milestone",
     "record_mission_review",

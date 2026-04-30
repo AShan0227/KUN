@@ -187,6 +187,66 @@ type MissionResumeResult = {
   } | null;
 };
 
+type MissionStoryEvent = {
+  event_id: string;
+  event_type: string;
+  occurred_at: string;
+  task_id?: string | null;
+  summary: string;
+  reason: string;
+  cost_usd: number;
+};
+
+type MissionTaskStory = {
+  task_id: string;
+  role: string;
+  status: string;
+  resume_attempts: number;
+  event_count: number;
+  decision_count: number;
+  world_action_count: number;
+  external_action_count: number;
+  total_cost_usd: number;
+  latest_reason: string;
+  current_action: string;
+  reconstruction_confidence: number;
+  gaps: string[];
+};
+
+type MissionStory = {
+  mission_id: string;
+  title: string;
+  objective: string;
+  status: string;
+  risk_level: string;
+  task_count: number;
+  done_task_count: number;
+  blocked_task_count: number;
+  event_count: number;
+  decision_count: number;
+  world_action_count: number;
+  external_action_count: number;
+  total_event_cost_usd: number;
+  budget_used_usd: number;
+  budget_cap_usd: number;
+  latest_reason: string;
+  current_action: string;
+  pending_confirmations: string[];
+  risk_flags: string[];
+  open_questions: string[];
+  reconstruction_confidence: number;
+  history_limit_reached: boolean;
+  next_step?: {
+    summary: string;
+    reason?: string;
+    task_id?: string | null;
+    action_type?: string;
+    due_at?: string | null;
+  } | null;
+  tasks: MissionTaskStory[];
+  timeline: MissionStoryEvent[];
+};
+
 type PendingAction = {
   action_id: string;
   task_ref: string;
@@ -312,6 +372,10 @@ export default function Home() {
   const [missions, setMissions] = useState<MissionSnapshot[]>([]);
   const [missionBusy, setMissionBusy] = useState(false);
   const [missionNotice, setMissionNotice] = useState("");
+  const [expandedMissionId, setExpandedMissionId] = useState("");
+  const [missionStoryById, setMissionStoryById] = useState<Record<string, MissionStory>>({});
+  const [missionStoryBusyId, setMissionStoryBusyId] = useState("");
+  const [missionStoryErrorById, setMissionStoryErrorById] = useState<Record<string, string>>({});
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState("");
@@ -509,6 +573,37 @@ export default function Home() {
     },
     [refreshDashboard],
   );
+
+  const loadMissionStory = useCallback(async (missionId: string) => {
+    const id = missionId.trim();
+    if (!id) return;
+    setExpandedMissionId((current) => (current === id ? "" : id));
+    if (expandedMissionId === id && missionStoryById[id]) return;
+    setMissionStoryBusyId(id);
+    setMissionStoryErrorById((items) => ({ ...items, [id]: "" }));
+    try {
+      const res = await fetch(
+        `${API_ORIGIN}/api/missions/${encodeURIComponent(id)}/story?history_limit_per_task=80`,
+        {
+          headers: {
+            "X-Tenant-Id": "u-sylvan",
+            "X-User-Id": "sylvan",
+          },
+        },
+      );
+      if (!res.ok) throw new Error(await res.text());
+      const payload = (await res.json()) as MissionStory;
+      setMissionStoryById((items) => ({ ...items, [id]: payload }));
+      setExpandedMissionId(id);
+    } catch (err) {
+      setMissionStoryErrorById((items) => ({
+        ...items,
+        [id]: err instanceof Error ? err.message : "Mission 故事线加载失败",
+      }));
+    } finally {
+      setMissionStoryBusyId("");
+    }
+  }, [expandedMissionId, missionStoryById]);
 
   const runMissionResume = useCallback(async () => {
     setMissionBusy(true);
@@ -860,6 +955,32 @@ export default function Home() {
                           上次复盘：{new Date(mission.last_reviewed_at).toLocaleString()} · 间隔{" "}
                           {mission.review_interval_hours ?? 24}h
                         </div>
+                      )}
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          className="rounded border border-gray-200 bg-white px-2 py-1 text-gray-600 hover:border-kun-accent hover:text-kun-accent disabled:opacity-50"
+                          disabled={missionStoryBusyId === mission.mission_id}
+                          onClick={() => void loadMissionStory(mission.mission_id)}
+                        >
+                          {expandedMissionId === mission.mission_id ? "收起故事线" : "查看故事线"}
+                        </button>
+                        <span className="truncate text-[11px] text-gray-400">
+                          {missionStoryById[mission.mission_id]
+                            ? `事件 ${missionStoryById[mission.mission_id].event_count} · 决策 ${
+                                missionStoryById[mission.mission_id].decision_count
+                              }`
+                            : "按需加载长期账本"}
+                        </span>
+                      </div>
+                      {missionStoryErrorById[mission.mission_id] && (
+                        <div className="mt-2 rounded border border-red-100 bg-red-50 px-2 py-1 text-red-700">
+                          {missionStoryErrorById[mission.mission_id].slice(0, 180)}
+                        </div>
+                      )}
+                      {expandedMissionId === mission.mission_id &&
+                        missionStoryById[mission.mission_id] && (
+                          <MissionStoryPanel story={missionStoryById[mission.mission_id]} />
                       )}
                       {mission.tasks.length > 0 && (
                         <div className="mt-2 grid grid-cols-2 gap-1">
@@ -1250,6 +1371,82 @@ const ICONS: Record<string, string> = {
   idle_batch_report: "🌙",
   scorecard: "📊",
 };
+
+function MissionStoryPanel({ story }: { story: MissionStory }) {
+  const confidence = Math.round(numberValue(story.reconstruction_confidence) * 100);
+  return (
+    <div className="mt-2 rounded border border-kun-accent/20 bg-blue-50/40 p-2 text-xs text-gray-600">
+      <div className="grid grid-cols-2 gap-2">
+        <DetailCell
+          label="长期进展"
+          value={`${story.done_task_count}/${story.task_count} 个任务完成`}
+        />
+        <DetailCell
+          label="账本"
+          value={`事件 ${story.event_count} · 决策 ${story.decision_count}`}
+        />
+        <DetailCell
+          label="成本"
+          value={`事件 $${numberValue(story.total_event_cost_usd).toFixed(4)} / Mission $${numberValue(
+            story.budget_used_usd,
+          ).toFixed(4)}`}
+        />
+        <DetailCell label="可信度" value={`${confidence}%`} />
+      </div>
+      {story.current_action && (
+        <div className="mt-2 rounded bg-white px-2 py-1">
+          <span className="font-medium text-gray-700">下一步/当前动作：</span>
+          {story.current_action}
+        </div>
+      )}
+      {story.latest_reason && (
+        <div className="mt-2 rounded bg-white px-2 py-1">
+          <span className="font-medium text-gray-700">最近原因：</span>
+          {story.latest_reason}
+        </div>
+      )}
+      {(story.open_questions.length > 0 || story.pending_confirmations.length > 0) && (
+        <div className="mt-2 rounded bg-amber-50 px-2 py-1 text-amber-800">
+          {[...story.pending_confirmations, ...story.open_questions].slice(0, 3).join("；")}
+        </div>
+      )}
+      {story.tasks.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {story.tasks.slice(0, 4).map((task) => (
+            <div key={task.task_id} className="rounded bg-white px-2 py-1">
+              <div className="flex justify-between gap-2">
+                <span className="truncate">
+                  {task.role} · {task.task_id}
+                </span>
+                <span className={missionStatusClass(task.status)}>{task.status}</span>
+              </div>
+              <div className="mt-0.5 truncate text-gray-400">
+                事件 {task.event_count} · 决策 {task.decision_count}
+                {task.current_action ? ` · ${task.current_action}` : ""}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {story.timeline.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {story.timeline.slice(0, 4).map((event) => (
+            <div key={event.event_id} className="rounded bg-white px-2 py-1">
+              <div className="flex justify-between gap-2">
+                <span className="truncate text-gray-500">{event.event_type}</span>
+                <span className="shrink-0 text-gray-400">{formatTime(event.occurred_at)}</span>
+              </div>
+              <div className="truncate">{event.reason || event.summary || "无摘要"}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {story.history_limit_reached && (
+        <div className="mt-2 text-gray-400">历史较长，这里只展示最近一部分事件。</div>
+      )}
+    </div>
+  );
+}
 
 function TaskDetailPanel({
   detail,

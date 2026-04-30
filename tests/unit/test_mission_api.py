@@ -16,6 +16,7 @@ from kun.datamodel.mission import (
     MissionNextStep,
     MissionReview,
     MissionSnapshot,
+    MissionStory,
     ResumeRequest,
 )
 from kun.engineering.mission_worker import MissionResumeResult
@@ -121,6 +122,40 @@ async def test_record_review_calls_service(monkeypatch) -> None:
     assert captured["tenant_id"] == "tenant-a"
     assert captured["mission_id"] == "msn-1"
     assert captured["review"] == payload
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_mission_story_calls_service(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_story(*, tenant_id: str, mission_id: str, history_limit_per_task: int):
+        captured.update(
+            {
+                "tenant_id": tenant_id,
+                "mission_id": mission_id,
+                "history_limit_per_task": history_limit_per_task,
+            }
+        )
+        return MissionStory(
+            mission_id=mission_id,
+            title="运营产品",
+            objective="持续推进商业化",
+            status="running",
+            risk_level="medium",
+        )
+
+    monkeypatch.setattr(mission_api.mission_control, "get_mission_story", fake_story)
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a")):
+        result = await mission_api.get_mission_story("msn-1", history_limit_per_task=25)
+
+    assert result.mission_id == "msn-1"
+    assert captured == {
+        "tenant_id": "tenant-a",
+        "mission_id": "msn-1",
+        "history_limit_per_task": 25,
+    }
 
 
 @pytest.mark.unit
