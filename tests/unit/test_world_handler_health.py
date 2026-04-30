@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
 from kun.core.orm import PendingActionRow, WorldActionExecutionRow
+from kun.ops.secret_store import SECRET_STORE_FILE_ENV
 from kun.world.gateway import (
     EmailDraftHandler,
     EmailSendHandler,
@@ -221,6 +223,44 @@ def test_handler_health_accepts_tenant_scoped_expected_handler_config(
         for card in build_world_handler_health(
             descriptors=[],
             rows=[_row("act-tenant", "email.send", "approved")],
+        )
+    }
+
+    email = cards["email.send"]
+    assert email.status == "unregistered"
+    assert not any("KUN_WORLD_EMAIL_SEND_ENABLED" in issue for issue in email.issues)
+    assert not any("SMTP_HOST" in issue for issue in email.issues)
+
+
+def test_handler_health_reads_expected_handler_config_from_secret_store(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = tmp_path / "secrets.json"
+    store.write_text(
+        json.dumps(
+            {
+                "global": {"KUN_WORLD_EMAIL_SEND_ENABLED": "true"},
+                "tenants": {
+                    "tenant-1": {
+                        "KUN_WORLD_SMTP_HOST": "smtp.secret.example.com",
+                        "KUN_WORLD_SMTP_FROM": "kun@secret.example.com",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(SECRET_STORE_FILE_ENV, str(store))
+    monkeypatch.delenv("KUN_WORLD_EMAIL_SEND_ENABLED", raising=False)
+    monkeypatch.delenv("KUN_WORLD_SMTP_HOST", raising=False)
+    monkeypatch.delenv("KUN_WORLD_SMTP_FROM", raising=False)
+
+    cards = {
+        card.action_type: card
+        for card in build_world_handler_health(
+            descriptors=[],
+            rows=[_row("act-secret", "email.send", "approved")],
         )
     }
 

@@ -7,7 +7,6 @@ plain health card.  It deliberately treats "executed but missing handler" and
 
 from __future__ import annotations
 
-import os
 from collections import defaultdict
 from typing import Any, Literal
 
@@ -399,7 +398,7 @@ def _expected_config_issues(action_type: str, *, tenant_id: str = "") -> list[st
         return []
     enable_env, required_envs = expected
     issues: list[str] = []
-    enabled = _env_truthy(os.getenv(enable_env))
+    enabled = _env_truthy(env_for_tenant(tenant_id, enable_env))
     if not enabled:
         present_required = [
             name for name in required_envs if _env_present_for_tenant(name, tenant_id=tenant_id)
@@ -428,7 +427,7 @@ def _expected_config_issues(action_type: str, *, tenant_id: str = "") -> list[st
 def _env_present_for_tenant(env_name: str, *, tenant_id: str = "") -> bool:
     if tenant_id:
         return env_for_tenant(tenant_id, env_name) is not None
-    return bool(os.getenv(env_name, "").strip())
+    return env_for_tenant("", env_name) is not None
 
 
 def _env_truthy(value: str | None) -> bool:
