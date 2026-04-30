@@ -1021,6 +1021,7 @@ class Orchestrator:
             context_pack = ContextPack()  # FAST 模式跳过, 空 pack
         context_summary = context_pack.summary()
         context_asset_ids = [item.asset_id for item in context_pack.items]
+        context_resource_ids = _context_resource_ids(context_pack)
         self._record_state_ledger(
             "record_context",
             task_ref.meta.task_id,
@@ -1244,6 +1245,7 @@ class Orchestrator:
                 # use_memory → 拉 query 相关 memory 加塞 step context (Wire 33)
                 # direct_llm → 走现有路径
                 step_context_summary = context_summary  # per-step 副本, hermes use_memory 可加塞
+                step_context_resources = list(context_resource_ids)
                 if _hermes_step is not None and _exec_mode in ("SMART", "MAX"):
                     _hermes_override = _hermes_skill_from_action(_hermes_step)
                     if _hermes_override and _hermes_override != step_plan.skill_hint:
@@ -1304,6 +1306,7 @@ class Orchestrator:
                                     f"{step_context_summary}\n\n[Hermes use_memory] "
                                     f"额外拉的相关 memory:\n{extra_summary}"
                                 ).strip()
+                                step_context_resources.extend(_context_resource_ids(extra_pack))
                                 yield OrchestratorEvent(
                                     kind="hermes_memory_injected",
                                     data={
@@ -1530,7 +1533,7 @@ class Orchestrator:
                     answer=answer,
                     response=response,
                     role_template_id=choice.role_template_id,
-                    context_asset_ids=context_asset_ids,
+                    context_asset_ids=step_context_resources,
                     watchtower_decision=watchtower_decision,
                     active_protocol=active_protocol,
                     decision_ticket_ids=[ticket.ticket_id for ticket in decision_tickets],
@@ -3358,6 +3361,22 @@ def _watchtower_similar_experience_asset_ids(watchtower_decision: Any) -> list[s
         if isinstance(asset_id, str) and asset_id:
             out.append(asset_id)
     return out
+
+
+def _context_resource_ids(context_pack: ContextPack) -> list[str]:
+    """Preserve asset kind for MoE credit keys.
+
+    Older credit code treated every context asset as ``memory:<asset_id>``.
+    That made knowledge/methodology/skill assets write to one key and read from
+    another.  Returning ``kind:id`` keeps credit assignment aligned with
+    ContextPacker's contribution lookup.
+    """
+
+    return [
+        f"{item.asset_kind}:{item.asset_id}"
+        for item in context_pack.items
+        if item.asset_id and item.asset_kind
+    ]
 
 
 def _dedupe_strings(values: list[str]) -> list[str]:

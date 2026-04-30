@@ -11,8 +11,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import pytest
+from kun.context.packer import ContextPack, PackedContextItem
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
-from kun.engineering.orchestrator import Orchestrator, TaskResult
+from kun.engineering.orchestrator import Orchestrator, TaskResult, _context_resource_ids
 from kun.interface.llm import LLMRouter
 from kun.interface.llm.base import LLMResponse, UsageInfo
 from kun.interface.llm.router import set_router
@@ -91,6 +92,34 @@ def _costly_exec_builder(request):
         usage=UsageInfo(input_tokens=10, output_tokens=4),
         cost_usd_equivalent=0.03,
     )
+
+
+def test_context_resource_ids_preserve_asset_kind() -> None:
+    pack = ContextPack(
+        items=[
+            PackedContextItem(
+                asset_id="m-1",
+                asset_kind="memory",
+                relevance_score=0.9,
+            ),
+            PackedContextItem(
+                asset_id="method-1",
+                asset_kind="methodology",
+                relevance_score=0.8,
+            ),
+            PackedContextItem(
+                asset_id="knowledge-1",
+                asset_kind="knowledge",
+                relevance_score=0.7,
+            ),
+        ]
+    )
+
+    assert _context_resource_ids(pack) == [
+        "memory:m-1",
+        "methodology:method-1",
+        "knowledge:knowledge-1",
+    ]
 
 
 def _judge_builder(request):
