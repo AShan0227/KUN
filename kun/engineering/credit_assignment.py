@@ -383,9 +383,9 @@ async def llm_reflector_factory(
 
 
 class ContributionTracker:
-    """全局资源贡献跟踪 (V2.2 §25.3.4 wire).
+    """Tenant-scoped resource contribution hot cache (V2.2 §25.3.4 wire).
 
-    累计每个资源 (memory:m1 / skill:s2 / model:m3) 的历史贡献度.
+    累计每个租户下每个资源 (memory:m1 / skill:s2 / model:m3) 的历史贡献度.
     给 ImportanceScorer.score_with_contribution_boost 用.
 
     contribution_score = 0.5 × (K/N) + 0.5 × (M/N)
@@ -397,27 +397,40 @@ class ContributionTracker:
     """
 
     def __init__(self) -> None:
-        # resource_key (e.g. "memory:m1") → (N, K, M)
-        self._stats: dict[str, tuple[int, int, int]] = {}
+        # (tenant_id, resource_key) → (N, K, M)
+        self._stats: dict[tuple[str, str], tuple[int, int, int]] = {}
 
-    def update_from_report(self, report: TaskCreditReport) -> None:
+    @staticmethod
+    def _tenant_scope(tenant_id: str | None) -> str:
+        return tenant_id or "__global__"
+
+    def update_from_report(self, report: TaskCreditReport, *, tenant_id: str | None = None) -> None:
         """task done 后, 用 TaskCreditReport 更新统计."""
         is_pass = report.task_outcome in ("pass", "partial")
+        tenant_scope = self._tenant_scope(tenant_id)
         for step in report.step_credits:
             for resource_key in step.credit_share:
-                n, k, m = self._stats.get(resource_key, (0, 0, 0))
+                scoped_key = (tenant_scope, resource_key)
+                n, k, m = self._stats.get(scoped_key, (0, 0, 0))
                 n += 1
                 if is_pass:
                     k += 1
                 if step.is_critical_path:
                     m += 1
-                self._stats[resource_key] = (n, k, m)
+                self._stats[scoped_key] = (n, k, m)
 
-    def update_from_deltas(self, deltas: dict[str, ResourceCreditDelta]) -> None:
+    def update_from_deltas(
+        self,
+        deltas: dict[str, ResourceCreditDelta],
+        *,
+        tenant_id: str | None = None,
+    ) -> None:
         """用 DB 同构的 delta 更新进程内热 cache."""
+        tenant_scope = self._tenant_scope(tenant_id)
         for resource_key, delta in deltas.items():
-            n, k, m = self._stats.get(resource_key, (0, 0, 0))
-            self._stats[resource_key] = (
+            scoped_key = (tenant_scope, resource_key)
+            n, k, m = self._stats.get(scoped_key, (0, 0, 0))
+            self._stats[scoped_key] = (
                 n + delta.used_count,
                 k + delta.pass_count,
                 m + delta.critical_count,
@@ -430,19 +443,27 @@ class ContributionTracker:
         used_count: int,
         pass_count: int,
         critical_count: int,
+        tenant_id: str | None = None,
     ) -> None:
         """从持久化统计灌入热 cache, 不覆盖更高的本地计数."""
-        n, k, m = self._stats.get(resource_key, (0, 0, 0))
-        self._stats[resource_key] = (
+        scoped_key = (self._tenant_scope(tenant_id), resource_key)
+        n, k, m = self._stats.get(scoped_key, (0, 0, 0))
+        self._stats[scoped_key] = (
             max(n, used_count),
             max(k, pass_count),
             max(m, critical_count),
         )
 
-    def contribution_score(self, asset_id: str, kind: str = "memory") -> float:
+    def contribution_score(
+        self,
+        asset_id: str,
+        kind: str = "memory",
+        *,
+        tenant_id: str | None = None,
+    ) -> float:
         """查 contribution score [0..1]. asset_id 可裸 id, 自动加 kind 前缀."""
         key = asset_id if ":" in asset_id else f"{kind}:{asset_id}"
-        n, k, m = self._stats.get(key, (0, 0, 0))
+        n, k, m = self._stats.get((self._tenant_scope(tenant_id), key), (0, 0, 0))
         return contribution_score_from_counts(used_count=n, pass_count=k, critical_count=m)
 
     def reset(self) -> None:
@@ -554,6 +575,7 @@ async def load_resource_credit_scores(
             used_count=row.used_count,
             pass_count=row.pass_count,
             critical_count=row.critical_count,
+            tenant_id=tenant_id,
         )
     return scores
 
@@ -649,6 +671,7 @@ async def hydrate_contribution_tracker_from_db(
             used_count=row.used_count,
             pass_count=row.pass_count,
             critical_count=row.critical_count,
+            tenant_id=tenant_id,
         )
     _hydration_last_run[cache_key] = now
     return len(rows)

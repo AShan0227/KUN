@@ -178,7 +178,8 @@ def test_decision_plane_uses_strategy_credit_as_moe_tie_breaker() -> None:
                     critical_count=2,
                     credit_total=2.0,
                 )
-            }
+            },
+            tenant_id="u-sylvan",
         )
         task_ref = _task_ref(
             task_type="general",

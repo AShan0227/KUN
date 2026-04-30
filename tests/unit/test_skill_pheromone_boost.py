@@ -165,12 +165,14 @@ def test_select_uses_moe_credit_inside_relevant_candidates() -> None:
         used_count=10,
         pass_count=10,
         critical_count=10,
+        tenant_id="u-test",
     )
     tracker.seed_counts(
         "skill:coding-review",
         used_count=20,
         pass_count=20,
         critical_count=20,
+        tenant_id="u-test",
     )
 
     skills = selector.select(_task("writing.creative"), top_k=3)

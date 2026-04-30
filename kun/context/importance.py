@@ -348,9 +348,10 @@ class ImportanceScorer:
         Returns:
             list[(LayeredAsset, ImportanceScore)] 按 overall 降序
         """
+        scoring_now = now or datetime.now(UTC)
         scored: list[tuple[LayeredAsset, ImportanceScore]] = []
         for asset in candidates:
-            base_score = self.score(asset=asset, query=query, now=now)
+            base_score = self.score(asset=asset, query=query, now=scoring_now)
             asset_id = str(asset.asset_id)
 
             # 拿 contribution
@@ -386,7 +387,7 @@ class ImportanceScorer:
                 )
             )
 
-        scored.sort(key=lambda x: x[1].overall, reverse=True)
+        scored.sort(key=lambda x: _stable_score_sort_key(x[0], x[1]))
         return scored
 
     async def score_with_graph_boost(
@@ -422,6 +423,7 @@ class ImportanceScorer:
         Returns:
             list[(LayeredAsset, ImportanceScore)] 按 overall 降序
         """
+        scoring_now = now or datetime.now(UTC)
         # 1. 查 anchor 的邻接节点
         related_asset_ids: set[str] = set()
         if anchor_entity_id:
@@ -444,7 +446,7 @@ class ImportanceScorer:
         # 2. 对每个 candidate 算 score, 加 graph boost
         scored: list[tuple[LayeredAsset, ImportanceScore]] = []
         for asset in candidates:
-            base_score = self.score(asset=asset, query=query, now=now)
+            base_score = self.score(asset=asset, query=query, now=scoring_now)
             asset_id_str = str(asset.asset_id)
             if asset_id_str in related_asset_ids:
                 # 邻接节点加 boost (cap 1.0)
@@ -462,7 +464,7 @@ class ImportanceScorer:
             else:
                 scored.append((asset, base_score))
 
-        scored.sort(key=lambda x: x[1].overall, reverse=True)
+        scored.sort(key=lambda x: _stable_score_sort_key(x[0], x[1]))
         return scored
 
     def score_anchor_then_expand(
@@ -523,13 +525,15 @@ class ImportanceScorer:
             ValueEstimator,
         )
 
-        # 预 score 全部, 按 overall 降序
+        # 预 score 全部, 按 stable score 降序. 这里统一采样 now，避免同一批候选
+        # 因为微秒级 recency 抖动导致 anchor 选择飘。
+        scoring_now = now or datetime.now(UTC)
         scored: list[tuple[LayeredAsset, ImportanceScore]] = []
         for asset in candidates:
             sc = self.score_with_anchors(
                 asset=asset,
                 query=query,
-                now=now,
+                now=scoring_now,
                 user_id=user_id,
                 project_id=project_id,
                 task_meta=task_meta,
@@ -537,7 +541,7 @@ class ImportanceScorer:
                 context_meta=context_meta,
             )
             scored.append((asset, sc))
-        scored.sort(key=lambda x: x[1].overall, reverse=True)
+        scored.sort(key=lambda x: _stable_score_sort_key(x[0], x[1]))
 
         # asset_id → index in scored, 让 graph traversal 拿到 entity_id 后能反查
         id_to_idx = {self._asset_entity_id(a): i for i, (a, _) in enumerate(scored)}
@@ -644,6 +648,53 @@ def _asset_text(asset: LayeredAsset) -> str:
         " ".join(f"{key} {value}" for key, value in asset.l1_metadata.items()),
     ]
     return " ".join(parts)
+
+
+def _stable_score_sort_key(
+    asset: LayeredAsset,
+    score: ImportanceScore,
+) -> tuple[float, float, float, float, float, str]:
+    """Deterministic sort key for context candidates.
+
+    重要度相同的资产很常见：例如短 summary、无 query、同一批 freshly-created
+    memory。排序如果只看 ``overall``，anchor-expand 会被全局状态或插入顺序带偏。
+    这里统一按分数降序、metadata importance_signal 降序、稳定 id 升序排序。
+    """
+
+    return (
+        -_sort_primary_score(asset, score),
+        -score.overall,
+        -score.semantic,
+        -score.frequency,
+        -score.recency,
+        _stable_asset_id(asset),
+    )
+
+
+def _sort_primary_score(asset: LayeredAsset, score: ImportanceScore) -> float:
+    signal = _metadata_importance_signal(asset)
+    return signal if signal > 0 else score.overall
+
+
+def _metadata_importance_signal(asset: LayeredAsset) -> float:
+    raw = asset.l1_metadata.get("importance_signal")
+    if raw is None:
+        raw = asset.l1_metadata.get("score")
+    if raw is None:
+        return 0.0
+    try:
+        return _clamp01(float(raw))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _stable_asset_id(asset: LayeredAsset) -> str:
+    meta = getattr(asset, "l1_metadata", None) or {}
+    for key in ("entity_id", "asset_id", "ref"):
+        value = meta.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return str(getattr(asset, "asset_id", ""))
 
 
 def _cosine_score(left: Sequence[float], right: Sequence[float]) -> float:

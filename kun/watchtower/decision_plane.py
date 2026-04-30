@@ -239,7 +239,7 @@ class WatchtowerDecisionPlane:
             (
                 pack,
                 _pack_base_score(pack, task_ref)
-                + _strategy_credit_bonus(pack.pack_id)
+                + _strategy_credit_bonus(pack.pack_id, tenant_id=_tenant_id_from_task(task_ref))
                 + _similar_experience_bonus(
                     pack.pack_id,
                     similar_experiences=similar_experiences or [],
@@ -472,17 +472,36 @@ def _pack_base_score(pack: StrategyPack, task_ref: TaskRef) -> float:
     return pack.match_score(task_ref)
 
 
-def _strategy_credit_bonus(pack_id: str) -> float:
+def _strategy_credit_bonus(pack_id: str, *, tenant_id: str | None = None) -> float:
     """Hot MoE feedback: historically useful strategy packs get a small boost.
 
     The base keyword/task-type match still dominates.  Credit only breaks ties
     or nudges similar packs, which keeps simple deterministic routing stable.
     """
     try:
-        score = get_contribution_tracker().contribution_score(pack_id, "strategy_pack")
+        score = get_contribution_tracker().contribution_score(
+            pack_id,
+            "strategy_pack",
+            tenant_id=tenant_id,
+        )
     except Exception:
         return 0.0
     return min(0.35, max(0.0, score) * 0.35)
+
+
+def _tenant_id_from_task(task_ref: TaskRef) -> str | None:
+    owner = getattr(task_ref.meta, "owner", None)
+    tenant_id = getattr(owner, "tenant_id", None) if owner is not None else None
+    if tenant_id:
+        tenant_text = str(tenant_id)
+        return tenant_text
+    try:
+        from kun.core.tenancy import current_tenant
+
+        tenant_text = str(current_tenant().tenant_id)
+        return tenant_text
+    except Exception:
+        return None
 
 
 def _similar_experience_bonus(

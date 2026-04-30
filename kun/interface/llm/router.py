@@ -444,10 +444,14 @@ async def _score_tier_credit_candidates(
     all_keys = [key for keys in tier_keys.values() for key in keys]
     durable_scores = await _load_route_credit_scores(all_keys)
     tracker = get_contribution_tracker()
+    tenant_id = _current_tenant_id_for_credit()
 
     scored: dict[ModelTier, float] = {}
     for tier, keys in tier_keys.items():
-        hot = max((tracker.contribution_score(key) for key in keys), default=0.0)
+        hot = max(
+            (tracker.contribution_score(key, tenant_id=tenant_id) for key in keys),
+            default=0.0,
+        )
         durable = max((durable_scores.get(key, 0.0) for key in keys), default=0.0)
         scored[tier] = max(hot, durable)
     return scored
@@ -473,6 +477,15 @@ async def _load_route_credit_scores(resource_keys: list[str]) -> dict[str, float
     except Exception as exc:
         log.debug("router.credit_scores_skipped", error=str(exc))
         return {}
+
+
+def _current_tenant_id_for_credit() -> str | None:
+    try:
+        from kun.core.tenancy import current_tenant
+
+        return current_tenant().tenant_id
+    except Exception:
+        return None
 
 
 def _tier_strength_rank(tier: ModelTier) -> int:

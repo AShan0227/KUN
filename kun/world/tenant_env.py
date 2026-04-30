@@ -11,6 +11,13 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 
+from kun.ops.secret_store import (
+    has_any_scoped_secret,
+    has_any_tenant_secret_prefix,
+    secret_for_tenant,
+    secret_store_has_required,
+)
+
 
 def tenant_env_key(tenant_id: str) -> str:
     """Return the safe tenant key used by env-scoped world credentials."""
@@ -34,7 +41,12 @@ def tenant_env(
     scoped_name = tenant_env_name(tenant_id, env_name)
     if not scoped_name:
         return None
-    return _empty_to_none((env or os.environ).get(scoped_name))
+    source = env or os.environ
+    return _empty_to_none(source.get(scoped_name)) or secret_for_tenant(
+        tenant_id,
+        env_name,
+        env=source,
+    )
 
 
 def env_for_tenant(
@@ -44,7 +56,11 @@ def env_for_tenant(
     env: Mapping[str, str] | None = None,
 ) -> str | None:
     source = env or os.environ
-    return tenant_env(tenant_id, env_name, env=source) or _empty_to_none(source.get(env_name))
+    return (
+        tenant_env(tenant_id, env_name, env=source)
+        or _empty_to_none(source.get(env_name))
+        or secret_for_tenant(tenant_id, env_name, env=source, allow_global=True)
+    )
 
 
 def has_tenant_env(
@@ -64,7 +80,7 @@ def has_any_tenant_env_prefix(
     scoped_name = tenant_env_name(tenant_id, env_prefix)
     if not scoped_name:
         return False
-    return any(
+    return has_any_tenant_secret_prefix(tenant_id, env_prefix, env=env or os.environ) or any(
         name.startswith(scoped_name) and _empty_to_none(value) is not None
         for name, value in (env or os.environ).items()
     )
@@ -77,7 +93,7 @@ def has_any_scoped_env(
 ) -> bool:
     """Return true when any tenant provides the scoped form of env_name."""
     suffix = "_" + env_name.removeprefix("KUN_")
-    return any(
+    return has_any_scoped_secret(env_name, env=env or os.environ) or any(
         name.startswith("KUN_TENANT_")
         and name.endswith(suffix)
         and _empty_to_none(value) is not None
@@ -102,6 +118,8 @@ def missing_required_world_env(
 ) -> list[str]:
     source = env or os.environ
     if all(_empty_to_none(source.get(name)) for name in required_envs):
+        return []
+    if secret_store_has_required(required_envs, tenant_id=tenant_id, env=source):
         return []
     if tenant_id:
         return [
@@ -142,7 +160,7 @@ def csv_set_for_tenant(
     *,
     default: set[str],
 ) -> set[str]:
-    value = tenant_env(tenant_id, env_name)
+    value = env_for_tenant(tenant_id, env_name)
     if value is None:
         return set(default)
     return {item.strip().lower() for item in value.split(",") if item.strip()}

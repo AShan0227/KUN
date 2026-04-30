@@ -172,6 +172,30 @@ def test_contribution_tracker_updates_from_deltas() -> None:
     assert tracker.contribution_score("m1", "memory") == 0.75
 
 
+def test_contribution_tracker_is_tenant_scoped_for_same_resource_key() -> None:
+    from kun.engineering.credit_assignment import ContributionTracker
+
+    tracker = ContributionTracker()
+    tracker.seed_counts(
+        "skill:writer",
+        used_count=4,
+        pass_count=4,
+        critical_count=4,
+        tenant_id="tenant-a",
+    )
+    tracker.seed_counts(
+        "skill:writer",
+        used_count=4,
+        pass_count=0,
+        critical_count=0,
+        tenant_id="tenant-b",
+    )
+
+    assert tracker.contribution_score("writer", "skill", tenant_id="tenant-a") == 1.0
+    assert tracker.contribution_score("writer", "skill", tenant_id="tenant-b") == 0.0
+    assert tracker.contribution_score("writer", "skill", tenant_id="tenant-c") == 0.0
+
+
 def test_resource_credit_summaries_are_human_readable() -> None:
     class Row:
         resource_key = "skill:writer"
@@ -257,6 +281,7 @@ async def test_hydrate_contribution_tracker_from_db_seeds_hot_cache() -> None:
             get_contribution_tracker().contribution_score(
                 "education",
                 "strategy_pack",
+                tenant_id="u-sylvan",
             )
             == 1.0
         )

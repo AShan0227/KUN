@@ -498,15 +498,13 @@ class EmailSendHandler(WorldActionHandler):
 
     @classmethod
     def from_env(cls, output_root: str | Path) -> EmailSendHandler:
-        host = os.getenv("KUN_WORLD_SMTP_HOST", "").strip()
-        from_addr = os.getenv("KUN_WORLD_SMTP_FROM", "").strip()
         return cls(
             output_root=output_root,
-            smtp_host=host,
-            smtp_port=int(os.getenv("KUN_WORLD_SMTP_PORT", "587")),
-            smtp_username=_empty_to_none(os.getenv("KUN_WORLD_SMTP_USERNAME")),
-            smtp_password=_empty_to_none(os.getenv("KUN_WORLD_SMTP_PASSWORD")),
-            smtp_from=from_addr,
+            smtp_host=_world_env("KUN_WORLD_SMTP_HOST") or "",
+            smtp_port=int(_world_env("KUN_WORLD_SMTP_PORT", default="587") or "587"),
+            smtp_username=_world_env("KUN_WORLD_SMTP_USERNAME") or None,
+            smtp_password=_world_env("KUN_WORLD_SMTP_PASSWORD") or None,
+            smtp_from=_world_env("KUN_WORLD_SMTP_FROM") or "",
             use_tls=_env_bool("KUN_WORLD_SMTP_TLS", default=True),
         )
 
@@ -687,8 +685,6 @@ class EnterpriseApiPostHandler(WorldActionHandler):
         auth_value: str | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        if not allowed_hosts:
-            raise ValueError("enterprise_api.post requires at least one allowed host")
         self.audit_root = Path(output_root).expanduser().resolve() / "api_calls"
         self.audit_root.mkdir(parents=True, exist_ok=True)
         self.allowed_hosts = allowed_hosts
@@ -699,13 +695,13 @@ class EnterpriseApiPostHandler(WorldActionHandler):
 
     @classmethod
     def from_env(cls, output_root: str | Path) -> EnterpriseApiPostHandler:
-        allowed_hosts = _csv_set(os.getenv("KUN_WORLD_API_ALLOWED_HOSTS", ""))
+        allowed_hosts = _csv_set(_world_env("KUN_WORLD_API_ALLOWED_HOSTS"))
         return cls(
             output_root=output_root,
             allowed_hosts=allowed_hosts,
-            timeout_sec=float(os.getenv("KUN_WORLD_API_TIMEOUT_SEC", "10")),
-            auth_header=_empty_to_none(os.getenv("KUN_WORLD_API_AUTH_HEADER")),
-            auth_value=_empty_to_none(os.getenv("KUN_WORLD_API_AUTH_VALUE")),
+            timeout_sec=float(_world_env("KUN_WORLD_API_TIMEOUT_SEC", default="10") or "10"),
+            auth_header=_world_env("KUN_WORLD_API_AUTH_HEADER") or None,
+            auth_value=_world_env("KUN_WORLD_API_AUTH_VALUE") or None,
         )
 
     async def preview(self, action: WorldAction) -> WorldHandlerResult:
@@ -857,8 +853,6 @@ class BrowserExecuteHandler(WorldActionHandler):
         allowed_hosts: set[str],
         runner: BrowserRunner | None = None,
     ) -> None:
-        if not allowed_hosts:
-            raise ValueError("browser.execute requires at least one allowed host")
         self.audit_root = Path(output_root).expanduser().resolve() / "browser_runs"
         self.audit_root.mkdir(parents=True, exist_ok=True)
         self.allowed_hosts = allowed_hosts
@@ -868,7 +862,7 @@ class BrowserExecuteHandler(WorldActionHandler):
     def from_env(cls, output_root: str | Path) -> BrowserExecuteHandler:
         return cls(
             output_root=output_root,
-            allowed_hosts=_csv_set(os.getenv("KUN_WORLD_BROWSER_ALLOWED_HOSTS", "")),
+            allowed_hosts=_csv_set(_world_env("KUN_WORLD_BROWSER_ALLOWED_HOSTS")),
         )
 
     async def preview(self, action: WorldAction) -> WorldHandlerResult:
@@ -1266,13 +1260,19 @@ def _empty_to_none(value: str | None) -> str | None:
 
 
 def _env_bool(name: str, *, default: bool = False) -> bool:
-    raw = os.getenv(name)
+    raw = _world_env(name)
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _csv_set(value: str) -> set[str]:
+def _world_env(name: str, *, default: str | None = None) -> str | None:
+    return env_for_tenant("", name) or default
+
+
+def _csv_set(value: str | None) -> set[str]:
+    if value is None:
+        return set()
     return {item.strip().lower() for item in value.split(",") if item.strip()}
 
 

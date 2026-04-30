@@ -274,7 +274,7 @@ class ContextPacker:
             kind = str(kind_by_asset_id.get(asset_id, "memory"))
             key = make_resource_key(kind, asset_id)
             return max(
-                tracker.contribution_score(asset_id, kind),
+                tracker.contribution_score(asset_id, kind, tenant_id=str(candidates[0].tenant_id)),
                 durable_scores.get(key, 0.0),
             )
 

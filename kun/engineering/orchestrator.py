@@ -2545,7 +2545,7 @@ class Orchestrator:
             )
             async with session_scope(tenant_id=tenant_id) as s:
                 deltas = await persist_resource_credit_report(s, tenant_id=tenant_id, report=report)
-                get_contribution_tracker().update_from_deltas(deltas)
+                get_contribution_tracker().update_from_deltas(deltas, tenant_id=tenant_id)
                 await emit(
                     s,
                     Event.build(

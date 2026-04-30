@@ -40,6 +40,7 @@ class SkillSelector:
         *,
         top_k: int = 3,
         prior_skill: str | None = None,
+        tenant_id: str | None = None,
     ) -> list[SkillRecord]:
         # 1. Required skills / protocol hints are high-priority candidates.
         # They no longer short-circuit the selector; other relevant skills can
@@ -48,7 +49,8 @@ class SkillSelector:
 
         # 2. V4 MoE credit 加成 — 已经被历史证明有贡献的同类 skill 排前.
         # 注意: 只给已有 overlap 的候选加分，不让高信用 skill 跨任务类型乱抢。
-        scored = _apply_skill_credit_boost(scored)
+        tenant = tenant_id or _tenant_id_from_task(task_ref) or _current_tenant_id()
+        scored = _apply_skill_credit_boost(scored, tenant_id=tenant)
 
         # 3. V2.3 Wire 47: Pheromone 加成 — 上一 skill → this skill 走过路径强 → 加分
         # 蚁群涌现: 多 task 走过的链路自然推上来 (无需手写 graph)
@@ -57,7 +59,7 @@ class SkillSelector:
                 from kun.qi.pheromone import get_pheromone_storage, neighbor_pheromone_score
 
                 storage = get_pheromone_storage()
-                tenant_id = task_ref.meta.owner.tenant_id if task_ref.meta.owner else "u-sylvan"
+                tenant_id = tenant or "u-sylvan"
                 if hasattr(storage, "get_pheromone"):  # InMemory
                     boosted = []
                     for overlap, rec in scored:
@@ -91,11 +93,11 @@ class SkillSelector:
 
         # Pull a slightly wider base set because graph/capability can lift
         # adjacent skills above the initial anchor.
-        base = self.select(task_ref, top_k=max(top_k, 5))
+        tenant = tenant_id or _tenant_id_from_task(task_ref) or _current_tenant_id()
+        base = self.select(task_ref, top_k=max(top_k, 5), tenant_id=tenant)
         candidates: dict[str, tuple[float, SkillRecord]] = {
             rec.skill_id: (1.0 - idx * 0.05, rec) for idx, rec in enumerate(base)
         }
-        tenant = tenant_id or _current_tenant_id()
 
         if graph_hops > 0:
             traversal = self._graph_traversal or _default_graph_traversal()
@@ -114,7 +116,7 @@ class SkillSelector:
 
         rescored: list[tuple[float, SkillRecord]] = []
         for base_score, rec in candidates.values():
-            score = _apply_single_skill_credit_boost(base_score, rec)
+            score = _apply_single_skill_credit_boost(base_score, rec, tenant_id=tenant)
             cap_bonus = 0.0
             if tenant is not None:
                 cap = await self._capability_cache.best_capability(
@@ -234,8 +236,13 @@ _selector: SkillSelector | None = None
 
 def _apply_skill_credit_boost(
     scored: list[tuple[float, SkillRecord]],
+    *,
+    tenant_id: str | None = None,
 ) -> list[tuple[float, SkillRecord]]:
-    return [(_apply_single_skill_credit_boost(score, rec), rec) for score, rec in scored]
+    return [
+        (_apply_single_skill_credit_boost(score, rec, tenant_id=tenant_id), rec)
+        for score, rec in scored
+    ]
 
 
 def _base_skill_candidates(
@@ -268,7 +275,12 @@ def _base_skill_candidates(
     return list(candidates.values())
 
 
-def _apply_single_skill_credit_boost(score: float, rec: SkillRecord) -> float:
+def _apply_single_skill_credit_boost(
+    score: float,
+    rec: SkillRecord,
+    *,
+    tenant_id: str | None = None,
+) -> float:
     """Boost relevant skills by durable MoE contribution hot-cache.
 
     The DB load happens elsewhere (orchestrator finalization / context packer);
@@ -279,7 +291,11 @@ def _apply_single_skill_credit_boost(score: float, rec: SkillRecord) -> float:
     try:
         from kun.engineering.credit_assignment import get_contribution_tracker
 
-        contribution = get_contribution_tracker().contribution_score(rec.skill_id, "skill")
+        contribution = get_contribution_tracker().contribution_score(
+            rec.skill_id,
+            "skill",
+            tenant_id=tenant_id,
+        )
     except Exception:
         log.debug("skill_selector.credit_boost_skipped", exc_info=True)
         return score
@@ -307,6 +323,11 @@ def _current_tenant_id() -> str | None:
         return current_tenant().tenant_id
     except Exception:
         return None
+
+
+def _tenant_id_from_task(task_ref: TaskRef) -> str | None:
+    owner = getattr(task_ref.meta, "owner", None)
+    return getattr(owner, "tenant_id", None) if owner is not None else None
 
 
 def _default_graph_traversal() -> Any:

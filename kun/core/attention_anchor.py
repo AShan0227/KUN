@@ -113,9 +113,9 @@ class AttentionManager:
         for a in self._anchors.values():
             if a.target_asset_ref != asset_ref:
                 continue
-            if a.user_id and user_id and a.user_id != user_id:
+            if a.user_id is not None and a.user_id != user_id:
                 continue
-            if a.project_id and project_id and a.project_id != project_id:
+            if a.project_id is not None and a.project_id != project_id:
                 continue
             if a.expires_at and a.expires_at < datetime.now(UTC):
                 continue

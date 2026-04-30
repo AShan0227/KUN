@@ -152,12 +152,13 @@ class ProductionValueEstimator:
 
             tracker = get_contribution_tracker()
             scores = []
+            tenant_id = str(ctx.get("tenant_id") or "") or None
             for raw in raw_keys:
                 if not raw:
                     continue
                 # Use the full durable key.  Some ids intentionally contain
                 # colons, e.g. ``value_gate:task_type:ops.workflow``.
-                scores.append(tracker.contribution_score(str(raw)))
+                scores.append(tracker.contribution_score(str(raw), tenant_id=tenant_id))
             return max(scores) if scores else 0.0
         except Exception:
             logger.exception("value_gate.history_lookup_failed")

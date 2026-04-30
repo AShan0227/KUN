@@ -228,6 +228,29 @@ def test_attention_manager_boost_for_asset() -> None:
     assert boost == 0.30
 
 
+def test_attention_manager_user_scoped_boost_does_not_leak_without_context() -> None:
+    m = AttentionManager()
+    m.add(
+        AttentionAnchor(
+            anchor_kind="user_pin",
+            target_asset_ref="ka-1",
+            weight_boost=0.15,
+            user_id="u1",
+        )
+    )
+    m.add(
+        AttentionAnchor(
+            anchor_kind="permanent_redline",
+            target_asset_ref="ka-1",
+            weight_boost=0.30,
+        )
+    )
+
+    assert m.boost_for_asset("ka-1") == 0.30
+    assert m.boost_for_asset("ka-1", user_id="u2") == 0.30
+    assert m.boost_for_asset("ka-1", user_id="u1") == 0.30
+
+
 def test_attention_manager_must_check_for_decision() -> None:
     m = AttentionManager()
     m.add(AttentionAnchor(anchor_kind="user_pin", target_asset_ref="a"))

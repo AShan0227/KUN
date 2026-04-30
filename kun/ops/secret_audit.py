@@ -14,8 +14,10 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field
 
 from kun.core.config import Settings, settings
+from kun.ops.secret_store import SECRET_STORE_FILE_ENV, secret_store_status
 from kun.world.handler_health import EXPECTED_REAL_WORLD_HANDLERS
 from kun.world.tenant_env import (
+    env_for_tenant,
     has_any_scoped_env,
     missing_required_world_env,
 )
@@ -82,6 +84,7 @@ def audit_runtime_secrets(
     items.extend(_auth_items(active))
     items.extend(_database_items(active))
     items.extend(_storage_items(active))
+    items.extend(_secret_store_items(env))
     items.extend(_world_gateway_items(env))
     items.extend(_llm_items(env))
 
@@ -281,7 +284,7 @@ def _storage_items(cfg: Settings) -> list[SecretAuditItem]:
 def _world_gateway_items(env: Mapping[str, str]) -> list[SecretAuditItem]:
     items: list[SecretAuditItem] = []
     for action_type, (enable_env, required_envs) in EXPECTED_REAL_WORLD_HANDLERS.items():
-        enabled = _env_truthy(env.get(enable_env))
+        enabled = _env_truthy(env_for_tenant("", enable_env, env=env))
         missing = missing_required_world_env(required_envs, env=env)
         if enabled and missing:
             items.append(
@@ -328,13 +331,61 @@ def _world_gateway_items(env: Mapping[str, str]) -> list[SecretAuditItem]:
     return items
 
 
+def _secret_store_items(env: Mapping[str, str]) -> list[SecretAuditItem]:
+    status = secret_store_status(env=env)
+    if not status.configured:
+        return [
+            SecretAuditItem(
+                item_id="world_gateway.secret_store.not_configured",
+                area="world_gateway",
+                severity="ok",
+                title="未配置集中 secret store",
+                detail=(
+                    "当前仍主要依赖 env / KUN_TENANT_<TENANT>_* 传递外部动作密钥；"
+                    "这是可用路径，但租户密钥治理和轮换会比较粗。"
+                ),
+                suggested_action=(
+                    "配置 KUN_SECRET_STORE_FILE 指向外部 JSON secret store；"
+                    "更正式的生产环境再接云 KMS/Secret Manager。"
+                ),
+                env_vars=[SECRET_STORE_FILE_ENV],
+            )
+        ]
+    if not status.readable:
+        return [
+            SecretAuditItem(
+                item_id="world_gateway.secret_store.unreadable",
+                area="world_gateway",
+                severity="blocker",
+                title="secret store 不可读取",
+                detail=f"KUN_SECRET_STORE_FILE 已配置，但读取失败：{status.error}",
+                suggested_action="修正文件路径/权限/JSON 格式，或先关闭该配置。",
+                env_vars=[SECRET_STORE_FILE_ENV],
+            )
+        ]
+    return [
+        SecretAuditItem(
+            item_id="world_gateway.secret_store.configured",
+            area="world_gateway",
+            severity="ok",
+            title="集中 secret store 已配置",
+            detail=(
+                f"检测到 {status.tenant_count} 个租户配置、"
+                f"{status.global_key_count} 个全局配置；不输出任何密钥值。"
+            ),
+            suggested_action="后续生产版本仍建议接云 KMS/Secret Manager 做加密、审计和轮换。",
+            env_vars=[SECRET_STORE_FILE_ENV],
+        )
+    ]
+
+
 def _world_gateway_extra_risks(
     action_type: str,
     env: Mapping[str, str],
 ) -> list[SecretAuditItem]:
     if action_type == "email.send":
-        username = env.get("KUN_WORLD_SMTP_USERNAME", "").strip()
-        password = env.get("KUN_WORLD_SMTP_PASSWORD", "").strip()
+        username = (env_for_tenant("", "KUN_WORLD_SMTP_USERNAME", env=env) or "").strip()
+        password = (env_for_tenant("", "KUN_WORLD_SMTP_PASSWORD", env=env) or "").strip()
         if username and not password:
             return [
                 SecretAuditItem(
@@ -348,8 +399,8 @@ def _world_gateway_extra_risks(
                 )
             ]
     if action_type == "enterprise_api.post":
-        header = env.get("KUN_WORLD_API_AUTH_HEADER", "").strip()
-        value = env.get("KUN_WORLD_API_AUTH_VALUE", "").strip()
+        header = (env_for_tenant("", "KUN_WORLD_API_AUTH_HEADER", env=env) or "").strip()
+        value = (env_for_tenant("", "KUN_WORLD_API_AUTH_VALUE", env=env) or "").strip()
         if bool(header) != bool(value):
             return [
                 SecretAuditItem(
