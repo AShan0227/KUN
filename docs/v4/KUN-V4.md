@@ -787,12 +787,15 @@ V4 继续坚持：
 5. WorldGateway 已经有 handler、权限、预览、审批、部分真实执行和真实外发 handler。
 6. Mission worker 已经能接 Orchestrator runner 做 continuation。
 7. NUO 页面已经有健康、成本、权限、风险、能力边界入口。
+8. Delivery Status 已有 API 和 CLI，可直接检查 ready / partial / not_ready，防止伪功能。
+9. State Ledger 已有当前热视图、EventRow 历史回放、任务 story 摘要。
+10. WorldGateway handler 健康、半启用真实 handler 配置、resource credit top 贡献资源已经进入傩/ops 视图。
 
 ### 17.2 还不能吹成完整闭环的部分
 
-1. **傩诊断数据源还太浅**
-   - 当前 DiagnoseRunner 主要靠 hint_text 关键词。
-   - 还没有真正从 StateLedger、WorldGateway、Memory、Context、Capability、events 聚合系统健康。
+1. **傩诊断数据源仍要继续加深**
+   - 已经有系统健康、WorldGateway handler health、context maintenance、resource credit、StateLedger 风险入口。
+   - 还要继续把这些诊断结果变成更稳定的自动降级、限权、瘦身、回滚动作。
 
 2. **傩修复仍偏占位**
    - fix_handlers 主要是 in-memory 标记和 audit log。
@@ -802,24 +805,25 @@ V4 继续坚持：
    - 现在主要是关键词和 tag 打分。
    - ImportanceScorer 更完整，但主 pack 路径还没完全用上。
 
-4. **CreditAssignment 还没成为主链路核心**
-   - 模型、skill、context、agent、WorldGateway handler 的贡献还没有完整归因。
+4. **CreditAssignment 已可观测，但还需要真实样本校准**
+   - 资源信用已持久化，也能通过傩/CLI 查看 top 贡献资源。
+   - 但模型、skill、context、WorldGateway handler 的路由权重还需要真实 dogfood 样本校准阈值。
 
 5. **启的探索还不够真实**
    - 当前有些探索分数仍偏启发式。
    - 必须改成从真实失败、低效、高风险、高成本案例里产生实验。
 
-6. **WorldGateway 缺 handler 体检**
-   - handler 描述有了。
-   - 但失败率、补偿缺失、密钥配置、租户风险、审批拒绝率还没被傩定期评分。
+6. **WorldGateway 还缺租户级真实生产治理**
+   - handler 体检、配置缺口、失败率、补偿策略已经能被傩/ops 看到。
+   - 但真实租户密钥隔离、密钥轮换、支付/公开发布动作、补偿演练还没完成。
 
-7. **State Ledger 还不是完整长期账本**
-   - 热状态和部分历史已经有。
-   - 但长期事件溯源、全链路决策回放、系统级诊断视图还要补。
+7. **State Ledger 仍不是完整事件溯源系统**
+   - 当前已有热状态、历史事件回放、任务 story 摘要。
+   - 但还不能从事件完整重建所有业务对象，也还没有跨 Mission 的长期运营故事线。
 
-8. **Decision Ticket 还不是一等公民**
-   - WatchtowerDecision 有了。
-   - 但 ExecutionMode、ValueGate、ProtocolRegistry、PreDeliverGate、模型路由、WorldGateway policy 还没有全部汇成统一票据。
+8. **Decision Ticket 已经进入很多关键路径，但仍需收尾**
+   - ProtocolRegistry、TaskRouter、模型路由、ContextPacker、SkillSelector、ValidationPipeline、BudgetTracker、PreDeliverGate、WorldGateway policy 已进入票据或信用记录。
+   - ValueGate、部分启实验、部分长期 Mission 策略调整还需要继续统一票据化。
 
 ## 18. V4 开发阶段
 
@@ -949,6 +953,22 @@ V4 继续坚持：
 - 外部动作密钥按租户隔离。
 - 备份恢复流程跑通。
 - CI 能防 ready 伪标。
+
+### 18.9：当前代码推进状态（2026-04-30）
+
+已经推进：
+
+- `kun ops delivery-status`：一条命令看清哪些能承诺、哪些只是 partial。
+- `kun ops dogfood --include-db-mission`：可显式跑真实数据库 Mission 续跑 smoke。
+- `kun ops preflight`：会阻断“真实外部 handler 开关已开但 env/密钥没配全”的半启用状态。
+- `/nuo/health/resource-credit` 和 `kun ops credit-report`：可查看 memory / skill / model / decision 等资源的持久贡献信用。
+- `/api/blackboard/state-ledger/{task_id}/story`：可把某个任务的长期事件历史压成可读故事线。
+
+仍不能承诺：
+
+- 不能说 KUN 已经能无人长期运营一个产品。现在是 Mission 续跑闭环和 DB smoke，不是跨周真实运营验证。
+- 不能说 WorldGateway 已有完整真实世界能力。邮件、浏览器、企业 API 已有 opt-in handler，但支付、公开发布、租户密钥治理、补偿演练仍未完成。
+- 不能说生产级部署完成。账号体系、组织/成员、集中密钥管理、线上备份恢复演练、CI/release/tag 仍是缺口。
 
 ## 19. V4 最小可测试产品形态
 

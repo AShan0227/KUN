@@ -48,6 +48,18 @@ uv run kun ops preflight --json
 
 有 blocker 时命令返回非零退出码，CI/release 应该直接拦住。
 
+### 能力边界自检
+
+```bash
+uv run kun ops delivery-status
+uv run kun ops delivery-status --json
+uv run kun ops delivery-status --fail-on-not-ready
+```
+
+这条命令回答一个很朴素的问题：KUN 现在到底哪些能力真能承诺，哪些只是 partial，哪些还 not_ready。
+
+`--fail-on-not-ready` 适合 release gate。现在它会失败是正常的，因为生产级部署和完整真实世界能力还没完成。
+
 ### 租户启动包
 
 生产模式不再信任裸 `X-Tenant-Id`。给一个租户发起 dogfood 前，先生成签名 token：
@@ -70,6 +82,8 @@ uv run kun ops onboard-tenant \
 ```bash
 uv run kun ops dogfood --tenant u-sylvan
 uv run kun ops dogfood --tenant u-sylvan --json
+# 显式多跑 Mission / RuntimeState / Orchestrator runner 的真实数据库续跑 smoke:
+uv run kun ops dogfood --tenant u-sylvan --include-db-mission
 ```
 
 这条命令只跑低风险、可重复的验收：
@@ -81,6 +95,17 @@ uv run kun ops dogfood --tenant u-sylvan --json
 - 关键边界仍然诚实暴露：生产级部署是 `not_ready`，长周期任务是 `partial`
 
 它不是“鲲已经能自动运营公司”的验收。真正长周期 dogfood 要另起真实 Mission，用用户目标、预算、外部动作和复盘跑完整周期。
+
+### MoE / 策略信用报告
+
+```bash
+uv run kun ops credit-report --tenant u-sylvan
+uv run kun ops credit-report --tenant u-sylvan --kind skill --json
+```
+
+这条命令看的是 `resource_credit_stats`：哪些 memory、skill、model、decision、WorldGateway handler 真的在历史任务里拿到过贡献分。
+
+它不是“自动证明策略已经最优”，只是把贡献数据露出来，方便傩、守望和后续 dogfood 校准路由阈值。
 
 ### 跑一次 task
 
