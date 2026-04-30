@@ -279,6 +279,7 @@ def get_v3_delivery_status(
                 "production API 会检查账号账本里的 revoked token，已撤销 token 会被拒绝",
                 "账号会话已有最小 refresh token 闭环：refresh/access token 入账、refresh 续短期 access、refresh token 不能访问普通 API",
                 "ops account-session CLI 可签发持久入账的 access+refresh 会话包，避免 refresh 功能只停在测试里",
+                "已补默认关闭的邀请码注册 API：可创建租户账本、owner 和 access+refresh 会话，但必须显式配置邀请码",
                 "NUO 账号面板可查看当前租户账号、成员和 token 签发账本，且不会暴露 raw bearer token",
                 "NUO 账号面板可撤销当前租户已签发 token，生产请求中间件会消费撤销结果",
                 "ops dogfood CLI 可跑 V4 低风险 smoke，验证 preflight / token / WorldGateway / 诚实边界",
@@ -312,12 +313,12 @@ def get_v3_delivery_status(
                 "tests/unit/test_ops_backup_restore.py",
             ],
             missing=[
-                "完整自助注册 / 登录 / 密码或 OAuth 账号体系",
+                "完整密码登录 / OAuth 账号体系",
                 "完整设备登录态、登录历史、异常登录风控和用户自助 session 管理",
                 "云 KMS / 托管 Secret Manager、自动轮换和租户自助密钥配置",
                 "真实数据库/S3 环境的备份恢复演练",
                 "跨周真实产品运营 dogfood 验收场景",
-                "租户自助注册 / 组织成员自助邀请 / 账单闭环",
+                "组织成员自助邀请 / 账单闭环",
             ],
             next_steps=[
                 "把账号账本升级成自助注册、成员管理和完整会话体系",

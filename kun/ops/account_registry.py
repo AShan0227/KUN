@@ -45,6 +45,22 @@ class TenantAccountBootstrap(BaseModel):
     honest_limits: list[str] = Field(default_factory=list)
 
 
+class TenantAccountRecord(BaseModel):
+    """Tenant account/member upsert result without issuing a bearer token."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    organization_id: str
+    display_name: str
+    owner_user_id: str
+    role: MemberRole = "owner"
+    plan: str = "dev"
+    billing_status: str = "manual"
+    persisted: bool = True
+    honest_limits: list[str] = Field(default_factory=list)
+
+
 def hash_bearer_token(token: str) -> str:
     """Hash a bearer token for audit correlation without storing the secret."""
 
@@ -122,50 +138,18 @@ async def bootstrap_tenant_account(
     token_hash = hash_bearer_token(token)
     now = datetime.now(UTC)
 
-    account_stmt = (
-        pg_insert(TenantAccountRow)
-        .values(
-            tenant_id=cleaned_tenant,
-            organization_id=cleaned_org,
-            display_name=cleaned_name,
-            owner_user_id=cleaned_owner,
-            plan=plan.strip() or "dev",
-            billing_status=billing_status.strip() or "manual",
-            metadata_json=metadata or {},
-            updated_at=now,
-        )
-        .on_conflict_do_update(
-            index_elements=[TenantAccountRow.tenant_id],
-            set_={
-                "organization_id": cleaned_org,
-                "display_name": cleaned_name,
-                "owner_user_id": cleaned_owner,
-                "plan": plan.strip() or "dev",
-                "billing_status": billing_status.strip() or "manual",
-                "metadata_json": metadata or {},
-                "updated_at": now,
-            },
-        )
-    )
-    member_stmt = (
-        pg_insert(TenantMemberRow)
-        .values(
-            tenant_id=cleaned_tenant,
-            user_id=cleaned_owner,
-            role=role,
-            scopes=cleaned_scopes,
-            status="active",
-            updated_at=now,
-        )
-        .on_conflict_do_update(
-            index_elements=[TenantMemberRow.tenant_id, TenantMemberRow.user_id],
-            set_={
-                "role": role,
-                "scopes": cleaned_scopes,
-                "status": "active",
-                "updated_at": now,
-            },
-        )
+    await upsert_tenant_account_member(
+        session,
+        tenant_id=cleaned_tenant,
+        organization_id=cleaned_org,
+        display_name=cleaned_name,
+        owner_user_id=cleaned_owner,
+        scopes=cleaned_scopes,
+        role=role,
+        plan=plan,
+        billing_status=billing_status,
+        metadata=metadata,
+        now=now,
     )
     token_stmt = (
         pg_insert(TenantTokenIssueRow)
@@ -196,8 +180,6 @@ async def bootstrap_tenant_account(
             },
         )
     )
-    await session.execute(account_stmt)
-    await session.execute(member_stmt)
     await session.execute(token_stmt)
     return TenantAccountBootstrap(
         tenant_id=cleaned_tenant,
@@ -213,6 +195,92 @@ async def bootstrap_tenant_account(
         expires_at=expires_at,
         persisted=True,
         honest_limits=_honest_limits(),
+    )
+
+
+async def upsert_tenant_account_member(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    organization_id: str,
+    display_name: str,
+    owner_user_id: str,
+    scopes: list[str],
+    role: MemberRole = "owner",
+    plan: str = "dev",
+    billing_status: str = "manual",
+    metadata: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> TenantAccountRecord:
+    """Upsert tenant account + owner/member rows without minting a token."""
+
+    cleaned_tenant = _required("tenant_id", tenant_id)
+    cleaned_org = _required("organization_id", organization_id)
+    cleaned_name = _required("display_name", display_name)
+    cleaned_owner = _required("owner_user_id", owner_user_id)
+    cleaned_scopes = [scope.strip() for scope in scopes if scope.strip()]
+    timestamp = now or datetime.now(UTC)
+    cleaned_plan = plan.strip() or "dev"
+    cleaned_billing = billing_status.strip() or "manual"
+    account_stmt = (
+        pg_insert(TenantAccountRow)
+        .values(
+            tenant_id=cleaned_tenant,
+            organization_id=cleaned_org,
+            display_name=cleaned_name,
+            owner_user_id=cleaned_owner,
+            plan=cleaned_plan,
+            billing_status=cleaned_billing,
+            metadata_json=metadata or {},
+            updated_at=timestamp,
+        )
+        .on_conflict_do_update(
+            index_elements=[TenantAccountRow.tenant_id],
+            set_={
+                "organization_id": cleaned_org,
+                "display_name": cleaned_name,
+                "owner_user_id": cleaned_owner,
+                "plan": cleaned_plan,
+                "billing_status": cleaned_billing,
+                "metadata_json": metadata or {},
+                "updated_at": timestamp,
+            },
+        )
+    )
+    member_stmt = (
+        pg_insert(TenantMemberRow)
+        .values(
+            tenant_id=cleaned_tenant,
+            user_id=cleaned_owner,
+            role=role,
+            scopes=cleaned_scopes,
+            status="active",
+            updated_at=timestamp,
+        )
+        .on_conflict_do_update(
+            index_elements=[TenantMemberRow.tenant_id, TenantMemberRow.user_id],
+            set_={
+                "role": role,
+                "scopes": cleaned_scopes,
+                "status": "active",
+                "updated_at": timestamp,
+            },
+        )
+    )
+    await session.execute(account_stmt)
+    await session.execute(member_stmt)
+    return TenantAccountRecord(
+        tenant_id=cleaned_tenant,
+        organization_id=cleaned_org,
+        display_name=cleaned_name,
+        owner_user_id=cleaned_owner,
+        role=role,
+        plan=cleaned_plan,
+        billing_status=cleaned_billing,
+        honest_limits=[
+            "这里只创建账号/成员账本，不签发裸 bearer token。",
+            "会话 token 需要通过 account-session 或 invite signup 单独签发并入账。",
+        ],
     )
 
 
@@ -330,10 +398,12 @@ __all__ = [
     "Audience",
     "MemberRole",
     "TenantAccountBootstrap",
+    "TenantAccountRecord",
     "bootstrap_tenant_account",
     "build_bootstrap_token",
     "build_unpersisted_bootstrap",
     "hash_bearer_token",
     "is_token_revoked",
     "revoke_token_issue",
+    "upsert_tenant_account_member",
 ]

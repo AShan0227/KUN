@@ -321,6 +321,9 @@ async def tenant_middleware(
     """
     cfg = settings()
     auth_header = request.headers.get("Authorization")
+    public_auth_paths = {"/api/auth/session/refresh", "/api/auth/signup"}
+    if request.url.path in public_auth_paths and not auth_header:
+        return await call_next(request)
     if auth_header:
         auth_secrets = cfg.auth_secret_candidates()
         if not auth_secrets:

@@ -37,6 +37,17 @@ class _FakeSession:
         return object()
 
 
+class _FakeScope:
+    def __init__(self, session: object | None = None) -> None:
+        self.session = session or object()
+
+    async def __aenter__(self) -> object:
+        return self.session
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
 def _api_app() -> FastAPI:
     app = FastAPI()
     app.include_router(session_api.router)
@@ -258,3 +269,133 @@ def test_refresh_session_api_rejects_access_token(monkeypatch: pytest.MonkeyPatc
 
     assert response.status_code == 400
     assert response.json()["detail"] == "refresh token required"
+
+
+@pytest.mark.unit
+def test_signup_api_is_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeSettings:
+        self_signup_enabled = False
+        self_signup_invite_code = None
+
+        def auth_secret_candidates(self) -> list[str]:
+            return ["s" * 40]
+
+    monkeypatch.setattr(session_api, "settings", lambda: _FakeSettings())
+
+    response = TestClient(_api_app()).post(
+        "/api/auth/signup",
+        json={
+            "invite_code": "invite",
+            "tenant_id": "tenant-a",
+            "owner_user_id": "owner-a",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "self signup is disabled"
+
+
+@pytest.mark.unit
+def test_signup_api_creates_account_and_refreshable_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "s" * 40
+
+    class _FakeSettings:
+        self_signup_enabled = True
+        self_signup_invite_code = "invite-123"
+
+        def auth_secret_candidates(self) -> list[str]:
+            return [secret]
+
+    async def fake_upsert(*_args: object, **kwargs: object) -> session_api.TenantAccountRecord:
+        assert kwargs["tenant_id"] == "tenant-a"
+        assert kwargs["owner_user_id"] == "owner-a"
+        assert kwargs["metadata"] == {"source": "api.auth.signup"}
+        return session_api.TenantAccountRecord(
+            tenant_id="tenant-a",
+            organization_id="tenant-a",
+            display_name="Tenant A",
+            owner_user_id="owner-a",
+            persisted=True,
+        )
+
+    async def fake_issue(*_args: object, **kwargs: object) -> session_api.SessionTokenPair:
+        assert kwargs["tenant_id"] == "tenant-a"
+        assert kwargs["user_id"] == "owner-a"
+        return session_api.SessionTokenPair(
+            tenant_id="tenant-a",
+            user_id="owner-a",
+            audience="developer",
+            scopes=["chat:write"],
+            access_token_id="acc-signup",
+            access_token=sign_auth_token(
+                {
+                    "tenant_id": "tenant-a",
+                    "user_id": "owner-a",
+                    "jti": "acc-signup",
+                    "token_type": "access",
+                },
+                secret,
+            ),
+            access_expires_at=456,
+            refresh_token_id="rfr-signup",
+            refresh_token=sign_auth_token(
+                {
+                    "tenant_id": "tenant-a",
+                    "user_id": "owner-a",
+                    "jti": "rfr-signup",
+                    "token_type": "refresh",
+                },
+                secret,
+            ),
+            refresh_expires_at=789,
+        )
+
+    monkeypatch.setattr(session_api, "settings", lambda: _FakeSettings())
+    monkeypatch.setattr(session_api, "session_scope", lambda **_kwargs: _FakeScope())
+    monkeypatch.setattr(session_api, "upsert_tenant_account_member", fake_upsert)
+    monkeypatch.setattr(session_api, "issue_session_token_pair", fake_issue)
+
+    response = TestClient(_api_app()).post(
+        "/api/auth/signup",
+        json={
+            "invite_code": "invite-123",
+            "tenant_id": "tenant-a",
+            "owner_user_id": "owner-a",
+            "display_name": "Tenant A",
+            "scopes": ["chat:write"],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tenant_id"] == "tenant-a"
+    assert body["access_token_id"] == "acc-signup"
+    assert body["refresh_token_id"] == "rfr-signup"
+    assert body["account_persisted"] is True
+    assert any("不是密码登录" in item for item in body["honest_limits"])
+
+
+@pytest.mark.unit
+def test_signup_api_rejects_bad_invite(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeSettings:
+        self_signup_enabled = True
+        self_signup_invite_code = "right"
+
+        def auth_secret_candidates(self) -> list[str]:
+            return ["s" * 40]
+
+    monkeypatch.setattr(session_api, "settings", lambda: _FakeSettings())
+
+    response = TestClient(_api_app()).post(
+        "/api/auth/signup",
+        json={
+            "invite_code": "wrong",
+            "tenant_id": "tenant-a",
+            "owner_user_id": "owner-a",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "invalid invite code"

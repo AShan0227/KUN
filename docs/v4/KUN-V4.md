@@ -966,12 +966,13 @@ V4 继续坚持：
 - `kun ops readiness`：把 preflight、secret-audit、delivery-status 和可选 dogfood 汇成一份正式测试报告。
 - `/nuo/health/resource-credit` 和 `kun ops credit-report`：可查看 memory / skill / model / decision 等资源的持久贡献信用。
 - `/api/blackboard/state-ledger/{task_id}/story`：可把某个任务的长期事件历史压成可读故事线。
+- `POST /api/auth/signup`：默认关闭的邀请码注册入口，可创建租户账本、owner 和 access+refresh 会话；这不是密码登录 / OAuth。
 
 仍不能承诺：
 
 - 不能说 KUN 已经能无人长期运营一个产品。现在是 Mission 续跑闭环和 DB smoke，不是跨周真实运营验证。
 - 不能说 WorldGateway 已有完整真实世界能力。邮件、浏览器、企业 API 已有 opt-in handler，但支付、公开发布、租户密钥治理、补偿演练仍未完成。
-- 不能说生产级部署完成。账号体系、组织/成员、集中密钥管理、线上备份恢复演练、CI/release/tag 仍是缺口。
+- 不能说生产级部署完成。密码/OAuth、设备会话风控、组织成员自助邀请、集中密钥管理、线上备份恢复演练仍是缺口。
 
 ## 19. V4 最小可测试产品形态
 

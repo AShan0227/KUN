@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     # first secret is used by operators to mint new tokens; all listed secrets
     # are accepted for verification.
     auth_secrets: str | None = None
+    self_signup_enabled: bool = False
+    self_signup_invite_code: str | None = None
 
     @field_validator("default_tenant_id", mode="before")
     @classmethod
@@ -101,6 +103,8 @@ class Settings(BaseSettings):
             issues.append(
                 "KUN_AUTH_SECRET or KUN_AUTH_SECRETS must contain at least one 32+ character secret"
             )
+        if self.self_signup_enabled and not (self.self_signup_invite_code or "").strip():
+            issues.append("KUN_SELF_SIGNUP_INVITE_CODE is required when self signup is enabled")
         if "kun:kun@" in self.pg_dsn:
             issues.append("KUN_PG_DSN must use the non-admin app role in production")
         if self.s3_access_key == "minio" or self.s3_secret_key == "minio123":

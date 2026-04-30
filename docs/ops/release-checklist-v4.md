@@ -21,6 +21,17 @@ uv run kun ops release-check --tag v4.0.0 --require-ready
 
 没有真实数据库/S3 restore 演练时，只能发内部测试版，不能宣称生产级完成。
 
+## 2.5 Auth / Signup
+
+如果要开放邀请码注册，必须确认：
+
+- `KUN_SELF_SIGNUP_ENABLED=true`
+- `KUN_SELF_SIGNUP_INVITE_CODE` 已设置，且不写进仓库
+- `KUN_AUTH_SECRET` 或 `KUN_AUTH_SECRETS` 已设置 32+ 字符真实密钥
+- 注册入口只承诺“邀请码注册 + refresh session”，不能宣传成密码登录 / OAuth / 设备风控
+
+不开放注册时，保持 `KUN_SELF_SIGNUP_ENABLED=false`。
+
 ## 3. Tag
 
 ```bash

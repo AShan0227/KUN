@@ -52,6 +52,7 @@ def test_preflight_blocks_unsafe_production_config(tmp_path: Path) -> None:
         default_tenant_id="u-sylvan",
         auth_secret="short",
         pg_dsn="postgresql+asyncpg://kun:kun@localhost:55432/kun",
+        self_signup_enabled=True,
     )
     report = run_preflight(cfg=cfg, repo_root=tmp_path, run_alembic_heads=False)
 
@@ -60,6 +61,7 @@ def test_preflight_blocks_unsafe_production_config(tmp_path: Path) -> None:
     assert "KUN_DEFAULT_TENANT_ID" in details
     assert "KUN_AUTH_SECRET" in details
     assert "KUN_PG_DSN" in details
+    assert "KUN_SELF_SIGNUP_INVITE_CODE" in details
     assert any(check.check_id == "backup_script" for check in report.blockers)
     assert any(check.check_id.startswith("secret_audit:") for check in report.blockers)
 
