@@ -89,6 +89,10 @@ def test_account_summary_hides_token_secrets(monkeypatch: pytest.MonkeyPatch) ->
                         status="issued",
                         expires_at=now + timedelta(hours=1),
                         revoked_at=None,
+                        last_used_at=now,
+                        last_ip_hash="ip-hash",
+                        last_user_agent="pytest-agent",
+                        use_count=3,
                         created_at=now,
                         updated_at=now,
                     )
@@ -119,6 +123,9 @@ def test_account_summary_hides_token_secrets(monkeypatch: pytest.MonkeyPatch) ->
     assert body["members"][0]["role"] == "owner"
     assert body["tokens"][0]["token_id"] == "tok-a"
     assert body["tokens"][0]["status"] == "issued"
+    assert body["tokens"][0]["last_ip_hash"] == "ip-hash"
+    assert body["tokens"][0]["last_user_agent"] == "pytest-agent"
+    assert body["tokens"][0]["use_count"] == 3
     assert "token_hash" not in body["tokens"][0]
     assert "secret-hash-that-must-not-leak" not in response.text
     assert body["counts"]["issued_tokens"] == 1

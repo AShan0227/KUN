@@ -12,6 +12,7 @@ from kun.ops.account_registry import (
     hash_bearer_token,
     invite_tenant_member,
     is_token_revoked,
+    record_token_usage,
     revoke_token_issue,
 )
 from kun.security.auth import verify_bearer_token
@@ -99,6 +100,25 @@ async def test_revoke_token_issue_returns_rowcount() -> None:
         _FakeSession(_ScalarResult(rowcount=0)),  # type: ignore[arg-type]
         tenant_id="tenant-a",
         token_id="tok-a",
+    )
+
+    assert ok is True
+    assert missing is False
+
+
+@pytest.mark.unit
+async def test_record_token_usage_returns_rowcount() -> None:
+    ok = await record_token_usage(
+        _FakeSession(_ScalarResult(rowcount=1)),  # type: ignore[arg-type]
+        tenant_id="tenant-a",
+        token_hash="hash-a",
+        ip_hash="ip-hash",
+        user_agent="pytest-agent",
+    )
+    missing = await record_token_usage(
+        _FakeSession(_ScalarResult(rowcount=0)),  # type: ignore[arg-type]
+        tenant_id="tenant-a",
+        token_hash="missing",
     )
 
     assert ok is True

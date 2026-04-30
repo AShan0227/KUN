@@ -12,6 +12,7 @@ Routes:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 
@@ -351,9 +352,11 @@ async def tenant_middleware(
         ctx = claims.to_tenant_context()
         if cfg.env == "production":
             try:
-                revoked = await _is_auth_token_revoked(
+                revoked = await _check_and_record_auth_token(
                     tenant_id=ctx.tenant_id,
                     auth_header=auth_header,
+                    ip_hash=_request_ip_hash(request),
+                    user_agent=request.headers.get("User-Agent"),
                 )
             except Exception as exc:
                 return JSONResponse(
@@ -392,14 +395,37 @@ async def tenant_middleware(
         return await call_next(request)
 
 
-async def _is_auth_token_revoked(*, tenant_id: str, auth_header: str) -> bool:
+async def _check_and_record_auth_token(
+    *,
+    tenant_id: str,
+    auth_header: str,
+    ip_hash: str | None,
+    user_agent: str | None,
+) -> bool:
     from kun.core.db import session_scope
-    from kun.ops.account_registry import hash_bearer_token, is_token_revoked
+    from kun.ops.account_registry import hash_bearer_token, is_token_revoked, record_token_usage
     from kun.security.auth import extract_bearer_token
 
     token_hash = hash_bearer_token(extract_bearer_token(auth_header))
     async with session_scope(tenant_id=tenant_id) as s:
-        return await is_token_revoked(s, tenant_id=tenant_id, token_hash=token_hash)
+        revoked = await is_token_revoked(s, tenant_id=tenant_id, token_hash=token_hash)
+        if not revoked:
+            await record_token_usage(
+                s,
+                tenant_id=tenant_id,
+                token_hash=token_hash,
+                ip_hash=ip_hash,
+                user_agent=user_agent,
+            )
+        return revoked
+
+
+def _request_ip_hash(request: Request) -> str | None:
+    raw_ip = request.client.host if request.client else ""
+    cleaned = raw_ip.strip()
+    if not cleaned:
+        return None
+    return hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
 
 
 @app.get("/metrics")

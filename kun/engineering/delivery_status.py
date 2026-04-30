@@ -283,6 +283,7 @@ def get_v3_delivery_status(
                 "已补默认关闭的邀请码注册 API：可创建租户账本、owner 和 access+refresh 会话，但必须显式配置邀请码",
                 "已补默认关闭的邀请接受 API：可用全局邀请码或一次性邀请 token 激活 invited 成员并签发 access+refresh 会话",
                 "已补最小用户会话自助面板 API：查看当前 session、列出自己的 token、撤销自己的 token",
+                "生产请求会记录 token 最后使用时间、使用次数、UA 摘要和 IP 哈希，NUO 账号面板可查看最小会话使用账本",
                 "NUO 账号面板可查看当前租户账号、成员和 token 签发账本，且不会暴露 raw bearer token",
                 "NUO 账号面板可写入成员邀请账本；不会伪装成已发送邮件或已完成成员登录",
                 "NUO 账号面板可撤销当前租户已签发 token，生产请求中间件会消费撤销结果",
@@ -320,7 +321,7 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "完整密码登录 / OAuth 账号体系",
-                "完整设备登录态、登录历史和异常登录风控",
+                "完整设备登录态和异常登录风控",
                 "云 KMS / 托管 Secret Manager、自动轮换和租户自助密钥配置",
                 "真实数据库/S3 环境的备份恢复演练",
                 "跨周真实产品运营 dogfood 验收场景",

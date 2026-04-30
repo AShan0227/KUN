@@ -521,6 +521,36 @@ async def is_token_revoked(
     return status == "revoked"
 
 
+async def record_token_usage(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    token_hash: str,
+    ip_hash: str | None = None,
+    user_agent: str | None = None,
+) -> bool:
+    """Record a successful bearer-token use without storing raw IP/secret."""
+
+    now = datetime.now(UTC)
+    cleaned_agent = (user_agent or "").strip()[:256] or None
+    result = await session.execute(
+        update(TenantTokenIssueRow)
+        .where(
+            TenantTokenIssueRow.tenant_id == tenant_id,
+            TenantTokenIssueRow.token_hash == token_hash,
+            TenantTokenIssueRow.status == "issued",
+        )
+        .values(
+            last_used_at=now,
+            last_ip_hash=ip_hash,
+            last_user_agent=cleaned_agent,
+            use_count=TenantTokenIssueRow.use_count + 1,
+            updated_at=now,
+        )
+    )
+    return bool(getattr(result, "rowcount", 0))
+
+
 async def revoke_token_issue(
     session: AsyncSession,
     *,
@@ -661,6 +691,7 @@ __all__ = [
     "hash_bearer_token",
     "invite_tenant_member",
     "is_token_revoked",
+    "record_token_usage",
     "revoke_token_issue",
     "upsert_tenant_account_member",
 ]

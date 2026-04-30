@@ -976,6 +976,10 @@ class TenantTokenIssueRow(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_ip_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_user_agent: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
@@ -995,6 +999,7 @@ class TenantTokenIssueRow(Base):
         ),
         Index("ix_tenant_tokens_tenant_status", "tenant_id", "status"),
         Index("ix_tenant_tokens_tenant_user", "tenant_id", "user_id"),
+        Index("ix_tenant_tokens_tenant_last_used", "tenant_id", "last_used_at"),
     )
 
 
