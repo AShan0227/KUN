@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import cast
 
 import pytest
@@ -14,6 +15,7 @@ from kun.engineering.mission_worker import (
     MissionResumeWorker,
     MissionRunnerOutcome,
     _mission_strategy_context_lines,
+    _suggest_next_step_from_outcome,
 )
 from kun.engineering.orchestrator import Orchestrator, TaskResult
 
@@ -200,6 +202,10 @@ def test_mission_strategy_context_lines_include_review_and_next_step() -> None:
                 "risk_notes": "避免真实外发。",
             },
             "strategy_notes": "优先做低风险验证。",
+            "last_continuation": {
+                "final_status": "done",
+                "answer_preview": "已经完成首轮客户访谈方案，并整理了低风险跟进动作。",
+            },
         },
         {
             "summary": "先生成下一个获客实验方案。",
@@ -214,3 +220,26 @@ def test_mission_strategy_context_lines_include_review_and_next_step() -> None:
     assert "避免真实外发" in joined
     assert "先生成下一个获客实验方案" in joined
     assert "优先做低风险验证" in joined
+    assert "Last continuation status: done" in joined
+    assert "已经完成首轮客户访谈方案" in joined
+
+
+def test_suggest_next_step_from_outcome_keeps_mission_moving() -> None:
+    request = _request()
+    outcome = MissionRunnerOutcome(
+        executed_task_id="tk-next",
+        final_status="done",
+        answer_preview="完成首个渠道验证，建议继续做小样本外联。",
+        cost_usd_equivalent=0.2,
+    )
+
+    next_step = _suggest_next_step_from_outcome(
+        request,
+        outcome,
+        now=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+
+    assert next_step.task_id == "tk-1"
+    assert next_step.action_type == "continue"
+    assert next_step.reason == "continuation_done"
+    assert "继续推进" in next_step.summary

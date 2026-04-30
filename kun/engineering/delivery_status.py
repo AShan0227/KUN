@@ -91,6 +91,7 @@ def get_v3_delivery_status(
                 "Mission 可记录下一步和复盘摘要",
                 "Mission 续跑 prompt 会带上最近复盘、预算提醒、风险提醒和下一步动作",
                 "Mission 复盘中的预算/风险/不确定性会影响下一次 Watchtower 策略权重和执行档位",
+                "Mission continuation 完成后会自动写入下一步建议和 last_continuation 摘要，下一轮续跑能消费",
                 "ops dogfood --include-db-mission 可跑真实数据库 Mission 续跑 smoke",
             ],
             evidence_refs=[
@@ -106,7 +107,7 @@ def get_v3_delivery_status(
             missing=[
                 "续跑还不是原 TaskRow 原地恢复，而是 continuation task 挂回 Mission",
                 "StateLedger 还不是完整事件溯源重建器，暂时只做历史事件回放",
-                "Mission 复盘只做轻量权重/档位 nudging，还没训练长期策略模型",
+                "Mission 复盘和 continuation 摘要只做轻量权重/档位 nudging，还没训练长期策略模型",
                 "还没有跑跨周真实产品运营 dogfood",
             ],
             next_steps=[
