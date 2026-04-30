@@ -170,6 +170,15 @@ type DeliveryCapability = {
   next_steps: string[];
 };
 
+type ReadinessReport = {
+  status: "pass" | "warn" | "block" | string;
+  tenant_id: string;
+  blockers: string[];
+  warnings: string[];
+  next_steps: string[];
+  delivery_summary?: Record<string, number>;
+};
+
 type WorldHandler = {
   action_type: string;
   handler_id: string;
@@ -310,6 +319,7 @@ export default function NuoDashboard() {
   const [diagnoseHint, setDiagnoseHint] = useState("");
   const [capability, setCapability] = useState<CapabilitySnapshot[]>([]);
   const [delivery, setDelivery] = useState<DeliveryCapability[]>([]);
+  const [readiness, setReadiness] = useState<ReadinessReport | null>(null);
   const [worldHandlers, setWorldHandlers] = useState<WorldHandler[]>([]);
   const [worldHealth, setWorldHealth] = useState<WorldHandlerHealth[]>([]);
   const [worldHealthSummary, setWorldHealthSummary] = useState<Record<string, number>>({});
@@ -337,12 +347,13 @@ export default function NuoDashboard() {
       ),
       fetchJson<{ snapshots: CapabilitySnapshot[] }>("/nuo/capability/summary"),
       fetchJson<{ items: DeliveryCapability[] }>("/nuo/health/delivery-status"),
+      fetchJson<ReadinessReport>("/nuo/health/readiness"),
       fetchJson<WorldGatewayHandlers>("/nuo/actions/handlers"),
       fetchJson<WorldGatewayHandlerHealthResponse>("/nuo/actions/handler-health"),
       fetchJson<AnchorPage<PendingAction>>("/nuo/actions/recent?limit=5"),
       fetchJson<WorldActionReliabilityResponse>("/nuo/actions/execution-reliability?limit=8"),
     ])
-      .then(([h, report, b, a, d, c, ds, wg, wh, recent, reliability]) => {
+      .then(([h, report, b, a, d, c, ds, ready, wg, wh, recent, reliability]) => {
         setHealth(h);
         setSystemReport(report);
         setBudget(b);
@@ -358,6 +369,7 @@ export default function NuoDashboard() {
         setFindingRound(d.round);
         setCapability(c.snapshots || []);
         setDelivery(ds.items || []);
+        setReadiness(ready);
         setWorldHandlers(wg.handlers || []);
         setWorldHealth(wh.handlers || []);
         setWorldHealthSummary(wh.summary || {});
@@ -634,6 +646,35 @@ export default function NuoDashboard() {
             ))}
           </div>
         </details>
+      )}
+
+      {readiness && (
+        <section className="bg-white rounded-lg shadow-sm p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-medium">正式测试就绪度</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                这里不是愿景，是傩按当前代码和配置给出的真实判断。
+              </p>
+            </div>
+            <ReadinessPill status={readiness.status} />
+          </div>
+          <div className="grid grid-cols-3 gap-3 mt-3">
+            <MiniMetric label="阻塞项" value={readiness.blockers.length} />
+            <MiniMetric label="提醒项" value={readiness.warnings.length} />
+            <MiniMetric label="下一步" value={readiness.next_steps.length} />
+          </div>
+          {readiness.blockers.length > 0 && (
+            <div className="mt-3 rounded border border-red-100 bg-red-50 p-3 text-xs text-red-800">
+              {readiness.blockers.slice(0, 2).join("；")}
+            </div>
+          )}
+          {readiness.next_steps.length > 0 && (
+            <div className="mt-3 text-xs text-gray-500">
+              下一步：{readiness.next_steps.slice(0, 2).join("；")}
+            </div>
+          )}
+        </section>
       )}
 
       <section className="bg-white rounded-lg shadow-sm p-4">
@@ -1085,6 +1126,17 @@ function StatusPill({ status }: { status: DeliveryCapability["status"] }) {
           ? "bg-gray-700 text-white"
           : "bg-kun-bad text-white";
   return <span className={`${color} rounded px-2 py-0.5 text-xs whitespace-nowrap`}>{label}</span>;
+}
+
+function ReadinessPill({ status }: { status: ReadinessReport["status"] }) {
+  const label = status === "pass" ? "可测" : status === "block" ? "有阻塞" : "可测但有提醒";
+  const color =
+    status === "pass"
+      ? "bg-kun-good text-white"
+      : status === "block"
+        ? "bg-kun-bad text-white"
+        : "bg-kun-warn text-white";
+  return <span className={`${color} rounded px-2 py-1 text-xs whitespace-nowrap`}>{label}</span>;
 }
 
 function HandlerHealthLine({ card }: { card?: WorldHandlerHealth }) {
