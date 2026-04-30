@@ -837,6 +837,7 @@ def test_ops_readiness_cli_passes_db_account_flag(monkeypatch: pytest.MonkeyPatc
             "tenant-cli",
             "--include-dogfood",
             "--include-db-account",
+            "--include-db-state-ledger-repair",
             "--json",
             "--skip-alembic",
             "--no-fail-on-blocker",
@@ -845,4 +846,5 @@ def test_ops_readiness_cli_passes_db_account_flag(monkeypatch: pytest.MonkeyPatc
 
     assert result.exit_code == 0
     assert calls[0]["include_db_account"] is True
+    assert calls[0]["include_db_state_ledger_repair"] is True
     assert calls[0]["include_dogfood"] is True

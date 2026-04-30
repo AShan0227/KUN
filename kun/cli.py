@@ -772,6 +772,11 @@ def ops_readiness(
         "--include-db-account",
         help="dogfood 里额外跑真实数据库账号账本 / session / 成员邀请 smoke",
     ),
+    include_db_state_ledger_repair: bool = typer.Option(
+        False,
+        "--include-db-state-ledger-repair",
+        help="dogfood 里额外跑真实数据库 StateLedger repair smoke",
+    ),
     skip_alembic: bool = typer.Option(False, "--skip-alembic", help="跳过 alembic heads 检查"),
     fail_on_blocker: bool = typer.Option(
         True,
@@ -789,6 +794,7 @@ def ops_readiness(
             include_dogfood=include_dogfood,
             include_db_mission=include_db_mission,
             include_db_account=include_db_account,
+            include_db_state_ledger_repair=include_db_state_ledger_repair,
             run_alembic_heads=not skip_alembic,
         )
     )

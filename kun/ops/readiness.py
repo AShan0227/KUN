@@ -42,6 +42,7 @@ async def run_readiness_report(
     include_dogfood: bool = False,
     include_db_mission: bool = False,
     include_db_account: bool = False,
+    include_db_state_ledger_repair: bool = False,
     run_alembic_heads: bool = True,
 ) -> ReadinessReport:
     """Run the current readiness gates and return one compact report."""
@@ -56,6 +57,7 @@ async def run_readiness_report(
             tenant_id=tenant_id,
             include_db_mission=include_db_mission,
             include_db_account=include_db_account,
+            include_db_state_ledger_repair=include_db_state_ledger_repair,
         )
 
     blockers = _blockers(
