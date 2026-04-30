@@ -195,22 +195,26 @@ def get_v3_delivery_status(
                 "NUO context maintenance 可压缩过长摘要、软遗忘/硬删除长期未用资产",
                 "idle-batch 会把情节规则蒸馏为 methodology 资产，供 ContextPacker 后续复用",
                 "NUO / CLI 可查看 resource_credit_stats 里的 top 贡献资源，避免信用只停留在流水账",
+                "相似任务的结果记忆 / 元决策记忆会召回成小证据包，接入 Watchtower Decision Plane",
             ],
             evidence_refs=[
                 "kun/memory/writeback.py",
+                "kun/memory/similar_task_recall.py",
                 "kun/context/packer.py",
                 "kun/engineering/orchestrator.py",
                 "kun/engineering/credit_assignment.py",
                 "kun/api/nuo/health_panel.py",
                 "kun/cli.py",
                 "kun/watchtower/decision_plane.py",
+                "tests/unit/test_watchtower_decision_plane.py",
                 "tests/unit/test_v3_memory_scoring_gateway.py",
             ],
             missing=[
+                "相似任务召回目前是确定性轻量检索，还不是向量库 / 跨租户匿名经验池",
                 "贡献信用对模型路由 / skill 路由的更强影响还需要真实样本和阈值校准",
             ],
             next_steps=[
-                "把相似任务检索结果接入 Watchtower Decision Plane",
+                "用真实 dogfood 样本校准相似经验权重，避免过拟合单次成功路径",
             ],
         ),
         DeliveryCapability(

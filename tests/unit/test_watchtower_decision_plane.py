@@ -4,7 +4,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import pytest
+from kun.context.assets import AssetLayer, LayeredAsset
 from kun.context.packer import ContextPack
+from kun.context.storage import InMemoryAssetStore
 from kun.core.state_ledger import StateLedger
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
 from kun.engineering.credit_assignment import (
@@ -17,6 +19,11 @@ from kun.interface.llm import LLMRouter
 from kun.interface.llm.base import LLMResponse, UsageInfo
 from kun.interface.llm.router import set_router
 from kun.interface.llm.stub_provider import StubProvider
+from kun.memory.similar_task_recall import (
+    SimilarTaskExperience,
+    recall_similar_task_experiences,
+    summarize_strategy_votes,
+)
 from kun.watchtower.decision_plane import WatchtowerDecisionPlane
 
 
@@ -182,6 +189,71 @@ def test_decision_plane_uses_strategy_credit_as_moe_tie_breaker() -> None:
         assert decision.strategy_pack_id == "education"
     finally:
         reset_contribution_tracker()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_similar_task_recall_extracts_strategy_votes_from_memory() -> None:
+    store = InMemoryAssetStore()
+    task_ref = _task_ref(
+        task_type="business.growth",
+        text="给产品做商业化增长方案",
+        complexity=0.5,
+    )
+    await store.put(
+        LayeredAsset.build(
+            "memory",
+            "u-sylvan",
+            metadata={
+                "memory_layer": "task_result",
+                "task_type": "business.growth",
+                "status": "done",
+                "validation_outcome": "pass",
+                "score_overall": 0.92,
+                "strategy_pack_id": "commercialization",
+            },
+            summary="任务结果: 商业化增长方案成功, 转化路径清晰。",
+            layer=AssetLayer.L2_PROJECT,
+            tags=["v3", "task_result", "business.growth", "commercialization"],
+        )
+    )
+
+    experiences = await recall_similar_task_experiences(
+        tenant_id="u-sylvan",
+        task_ref=task_ref,
+        store=store,
+    )
+
+    assert experiences
+    assert experiences[0].strategy_pack_id == "commercialization"
+    assert experiences[0].positive_weight > 0
+    assert summarize_strategy_votes(experiences)["commercialization"] > 0
+
+
+@pytest.mark.unit
+def test_decision_plane_uses_similar_experience_as_moe_signal() -> None:
+    task_ref = _task_ref(task_type="general", text="帮我想一个新业务方案")
+    decision = WatchtowerDecisionPlane().decide(
+        task_ref,
+        similar_experiences=[
+            SimilarTaskExperience(
+                asset_id="mm-1",
+                memory_layer="task_result",
+                task_type="business.growth",
+                summary="上一轮类似任务商业化策略效果最好。",
+                strategy_pack_id="commercialization",
+                validation_outcome="pass",
+                score_overall=0.95,
+                similarity_score=0.9,
+                reason="text_overlap",
+            )
+        ],
+    )
+
+    assert decision.strategy_pack_id == "commercialization"
+    assert decision.metadata["similar_experience_count"] == 1
+    assert decision.metadata["similar_strategy_votes"]["commercialization"] > 0
+    assert "similar_experience=commercialization" in decision.reason
 
 
 @pytest.mark.unit

@@ -67,6 +67,16 @@ uv run kun ops delivery-status --fail-on-not-ready
 
 `--fail-on-not-ready` 适合 release gate。现在它会失败是正常的，因为生产级部署和完整真实世界能力还没完成。
 
+### 备份/恢复演练
+
+```bash
+uv run python scripts/backup_restore_drill.py create --output-dir backups
+uv run python scripts/backup_restore_drill.py restore-dry-run backups/kun-backup-drill-*.manifest.json \
+  --restore-root /tmp/kun-restore-dry-run
+```
+
+这条演练只验证本地关键配置/目录的“可打包 + manifest 可校验 + restore dry-run 能发现缺失/覆盖风险”。它会生成 tar.gz 和 manifest，记录文件数、sha256、时间和路径白名单；restore dry-run 不写文件、不覆盖目录。Postgres 真实数据仍按下面生产部署里的 `backup_postgres.sh` / `restore_postgres_smoke.sh` 单独演练。
+
 ### 租户启动包
 
 生产模式不再信任裸 `X-Tenant-Id`。给一个租户发起 dogfood 前，先生成签名 token：

@@ -257,7 +257,30 @@ def _findings(
                     suggested_action=card.recommendation,
                 )
             )
+        elif card.status == "limited" and _world_handler_needs_finding(card):
+            findings.append(
+                SystemHealthFinding(
+                    finding_id=f"world:{card.action_type}",
+                    severity="warn",
+                    subsystem="world_gateway",
+                    title=f"外部动作 {card.action_type} 有风险",
+                    detail="；".join(card.issues) or card.recommendation,
+                    suggested_action=card.recommendation,
+                )
+            )
     return findings
+
+
+def _world_handler_needs_finding(card: WorldHandlerHealthCard) -> bool:
+    """Keep low-noise WorldGateway warnings, but surface real side-effect risk."""
+    return (
+        card.external_dispatched
+        or not card.configured
+        or not card.has_compensation
+        or card.failure_rate >= 0.1
+        or card.missing_handler_count > 0
+        or card.policy_blocked_count > 0
+    )
 
 
 __all__ = [

@@ -254,6 +254,7 @@ export default function Home() {
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [expandedTaskId, setExpandedTaskId] = useState("");
   const [taskDetail, setTaskDetail] = useState<TaskDetail | null>(null);
   const [taskDetailLoading, setTaskDetailLoading] = useState(false);
   const [taskDetailError, setTaskDetailError] = useState("");
@@ -465,6 +466,7 @@ export default function Home() {
     const id = taskId.trim();
     if (!id) return;
     setSelectedTaskId(id);
+    setExpandedTaskId(id);
     setTaskDetailLoading(true);
     setTaskDetailError("");
     try {
@@ -483,6 +485,19 @@ export default function Home() {
       setTaskDetailLoading(false);
     }
   }, []);
+
+  const toggleTaskDetail = useCallback(
+    (taskId: string) => {
+      const id = taskId.trim();
+      if (!id) return;
+      if (expandedTaskId === id) {
+        setExpandedTaskId("");
+        return;
+      }
+      void loadTaskDetail(id);
+    },
+    [expandedTaskId, loadTaskDetail],
+  );
 
   const loadGraph = useCallback(async () => {
     const kind = graphKind.trim();
@@ -669,9 +684,14 @@ export default function Home() {
                       {mission.tasks.length > 0 && (
                         <div className="mt-2 grid grid-cols-2 gap-1">
                           {mission.tasks.slice(0, 4).map((task) => (
-                            <div
+                            <button
                               key={task.task_id}
-                              className="rounded border border-white bg-white px-2 py-1"
+                              className={`rounded border bg-white px-2 py-1 text-left ${
+                                expandedTaskId === task.task_id
+                                  ? "border-kun-accent"
+                                  : "border-white"
+                              }`}
+                              onClick={() => toggleTaskDetail(task.task_id)}
                             >
                               <div className="flex items-center justify-between gap-1">
                                 <span className="truncate text-gray-600">{task.role}</span>
@@ -682,7 +702,7 @@ export default function Home() {
                               <div className="mt-0.5 truncate text-[11px] text-gray-400">
                                 {task.task_id} · 尝试 {task.resume_attempts}
                               </div>
-                            </div>
+                            </button>
                           ))}
                         </div>
                       )}
@@ -691,43 +711,90 @@ export default function Home() {
                 </div>
               </div>
             )}
-            {activeLedger.slice(0, 3).map((item) => (
-              <button
-                key={item.task_id}
-                className={`w-full rounded border bg-white p-2 text-left text-xs ${
-                  selectedTaskId === item.task_id ? "border-kun-accent" : "border-gray-200"
-                }`}
-                onClick={() => void loadTaskDetail(item.task_id)}
-              >
-                <div className="flex justify-between gap-2">
-                  <span className="truncate font-medium">{item.current_goal || item.task_id}</span>
-                  <span className="text-gray-500">{item.status}</span>
+            {activeLedger.length > 0 && (
+              <div className="rounded border border-gray-200 bg-white p-2 text-xs">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="font-medium">任务看板</span>
+                  <span className="text-gray-400">点开看状态账本</span>
                 </div>
-                <div className="mt-1 text-gray-500">
-                  第 {item.current_step}/{item.total_steps || 1} 步 · 风险 {item.current_risk} ·{" "}
-                  {item.execution_mode}
-                  {item.strategy_pack_id ? ` · 策略 ${item.strategy_pack_id}` : ""}
+                <div className="space-y-2">
+                  {activeLedger.slice(0, 4).map((item) => {
+                    const isExpanded = expandedTaskId === item.task_id;
+                    return (
+                      <div
+                        key={item.task_id}
+                        className={`rounded border bg-gray-50 ${
+                          isExpanded ? "border-kun-accent" : "border-gray-100"
+                        }`}
+                      >
+                        <button
+                          className="w-full p-2 text-left"
+                          onClick={() => toggleTaskDetail(item.task_id)}
+                        >
+                          <div className="flex justify-between gap-2">
+                            <span className="truncate font-medium">
+                              {item.current_goal || item.title || item.task_id}
+                            </span>
+                            <span className={missionStatusClass(item.status)}>{item.status}</span>
+                          </div>
+                          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-gray-500">
+                            <span>
+                              第 {item.current_step}/{item.total_steps || 1} 步
+                            </span>
+                            <span>风险 {item.current_risk}</span>
+                            <span>${item.cost_so_far_usd.toFixed(4)}</span>
+                            <span>
+                              待确认{" "}
+                              {item.pending_confirmations.length +
+                                pendingActions.filter(
+                                  (action) => action.task_ref === item.task_id,
+                                ).length}
+                            </span>
+                          </div>
+                          <div className="mt-1 truncate text-gray-500">
+                            {item.current_action ||
+                              item.current_model ||
+                              item.current_skill ||
+                              item.execution_mode}
+                          </div>
+                          {item.recent_events?.[0]?.summary && (
+                            <div className="mt-1 truncate text-gray-400">
+                              最近：{item.recent_events[0].summary}
+                            </div>
+                          )}
+                        </button>
+                        {isExpanded && (
+                          <div className="border-t border-gray-100 p-2">
+                            <TaskDetailPanel
+                              detail={taskDetail}
+                              loading={taskDetailLoading}
+                              error={taskDetailError}
+                              selectedTaskId={item.task_id}
+                              ledgerFallback={item}
+                              pendingActions={pendingActions.filter(
+                                (action) => action.task_ref === item.task_id,
+                              )}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="mt-1 truncate text-gray-500">
-                  {item.current_model || "未选模型"}
-                  {item.current_skill ? ` · ${item.current_skill}` : ""} · $
-                  {item.cost_so_far_usd.toFixed(4)}
-                </div>
-                {item.decision_reason && (
-                  <div className="mt-1 truncate text-gray-400">{item.decision_reason}</div>
-                )}
-              </button>
-            ))}
-            {(selectedTaskId || taskDetailLoading || taskDetailError) && (
-              <TaskDetailPanel
-                detail={taskDetail}
-                loading={taskDetailLoading}
-                error={taskDetailError}
-                selectedTaskId={selectedTaskId}
-                pendingActions={pendingActions.filter(
-                  (action) => action.task_ref === selectedTaskId,
-                )}
-              />
+              </div>
+            )}
+            {expandedTaskId &&
+              !activeLedger.some((item) => item.task_id === expandedTaskId) &&
+              (selectedTaskId || taskDetailLoading || taskDetailError) && (
+                <TaskDetailPanel
+                  detail={taskDetail}
+                  loading={taskDetailLoading}
+                  error={taskDetailError}
+                  selectedTaskId={selectedTaskId}
+                  pendingActions={pendingActions.filter(
+                    (action) => action.task_ref === selectedTaskId,
+                  )}
+                />
             )}
             {globalState && activeLedger.length === 0 && (
               <div className="rounded border border-dashed border-gray-200 bg-white p-2 text-xs text-gray-500">
@@ -958,15 +1025,17 @@ function TaskDetailPanel({
   loading,
   error,
   selectedTaskId,
+  ledgerFallback,
   pendingActions,
 }: {
   detail: TaskDetail | null;
   loading: boolean;
   error: string;
   selectedTaskId: string;
+  ledgerFallback?: LedgerEntry;
   pendingActions: PendingAction[];
 }) {
-  const ledger = detail?.state_ledger ?? null;
+  const ledger = detail?.state_ledger ?? ledgerFallback ?? null;
   const artifacts = detail?.workspace?.artifacts ?? [];
   const trails = ledger?.recent_events ?? [];
   const history = detail?.state_ledger_history ?? [];

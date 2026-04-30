@@ -19,6 +19,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kun.datamodel.task import ExecutionMode, TaskRef
 from kun.engineering.credit_assignment import get_contribution_tracker
+from kun.memory.similar_task_recall import (
+    SimilarTaskExperience,
+    summarize_strategy_votes,
+)
 
 BASE_METRICS = [
     "success_rate",
@@ -116,8 +120,15 @@ class WatchtowerDecisionPlane:
         *,
         active_protocol: Any | None = None,
         mission_strategy: dict[str, Any] | None = None,
+        similar_experiences: list[SimilarTaskExperience] | None = None,
     ) -> WatchtowerDecision:
-        pack, pack_score = self._select_pack(task_ref)
+        similar_experiences = similar_experiences or []
+        strategy_votes = summarize_strategy_votes(similar_experiences)
+        pack, pack_score = self._select_pack(
+            task_ref,
+            similar_experiences=similar_experiences,
+            strategy_votes=strategy_votes,
+        )
         protocol_mode = _protocol_execution_mode(active_protocol)
         mission_adjustment = _mission_strategy_adjustment(mission_strategy)
         mode_source: Literal["watchtower", "protocol", "forced"] = "watchtower"
@@ -161,6 +172,9 @@ class WatchtowerDecisionPlane:
             reason += "; execution_mode 来自 active protocol"
         if mission_adjustment.reason:
             reason += f"; mission_review={mission_adjustment.reason}"
+        if strategy_votes:
+            top_vote = next(iter(strategy_votes.items()))
+            reason += f"; similar_experience={top_vote[0]}:{top_vote[1]:.2f}"
 
         return WatchtowerDecision(
             strategy_pack_id=pack.pack_id,
@@ -182,6 +196,22 @@ class WatchtowerDecisionPlane:
                 "risk_level": task_ref.meta.risk_level,
                 "complexity_score": task_ref.meta.complexity_score,
                 "mission_review_adjustments": mission_adjustment.model_dump(mode="json"),
+                "similar_experience_count": len(similar_experiences),
+                "similar_experience_refs": [
+                    {
+                        "asset_id": item.asset_id,
+                        "memory_layer": item.memory_layer,
+                        "task_type": item.task_type,
+                        "strategy_pack_id": item.strategy_pack_id,
+                        "validation_outcome": item.validation_outcome,
+                        "score_overall": item.score_overall,
+                        "similarity_score": item.similarity_score,
+                        "positive_weight": item.positive_weight,
+                        "reason": item.reason,
+                    }
+                    for item in similar_experiences[:5]
+                ],
+                "similar_strategy_votes": strategy_votes,
             },
         )
 
@@ -198,9 +228,24 @@ class WatchtowerDecisionPlane:
                 existing.append(skill_id)
         task_ref.spec.required_skills = existing
 
-    def _select_pack(self, task_ref: TaskRef) -> tuple[StrategyPack, float]:
+    def _select_pack(
+        self,
+        task_ref: TaskRef,
+        *,
+        similar_experiences: list[SimilarTaskExperience] | None = None,
+        strategy_votes: dict[str, float] | None = None,
+    ) -> tuple[StrategyPack, float]:
         scored = [
-            (pack, _pack_base_score(pack, task_ref) + _strategy_credit_bonus(pack.pack_id))
+            (
+                pack,
+                _pack_base_score(pack, task_ref)
+                + _strategy_credit_bonus(pack.pack_id)
+                + _similar_experience_bonus(
+                    pack.pack_id,
+                    similar_experiences=similar_experiences or [],
+                    strategy_votes=strategy_votes or {},
+                ),
+            )
             for pack in self.packs
         ]
         scored.sort(key=lambda item: (-item[1], item[0].pack_id))
@@ -438,6 +483,27 @@ def _strategy_credit_bonus(pack_id: str) -> float:
     except Exception:
         return 0.0
     return min(0.35, max(0.0, score) * 0.35)
+
+
+def _similar_experience_bonus(
+    pack_id: str,
+    *,
+    similar_experiences: list[SimilarTaskExperience],
+    strategy_votes: dict[str, float],
+) -> float:
+    """Cold-start MoE feedback from actual memory assets.
+
+    Durable contribution credit is still the stronger signal.  Similar memories
+    are a short-loop nudge: if past similar tasks repeatedly succeeded with a
+    strategy pack, let it influence ambiguous routing immediately.
+    """
+
+    if not similar_experiences:
+        return 0.0
+    vote = float(strategy_votes.get(pack_id, 0.0))
+    if vote <= 0:
+        return 0.0
+    return min(0.45, vote * 0.35)
 
 
 class MissionStrategyAdjustment(BaseModel):

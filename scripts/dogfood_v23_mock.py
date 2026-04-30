@@ -31,6 +31,7 @@ import asyncio
 import os
 import sys
 from types import SimpleNamespace
+from typing import NoReturn
 
 # 强制启用 V2.3 全套
 os.environ["KUN_QI_RUNTIME_ENABLED"] = "1"
@@ -50,7 +51,7 @@ def _ok(msg: str) -> None:
     print(f"\033[32m✓\033[0m {msg}")
 
 
-def _fail(msg: str) -> None:
+def _fail(msg: str) -> NoReturn:
     print(f"\033[31m✗\033[0m {msg}")
     sys.exit(1)
 
@@ -189,12 +190,12 @@ async def main() -> None:
     from typer.testing import CliRunner
 
     runner = CliRunner()
-    result = runner.invoke(cli_app, ["qi", "status"])
-    if result.exit_code != 0:
-        _fail(f"kun qi status exit_code={result.exit_code}")
+    cli_result = runner.invoke(cli_app, ["qi", "status"])
+    if cli_result.exit_code != 0:
+        _fail(f"kun qi status exit_code={cli_result.exit_code}")
     _ok("kun qi status 返 exit_code=0")
     print("   --- output ---")
-    for line in result.output.splitlines():
+    for line in cli_result.output.splitlines():
         print(f"   {line}")
 
     # ===== 8. cron jobs registered =====

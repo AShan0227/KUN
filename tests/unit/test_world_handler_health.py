@@ -20,7 +20,11 @@ def _row(
     *,
     gateway: dict[str, object] | None = None,
     risk_level: str = "medium",
+    executor_status: str | None = None,
 ) -> PendingActionRow:
+    executor: dict[str, object] = {"gateway": gateway or {}}
+    if executor_status is not None:
+        executor["status"] = executor_status
     return PendingActionRow(
         action_id=action_id,
         tenant_id="tenant-1",
@@ -29,7 +33,7 @@ def _row(
         target_ref="target",
         status=status,
         risk_level=risk_level,
-        payload={"executor": {"gateway": gateway or {}}},
+        payload={"executor": executor},
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
     )
@@ -165,3 +169,68 @@ def test_handler_health_accepts_tenant_scoped_expected_handler_config(
     assert email.status == "unregistered"
     assert not any("KUN_WORLD_EMAIL_SEND_ENABLED" in issue for issue in email.issues)
     assert not any("SMTP_HOST" in issue for issue in email.issues)
+
+
+def test_handler_health_flags_half_enabled_real_external_env(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("KUN_WORLD_EMAIL_SEND_ENABLED", raising=False)
+    monkeypatch.setenv("KUN_WORLD_SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("KUN_WORLD_SMTP_FROM", "kun@example.com")
+
+    cards = {card.action_type: card for card in build_world_handler_health(descriptors=[], rows=[])}
+
+    email = cards["email.send"]
+    assert email.configured is False
+    assert any("真实外发半启用" in issue for issue in email.issues)
+    assert any("KUN_WORLD_EMAIL_SEND_ENABLED" in issue for issue in email.issues)
+
+
+def test_handler_health_flags_high_failure_rate(tmp_path: Path) -> None:
+    descriptors = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[EmailDraftHandler(tmp_path / "drafts")],
+    ).handler_descriptors()
+    rows = [
+        _row(
+            "act-ok-1",
+            "email.draft",
+            "executed",
+            gateway={
+                "gateway_mode": "handler_executed",
+                "requires_handler": False,
+                "capability_status": "supported_draft",
+            },
+        ),
+        _row(
+            "act-ok-2",
+            "email.draft",
+            "executed",
+            gateway={
+                "gateway_mode": "handler_executed",
+                "requires_handler": False,
+                "capability_status": "supported_draft",
+            },
+        ),
+        _row(
+            "act-ok-3",
+            "email.draft",
+            "executed",
+            gateway={
+                "gateway_mode": "handler_executed",
+                "requires_handler": False,
+                "capability_status": "supported_draft",
+            },
+        ),
+        _row("act-fail", "email.draft", "approved", executor_status="failed"),
+    ]
+
+    cards = {
+        card.action_type: card
+        for card in build_world_handler_health(descriptors=descriptors, rows=rows)
+    }
+
+    email = cards["email.draft"]
+    assert email.status == "blocked"
+    assert email.failure_rate == 0.25
+    assert any("失败率高" in issue for issue in email.issues)

@@ -86,6 +86,7 @@ from kun.interface.llm import (
     get_router,
 )
 from kun.interface.llm.router import TaskPurpose
+from kun.memory.similar_task_recall import recall_similar_task_experiences
 from kun.skills.selector import get_selector as get_skill_selector
 from kun.watchtower.engine import RuleEngine
 
@@ -698,10 +699,17 @@ class Orchestrator:
                         resource_kinds=("strategy_pack",),
                         limit=200,
                     )
+                similar_experiences = await recall_similar_task_experiences(
+                    tenant_id=tenant.tenant_id,
+                    task_ref=task_ref,
+                    store=_memory_store_from_writeback(self.memory_writeback),
+                    limit=5,
+                )
                 watchtower_decision = self.decision_plane.decide(
                     task_ref,
                     active_protocol=active_protocol,
                     mission_strategy=mission_strategy,
+                    similar_experiences=similar_experiences,
                 )
                 watchtower_ticket = ticket_from_watchtower_decision(
                     tenant_id=tenant.tenant_id,
@@ -2344,8 +2352,10 @@ class Orchestrator:
         if self.credit_assignment is None:
             return
         skill_ids = [step.skill_used] if step.skill_used and step.skill_used != "llm.direct" else []
+        memory_asset_ids = list(context_asset_ids)
+        memory_asset_ids.extend(_watchtower_similar_experience_asset_ids(watchtower_decision))
         resources: dict[str, list[str]] = {
-            "memory": list(context_asset_ids),
+            "memory": _dedupe_strings(memory_asset_ids),
             "skill": skill_ids,
             "model": [response.model or "unknown"],
             "llm_route": [
@@ -3248,6 +3258,42 @@ def _attach_task_parent(task_ref: TaskRef, mission_id: str | None) -> None:
     if task_ref.spec is None:
         task_ref.spec = TaskSpec(goal_detail=task_ref.meta.success_criteria_short)
     task_ref.spec.parent_task_id = mission_id
+
+
+def _memory_store_from_writeback(memory_writeback: Any) -> Any | None:
+    """Reuse the same AssetStore used by memory writeback when available."""
+
+    store = getattr(memory_writeback, "store", None)
+    return store if store is not None else None
+
+
+def _watchtower_similar_experience_asset_ids(watchtower_decision: Any) -> list[str]:
+    """Return memory assets that influenced Watchtower's sparse path choice."""
+
+    metadata = getattr(watchtower_decision, "metadata", None)
+    if not isinstance(metadata, dict):
+        return []
+    refs = metadata.get("similar_experience_refs")
+    if not isinstance(refs, list):
+        return []
+    out: list[str] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        asset_id = ref.get("asset_id")
+        if isinstance(asset_id, str) and asset_id:
+            out.append(asset_id)
+    return out
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
 
 
 async def _load_mission_strategy(*, tenant_id: str, mission_id: str) -> dict[str, Any]:

@@ -17,7 +17,7 @@ from sqlalchemy import select
 from kun.core.db import session_scope
 from kun.core.orm import PendingActionRow
 from kun.world.gateway import WorldGateway, WorldHandlerDescriptor, get_world_gateway
-from kun.world.tenant_env import missing_required_world_env
+from kun.world.tenant_env import env_for_tenant, missing_required_world_env
 
 HandlerHealthStatus = Literal["ready", "limited", "blocked", "unregistered"]
 
@@ -88,6 +88,7 @@ async def collect_world_handler_health(
     return build_world_handler_health(
         descriptors=(gateway or get_world_gateway()).handler_descriptors(),
         rows=rows,
+        tenant_id=tenant_id,
     )
 
 
@@ -95,6 +96,7 @@ def build_world_handler_health(
     *,
     descriptors: list[WorldHandlerDescriptor],
     rows: list[PendingActionRow],
+    tenant_id: str = "",
 ) -> list[WorldHandlerHealthCard]:
     descriptor_by_type = {item.action_type: item for item in descriptors}
     action_types = (
@@ -103,7 +105,7 @@ def build_world_handler_health(
         | set(EXPECTED_REAL_WORLD_HANDLERS)
     )
     cards = [
-        _build_card(action_type, descriptor_by_type.get(action_type), rows)
+        _build_card(action_type, descriptor_by_type.get(action_type), rows, tenant_id=tenant_id)
         for action_type in sorted(action_types)
     ]
     cards.sort(key=lambda item: (_status_rank(item.status), -item.failed_count, item.action_type))
@@ -114,8 +116,11 @@ def _build_card(
     action_type: str,
     descriptor: WorldHandlerDescriptor | None,
     rows: list[PendingActionRow],
+    *,
+    tenant_id: str = "",
 ) -> WorldHandlerHealthCard:
     relevant = [row for row in rows if row.action_type == action_type]
+    effective_tenant_id = tenant_id or (relevant[0].tenant_id if relevant else "")
     total = len(relevant)
     approved = sum(1 for row in relevant if row.status == "approved")
     rejected = sum(1 for row in relevant if row.status == "rejected")
@@ -131,23 +136,30 @@ def _build_card(
     success_rate = executed_success / denominator
 
     issues: list[str] = []
+    config_issues = _expected_config_issues(action_type, tenant_id=effective_tenant_id)
     if descriptor is None:
         issues.append("没有注册 WorldGateway handler")
-        tenant_id = relevant[0].tenant_id if relevant else ""
-        issues.extend(_expected_config_issues(action_type, tenant_id=tenant_id))
+        issues.extend(config_issues)
     else:
-        if descriptor.external_dispatched and descriptor.requires_external_dispatch_confirmation:
-            issues.append("真实外发动作必须保留人工确认")
+        if descriptor.external_dispatched:
+            issues.append("真实外发风险高：会影响外部系统，必须人工确认和审计")
+            if not descriptor.requires_external_dispatch_confirmation:
+                issues.append("真实外发 handler 没声明二次外发确认")
+            if not descriptor.permissions_required:
+                issues.append("真实外发 handler 没声明权限要求")
+            issues.extend(config_issues)
         if not _has_clear_compensation(descriptor.compensation_strategy):
             issues.append("补偿策略不清楚")
-        if descriptor.external_dispatched and descriptor.mode == "execute":
-            issues.append("真实外发 handler 需要持续审计")
     if missing:
         issues.append(f"最近 {missing} 次没有 handler")
     if policy_blocked:
         issues.append(f"最近 {policy_blocked} 次被策略拦截")
     if failed:
         issues.append(f"最近 {failed} 次执行失败")
+    if total >= 3 and failure_rate >= 0.25:
+        issues.append(f"失败率高 ({failure_rate:.0%})，不要继续自动执行")
+    elif total >= 3 and failure_rate >= 0.1:
+        issues.append(f"失败率偏高 ({failure_rate:.0%})，需要复盘 handler 或上游动作生成")
     if reject_rate >= 0.3 and total >= 3:
         issues.append("审批拒绝率偏高，可能生成动作质量不够")
 
@@ -166,7 +178,7 @@ def _build_card(
         mode=descriptor.mode if descriptor else "",
         external_dispatched=bool(descriptor and descriptor.external_dispatched),
         registered=descriptor is not None,
-        configured=descriptor is not None,
+        configured=descriptor is not None and not config_issues,
         requires_human_approval=True
         if descriptor is None
         else bool(descriptor.permissions_required or descriptor.external_dispatched),
@@ -299,17 +311,36 @@ def _expected_config_issues(action_type: str, *, tenant_id: str = "") -> list[st
         return []
     enable_env, required_envs = expected
     issues: list[str] = []
-    if not _env_truthy(os.getenv(enable_env)):
-        issues.append(f"未启用 {enable_env}=true")
-    missing = missing_required_world_env(required_envs, tenant_id=tenant_id)
-    if missing:
-        if tenant_id:
+    enabled = _env_truthy(os.getenv(enable_env))
+    if not enabled:
+        present_required = [
+            name for name in required_envs if _env_present_for_tenant(name, tenant_id=tenant_id)
+        ]
+        if present_required:
             issues.append(
-                "缺少全局或租户级环境变量: " + ", ".join(missing) + f" (tenant={tenant_id})"
+                f"真实外发半启用：已配置 {', '.join(present_required)}，但未启用 {enable_env}=true"
             )
         else:
-            issues.append("缺少全局或任意租户级环境变量: " + ", ".join(missing))
+            issues.append(f"未启用 {enable_env}=true")
+    missing = missing_required_world_env(required_envs, tenant_id=tenant_id)
+    if missing:
+        prefix = "真实外发半启用：" if enabled else ""
+        if tenant_id:
+            issues.append(
+                prefix
+                + "缺少全局或租户级环境变量: "
+                + ", ".join(missing)
+                + f" (tenant={tenant_id})"
+            )
+        else:
+            issues.append(prefix + "缺少全局或任意租户级环境变量: " + ", ".join(missing))
     return issues
+
+
+def _env_present_for_tenant(env_name: str, *, tenant_id: str = "") -> bool:
+    if tenant_id:
+        return env_for_tenant(tenant_id, env_name) is not None
+    return bool(os.getenv(env_name, "").strip())
 
 
 def _env_truthy(value: str | None) -> bool:
