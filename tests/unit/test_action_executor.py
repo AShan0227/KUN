@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from kun.core.orm import WorldActionExecutionRow
 from kun.datamodel.decision_ticket import ticket_from_world_policy
 from kun.engineering.action_executor import (
     _claim_approved_action_stmt,
@@ -16,6 +17,8 @@ from kun.engineering.action_executor import (
     _executor_blocked_payload,
     _executor_error_payload,
     _executor_payload,
+    _fail_world_action_execution,
+    _finish_world_action_execution,
     _gateway_result_blocks_resume,
     _handler_health_blocked_result,
     _handler_health_blocks_execution,
@@ -368,6 +371,78 @@ def test_world_action_credit_marks_blocked_handler_as_failure() -> None:
     assert "world_handler" not in resources
     assert reward == 0.15
     assert outcome == "fail"
+
+
+@pytest.mark.unit
+def test_finish_world_action_execution_persists_gateway_audit() -> None:
+    now = datetime.now(UTC)
+    row = WorldActionExecutionRow(
+        tenant_id="tenant-1",
+        action_id="act-1",
+        task_ref="task-1",
+        action_type="email.send",
+        target_ref="user@example.com",
+        idempotency_key="act-1",
+        attempt_count=1,
+    )
+    gateway_result = WorldGatewayResult(
+        action_id="act-1",
+        gateway_mode="handler_executed",
+        capability_status="supported_execute",
+        external_dispatched=True,
+        requires_handler=False,
+        audit={
+            "handler_id": "email.send.smtp.v1",
+            "artifact_ref": "smtp://message/1",
+            "policy": {
+                "retry_policy": "不自动重试",
+                "compensation_strategy": "发送更正邮件",
+            },
+        },
+        message="sent",
+    )
+
+    _finish_world_action_execution(
+        row,
+        now,
+        status="executed",
+        gateway_result=gateway_result,
+        decision_ticket={"ticket_id": "ticket-1"},
+    )
+
+    assert row.status == "executed"
+    assert row.handler_id == "email.send.smtp.v1"
+    assert row.external_dispatched is True
+    assert row.requires_handler is False
+    assert row.artifact_ref == "smtp://message/1"
+    assert row.retry_policy == "不自动重试"
+    assert row.compensation_strategy == "发送更正邮件"
+    assert row.last_error == ""
+    assert row.audit_json["gateway_mode"] == "handler_executed"
+    assert row.decision_ticket_json == {"ticket_id": "ticket-1"}
+    assert row.completed_at == now
+
+
+@pytest.mark.unit
+def test_fail_world_action_execution_records_error() -> None:
+    now = datetime.now(UTC)
+    row = WorldActionExecutionRow(
+        tenant_id="tenant-1",
+        action_id="act-1",
+        task_ref="task-1",
+        action_type="browser.execute",
+        target_ref="https://example.com",
+        idempotency_key="act-1",
+        attempt_count=1,
+    )
+
+    _fail_world_action_execution(row, now, RuntimeError("browser crashed"))
+
+    assert row.status == "failed"
+    assert row.gateway_mode == "handler_failed"
+    assert row.last_error == "browser crashed"
+    assert row.audit_json["error"] == "browser crashed"
+    assert row.completed_at == now
 
 
 @pytest.mark.unit

@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -457,6 +458,71 @@ class WorldHandlerControlRow(Base):
         ),
         CheckConstraint("length(action_type) > 0", name="world_handler_control_action_not_empty"),
         Index("ix_world_handler_controls_tenant_status", "tenant_id", "status"),
+    )
+
+
+class WorldActionExecutionRow(Base):
+    """Durable execution ledger for approved WorldGateway side effects."""
+
+    __tablename__ = "world_action_executions"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    action_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_ref: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tasks.task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_ref: Mapped[str] = mapped_column(String(256), nullable=False, default="unknown")
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="claimed", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    handler_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    gateway_mode: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    capability_status: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    external_dispatched: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    requires_handler: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    artifact_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    compensation_strategy: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    retry_policy: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    audit_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    decision_ticket_json: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+    first_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('claimed', 'executed', 'blocked', 'failed', 'cancelled')",
+            name="world_action_execution_status_valid",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="world_action_execution_attempt_count_nonnegative",
+        ),
+        CheckConstraint(
+            "length(idempotency_key) > 0",
+            name="world_action_execution_idempotency_not_empty",
+        ),
+        Index("ix_world_action_executions_tenant_status", "tenant_id", "status"),
+        Index("ix_world_action_executions_tenant_action_type", "tenant_id", "action_type"),
+        Index("ix_world_action_executions_task_ref", "task_ref"),
     )
 
 

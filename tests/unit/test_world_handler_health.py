@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kun.core.orm import PendingActionRow
+from kun.core.orm import PendingActionRow, WorldActionExecutionRow
 from kun.world.gateway import (
     EmailDraftHandler,
     EmailSendHandler,
@@ -35,6 +35,36 @@ def _row(
         status=status,
         risk_level=risk_level,
         payload={"executor": executor},
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+
+def _execution(
+    action_id: str,
+    action_type: str,
+    status: str,
+    *,
+    gateway_mode: str = "handler_executed",
+    capability_status: str = "supported_execute",
+    external_dispatched: bool = False,
+    requires_handler: bool = False,
+    handler_id: str | None = None,
+) -> WorldActionExecutionRow:
+    return WorldActionExecutionRow(
+        tenant_id="tenant-1",
+        action_id=action_id,
+        task_ref="tk-1",
+        action_type=action_type,
+        target_ref="target",
+        idempotency_key=action_id,
+        status=status,
+        attempt_count=1,
+        handler_id=handler_id,
+        gateway_mode=gateway_mode,
+        capability_status=capability_status,
+        external_dispatched=external_dispatched,
+        requires_handler=requires_handler,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
     )
@@ -263,3 +293,67 @@ def test_handler_health_flags_high_failure_rate(tmp_path: Path) -> None:
     assert email.status == "blocked"
     assert email.failure_rate == 0.25
     assert any("失败率高" in issue for issue in email.issues)
+
+
+def test_handler_health_prefers_durable_execution_ledger(tmp_path: Path) -> None:
+    descriptors = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[EmailDraftHandler(tmp_path / "drafts")],
+    ).handler_descriptors()
+    rows = [
+        # The approval row still says approved, but the durable execution ledger
+        # is the stronger source of truth for handler health.
+        _row("act-1", "email.draft", "approved"),
+    ]
+    executions = [
+        _execution(
+            "act-1",
+            "email.draft",
+            "executed",
+            capability_status="supported_draft",
+            handler_id="email.draft.v1",
+        )
+    ]
+
+    cards = {
+        card.action_type: card
+        for card in build_world_handler_health(
+            descriptors=descriptors,
+            rows=rows,
+            executions=executions,
+        )
+    }
+
+    assert cards["email.draft"].executed_count == 1
+    assert cards["email.draft"].success_rate == 1.0
+    assert cards["email.draft"].failure_rate == 0.0
+
+
+def test_handler_health_counts_durable_blocked_execution_as_failure(tmp_path: Path) -> None:
+    descriptors = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[EmailDraftHandler(tmp_path / "drafts")],
+    ).handler_descriptors()
+    executions = [
+        _execution(
+            "act-1",
+            "email.draft",
+            "blocked",
+            gateway_mode="policy_blocked",
+            capability_status="preview_failed",
+            requires_handler=True,
+        )
+    ]
+
+    cards = {
+        card.action_type: card
+        for card in build_world_handler_health(
+            descriptors=descriptors,
+            rows=[],
+            executions=executions,
+        )
+    }
+
+    assert cards["email.draft"].failure_rate == 1.0
+    assert cards["email.draft"].policy_blocked_count == 1
+    assert cards["email.draft"].missing_handler_count == 1

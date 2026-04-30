@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from kun.core.db import session_scope
-from kun.core.orm import PendingActionRow
+from kun.core.orm import PendingActionRow, WorldActionExecutionRow
 from kun.world.gateway import WorldGateway, WorldHandlerDescriptor, get_world_gateway
 from kun.world.handler_control import WorldHandlerControl, load_world_handler_controls
 from kun.world.tenant_env import env_for_tenant, missing_required_world_env
@@ -88,10 +88,18 @@ async def collect_world_handler_health(
             .limit(history_limit)
         )
         rows = list(result.scalars().all())
+        execution_result = await s.execute(
+            select(WorldActionExecutionRow)
+            .where(WorldActionExecutionRow.tenant_id == tenant_id)
+            .order_by(WorldActionExecutionRow.updated_at.desc())
+            .limit(history_limit)
+        )
+        executions = list(execution_result.scalars().all())
         controls = await load_world_handler_controls(s, tenant_id=tenant_id)
     return build_world_handler_health(
         descriptors=(gateway or get_world_gateway()).handler_descriptors(),
         rows=rows,
+        executions=executions,
         tenant_id=tenant_id,
         controls=controls,
     )
@@ -101,13 +109,16 @@ def build_world_handler_health(
     *,
     descriptors: list[WorldHandlerDescriptor],
     rows: list[PendingActionRow],
+    executions: list[WorldActionExecutionRow] | None = None,
     tenant_id: str = "",
     controls: dict[str, WorldHandlerControl] | None = None,
 ) -> list[WorldHandlerHealthCard]:
     descriptor_by_type = {item.action_type: item for item in descriptors}
+    execution_rows = executions or []
     action_types = (
         set(descriptor_by_type)
         | {row.action_type for row in rows}
+        | {row.action_type for row in execution_rows}
         | set(EXPECTED_REAL_WORLD_HANDLERS)
         | set(controls or {})
     )
@@ -116,6 +127,7 @@ def build_world_handler_health(
             action_type,
             descriptor_by_type.get(action_type),
             rows,
+            execution_rows,
             tenant_id=tenant_id,
             control=(controls or {}).get(action_type),
         )
@@ -129,24 +141,46 @@ def _build_card(
     action_type: str,
     descriptor: WorldHandlerDescriptor | None,
     rows: list[PendingActionRow],
+    executions: list[WorldActionExecutionRow],
     *,
     tenant_id: str = "",
     control: WorldHandlerControl | None = None,
 ) -> WorldHandlerHealthCard:
     relevant = [row for row in rows if row.action_type == action_type]
-    effective_tenant_id = tenant_id or (relevant[0].tenant_id if relevant else "")
-    total = len(relevant)
+    relevant_executions = [row for row in executions if row.action_type == action_type]
+    effective_tenant_id = tenant_id or (
+        relevant[0].tenant_id
+        if relevant
+        else (relevant_executions[0].tenant_id if relevant_executions else "")
+    )
+    total = max(len(relevant), len(relevant_executions))
     approved = sum(1 for row in relevant if row.status == "approved")
     rejected = sum(1 for row in relevant if row.status == "rejected")
-    failed = sum(1 for row in relevant if _row_failed(row))
-    missing = sum(1 for row in relevant if _gateway_payload(row).get("requires_handler") is True)
-    policy_blocked = sum(
-        1 for row in relevant if _gateway_payload(row).get("gateway_mode") == "policy_blocked"
+    missing = (
+        sum(1 for row in relevant_executions if row.requires_handler)
+        if relevant_executions
+        else sum(1 for row in relevant if _gateway_payload(row).get("requires_handler") is True)
     )
-    executed_success = sum(1 for row in relevant if _row_success(row))
+    policy_blocked = (
+        sum(1 for row in relevant_executions if row.gateway_mode == "policy_blocked")
+        if relevant_executions
+        else sum(
+            1 for row in relevant if _gateway_payload(row).get("gateway_mode") == "policy_blocked"
+        )
+    )
+    failed = (
+        sum(1 for row in relevant_executions if _execution_failed(row))
+        if relevant_executions
+        else sum(1 for row in relevant if _legacy_failure(row))
+    )
+    executed_success = (
+        sum(1 for row in relevant_executions if _execution_success(row))
+        if relevant_executions
+        else sum(1 for row in relevant if _row_success(row))
+    )
     denominator = max(1, total)
     reject_rate = rejected / denominator
-    failure_rate = (failed + missing + policy_blocked) / denominator
+    failure_rate = failed / denominator
     success_rate = executed_success / denominator
 
     issues: list[str] = []
@@ -259,6 +293,34 @@ def _row_failed(row: PendingActionRow) -> bool:
     if row.status == "cancelled":
         return True
     return isinstance(executor, dict) and executor.get("status") == "failed"
+
+
+def _legacy_failure(row: PendingActionRow) -> bool:
+    gateway = _gateway_payload(row)
+    return (
+        _row_failed(row)
+        or gateway.get("requires_handler") is True
+        or gateway.get("gateway_mode") == "policy_blocked"
+    )
+
+
+def _execution_success(row: WorldActionExecutionRow) -> bool:
+    if row.status != "executed":
+        return False
+    if row.requires_handler:
+        return False
+    if row.gateway_mode == "policy_blocked":
+        return False
+    return row.capability_status in {
+        "supported_execute",
+        "supported_draft",
+        "supported_dry_run",
+        "supported_plan",
+    }
+
+
+def _execution_failed(row: WorldActionExecutionRow) -> bool:
+    return row.status in {"blocked", "failed", "cancelled"}
 
 
 def _has_clear_compensation(strategy: str) -> bool:

@@ -21,7 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from kun.core.db import session_scope
 from kun.core.events import emit
-from kun.core.orm import PendingActionRow, RuntimeStateRow, TaskResultRow
+from kun.core.orm import (
+    PendingActionRow,
+    RuntimeStateRow,
+    TaskResultRow,
+    WorldActionExecutionRow,
+)
 from kun.core.state_ledger import get_state_ledger
 from kun.datamodel.decision_ticket import DecisionTicket, ticket_from_world_policy
 from kun.datamodel.events import Event
@@ -60,6 +65,7 @@ async def execute_approved_action_once(
             return None
 
         task_ref = str(action.task_ref)
+        execution_row = await _start_world_action_execution(s, action=action, now=now)
         health_card = await _collect_handler_health_card(
             tenant_id=tenant_id,
             action_type=action.action_type,
@@ -89,6 +95,13 @@ async def execute_approved_action_once(
             action.payload = _executor_blocked_payload(
                 action.payload,
                 now,
+                gateway_result=gateway_result,
+                decision_ticket=world_ticket.event_payload(),
+            )
+            _finish_world_action_execution(
+                execution_row,
+                now,
+                status="blocked",
                 gateway_result=gateway_result,
                 decision_ticket=world_ticket.event_payload(),
             )
@@ -160,6 +173,7 @@ async def execute_approved_action_once(
             )
         except Exception as exc:
             action.payload = _executor_error_payload(action.payload, now, exc)
+            _fail_world_action_execution(execution_row, now, exc)
             action.status = "cancelled"
             action.updated_at = now
             await emit(
@@ -215,6 +229,13 @@ async def execute_approved_action_once(
             action.payload = _executor_blocked_payload(
                 action.payload,
                 now,
+                gateway_result=gateway_result,
+                decision_ticket=world_ticket.event_payload(),
+            )
+            _finish_world_action_execution(
+                execution_row,
+                now,
+                status="blocked",
                 gateway_result=gateway_result,
                 decision_ticket=world_ticket.event_payload(),
             )
@@ -275,6 +296,13 @@ async def execute_approved_action_once(
         action.payload = _executor_payload(
             action.payload,
             now,
+            gateway_result=gateway_result,
+            decision_ticket=world_ticket.event_payload(),
+        )
+        _finish_world_action_execution(
+            execution_row,
+            now,
+            status="executed",
             gateway_result=gateway_result,
             decision_ticket=world_ticket.event_payload(),
         )
@@ -406,6 +434,103 @@ def _claim_approved_action_stmt(tenant_id: str, action_id: str) -> Any:
         )
         .with_for_update(skip_locked=True)
     )
+
+
+async def _start_world_action_execution(
+    session: AsyncSession,
+    *,
+    action: PendingActionRow,
+    now: datetime,
+) -> WorldActionExecutionRow:
+    """Create or claim the durable WorldGateway execution ledger row."""
+
+    result = await session.execute(
+        select(WorldActionExecutionRow)
+        .where(
+            WorldActionExecutionRow.tenant_id == action.tenant_id,
+            WorldActionExecutionRow.action_id == action.action_id,
+        )
+        .with_for_update()
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        row = WorldActionExecutionRow(
+            tenant_id=action.tenant_id,
+            action_id=action.action_id,
+            task_ref=action.task_ref,
+            action_type=action.action_type,
+            target_ref=action.target_ref,
+            idempotency_key=str(
+                action.payload.get("idempotency_key")
+                or action.payload.get("idempotencyKey")
+                or action.action_id
+            ),
+            status="claimed",
+            attempt_count=1,
+            first_attempt_at=now,
+            last_attempt_at=now,
+            updated_at=now,
+            audit_json={"source": "pending_action_executor"},
+        )
+        session.add(row)
+        await session.flush()
+        return row
+
+    row.status = "claimed"
+    row.attempt_count = int(row.attempt_count or 0) + 1
+    if row.first_attempt_at is None:
+        row.first_attempt_at = now
+    row.last_attempt_at = now
+    row.updated_at = now
+    row.last_error = ""
+    return row
+
+
+def _finish_world_action_execution(
+    row: WorldActionExecutionRow,
+    now: datetime,
+    *,
+    status: str,
+    gateway_result: WorldGatewayResult,
+    decision_ticket: dict[str, Any],
+) -> None:
+    """Persist a terminal WorldGateway execution outcome."""
+
+    audit = gateway_result.audit
+    policy = _dict_or_empty(audit.get("policy"))
+    row.status = status
+    row.gateway_mode = gateway_result.gateway_mode
+    row.capability_status = gateway_result.capability_status
+    row.external_dispatched = gateway_result.external_dispatched
+    row.requires_handler = gateway_result.requires_handler
+    row.handler_id = _optional_str(audit.get("handler_id"))
+    row.artifact_ref = _optional_str(audit.get("artifact_ref"))
+    row.compensation_strategy = str(
+        policy.get("compensation_strategy")
+        or audit.get("compensation")
+        or gateway_result.next_step
+        or ""
+    )
+    row.retry_policy = str(policy.get("retry_policy") or "")
+    row.last_error = "" if status == "executed" else gateway_result.message
+    row.audit_json = gateway_result.model_dump(mode="json")
+    row.decision_ticket_json = decision_ticket
+    row.completed_at = now
+    row.updated_at = now
+
+
+def _fail_world_action_execution(
+    row: WorldActionExecutionRow,
+    now: datetime,
+    exc: Exception,
+) -> None:
+    row.status = "failed"
+    row.gateway_mode = "handler_failed"
+    row.capability_status = "preview_failed"
+    row.last_error = str(exc)
+    row.audit_json = {"error": str(exc), "source": "pending_action_executor"}
+    row.completed_at = now
+    row.updated_at = now
 
 
 def _count_unresolved_actions_stmt(tenant_id: str, task_ref: str) -> Any:
