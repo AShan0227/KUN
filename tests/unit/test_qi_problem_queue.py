@@ -6,10 +6,13 @@ import pytest
 from kun.qi.cron_jobs import _pick_explore_prompt
 from kun.qi.problem_queue import (
     QiProblemSignal,
+    SqlQiProblemQueue,
+    _upsert_problem_signal_stmt,
     get_qi_problem_queue,
     prompt_for_problem,
     reset_qi_problem_queue,
 )
+from sqlalchemy.dialects import postgresql
 
 
 def setup_function(_function: object) -> None:
@@ -77,6 +80,67 @@ def test_prompt_for_problem_is_actionable() -> None:
     assert "交付状态声明" in prompt
 
 
+def test_sql_problem_queue_upsert_dedupes_by_tenant_signal() -> None:
+    signal = QiProblemSignal.build(
+        tenant_id="u-test",
+        category="world_gateway",
+        severity="critical",
+        summary="WorldGateway handler 连续失败",
+        source="test",
+    )
+
+    stmt = _upsert_problem_signal_stmt(signal, signal.created_at)
+    dialect = postgresql.dialect()  # type: ignore[no-untyped-call]
+    sql = str(stmt.compile(dialect=dialect))
+
+    assert "INSERT INTO qi_problem_signals" in sql
+    assert "ON CONFLICT (tenant_id, signal_id) DO UPDATE" in sql
+    assert "occurrence_count = (qi_problem_signals.occurrence_count + " in sql
+    assert "status = " in sql
+
+
+@pytest.mark.asyncio
+async def test_collect_problem_signals_persists_sampled_findings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kun.engineering.nuo_system_health import SystemHealthFinding, SystemHealthReport
+    from kun.qi import problem_queue
+
+    async def fake_collect_system_health_report(*, tenant_id: str) -> SystemHealthReport:
+        return SystemHealthReport(
+            tenant_id=tenant_id,
+            findings=[
+                SystemHealthFinding(
+                    finding_id="f-1",
+                    severity="warn",
+                    subsystem="world_gateway",
+                    title="WorldGateway handler 缺补偿",
+                    detail="真实外发 handler 没有补偿演练",
+                    suggested_action="补补偿策略",
+                )
+            ],
+        )
+
+    persisted: list[QiProblemSignal] = []
+
+    async def fake_persist(signals: list[QiProblemSignal]) -> int:
+        persisted.extend(signals)
+        return len(signals)
+
+    monkeypatch.setattr(
+        "kun.engineering.nuo_system_health.collect_system_health_report",
+        fake_collect_system_health_report,
+    )
+    monkeypatch.setattr(problem_queue, "persist_problem_signals", fake_persist)
+
+    signals = await problem_queue.collect_problem_signals("u-test")
+
+    assert len(signals) == 1
+    assert persisted == signals
+    assert signals[0].category == "world_gateway"
+    assert signals[0].summary == "WorldGateway handler 缺补偿"
+
+
 @pytest.mark.asyncio
 async def test_qi_prompt_prefers_real_problem_signal(monkeypatch: pytest.MonkeyPatch) -> None:
     queue = get_qi_problem_queue()
@@ -97,3 +161,8 @@ async def test_qi_prompt_prefers_real_problem_signal(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr("kun.qi.problem_queue.collect_problem_signals", _no_collect)
     prompt = await _pick_explore_prompt(app=app, tenant_id="u-test")
     assert "WorldGateway handler 连续失败" in prompt
+
+
+def test_sql_problem_queue_is_explicitly_async() -> None:
+    queue = SqlQiProblemQueue()
+    assert hasattr(queue.enqueue_many, "__call__")

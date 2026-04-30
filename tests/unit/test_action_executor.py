@@ -9,6 +9,7 @@ from kun.datamodel.decision_ticket import ticket_from_world_policy
 from kun.engineering.action_executor import (
     _claim_approved_action_stmt,
     _count_unresolved_actions_stmt,
+    _enqueue_world_action_problem,
     _execution_blocked_message,
     _execution_failed_message,
     _execution_message,
@@ -22,6 +23,7 @@ from kun.engineering.action_executor import (
     _unblock_paused_runtime_stmt,
     _world_action_credit_inputs,
 )
+from kun.qi.problem_queue import get_qi_problem_queue, reset_qi_problem_queue
 from kun.world.gateway import WorldGatewayResult
 from kun.world.handler_health import WorldHandlerHealthCard
 from sqlalchemy.dialects import postgresql
@@ -322,3 +324,36 @@ def test_world_action_credit_marks_blocked_handler_as_failure() -> None:
     assert "world_handler" not in resources
     assert reward == 0.15
     assert outcome == "fail"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_action_problem_is_fed_to_qi_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+    reset_qi_problem_queue()
+    monkeypatch.setenv("KUN_QI_PROBLEM_QUEUE_DB_ENABLED", "0")
+    gateway_result = WorldGatewayResult(
+        action_id="act-1",
+        gateway_mode="policy_blocked",
+        capability_status="preview_failed",
+        external_dispatched=False,
+        requires_handler=True,
+    )
+
+    await _enqueue_world_action_problem(
+        tenant_id="tenant-1",
+        task_ref="task-1",
+        action_id="act-1",
+        action_type="email.send",
+        severity="error",
+        summary="WorldGateway handler health blocked approved action",
+        gateway_result=gateway_result,
+    )
+
+    signals = get_qi_problem_queue().list("tenant-1")
+
+    assert len(signals) == 1
+    assert signals[0].category == "world_gateway"
+    assert signals[0].source == "action_executor"
+    assert signals[0].evidence["action_type"] == "email.send"
+    assert signals[0].evidence["gateway"]["gateway_mode"] == "policy_blocked"
+    reset_qi_problem_queue()

@@ -726,6 +726,49 @@ class LabExperimentRow(Base):
     )
 
 
+# ============== QI PROBLEM SIGNALS ==============
+
+
+class QiProblemSignalRow(Base):
+    """Durable problem queue for Qi exploration inputs."""
+
+    __tablename__ = "qi_problem_signals"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    signal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="info")
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    task_type: Mapped[str] = mapped_column(String(128), nullable=False, default="general")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open", index=True)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint("length(summary) > 0", name="qi_problem_summary_not_empty"),
+        CheckConstraint("occurrence_count >= 1", name="qi_problem_occurrence_positive"),
+        CheckConstraint(
+            "status IN ('open', 'consumed', 'dismissed')",
+            name="qi_problem_status_valid",
+        ),
+        Index("ix_qi_problem_tenant_status", "tenant_id", "status"),
+        Index("ix_qi_problem_tenant_category", "tenant_id", "category"),
+        Index("ix_qi_problem_tenant_last_seen", "tenant_id", "last_seen_at"),
+    )
+
+
 # ============== IDEMPOTENCY KEYS ==============
 
 

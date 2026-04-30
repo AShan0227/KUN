@@ -10,6 +10,7 @@ perform arbitrary external side effects yet; it executes the approval gate:
 
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime
 from typing import Any
 
@@ -127,6 +128,15 @@ async def execute_approved_action_once(
                 reason=_execution_blocked_message(gateway_result),
                 pending_confirmations=[action.action_id],
             )
+            await _enqueue_world_action_problem(
+                tenant_id=tenant_id,
+                task_ref=task_ref,
+                action_id=action.action_id,
+                action_type=action.action_type,
+                severity="error",
+                summary="WorldGateway handler health blocked approved action",
+                gateway_result=gateway_result,
+            )
             return ActionExecutionResult(
                 action_id=action_id,
                 task_ref=task_ref,
@@ -171,6 +181,15 @@ async def execute_approved_action_once(
                 task_ref,
                 reason=f"外部动作执行失败：{exc}",
                 pending_confirmations=[action.action_id],
+            )
+            await _enqueue_world_action_problem(
+                tenant_id=tenant_id,
+                task_ref=task_ref,
+                action_id=action.action_id,
+                action_type=action.action_type,
+                severity="error",
+                summary="WorldGateway handler execution failed",
+                error=str(exc),
             )
             return ActionExecutionResult(
                 action_id=action_id,
@@ -234,6 +253,15 @@ async def execute_approved_action_once(
                 task_ref,
                 reason=_execution_blocked_message(gateway_result),
                 pending_confirmations=[action.action_id],
+            )
+            await _enqueue_world_action_problem(
+                tenant_id=tenant_id,
+                task_ref=task_ref,
+                action_id=action.action_id,
+                action_type=action.action_type,
+                severity="warn",
+                summary="WorldGateway policy blocked approved action",
+                gateway_result=gateway_result,
             )
             return ActionExecutionResult(
                 action_id=action_id,
@@ -625,6 +653,50 @@ def _handler_health_blocked_result(
         permissions_required=["world:dispatch"],
         message=f"World Gateway blocked by NUO handler health: {issue_text}",
     )
+
+
+async def _enqueue_world_action_problem(
+    *,
+    tenant_id: str,
+    task_ref: str,
+    action_id: str,
+    action_type: str,
+    severity: str,
+    summary: str,
+    gateway_result: WorldGatewayResult | None = None,
+    error: str = "",
+) -> None:
+    """Feed real world-action failures into Qi's problem queue.
+
+    This is deliberately best-effort: if the learning queue is unavailable, the
+    user-facing block/failure must still be recorded and returned.
+    """
+
+    with contextlib.suppress(Exception):
+        from kun.qi.problem_queue import QiProblemSignal, persist_problem_signals
+
+        evidence: dict[str, Any] = {
+            "task_id": task_ref,
+            "action_id": action_id,
+            "action_type": action_type,
+        }
+        if gateway_result is not None:
+            evidence["gateway"] = gateway_result.model_dump(mode="json")
+        if error:
+            evidence["error"] = error
+        await persist_problem_signals(
+            [
+                QiProblemSignal.build(
+                    tenant_id=tenant_id,
+                    category="world_gateway",
+                    severity=severity,
+                    summary=summary,
+                    source="action_executor",
+                    task_type="world_gateway.action",
+                    evidence=evidence,
+                )
+            ]
+        )
 
 
 __all__ = ["ActionExecutionResult", "execute_approved_action_once"]
