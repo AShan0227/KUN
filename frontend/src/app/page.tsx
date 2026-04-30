@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiFetch, kunWebSocketUrl } from "@/kunApiClient";
+import { apiFetch, getKunIdentity, kunWebSocketUrl, saveKunIdentity } from "@/kunApiClient";
 
 /**
  * KUN 主工作区 — 对话框主入口 (ADR-010).
@@ -345,6 +345,8 @@ type StateLedgerStory = {
 };
 
 export default function Home() {
+  const [identityOpen, setIdentityOpen] = useState(false);
+  const [identityDraft, setIdentityDraft] = useState(() => getKunIdentity());
   const [messages, setMessages] = useState<Msg[]>([]);
   const [side, setSide] = useState<SideMsg[]>([]);
   const [input, setInput] = useState("");
@@ -779,15 +781,63 @@ export default function Home() {
     <div className="grid grid-cols-[1fr_360px] gap-4 p-4 h-full">
       {/* Main channel */}
       <section className="bg-white rounded-lg shadow-sm flex flex-col min-h-[calc(100vh-100px)]">
-        <header className="px-4 py-2 border-b text-sm text-gray-600 flex justify-between">
-          <span>主通道 · 对话 + 任务看板</span>
-          <span>
-            {connected ? (
-              <span className="text-kun-good">● 已连接</span>
-            ) : (
-              <span className="text-kun-bad">● 未连接</span>
-            )}
-          </span>
+        <header className="px-4 py-2 border-b text-sm text-gray-600">
+          <div className="flex justify-between gap-3">
+            <span>主通道 · 对话 + 任务看板</span>
+            <div className="flex items-center gap-3">
+              <button
+                className="rounded border border-gray-200 px-2 py-0.5 text-xs hover:bg-gray-50"
+                onClick={() => {
+                  setIdentityDraft(getKunIdentity());
+                  setIdentityOpen((value) => !value);
+                }}
+              >
+                {identityDraft.tenantId} / {identityDraft.userId}
+              </button>
+              {connected ? (
+                <span className="text-kun-good">● 已连接</span>
+              ) : (
+                <span className="text-kun-bad">● 未连接</span>
+              )}
+            </div>
+          </div>
+          {identityOpen && (
+            <div className="mt-2 grid grid-cols-1 gap-2 rounded border border-gray-200 bg-gray-50 p-2 text-xs md:grid-cols-[1fr_1fr_1.5fr_auto]">
+              <input
+                className="rounded border border-gray-200 px-2 py-1"
+                placeholder="tenant_id"
+                value={identityDraft.tenantId}
+                onChange={(event) =>
+                  setIdentityDraft((value) => ({ ...value, tenantId: event.target.value }))
+                }
+              />
+              <input
+                className="rounded border border-gray-200 px-2 py-1"
+                placeholder="user_id"
+                value={identityDraft.userId}
+                onChange={(event) =>
+                  setIdentityDraft((value) => ({ ...value, userId: event.target.value }))
+                }
+              />
+              <input
+                className="rounded border border-gray-200 px-2 py-1"
+                placeholder="Bearer token，可空"
+                value={identityDraft.authToken ?? ""}
+                onChange={(event) =>
+                  setIdentityDraft((value) => ({ ...value, authToken: event.target.value }))
+                }
+              />
+              <button
+                className="rounded border border-gray-300 bg-white px-3 py-1 hover:bg-gray-100"
+                onClick={() => {
+                  saveKunIdentity(identityDraft);
+                  window.location.reload();
+                }}
+              >
+                保存并重连
+              </button>
+            </div>
+          )}
         </header>
         <div className="border-b bg-gray-50 px-4 py-3">
           <div className="grid grid-cols-4 gap-2 text-xs">

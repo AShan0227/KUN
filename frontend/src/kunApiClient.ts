@@ -37,6 +37,20 @@ export function getKunIdentity(): KunIdentity {
   };
 }
 
+export function saveKunIdentity(identity: KunIdentity): void {
+  if (typeof window === "undefined") return;
+  const tenantId = identity.tenantId.trim();
+  const userId = identity.userId.trim();
+  const authToken = identity.authToken?.trim() || "";
+  window.localStorage.setItem(STORAGE_KEYS.tenantId, tenantId || DEFAULT_TENANT_ID);
+  window.localStorage.setItem(STORAGE_KEYS.userId, userId || DEFAULT_USER_ID);
+  if (authToken) {
+    window.localStorage.setItem(STORAGE_KEYS.authToken, authToken);
+  } else {
+    window.localStorage.removeItem(STORAGE_KEYS.authToken);
+  }
+}
+
 function authHeaderValue(token: string): string {
   return token.toLowerCase().startsWith("bearer ") ? token : `Bearer ${token}`;
 }
