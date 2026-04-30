@@ -283,6 +283,7 @@ def _world_gateway_delivery_status(
         "WorldGateway 会返回 user_summary / next_step / permissions_required，避免用户误解是否真实外发",
         "WorldGateway handler 注册表会暴露重试策略、补偿策略和风险范围",
         "真实外部动作缺少 external_dispatch_confirmed=true 时会被策略层拦截",
+        "NUO 判断 handler blocked/unregistered 时，审批后执行器会拦截并保持任务暂停",
     ]
     done.extend(_handler_done_line(item) for item in descriptors)
 
@@ -323,7 +324,7 @@ def _world_gateway_delivery_status(
         next_steps=[
             "按租户配置真实 email / browser / enterprise API handler",
             "给每个真实 handler 补租户级密钥、重试、补偿、回滚演练",
-            "把执行结果写入更完整的 StateLedger",
+            "把 handler 健康状态进一步接入自动限权 / 租户配置引导",
         ],
     )
 

@@ -15,10 +15,13 @@ from kun.engineering.action_executor import (
     _executor_error_payload,
     _executor_payload,
     _gateway_result_blocks_resume,
+    _handler_health_blocked_result,
+    _handler_health_blocks_execution,
     _mark_task_result_queued_stmt,
     _unblock_paused_runtime_stmt,
 )
 from kun.world.gateway import WorldGatewayResult
+from kun.world.handler_health import WorldHandlerHealthCard
 from sqlalchemy.dialects import postgresql
 
 
@@ -194,3 +197,25 @@ def test_execution_message_includes_gateway_message() -> None:
 @pytest.mark.unit
 def test_execution_failed_message_is_honest() -> None:
     assert "remains paused" in _execution_failed_message(ValueError("bad path"))
+
+
+@pytest.mark.unit
+def test_handler_health_block_prevents_external_execution() -> None:
+    card = WorldHandlerHealthCard(
+        action_type="email.send",
+        status="blocked",
+        registered=True,
+        configured=True,
+        recommendation="暂停自动执行，必须人工确认并排查失败原因。",
+        issues=["最近 3 次执行失败"],
+        failure_rate=0.5,
+    )
+
+    result = _handler_health_blocked_result(action_id="act-1", health_card=card)
+
+    assert _handler_health_blocks_execution(card) is True
+    assert result.gateway_mode == "policy_blocked"
+    assert result.external_dispatched is False
+    assert result.requires_handler is True
+    assert result.audit["policy"]["source"] == "nuo.handler_health"
+    assert "安全拦截" in result.user_summary

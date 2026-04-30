@@ -25,6 +25,7 @@ from kun.datamodel.decision_ticket import ticket_from_world_policy
 from kun.datamodel.events import Event
 from kun.datamodel.runtime import TaskStatus
 from kun.world.gateway import WorldAction, WorldGatewayResult, get_world_gateway
+from kun.world.handler_health import WorldHandlerHealthCard, collect_world_handler_health
 
 
 class ActionExecutionResult(BaseModel):
@@ -56,6 +57,75 @@ async def execute_approved_action_once(
             return None
 
         task_ref = str(action.task_ref)
+        health_card = await _collect_handler_health_card(
+            tenant_id=tenant_id,
+            action_type=action.action_type,
+        )
+        if health_card is not None and _handler_health_blocks_execution(health_card):
+            gateway_result = _handler_health_blocked_result(
+                action_id=action.action_id,
+                health_card=health_card,
+            )
+            world_ticket = ticket_from_world_policy(
+                tenant_id=tenant_id,
+                task_id=task_ref,
+                action_id=action.action_id,
+                action_type=action.action_type,
+                risk_level=action.risk_level,
+                gateway_mode=gateway_result.gateway_mode,
+                external_dispatched=False,
+                requires_handler=True,
+                policy={
+                    "allowed": False,
+                    "source": "nuo.handler_health",
+                    "status": health_card.status,
+                    "issues": health_card.issues,
+                },
+                reason=gateway_result.message,
+            )
+            action.payload = _executor_blocked_payload(
+                action.payload,
+                now,
+                gateway_result=gateway_result,
+                decision_ticket=world_ticket.event_payload(),
+            )
+            action.status = "cancelled"
+            action.updated_at = now
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant_id,
+                    event_type="task.pending_action.blocked",
+                    payload={
+                        "task_id": task_ref,
+                        "action_id": action.action_id,
+                        "action_type": action.action_type,
+                        "target_ref": action.target_ref,
+                        "executor_mode": gateway_result.gateway_mode,
+                        "external_dispatched": False,
+                        "requires_handler": True,
+                        "capability_status": gateway_result.capability_status,
+                        "decision_ticket": world_ticket.event_payload(),
+                        "reason": gateway_result.message,
+                    },
+                    task_ref=task_ref,
+                ),
+            )
+            get_state_ledger().record_decision_ticket(world_ticket)
+            get_state_ledger().record_paused(
+                task_ref,
+                reason=_execution_blocked_message(gateway_result),
+                pending_confirmations=[action.action_id],
+            )
+            return ActionExecutionResult(
+                action_id=action_id,
+                task_ref=task_ref,
+                action_status="cancelled",
+                task_status="paused",
+                message=_execution_blocked_message(gateway_result),
+                gateway_result=gateway_result,
+            )
+
         try:
             gateway_result = await get_world_gateway().execute_approved(
                 WorldAction(
@@ -421,6 +491,54 @@ def _gateway_result_blocks_resume(gateway_result: WorldGatewayResult) -> bool:
         gateway_result.requires_handler
         or gateway_result.gateway_mode == "policy_blocked"
         or gateway_result.capability_status in {"missing_handler", "preview_failed"}
+    )
+
+
+async def _collect_handler_health_card(
+    *,
+    tenant_id: str,
+    action_type: str,
+) -> WorldHandlerHealthCard | None:
+    try:
+        cards = await collect_world_handler_health(tenant_id=tenant_id)
+    except Exception:
+        return None
+    return next((card for card in cards if card.action_type == action_type), None)
+
+
+def _handler_health_blocks_execution(card: WorldHandlerHealthCard) -> bool:
+    return card.status in {"blocked", "unregistered"}
+
+
+def _handler_health_blocked_result(
+    *,
+    action_id: str,
+    health_card: WorldHandlerHealthCard,
+) -> WorldGatewayResult:
+    issue_text = "；".join(health_card.issues[:3]) or health_card.recommendation
+    return WorldGatewayResult(
+        action_id=action_id,
+        gateway_mode="policy_blocked",
+        capability_status="preview_failed",
+        external_dispatched=False,
+        requires_handler=True,
+        audit={
+            "policy": {
+                "allowed": False,
+                "source": "nuo.handler_health",
+                "handler_status": health_card.status,
+                "action_type": health_card.action_type,
+                "failure_rate": health_card.failure_rate,
+                "approval_reject_rate": health_card.approval_reject_rate,
+            },
+            "handler_health": health_card.model_dump(mode="json"),
+        },
+        user_summary=(
+            f"NUO 判断 {health_card.action_type} 当前不适合执行，这个外部动作已被安全拦截。"
+        ),
+        next_step=health_card.recommendation,
+        permissions_required=["world:dispatch"],
+        message=f"World Gateway blocked by NUO handler health: {issue_text}",
     )
 
 
