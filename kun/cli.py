@@ -765,6 +765,102 @@ def ops_onboard_tenant(
         console.print_json(data=payload)
 
 
+@ops_app.command("account-bootstrap")
+def ops_account_bootstrap(
+    tenant: str = typer.Option(..., "--tenant", help="租户 ID"),
+    organization: str = typer.Option("", "--org", help="组织 ID；默认等于 tenant"),
+    name: str = typer.Option("", "--name", help="租户展示名；默认等于 tenant"),
+    owner: str = typer.Option(..., "--owner", help="owner user_id"),
+    scopes: str = typer.Option(
+        "world:approve,world:dispatch",
+        "--scopes",
+        help="逗号分隔权限 scope",
+    ),
+    audience: str = typer.Option("developer", "--audience", help="novice/developer/expert"),
+    plan: str = typer.Option("dev", "--plan"),
+    billing_status: str = typer.Option("manual", "--billing-status"),
+    ttl_sec: int = typer.Option(86400, "--ttl-sec", min=60),
+    persist: bool = typer.Option(
+        True,
+        "--persist/--dry-run",
+        help="默认写入 tenant_accounts / tenant_members / token ledger；--dry-run 只生成包",
+    ),
+    output: Path | None = typer.Option(None, "--output", help="写入 JSON 文件"),
+) -> None:
+    """生成账号/组织启动包，并可写入租户账本。
+
+    这是 V4 的第一版生产账号底座：有组织/成员/token 签发记录，但还不是
+    完整自助注册、登录、账单系统。
+    """
+
+    import os
+
+    from kun.core.db import session_scope
+    from kun.ops.account_registry import (
+        bootstrap_tenant_account,
+        build_unpersisted_bootstrap,
+    )
+
+    secret = os.environ.get("KUN_AUTH_SECRET", "")
+    if not secret:
+        secret = next(
+            (
+                item.strip()
+                for item in os.environ.get("KUN_AUTH_SECRETS", "").split(",")
+                if len(item.strip()) >= 32
+            ),
+            "",
+        )
+    if audience not in {"novice", "developer", "expert"}:
+        console.print("[red]audience 必须是 novice/developer/expert[/]")
+        raise typer.Exit(code=2)
+    cleaned_scopes = [item.strip() for item in scopes.split(",") if item.strip()]
+    organization_id = organization.strip() or tenant
+    display_name = name.strip() or tenant
+
+    async def _persist() -> dict[str, Any]:
+        async with session_scope(tenant_id=tenant) as s:
+            pack = await bootstrap_tenant_account(
+                s,
+                tenant_id=tenant,
+                organization_id=organization_id,
+                display_name=display_name,
+                owner_user_id=owner,
+                scopes=cleaned_scopes,
+                audience=audience,  # type: ignore[arg-type]
+                plan=plan,
+                billing_status=billing_status,
+                ttl_sec=ttl_sec,
+                secret=secret,
+            )
+        return pack.model_dump(mode="json")
+
+    try:
+        if persist:
+            payload = asyncio.run(_persist())
+        else:
+            payload = build_unpersisted_bootstrap(
+                tenant_id=tenant,
+                organization_id=organization_id,
+                display_name=display_name,
+                owner_user_id=owner,
+                scopes=cleaned_scopes,
+                audience=audience,  # type: ignore[arg-type]
+                plan=plan,
+                billing_status=billing_status,
+                ttl_sec=ttl_sec,
+                secret=secret,
+            ).model_dump(mode="json")
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2) from exc
+    if output is not None:
+        output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        console.print(f"[green]tenant account bootstrap written[/]: {output}")
+    else:
+        console.print_json(data=payload)
+
+
 @ops_app.command("dogfood")
 def ops_dogfood(
     tenant: str = typer.Option("u-sylvan", "--tenant"),

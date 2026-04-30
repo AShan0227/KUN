@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import pytest
 from kun.cli import app
 from kun.core.config import Settings
 from kun.ops import dogfood as dogfood_module
+from kun.ops.account_registry import build_unpersisted_bootstrap, hash_bearer_token
 from kun.ops.dogfood import run_v4_dogfood
 from kun.ops.preflight import run_preflight
 from kun.ops.secret_audit import audit_runtime_secrets
@@ -264,6 +266,60 @@ def test_ops_onboard_tenant_cli_outputs_json(monkeypatch: pytest.MonkeyPatch) ->
     assert result.exit_code == 0
     assert "tenant-cli" in result.output
     assert "bearer_token" in result.output
+
+
+@pytest.mark.unit
+def test_account_bootstrap_dry_run_mints_verifiable_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "a" * 40
+    monkeypatch.setenv("KUN_AUTH_SECRET", secret)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "ops",
+            "account-bootstrap",
+            "--tenant",
+            "tenant-ledger",
+            "--owner",
+            "owner-1",
+            "--org",
+            "org-1",
+            "--scopes",
+            "world:approve,world:dispatch",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    claims = verify_bearer_token(f"Bearer {payload['bearer_token']}", secret)
+    assert payload["tenant_id"] == "tenant-ledger"
+    assert payload["organization_id"] == "org-1"
+    assert payload["owner_user_id"] == "owner-1"
+    assert payload["persisted"] is False
+    assert payload["token_hash"] == hash_bearer_token(payload["bearer_token"])
+    assert claims.tenant_id == "tenant-ledger"
+    assert claims.user_id == "owner-1"
+    assert claims.scopes == ("world:approve", "world:dispatch")
+
+
+@pytest.mark.unit
+def test_account_bootstrap_builds_honest_limits() -> None:
+    pack = build_unpersisted_bootstrap(
+        tenant_id="tenant-a",
+        organization_id="org-a",
+        display_name="Tenant A",
+        owner_user_id="owner-a",
+        scopes=["world:approve"],
+        secret="b" * 40,
+        ttl_sec=3600,
+    )
+
+    assert pack.persisted is False
+    assert pack.token_hash == hash_bearer_token(pack.bearer_token)
+    assert any("不是完整自助注册系统" in item for item in pack.honest_limits)
 
 
 @pytest.mark.unit

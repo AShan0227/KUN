@@ -769,6 +769,130 @@ class QiProblemSignalRow(Base):
     )
 
 
+# ============== TENANT ACCOUNT REGISTRY ==============
+
+
+class TenantAccountRow(Base):
+    """Operator-managed tenant/org record.
+
+    This is the first production-accounting slice: it does not replace a full
+    signup/billing product, but it makes tenant ownership and plan state
+    durable instead of living only in env vars or one-off onboarding JSON.
+    """
+
+    __tablename__ = "tenant_accounts"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+    plan: Mapped[str] = mapped_column(String(32), nullable=False, default="dev")
+    billing_status: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'suspended', 'closed')",
+            name="tenant_account_status_valid",
+        ),
+        CheckConstraint(
+            "billing_status IN ('manual', 'trial', 'active', 'past_due', 'cancelled')",
+            name="tenant_account_billing_status_valid",
+        ),
+        CheckConstraint("length(display_name) > 0", name="tenant_account_display_not_empty"),
+        CheckConstraint("length(owner_user_id) > 0", name="tenant_account_owner_not_empty"),
+        Index("ix_tenant_accounts_org_status", "organization_id", "status"),
+    )
+
+
+class TenantMemberRow(Base):
+    """Durable tenant member and scope ledger."""
+
+    __tablename__ = "tenant_members"
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tenant_accounts.tenant_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="owner")
+    scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'member', 'viewer')",
+            name="tenant_member_role_valid",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'invited', 'disabled')",
+            name="tenant_member_status_valid",
+        ),
+        Index("ix_tenant_members_tenant_status", "tenant_id", "status"),
+    )
+
+
+class TenantTokenIssueRow(Base):
+    """Audit ledger for operator-issued bearer tokens.
+
+    The raw token is never stored.  ``token_hash`` lets ops correlate a leaked
+    token with an issuance record later without keeping the secret itself.
+    """
+
+    __tablename__ = "tenant_token_issues"
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tenant_accounts.tenant_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    token_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    audience: Mapped[str] = mapped_column(String(16), nullable=False, default="developer")
+    scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="issued", index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "audience IN ('novice', 'developer', 'expert')",
+            name="tenant_token_audience_valid",
+        ),
+        CheckConstraint(
+            "status IN ('issued', 'revoked')",
+            name="tenant_token_status_valid",
+        ),
+        Index("ix_tenant_tokens_tenant_status", "tenant_id", "status"),
+        Index("ix_tenant_tokens_tenant_user", "tenant_id", "user_id"),
+    )
+
+
 # ============== IDEMPOTENCY KEYS ==============
 
 
