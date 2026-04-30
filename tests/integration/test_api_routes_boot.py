@@ -33,6 +33,8 @@ def test_routes_registered():
         "/nuo/budget/summary",
         "/nuo/actions/pending",
         "/nuo/actions/{action_id}/decision",
+        "/nuo/accounts/summary",
+        "/nuo/accounts/tokens/{token_id}/revoke",
     }
     assert expected <= paths, f"missing routes: {expected - paths}"
 

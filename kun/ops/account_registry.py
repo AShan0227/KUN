@@ -321,7 +321,7 @@ def _required(field: str, value: str) -> str:
 def _honest_limits() -> list[str]:
     return [
         "这是账号/组织/token 签发账本的第一版，不是完整自助注册系统。",
-        "当前 token 撤销还没有接入请求中间件强制校验。",
+        "生产请求中间件会校验已撤销 token，但还没有完整登录会话和刷新 token 体系。",
         "账单仍是 manual/trial/active 等状态记录，还没有真实支付闭环。",
     ]
 

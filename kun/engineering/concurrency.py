@@ -31,6 +31,11 @@ from kun.core.ids import new_id
 from kun.core.logging import get_logger
 from kun.core.orm import PendingActionRow, RuntimeStateRow, TaskRow
 from kun.datamodel.task import RiskLevel, TaskRef, TaskSpec
+from kun.world.action_taxonomy import (
+    TaxonomyResult,
+    apply_taxonomy_audit_fields,
+    normalize_world_action_type,
+)
 
 log = get_logger("kun.engineering.concurrency")
 
@@ -213,6 +218,9 @@ _SIDE_EFFECT_KEYWORDS = {
     "部署": "deployment.change",
     "合并": "repository.merge",
 }
+_EXPLICIT_ACTION_TYPE_RE = re.compile(
+    r"(?<![a-z0-9])([a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+)(?![a-z0-9])"
+)
 
 
 class ResourceIntent(BaseModel):
@@ -253,6 +261,17 @@ class PendingActionSpec(BaseModel):
     target_ref: str = "unknown"
     risk_level: RiskLevel = "medium"
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    def model_post_init(self, __context: Any) -> None:
+        taxonomy = normalize_world_action_type(self.action_type, self.payload)
+        self.action_type = taxonomy.action_type
+        if "source_action_type" in self.payload and "taxonomy_reason" in self.payload:
+            self.payload = {
+                **self.payload,
+                "matched_action_type": taxonomy.action_type,
+            }
+            return
+        self.payload = apply_taxonomy_audit_fields(self.payload, taxonomy)
 
 
 async def scan_pre_conflicts(
@@ -366,8 +385,8 @@ def derive_resource_intents(task_ref: TaskRef) -> list[ResourceIntent]:
 def pending_actions_for(task_ref: TaskRef) -> list[PendingActionSpec]:
     """Extract side-effect actions that should wait for approval."""
     text = _task_text(task_ref)
-    action_types = sorted(_matched_action_types(text))
-    if not action_types:
+    taxonomies = _matched_action_taxonomies(text)
+    if not taxonomies:
         return []
 
     target_ref = "unknown"
@@ -382,16 +401,16 @@ def pending_actions_for(task_ref: TaskRef) -> list[PendingActionSpec]:
 
     return [
         PendingActionSpec(
-            action_type=action_type,
+            action_type=taxonomy.action_type,
             target_ref=target_ref,
             risk_level=risk_level,
             payload=_pending_action_payload(
                 task_ref=task_ref,
-                action_type=action_type,
+                taxonomy=taxonomy,
                 target_ref=target_ref,
             ),
         )
-        for action_type in action_types
+        for taxonomy in sorted(taxonomies.values(), key=lambda item: item.action_type)
     ]
 
 
@@ -595,16 +614,28 @@ def _has_side_effect_text(text: str) -> bool:
 
 
 def _matched_action_types(text: str) -> set[str]:
+    return set(_matched_action_taxonomies(text))
+
+
+def _matched_action_taxonomies(text: str) -> dict[str, TaxonomyResult]:
     normalized = text.lower()
-    ascii_search_text = re.sub(r"[_\-.]+", " ", normalized)
-    matched: set[str] = set()
+    explicit_action_types = _EXPLICIT_ACTION_TYPE_RE.findall(normalized)
+    keyword_search_source = _EXPLICIT_ACTION_TYPE_RE.sub(" ", normalized)
+    ascii_search_text = re.sub(r"[_\-.]+", " ", keyword_search_source)
+    matched: dict[str, TaxonomyResult] = {}
+    for explicit_action_type in explicit_action_types:
+        taxonomy = normalize_world_action_type(explicit_action_type)
+        if taxonomy.taxonomy_reason != "no_taxonomy_mapping_found":
+            matched.setdefault(taxonomy.action_type, taxonomy)
     for keyword, action_type in _SIDE_EFFECT_KEYWORDS.items():
         if keyword.isascii():
             pattern = rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])"
             if re.search(pattern, ascii_search_text):
-                matched.add(action_type)
+                taxonomy = normalize_world_action_type(action_type)
+                matched.setdefault(taxonomy.action_type, taxonomy)
         elif keyword in normalized:
-            matched.add(action_type)
+            taxonomy = normalize_world_action_type(action_type)
+            matched.setdefault(taxonomy.action_type, taxonomy)
     return matched
 
 
@@ -626,15 +657,17 @@ def _target_ref(value: str) -> str:
 def _pending_action_payload(
     *,
     task_ref: TaskRef,
-    action_type: str,
+    taxonomy: TaxonomyResult,
     target_ref: str,
 ) -> dict[str, Any]:
+    action_type = taxonomy.action_type
     base = {
         "task_id": task_ref.meta.task_id,
         "task_type": task_ref.meta.task_type,
         "success_criteria_short": task_ref.meta.success_criteria_short,
         "matched_action_type": action_type,
     }
+    base = apply_taxonomy_audit_fields(base, taxonomy)
     goal = task_ref.spec.goal_detail if task_ref.spec else task_ref.meta.success_criteria_short
     if action_type == "email.draft":
         return {

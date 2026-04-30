@@ -65,6 +65,25 @@ type Budget = {
   month_equivalent_usd: number;
 };
 
+type AccountSummary = {
+  tenant_id: string;
+  account: {
+    display_name?: string | null;
+    status: string;
+    plan?: string | null;
+    billing_status?: string | null;
+  };
+  members: unknown[];
+  tokens: unknown[];
+  counts: {
+    members: number;
+    issued_tokens: number;
+    revoked_tokens: number;
+    expired_tokens: number;
+  };
+  honest_limits: string[];
+};
+
 type PendingAction = {
   action_id: string;
   task_ref: string;
@@ -274,6 +293,9 @@ export default function NuoDashboard() {
   const [health, setHealth] = useState<Health | null>(null);
   const [systemReport, setSystemReport] = useState<SystemHealthReport | null>(null);
   const [budget, setBudget] = useState<Budget | null>(null);
+  const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(null);
+  const [accountLoading, setAccountLoading] = useState(true);
+  const [accountUnavailable, setAccountUnavailable] = useState(false);
   const [actions, setActions] = useState<PendingAction[]>([]);
   const [recentActions, setRecentActions] = useState<PendingAction[]>([]);
   const [actionCursor, setActionCursor] = useState<string | null>(null);
@@ -347,6 +369,18 @@ export default function NuoDashboard() {
         setErr(null);
       })
       .catch((e) => setErr(String(e)));
+
+    fetchJson<AccountSummary>("/nuo/accounts/summary")
+      .then((summary) => {
+        setAccountSummary(summary);
+        setAccountLoading(false);
+        setAccountUnavailable(false);
+      })
+      .catch(() => {
+        setAccountSummary(null);
+        setAccountLoading(false);
+        setAccountUnavailable(true);
+      });
   }, [diagnoseHint]);
 
   useEffect(() => {
@@ -505,6 +539,42 @@ export default function NuoDashboard() {
           value={riskLabel}
           hint={`事件积压 ${health.events_outbox_lag} · 协同 ${coordinationProblemCount}`}
         />
+      </section>
+
+      <section className="bg-white rounded-lg shadow-sm p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-medium">账号与 Token</h2>
+            <p className="text-xs text-gray-500 mt-1">
+              {accountUnavailable
+                ? "账号账本暂不可用"
+                : accountSummary
+                  ? `${accountSummary.account.display_name || accountSummary.tenant_id || health.tenant_id} · ${
+                      accountSummary.account.status || "未知状态"
+                    }`
+                  : "账号账本加载中..."}
+            </p>
+          </div>
+          {!accountUnavailable && accountSummary && (
+            <span className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-500">
+              {accountSummary.account.status || "unknown"}
+            </span>
+          )}
+        </div>
+        {!accountUnavailable && accountSummary && (
+          <div className="grid grid-cols-2 gap-3 mt-3 md:grid-cols-4">
+            <MiniMetric label="成员数" value={accountSummary.counts.members} />
+            <MiniMetric label="已签发 token" value={accountSummary.counts.issued_tokens} />
+            <MiniMetric label="已撤销 token" value={accountSummary.counts.revoked_tokens} />
+            <MiniMetric
+              label="诚实限制"
+              value={formatHonestyLimit(accountSummary.honest_limits)}
+            />
+          </div>
+        )}
+        {accountLoading && !accountUnavailable && !accountSummary && (
+          <div className="mt-3 text-xs text-gray-400">正在读取账号账本。</div>
+        )}
       </section>
 
       {systemReport && (
@@ -990,6 +1060,11 @@ function MiniMetric({ label, value }: { label: string; value: string | number })
       <div className="text-lg font-semibold mt-1">{value}</div>
     </div>
   );
+}
+
+function formatHonestyLimit(value: AccountSummary["honest_limits"]) {
+  if (!value.length) return "无";
+  return String(value.length);
 }
 
 function StatusPill({ status }: { status: DeliveryCapability["status"] }) {
