@@ -72,6 +72,10 @@ make format       # 自动修复格式
 make rules        # 看加载的守望规则
 make skills       # 看加载的 starter skills
 make idle-batch   # 跑一次 idle-batch (health_report 子集)
+make preflight    # 换电脑/上线前的基础检查
+make readiness    # preflight + secret + delivery 汇总
+make dogfood      # V4 低风险 dogfood smoke
+make delivery-status # 诚实查看 ready / partial / not_ready
 make run-cli      # 对话框 CLI smoke
 ```
 
