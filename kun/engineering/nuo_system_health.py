@@ -2,7 +2,8 @@
 
 Unlike the light `/nuo/health/summary` endpoint, this report is meant for
 system diagnosis.  It gathers real runtime rows, event lag, pending approvals,
-delivery-status honesty checks, and WorldGateway handler health.
+delivery-status honesty checks, secret/config safety, and WorldGateway handler
+health.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from kun.core.db import session_scope
 from kun.core.orm import EventRow, PendingActionRow, RuntimeStateRow, TaskRow
 from kun.engineering.concurrency import scan_active_resource_conflicts
 from kun.engineering.delivery_status import get_v3_delivery_status, validate_delivery_status
+from kun.ops.secret_audit import SecretAuditItem, audit_runtime_secrets
 from kun.world.handler_health import (
     WorldHandlerHealthCard,
     collect_world_handler_health,
@@ -54,6 +56,8 @@ class SystemHealthReport(BaseModel):
     stale_runtime_count: int = 0
     active_resource_conflicts: int = 0
     delivery_status_issues: list[str] = Field(default_factory=list)
+    secret_audit_summary: dict[str, int] = Field(default_factory=dict)
+    secret_audit_items: list[SecretAuditItem] = Field(default_factory=list)
     world_handler_summary: dict[str, int] = Field(default_factory=dict)
     world_handlers: list[WorldHandlerHealthCard] = Field(default_factory=list)
     findings: list[SystemHealthFinding] = Field(default_factory=list)
@@ -133,6 +137,7 @@ async def collect_system_health_report(
         )
 
     delivery_issues = validate_delivery_status(get_v3_delivery_status())
+    secret_audit = audit_runtime_secrets()
     world_handlers = await collect_world_handler_health(tenant_id=tenant_id)
     findings = _findings(
         outbox_lag=outbox_lag,
@@ -140,6 +145,7 @@ async def collect_system_health_report(
         stale_runtime_count=stale_runtime_count,
         active_resource_conflicts=active_resource_conflicts,
         delivery_issues=delivery_issues,
+        secret_audit_items=secret_audit.items,
         world_handlers=world_handlers,
     )
     return SystemHealthReport(
@@ -152,6 +158,8 @@ async def collect_system_health_report(
         stale_runtime_count=stale_runtime_count,
         active_resource_conflicts=active_resource_conflicts,
         delivery_status_issues=delivery_issues,
+        secret_audit_summary=secret_audit.summary,
+        secret_audit_items=secret_audit.items,
         world_handler_summary=summarize_handler_health(world_handlers),
         world_handlers=world_handlers,
         findings=findings,
@@ -165,6 +173,7 @@ def _findings(
     stale_runtime_count: int,
     active_resource_conflicts: int,
     delivery_issues: list[str],
+    secret_audit_items: list[SecretAuditItem],
     world_handlers: list[WorldHandlerHealthCard],
 ) -> list[SystemHealthFinding]:
     findings: list[SystemHealthFinding] = []
@@ -221,6 +230,19 @@ def _findings(
                 title="能力边界标注不诚实",
                 detail=issue,
                 suggested_action="修正文档/状态，或补主流程调用和测试后再标 ready。",
+            )
+        )
+    for item in secret_audit_items:
+        if item.severity == "ok":
+            continue
+        findings.append(
+            SystemHealthFinding(
+                finding_id=f"secret:{item.item_id}",
+                severity="error" if item.severity == "blocker" else "warn",
+                subsystem=f"secret_audit.{item.area}",
+                title=item.title,
+                detail=item.detail,
+                suggested_action=item.suggested_action,
             )
         )
     for card in world_handlers:

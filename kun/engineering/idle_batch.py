@@ -347,6 +347,7 @@ class HealthReportStep(IdleBatchStep):
             "stale_runtime_count": report.stale_runtime_count,
             "active_resource_conflicts": report.active_resource_conflicts,
             "worst_severity": report.worst_severity,
+            "secret_audit_summary": report.secret_audit_summary,
             "world_handler_summary": report.world_handler_summary,
             "findings": len(report.findings),
             "top_findings": [

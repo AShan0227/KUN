@@ -233,6 +233,35 @@ async def test_health_report_step_collects_nuo_report_and_emits_event(monkeypatc
 
 
 @pytest.mark.unit
+def test_nuo_health_findings_include_secret_audit_items() -> None:
+    from kun.engineering.nuo_system_health import _findings
+    from kun.ops.secret_audit import SecretAuditItem
+
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[
+            SecretAuditItem(
+                item_id="auth.no_valid_secret",
+                area="auth",
+                severity="blocker",
+                title="没有可用认证密钥",
+                detail="缺少 KUN_AUTH_SECRET",
+                suggested_action="配置随机密钥",
+            )
+        ],
+        world_handlers=[],
+    )
+
+    assert findings[0].finding_id == "secret:auth.no_valid_secret"
+    assert findings[0].severity == "error"
+    assert findings[0].subsystem == "secret_audit.auth"
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_route_rule_mining_step_surfaces_best_model_pattern() -> None:
     set_idle_batch_data_source(_FakeIdleBatchDataSource())
