@@ -5,6 +5,7 @@ from typing import ClassVar
 from kun.datamodel.decision_ticket import (
     ticket_from_delivery_review,
     ticket_from_llm_route,
+    ticket_from_protocol_applied,
     ticket_from_route_choice,
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
@@ -116,6 +117,45 @@ def test_llm_route_ticket_wraps_actual_model_choice() -> None:
     assert ticket.selected_action == "codex-mcp:gpt-5.5:top"
     assert ticket.evidence["provider"] == "codex-mcp"
     assert ticket.metadata["step_id"] == 2
+
+
+def test_protocol_applied_ticket_wraps_protocol_registry_choice() -> None:
+    from kun.qi.protocol import (
+        Protocol,
+        ProtocolExecution,
+        ProtocolSkillStep,
+        ProtocolTrigger,
+        ProtocolVerificationSpec,
+    )
+
+    protocol = Protocol(
+        protocol_id="education.lesson.plan",
+        version="1.2.0",
+        tenant_id="tenant-1",
+        status="stable",
+        trigger=ProtocolTrigger(
+            task_type_pattern="education.*",
+            risk_levels=["low", "medium"],
+        ),
+        execution=ProtocolExecution(mode="MAX", expected_cost_usd=0.2),
+        skill_chain=[ProtocolSkillStep(skill="context.retrieve", when="before_planning")],
+        verification=[ProtocolVerificationSpec(kind="rubric", required=True)],
+    )
+
+    ticket = ticket_from_protocol_applied(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        risk_level="medium",
+        estimated_cost_usd=0.4,
+        protocol=protocol,
+    )
+
+    assert ticket.phase == "protocol"
+    assert ticket.decision_point == "protocol_applied"
+    assert ticket.selected_action == "education.lesson.plan:1.2.0:MAX"
+    assert ticket.status == "applied"
+    assert ticket.evidence["skill_chain"][0]["skill"] == "context.retrieve"
+    assert ticket.metadata["protocol_status"] == "stable"
 
 
 def test_world_policy_ticket_blocks_missing_handler() -> None:

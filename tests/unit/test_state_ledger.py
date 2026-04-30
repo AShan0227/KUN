@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from kun.core.state_ledger import StateLedger
+from kun.datamodel.decision_ticket import ticket_from_llm_route, ticket_from_protocol_applied
 from kun.datamodel.runtime import RuntimeState, StepRecord
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
+from kun.qi.protocol import Protocol, ProtocolExecution, ProtocolTrigger
 from kun.watchtower.decision_plane import WatchtowerDecisionPlane
 
 
@@ -79,6 +81,51 @@ def test_state_ledger_active_snapshots_are_tenant_scoped() -> None:
     active_a = ledger.active_snapshots(tenant_id="tenant-a")
 
     assert [entry.task_id for entry in active_a] == [task_a.meta.task_id]
+
+
+def test_state_ledger_applies_protocol_and_llm_route_tickets_to_current_view() -> None:
+    ledger = StateLedger()
+    owner = Owner(tenant_id="tenant-a", user_id="user-a")
+    task = _task_ref(owner, "设计课程")
+    ledger.record_task_created(task, tenant_id=owner.tenant_id)
+    protocol = Protocol(
+        protocol_id="education.lesson.plan",
+        version="1.0.0",
+        tenant_id=owner.tenant_id,
+        status="stable",
+        trigger=ProtocolTrigger(task_type_pattern="product.*"),
+        execution=ProtocolExecution(mode="MAX"),
+    )
+
+    protocol_ticket = ticket_from_protocol_applied(
+        tenant_id=owner.tenant_id,
+        task_id=task.meta.task_id,
+        risk_level="low",
+        estimated_cost_usd=0.1,
+        protocol=protocol,
+    )
+    ledger.record_decision_ticket(protocol_ticket)
+    llm_ticket = ticket_from_llm_route(
+        tenant_id=owner.tenant_id,
+        task_id=task.meta.task_id,
+        step_id=1,
+        purpose="execution",
+        provider="codex-mcp",
+        model="gpt-5.5",
+        tier="top",
+        cost_usd=0.02,
+    )
+    ledger.record_decision_ticket(llm_ticket)
+
+    snapshot = ledger.snapshot(task.meta.task_id)
+
+    assert snapshot is not None
+    assert snapshot.execution_mode == "MAX"
+    assert snapshot.current_action == "应用任务协议 education.lesson.plan"
+    assert snapshot.current_provider == "codex-mcp"
+    assert snapshot.current_model == "gpt-5.5"
+    assert snapshot.current_tier == "top"
+    assert snapshot.decision_ticket_ids == [protocol_ticket.ticket_id, llm_ticket.ticket_id]
 
 
 def test_state_ledger_records_world_action_execution() -> None:

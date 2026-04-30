@@ -16,14 +16,16 @@ from typing import Any
 from pydantic import BaseModel
 from sqlalchemy import func, literal, select, update
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from kun.core.db import session_scope
 from kun.core.events import emit
 from kun.core.orm import PendingActionRow, RuntimeStateRow, TaskResultRow
 from kun.core.state_ledger import get_state_ledger
-from kun.datamodel.decision_ticket import ticket_from_world_policy
+from kun.datamodel.decision_ticket import DecisionTicket, ticket_from_world_policy
 from kun.datamodel.events import Event
 from kun.datamodel.runtime import TaskStatus
+from kun.engineering.credit_assignment import CreditAssignment, persist_resource_credit_report
 from kun.world.gateway import WorldAction, WorldGatewayResult, get_world_gateway
 from kun.world.handler_health import WorldHandlerHealthCard, collect_world_handler_health
 
@@ -112,6 +114,14 @@ async def execute_approved_action_once(
                 ),
             )
             get_state_ledger().record_decision_ticket(world_ticket)
+            await _record_world_action_credit(
+                s,
+                tenant_id=tenant_id,
+                task_ref=task_ref,
+                action_type=action.action_type,
+                gateway_result=gateway_result,
+                decision_ticket=world_ticket,
+            )
             get_state_ledger().record_paused(
                 task_ref,
                 reason=_execution_blocked_message(gateway_result),
@@ -211,6 +221,14 @@ async def execute_approved_action_once(
                 ),
             )
             get_state_ledger().record_decision_ticket(world_ticket)
+            await _record_world_action_credit(
+                s,
+                tenant_id=tenant_id,
+                task_ref=task_ref,
+                action_type=action.action_type,
+                gateway_result=gateway_result,
+                decision_ticket=world_ticket,
+            )
             get_state_ledger().record_paused(
                 task_ref,
                 reason=_execution_blocked_message(gateway_result),
@@ -264,6 +282,14 @@ async def execute_approved_action_once(
             handler_id=_optional_str(gateway_result.audit.get("handler_id")),
             artifact_ref=_optional_str(gateway_result.audit.get("artifact_ref")),
             message=gateway_result.message,
+            decision_ticket=world_ticket,
+        )
+        await _record_world_action_credit(
+            s,
+            tenant_id=tenant_id,
+            task_ref=task_ref,
+            action_type=action.action_type,
+            gateway_result=gateway_result,
             decision_ticket=world_ticket,
         )
 
@@ -492,6 +518,60 @@ def _gateway_result_blocks_resume(gateway_result: WorldGatewayResult) -> bool:
         or gateway_result.gateway_mode == "policy_blocked"
         or gateway_result.capability_status in {"missing_handler", "preview_failed"}
     )
+
+
+async def _record_world_action_credit(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    task_ref: str,
+    action_type: str,
+    gateway_result: WorldGatewayResult,
+    decision_ticket: DecisionTicket,
+) -> None:
+    resources, immediate_reward, outcome = _world_action_credit_inputs(
+        action_type=action_type,
+        gateway_result=gateway_result,
+        decision_ticket=decision_ticket,
+    )
+    credit = CreditAssignment()
+    credit.record_step(
+        task_ref,
+        0,
+        resources,
+        immediate_reward=immediate_reward,
+        metadata={
+            "source": "world_gateway",
+            "gateway_mode": gateway_result.gateway_mode,
+            "capability_status": gateway_result.capability_status,
+            "external_dispatched": gateway_result.external_dispatched,
+            "requires_handler": gateway_result.requires_handler,
+            "decision_ticket_id": decision_ticket.ticket_id,
+        },
+    )
+    report = await credit.finalize_task(task_ref, outcome)
+    await persist_resource_credit_report(session, tenant_id=tenant_id, report=report)
+
+
+def _world_action_credit_inputs(
+    *,
+    action_type: str,
+    gateway_result: WorldGatewayResult,
+    decision_ticket: DecisionTicket,
+) -> tuple[dict[str, list[str]], float, str]:
+    handler_id = _optional_str(gateway_result.audit.get("handler_id"))
+    resources: dict[str, list[str]] = {
+        "world_action": [action_type],
+        "world_gateway_mode": [gateway_result.gateway_mode],
+        "decision_ticket": [decision_ticket.ticket_id],
+    }
+    if handler_id:
+        resources["world_handler"] = [handler_id]
+    if _gateway_result_blocks_resume(gateway_result):
+        return resources, 0.15, "fail"
+    if gateway_result.external_dispatched:
+        return resources, 0.9, "pass"
+    return resources, 0.7, "partial"
 
 
 async def _collect_handler_health_card(

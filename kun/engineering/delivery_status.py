@@ -180,6 +180,7 @@ def get_v3_delivery_status(
                 "资源贡献已持久化到 resource_credit_stats，重启后不会全部丢失",
                 "ContextPacker 已按持久贡献度、验证结果和质量分排序",
                 "Watchtower Decision Plane 会用 strategy_pack 历史信用做 MoE 式轻量加权",
+                "ProtocolRegistry 协议消费已进入统一 DecisionTicket 和 StateLedger",
                 "TaskRouter 角色/模型用途选择已进入统一 DecisionTicket 和 StateLedger",
                 "真实 LLM provider/model/tier 选择已进入统一 DecisionTicket 和 StateLedger",
                 "PreDeliverGate 交付审核结果已进入统一 DecisionTicket 和 StateLedger",
@@ -293,6 +294,7 @@ def _world_gateway_delivery_status(
         "WorldGateway handler 注册表会暴露重试策略、补偿策略和风险范围",
         "真实外部动作缺少 external_dispatch_confirmed=true 时会被策略层拦截",
         "NUO 判断 handler blocked/unregistered 时，审批后执行器会拦截并保持任务暂停",
+        "WorldGateway 执行结果会回写 world_action / world_handler / world_policy 决策票据信用",
     ]
     done.extend(_handler_done_line(item) for item in descriptors)
 

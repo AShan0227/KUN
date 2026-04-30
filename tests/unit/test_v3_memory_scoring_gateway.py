@@ -11,6 +11,7 @@ import httpx
 import pytest
 from kun.context.packer import ContextPacker
 from kun.context.storage import InMemoryAssetStore
+from kun.datamodel.decision_ticket import ticket_from_protocol_applied
 from kun.datamodel.runtime import RuntimeState, StepRecord
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
 from kun.engineering.orchestrator import Orchestrator
@@ -19,6 +20,7 @@ from kun.interface.llm.base import LLMResponse, UsageInfo
 from kun.interface.llm.router import set_router
 from kun.interface.llm.stub_provider import StubProvider
 from kun.memory.writeback import MemoryWriteback, MemoryWritebackResult
+from kun.qi.protocol import Protocol, ProtocolExecution, ProtocolSkillStep, ProtocolTrigger
 from kun.watchtower.decision_plane import WatchtowerDecisionPlane
 from kun.watchtower.scoring import UnifiedScoringSystem
 from kun.world.gateway import (
@@ -179,6 +181,44 @@ async def test_memory_writeback_assets_are_retrievable_by_context_packer() -> No
     assert {item.asset_kind for item in pack.items} == {"memory"}
     assert any("任务结果" in item.summary for item in pack.items)
     assert any("执行过程" in item.summary for item in pack.items)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_writeback_records_protocol_as_meta_decision() -> None:
+    store = InMemoryAssetStore()
+    writeback = MemoryWriteback(store=store)
+    task_ref = _task_ref()
+    protocol = Protocol(
+        protocol_id="education.lesson.plan",
+        version="1.0.0",
+        tenant_id="tenant-v3",
+        status="stable",
+        trigger=ProtocolTrigger(task_type_pattern="education.*"),
+        execution=ProtocolExecution(mode="MAX"),
+        skill_chain=[ProtocolSkillStep(skill="lesson_planner")],
+    )
+    ticket = ticket_from_protocol_applied(
+        tenant_id="tenant-v3",
+        task_id=task_ref.meta.task_id,
+        risk_level=task_ref.meta.risk_level,
+        estimated_cost_usd=task_ref.meta.estimated_cost_usd,
+        protocol=protocol,
+    )
+
+    result = await writeback.record_meta_decision(
+        tenant_id="tenant-v3",
+        task_ref=task_ref,
+        decision=protocol,
+        decision_ticket=ticket,
+    )
+    assets = await store.list(tenant_id="tenant-v3", asset_kind="methodology")
+
+    assert result.memory_layer == "meta_decision"
+    assert assets[0].l1_metadata["decision_point"] == "protocol_applied"
+    assert assets[0].l1_metadata["strategy_pack_id"] == "education.lesson.plan"
+    assert assets[0].l1_metadata["execution_mode"] == "MAX"
+    assert "lesson_planner" in assets[0].l1_metadata["skill_hints"]
 
 
 @pytest.mark.unit

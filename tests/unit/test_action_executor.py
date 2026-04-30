@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from kun.datamodel.decision_ticket import ticket_from_world_policy
 from kun.engineering.action_executor import (
     _claim_approved_action_stmt,
     _count_unresolved_actions_stmt,
@@ -19,6 +20,7 @@ from kun.engineering.action_executor import (
     _handler_health_blocks_execution,
     _mark_task_result_queued_stmt,
     _unblock_paused_runtime_stmt,
+    _world_action_credit_inputs,
 )
 from kun.world.gateway import WorldGatewayResult
 from kun.world.handler_health import WorldHandlerHealthCard
@@ -219,3 +221,72 @@ def test_handler_health_block_prevents_external_execution() -> None:
     assert result.requires_handler is True
     assert result.audit["policy"]["source"] == "nuo.handler_health"
     assert "安全拦截" in result.user_summary
+
+
+@pytest.mark.unit
+def test_world_action_credit_tracks_handler_action_and_policy_ticket() -> None:
+    gateway_result = WorldGatewayResult(
+        action_id="act-1",
+        gateway_mode="handler_executed",
+        capability_status="supported_execute",
+        external_dispatched=True,
+        requires_handler=False,
+        audit={"handler_id": "email.send.v1"},
+    )
+    ticket = ticket_from_world_policy(
+        tenant_id="tenant-1",
+        task_id="task-1",
+        action_id="act-1",
+        action_type="email.send",
+        risk_level="high",
+        gateway_mode=gateway_result.gateway_mode,
+        external_dispatched=gateway_result.external_dispatched,
+        requires_handler=gateway_result.requires_handler,
+        reason="handler executed",
+    )
+
+    resources, reward, outcome = _world_action_credit_inputs(
+        action_type="email.send",
+        gateway_result=gateway_result,
+        decision_ticket=ticket,
+    )
+
+    assert resources["world_action"] == ["email.send"]
+    assert resources["world_handler"] == ["email.send.v1"]
+    assert resources["world_gateway_mode"] == ["handler_executed"]
+    assert resources["decision_ticket"] == [ticket.ticket_id]
+    assert reward == 0.9
+    assert outcome == "pass"
+
+
+@pytest.mark.unit
+def test_world_action_credit_marks_blocked_handler_as_failure() -> None:
+    gateway_result = WorldGatewayResult(
+        action_id="act-1",
+        gateway_mode="policy_blocked",
+        capability_status="preview_failed",
+        external_dispatched=False,
+        requires_handler=True,
+    )
+    ticket = ticket_from_world_policy(
+        tenant_id="tenant-1",
+        task_id="task-1",
+        action_id="act-1",
+        action_type="email.send",
+        risk_level="high",
+        gateway_mode=gateway_result.gateway_mode,
+        external_dispatched=gateway_result.external_dispatched,
+        requires_handler=gateway_result.requires_handler,
+        reason="blocked",
+    )
+
+    resources, reward, outcome = _world_action_credit_inputs(
+        action_type="email.send",
+        gateway_result=gateway_result,
+        decision_ticket=ticket,
+    )
+
+    assert resources["world_action"] == ["email.send"]
+    assert "world_handler" not in resources
+    assert reward == 0.15
+    assert outcome == "fail"

@@ -280,6 +280,81 @@ def ticket_from_llm_route(
     )
 
 
+def ticket_from_protocol_applied(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    estimated_cost_usd: float | None,
+    protocol: Any,
+    mission_id: str | None = None,
+) -> DecisionTicket:
+    """Wrap ProtocolRegistry consume as a V4 decision ticket."""
+
+    protocol_id = str(getattr(protocol, "protocol_id", "unknown"))
+    version = str(getattr(protocol, "version", "unknown"))
+    execution = getattr(protocol, "execution", None)
+    mode = str(getattr(execution, "mode", "SMART"))
+    status = str(getattr(protocol, "status", "unknown"))
+    skill_chain = list(getattr(protocol, "skill_chain", []) or [])
+    verification = list(getattr(protocol, "verification", []) or [])
+    trigger = getattr(protocol, "trigger", None)
+    confidence = 0.82 if status == "stable" else 0.62 if status == "canary" else 0.5
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="protocol",
+        decision_point="protocol_applied",
+        source_module="qi.protocol_registry",
+        selected_action=f"{protocol_id}:{version}:{mode}",
+        status="applied",
+        reason=f"ProtocolRegistry applied {status} protocol {protocol_id}@{version}",
+        confidence=confidence,
+        risk_level=risk_level,
+        cost_estimate_usd=estimated_cost_usd,
+        inputs_summary={
+            "task_id": task_id,
+            "risk_level": risk_level,
+            "estimated_cost_usd": estimated_cost_usd,
+        },
+        constraints=[
+            f"task_type_pattern={getattr(trigger, 'task_type_pattern', '')}",
+            f"risk_levels={','.join(_string_list(getattr(trigger, 'risk_levels', [])))}",
+        ],
+        evidence={
+            "protocol_id": protocol_id,
+            "version": version,
+            "status": status,
+            "execution_mode": mode,
+            "expected_cost_usd": getattr(execution, "expected_cost_usd", None),
+            "expected_duration_sec": getattr(execution, "expected_duration_sec", None),
+            "skill_chain": [
+                {
+                    "skill": str(getattr(step, "skill", "")),
+                    "when": str(getattr(step, "when", "")),
+                    "fallback": str(getattr(step, "fallback", "")),
+                }
+                for step in skill_chain
+            ],
+            "verification": [
+                {
+                    "kind": str(getattr(spec, "kind", "")),
+                    "required": bool(getattr(spec, "required", False)),
+                }
+                for spec in verification
+            ],
+            "reward_weights": getattr(protocol, "reward_weights", {}),
+        },
+        metadata={
+            "protocol_id": protocol_id,
+            "version": version,
+            "execution_mode": mode,
+            "protocol_status": status,
+        },
+    )
+
+
 def ticket_from_delivery_review(
     *,
     tenant_id: str,
@@ -400,6 +475,7 @@ __all__ = [
     "DecisionTicketRef",
     "ticket_from_delivery_review",
     "ticket_from_llm_route",
+    "ticket_from_protocol_applied",
     "ticket_from_route_choice",
     "ticket_from_value_gate_decision",
     "ticket_from_watchtower_decision",

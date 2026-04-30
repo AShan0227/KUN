@@ -45,6 +45,7 @@ from kun.datamodel.decision_ticket import (
     DecisionTicket,
     ticket_from_delivery_review,
     ticket_from_llm_route,
+    ticket_from_protocol_applied,
     ticket_from_route_choice,
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
@@ -568,6 +569,7 @@ class Orchestrator:
         # 找到 stable 协议 → 改 task_ref.meta.execution_mode (按 protocol.execution.mode)
         # 协议是 KUN 沉淀的 IP, 鲲消费协议 = "怎么做这个 task" 的标准说明书
         active_protocol: Any = None
+        decision_tickets: list[DecisionTicket] = []
         if (
             self.protocol_registry is not None
             and _os.getenv("KUN_PROTOCOL_CONSUME_ENABLED", "1") == "1"
@@ -597,6 +599,16 @@ class Orchestrator:
                             )
                         task_ref.spec.verification_specs = existing_specs
 
+                    protocol_ticket = ticket_from_protocol_applied(
+                        tenant_id=tenant.tenant_id,
+                        task_id=task_ref.meta.task_id,
+                        risk_level=task_ref.meta.risk_level,
+                        estimated_cost_usd=task_ref.meta.estimated_cost_usd,
+                        protocol=active_protocol,
+                        mission_id=_mission_id_from_task(task_ref),
+                    )
+                    decision_tickets.append(protocol_ticket)
+                    self._record_state_ledger("record_decision_ticket", protocol_ticket)
                     async with session_scope(tenant_id=tenant.tenant_id) as s:
                         await emit(
                             s,
@@ -612,10 +624,25 @@ class Orchestrator:
                                     "addon_verifications": [
                                         v.kind for v in active_protocol.verification
                                     ],
+                                    "decision_ticket": protocol_ticket.event_payload(),
                                 },
                                 task_ref=task_ref.meta.task_id,
                             ),
                         )
+                    yield OrchestratorEvent(
+                        kind="action_plan",
+                        data={
+                            "stage": "protocol_applied",
+                            "task_id": task_ref.meta.task_id,
+                            "decision_ticket": protocol_ticket.event_payload(),
+                        },
+                    )
+                    await self._record_meta_decision_memory(
+                        tenant_id=tenant.tenant_id,
+                        task_ref=task_ref,
+                        decision=active_protocol,
+                        decision_ticket=protocol_ticket,
+                    )
                     try:
                         from kun.core.metrics import protocol_match_total
 
@@ -630,7 +657,6 @@ class Orchestrator:
         # V3: Watchtower Decision Plane consume — task 启动前选 StrategyPack,
         # 并真实影响 execution_mode / context_limit / required_skills.
         watchtower_decision: Any = None
-        decision_tickets: list[DecisionTicket] = []
         if (
             self.decision_plane is not None
             and _os.getenv("KUN_WATCHTOWER_DECISION_PLANE_ENABLED", "1") == "1"

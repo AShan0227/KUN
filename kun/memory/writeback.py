@@ -3,7 +3,7 @@
 This module turns real execution artifacts into context assets:
 - result memory: final delivery and quality;
 - process memory: step path and tool/model usage;
-- meta-decision memory: why Watchtower chose this strategy.
+- meta-decision memory: why KUN chose this strategy/protocol/path.
 
 The write path uses the existing AssetStore so the existing ContextPacker can
 retrieve these memories on later similar tasks.  No separate "memory silo".
@@ -52,14 +52,30 @@ class MemoryWriteback:
         decision: Any,
         decision_ticket: DecisionTicket | None = None,
     ) -> MemoryWritebackResult:
-        strategy_pack_id = str(getattr(decision, "strategy_pack_id", "default"))
-        execution_mode = str(getattr(decision, "execution_mode", task_ref.meta.execution_mode))
-        metric_dimensions = list(getattr(decision, "metric_dimensions", []) or [])
-        skill_hints = list(getattr(decision, "skill_hints", []) or [])
-        reason = str(getattr(decision, "reason", ""))
+        decision_point = decision_ticket.decision_point if decision_ticket else "strategy_selected"
+        selected_action = decision_ticket.selected_action if decision_ticket else ""
+        if decision_ticket and decision_ticket.decision_point == "protocol_applied":
+            strategy_pack_id = str(decision_ticket.metadata.get("protocol_id") or "protocol")
+            execution_mode = str(
+                decision_ticket.metadata.get("execution_mode") or task_ref.meta.execution_mode
+            )
+            metric_dimensions = list((decision_ticket.evidence.get("reward_weights") or {}).keys())
+            skill_hints = [
+                str(item.get("skill", ""))
+                for item in decision_ticket.evidence.get("skill_chain", [])
+                if isinstance(item, dict) and str(item.get("skill", ""))
+            ]
+            reason = decision_ticket.reason
+        else:
+            strategy_pack_id = str(getattr(decision, "strategy_pack_id", "default"))
+            execution_mode = str(getattr(decision, "execution_mode", task_ref.meta.execution_mode))
+            metric_dimensions = list(getattr(decision, "metric_dimensions", []) or [])
+            skill_hints = list(getattr(decision, "skill_hints", []) or [])
+            reason = str(getattr(decision, "reason", ""))
         ticket_ref = decision_ticket.ref().model_dump(mode="json") if decision_ticket else None
         summary = (
             f"元决策: task_type={task_ref.meta.task_type}; "
+            f"point={decision_point}; "
             f"strategy={strategy_pack_id}; mode={execution_mode}; "
             f"skills={', '.join(skill_hints[:5])}; reason={reason}"
         )
@@ -70,6 +86,8 @@ class MemoryWriteback:
                 "memory_layer": "meta_decision",
                 "task_id": task_ref.meta.task_id,
                 "task_type": task_ref.meta.task_type,
+                "decision_point": decision_point,
+                "selected_action": selected_action,
                 "strategy_pack_id": strategy_pack_id,
                 "execution_mode": execution_mode,
                 "metric_dimensions": metric_dimensions,
@@ -83,6 +101,7 @@ class MemoryWriteback:
                 "v3",
                 "meta_decision",
                 task_ref.meta.task_type,
+                decision_point,
                 strategy_pack_id,
                 execution_mode,
             ],

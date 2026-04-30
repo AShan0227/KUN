@@ -170,6 +170,25 @@ class StateLedger:
                 entry.execution_mode = str(
                     ticket.metadata.get("execution_mode") or entry.execution_mode
                 )
+            elif ticket.decision_point == "protocol_applied":
+                entry.decision_reason = ticket.reason or entry.decision_reason
+                entry.execution_mode = str(
+                    ticket.metadata.get("execution_mode") or entry.execution_mode
+                )
+                protocol_id = str(ticket.metadata.get("protocol_id") or "")
+                if protocol_id:
+                    entry.current_action = f"应用任务协议 {protocol_id}"
+            elif ticket.decision_point == "llm_model_selected":
+                entry.current_provider = str(
+                    ticket.metadata.get("provider") or entry.current_provider
+                )
+                entry.current_model = str(ticket.metadata.get("model") or entry.current_model)
+                selected_parts = ticket.selected_action.split(":")
+                if len(selected_parts) >= 3:
+                    entry.current_tier = selected_parts[-1] or entry.current_tier
+                entry.decision_reason = ticket.reason or entry.decision_reason
+            elif ticket.decision_point in {"delivery_review", "world_policy"}:
+                entry.decision_reason = ticket.reason or entry.decision_reason
             entry.add_trail(
                 "decision.ticket",
                 f"{ticket.decision_point}: {ticket.selected_action}",
