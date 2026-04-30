@@ -200,3 +200,19 @@ def test_row_to_item_embeds_gateway_preview() -> None:
     assert item.gateway_preview["user_summary"] == "批准后会执行受控动作。"
     assert item.gateway_preview["next_step"] == "批准前先看 diff。"
     assert item.gateway_preview["audit"]["handler_id"] == "local_file.write.v1"
+
+
+@pytest.mark.unit
+def test_row_to_item_redacts_secrets_from_payload() -> None:
+    row = _action("a-1", "low", 1)
+    row.payload = {
+        "email": "ok@example.com",
+        "api_key": "secret-value",
+        "nested": {"authorization": "Bearer hidden", "safe": "visible"},
+    }
+
+    item = _row_to_item(row)
+
+    assert item.payload["api_key"] == "[redacted]"
+    assert item.payload["nested"]["authorization"] == "[redacted]"
+    assert item.payload["nested"]["safe"] == "visible"

@@ -73,6 +73,11 @@ KUN_TASK_MAX_DURATION_SEC=1800
 
 # 多租户 (production 必须显式, dev 可设 default)
 KUN_DEFAULT_TENANT_ID=                  # production 必须空
+KUN_AUTH_SECRET=please-use-32+-chars    # production 必须有；API 不再信任裸 X-Tenant-Id
+
+# 低峰期 context/memory 瘦身
+KUN_CONTEXT_MAINTENANCE_ENABLED=1
+KUN_CONTEXT_MAINTENANCE_MUTATE=0        # 默认 dry-run；确认后再改 1
 ```
 
 ### 启动顺序
@@ -83,6 +88,10 @@ docker compose -f docker-compose.prod.yml up -d postgres nats
 
 # 2. alembic 迁移到 head
 docker compose run --rm api uv run alembic upgrade head
+
+# 2.5 发布前做一次备份 + restore smoke
+docker compose run --rm api scripts/backup_postgres.sh backups
+KUN_RESTORE_TEST_DSN=postgresql://... scripts/restore_postgres_smoke.sh backups/kun-postgres-*.dump
 
 # 3. 启 API (含 install_runtime 装 hermes/verification/lab bridge etc.)
 docker compose -f docker-compose.prod.yml up -d api
@@ -129,6 +138,20 @@ docker compose -f docker-compose.prod.yml up -d prometheus grafana
 - 看 `kun_llm_request_total{provider, model}` — 是否真切到 fallback (MiniMax / Stub)
 - 如 Anthropic API 配额耗尽 → 看 `kun.core.quota_tracker` 日志, 等 5h rolling window 重置
 - 如 ChatGPT subscription 过期 → 重新 login claude-code CLI: `claude login`
+
+### 2b. API 401 / 租户头不生效
+
+**症状**: production 里带 `X-Tenant-Id` 还是 401。
+
+**原因**: production 不再信任裸 header，必须用签名 Bearer token。  
+
+**处置**:
+
+```bash
+export KUN_AUTH_SECRET=...
+TOKEN="$(scripts/mint_auth_token.py --tenant u-sylvan --user sylvan --scopes world:approve,world:dispatch)"
+curl -H "Authorization: Bearer $TOKEN" https://your-kun/api/missions
+```
 
 ### 3. Task timed out
 

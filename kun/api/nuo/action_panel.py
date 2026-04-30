@@ -10,9 +10,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import literal, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 
+from kun.core.config import settings
 from kun.core.db import session_scope
 from kun.core.orm import PendingActionRow
-from kun.core.tenancy import current_tenant
+from kun.core.tenancy import current_tenant, require_scope
 from kun.datamodel.runtime import TaskStatus
 from kun.engineering.action_executor import ActionExecutionResult, execute_approved_action_once
 from kun.world.gateway import (
@@ -205,6 +206,10 @@ async def decide_pending_action(
     unsupported action types stay honest through requires_handler metadata.
     """
     tenant = current_tenant()
+    if req.decision == "approve":
+        _require_scope_when_enforced("world:approve")
+    if req.external_dispatch_confirmed:
+        _require_scope_when_enforced("world:dispatch")
     new_status = _decision_to_status(req.decision)
     now = datetime.now(UTC)
 
@@ -344,11 +349,47 @@ def _row_to_item(
         target_ref=row.target_ref,
         status=cast(ActionStatus, row.status),
         risk_level=row.risk_level,
-        payload=row.payload,
+        payload=_redact_payload(row.payload),
         gateway_preview=preview.model_dump(mode="json") if preview else None,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def _require_scope_when_enforced(scope: str) -> None:
+    tenant = current_tenant()
+    if settings().env != "production" and not tenant.scopes:
+        return
+    try:
+        require_scope(scope, ctx=tenant)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+_SECRET_KEY_FRAGMENTS = (
+    "secret",
+    "token",
+    "password",
+    "api_key",
+    "apikey",
+    "authorization",
+    "credential",
+    "private_key",
+)
+
+
+def _redact_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if any(fragment in key.lower() for fragment in _SECRET_KEY_FRAGMENTS):
+                redacted[key] = "[redacted]"
+            else:
+                redacted[key] = _redact_payload(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_payload(item) for item in value]
+    return value
 
 
 _RISK_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}

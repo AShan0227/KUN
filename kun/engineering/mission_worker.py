@@ -13,7 +13,7 @@ from textwrap import shorten
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from kun.core.db import session_scope
 from kun.core.events import emit
@@ -366,6 +366,22 @@ async def _recompute_mission_status_inline(
     tenant_id: str,
     mission_id: str,
 ) -> None:
+    budget_used = float(
+        (
+            await session.execute(
+                select(
+                    func.coalesce(func.sum(RuntimeStateRow.accumulated_cost_usd_equivalent), 0.0)
+                )
+                .select_from(MissionTaskRow)
+                .join(RuntimeStateRow, RuntimeStateRow.task_ref == MissionTaskRow.task_id)
+                .where(
+                    MissionTaskRow.tenant_id == tenant_id,
+                    MissionTaskRow.mission_id == mission_id,
+                    RuntimeStateRow.tenant_id == tenant_id,
+                )
+            )
+        ).scalar_one()
+    )
     statuses = list(
         (
             await session.execute(
@@ -398,7 +414,30 @@ async def _recompute_mission_status_inline(
     else:
         mission_status = "planned"
         finished_at = None
-    values: dict[str, Any] = {"status": mission_status, "updated_at": datetime.now(UTC)}
+    now = datetime.now(UTC)
+    values: dict[str, Any] = {
+        "status": mission_status,
+        "budget_used_usd": max(0.0, budget_used),
+        "updated_at": now,
+    }
+    cap = (
+        await session.execute(
+            select(MissionRow.budget_cap_usd).where(
+                MissionRow.tenant_id == tenant_id,
+                MissionRow.mission_id == mission_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if (
+        cap
+        and float(cap) > 0
+        and budget_used > float(cap)
+        and mission_status not in {"done", "failed", "cancelled"}
+    ):
+        values["status"] = "paused"
+        values["blocked_reason"] = (
+            f"mission budget exceeded: used ${budget_used:.4f} > cap ${float(cap):.4f}"
+        )
     if finished_at is not None:
         values["finished_at"] = finished_at
     await session.execute(

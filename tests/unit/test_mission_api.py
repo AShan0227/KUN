@@ -10,7 +10,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from kun.api import missions as mission_api
 from kun.core.tenancy import TenantContext, tenant_scope
-from kun.datamodel.mission import MissionCreate, MissionMilestone, MissionSnapshot, ResumeRequest
+from kun.datamodel.mission import (
+    MissionCreate,
+    MissionMilestone,
+    MissionNextStep,
+    MissionReview,
+    MissionSnapshot,
+    ResumeRequest,
+)
 from kun.engineering.mission_worker import MissionResumeResult
 
 
@@ -74,6 +81,46 @@ async def test_record_milestone_calls_service(monkeypatch) -> None:
 
     assert captured["tenant_id"] == "tenant-a"
     assert captured["mission_id"] == "msn-1"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_next_step_calls_service(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_update(next_step, *, tenant_id: str, mission_id: str):
+        captured.update({"next_step": next_step, "tenant_id": tenant_id, "mission_id": mission_id})
+        return _snapshot()
+
+    monkeypatch.setattr(mission_api.mission_control, "update_mission_next_step", fake_update)
+
+    payload = MissionNextStep(summary="继续推进首个客户访谈", reason="当前任务已完成")
+    with tenant_scope(TenantContext(tenant_id="tenant-a")):
+        await mission_api.update_next_step("msn-1", payload)
+
+    assert captured["tenant_id"] == "tenant-a"
+    assert captured["mission_id"] == "msn-1"
+    assert captured["next_step"] == payload
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_record_review_calls_service(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_review(review, *, tenant_id: str, mission_id: str):
+        captured.update({"review": review, "tenant_id": tenant_id, "mission_id": mission_id})
+        return _snapshot()
+
+    monkeypatch.setattr(mission_api.mission_control, "record_mission_review", fake_review)
+
+    payload = MissionReview(summary="进展正常", next_step=MissionNextStep(summary="找下一个线索"))
+    with tenant_scope(TenantContext(tenant_id="tenant-a")):
+        await mission_api.record_review("msn-1", payload)
+
+    assert captured["tenant_id"] == "tenant-a"
+    assert captured["mission_id"] == "msn-1"
+    assert captured["review"] == payload
 
 
 @pytest.mark.unit

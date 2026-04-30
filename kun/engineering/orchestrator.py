@@ -29,7 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from kun.brain.intent import IntentInterpreter
 from kun.brain.planner import TaskPlanner
 from kun.brain.router import TaskRouter
-from kun.context.packer import ContextPacker
+from kun.context.packer import ContextPack, ContextPacker
 from kun.core.config import settings
 from kun.core.db import session_scope
 from kun.core.events import emit
@@ -56,6 +56,11 @@ from kun.engineering.concurrency import (
     enqueue_pending_actions,
     pending_actions_for,
     scan_pre_conflicts,
+)
+from kun.engineering.credit_assignment import (
+    CreditAssignment,
+    get_contribution_tracker,
+    heuristic_reflector,
 )
 from kun.engineering.validation import ValidationPipeline, pick_tier
 from kun.interface.adapters import translate_for
@@ -182,6 +187,7 @@ class Orchestrator:
         hermes_adapter: HermesAdapter | None = None,
         memory_writeback: Any = None,
         scoring_system: Any = None,
+        credit_assignment: CreditAssignment | None = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -223,6 +229,15 @@ class Orchestrator:
         # V3-6: unified scorecard.  Its output feeds capability writeback and
         # memory, so metrics are not just a side dashboard.
         self.scoring_system = scoring_system
+        self.credit_assignment = (
+            credit_assignment
+            if credit_assignment is not None
+            else (
+                CreditAssignment()
+                if _os.getenv("KUN_CREDIT_ASSIGNMENT_ENABLED", "1") == "1"
+                else None
+            )
+        )
         # 累计 step value history, 给 value_gate marginal_roi 用
         self._value_history: list[float] = []
 
@@ -840,27 +855,39 @@ class Orchestrator:
             else {"FAST": 0, "SMART": 1, "MAX": 3, "ENSEMBLE": 3}.get(_task_mode, 1)
         )
         if _context_limit > 0:
-            context_pack = await self.context_packer.pack(
-                task_ref,
-                tenant_id=tenant.tenant_id,
-                limit=_context_limit,
-            )
+            if _task_mode in {"MAX", "ENSEMBLE"}:
+                context_items = []
+                async for item in self.context_packer.pack_anchor_then_expand(
+                    task_ref,
+                    tenant_id=tenant.tenant_id,
+                    max_rounds=_context_limit,
+                ):
+                    context_items.append(item)
+                    if len(context_items) >= _context_limit:
+                        break
+                context_pack = ContextPack(items=context_items)
+            else:
+                context_pack = await self.context_packer.pack(
+                    task_ref,
+                    tenant_id=tenant.tenant_id,
+                    limit=_context_limit,
+                )
         else:
-            from kun.context.packer import ContextPack
-
             context_pack = ContextPack()  # FAST 模式跳过, 空 pack
         context_summary = context_pack.summary()
+        context_asset_ids = [item.asset_id for item in context_pack.items]
         self._record_state_ledger(
             "record_context",
             task_ref.meta.task_id,
-            asset_ids=[item.asset_id for item in context_pack.items],
+            asset_ids=context_asset_ids,
         )
         if context_pack.items:
             yield OrchestratorEvent(
                 kind="action_plan",
                 data={
                     "stage": "context_preheat",
-                    "asset_ids": [item.asset_id for item in context_pack.items],
+                    "asset_ids": context_asset_ids,
+                    "mode": _task_mode,
                 },
             )
 
@@ -1277,6 +1304,16 @@ class Orchestrator:
                     provider=response.provider,
                     model=response.model,
                     tier=str(response.tier),
+                )
+                self._record_step_credit(
+                    task_ref=task_ref,
+                    step=step_record,
+                    answer=answer,
+                    response=response,
+                    role_template_id=choice.role_template_id,
+                    context_asset_ids=context_asset_ids,
+                    watchtower_decision=watchtower_decision,
+                    active_protocol=active_protocol,
                 )
                 await self._record_process_memory(
                     tenant_id=tenant.tenant_id,
@@ -1909,6 +1946,12 @@ class Orchestrator:
             # Writeback failure must not break the task.
             log.warning("capability.writeback_failed", error=str(e))
 
+        await self._finalize_credit_assignment(
+            tenant_id=tenant.tenant_id,
+            task_ref=task_ref,
+            outcome=outcome,
+        )
+
         await self._record_result_memory(
             tenant_id=tenant.tenant_id,
             task_ref=task_ref,
@@ -1964,6 +2007,96 @@ class Orchestrator:
             method(*args, **kwargs)
         except Exception:
             log.exception("state_ledger.%s_failed (non-fatal)", method_name)
+
+    def _record_step_credit(
+        self,
+        *,
+        task_ref: TaskRef,
+        step: StepRecord,
+        answer: str,
+        response: LLMResponse,
+        role_template_id: str,
+        context_asset_ids: list[str],
+        watchtower_decision: Any,
+        active_protocol: Any,
+    ) -> None:
+        if self.credit_assignment is None:
+            return
+        skill_ids = [step.skill_used] if step.skill_used and step.skill_used != "llm.direct" else []
+        resources: dict[str, list[str]] = {
+            "memory": list(context_asset_ids),
+            "skill": skill_ids,
+            "model": [response.model or "unknown"],
+            "role_template": [role_template_id],
+        }
+        if watchtower_decision is not None:
+            strategy_pack_id = getattr(watchtower_decision, "strategy_pack_id", "")
+            if strategy_pack_id:
+                resources["strategy_pack"] = [str(strategy_pack_id)]
+        if active_protocol is not None:
+            protocol_id = getattr(active_protocol, "protocol_id", "")
+            if protocol_id:
+                resources["protocol"] = [str(protocol_id)]
+        estimated_cost = max(float(task_ref.meta.estimated_cost_usd or 0.0), 0.01)
+        cost_penalty = min(0.3, float(step.cost_usd_equivalent or 0.0) / estimated_cost)
+        answer_signal = 0.2 if answer.strip() else -0.2
+        immediate_reward = max(0.0, min(1.0, 0.55 + answer_signal - cost_penalty))
+        try:
+            self.credit_assignment.record_step(
+                task_ref.meta.task_id,
+                step.step_id,
+                resources,
+                immediate_reward=immediate_reward,
+                metadata={
+                    "provider": response.provider,
+                    "tier": str(response.tier),
+                    "cost_usd_equivalent": response.cost_usd_equivalent,
+                    "tokens": response.usage.total(),
+                    "risk_level": task_ref.meta.risk_level,
+                },
+            )
+        except Exception:
+            log.exception("credit_assignment.record_step_failed (non-fatal)")
+
+    async def _finalize_credit_assignment(
+        self,
+        *,
+        tenant_id: str,
+        task_ref: TaskRef,
+        outcome: str,
+    ) -> None:
+        if self.credit_assignment is None:
+            return
+        try:
+            report = await self.credit_assignment.finalize_task(
+                task_ref.meta.task_id,
+                outcome,
+                reflector=heuristic_reflector,
+            )
+            get_contribution_tracker().update_from_report(report)
+            async with session_scope(tenant_id=tenant_id) as s:
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant_id,
+                        event_type="credit.assignment.completed",
+                        payload={
+                            "task_id": task_ref.meta.task_id,
+                            "task_outcome": report.task_outcome,
+                            "step_count": len(report.step_credits),
+                            "critical_path_step_ids": report.critical_path_step_ids,
+                            "total_immediate_reward": report.total_immediate_reward,
+                        },
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+        except Exception:
+            log.exception("credit_assignment.finalize_failed (non-fatal)")
+        finally:
+            try:
+                self.credit_assignment.reset_task(task_ref.meta.task_id)
+            except Exception:
+                log.exception("credit_assignment.reset_failed (non-fatal)")
 
     async def _record_meta_decision_memory(
         self,

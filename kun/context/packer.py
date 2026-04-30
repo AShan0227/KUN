@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable
 from typing import Any
@@ -12,6 +13,8 @@ from kun.context.assets import AssetKind, LayeredAsset
 from kun.context.importance import ImportanceScore, ImportanceScorer
 from kun.context.storage import AssetStore, get_store
 from kun.datamodel.task import TaskRef
+
+log = logging.getLogger(__name__)
 
 
 class PackedContextItem(BaseModel):
@@ -90,7 +93,9 @@ class ContextPacker:
                 continue
 
         scored = await self._rank_assets(candidates, query=query)
-        return ContextPack(items=[_to_packed(score, asset) for asset, score in scored[:limit]])
+        selected = scored[:limit]
+        await self._touch_selected(selected)
+        return ContextPack(items=[_to_packed(score, asset) for asset, score in selected])
 
     async def pack(
         self,
@@ -112,7 +117,9 @@ class ContextPacker:
 
         query = _task_query(task_ref)
         scored = await self._rank_assets(candidates, query=query)
-        return ContextPack(items=[_to_packed(score, asset) for asset, score in scored[:limit]])
+        selected = scored[:limit]
+        await self._touch_selected(selected)
+        return ContextPack(items=[_to_packed(score, asset) for asset, score in selected])
 
     def pack_anchor_then_expand(
         self,
@@ -164,6 +171,7 @@ class ContextPacker:
             if not scored:
                 raise StopAsyncIteration
             asset, score = scored[0]
+            await self._touch_selected([(asset, score)])
             return _to_packed(score, asset)
 
         async def expand_fn(
@@ -174,6 +182,7 @@ class ContextPacker:
             if idx >= len(scored):
                 return None
             asset, score = scored[idx]
+            await self._touch_selected([(asset, score)])
             return _to_packed(score, asset)
 
         criterion: MarginalROIStopCriterion | None = None
@@ -223,6 +232,7 @@ class ContextPacker:
                 asset_id, str(kind_by_asset_id.get(asset_id, "memory"))
             ),
         )
+        scored = [(asset, _quality_adjusted_score(asset, score)) for asset, score in scored]
         filtered = [
             (asset, score)
             for asset, score in scored
@@ -230,6 +240,18 @@ class ContextPacker:
         ]
         filtered.sort(key=lambda item: (-item[1].overall, item[0].asset_id))
         return filtered
+
+    async def _touch_selected(
+        self,
+        selected: list[tuple[LayeredAsset, ImportanceScore]],
+    ) -> None:
+        for asset, _score in selected:
+            try:
+                asset.touch()
+                await self._store.put(asset)
+            except Exception:
+                log.debug("context_packer.touch_selected_failed", exc_info=True)
+                continue
 
 
 def _task_terms(task_ref: TaskRef) -> set[str]:
@@ -275,6 +297,51 @@ def _to_packed(score: ImportanceScore, asset: LayeredAsset) -> PackedContextItem
         tags=asset.tags,
         summary=asset.l2_summary or _metadata_summary(asset),
         score_rationale=score.rationale,
+    )
+
+
+def _quality_adjusted_score(asset: LayeredAsset, score: ImportanceScore) -> ImportanceScore:
+    """Adjust context ranking by outcome quality, not just text match.
+
+    This keeps failed or low-confidence memories from dominating future context
+    just because they share keywords.
+    """
+
+    meta = asset.l1_metadata or {}
+    quality_delta = 0.0
+    validation_outcome = str(meta.get("validation_outcome") or meta.get("outcome") or "").lower()
+    if validation_outcome in {"fail", "failed"}:
+        quality_delta -= 0.20
+    elif validation_outcome == "partial":
+        quality_delta -= 0.05
+    elif validation_outcome in {"pass", "passed", "done"}:
+        quality_delta += 0.08
+
+    for key in ("score_overall", "validation_score", "rubric_score"):
+        raw = meta.get(key)
+        if isinstance(raw, int | float):
+            value = float(raw)
+            if key == "rubric_score" and value > 1.0:
+                value = value / 5.0
+            quality_delta += max(-0.10, min(0.15, (value - 0.5) * 0.20))
+            break
+
+    surprise = meta.get("surprise_score")
+    if isinstance(surprise, int | float) and float(surprise) >= 0.75:
+        quality_delta += 0.05
+
+    if quality_delta == 0:
+        return score
+    adjusted = max(0.0, min(1.0, score.overall + quality_delta))
+    return ImportanceScore(
+        overall=adjusted,
+        semantic=score.semantic,
+        frequency=score.frequency,
+        recency=score.recency,
+        dependency=score.dependency,
+        pin=score.pin,
+        contribution=score.contribution,
+        rationale=f"{score.rationale}; quality_delta={quality_delta:+.2f}",
     )
 
 

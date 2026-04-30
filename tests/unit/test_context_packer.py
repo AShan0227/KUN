@@ -147,3 +147,50 @@ async def test_pack_query_respects_limit() -> None:
 
     pack = await ContextPacker(store).pack_query("jwt auth", tenant_id="u-sylvan", limit=2)
     assert len(pack.items) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_penalizes_failed_memories() -> None:
+    store = InMemoryAssetStore()
+    good = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest good", "validation_outcome": "pass", "score_overall": 0.9},
+        summary="pytest 修复 复现 回归",
+        tags=["pytest"],
+    )
+    bad = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest bad", "validation_outcome": "fail", "score_overall": 0.1},
+        summary="pytest 修复 复现 回归",
+        tags=["pytest"],
+    )
+    await store.put(bad)
+    await store.put(good)
+
+    pack = await ContextPacker(store).pack(_task(), tenant_id="u-sylvan", limit=2)
+
+    assert [item.asset_id for item in pack.items][:2] == [good.asset_id, bad.asset_id]
+    assert "quality_delta" in pack.items[0].score_rationale
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_touches_selected_assets() -> None:
+    store = InMemoryAssetStore()
+    asset = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest touch"},
+        summary="pytest 回归",
+        tags=["pytest"],
+    )
+    await store.put(asset)
+
+    await ContextPacker(store).pack(_task(), tenant_id="u-sylvan", limit=1)
+    touched = await store.get(asset.asset_id, tenant_id="u-sylvan")
+
+    assert touched is not None
+    assert touched.access_count >= 1

@@ -85,6 +85,9 @@ def get_v3_delivery_status(
                 "pending approval 通过后可解除任务暂停",
                 "StateLedger history 可从 EventRow 回放长期事件",
                 "idle-batch 有部分复盘和学习能力",
+                "Mission 级预算已滚动汇总并可超预算暂停",
+                "Mission reaper 可处理 queued/running 卡死任务",
+                "Mission 可记录下一步和复盘摘要",
             ],
             evidence_refs=[
                 "kun/engineering/mission_worker.py",
@@ -93,17 +96,17 @@ def get_v3_delivery_status(
                 "kun/api/blackboard_data_sources.py",
                 "tests/unit/test_mission_worker.py",
                 "tests/unit/test_mission_control.py",
+                "tests/unit/test_mission_reaper.py",
                 "tests/unit/test_wave7.py",
             ],
             missing=[
                 "续跑还不是原 TaskRow 原地恢复，而是 continuation task 挂回 Mission",
-                "失败续跑策略还只是尝试次数限制",
-                "跨天/跨周任务的预算、风险、里程碑管理",
                 "StateLedger 还不是完整事件溯源重建器，暂时只做历史事件回放",
+                "Mission 复盘还需要接入自动策略调整，而不是只记录 review",
             ],
             next_steps=[
-                "补 failure reaper，处理 running/queued 卡死的 mission task",
-                "补 Mission 级定时复盘和预算汇总",
+                "让 Mission review 结果反向影响 Watchtower Decision Plane",
+                "补跨周运营策略模板和真实 dogfood 运营任务",
             ],
         ),
         DeliveryCapability(
@@ -140,6 +143,8 @@ def get_v3_delivery_status(
                 "成本面板",
                 "待审批动作",
                 "诊断和能力画像",
+                "WorldGateway handler 健康体检",
+                "Context / memory 瘦身维护 dry-run 和真实执行入口",
             ],
             evidence_refs=[
                 "kun/api/nuo/health_panel.py",
@@ -167,6 +172,9 @@ def get_v3_delivery_status(
                 "执行过程记忆写入 Context AssetStore",
                 "模型/路径选择的元决策记忆已写入",
                 "scorecard 进入事件和 capability writeback 来源",
+                "CreditAssignment 已接入 Orchestrator，能给 memory/skill/model/role_template 记贡献",
+                "ContextPacker 已按贡献度、验证结果和质量分排序",
+                "NUO context maintenance 可压缩过长摘要、软遗忘/硬删除长期未用资产",
             ],
             evidence_refs=[
                 "kun/memory/writeback.py",
@@ -177,7 +185,7 @@ def get_v3_delivery_status(
             missing=[
                 "定期蒸馏",
                 "遗忘/衰减",
-                "策略复用对下次路由的强影响",
+                "策略复用对下次路由的强影响还需要更多真实样本",
             ],
             next_steps=[
                 "让 idle-batch 汇总元决策为 methodology",
@@ -194,6 +202,9 @@ def get_v3_delivery_status(
                 "Alembic 单 head",
                 "RLS 应用账号路径已设计",
                 "Grafana / Prometheus / OTEL 本地栈存在",
+                "生产模式不再信任裸 X-Tenant-Id；支持 HMAC Bearer token 解析租户/权限",
+                "NUO 外部动作审批支持 world:approve / world:dispatch scope 守门",
+                "已补 Postgres backup 和 restore smoke 脚本",
             ],
             evidence_refs=[
                 "docker-compose.dev.yml",
@@ -201,11 +212,11 @@ def get_v3_delivery_status(
                 "docs/DEPLOY.md",
             ],
             missing=[
-                "正式用户账号体系",
+                "完整正式用户账号体系",
                 "租户 onboarding",
-                "密钥管理",
+                "集中密钥管理和轮换",
                 "线上 CI/release/tag",
-                "备份恢复演练",
+                "真实环境备份恢复演练",
                 "真实 dogfood 验收场景",
             ],
             next_steps=[

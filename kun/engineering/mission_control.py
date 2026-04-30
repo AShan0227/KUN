@@ -27,6 +27,8 @@ from kun.datamodel.events import Event
 from kun.datamodel.mission import (
     MissionCreate,
     MissionMilestone,
+    MissionNextStep,
+    MissionReview,
     MissionSnapshot,
     MissionTaskLink,
     ResumeRequest,
@@ -53,6 +55,7 @@ async def create_mission(
             status="planned",
             risk_level=payload.risk_level,
             budget_cap_usd=payload.budget_cap_usd,
+            review_interval_hours=payload.review_interval_hours,
             success_metrics=payload.success_metrics,
             strategy_json=payload.strategy,
         )
@@ -183,6 +186,7 @@ async def record_milestone(
             status=milestone.status,
             sequence_no=milestone.sequence_no,
             task_ref=milestone.task_ref,
+            completed_by_task_id=milestone.completed_by_task_id,
             due_at=milestone.due_at,
             checkpoint_json=milestone.checkpoint,
             completed_at=milestone.completed_at,
@@ -196,6 +200,7 @@ async def record_milestone(
                     "status": milestone.status,
                     "sequence_no": milestone.sequence_no,
                     "task_ref": milestone.task_ref,
+                    "completed_by_task_id": milestone.completed_by_task_id,
                     "due_at": milestone.due_at,
                     "checkpoint_json": milestone.checkpoint,
                     "completed_at": milestone.completed_at,
@@ -215,6 +220,7 @@ async def record_milestone(
                     "title": milestone.title,
                     "status": milestone.status,
                     "task_ref": milestone.task_ref,
+                    "completed_by_task_id": milestone.completed_by_task_id,
                 },
                 task_ref=milestone.task_ref,
             ),
@@ -267,26 +273,180 @@ async def request_resumable_tasks(
 
 
 async def refresh_mission_task_statuses(*, tenant_id: str, mission_id: str) -> MissionSnapshot:
-    """Copy current RuntimeState status into mission_tasks."""
+    """Copy current RuntimeState status into mission_tasks and refresh rollup."""
 
     async with session_scope(tenant_id=tenant_id) as s:
-        rows = (
-            await s.execute(
-                select(MissionTaskRow, RuntimeStateRow)
-                .join(RuntimeStateRow, RuntimeStateRow.task_ref == MissionTaskRow.task_id)
-                .where(
-                    MissionTaskRow.tenant_id == tenant_id,
-                    MissionTaskRow.mission_id == mission_id,
-                    RuntimeStateRow.tenant_id == tenant_id,
-                )
-            )
-        ).all()
-        for mission_task, runtime in rows:
-            mission_task.status = runtime.status
-            mission_task.updated_at = datetime.now(UTC)
-        await _recompute_mission_status(s, tenant_id=tenant_id, mission_id=mission_id)
+        await _refresh_mission_rollup_in_session(s, tenant_id=tenant_id, mission_id=mission_id)
         await s.flush()
         return await _snapshot_from_session(s, tenant_id=tenant_id, mission_id=mission_id)
+
+
+async def update_mission_next_step(
+    next_step: MissionNextStep,
+    *,
+    tenant_id: str,
+    mission_id: str,
+) -> MissionSnapshot:
+    """Persist the currently recommended next step for a long mission."""
+
+    async with session_scope(tenant_id=tenant_id) as s:
+        mission = await s.get(MissionRow, mission_id)
+        if mission is None or mission.tenant_id != tenant_id:
+            raise KeyError(f"mission not found: {mission_id}")
+        now = datetime.now(UTC)
+        if next_step.created_at is None:
+            next_step = next_step.model_copy(update={"created_at": now})
+        mission.next_step_json = next_step.model_dump(mode="json")
+        mission.updated_at = now
+        await emit(
+            s,
+            Event.build(
+                tenant_id=tenant_id,
+                event_type="mission.next_step.updated",
+                payload={"mission_id": mission_id, "next_step": mission.next_step_json},
+                task_ref=next_step.task_id,
+            ),
+        )
+        await s.flush()
+        return await _snapshot_from_session(s, tenant_id=tenant_id, mission_id=mission_id)
+
+
+async def record_mission_review(
+    review: MissionReview,
+    *,
+    tenant_id: str,
+    mission_id: str,
+) -> MissionSnapshot:
+    """Record a mission review without pretending it executed the next task."""
+
+    async with session_scope(tenant_id=tenant_id) as s:
+        mission = await s.get(MissionRow, mission_id)
+        if mission is None or mission.tenant_id != tenant_id:
+            raise KeyError(f"mission not found: {mission_id}")
+        now = datetime.now(UTC)
+        strategy = dict(mission.strategy_json or {})
+        review_payload = review.model_dump(mode="json")
+        history = list(strategy.get("review_history") or [])
+        history.append({"recorded_at": now.isoformat(), **review_payload})
+        strategy["review_history"] = history[-20:]
+        strategy["last_review"] = {"recorded_at": now.isoformat(), **review_payload}
+        mission.strategy_json = strategy
+        mission.last_reviewed_at = now
+        mission.updated_at = now
+        if review.next_step is not None:
+            next_step = review.next_step
+            if next_step.created_at is None:
+                next_step = next_step.model_copy(update={"created_at": now})
+            mission.next_step_json = next_step.model_dump(mode="json")
+        await emit(
+            s,
+            Event.build(
+                tenant_id=tenant_id,
+                event_type="mission.review.recorded",
+                payload={
+                    "mission_id": mission_id,
+                    "summary": review.summary,
+                    "budget_notes": review.budget_notes,
+                    "risk_notes": review.risk_notes,
+                    "next_step": mission.next_step_json if review.next_step else None,
+                },
+                task_ref=review.next_step.task_id if review.next_step else None,
+            ),
+        )
+        await _refresh_mission_rollup_in_session(s, tenant_id=tenant_id, mission_id=mission_id)
+        await s.flush()
+        return await _snapshot_from_session(s, tenant_id=tenant_id, mission_id=mission_id)
+
+
+async def refresh_mission_rollup(*, tenant_id: str, mission_id: str) -> MissionSnapshot:
+    """Refresh budget/status/milestone rollups for a mission."""
+
+    async with session_scope(tenant_id=tenant_id) as s:
+        await _refresh_mission_rollup_in_session(s, tenant_id=tenant_id, mission_id=mission_id)
+        await s.flush()
+        return await _snapshot_from_session(s, tenant_id=tenant_id, mission_id=mission_id)
+
+
+async def _refresh_mission_rollup_in_session(
+    session: Any,
+    *,
+    tenant_id: str,
+    mission_id: str,
+) -> None:
+    """Keep MissionRow as the fast current-state view over durable task/runtime rows."""
+
+    mission = await session.get(MissionRow, mission_id)
+    if mission is None or mission.tenant_id != tenant_id:
+        raise KeyError(f"mission not found: {mission_id}")
+    now = datetime.now(UTC)
+    rows = (
+        await session.execute(
+            select(MissionTaskRow, RuntimeStateRow)
+            .join(RuntimeStateRow, RuntimeStateRow.task_ref == MissionTaskRow.task_id)
+            .where(
+                MissionTaskRow.tenant_id == tenant_id,
+                MissionTaskRow.mission_id == mission_id,
+                RuntimeStateRow.tenant_id == tenant_id,
+            )
+        )
+    ).all()
+    budget_used = 0.0
+    done_task_ids: set[str] = set()
+    for mission_task, runtime in rows:
+        mission_task.status = runtime.status
+        mission_task.updated_at = now
+        budget_used += float(runtime.accumulated_cost_usd_equivalent or 0.0)
+        if runtime.status == "done":
+            done_task_ids.add(mission_task.task_id)
+    mission.budget_used_usd = max(0.0, budget_used)
+
+    if done_task_ids:
+        milestones = list(
+            (
+                await session.execute(
+                    select(MissionMilestoneRow).where(
+                        MissionMilestoneRow.tenant_id == tenant_id,
+                        MissionMilestoneRow.mission_id == mission_id,
+                        MissionMilestoneRow.task_ref.in_(done_task_ids),
+                        MissionMilestoneRow.status.in_(("planned", "active")),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for milestone in milestones:
+            milestone.status = "done"
+            milestone.completed_by_task_id = milestone.task_ref
+            milestone.completed_at = milestone.completed_at or now
+            milestone.updated_at = now
+
+    await _recompute_mission_status(session, tenant_id=tenant_id, mission_id=mission_id)
+    if (
+        mission.budget_cap_usd
+        and mission.budget_cap_usd > 0
+        and mission.budget_used_usd > mission.budget_cap_usd
+        and mission.status not in {"done", "failed", "cancelled"}
+    ):
+        mission.status = "paused"
+        mission.blocked_reason = (
+            f"mission budget exceeded: used ${mission.budget_used_usd:.4f} "
+            f"> cap ${mission.budget_cap_usd:.4f}"
+        )
+        mission.updated_at = now
+        await emit(
+            session,
+            Event.build(
+                tenant_id=tenant_id,
+                event_type="mission.budget.exceeded",
+                payload={
+                    "mission_id": mission_id,
+                    "budget_used_usd": mission.budget_used_usd,
+                    "budget_cap_usd": mission.budget_cap_usd,
+                    "blocked_reason": mission.blocked_reason,
+                },
+            ),
+        )
 
 
 async def _recompute_mission_status(
@@ -404,6 +564,10 @@ async def _snapshot_from_session(
         status=mission.status,
         risk_level=mission.risk_level,
         budget_cap_usd=mission.budget_cap_usd,
+        budget_used_usd=mission.budget_used_usd,
+        blocked_reason=mission.blocked_reason or "",
+        next_step=_mission_next_step(mission.next_step_json),
+        review_interval_hours=mission.review_interval_hours,
         success_metrics=list(mission.success_metrics or []),
         strategy=dict(mission.strategy_json or {}),
         tasks=[
@@ -425,6 +589,7 @@ async def _snapshot_from_session(
                 status=row.status,
                 sequence_no=row.sequence_no,
                 task_ref=row.task_ref,
+                completed_by_task_id=row.completed_by_task_id,
                 due_at=row.due_at,
                 checkpoint=dict(row.checkpoint_json or {}),
                 completed_at=row.completed_at,
@@ -435,7 +600,23 @@ async def _snapshot_from_session(
         updated_at=mission.updated_at,
         started_at=mission.started_at,
         finished_at=mission.finished_at,
+        last_reviewed_at=mission.last_reviewed_at,
     )
+
+
+def _mission_next_step(raw: dict[str, Any] | None) -> MissionNextStep | None:
+    if not raw:
+        return None
+    try:
+        return MissionNextStep.model_validate(raw)
+    except Exception:
+        return MissionNextStep(
+            summary=str(raw.get("summary") or "Review stored next step"),
+            reason=str(
+                raw.get("reason") or "Legacy mission next_step_json could not fully validate."
+            ),
+            task_id=raw.get("task_id") if isinstance(raw.get("task_id"), str) else None,
+        )
 
 
 async def count_active_missions(*, tenant_id: str) -> int:
@@ -459,6 +640,9 @@ __all__ = [
     "get_mission",
     "list_missions",
     "record_milestone",
+    "record_mission_review",
+    "refresh_mission_rollup",
     "refresh_mission_task_statuses",
     "request_resumable_tasks",
+    "update_mission_next_step",
 ]

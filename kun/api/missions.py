@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from kun.core.tenancy import current_tenant
-from kun.datamodel.mission import MissionCreate, MissionMilestone, MissionSnapshot, ResumeRequest
+from kun.datamodel.mission import (
+    MissionCreate,
+    MissionMilestone,
+    MissionNextStep,
+    MissionReview,
+    MissionSnapshot,
+    ResumeRequest,
+)
 from kun.engineering import mission_control
+from kun.engineering.mission_reaper import MissionReapResult, reap_stale_mission_tasks
 from kun.engineering.mission_worker import MissionResumeResult, MissionResumeWorker
 
 router = APIRouter(prefix="/api/missions", tags=["missions"])
@@ -76,6 +85,21 @@ async def run_resume_worker_once(
     )
 
 
+@router.post("/reaper/run-once", response_model=list[MissionReapResult])
+async def run_reaper_once(
+    stale_after_sec: int = Query(default=1800, ge=1, le=86400),
+    max_attempts: int = Query(default=3, ge=1, le=20),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[MissionReapResult]:
+    tenant = current_tenant()
+    return await reap_stale_mission_tasks(
+        tenant_id=tenant.tenant_id,
+        stale_after=timedelta(seconds=stale_after_sec),
+        max_attempts=max_attempts,
+        limit=limit,
+    )
+
+
 @router.get("/{mission_id}", response_model=MissionSnapshot)
 async def get_mission(mission_id: str) -> MissionSnapshot:
     tenant = current_tenant()
@@ -112,6 +136,32 @@ async def record_milestone(
     tenant = current_tenant()
     try:
         return await mission_control.record_milestone(
+            payload,
+            tenant_id=tenant.tenant_id,
+            mission_id=mission_id,
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.post("/{mission_id}/next-step", response_model=MissionSnapshot)
+async def update_next_step(mission_id: str, payload: MissionNextStep) -> MissionSnapshot:
+    tenant = current_tenant()
+    try:
+        return await mission_control.update_mission_next_step(
+            payload,
+            tenant_id=tenant.tenant_id,
+            mission_id=mission_id,
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.post("/{mission_id}/review", response_model=MissionSnapshot)
+async def record_review(mission_id: str, payload: MissionReview) -> MissionSnapshot:
+    tenant = current_tenant()
+    try:
+        return await mission_control.record_mission_review(
             payload,
             tenant_id=tenant.tenant_id,
             mission_id=mission_id,

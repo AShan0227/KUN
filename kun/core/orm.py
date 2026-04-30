@@ -135,6 +135,13 @@ class MissionRow(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned", index=True)
     risk_level: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
     budget_cap_usd: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    budget_used_usd: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    blocked_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    next_step_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    review_interval_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
+    last_reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     success_metrics: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     strategy_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
@@ -158,6 +165,11 @@ class MissionRow(Base):
             name="mission_risk_level_valid",
         ),
         CheckConstraint("budget_cap_usd >= 0", name="mission_budget_nonnegative"),
+        CheckConstraint("budget_used_usd >= 0", name="mission_budget_used_nonnegative"),
+        CheckConstraint(
+            "review_interval_hours > 0",
+            name="mission_review_interval_positive",
+        ),
         CheckConstraint("length(title) > 0", name="mission_title_not_empty"),
         CheckConstraint("length(objective) > 0", name="mission_objective_not_empty"),
         Index("ix_missions_tenant_status", "tenant_id", "status"),
@@ -227,6 +239,7 @@ class MissionMilestoneRow(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned", index=True)
     sequence_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     task_ref: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    completed_by_task_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     checkpoint_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 

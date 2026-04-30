@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     env: Literal["dev", "staging", "production"] = "dev"
     log_level: str = "INFO"
     default_tenant_id: str | None = "u-sylvan"
+    auth_secret: str | None = None
 
     @field_validator("default_tenant_id", mode="before")
     @classmethod
@@ -83,6 +84,22 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     api_cors_origins: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002"
+
+    def production_safety_issues(self) -> list[str]:
+        """Return deployment blockers that make a production KUN unsafe."""
+
+        issues: list[str] = []
+        if self.env != "production":
+            return issues
+        if self.default_tenant_id:
+            issues.append("KUN_DEFAULT_TENANT_ID must be blank in production")
+        if not self.auth_secret or len(self.auth_secret) < 32:
+            issues.append("KUN_AUTH_SECRET must be set to at least 32 characters")
+        if "kun:kun@" in self.pg_dsn:
+            issues.append("KUN_PG_DSN must use the non-admin app role in production")
+        if self.s3_access_key == "minio" or self.s3_secret_key == "minio123":
+            issues.append("S3/MinIO default credentials must be changed in production")
+        return issues
 
 
 @cache

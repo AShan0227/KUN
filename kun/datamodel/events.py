@@ -51,7 +51,11 @@ EventKind = Literal[
     "mission.task.resume_failed",
     "mission.task.orchestrator_started",
     "mission.task.orchestrator_finished",
+    "mission.task.reaped",
     "mission.milestone.recorded",
+    "mission.review.recorded",
+    "mission.budget.exceeded",
+    "mission.next_step.updated",
     # Handoff
     "handoff.sent",
     "handoff.received",
@@ -71,6 +75,7 @@ EventKind = Literal[
     "context.updated",
     "context.forgotten",
     "memory.writeback.recorded",
+    "credit.assignment.completed",
     # Evaluation / Validation
     "validation.run.completed",
     "scorecard.created",

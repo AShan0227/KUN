@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 
+from kun.context.maintenance import ContextMaintenanceReport, run_context_maintenance
 from kun.core.db import session_scope
 from kun.core.orm import EventRow, PendingActionRow, TaskRow
 from kun.core.tenancy import current_tenant
@@ -89,3 +90,21 @@ async def system_health_report() -> dict[str, Any]:
     tenant = current_tenant()
     report = await collect_system_health_report(tenant_id=tenant.tenant_id)
     return report.model_dump(mode="json")
+
+
+@router.post("/context-maintenance/run", response_model=ContextMaintenanceReport)
+async def run_context_maintenance_once(
+    dry_run: bool = Query(default=True),
+    max_assets: int = Query(default=500, ge=1, le=5000),
+) -> ContextMaintenanceReport:
+    """Run NUO context/memory slimming once.
+
+    Default is dry-run so the user can see what NUO would compress/forget before
+    allowing real mutation.
+    """
+    tenant = current_tenant()
+    return await run_context_maintenance(
+        tenant_id=tenant.tenant_id,
+        dry_run=dry_run,
+        max_assets=max_assets,
+    )

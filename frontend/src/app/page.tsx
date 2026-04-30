@@ -125,6 +125,17 @@ type MissionSnapshot = {
   status: string;
   risk_level: string;
   budget_cap_usd: number;
+  budget_used_usd: number;
+  blocked_reason?: string;
+  next_step?: {
+    summary: string;
+    reason?: string;
+    task_id?: string | null;
+    action_type?: string;
+    due_at?: string | null;
+  } | null;
+  last_reviewed_at?: string | null;
+  review_interval_hours?: number;
   tasks: Array<{
     task_id: string;
     role: string;
@@ -621,9 +632,26 @@ export default function Home() {
                         </span>
                       </div>
                       <div className="mt-1 truncate text-gray-500">
-                        风险 {mission.risk_level} · 预算 ${mission.budget_cap_usd.toFixed(2)} ·
-                        任务 {mission.tasks.length} · 里程碑 {mission.milestones.length}
+                        风险 {mission.risk_level} · 已用 ${mission.budget_used_usd.toFixed(2)} / $
+                        {mission.budget_cap_usd.toFixed(2)} · 任务 {mission.tasks.length} · 里程碑{" "}
+                        {mission.milestones.length}
                       </div>
+                      {mission.next_step && (
+                        <div className="mt-1 truncate text-gray-500">
+                          下一步：{mission.next_step.summary}
+                        </div>
+                      )}
+                      {mission.blocked_reason && (
+                        <div className="mt-1 rounded border border-amber-100 bg-amber-50 px-2 py-1 text-amber-700">
+                          卡住原因：{mission.blocked_reason}
+                        </div>
+                      )}
+                      {mission.last_reviewed_at && (
+                        <div className="mt-1 truncate text-[11px] text-gray-400">
+                          上次复盘：{new Date(mission.last_reviewed_at).toLocaleString()} · 间隔{" "}
+                          {mission.review_interval_hours ?? 24}h
+                        </div>
+                      )}
                       {mission.tasks.length > 0 && (
                         <div className="mt-2 grid grid-cols-2 gap-1">
                           {mission.tasks.slice(0, 4).map((task) => (

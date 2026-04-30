@@ -159,6 +159,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         sched.register("kp_daily", "@daily", _daily_kp)
         sched.register("kp_weekly", "@weekly", _weekly_kp)
 
+        if os.getenv("KUN_CONTEXT_MAINTENANCE_ENABLED", "1") == "1":
+            from kun.context.maintenance import run_context_maintenance
+
+            async def _daily_context_maintenance() -> None:
+                mutate = os.getenv("KUN_CONTEXT_MAINTENANCE_MUTATE", "0") == "1"
+                await run_context_maintenance(
+                    tenant_id=default_tenant,
+                    dry_run=not mutate,
+                )
+
+            sched.register("nuo_context_maintenance_daily", "@daily", _daily_context_maintenance)
+
         if os.getenv("KUN_MISSION_RESUME_WORKER_ENABLED", "0") == "1":
             from kun.api.runtime import get_mission_resume_worker
 
@@ -166,6 +178,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await get_mission_resume_worker(app).run_once(tenant_id=default_tenant)
 
             sched.register("mission_resume_every_minute", "* * * * *", _mission_resume_once)
+
+        if os.getenv("KUN_MISSION_REAPER_ENABLED", "1") == "1":
+            from datetime import timedelta
+
+            from kun.engineering.mission_reaper import reap_stale_mission_tasks
+
+            stale_after_sec = int(os.getenv("KUN_MISSION_REAPER_STALE_AFTER_SEC", "1800"))
+            max_attempts = int(os.getenv("KUN_MISSION_REAPER_MAX_ATTEMPTS", "3"))
+
+            async def _mission_reaper_once() -> None:
+                await reap_stale_mission_tasks(
+                    tenant_id=default_tenant,
+                    stale_after=timedelta(seconds=stale_after_sec),
+                    max_attempts=max_attempts,
+                )
+
+            sched.register("mission_reaper_every_5_minutes", "*/5 * * * *", _mission_reaper_once)
 
         # V2.3: 启 (Qi) cron — 启窗口内自动跑探索 (Darwin / AI Scientist /
         # PredictionTrainer). 默认装上 (KUN_QI_CRON_ENABLED=1), 但每次 tick 调用
@@ -279,24 +308,46 @@ async def tenant_middleware(
     Also threads X-Scopes (comma-separated) into TenantContext so endpoints can
     enforce permission checks (R-A12). Empty / missing scopes = empty tuple.
     """
-    try:
-        tenant_id = resolve_tenant_id(request.headers.get("X-Tenant-Id"))
-    except MissingTenantContextError:
+    cfg = settings()
+    auth_header = request.headers.get("Authorization")
+    if auth_header:
+        if not cfg.auth_secret:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "KUN_AUTH_SECRET is required for bearer auth"},
+            )
+        from kun.security.auth import AuthTokenError, verify_bearer_token
+
+        try:
+            ctx = verify_bearer_token(auth_header, cfg.auth_secret).to_tenant_context()
+        except AuthTokenError as exc:
+            return JSONResponse(status_code=401, content={"detail": str(exc)})
+    elif cfg.env == "production":
         return JSONResponse(
-            status_code=400,
-            content={"detail": "X-Tenant-Id header is required"},
+            status_code=401,
+            content={"detail": "Authorization: Bearer token is required in production"},
         )
-    user_id = request.headers.get("X-User-Id")
-    raw_scopes = request.headers.get("X-Scopes") or ""
-    scopes = tuple(s.strip() for s in raw_scopes.split(",") if s.strip())
-    raw_audience = (request.headers.get("X-Audience") or "developer").lower()
-    audience = raw_audience if raw_audience in {"novice", "developer", "expert"} else "developer"
-    ctx = TenantContext(
-        tenant_id=tenant_id,
-        user_id=user_id,
-        scopes=scopes,
-        audience=audience,  # type: ignore[arg-type]
-    )
+    else:
+        try:
+            tenant_id = resolve_tenant_id(request.headers.get("X-Tenant-Id"))
+        except MissingTenantContextError:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "X-Tenant-Id header is required"},
+            )
+        user_id = request.headers.get("X-User-Id")
+        raw_scopes = request.headers.get("X-Scopes") or ""
+        scopes = tuple(s.strip() for s in raw_scopes.split(",") if s.strip())
+        raw_audience = (request.headers.get("X-Audience") or "developer").lower()
+        audience = (
+            raw_audience if raw_audience in {"novice", "developer", "expert"} else "developer"
+        )
+        ctx = TenantContext(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            scopes=scopes,
+            audience=audience,  # type: ignore[arg-type]
+        )
     with tenant_scope(ctx):
         return await call_next(request)
 

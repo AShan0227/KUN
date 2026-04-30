@@ -38,6 +38,27 @@ class MissionCreate(BaseModel):
     budget_cap_usd: float = Field(default=0.0, ge=0.0)
     success_metrics: list[str] = Field(default_factory=list)
     strategy: dict[str, Any] = Field(default_factory=dict)
+    review_interval_hours: int = Field(default=24, ge=1, le=24 * 30)
+
+
+class MissionNextStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(min_length=1, max_length=1000)
+    reason: str = Field(default="", max_length=1000)
+    task_id: str | None = None
+    action_type: str = "continue"
+    due_at: datetime | None = None
+    created_at: datetime | None = None
+
+
+class MissionReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(min_length=1, max_length=2000)
+    budget_notes: str = Field(default="", max_length=1000)
+    risk_notes: str = Field(default="", max_length=1000)
+    next_step: MissionNextStep | None = None
 
 
 class MissionTaskLink(BaseModel):
@@ -60,6 +81,7 @@ class MissionMilestone(BaseModel):
     status: MilestoneStatus = "planned"
     sequence_no: int = Field(default=0, ge=0)
     task_ref: str | None = None
+    completed_by_task_id: str | None = None
     due_at: datetime | None = None
     checkpoint: dict[str, Any] = Field(default_factory=dict)
     completed_at: datetime | None = None
@@ -77,6 +99,10 @@ class MissionSnapshot(BaseModel):
     status: MissionStatus
     risk_level: RiskLevel
     budget_cap_usd: float = 0.0
+    budget_used_usd: float = 0.0
+    blocked_reason: str = ""
+    next_step: MissionNextStep | None = None
+    review_interval_hours: int = 24
     success_metrics: list[str] = Field(default_factory=list)
     strategy: dict[str, Any] = Field(default_factory=dict)
     tasks: list[MissionTaskLink] = Field(default_factory=list)
@@ -85,6 +111,7 @@ class MissionSnapshot(BaseModel):
     updated_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    last_reviewed_at: datetime | None = None
 
 
 class ResumeRequest(BaseModel):
@@ -101,6 +128,8 @@ __all__ = [
     "MilestoneStatus",
     "MissionCreate",
     "MissionMilestone",
+    "MissionNextStep",
+    "MissionReview",
     "MissionSnapshot",
     "MissionStatus",
     "MissionTaskLink",
