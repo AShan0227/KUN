@@ -85,6 +85,7 @@ def get_v3_delivery_status(
                 "pending approval 通过后可解除任务暂停",
                 "StateLedger history 可从 EventRow 回放长期事件",
                 "StateLedger story 可把某个任务的事件历史压成可读时间线、成本和决策摘要",
+                "Mission story 可把一个长期目标下的多个 task 账本聚合成总故事线、成本、决策数和下一步",
                 "StateLedger replay 会从 EventRow 重建推断状态、外部动作、模型/skill/context 路径、风险和账本缺口",
                 "idle-batch 有部分复盘和学习能力",
                 "Mission 级预算已滚动汇总并可超预算暂停",
@@ -100,6 +101,7 @@ def get_v3_delivery_status(
             evidence_refs=[
                 "kun/engineering/mission_worker.py",
                 "kun/engineering/mission_control.py",
+                "kun/api/missions.py",
                 "kun/api/blackboard.py",
                 "kun/api/blackboard_data_sources.py",
                 "tests/unit/test_mission_worker.py",
@@ -132,9 +134,11 @@ def get_v3_delivery_status(
                 "主工作区会显示能力边界数量：可测 / 半闭环 / 仅审计 / 未就绪",
                 "主工作区会显示用户可见的 top 能力缺口，并跳转到傩查看详情",
                 "主工作区会显示傩发现的系统风险，避免风险只躲在 NUO 高级页",
+                "长期目标卡片可按需展开 Mission 故事线，查看跨 task 的事件数、决策数、成本、原因和下一步",
             ],
             evidence_refs=[
                 "frontend/src/app/page.tsx",
+                "kun/api/missions.py",
                 "kun/api/blackboard.py",
                 "kun/api/blackboard_data_sources.py",
             ],
