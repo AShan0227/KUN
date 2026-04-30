@@ -314,6 +314,7 @@ def get_v3_delivery_status(
                 "前端主入口 / NUO / billing 已通过统一 apiClient 从 localStorage 或 NEXT_PUBLIC_KUN_TENANT_ID/NEXT_PUBLIC_KUN_USER_ID 注入租户与用户 header，避免页面散落 u-sylvan/sylvan",
                 "前端已补 /account 会话入口，可手动录入 bearer token 并显示服务端 session，不再只能改 env/localStorage",
                 "前端 /account 可调用邀请码注册、接受邀请和 refresh-token 续期接口；仍诚实标注这不是密码登录/OAuth",
+                "前端 /account 可查看自己的 token 账本并撤销 token，且不展示原始 token/hash",
                 "WebSocket 支持 auth_token 查询参数；生产环境必须使用签名 token，不再接受裸 tenant_id/user_id 打开会话",
                 "ops dogfood CLI 可跑 V4 低风险 smoke，验证 preflight / token / WorldGateway / 诚实边界",
                 "ops dogfood --include-db-mission 可额外验证 Mission/RuntimeState/Orchestrator runner 的真实 DB 续跑闭环",

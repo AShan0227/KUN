@@ -21,6 +21,22 @@ type CurrentSession = {
   honest_limits: string[];
 };
 
+type SessionTokenSummary = {
+  token_id: string;
+  token_kind: string;
+  status: string;
+  expires_at?: string | null;
+  revoked_at?: string | null;
+  scopes: string[];
+};
+
+type CurrentUserSessions = {
+  tenant_id: string;
+  user_id: string;
+  tokens: SessionTokenSummary[];
+  honest_limits: string[];
+};
+
 type SessionAccountEntryProps = {
   compact?: boolean;
 };
@@ -69,7 +85,11 @@ export function SessionAccountEntry({ compact = false }: SessionAccountEntryProp
   });
   const [refreshToken, setRefreshToken] = useState(() => getKunRefreshToken());
   const [currentSession, setCurrentSession] = useState<CurrentSession | null>(null);
+  const [currentUserSessions, setCurrentUserSessions] = useState<CurrentUserSessions | null>(
+    null,
+  );
   const [sessionError, setSessionError] = useState("");
+  const [tokenListError, setTokenListError] = useState("");
   const [savedNotice, setSavedNotice] = useState("");
   const [authActionError, setAuthActionError] = useState("");
   const [authActionNotice, setAuthActionNotice] = useState("");
@@ -98,9 +118,27 @@ export function SessionAccountEntry({ compact = false }: SessionAccountEntryProp
     }
   }, []);
 
+  const refreshTokenList = useCallback(async () => {
+    setTokenListError("");
+    try {
+      const response = await apiFetch("/api/auth/session/tokens");
+      const payload = (await response.json().catch(() => null)) as CurrentUserSessions | null;
+      if (!response.ok || !payload) {
+        throw new Error(response.status ? `${response.status} ${response.statusText}` : "请求失败");
+      }
+      setCurrentUserSessions(payload);
+    } catch (error) {
+      setCurrentUserSessions(null);
+      setTokenListError(error instanceof Error ? error.message : "无法读取 token 列表");
+    }
+  }, []);
+
   useEffect(() => {
     void refreshCurrentSession();
-  }, [refreshCurrentSession]);
+    if (!compact) {
+      void refreshTokenList();
+    }
+  }, [compact, refreshCurrentSession, refreshTokenList]);
 
   const saveAndReload = () => {
     saveKunIdentity(draft);
@@ -182,6 +220,23 @@ export function SessionAccountEntry({ compact = false }: SessionAccountEntryProp
       persistTokenPair(payload);
     } catch (error) {
       setAuthActionError(error instanceof Error ? error.message : "续期失败");
+    }
+  };
+
+  const revokeToken = async (tokenId: string) => {
+    setTokenListError("");
+    try {
+      const response = await apiFetch(`/api/auth/session/tokens/${encodeURIComponent(tokenId)}/revoke`, {
+        method: "POST",
+      });
+      const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+      if (!response.ok) {
+        throw new Error(payload?.detail || `${response.status} ${response.statusText}`);
+      }
+      setAuthActionNotice(`已撤销 token：${tokenId}`);
+      await refreshTokenList();
+    } catch (error) {
+      setTokenListError(error instanceof Error ? error.message : "撤销 token 失败");
     }
   };
 
@@ -406,6 +461,58 @@ export function SessionAccountEntry({ compact = false }: SessionAccountEntryProp
               清除 refresh
             </button>
           </div>
+        </div>
+      )}
+
+      {!compact && (
+        <div className="mt-4 rounded border border-gray-200 bg-white p-3 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="font-medium text-gray-700">我的 token 账本</div>
+              <p className="mt-1 text-gray-500">
+                只显示 token_id、状态和权限，不显示原始 token 或 hash。
+              </p>
+            </div>
+            <button
+              className="rounded border border-gray-200 bg-white px-3 py-1 hover:bg-gray-100"
+              onClick={() => void refreshTokenList()}
+            >
+              刷新列表
+            </button>
+          </div>
+          {currentUserSessions && currentUserSessions.tokens.length > 0 ? (
+            <div className="mt-3 divide-y divide-gray-100">
+              {currentUserSessions.tokens.slice(0, 12).map((token) => (
+                <div
+                  key={token.token_id}
+                  className="grid gap-2 py-2 md:grid-cols-[1.5fr_0.8fr_0.8fr_1fr_auto]"
+                >
+                  <span className="break-all text-gray-700">{token.token_id}</span>
+                  <span>{token.token_kind}</span>
+                  <span>{token.status}</span>
+                  <span className="text-gray-500">{token.expires_at || "无过期时间"}</span>
+                  <button
+                    className="rounded border border-red-200 bg-white px-2 py-1 text-red-600 hover:bg-red-50 disabled:opacity-40"
+                    disabled={token.status === "revoked"}
+                    onClick={() => void revokeToken(token.token_id)}
+                  >
+                    撤销
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-2 text-gray-500">
+              {tokenListError ? `读取失败：${tokenListError}` : "当前没有可显示的 token 记录"}
+            </p>
+          )}
+          {currentUserSessions && currentUserSessions.honest_limits.length > 0 && (
+            <ul className="mt-2 list-disc pl-4 text-gray-500">
+              {currentUserSessions.honest_limits.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 
