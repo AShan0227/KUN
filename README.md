@@ -8,7 +8,25 @@
 - [`PROGRESS.md`](./PROGRESS.md) — 开发进度
 - [`docs/DEPLOY.md`](./docs/DEPLOY.md) — 另一台机器如何部署 + 做 PR
 
-GitHub: https://github.com/AShan0227/KUN (private)
+GitHub: https://github.com/AShan0227/KUN (public, proprietary)
+
+## Legal / IP Notice
+
+KUN is public for visibility and collaboration, but it is **not open source**.
+Public visibility is not permission to copy, reuse, commercialize, host,
+redistribute, train models on, or build derivative products from this work.
+
+Key files:
+
+- [`LICENSE`](./LICENSE) — proprietary source-available terms, all rights reserved.
+- [`NOTICE`](./NOTICE) — protected materials and product identifiers.
+- [`COMMERCIAL_USE.md`](./COMMERCIAL_USE.md) — commercial use is prohibited without
+  prior written permission.
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — contribution terms and inbound rights.
+- [`SECURITY.md`](./SECURITY.md) — private vulnerability reporting.
+- [`docs/legal/IP_POLICY.md`](./docs/legal/IP_POLICY.md) — plain-language IP policy.
+- [`docs/legal/PUBLIC_REPO_RISK.md`](./docs/legal/PUBLIC_REPO_RISK.md) — what public
+  visibility does and does not protect.
 
 ## Quickstart
 
