@@ -5,7 +5,11 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from kun.api.nuo.health_panel import router
-from kun.engineering.delivery_status import get_v3_delivery_status, validate_delivery_status
+from kun.engineering.delivery_status import (
+    DeliveryCapability,
+    get_v3_delivery_status,
+    validate_delivery_status,
+)
 from kun.world.gateway import EmailSendHandler, WorldGateway
 
 
@@ -35,6 +39,24 @@ def test_delivery_status_endpoint() -> None:
     assert body["summary"]["not_ready"] >= 1
     assert body["validation_issues"] == []
     assert any(item["capability_id"] == "world_gateway" for item in body["items"])
+
+
+def test_delivery_status_partial_claims_need_existing_evidence() -> None:
+    items = [
+        DeliveryCapability(
+            capability_id="fake_partial",
+            label="假闭环",
+            status="partial",
+            summary="有 done 文案，但 evidence 不存在，必须被拦住。",
+            done=["声称已经接入真实热路径"],
+            missing=["还缺真实执行器"],
+            evidence_refs=["kun/no_such_file.py"],
+        )
+    ]
+
+    problems = validate_delivery_status(items)
+
+    assert any("missing evidence" in problem for problem in problems)
 
 
 def test_delivery_status_derives_world_gateway_capabilities_from_registry(tmp_path: Path) -> None:

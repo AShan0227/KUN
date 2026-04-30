@@ -453,9 +453,13 @@ def validate_delivery_status(items: list[DeliveryCapability] | None = None) -> l
         if item.status == "ready" and not item.evidence_refs:
             problems.append(f"{item.capability_id}: ready capability has no machine evidence refs")
         missing_refs = [ref for ref in item.evidence_refs if not _evidence_ref_exists(ref)]
-        if item.status == "ready" and missing_refs:
+        if missing_refs:
             problems.append(
-                f"{item.capability_id}: ready capability references missing evidence {missing_refs}"
+                f"{item.capability_id}: capability references missing evidence {missing_refs}"
+            )
+        if item.status in {"partial", "audit_only"} and item.done and not item.evidence_refs:
+            problems.append(
+                f"{item.capability_id}: incomplete capability with done claims needs evidence refs"
             )
         if item.status in {"partial", "audit_only", "not_ready"} and not item.missing:
             problems.append(
