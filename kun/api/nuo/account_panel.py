@@ -132,7 +132,7 @@ async def account_summary() -> TenantAccountLedgerSummary:
         },
         honest_limits=[
             "这里只展示账号/成员/token 签发账本，不返回 raw bearer token 或 token_hash。",
-            "这还不是完整自助注册 / OAuth / 刷新 token / 设备登录态。",
+            "refresh token 续期已有最小闭环，但这还不是完整自助注册 / OAuth / 设备登录态。",
             "账单字段仍是运营状态记录，不代表已经接入真实支付闭环。",
         ],
     )

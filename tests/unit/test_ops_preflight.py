@@ -12,6 +12,7 @@ from kun.ops.account_registry import build_unpersisted_bootstrap, hash_bearer_to
 from kun.ops.dogfood import run_v4_dogfood
 from kun.ops.preflight import run_preflight
 from kun.ops.secret_audit import audit_runtime_secrets
+from kun.ops.secret_store import SECRET_STORE_FILE_ENV
 from kun.ops.tenant_onboarding import create_tenant_onboarding_pack
 from kun.security.auth import verify_bearer_token
 from typer.testing import CliRunner
@@ -162,6 +163,69 @@ def test_preflight_accepts_enabled_world_gateway_handler_with_tenant_scoped_env(
     ]
     assert world_checks and world_checks[0].severity == "ok"
     assert "租户级 env" in world_checks[0].detail
+
+
+@pytest.mark.unit
+def test_preflight_reads_world_gateway_enable_flag_from_secret_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_ops_scripts(tmp_path)
+    store = tmp_path / "secrets.json"
+    store.write_text(
+        json.dumps(
+            {
+                "global": {
+                    "KUN_WORLD_API_POST_ENABLED": "true",
+                    "KUN_WORLD_API_ALLOWED_HOSTS": "api.example.com",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(SECRET_STORE_FILE_ENV, str(store))
+    monkeypatch.delenv("KUN_WORLD_API_POST_ENABLED", raising=False)
+    monkeypatch.delenv("KUN_WORLD_API_ALLOWED_HOSTS", raising=False)
+
+    report = run_preflight(
+        cfg=_safe_prod_settings(),
+        repo_root=tmp_path,
+        run_alembic_heads=False,
+    )
+
+    assert report.status == "warn"
+    assert report.blockers == []
+    assert any(
+        check.check_id == "world_handler_config:enterprise_api.post" and check.severity == "ok"
+        for check in report.checks
+    )
+
+
+@pytest.mark.unit
+def test_preflight_blocks_half_enabled_world_gateway_handler_from_secret_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_ops_scripts(tmp_path)
+    store = tmp_path / "secrets.json"
+    store.write_text(
+        json.dumps({"global": {"KUN_WORLD_API_POST_ENABLED": "true"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(SECRET_STORE_FILE_ENV, str(store))
+    monkeypatch.delenv("KUN_WORLD_API_POST_ENABLED", raising=False)
+    monkeypatch.delenv("KUN_WORLD_API_ALLOWED_HOSTS", raising=False)
+
+    report = run_preflight(
+        cfg=_safe_prod_settings(),
+        repo_root=tmp_path,
+        run_alembic_heads=False,
+    )
+
+    assert report.status == "block"
+    assert any(
+        check.check_id == "world_handler_config:enterprise_api.post" for check in report.blockers
+    )
 
 
 @pytest.mark.unit

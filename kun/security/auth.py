@@ -31,6 +31,7 @@ class AuthClaims:
     audience: Audience = "developer"
     exp: int | None = None
     token_id: str | None = None
+    token_type: str | None = None
 
     def to_tenant_context(self) -> TenantContext:
         return TenantContext(
@@ -124,6 +125,7 @@ def _claims_from_payload(data: dict[str, Any]) -> AuthClaims:
         audience=audience,
         exp=exp,
         token_id=str(data["jti"]) if data.get("jti") is not None else None,
+        token_type=str(data["token_type"]) if data.get("token_type") is not None else None,
     )
 
 

@@ -34,6 +34,7 @@ from kun.api.nuo import router as nuo_router
 from kun.api.protocols import router as protocols_router
 from kun.api.qi import router as qi_router
 from kun.api.runtime import install_runtime
+from kun.api.session import router as session_router
 from kun.api.task_control import router as task_control_router
 from kun.api.ws import ws_router
 from kun.core.config import settings
@@ -332,9 +333,15 @@ async def tenant_middleware(
         from kun.security.auth import AuthTokenError, verify_bearer_token_any
 
         try:
-            ctx = verify_bearer_token_any(auth_header, auth_secrets).to_tenant_context()
+            claims = verify_bearer_token_any(auth_header, auth_secrets)
         except AuthTokenError as exc:
             return JSONResponse(status_code=401, content={"detail": str(exc)})
+        if claims.token_type == "refresh" and request.url.path != "/api/auth/session/refresh":
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "refresh token can only be used on session refresh endpoint"},
+            )
+        ctx = claims.to_tenant_context()
         if cfg.env == "production":
             try:
                 revoked = await _is_auth_token_revoked(
@@ -397,6 +404,7 @@ async def metrics() -> Response:
 app.include_router(health_router, prefix="/health", tags=["health"])
 app.include_router(billing_router, prefix="/api/billing", tags=["billing"])
 app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
+app.include_router(session_router)
 app.include_router(ws_router)
 app.include_router(nuo_router, prefix="/nuo", tags=["nuo"])
 # V2.1 wire: 黑板 + 注意力 pin + task control (kill switch / timeout)
