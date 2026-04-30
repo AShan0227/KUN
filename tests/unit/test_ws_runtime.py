@@ -5,9 +5,18 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
-from kun.api.ws import _cancel_task, _clear_finished_task, _receive_client_message
+from kun.api import ws as ws_module
+from kun.api.ws import (
+    _cancel_task,
+    _clear_finished_task,
+    _receive_client_message,
+    _resolve_ws_tenant_context,
+)
+from kun.security.auth import AuthTokenError, sign_auth_token
 
 
 @pytest.mark.unit
@@ -43,11 +52,32 @@ async def test_clear_finished_task_returns_none_for_completed_task() -> None:
 
 
 class _FakeWebSocket:
-    def __init__(self, packet: dict) -> None:
+    def __init__(self, packet: dict[str, Any]) -> None:
         self._packet = packet
 
-    async def receive(self) -> dict:
+    async def receive(self) -> dict[str, Any]:
         return self._packet
+
+
+class _FakeHandshake:
+    def __init__(
+        self,
+        *,
+        query: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.query_params = query or {}
+        self.headers = headers or {}
+        self.client = SimpleNamespace(host="127.0.0.1")
+
+
+class _Settings:
+    def __init__(self, *, env: str = "dev", secrets: list[str] | None = None) -> None:
+        self.env = env
+        self._secrets = secrets or []
+
+    def auth_secret_candidates(self) -> list[str]:
+        return self._secrets
 
 
 @pytest.mark.unit
@@ -88,3 +118,41 @@ async def test_receive_client_message_translates_binary_frame() -> None:
     assert "binary text" in msg["content"]
     assert translated is not None
     assert translated.descriptors[0]["filename"] == "websocket.bin"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ws_context_uses_signed_query_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = "x" * 32
+    token = sign_auth_token(
+        {
+            "tenant_id": "tenant-token",
+            "user_id": "user-token",
+            "scopes": ["world:approve"],
+        },
+        secret,
+    )
+    monkeypatch.setattr(ws_module, "settings", lambda: _Settings(env="staging", secrets=[secret]))
+
+    ctx = await _resolve_ws_tenant_context(
+        cast(Any, _FakeHandshake(query={"auth_token": token, "tenant_id": "ignored"}))
+    )
+
+    assert ctx.tenant_id == "tenant-token"
+    assert ctx.user_id == "user-token"
+    assert ctx.scopes == ("world:approve",)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ws_context_requires_token_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ws_module,
+        "settings",
+        lambda: _Settings(env="production", secrets=["x" * 32]),
+    )
+
+    with pytest.raises(AuthTokenError, match="auth_token is required"):
+        await _resolve_ws_tenant_context(
+            cast(Any, _FakeHandshake(query={"tenant_id": "tenant-dev", "user_id": "user-dev"}))
+        )

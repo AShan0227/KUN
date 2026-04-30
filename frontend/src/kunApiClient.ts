@@ -91,5 +91,8 @@ export function kunWebSocketUrl(): string {
     tenant_id: identity.tenantId,
     user_id: identity.userId,
   });
+  if (identity.authToken) {
+    params.set("auth_token", identity.authToken);
+  }
   return `${proto}//${host}/ws?${params.toString()}`;
 }

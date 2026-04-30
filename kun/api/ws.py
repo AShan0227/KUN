@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import uuid
 from typing import Any
@@ -41,6 +42,8 @@ from kun.api.input_payload import (
     translate_chat_input,
 )
 from kun.api.runtime import get_kill_switch, get_orchestrator
+from kun.core.config import settings
+from kun.core.db import session_scope
 from kun.core.logging import get_logger
 from kun.core.tenancy import (
     MissingTenantContextError,
@@ -49,6 +52,8 @@ from kun.core.tenancy import (
     tenant_scope,
 )
 from kun.engineering.orchestrator import OrchestratorEvent
+from kun.ops.account_registry import hash_bearer_token, is_token_revoked, record_token_usage
+from kun.security.auth import AuthTokenError, extract_bearer_token, verify_bearer_token_any
 
 log = get_logger("kun.api.ws")
 
@@ -84,27 +89,31 @@ def _is_correction(text: str) -> bool:
 @ws_router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket) -> None:
     try:
-        tenant_id = resolve_tenant_id(ws.query_params.get("tenant_id"))
+        ctx = await _resolve_ws_tenant_context(ws)
+    except AuthTokenError as exc:
+        await ws.close(code=1008, reason=str(exc))
+        return
     except MissingTenantContextError:
-        await ws.close(code=1008, reason="tenant_id required")
+        await ws.close(code=1008, reason="tenant_id or auth_token required")
         return
 
     await ws.accept()
-    user_id = ws.query_params.get("user_id")
     raw_audience = (ws.query_params.get("audience") or "developer").lower()
     audience = raw_audience if raw_audience in {"novice", "developer", "expert"} else "developer"
     default_output_kind = str(ws.query_params.get("output_kind") or "user")
-    ctx = TenantContext(
-        tenant_id=tenant_id,
-        user_id=user_id,
-        audience=audience,  # type: ignore[arg-type]
-    )
+    if ctx.audience != audience:
+        ctx = TenantContext(
+            tenant_id=ctx.tenant_id,
+            user_id=ctx.user_id,
+            scopes=ctx.scopes,
+            audience=audience,  # type: ignore[arg-type]
+        )
     send_lock = asyncio.Lock()
     current_task: asyncio.Task[None] | None = None
     current_task_id: str | None = None
     ks = get_kill_switch(ws.scope["app"])
 
-    log.info("ws.connected", tenant_id=tenant_id, user_id=user_id)
+    log.info("ws.connected", tenant_id=ctx.tenant_id, user_id=ctx.user_id)
 
     try:
         with tenant_scope(ctx):
@@ -194,7 +203,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                         send_lock,
                     )
     except WebSocketDisconnect:
-        log.info("ws.disconnected", tenant_id=tenant_id)
+        log.info("ws.disconnected", tenant_id=ctx.tenant_id)
     except Exception as e:
         log.exception("ws.error", error=str(e))
         with contextlib.suppress(Exception):
@@ -206,6 +215,88 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             await _cancel_task(current_task)
         if current_task_id:
             ks.cleanup(current_task_id)
+
+
+async def _resolve_ws_tenant_context(ws: WebSocket) -> TenantContext:
+    """Resolve WebSocket identity.
+
+    Browsers cannot set custom Authorization headers for WebSocket handshakes.
+    We therefore accept an auth token query param in addition to Authorization.
+    Production must use a signed token; dev can still fall back to tenant/user
+    query params for local dogfood.
+    """
+
+    cfg = settings()
+    auth_header = ws.headers.get("authorization")
+    raw_query_token = (
+        ws.query_params.get("auth_token")
+        or ws.query_params.get("access_token")
+        or ws.query_params.get("token")
+    )
+    if raw_query_token and not auth_header:
+        auth_header = _bearer_header(raw_query_token)
+
+    if auth_header:
+        secrets = cfg.auth_secret_candidates()
+        if not secrets:
+            raise AuthTokenError(
+                "KUN_AUTH_SECRET or KUN_AUTH_SECRETS is required for websocket auth"
+            )
+        claims = verify_bearer_token_any(auth_header, secrets)
+        if claims.token_type == "refresh":
+            raise AuthTokenError("refresh token cannot open websocket sessions")
+        if cfg.env == "production":
+            revoked = await _check_and_record_ws_auth_token(
+                tenant_id=claims.tenant_id,
+                auth_header=auth_header,
+                ip_hash=_ws_ip_hash(ws),
+                user_agent=ws.headers.get("user-agent"),
+            )
+            if revoked:
+                raise AuthTokenError("bearer token revoked")
+        return claims.to_tenant_context()
+
+    if cfg.env == "production":
+        raise AuthTokenError("auth_token is required for websocket in production")
+
+    return TenantContext(
+        tenant_id=resolve_tenant_id(ws.query_params.get("tenant_id")),
+        user_id=ws.query_params.get("user_id"),
+    )
+
+
+def _bearer_header(raw_token: str) -> str:
+    token = raw_token.strip()
+    return token if token.lower().startswith("bearer ") else f"Bearer {token}"
+
+
+async def _check_and_record_ws_auth_token(
+    *,
+    tenant_id: str,
+    auth_header: str,
+    ip_hash: str | None,
+    user_agent: str | None,
+) -> bool:
+    token_hash = hash_bearer_token(extract_bearer_token(auth_header))
+    async with session_scope(tenant_id=tenant_id) as s:
+        revoked = await is_token_revoked(s, tenant_id=tenant_id, token_hash=token_hash)
+        if not revoked:
+            await record_token_usage(
+                s,
+                tenant_id=tenant_id,
+                token_hash=token_hash,
+                ip_hash=ip_hash,
+                user_agent=user_agent,
+            )
+        return revoked
+
+
+def _ws_ip_hash(ws: WebSocket) -> str | None:
+    raw_ip = ws.client.host if ws.client else ""
+    cleaned = raw_ip.strip()
+    if not cleaned:
+        return None
+    return hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
 
 
 async def _run_task_stream(
