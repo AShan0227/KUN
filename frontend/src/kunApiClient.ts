@@ -12,6 +12,7 @@ const STORAGE_KEYS = {
   tenantId: "kun.tenant_id",
   userId: "kun.user_id",
   authToken: "kun.auth_token",
+  refreshToken: "kun.refresh_token",
 } as const;
 
 export type KunIdentity = {
@@ -75,6 +76,25 @@ export function clearKunIdentity(): void {
   window.localStorage.removeItem(STORAGE_KEYS.tenantId);
   window.localStorage.removeItem(STORAGE_KEYS.userId);
   window.localStorage.removeItem(STORAGE_KEYS.authToken);
+}
+
+export function getKunRefreshToken(): string {
+  return readLocalStorage(STORAGE_KEYS.refreshToken);
+}
+
+export function saveKunRefreshToken(token: string): void {
+  if (typeof window === "undefined") return;
+  const cleaned = token.trim();
+  if (cleaned) {
+    window.localStorage.setItem(STORAGE_KEYS.refreshToken, cleaned);
+  } else {
+    window.localStorage.removeItem(STORAGE_KEYS.refreshToken);
+  }
+}
+
+export function clearKunRefreshToken(): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(STORAGE_KEYS.refreshToken);
 }
 
 function authHeaderValue(token: string): string {

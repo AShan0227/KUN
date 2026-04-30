@@ -313,6 +313,7 @@ def get_v3_delivery_status(
                 "NUO 账号面板可撤销当前租户已签发 token，生产请求中间件会消费撤销结果",
                 "前端主入口 / NUO / billing 已通过统一 apiClient 从 localStorage 或 NEXT_PUBLIC_KUN_TENANT_ID/NEXT_PUBLIC_KUN_USER_ID 注入租户与用户 header，避免页面散落 u-sylvan/sylvan",
                 "前端已补 /account 会话入口，可手动录入 bearer token 并显示服务端 session，不再只能改 env/localStorage",
+                "前端 /account 可调用邀请码注册、接受邀请和 refresh-token 续期接口；仍诚实标注这不是密码登录/OAuth",
                 "WebSocket 支持 auth_token 查询参数；生产环境必须使用签名 token，不再接受裸 tenant_id/user_id 打开会话",
                 "ops dogfood CLI 可跑 V4 低风险 smoke，验证 preflight / token / WorldGateway / 诚实边界",
                 "ops dogfood --include-db-mission 可额外验证 Mission/RuntimeState/Orchestrator runner 的真实 DB 续跑闭环",
@@ -354,7 +355,7 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "完整密码登录 / OAuth 账号体系",
-                "前端已有手动会话入口，但还没有完整登录 UI、租户切换器、CSRF/设备态风控；WebSocket token 通过 query 传递，生产还应升级到更正式的会话/短期票据方案",
+                "前端已有手动会话/邀请码注册/接受邀请/refresh 入口，但还没有密码登录、OAuth、租户切换器、CSRF/设备态风控；WebSocket token 通过 query 传递，生产还应升级到更正式的会话/短期票据方案",
                 "完整设备登录态和异常登录风控",
                 "云 KMS / 托管 Secret Manager、自动轮换和租户自助密钥配置",
                 "真实数据库/S3 环境的备份恢复演练",

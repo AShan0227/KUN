@@ -4,8 +4,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   apiFetch,
   clearKunIdentity,
+  clearKunRefreshToken,
   getKunIdentitySource,
+  getKunRefreshToken,
   saveKunIdentity,
+  saveKunRefreshToken,
   type KunIdentity,
   type KunIdentitySource,
 } from "@/kunApiClient";
@@ -20,6 +23,17 @@ type CurrentSession = {
 
 type SessionAccountEntryProps = {
   compact?: boolean;
+};
+
+type SessionTokenPairResponse = {
+  tenant_id: string;
+  owner_user_id?: string;
+  user_id?: string;
+  access_token: string;
+  refresh_token?: string;
+  scopes: string[];
+  audience: string;
+  honest_limits: string[];
 };
 
 function sourceLabel(source: KunIdentitySource): string {
@@ -41,9 +55,24 @@ function tokenLabel(identity: KunIdentity): string {
 export function SessionAccountEntry({ compact = false }: SessionAccountEntryProps) {
   const [identitySource, setIdentitySource] = useState(() => getKunIdentitySource());
   const [draft, setDraft] = useState<KunIdentity>(() => identitySource.identity);
+  const [signupDraft, setSignupDraft] = useState({
+    inviteCode: "",
+    tenantId: identitySource.identity.tenantId,
+    ownerUserId: identitySource.identity.userId,
+    displayName: "",
+  });
+  const [acceptDraft, setAcceptDraft] = useState({
+    inviteCode: "",
+    inviteToken: "",
+    tenantId: identitySource.identity.tenantId,
+    userId: identitySource.identity.userId,
+  });
+  const [refreshToken, setRefreshToken] = useState(() => getKunRefreshToken());
   const [currentSession, setCurrentSession] = useState<CurrentSession | null>(null);
   const [sessionError, setSessionError] = useState("");
   const [savedNotice, setSavedNotice] = useState("");
+  const [authActionError, setAuthActionError] = useState("");
+  const [authActionNotice, setAuthActionNotice] = useState("");
 
   const sourceText = useMemo(() => sourceLabel(identitySource), [identitySource]);
 
@@ -51,6 +80,7 @@ export function SessionAccountEntry({ compact = false }: SessionAccountEntryProp
     const next = getKunIdentitySource();
     setIdentitySource(next);
     setDraft(next.identity);
+    setRefreshToken(getKunRefreshToken());
   }, []);
 
   const refreshCurrentSession = useCallback(async () => {
@@ -80,8 +110,79 @@ export function SessionAccountEntry({ compact = false }: SessionAccountEntryProp
 
   const clearAndReload = () => {
     clearKunIdentity();
+    clearKunRefreshToken();
     setSavedNotice("已清除，正在恢复默认 session");
     window.location.reload();
+  };
+
+  const persistTokenPair = (payload: SessionTokenPairResponse) => {
+    const userId = payload.owner_user_id || payload.user_id || draft.userId;
+    saveKunIdentity({
+      tenantId: payload.tenant_id,
+      userId,
+      authToken: payload.access_token,
+    });
+    if (payload.refresh_token) {
+      saveKunRefreshToken(payload.refresh_token);
+    }
+    setAuthActionNotice("已保存 access token 和 refresh token，正在重载会话");
+    window.location.reload();
+  };
+
+  const postAuthAction = async (path: string, body: unknown): Promise<SessionTokenPairResponse> => {
+    setAuthActionError("");
+    setAuthActionNotice("");
+    const response = await apiFetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = (await response.json().catch(() => null)) as
+      | (SessionTokenPairResponse & { detail?: string })
+      | null;
+    if (!response.ok || !payload) {
+      throw new Error(payload?.detail || `${response.status} ${response.statusText}`);
+    }
+    return payload;
+  };
+
+  const signup = async () => {
+    try {
+      const payload = await postAuthAction("/api/auth/signup", {
+        invite_code: signupDraft.inviteCode,
+        tenant_id: signupDraft.tenantId,
+        owner_user_id: signupDraft.ownerUserId,
+        display_name: signupDraft.displayName || undefined,
+      });
+      persistTokenPair(payload);
+    } catch (error) {
+      setAuthActionError(error instanceof Error ? error.message : "邀请码注册失败");
+    }
+  };
+
+  const acceptInvite = async () => {
+    try {
+      const payload = await postAuthAction("/api/auth/invite/accept", {
+        invite_code: acceptDraft.inviteToken ? undefined : acceptDraft.inviteCode,
+        invite_token: acceptDraft.inviteToken || undefined,
+        tenant_id: acceptDraft.tenantId,
+        user_id: acceptDraft.userId,
+      });
+      persistTokenPair(payload);
+    } catch (error) {
+      setAuthActionError(error instanceof Error ? error.message : "接受邀请失败");
+    }
+  };
+
+  const refreshAccessToken = async () => {
+    try {
+      const payload = await postAuthAction("/api/auth/session/refresh", {
+        refresh_token: refreshToken,
+      });
+      persistTokenPair(payload);
+    } catch (error) {
+      setAuthActionError(error instanceof Error ? error.message : "续期失败");
+    }
   };
 
   return (
@@ -180,6 +281,145 @@ export function SessionAccountEntry({ compact = false }: SessionAccountEntryProp
           </p>
         )}
       </div>
+
+      {!compact && (
+        <div className="mt-4 grid gap-3 lg:grid-cols-3">
+          <div className="rounded border border-gray-200 bg-gray-50 p-3 text-xs">
+            <div className="font-medium text-gray-700">邀请码注册</div>
+            <p className="mt-1 text-gray-500">
+              仅在后端显式开启 self signup 时可用；这不是密码登录或 OAuth。
+            </p>
+            <input
+              className="mt-2 w-full rounded border border-gray-200 px-2 py-1.5"
+              placeholder="invite_code"
+              value={signupDraft.inviteCode}
+              onChange={(event) =>
+                setSignupDraft((value) => ({ ...value, inviteCode: event.target.value }))
+              }
+            />
+            <input
+              className="mt-2 w-full rounded border border-gray-200 px-2 py-1.5"
+              placeholder="tenant_id"
+              value={signupDraft.tenantId}
+              onChange={(event) =>
+                setSignupDraft((value) => ({ ...value, tenantId: event.target.value }))
+              }
+            />
+            <input
+              className="mt-2 w-full rounded border border-gray-200 px-2 py-1.5"
+              placeholder="owner_user_id"
+              value={signupDraft.ownerUserId}
+              onChange={(event) =>
+                setSignupDraft((value) => ({ ...value, ownerUserId: event.target.value }))
+              }
+            />
+            <input
+              className="mt-2 w-full rounded border border-gray-200 px-2 py-1.5"
+              placeholder="display_name，可空"
+              value={signupDraft.displayName}
+              onChange={(event) =>
+                setSignupDraft((value) => ({ ...value, displayName: event.target.value }))
+              }
+            />
+            <button
+              className="mt-2 rounded bg-kun-accent px-3 py-1.5 text-white hover:opacity-90"
+              onClick={() => void signup()}
+            >
+              注册并保存会话
+            </button>
+          </div>
+
+          <div className="rounded border border-gray-200 bg-gray-50 p-3 text-xs">
+            <div className="font-medium text-gray-700">接受成员邀请</div>
+            <p className="mt-1 text-gray-500">
+              可用一次性 invite token，或后端允许时用全局 invite_code。
+            </p>
+            <input
+              className="mt-2 w-full rounded border border-gray-200 px-2 py-1.5"
+              placeholder="invite_token，可空"
+              value={acceptDraft.inviteToken}
+              onChange={(event) =>
+                setAcceptDraft((value) => ({ ...value, inviteToken: event.target.value }))
+              }
+            />
+            <input
+              className="mt-2 w-full rounded border border-gray-200 px-2 py-1.5"
+              placeholder="invite_code，没 token 时填写"
+              value={acceptDraft.inviteCode}
+              onChange={(event) =>
+                setAcceptDraft((value) => ({ ...value, inviteCode: event.target.value }))
+              }
+            />
+            <input
+              className="mt-2 w-full rounded border border-gray-200 px-2 py-1.5"
+              placeholder="tenant_id"
+              value={acceptDraft.tenantId}
+              onChange={(event) =>
+                setAcceptDraft((value) => ({ ...value, tenantId: event.target.value }))
+              }
+            />
+            <input
+              className="mt-2 w-full rounded border border-gray-200 px-2 py-1.5"
+              placeholder="user_id"
+              value={acceptDraft.userId}
+              onChange={(event) =>
+                setAcceptDraft((value) => ({ ...value, userId: event.target.value }))
+              }
+            />
+            <button
+              className="mt-2 rounded bg-kun-accent px-3 py-1.5 text-white hover:opacity-90"
+              onClick={() => void acceptInvite()}
+            >
+              接受邀请并保存
+            </button>
+          </div>
+
+          <div className="rounded border border-gray-200 bg-gray-50 p-3 text-xs">
+            <div className="font-medium text-gray-700">refresh token 续期</div>
+            <p className="mt-1 text-gray-500">
+              用已保存或粘贴的 refresh token 换一个新的短期 access token。
+            </p>
+            <input
+              className="mt-2 w-full rounded border border-gray-200 px-2 py-1.5"
+              placeholder="refresh token"
+              type="password"
+              value={refreshToken}
+              onChange={(event) => {
+                setRefreshToken(event.target.value);
+                saveKunRefreshToken(event.target.value);
+              }}
+            />
+            <button
+              className="mt-2 rounded bg-kun-accent px-3 py-1.5 text-white hover:opacity-90"
+              onClick={() => void refreshAccessToken()}
+            >
+              续期并保存
+            </button>
+            <button
+              className="ml-2 mt-2 rounded border border-gray-300 bg-white px-3 py-1.5 hover:bg-gray-100"
+              onClick={() => {
+                clearKunRefreshToken();
+                setRefreshToken("");
+                setAuthActionNotice("已清除 refresh token");
+              }}
+            >
+              清除 refresh
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!compact && (authActionError || authActionNotice) && (
+        <div
+          className={`mt-3 rounded border p-3 text-xs ${
+            authActionError
+              ? "border-red-200 bg-red-50 text-red-700"
+              : "border-green-200 bg-green-50 text-green-700"
+          }`}
+        >
+          {authActionError || authActionNotice}
+        </div>
+      )}
     </section>
   );
 }
