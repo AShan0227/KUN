@@ -23,6 +23,7 @@ from kun.world.gateway import (
     WorldHandlerDescriptor,
     get_world_gateway,
 )
+from kun.world.handler_control import WorldHandlerControl, set_world_handler_control
 from kun.world.handler_health import (
     WorldHandlerHealthCard,
     collect_world_handler_health,
@@ -87,6 +88,17 @@ class WorldGatewayHandlerHealthResponse(BaseModel):
     tenant_id: str
     summary: dict[str, int]
     handlers: list[WorldHandlerHealthCard]
+
+
+class HandlerControlRequest(BaseModel):
+    status: Literal["enabled", "quarantined", "disabled"]
+    reason: str = ""
+
+
+class HandlerControlResponse(BaseModel):
+    tenant_id: str
+    control: WorldHandlerControl
+    message: str
 
 
 @router.get("/pending", response_model=PendingActionList)
@@ -166,6 +178,32 @@ async def list_world_gateway_handler_health() -> WorldGatewayHandlerHealthRespon
         summary=summarize_handler_health(cards),
         handlers=cards,
     )
+
+
+@router.post("/handler-control/{action_type}", response_model=HandlerControlResponse)
+async def set_world_gateway_handler_control(
+    action_type: str,
+    req: HandlerControlRequest,
+) -> HandlerControlResponse:
+    """Persistently enable/quarantine/disable a WorldGateway action type."""
+
+    tenant = current_tenant()
+    _require_scope_when_enforced("world:dispatch")
+    async with session_scope(tenant_id=tenant.tenant_id) as s:
+        control = await set_world_handler_control(
+            s,
+            tenant_id=tenant.tenant_id,
+            action_type=action_type,
+            status=req.status,
+            reason=req.reason,
+            source="nuo.api",
+            updated_by=tenant.user_id,
+        )
+    if req.status == "enabled":
+        message = "handler 已恢复；后续仍会继续接受健康检查和审批门控。"
+    else:
+        message = "handler 已持久化隔离；恢复前真实外发会被执行器拦截。"
+    return HandlerControlResponse(tenant_id=tenant.tenant_id, control=control, message=message)
 
 
 @router.get("/recent", response_model=PendingActionList)

@@ -430,6 +430,36 @@ class PendingActionRow(Base):
     )
 
 
+class WorldHandlerControlRow(Base):
+    """Tenant-scoped persistent control state for one WorldGateway handler."""
+
+    __tablename__ = "world_handler_controls"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    action_type: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="enabled", index=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="nuo")
+    updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('enabled', 'quarantined', 'disabled')",
+            name="world_handler_control_status_valid",
+        ),
+        CheckConstraint("length(action_type) > 0", name="world_handler_control_action_not_empty"),
+        Index("ix_world_handler_controls_tenant_status", "tenant_id", "status"),
+    )
+
+
 # ============== CAPABILITY CARDS ==============
 
 

@@ -10,6 +10,7 @@ from kun.world.gateway import (
     LocalFileWriteHandler,
     WorldGateway,
 )
+from kun.world.handler_control import WorldHandlerControl
 from kun.world.handler_health import build_world_handler_health
 
 
@@ -60,6 +61,34 @@ def test_handler_health_does_not_count_missing_handler_as_success(tmp_path: Path
     assert card.status == "unregistered"
     assert card.success_rate == 0.0
     assert card.missing_handler_count == 1
+
+
+def test_handler_health_consumes_persistent_quarantine(tmp_path: Path) -> None:
+    descriptors = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[EmailDraftHandler(tmp_path / "drafts")],
+    ).handler_descriptors()
+
+    cards = build_world_handler_health(
+        descriptors=descriptors,
+        rows=[],
+        tenant_id="tenant-1",
+        controls={
+            "email.draft": WorldHandlerControl(
+                tenant_id="tenant-1",
+                action_type="email.draft",
+                status="quarantined",
+                reason="recent failures",
+            )
+        },
+    )
+    card = next(card for card in cards if card.action_type == "email.draft")
+
+    assert card.status == "blocked"
+    assert card.control_status == "quarantined"
+    assert "recent failures" in card.control_reason
+    assert any("持久化隔离" in issue for issue in card.issues)
+    assert "restore" in card.recommendation
 
 
 def test_handler_health_flags_real_external_handler_as_limited(tmp_path: Path) -> None:

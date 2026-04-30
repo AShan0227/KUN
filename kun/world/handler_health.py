@@ -17,6 +17,7 @@ from sqlalchemy import select
 from kun.core.db import session_scope
 from kun.core.orm import PendingActionRow
 from kun.world.gateway import WorldGateway, WorldHandlerDescriptor, get_world_gateway
+from kun.world.handler_control import WorldHandlerControl, load_world_handler_controls
 from kun.world.tenant_env import env_for_tenant, missing_required_world_env
 
 HandlerHealthStatus = Literal["ready", "limited", "blocked", "unregistered"]
@@ -64,6 +65,8 @@ class WorldHandlerHealthCard(BaseModel):
     failure_rate: float = 0.0
     approval_reject_rate: float = 0.0
     compensation_strategy: str = ""
+    control_status: Literal["enabled", "quarantined", "disabled"] = "enabled"
+    control_reason: str = ""
     recommendation: str
     issues: list[str] = Field(default_factory=list)
 
@@ -85,10 +88,12 @@ async def collect_world_handler_health(
             .limit(history_limit)
         )
         rows = list(result.scalars().all())
+        controls = await load_world_handler_controls(s, tenant_id=tenant_id)
     return build_world_handler_health(
         descriptors=(gateway or get_world_gateway()).handler_descriptors(),
         rows=rows,
         tenant_id=tenant_id,
+        controls=controls,
     )
 
 
@@ -97,15 +102,23 @@ def build_world_handler_health(
     descriptors: list[WorldHandlerDescriptor],
     rows: list[PendingActionRow],
     tenant_id: str = "",
+    controls: dict[str, WorldHandlerControl] | None = None,
 ) -> list[WorldHandlerHealthCard]:
     descriptor_by_type = {item.action_type: item for item in descriptors}
     action_types = (
         set(descriptor_by_type)
         | {row.action_type for row in rows}
         | set(EXPECTED_REAL_WORLD_HANDLERS)
+        | set(controls or {})
     )
     cards = [
-        _build_card(action_type, descriptor_by_type.get(action_type), rows, tenant_id=tenant_id)
+        _build_card(
+            action_type,
+            descriptor_by_type.get(action_type),
+            rows,
+            tenant_id=tenant_id,
+            control=(controls or {}).get(action_type),
+        )
         for action_type in sorted(action_types)
     ]
     cards.sort(key=lambda item: (_status_rank(item.status), -item.failed_count, item.action_type))
@@ -118,6 +131,7 @@ def _build_card(
     rows: list[PendingActionRow],
     *,
     tenant_id: str = "",
+    control: WorldHandlerControl | None = None,
 ) -> WorldHandlerHealthCard:
     relevant = [row for row in rows if row.action_type == action_type]
     effective_tenant_id = tenant_id or (relevant[0].tenant_id if relevant else "")
@@ -136,6 +150,9 @@ def _build_card(
     success_rate = executed_success / denominator
 
     issues: list[str] = []
+    if control is not None and control.status in {"quarantined", "disabled"}:
+        label = "隔离" if control.status == "quarantined" else "禁用"
+        issues.append(f"傩已持久化{label}这个 handler: {control.reason or '未填写原因'}")
     config_issues = _expected_config_issues(action_type, tenant_id=effective_tenant_id)
     if descriptor is None:
         issues.append("没有注册 WorldGateway handler")
@@ -170,6 +187,7 @@ def _build_card(
         static_risk=static_risk,
         dynamic_risk=dynamic_risk,
         issues=issues,
+        control=control,
     )
     return WorldHandlerHealthCard(
         action_type=action_type,
@@ -198,7 +216,9 @@ def _build_card(
         failure_rate=round(failure_rate, 4),
         approval_reject_rate=round(reject_rate, 4),
         compensation_strategy=descriptor.compensation_strategy if descriptor else "",
-        recommendation=_recommendation(status, issues, descriptor),
+        control_status=control.status if control else "enabled",
+        control_reason=control.reason if control else "",
+        recommendation=_recommendation(status, issues, descriptor, control),
         issues=issues,
     )
 
@@ -273,7 +293,10 @@ def _status(
     static_risk: str,
     dynamic_risk: str,
     issues: list[str],
+    control: WorldHandlerControl | None = None,
 ) -> HandlerHealthStatus:
+    if control is not None and control.status in {"quarantined", "disabled"}:
+        return "blocked"
     if descriptor is None:
         return "unregistered"
     if dynamic_risk == "high":
@@ -287,7 +310,10 @@ def _recommendation(
     status: HandlerHealthStatus,
     issues: list[str],
     descriptor: WorldHandlerDescriptor | None,
+    control: WorldHandlerControl | None = None,
 ) -> str:
+    if control is not None and control.status in {"quarantined", "disabled"}:
+        return "先通过 NUO restore 恢复 handler；恢复前所有真实外发都会被拦截。"
     if status == "unregistered":
         if issues:
             return "先补 handler 或配置缺失环境变量；未补齐前不要执行这种外部动作。"
