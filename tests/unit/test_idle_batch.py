@@ -1,5 +1,7 @@
 """idle-batch scheduler tests."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
@@ -161,6 +163,55 @@ async def test_health_report_step_uses_data_source_snapshot() -> None:
 
     assert summary["total_tasks"] == 8
     assert summary["events_outbox_lag"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_health_report_step_collects_nuo_report_and_emits_event(monkeypatch) -> None:
+    from kun.engineering.nuo_system_health import SystemHealthFinding, SystemHealthReport
+
+    events = []
+
+    async def fake_collect_system_health_report(*, tenant_id: str) -> SystemHealthReport:
+        return SystemHealthReport(
+            tenant_id=tenant_id,
+            total_tasks=3,
+            outbox_lag=2,
+            pending_approvals=1,
+            findings=[
+                SystemHealthFinding(
+                    finding_id="f-1",
+                    severity="warn",
+                    subsystem="events",
+                    title="outbox lag",
+                    detail="lag",
+                    suggested_action="restart worker",
+                )
+            ],
+        )
+
+    @asynccontextmanager
+    async def fake_session_scope(**_kwargs: object) -> AsyncIterator[object]:
+        yield object()
+
+    async def fake_emit(_session: object, event: object) -> None:
+        events.append(event)
+
+    monkeypatch.setattr(
+        "kun.engineering.nuo_system_health.collect_system_health_report",
+        fake_collect_system_health_report,
+    )
+    monkeypatch.setattr("kun.core.db.session_scope", fake_session_scope)
+    monkeypatch.setattr("kun.core.events.emit", fake_emit)
+
+    summary = await HealthReportStep().run("t-1")
+
+    assert summary["total_tasks"] == 3
+    assert summary["events_outbox_lag"] == 2
+    assert summary["worst_severity"] == "warn"
+    assert len(events) == 1
+    assert getattr(events[0], "event_type") == "nuo.health_report.generated"
+    assert getattr(events[0], "payload")["top_findings"][0]["finding_id"] == "f-1"
 
 
 @pytest.mark.unit

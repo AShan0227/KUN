@@ -146,6 +146,7 @@ def get_v3_delivery_status(
                 "未启用的真实外部 handler 会暴露 env/密钥配置缺口",
                 "Context / memory 瘦身维护 dry-run 和真实执行入口",
                 "默认只露健康 / 成本 / 权限 / 风险，高级诊断折叠",
+                "idle-batch 会定期生成 NUO 深度体检摘要并写入事件账本",
             ],
             evidence_refs=[
                 "kun/api/nuo/health_panel.py",
@@ -154,11 +155,11 @@ def get_v3_delivery_status(
                 "tests/unit/test_delivery_status.py",
             ],
             missing=[
-                "自动生成定期 NUO 体检报告并推送给用户",
+                "定期 NUO 体检暂时写事件账本，还没主动推送给用户",
                 "把 handler 健康结果接入自动限权 / 降级",
             ],
             next_steps=[
-                "定期把 NUO 体检写入 StateLedger / 报告",
+                "把高风险 NUO finding 推送到用户看板 / StateLedger 当前快照",
                 "失败率高的外部 handler 自动降级为人工确认",
             ],
         ),

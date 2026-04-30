@@ -107,6 +107,8 @@ EventKind = Literal[
     "delivery.review_done",
     "delivery.needs_review",
     "delivery.failed",
+    # NUO manager
+    "nuo.health_report.generated",
 ]
 
 

@@ -319,7 +319,7 @@ class ABDecisionRollupStep(IdleBatchStep):
 
 
 class HealthReportStep(IdleBatchStep):
-    """Generate weekly / monthly health report → NUO dashboard."""
+    """Generate periodic NUO system health report."""
 
     step_id = "health_report"
 
@@ -328,40 +328,44 @@ class HealthReportStep(IdleBatchStep):
         if sourced:
             return sourced
 
-        # Produce a minimal but real snapshot here (tasks count, outbox lag, cost)
-        from sqlalchemy import func, select
-
         from kun.core.db import session_scope
-        from kun.core.orm import EventRow, RuntimeStateRow, TaskRow
+        from kun.core.events import emit
+        from kun.datamodel.events import Event
+        from kun.engineering.nuo_system_health import collect_system_health_report
 
-        async with session_scope() as s:
-            total_tasks = (
-                await s.execute(
-                    select(func.count()).select_from(TaskRow).where(TaskRow.tenant_id == tenant_id)
-                )
-            ).scalar_one()
-            outbox_lag = (
-                await s.execute(
-                    select(func.count())
-                    .select_from(EventRow)
-                    .where(EventRow.published_at.is_(None))
-                )
-            ).scalar_one()
-            cost_equiv = (
-                await s.execute(
-                    select(
-                        func.coalesce(
-                            func.sum(RuntimeStateRow.accumulated_cost_usd_equivalent), 0.0
-                        )
-                    ).where(RuntimeStateRow.tenant_id == tenant_id)
-                )
-            ).scalar_one()
-
-        return {
-            "total_tasks": int(total_tasks),
-            "events_outbox_lag": int(outbox_lag),
-            "lifetime_cost_usd_equivalent": float(cost_equiv),
+        report = await collect_system_health_report(tenant_id=tenant_id)
+        summary = {
+            "total_tasks": report.total_tasks,
+            "runtime_by_status": report.runtime_by_status,
+            "events_outbox_lag": report.outbox_lag,
+            "pending_approvals": report.pending_approvals,
+            "stale_runtime_count": report.stale_runtime_count,
+            "active_resource_conflicts": report.active_resource_conflicts,
+            "worst_severity": report.worst_severity,
+            "world_handler_summary": report.world_handler_summary,
+            "findings": len(report.findings),
+            "top_findings": [
+                {
+                    "finding_id": finding.finding_id,
+                    "severity": finding.severity,
+                    "subsystem": finding.subsystem,
+                    "title": finding.title,
+                    "suggested_action": finding.suggested_action,
+                }
+                for finding in report.findings[:10]
+            ],
         }
+        async with session_scope(tenant_id=tenant_id) as s:
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant_id,
+                    event_type="nuo.health_report.generated",
+                    payload=summary,
+                ),
+            )
+
+        return summary
 
 
 class RouteRuleMiningStep(IdleBatchStep):
