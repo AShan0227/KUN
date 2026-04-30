@@ -966,6 +966,8 @@ V4 继续坚持：
 - `kun ops readiness`：把 preflight、secret-audit、delivery-status 和可选 dogfood 汇成一份正式测试报告。
 - `/nuo/health/resource-credit` 和 `kun ops credit-report`：可查看 memory / skill / model / decision 等资源的持久贡献信用。
 - `/api/blackboard/state-ledger/{task_id}/story`：可把某个任务的长期事件历史压成可读故事线。
+- 主工作区已经显示能力边界数量和 top 用户可见缺口，避免用户把 partial / audit_only 当成 ready。
+- 傩系统体检的 warn/error/critical finding 已进入黑板全局状态，主工作区可看到系统风险并跳转到傩处理。
 - `POST /api/auth/signup`：默认关闭的邀请码注册入口，可创建租户账本、owner 和 access+refresh 会话；这不是密码登录 / OAuth。
 - `POST /api/auth/invite/accept`：默认关闭的邀请接受入口，可用全局邀请码或一次性邀请 token 把 invited 成员激活并签发 session；仍不是邮件邀请系统。
 - `/api/auth/session/me` 和 `/api/auth/session/tokens`：用户可查看当前会话和自己的 token 账本，并撤销自己的 token；仍不是完整设备风控。
