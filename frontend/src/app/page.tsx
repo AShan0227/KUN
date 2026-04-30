@@ -1598,6 +1598,11 @@ function TaskDetailPanel({
   const trails = ledger?.recent_events ?? [];
   const history = detail?.state_ledger_history ?? [];
   const story = detail?.state_ledger_story ?? null;
+  const [feedbackRating, setFeedbackRating] = useState(5);
+  const [feedbackComment, setFeedbackComment] = useState("");
+  const [feedbackTag, setFeedbackTag] = useState("done_well");
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
+  const [feedbackNotice, setFeedbackNotice] = useState("");
   const audit =
     detail?.state_ledger_audit ??
     buildStateLedgerAudit({
@@ -1605,6 +1610,31 @@ function TaskDetailPanel({
       ledger,
       story,
     });
+  const submitTaskFeedback = async () => {
+    const id = selectedTaskId.trim();
+    if (!id) return;
+    setFeedbackBusy(true);
+    setFeedbackNotice("");
+    try {
+      const res = await apiFetch(`/api/tasks/${encodeURIComponent(id)}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rating: feedbackRating,
+          comment: feedbackComment,
+          tags: feedbackTag ? [feedbackTag] : [],
+        }),
+      });
+      const raw = await res.text();
+      if (!res.ok) throw new Error(raw || `${res.status} ${res.statusText}`);
+      setFeedbackNotice("已收到。这条反馈会进入事件账本，后续用于策略复盘。");
+      setFeedbackComment("");
+    } catch (err) {
+      setFeedbackNotice(err instanceof Error ? err.message : "反馈提交失败");
+    } finally {
+      setFeedbackBusy(false);
+    }
+  };
 
   return (
     <div className="rounded border border-kun-accent/30 bg-blue-50/30 p-3 text-xs">
@@ -1775,6 +1805,58 @@ function TaskDetailPanel({
         {taskControlNotice && (
           <div className="mt-2 rounded bg-gray-50 px-2 py-1 text-gray-500">
             {taskControlNotice.slice(0, 240)}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-3 rounded bg-white p-2 text-gray-600">
+        <div className="font-medium text-gray-700">任务反馈</div>
+        <div className="mt-0.5 text-gray-400">
+          这里不是点赞摆设。反馈会写入 task 事件，给启和策略评分系统做复盘依据。
+        </div>
+        <div className="mt-2 grid gap-2 md:grid-cols-[0.7fr_1fr_2fr_auto]">
+          <select
+            className="rounded border border-gray-200 px-2 py-1 text-xs"
+            value={feedbackRating}
+            onChange={(event) => setFeedbackRating(Number(event.target.value))}
+          >
+            <option value={5}>5 分</option>
+            <option value={4}>4 分</option>
+            <option value={3}>3 分</option>
+            <option value={2}>2 分</option>
+            <option value={1}>1 分</option>
+          </select>
+          <select
+            className="rounded border border-gray-200 px-2 py-1 text-xs"
+            value={feedbackTag}
+            onChange={(event) => setFeedbackTag(event.target.value)}
+          >
+            <option value="done_well">做得好</option>
+            <option value="inaccurate">不准确</option>
+            <option value="too_slow">太慢</option>
+            <option value="too_expensive">太贵</option>
+            <option value="wrong_strategy">策略错了</option>
+            <option value="wrong_skill">工具/skill 用错</option>
+            <option value="unsafe">风险处理不好</option>
+          </select>
+          <input
+            className="rounded border border-gray-200 px-2 py-1 text-xs"
+            placeholder="一句话说明，可空"
+            value={feedbackComment}
+            onChange={(event) => setFeedbackComment(event.target.value)}
+          />
+          <button
+            type="button"
+            className="rounded bg-gray-900 px-2 py-1 text-xs text-white disabled:opacity-50"
+            disabled={!selectedTaskId || feedbackBusy}
+            onClick={() => void submitTaskFeedback()}
+          >
+            {feedbackBusy ? "提交中" : "提交"}
+          </button>
+        </div>
+        {feedbackNotice && (
+          <div className="mt-2 rounded bg-gray-50 px-2 py-1 text-gray-500">
+            {feedbackNotice.slice(0, 240)}
           </div>
         )}
       </div>

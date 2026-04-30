@@ -143,6 +143,7 @@ def get_v3_delivery_status(
                 "长期目标卡片可按需展开 Mission 故事线，查看跨 task 的事件数、决策数、成本、原因和下一步",
                 "长期目标卡片展开后可轻量调整下一步，走 Mission API 持久化，不需要进高级节点图",
                 "任务详情会显示账本审计，能看出当前快照和长期事件回放是否漂移",
+                "任务详情可提交 1-5 分用户反馈和原因标签，反馈会进入任务事件流",
                 "WebSocket 未连接时，对话主入口会降级到 /api/chat/run HTTP 执行并提示用户",
                 "主工作区和 /account 已有最小会话入口：可保存/清除 tenant_id、user_id、bearer token，并读取服务端 session",
             ],
@@ -247,6 +248,7 @@ def get_v3_delivery_status(
                 "ProductionValueEstimator 会读取 ValueGate 历史信用，让同类任务的过往效果影响是否继续投入",
                 "Context/Memory 资产启动时可按 KUN_CONTEXT_STORE_BACKEND=auto/redis 装 Redis 持久 store，Redis 不可用时诚实降级为 memory",
                 "傩深度体检会把 StateLedger 漂移/缺历史暴露成 finding，避免账本漂移只藏在 API 里",
+                "主前端任务详情已接用户反馈入口，用户满意度不再只停在后端 API",
             ],
             evidence_refs=[
                 "kun/memory/writeback.py",
