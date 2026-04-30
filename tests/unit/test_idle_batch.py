@@ -72,9 +72,13 @@ class _FakeIdleBatchDataSource:
 
 @pytest.fixture(autouse=True)
 def _reset_data_source():
+    from kun.context.storage import reset_store
+
     reset_idle_batch_data_source()
+    reset_store()
     yield
     reset_idle_batch_data_source()
+    reset_store()
 
 
 @pytest.mark.unit
@@ -124,12 +128,18 @@ async def test_consistency_step_flags_unstable_samples() -> None:
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_methodology_distill_step_extracts_rules() -> None:
+    from kun.context.storage import get_store
+
     set_idle_batch_data_source(_FakeIdleBatchDataSource())
 
     summary = await MethodologyDistillStep().run("t-1")
 
     assert summary["new_rules"] == 2
     assert "高风险任务先跑验证" in summary["rules"]
+    assert len(summary["asset_ids"]) == 2
+    assets = await get_store().list(tenant_id="t-1", asset_kind="methodology")
+    assert len(assets) == 2
+    assert {asset.l2_summary for asset in assets} >= {"高风险任务先跑验证", "先读 brief 再动手"}
 
 
 @pytest.mark.unit

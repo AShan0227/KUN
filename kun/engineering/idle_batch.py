@@ -17,6 +17,7 @@ Walking skeleton: 注册 6 类 step 的占位实现, 实际逻辑由 follow-on c
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -253,10 +254,12 @@ class MethodologyDistillStep(IdleBatchStep):
                 if str(item.get("rule") or item.get("lesson") or "").strip()
             },
         )
+        asset_ids = await _persist_methodology_rules(tenant_id=tenant_id, rules=rules)
         return {
             "source_narratives": len(narratives),
             "new_rules": len(rules),
             "rules": rules[:10],
+            "asset_ids": asset_ids[:10],
         }
 
 
@@ -654,6 +657,44 @@ async def _call_data_source(method_name: str, tenant_id: str) -> Any:
     if asyncio.iscoroutine(result):
         return await result
     return result
+
+
+async def _persist_methodology_rules(*, tenant_id: str, rules: list[str]) -> list[str]:
+    """Persist distilled rules as methodology assets for future ContextPacker reuse."""
+
+    if not rules:
+        return []
+    from kun.context.assets import AssetLayer, LayeredAsset
+    from kun.context.storage import get_store
+
+    store = get_store()
+    existing = await store.list(tenant_id=tenant_id, asset_kind="methodology", limit=1000)
+    seen_hashes = {
+        str(asset.l1_metadata.get("rule_hash"))
+        for asset in existing
+        if asset.l1_metadata.get("source") == "idle_batch.methodology_distill"
+    }
+    created: list[str] = []
+    for rule in rules:
+        rule_hash = hashlib.sha256(rule.encode("utf-8")).hexdigest()[:16]
+        if rule_hash in seen_hashes:
+            continue
+        asset = LayeredAsset.build(
+            "methodology",
+            tenant_id,
+            metadata={
+                "source": "idle_batch.methodology_distill",
+                "rule_hash": rule_hash,
+                "reuse_scope": AssetLayer.L2_PROJECT.value,
+            },
+            summary=rule,
+            layer=AssetLayer.L2_PROJECT,
+            tags=["methodology", "distilled", "idle_batch"],
+        )
+        await store.put(asset)
+        created.append(asset.asset_id)
+        seen_hashes.add(rule_hash)
+    return created
 
 
 def _float(value: Any, *, default: float = 0.0) -> float:

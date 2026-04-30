@@ -183,6 +183,7 @@ def get_v3_delivery_status(
                 "TaskRouter 角色/模型用途选择已进入统一 DecisionTicket 和 StateLedger",
                 "PreDeliverGate 交付审核结果已进入统一 DecisionTicket 和 StateLedger",
                 "NUO context maintenance 可压缩过长摘要、软遗忘/硬删除长期未用资产",
+                "idle-batch 会把情节规则蒸馏为 methodology 资产，供 ContextPacker 后续复用",
             ],
             evidence_refs=[
                 "kun/memory/writeback.py",
@@ -193,11 +194,9 @@ def get_v3_delivery_status(
                 "tests/unit/test_v3_memory_scoring_gateway.py",
             ],
             missing=[
-                "定期蒸馏",
                 "贡献信用对模型路由 / skill 路由的更强影响还需要真实样本和阈值校准",
             ],
             next_steps=[
-                "让 idle-batch 汇总元决策为 methodology",
                 "把相似任务检索结果接入 Watchtower Decision Plane",
             ],
         ),
