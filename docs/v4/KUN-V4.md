@@ -970,7 +970,7 @@ V4 继续坚持：
 - `POST /api/auth/invite/accept`：默认关闭的邀请接受入口，可把 invited 成员激活并签发 session；仍不是邮件邀请系统。
 - `/api/auth/session/me` 和 `/api/auth/session/tokens`：用户可查看当前会话和自己的 token 账本，并撤销自己的 token；仍不是完整设备风控。
 - `POST /nuo/accounts/members/invite`：可写入成员邀请账本；不会伪装成已经发出邀请邮件或完成成员登录。
-- `kun ops dogfood --include-db-account`：可显式跑账号账本、refresh session、成员邀请的真实 DB smoke。
+- `kun ops dogfood --include-db-account`：可显式跑账号账本、refresh session、成员邀请和接受邀请的真实 DB smoke。
 - `kun ops secret-store-set`：可把 `KUN_WORLD_*` 外部动作配置写入本地 JSON secret store；这仍不是云 KMS。
 
 仍不能承诺：

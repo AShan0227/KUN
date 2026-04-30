@@ -288,7 +288,7 @@ def get_v3_delivery_status(
                 "NUO 账号面板可撤销当前租户已签发 token，生产请求中间件会消费撤销结果",
                 "ops dogfood CLI 可跑 V4 低风险 smoke，验证 preflight / token / WorldGateway / 诚实边界",
                 "ops dogfood --include-db-mission 可额外验证 Mission/RuntimeState/Orchestrator runner 的真实 DB 续跑闭环",
-                "ops dogfood --include-db-account 可额外验证账号账本、refresh session 和成员邀请的真实 DB smoke",
+                "ops dogfood --include-db-account 可额外验证账号账本、refresh session、成员邀请和接受邀请的真实 DB smoke",
                 "ops delivery-status CLI 可直接查看 ready / partial / not_ready，防止伪功能被误认为已完成",
                 "CI 会检查 scripts/alembic 的 ruff/format，并在 honesty gate 里检查 Alembic 单 head",
                 "ops release-check CLI 会检查 V4 release checklist、preflight、legal guard、git dirty/tag、rollback/hotfix 文档",

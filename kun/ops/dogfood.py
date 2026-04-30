@@ -336,7 +336,11 @@ async def _scenario_account_ledger_db(*, tenant_id: str, secret: str) -> Dogfood
 
     try:
         from kun.core.db import session_scope
-        from kun.ops.account_registry import invite_tenant_member, upsert_tenant_account_member
+        from kun.ops.account_registry import (
+            accept_tenant_member_invite,
+            invite_tenant_member,
+            upsert_tenant_account_member,
+        )
         from kun.ops.account_sessions import issue_session_token_pair, refresh_session_access_token
     except Exception as exc:  # pragma: no cover - import failures are deployment issues
         return DogfoodScenarioResult(
@@ -386,15 +390,31 @@ async def _scenario_account_ledger_db(*, tenant_id: str, secret: str) -> Dogfood
                 role="viewer",
                 scopes=["account:read"],
             )
+            accepted = await accept_tenant_member_invite(
+                s,
+                tenant_id=tenant_id,
+                user_id=invited_user_id,
+            )
+            invited_pair = await issue_session_token_pair(
+                s,
+                tenant_id=tenant_id,
+                user_id=invited_user_id,
+                secret=secret,
+                scopes=accepted.scopes,
+                audience="developer",
+                metadata={"source": "ops.dogfood.account_invite_accept"},
+            )
         ok = (
             account.persisted
             and pair.refresh_token_id == refreshed.refresh_token_id
             and invited.status in {"invited", "active"}
+            and accepted.status == "active"
+            and bool(invited_pair.refresh_token_id)
         )
         return DogfoodScenarioResult(
             scenario_id="account_ledger_db",
             status="pass" if ok else "block",
-            summary="账号账本、refresh session 和成员邀请 DB smoke 可跑通。"
+            summary="账号账本、refresh session、成员邀请和接受邀请 DB smoke 可跑通。"
             if ok
             else "账号账本 DB smoke 没有跑通。",
             evidence={
@@ -405,8 +425,12 @@ async def _scenario_account_ledger_db(*, tenant_id: str, secret: str) -> Dogfood
                 "refreshed_access_token_id": refreshed.access_token_id,
                 "invited_user_id": invited.user_id,
                 "invite_status": invited.status,
+                "accepted_status": accepted.status,
+                "accepted_role": accepted.role,
+                "invited_access_token_id": invited_pair.access_token_id,
+                "invited_refresh_token_id": invited_pair.refresh_token_id,
             },
-            next_step="" if ok else "检查 tenant account / session / invite 写库链路。",
+            next_step="" if ok else "检查 tenant account / session / invite accept 写库链路。",
         )
     except Exception as exc:
         return DogfoodScenarioResult(
