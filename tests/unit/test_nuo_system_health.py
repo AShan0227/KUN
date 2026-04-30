@@ -64,3 +64,31 @@ def test_system_health_surfaces_disabled_mission_resume_worker() -> None:
     )
 
     assert any(item.finding_id == "mission_resume_worker_disabled" for item in findings)
+
+
+def test_system_health_surfaces_coordination_issues() -> None:
+    from kun.engineering.system_coordination import CoordinationIssue
+
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        resumable_mission_task_count=0,
+        mission_resume_worker_enabled=False,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[],
+        world_handlers=[],
+        coordination_issues=[
+            CoordinationIssue(
+                issue_id="paused_without_gate:task-1",
+                severity="warn",
+                title="任务暂停了，但没有可见的待确认动作",
+                detail="task-1 paused without gate",
+                suggested_action="检查 RuntimeState。",
+                task_id="task-1",
+            )
+        ],
+    )
+
+    assert any(item.finding_id == "coordination:paused_without_gate:task-1" for item in findings)

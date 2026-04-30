@@ -8,6 +8,7 @@ import pytest
 from kun.core.orm import WorldActionExecutionRow
 from kun.datamodel.decision_ticket import ticket_from_world_policy
 from kun.engineering.action_executor import (
+    _action_type_needs_fail_closed,
     _claim_approved_action_stmt,
     _count_unresolved_actions_stmt,
     _enqueue_world_action_problem,
@@ -22,6 +23,7 @@ from kun.engineering.action_executor import (
     _gateway_result_blocks_resume,
     _handler_health_blocked_result,
     _handler_health_blocks_execution,
+    _health_lookup_failed_card,
     _mark_task_result_queued_stmt,
     _resume_request_payload,
     _unblock_paused_runtime_stmt,
@@ -270,6 +272,21 @@ def test_handler_health_block_prevents_external_execution() -> None:
     assert result.requires_handler is True
     assert result.audit["policy"]["source"] == "nuo.handler_health"
     assert "安全拦截" in result.user_summary
+
+
+@pytest.mark.unit
+def test_external_actions_fail_closed_when_health_lookup_fails() -> None:
+    assert _action_type_needs_fail_closed("email.send") is True
+    assert _action_type_needs_fail_closed("enterprise_api.post") is True
+    assert _action_type_needs_fail_closed("local_file.write") is False
+
+    card = _health_lookup_failed_card(action_type="email.send", exc=RuntimeError("db down"))
+
+    assert card.status == "blocked"
+    assert card.external_dispatched is True
+    assert card.has_compensation is False
+    assert _handler_health_blocks_execution(card) is True
+    assert "fail-closed" in " ".join(card.issues)
 
 
 @pytest.mark.unit

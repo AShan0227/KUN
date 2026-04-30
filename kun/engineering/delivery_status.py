@@ -164,6 +164,7 @@ def get_v3_delivery_status(
                 "NUO 可把 WorldGateway handler 持久化 quarantined/disabled/enabled，执行器会消费这个状态",
                 "NUO 可根据 handler 失败率、补偿缺口、配置缺口生成自动 quarantine 决策；默认 dry-run，确认后才写入",
                 "idle-batch 会定期跑 WorldGateway handler 自动 quarantine 建议，默认只报告不静默改控制",
+                "傩系统体检会扫描审批、暂停任务和 handler 控制之间的协同冲突",
             ],
             evidence_refs=[
                 "kun/api/nuo/health_panel.py",
@@ -175,14 +176,17 @@ def get_v3_delivery_status(
                 "kun/qi/problem_queue.py",
                 "tests/unit/test_delivery_status.py",
                 "tests/unit/test_action_executor.py",
+                "tests/unit/test_system_coordination.py",
             ],
             missing=[
                 "定期 NUO 体检已进入当前状态账本，但还没做浏览器/移动端主动推送",
                 "handler 自动 quarantine 已接入定时体检 dry-run，但真实自动执行仍需用户/运维确认",
+                "协同体检目前先发现冲突和给建议，还没有自动暂停/恢复所有冲突任务",
             ],
             next_steps=[
                 "把高风险 NUO finding 推送到用户看板 / StateLedger 当前快照",
                 "把 auto-quarantine 高风险建议推送到主看板，并保持真实外发默认人工确认",
+                "让守望消费协同体检结果，对低风险卡住任务做安全恢复，对高风险任务升级人工",
             ],
         ),
         DeliveryCapability(
@@ -216,6 +220,8 @@ def get_v3_delivery_status(
                 "任务结果记忆会携带 strategy_pack / execution_mode / skill / context / decision_path，供相似召回和信用分配复用",
                 "SkillSelector 会消费 MoE 贡献信用热缓存，让同类候选里历史贡献高的 skill 前排",
                 "LLMRouter 会消费模型档位/模型/路线贡献信用，在真实调用前对模型档位做谨慎覆盖",
+                "Orchestrator 选 skill 前会预热持久 skill 贡献信用，并走 graph/capability 选择器",
+                "required_skills / Watchtower skill_hints 是强信号，但不再绕过贡献信用和能力卡排序",
             ],
             evidence_refs=[
                 "kun/memory/writeback.py",
@@ -232,10 +238,12 @@ def get_v3_delivery_status(
                 "tests/unit/test_v3_memory_scoring_gateway.py",
                 "tests/unit/test_qi_problem_queue.py",
                 "tests/unit/test_skill_pheromone_boost.py",
+                "tests/unit/test_skill_selector_graph_capability.py",
             ],
             missing=[
                 "相似任务召回目前是确定性轻量检索，还不是向量库 / 跨租户匿名经验池",
                 "贡献信用对模型路由已进热路径，但还需要真实 dogfood 样本校准阈值",
+                "ValueGate 仍主要靠启发式估值，step outcome 还没训练成跨任务 gate estimator",
             ],
             next_steps=[
                 "用真实 dogfood 样本校准相似经验权重，避免过拟合单次成功路径",
@@ -356,6 +364,8 @@ def _world_gateway_delivery_status(
         "真实 handler 执行时可按租户读取 SMTP / 企业 API / 浏览器白名单覆盖配置",
         "傩体检、secret audit、preflight 已识别 KUN_TENANT_<TENANT>_* 租户级外部动作配置",
         "傩可从 world_action_executions 账本识别重试/补偿/缺幂等风险，不会默认重复真实外发",
+        "任务 preflight 会尽量生成 WorldGateway 已注册的低风险动作类型：email.draft / local_file.write / webhook.post_dry_run / browser.plan",
+        "真实外发和高风险动作读取 handler health/control 失败时默认 fail-closed，避免绕过傩控制",
     ]
     done.extend(_handler_done_line(item) for item in descriptors)
 
@@ -393,6 +403,7 @@ def _world_gateway_delivery_status(
             "tests/unit/test_action_executor.py",
             "tests/unit/test_delivery_status.py",
             "tests/unit/test_world_handler_health.py",
+            "tests/unit/test_concurrency_safety.py",
         ],
         next_steps=[
             "按租户配置真实 email / browser / enterprise API handler",

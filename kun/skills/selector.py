@@ -1,24 +1,21 @@
 """Skill selector — pick best skill(s) for a task (§2.1 原子 / 组合 / 元技能).
 
-Walking skeleton:
-  - Match by TaskSpec.required_skills (if present)
-  - Fall back to simple substring match on task_type vs skill name
-  - Return top-k skills
-
-Later:
-  - Vector similarity (Qdrant) over skill descriptions
-  - Capability-card driven scoring
-  - Two-tower recall for large skill libs
+V4 rule: required_skills / Watchtower hints are strong evidence, not a bypass.
+They should lead the list, but historical credit, graph neighbors and capability
+cards must still be able to add or reorder nearby candidates. Otherwise the
+"MoE learns from experience" loop becomes decorative.
 """
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from kun.core.logging import get_logger
 from kun.datamodel.task import TaskRef
-from kun.engineering.capability_cache import CapabilityCardCache, get_capability_card_cache
 from kun.skills.loader import SkillRecord, SkillRegistry, get_registry
+
+if TYPE_CHECKING:
+    from kun.engineering.capability_cache import CapabilityCardCache
 
 log = get_logger("kun.skills.selector")
 
@@ -34,7 +31,7 @@ class SkillSelector:
         graph_traversal: Any = None,
     ) -> None:
         self._reg = registry or get_registry()
-        self._capability_cache = capability_cache or get_capability_card_cache()
+        self._capability_cache = capability_cache or _default_capability_cache()
         self._graph_traversal = graph_traversal
 
     def select(
@@ -44,31 +41,16 @@ class SkillSelector:
         top_k: int = 3,
         prior_skill: str | None = None,
     ) -> list[SkillRecord]:
-        # 1. Explicit required_skills from TaskSpec
-        if task_ref.spec and task_ref.spec.required_skills:
-            out: list[SkillRecord] = []
-            for sid in task_ref.spec.required_skills:
-                rec = self._reg.get(sid)
-                if rec is not None:
-                    out.append(rec)
-            if out:
-                return out[:top_k]
+        # 1. Required skills / protocol hints are high-priority candidates.
+        # They no longer short-circuit the selector; other relevant skills can
+        # still enter the list and be boosted by credit/capability evidence.
+        scored = _base_skill_candidates(self._reg, task_ref)
 
-        # 2. Heuristic substring match on task_type parts
-        task_type = task_ref.meta.task_type
-        parts = set(task_type.split("."))
-        scored: list[tuple[float, SkillRecord]] = []
-        for rec in self._reg:
-            name_parts = set(rec.skill_id.replace("_", "-").split("-"))
-            overlap = float(len(parts & name_parts))
-            if overlap > 0:
-                scored.append((overlap, rec))
-
-        # 3. V4 MoE credit 加成 — 已经被历史证明有贡献的同类 skill 排前.
+        # 2. V4 MoE credit 加成 — 已经被历史证明有贡献的同类 skill 排前.
         # 注意: 只给已有 overlap 的候选加分，不让高信用 skill 跨任务类型乱抢。
         scored = _apply_skill_credit_boost(scored)
 
-        # 4. V2.3 Wire 47: Pheromone 加成 — 上一 skill → this skill 走过路径强 → 加分
+        # 3. V2.3 Wire 47: Pheromone 加成 — 上一 skill → this skill 走过路径强 → 加分
         # 蚁群涌现: 多 task 走过的链路自然推上来 (无需手写 graph)
         if prior_skill:
             try:
@@ -107,7 +89,9 @@ class SkillSelector:
         capability cards boost candidates that have worked on this task_type.
         """
 
-        base = self.select(task_ref, top_k=max(top_k, 3))
+        # Pull a slightly wider base set because graph/capability can lift
+        # adjacent skills above the initial anchor.
+        base = self.select(task_ref, top_k=max(top_k, 5))
         candidates: dict[str, tuple[float, SkillRecord]] = {
             rec.skill_id: (1.0 - idx * 0.05, rec) for idx, rec in enumerate(base)
         }
@@ -155,6 +139,11 @@ class SkillSelector:
             return ""
         lines = [f"- {s.skill_id}: {s.manifest.description}" for s in skills]
         return f"可用技能 (top {len(lines)}):\n" + "\n".join(lines)
+
+    def skill_ids(self) -> list[str]:
+        """Return registered skill ids for credit preheating."""
+
+        return [rec.skill_id for rec in self._reg]
 
     def select_anchor_then_expand(
         self,
@@ -249,6 +238,36 @@ def _apply_skill_credit_boost(
     return [(_apply_single_skill_credit_boost(score, rec), rec) for score, rec in scored]
 
 
+def _base_skill_candidates(
+    registry: SkillRegistry,
+    task_ref: TaskRef,
+) -> list[tuple[float, SkillRecord]]:
+    """Build initial candidates without bypassing the MoE evidence layer."""
+
+    candidates: dict[str, tuple[float, SkillRecord]] = {}
+    if task_ref.spec and task_ref.spec.required_skills:
+        for idx, sid in enumerate(task_ref.spec.required_skills):
+            rec = registry.get(sid)
+            if rec is not None:
+                # Required/hinted skills get a strong head start, not an
+                # absolute veto. A very strong, task-relevant capability signal
+                # can still lift another candidate above a stale hint.
+                candidates[rec.skill_id] = (3.0 - idx * 0.1, rec)
+
+    task_type = task_ref.meta.task_type
+    parts = set(task_type.split("."))
+    for rec in registry:
+        name_parts = set(rec.skill_id.replace("_", "-").split("-"))
+        overlap = float(len(parts & name_parts))
+        if overlap <= 0:
+            continue
+        current = candidates.get(rec.skill_id)
+        if current is None or overlap > current[0]:
+            candidates[rec.skill_id] = (overlap, rec)
+
+    return list(candidates.values())
+
+
 def _apply_single_skill_credit_boost(score: float, rec: SkillRecord) -> float:
     """Boost relevant skills by durable MoE contribution hot-cache.
 
@@ -297,6 +316,12 @@ def _default_graph_traversal() -> Any:
         return GraphTraversal(relation_types=("similar_to", "co_occurs", "depends_on"))
     except Exception:
         return None
+
+
+def _default_capability_cache() -> Any:
+    from kun.engineering.capability_cache import get_capability_card_cache
+
+    return get_capability_card_cache()
 
 
 async def _skill_neighbors(traversal: Any, skill_id: str, hops: int) -> list[Any]:

@@ -49,7 +49,8 @@ def test_explicit_required_skills_wins():
     sel = SkillSelector(reg)
     task = _make_task("writing.marketing", required=["data-csv-query"])
     picks = sel.select(task)
-    assert [p.skill_id for p in picks] == ["data-csv-query"]
+    assert picks[0].skill_id == "data-csv-query"
+    assert "writing-markdown" in [p.skill_id for p in picks]
 
 
 @pytest.mark.unit

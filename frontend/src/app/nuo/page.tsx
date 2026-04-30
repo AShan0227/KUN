@@ -28,6 +28,33 @@ type Health = {
   pending_actions?: number;
 };
 
+type SystemHealthFinding = {
+  finding_id: string;
+  severity: "info" | "warn" | "error" | "critical";
+  subsystem: string;
+  title: string;
+  detail: string;
+  suggested_action: string;
+};
+
+type CoordinationIssue = {
+  issue_id: string;
+  severity: "info" | "warn" | "error" | "critical";
+  title: string;
+  detail: string;
+  suggested_action: string;
+  task_id?: string | null;
+  action_id?: string | null;
+  action_type?: string | null;
+};
+
+type SystemHealthReport = {
+  worst_severity: "info" | "warn" | "error" | "critical";
+  coordination_summary?: Record<string, number>;
+  coordination_issues?: CoordinationIssue[];
+  findings?: SystemHealthFinding[];
+};
+
 type Budget = {
   tenant_id: string;
   budget_daily_usd: number;
@@ -245,6 +272,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 export default function NuoDashboard() {
   const [health, setHealth] = useState<Health | null>(null);
+  const [systemReport, setSystemReport] = useState<SystemHealthReport | null>(null);
   const [budget, setBudget] = useState<Budget | null>(null);
   const [actions, setActions] = useState<PendingAction[]>([]);
   const [recentActions, setRecentActions] = useState<PendingAction[]>([]);
@@ -279,6 +307,7 @@ export default function NuoDashboard() {
   const reload = useCallback(() => {
     Promise.all([
       fetchJson<Health>("/nuo/health/summary"),
+      fetchJson<SystemHealthReport>("/nuo/health/report"),
       fetchJson<Budget>("/nuo/budget/summary"),
       fetchJson<AnchorPage<PendingAction>>("/nuo/actions/pending?limit=3"),
       fetchJson<AnchorPage<DiagnoseFinding>>(
@@ -291,8 +320,9 @@ export default function NuoDashboard() {
       fetchJson<AnchorPage<PendingAction>>("/nuo/actions/recent?limit=5"),
       fetchJson<WorldActionReliabilityResponse>("/nuo/actions/execution-reliability?limit=8"),
     ])
-      .then(([h, b, a, d, c, ds, wg, wh, recent, reliability]) => {
+      .then(([h, report, b, a, d, c, ds, wg, wh, recent, reliability]) => {
         setHealth(h);
+        setSystemReport(report);
         setBudget(b);
         setActions(a.actions || []);
         setActionCursor(a.next_cursor);
@@ -430,9 +460,20 @@ export default function NuoDashboard() {
   const monthRatio = budget.month_equivalent_usd / Math.max(budget.budget_monthly_usd, 1e-9);
   const incompleteCapabilityCount = delivery.filter((item) => item.status !== "ready").length;
   const pendingCount = health.pending_actions ?? actions.length;
-  const healthLabel = health.events_outbox_lag > 0 ? "需关注" : "正常";
+  const coordinationProblemCount = systemReport?.coordination_summary?.total ?? 0;
+  const highSeverityCount =
+    (systemReport?.coordination_summary?.error ?? 0) +
+    (systemReport?.coordination_summary?.critical ?? 0);
+  const healthLabel =
+    highSeverityCount > 0 || systemReport?.worst_severity === "critical"
+      ? "异常"
+      : health.events_outbox_lag > 0 || coordinationProblemCount > 0
+        ? "需关注"
+        : "正常";
   const riskLabel =
-    incompleteCapabilityCount > 0 || health.events_outbox_lag > 0 ? "有边界" : "低";
+    incompleteCapabilityCount > 0 || health.events_outbox_lag > 0 || coordinationProblemCount > 0
+      ? "有边界"
+      : "低";
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -447,7 +488,7 @@ export default function NuoDashboard() {
         <Card
           title="健康"
           value={healthLabel}
-          hint={`任务 ${health.total_tasks} · 运行 ${health.tasks_by_status?.running ?? 0}`}
+          hint={`任务 ${health.total_tasks} · 协同问题 ${coordinationProblemCount}`}
         />
         <Card
           title="成本"
@@ -462,9 +503,43 @@ export default function NuoDashboard() {
         <Card
           title="风险"
           value={riskLabel}
-          hint={`事件积压 ${health.events_outbox_lag} · 边界 ${incompleteCapabilityCount}`}
+          hint={`事件积压 ${health.events_outbox_lag} · 协同 ${coordinationProblemCount}`}
         />
       </section>
+
+      {systemReport && (
+        <details className="bg-white rounded-lg shadow-sm p-4">
+          <summary className="cursor-pointer text-base font-medium">
+            高级 · 系统协同体检
+          </summary>
+          <p className="text-xs text-gray-500 mt-2">
+            傩会检查审批、任务暂停、handler 隔离、事件账本之间有没有互相矛盾。
+          </p>
+          <div className="grid md:grid-cols-4 gap-3 mt-3">
+            <MiniMetric label="总问题" value={systemReport.coordination_summary?.total ?? 0} />
+            <MiniMetric label="警告" value={systemReport.coordination_summary?.warn ?? 0} />
+            <MiniMetric label="错误" value={systemReport.coordination_summary?.error ?? 0} />
+            <MiniMetric label="最高等级" value={systemReport.worst_severity} />
+          </div>
+          {(systemReport.coordination_issues || []).length > 0 && (
+            <div className="mt-3 space-y-2">
+              {(systemReport.coordination_issues || []).slice(0, 4).map((issue) => (
+                <div key={issue.issue_id} className="border rounded p-3 text-sm">
+                  <div className="flex justify-between gap-3">
+                    <span className="font-medium">{issue.title}</span>
+                    <span className="text-xs text-gray-500">{issue.severity}</span>
+                  </div>
+                  <p className="text-xs text-gray-600 mt-1">{issue.detail}</p>
+                  <p className="text-xs text-gray-400 mt-1">{issue.suggested_action}</p>
+                </div>
+              ))}
+            </div>
+          )}
+          {(systemReport.coordination_issues || []).length === 0 && (
+            <p className="text-xs text-gray-400 mt-3">暂未发现模块协同冲突。</p>
+          )}
+        </details>
+      )}
 
       {delivery.length > 0 && (
         <details className="bg-white rounded-lg shadow-sm p-4">
@@ -904,6 +979,15 @@ function Card({ title, value, hint }: { title: string; value: string; hint?: str
       <div className="text-xs text-gray-500">{title}</div>
       <div className="text-2xl font-semibold mt-1">{value}</div>
       {hint && <div className="text-xs text-gray-400 mt-1">{hint}</div>}
+    </div>
+  );
+}
+
+function MiniMetric({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="border rounded p-3">
+      <div className="text-xs text-gray-500">{label}</div>
+      <div className="text-lg font-semibold mt-1">{value}</div>
     </div>
   );
 }

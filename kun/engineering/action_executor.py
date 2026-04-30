@@ -799,9 +799,53 @@ async def _collect_handler_health_card(
 ) -> WorldHandlerHealthCard | None:
     try:
         cards = await collect_world_handler_health(tenant_id=tenant_id)
-    except Exception:
+    except Exception as exc:
+        if _action_type_needs_fail_closed(action_type):
+            return _health_lookup_failed_card(action_type=action_type, exc=exc)
         return None
     return next((card for card in cards if card.action_type == action_type), None)
+
+
+def _action_type_needs_fail_closed(action_type: str) -> bool:
+    return action_type in {
+        "email.send",
+        "enterprise_api.post",
+        "browser.execute",
+    } or action_type.startswith(("payment.", "deployment.", "resource.delete"))
+
+
+def _health_lookup_failed_card(*, action_type: str, exc: Exception) -> WorldHandlerHealthCard:
+    return WorldHandlerHealthCard(
+        action_type=action_type,
+        handler_id="",
+        status="blocked",
+        mode="unknown",
+        external_dispatched=True,
+        registered=False,
+        configured=False,
+        requires_human_approval=True,
+        has_compensation=False,
+        static_risk="high",
+        dynamic_risk="high",
+        total_seen=0,
+        approved_count=0,
+        rejected_count=0,
+        executed_count=0,
+        failed_count=0,
+        missing_handler_count=1,
+        policy_blocked_count=1,
+        success_rate=0.0,
+        failure_rate=1.0,
+        approval_reject_rate=0.0,
+        compensation_strategy="",
+        control_status="enabled",
+        control_reason="",
+        recommendation="暂停真实外发；先恢复 NUO handler health / control 读取，再重新审批。",
+        issues=[
+            "NUO handler health/control 读取失败，真实外发按 fail-closed 拦截",
+            f"{type(exc).__name__}: {exc}",
+        ],
+    )
 
 
 def _handler_health_blocks_execution(card: WorldHandlerHealthCard) -> bool:

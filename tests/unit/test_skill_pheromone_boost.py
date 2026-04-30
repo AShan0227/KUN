@@ -124,7 +124,7 @@ def test_select_pheromone_storage_failure_falls_back() -> None:
 
 
 def test_select_pheromone_doesnt_break_required_skills() -> None:
-    """有 required_skills → 直接走 required, 不查 pheromone."""
+    """required_skills 是强信号，但不再绕过候选扩展。"""
     from kun.datamodel.task import TaskSpec
 
     reg = SkillRegistry()
@@ -147,8 +147,8 @@ def test_select_pheromone_doesnt_break_required_skills() -> None:
     )
 
     skills = selector.select(task, prior_skill="reader")
-    # required 优先, pheromone 不影响
     assert skills[0].skill_id == "must-use-skill"
+    assert "writing-polish" in [skill.skill_id for skill in skills]
 
 
 def test_select_uses_moe_credit_inside_relevant_candidates() -> None:

@@ -178,13 +178,18 @@ ResourceMode = Literal["read", "write"]
 
 _ACTIVE_RUNTIME_STATUSES = ("queued", "running", "paused")
 _SIDE_EFFECT_KEYWORDS = {
-    "send": "message.send",
-    "email": "message.send",
-    "mail": "message.send",
-    "slack": "message.send",
-    "sms": "message.send",
-    "publish": "content.publish",
-    "post": "content.publish",
+    "send": "email.draft",
+    "email": "email.draft",
+    "mail": "email.draft",
+    "slack": "email.draft",
+    "sms": "email.draft",
+    "publish": "local_file.write",
+    "post": "webhook.post_dry_run",
+    "webhook": "webhook.post_dry_run",
+    "api": "webhook.post_dry_run",
+    "browser": "browser.plan",
+    "click": "browser.plan",
+    "form": "browser.plan",
     "delete": "resource.delete",
     "remove": "resource.delete",
     "transfer": "payment.transfer",
@@ -193,9 +198,14 @@ _SIDE_EFFECT_KEYWORDS = {
     "refund": "payment.refund",
     "deploy": "deployment.change",
     "merge": "repository.merge",
-    "发送": "message.send",
-    "邮件": "message.send",
-    "发布": "content.publish",
+    "发送": "email.draft",
+    "邮件": "email.draft",
+    "发布": "local_file.write",
+    "网页": "browser.plan",
+    "浏览器": "browser.plan",
+    "点击": "browser.plan",
+    "表单": "browser.plan",
+    "接口": "webhook.post_dry_run",
     "删除": "resource.delete",
     "转账": "payment.transfer",
     "支付": "payment.transfer",
@@ -362,7 +372,7 @@ def pending_actions_for(task_ref: TaskRef) -> list[PendingActionSpec]:
 
     target_ref = "unknown"
     if task_ref.spec and task_ref.spec.external_resources:
-        target_ref = _normalize(task_ref.spec.external_resources[0])
+        target_ref = _target_ref(task_ref.spec.external_resources[0])
     elif task_ref.meta.owner.project_id:
         target_ref = f"project:{_normalize(task_ref.meta.owner.project_id)}"
 
@@ -375,12 +385,11 @@ def pending_actions_for(task_ref: TaskRef) -> list[PendingActionSpec]:
             action_type=action_type,
             target_ref=target_ref,
             risk_level=risk_level,
-            payload={
-                "task_id": task_ref.meta.task_id,
-                "task_type": task_ref.meta.task_type,
-                "success_criteria_short": task_ref.meta.success_criteria_short,
-                "matched_action_type": action_type,
-            },
+            payload=_pending_action_payload(
+                task_ref=task_ref,
+                action_type=action_type,
+                target_ref=target_ref,
+            ),
         )
         for action_type in action_types
     ]
@@ -603,3 +612,59 @@ def _normalize(value: str) -> str:
     normalized = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff._:-]+", "-", value.strip().lower())
     normalized = re.sub(r"-+", "-", normalized).strip("-")
     return normalized or "unknown"
+
+
+def _target_ref(value: str) -> str:
+    raw = value.strip()
+    if re.match(r"https?://", raw, flags=re.IGNORECASE):
+        return raw
+    if "@" in raw and not raw.startswith("project:"):
+        return raw
+    return _normalize(raw)
+
+
+def _pending_action_payload(
+    *,
+    task_ref: TaskRef,
+    action_type: str,
+    target_ref: str,
+) -> dict[str, Any]:
+    base = {
+        "task_id": task_ref.meta.task_id,
+        "task_type": task_ref.meta.task_type,
+        "success_criteria_short": task_ref.meta.success_criteria_short,
+        "matched_action_type": action_type,
+    }
+    goal = task_ref.spec.goal_detail if task_ref.spec else task_ref.meta.success_criteria_short
+    if action_type == "email.draft":
+        return {
+            **base,
+            "to": "" if target_ref.startswith("project:") else target_ref,
+            "subject": task_ref.meta.success_criteria_short[:120],
+            "body": goal,
+        }
+    if action_type == "local_file.write":
+        safe_name = _normalize(task_ref.meta.task_id or "task")
+        return {
+            **base,
+            "path": f"drafts/{safe_name}.md",
+            "content": goal,
+        }
+    if action_type == "webhook.post_dry_run":
+        return {
+            **base,
+            "url": target_ref if target_ref.startswith(("http://", "https://")) else "",
+            "json": {
+                "task_id": task_ref.meta.task_id,
+                "summary": task_ref.meta.success_criteria_short,
+                "goal": goal,
+            },
+        }
+    if action_type == "browser.plan":
+        return {
+            **base,
+            "url": target_ref if target_ref.startswith(("http://", "https://")) else "",
+            "objective": goal,
+            "steps": [],
+        }
+    return base

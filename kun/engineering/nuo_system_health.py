@@ -27,6 +27,11 @@ from kun.core.orm import (
 )
 from kun.engineering.concurrency import scan_active_resource_conflicts
 from kun.engineering.delivery_status import get_v3_delivery_status, validate_delivery_status
+from kun.engineering.system_coordination import (
+    CoordinationIssue,
+    collect_coordination_issues,
+    summarize_coordination_issues,
+)
 from kun.ops.secret_audit import SecretAuditItem, audit_runtime_secrets
 from kun.world.handler_health import (
     WorldHandlerHealthCard,
@@ -70,6 +75,8 @@ class SystemHealthReport(BaseModel):
     secret_audit_items: list[SecretAuditItem] = Field(default_factory=list)
     world_handler_summary: dict[str, int] = Field(default_factory=dict)
     world_handlers: list[WorldHandlerHealthCard] = Field(default_factory=list)
+    coordination_summary: dict[str, int] = Field(default_factory=dict)
+    coordination_issues: list[CoordinationIssue] = Field(default_factory=list)
     findings: list[SystemHealthFinding] = Field(default_factory=list)
 
     @property
@@ -173,6 +180,7 @@ async def collect_system_health_report(
     delivery_issues = validate_delivery_status(get_v3_delivery_status())
     secret_audit = audit_runtime_secrets()
     world_handlers = await collect_world_handler_health(tenant_id=tenant_id)
+    coordination_issues = await collect_coordination_issues(tenant_id=tenant_id)
     findings = _findings(
         outbox_lag=outbox_lag,
         pending_approvals=pending_approvals,
@@ -183,6 +191,7 @@ async def collect_system_health_report(
         delivery_issues=delivery_issues,
         secret_audit_items=secret_audit.items,
         world_handlers=world_handlers,
+        coordination_issues=coordination_issues,
     )
     return SystemHealthReport(
         tenant_id=tenant_id,
@@ -200,6 +209,8 @@ async def collect_system_health_report(
         secret_audit_items=secret_audit.items,
         world_handler_summary=summarize_handler_health(world_handlers),
         world_handlers=world_handlers,
+        coordination_summary=summarize_coordination_issues(coordination_issues),
+        coordination_issues=coordination_issues,
         findings=findings,
     )
 
@@ -213,6 +224,7 @@ def _findings(
     delivery_issues: list[str],
     secret_audit_items: list[SecretAuditItem],
     world_handlers: list[WorldHandlerHealthCard],
+    coordination_issues: list[CoordinationIssue] | None = None,
     resumable_mission_task_count: int = 0,
     mission_resume_worker_enabled: bool = False,
 ) -> list[SystemHealthFinding]:
@@ -325,6 +337,17 @@ def _findings(
                     suggested_action=card.recommendation,
                 )
             )
+    for coordination_issue in coordination_issues or []:
+        findings.append(
+            SystemHealthFinding(
+                finding_id=f"coordination:{coordination_issue.issue_id}",
+                severity=coordination_issue.severity,
+                subsystem=coordination_issue.subsystem,
+                title=coordination_issue.title,
+                detail=coordination_issue.detail,
+                suggested_action=coordination_issue.suggested_action,
+            )
+        )
     return findings
 
 

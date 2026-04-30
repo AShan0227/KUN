@@ -72,6 +72,7 @@ from kun.engineering.credit_assignment import (
     get_contribution_tracker,
     heuristic_reflector,
     hydrate_contribution_tracker_from_db,
+    load_resource_credit_scores,
     persist_resource_credit_report,
 )
 from kun.engineering.validation import ValidationPipeline, pick_tier
@@ -1062,7 +1063,11 @@ class Orchestrator:
         _skill_top_k = (
             max(3, len(watchtower_decision.skill_hints)) if watchtower_decision is not None else 3
         )
-        skill_candidates = self.skill_selector.select(task_ref, top_k=_skill_top_k)
+        skill_candidates = await self._select_skills_with_moe(
+            tenant_id=tenant.tenant_id,
+            task_ref=task_ref,
+            top_k=_skill_top_k,
+        )
         skill_ticket = ticket_from_skill_selection(
             tenant_id=tenant.tenant_id,
             task_id=task_ref.meta.task_id,
@@ -2403,6 +2408,35 @@ class Orchestrator:
                     signal.reason if signal else "user_interrupt",
                 ) from exc
             raise
+
+    async def _select_skills_with_moe(
+        self,
+        *,
+        tenant_id: str,
+        task_ref: TaskRef,
+        top_k: int,
+    ) -> list[Any]:
+        """Select skills with durable credit + capability evidence in the hot path."""
+
+        try:
+            skill_keys = [f"skill:{skill_id}" for skill_id in self.skill_selector.skill_ids()]
+            async with session_scope(tenant_id=tenant_id) as s:
+                await load_resource_credit_scores(
+                    s,
+                    tenant_id=tenant_id,
+                    resource_keys=skill_keys,
+                )
+        except Exception:
+            log.debug("skill_selector.credit_hydration_skipped", exc_info=True)
+        try:
+            return await self.skill_selector.select_with_graph_and_capability(
+                task_ref,
+                top_k=top_k,
+                tenant_id=tenant_id,
+            )
+        except Exception:
+            log.exception("skill_selector.graph_capability_failed_fallback_to_basic")
+            return self.skill_selector.select(task_ref, top_k=top_k)
 
     def _record_state_ledger(self, method_name: str, *args: Any, **kwargs: Any) -> None:
         if self.state_ledger is None:

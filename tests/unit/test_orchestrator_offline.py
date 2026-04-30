@@ -438,7 +438,7 @@ async def test_orchestrator_pauses_side_effect_tasks_before_execution(monkeypatc
     result = TaskResult.model_validate(done.data["result"])
     assert result.status == "paused"
     assert "等待确认" in result.answer
-    assert "message.send" in result.answer
+    assert "email.draft" in result.answer
 
 
 @pytest.mark.unit
