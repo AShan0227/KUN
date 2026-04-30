@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from kun.datamodel.task import Owner, TaskMeta, TaskRef
+from kun.engineering.credit_assignment import get_contribution_tracker
 from kun.qi.pheromone import (
     InMemoryPheromoneStorage,
     reset_pheromone_storage,
@@ -16,8 +17,10 @@ from kun.skills.selector import SkillSelector
 @pytest.fixture(autouse=True)
 def _isolate():
     reset_pheromone_storage()
+    get_contribution_tracker().reset()
     yield
     reset_pheromone_storage()
+    get_contribution_tracker().reset()
 
 
 def _make_skill(skill_id: str, description: str = "test skill") -> SkillRecord:
@@ -146,3 +149,30 @@ def test_select_pheromone_doesnt_break_required_skills() -> None:
     skills = selector.select(task, prior_skill="reader")
     # required 优先, pheromone 不影响
     assert skills[0].skill_id == "must-use-skill"
+
+
+def test_select_uses_moe_credit_inside_relevant_candidates() -> None:
+    """历史贡献高的同类 skill 会前排，但不会跨任务类型乱抢。"""
+    reg = SkillRegistry()
+    reg.register(_make_skill("writing-polish"))
+    reg.register(_make_skill("writing-review"))
+    reg.register(_make_skill("coding-review"))
+    selector = SkillSelector(reg)
+
+    tracker = get_contribution_tracker()
+    tracker.seed_counts(
+        "skill:writing-review",
+        used_count=10,
+        pass_count=10,
+        critical_count=10,
+    )
+    tracker.seed_counts(
+        "skill:coding-review",
+        used_count=20,
+        pass_count=20,
+        critical_count=20,
+    )
+
+    skills = selector.select(_task("writing.creative"), top_k=3)
+
+    assert [skill.skill_id for skill in skills] == ["writing-review", "writing-polish"]

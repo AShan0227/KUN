@@ -64,7 +64,11 @@ class SkillSelector:
             if overlap > 0:
                 scored.append((overlap, rec))
 
-        # 3. V2.3 Wire 47: Pheromone 加成 — 上一 skill → this skill 走过路径强 → 加分
+        # 3. V4 MoE credit 加成 — 已经被历史证明有贡献的同类 skill 排前.
+        # 注意: 只给已有 overlap 的候选加分，不让高信用 skill 跨任务类型乱抢。
+        scored = _apply_skill_credit_boost(scored)
+
+        # 4. V2.3 Wire 47: Pheromone 加成 — 上一 skill → this skill 走过路径强 → 加分
         # 蚁群涌现: 多 task 走过的链路自然推上来 (无需手写 graph)
         if prior_skill:
             try:
@@ -126,6 +130,7 @@ class SkillSelector:
 
         rescored: list[tuple[float, SkillRecord]] = []
         for base_score, rec in candidates.values():
+            score = _apply_single_skill_credit_boost(base_score, rec)
             cap_bonus = 0.0
             if tenant is not None:
                 cap = await self._capability_cache.best_capability(
@@ -136,7 +141,7 @@ class SkillSelector:
                 )
                 if cap is not None:
                     cap_bonus = 0.5 * cap.capability_score().value
-            rescored.append((base_score + cap_bonus, rec))
+            rescored.append((score + cap_bonus, rec))
 
         rescored.sort(key=lambda item: (-item[0], item[1].skill_id))
         return [rec for _, rec in rescored[:top_k]]
@@ -236,6 +241,32 @@ class SkillSelector:
 
 
 _selector: SkillSelector | None = None
+
+
+def _apply_skill_credit_boost(
+    scored: list[tuple[float, SkillRecord]],
+) -> list[tuple[float, SkillRecord]]:
+    return [(_apply_single_skill_credit_boost(score, rec), rec) for score, rec in scored]
+
+
+def _apply_single_skill_credit_boost(score: float, rec: SkillRecord) -> float:
+    """Boost relevant skills by durable MoE contribution hot-cache.
+
+    The DB load happens elsewhere (orchestrator finalization / context packer);
+    this sync selector only reads the in-process cache.  If the cache is empty,
+    behavior is unchanged.
+    """
+
+    try:
+        from kun.engineering.credit_assignment import get_contribution_tracker
+
+        contribution = get_contribution_tracker().contribution_score(rec.skill_id, "skill")
+    except Exception:
+        log.debug("skill_selector.credit_boost_skipped", exc_info=True)
+        return score
+    if contribution <= 0:
+        return score
+    return score * (1.0 + min(contribution, 1.0))
 
 
 def get_selector() -> SkillSelector:
