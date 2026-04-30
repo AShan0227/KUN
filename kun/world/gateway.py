@@ -35,6 +35,7 @@ class WorldAction(BaseModel):
     """A tenant-scoped side-effect request."""
 
     action_id: str
+    tenant_id: str = ""
     task_ref: str
     action_type: str
     target_ref: str
@@ -490,8 +491,6 @@ class EmailSendHandler(WorldActionHandler):
     def from_env(cls, output_root: str | Path) -> EmailSendHandler:
         host = os.getenv("KUN_WORLD_SMTP_HOST", "").strip()
         from_addr = os.getenv("KUN_WORLD_SMTP_FROM", "").strip()
-        if not host or not from_addr:
-            raise ValueError("email.send requires KUN_WORLD_SMTP_HOST and KUN_WORLD_SMTP_FROM")
         return cls(
             output_root=output_root,
             smtp_host=host,
@@ -503,7 +502,8 @@ class EmailSendHandler(WorldActionHandler):
         )
 
     async def preview(self, action: WorldAction) -> WorldHandlerResult:
-        message, audit = self._message(action)
+        config = self._config_for(action)
+        message, audit = self._message(action, smtp_from=config["smtp_from"])
         rendered = _render_email_preview(message)
         return WorldHandlerResult(
             handler_id=self.handler_id,
@@ -513,22 +513,33 @@ class EmailSendHandler(WorldActionHandler):
             audit={
                 **audit,
                 "sent": False,
-                "smtp_host": self.smtp_host,
+                "smtp_host": config["smtp_host"],
+                "smtp_port": config["smtp_port"],
+                "smtp_tls": config["use_tls"],
+                "smtp_username_set": bool(config["smtp_username"]),
+                "tenant_scoped_config": config["tenant_scoped_config"],
+                "config_source": config["config_source"],
                 "compensation": "cannot_recall_automatically; send follow-up correction if needed",
             },
             message="Preview only. Approval will send this email through the configured SMTP account.",
         )
 
     async def execute(self, action: WorldAction) -> WorldHandlerResult:
-        message, audit = self._message(action)
-        send_result = await self._send(message)
+        config = self._config_for(action)
+        message, audit = self._message(action, smtp_from=config["smtp_from"])
+        send_result = await self._send(message, config=config)
         rendered = _render_email_preview(message)
         path = self.audit_root / f"{_safe_artifact_name(action.action_id)}.json"
         audit_payload = {
             **audit,
             **send_result,
             "sent": True,
-            "smtp_host": self.smtp_host,
+            "smtp_host": config["smtp_host"],
+            "smtp_port": config["smtp_port"],
+            "smtp_tls": config["use_tls"],
+            "smtp_username_set": bool(config["smtp_username"]),
+            "tenant_scoped_config": config["tenant_scoped_config"],
+            "config_source": config["config_source"],
             "compensation": "cannot_recall_automatically; send follow-up correction if needed",
         }
         path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -542,7 +553,7 @@ class EmailSendHandler(WorldActionHandler):
             message="Email sent through the configured SMTP account. Audit artifact written.",
         )
 
-    async def _send(self, message: EmailMessage) -> dict[str, Any]:
+    async def _send(self, message: EmailMessage, *, config: dict[str, Any]) -> dict[str, Any]:
         if self._sender is not None:
             result = self._sender(message)
             if isawaitable(result):
@@ -551,14 +562,60 @@ class EmailSendHandler(WorldActionHandler):
             return result
         return await _send_email_smtp(
             message,
-            host=self.smtp_host,
-            port=self.smtp_port,
-            username=self.smtp_username,
-            password=self.smtp_password,
-            use_tls=self.use_tls,
+            host=str(config["smtp_host"]),
+            port=int(config["smtp_port"]),
+            username=config["smtp_username"],
+            password=config["smtp_password"],
+            use_tls=bool(config["use_tls"]),
         )
 
-    def _message(self, action: WorldAction) -> tuple[EmailMessage, dict[str, Any]]:
+    def _config_for(self, action: WorldAction) -> dict[str, Any]:
+        host = _env_for_action(action, "KUN_WORLD_SMTP_HOST") or self.smtp_host
+        from_addr = _env_for_action(action, "KUN_WORLD_SMTP_FROM") or self.smtp_from
+        if not host or not from_addr:
+            raise ValueError(
+                "email.send requires SMTP host/from via global env or tenant-scoped env"
+            )
+
+        tenant_credential_override = _has_tenant_env(
+            action,
+            "KUN_WORLD_SMTP_USERNAME",
+            "KUN_WORLD_SMTP_PASSWORD",
+        )
+        if tenant_credential_override:
+            username = _empty_to_none(_tenant_env(action, "KUN_WORLD_SMTP_USERNAME"))
+            password = _empty_to_none(_tenant_env(action, "KUN_WORLD_SMTP_PASSWORD"))
+        else:
+            username = self.smtp_username
+            password = self.smtp_password
+
+        return {
+            "smtp_host": host,
+            "smtp_port": _env_int_for_action(
+                action,
+                "KUN_WORLD_SMTP_PORT",
+                default=self.smtp_port,
+            ),
+            "smtp_username": username,
+            "smtp_password": password,
+            "smtp_from": from_addr,
+            "use_tls": _env_bool_for_action(
+                action,
+                "KUN_WORLD_SMTP_TLS",
+                default=self.use_tls,
+            ),
+            "tenant_scoped_config": _has_any_tenant_env(action, "KUN_WORLD_SMTP_"),
+            "config_source": (
+                "tenant_override" if _has_any_tenant_env(action, "KUN_WORLD_SMTP_") else "global"
+            ),
+        }
+
+    def _message(
+        self,
+        action: WorldAction,
+        *,
+        smtp_from: str,
+    ) -> tuple[EmailMessage, dict[str, Any]]:
         to_values = _string_list(action.payload.get("to") or action.target_ref)
         if not to_values:
             raise ValueError("email.send requires payload.to or target_ref")
@@ -569,7 +626,7 @@ class EmailSendHandler(WorldActionHandler):
         cc_values = _string_list(action.payload.get("cc"))
         bcc_values = _string_list(action.payload.get("bcc"))
         message = EmailMessage()
-        message["From"] = self.smtp_from
+        message["From"] = smtp_from
         message["To"] = ", ".join(to_values)
         if cc_values:
             message["Cc"] = ", ".join(cc_values)
@@ -654,7 +711,10 @@ class EnterpriseApiPostHandler(WorldActionHandler):
                 "url": request["url"],
                 "host": request["host"],
                 "would_post": True,
-                "allowed_hosts": sorted(self.allowed_hosts),
+                "allowed_hosts": request["allowed_hosts"],
+                "tenant_scoped_config": request["tenant_scoped_config"],
+                "config_source": request["config_source"],
+                "auth_source": request["auth_source"],
                 "compensation": "depends_on_remote_api; use idempotency key or follow-up reversal endpoint",
             },
             message="Preview only. Approval will POST JSON to the allowlisted enterprise API.",
@@ -668,6 +728,10 @@ class EnterpriseApiPostHandler(WorldActionHandler):
             **response_audit,
             "url": request["url"],
             "host": request["host"],
+            "allowed_hosts": request["allowed_hosts"],
+            "tenant_scoped_config": request["tenant_scoped_config"],
+            "config_source": request["config_source"],
+            "auth_source": request["auth_source"],
             "request_json_bytes": len(json.dumps(request["json"], ensure_ascii=False).encode()),
             "compensation": "depends_on_remote_api; use idempotency key or follow-up reversal endpoint",
         }
@@ -708,14 +772,20 @@ class EnterpriseApiPostHandler(WorldActionHandler):
     def _request(self, action: WorldAction) -> dict[str, Any]:
         url = str(action.payload.get("url") or action.target_ref or "").strip()
         parsed = urlparse(url)
+        allowed_hosts = _csv_set_for_action(
+            action,
+            "KUN_WORLD_API_ALLOWED_HOSTS",
+            default=self.allowed_hosts,
+        )
         _assert_allowed_https_host(
             parsed,
-            allowed_hosts=self.allowed_hosts,
+            allowed_hosts=allowed_hosts,
             action_type=self.action_type,
         )
         headers = _safe_api_headers(action.payload.get("headers"))
-        if self.auth_header and self.auth_value:
-            headers[self.auth_header] = self.auth_value
+        auth_header, auth_value, auth_source = self._auth_for(action)
+        if auth_header and auth_value:
+            headers[auth_header] = auth_value
         if "Idempotency-Key" not in headers:
             headers["Idempotency-Key"] = action.action_id
         return {
@@ -724,7 +794,27 @@ class EnterpriseApiPostHandler(WorldActionHandler):
             "host": parsed.hostname or "",
             "headers": headers,
             "json": action.payload.get("json", action.payload.get("body", {})),
+            "allowed_hosts": sorted(allowed_hosts),
+            "tenant_scoped_config": _has_any_tenant_env(action, "KUN_WORLD_API_"),
+            "config_source": (
+                "tenant_override" if _has_any_tenant_env(action, "KUN_WORLD_API_") else "global"
+            ),
+            "auth_source": auth_source,
         }
+
+    def _auth_for(self, action: WorldAction) -> tuple[str | None, str | None, str]:
+        tenant_auth_override = _has_tenant_env(
+            action,
+            "KUN_WORLD_API_AUTH_HEADER",
+            "KUN_WORLD_API_AUTH_VALUE",
+        )
+        if tenant_auth_override:
+            return (
+                _empty_to_none(_tenant_env(action, "KUN_WORLD_API_AUTH_HEADER")),
+                _empty_to_none(_tenant_env(action, "KUN_WORLD_API_AUTH_VALUE")),
+                "tenant_override",
+            )
+        return self.auth_header, self.auth_value, "global"
 
 
 BrowserRunner = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -786,7 +876,9 @@ class BrowserExecuteHandler(WorldActionHandler):
                 "host": plan["host"],
                 "step_count": len(plan["steps"]),
                 "would_control_browser": True,
-                "allowed_hosts": sorted(self.allowed_hosts),
+                "allowed_hosts": plan["allowed_hosts"],
+                "tenant_scoped_config": plan["tenant_scoped_config"],
+                "config_source": plan["config_source"],
                 "compensation": "browser side effects depend on website; manual reversal may be required",
             },
             message="Preview only. Approval will run browser automation against an allowlisted host.",
@@ -801,6 +893,9 @@ class BrowserExecuteHandler(WorldActionHandler):
             **result,
             "url": plan["url"],
             "host": plan["host"],
+            "allowed_hosts": plan["allowed_hosts"],
+            "tenant_scoped_config": plan["tenant_scoped_config"],
+            "config_source": plan["config_source"],
             "step_count": len(plan["steps"]),
             "compensation": "browser side effects depend on website; manual reversal may be required",
         }
@@ -818,9 +913,14 @@ class BrowserExecuteHandler(WorldActionHandler):
     def _plan(self, action: WorldAction) -> dict[str, Any]:
         url = str(action.payload.get("url") or action.target_ref or "").strip()
         parsed = urlparse(url)
+        allowed_hosts = _csv_set_for_action(
+            action,
+            "KUN_WORLD_BROWSER_ALLOWED_HOSTS",
+            default=self.allowed_hosts,
+        )
         _assert_allowed_https_host(
             parsed,
-            allowed_hosts=self.allowed_hosts,
+            allowed_hosts=allowed_hosts,
             action_type=self.action_type,
         )
         raw_steps = action.payload.get("steps", [])
@@ -843,6 +943,11 @@ class BrowserExecuteHandler(WorldActionHandler):
             "steps": steps,
             "task_ref": action.task_ref,
             "action_id": action.action_id,
+            "allowed_hosts": sorted(allowed_hosts),
+            "tenant_scoped_config": _has_any_tenant_env(action, "KUN_WORLD_BROWSER_"),
+            "config_source": (
+                "tenant_override" if _has_any_tenant_env(action, "KUN_WORLD_BROWSER_") else "global"
+            ),
         }
 
 
@@ -1152,6 +1257,73 @@ def _empty_to_none(value: str | None) -> str | None:
         return None
     value = value.strip()
     return value or None
+
+
+def _tenant_env_key(tenant_id: str) -> str:
+    """Return the safe tenant key used by env-scoped world credentials."""
+    return "".join(ch if ch.isalnum() else "_" for ch in tenant_id.upper()).strip("_")
+
+
+def _tenant_env_name(action: WorldAction, env_name: str) -> str | None:
+    tenant_key = _tenant_env_key(action.tenant_id)
+    if not tenant_key:
+        return None
+    suffix = env_name.removeprefix("KUN_")
+    return f"KUN_TENANT_{tenant_key}_{suffix}"
+
+
+def _tenant_env(action: WorldAction, env_name: str) -> str | None:
+    scoped_name = _tenant_env_name(action, env_name)
+    if not scoped_name:
+        return None
+    return _empty_to_none(os.getenv(scoped_name))
+
+
+def _env_for_action(action: WorldAction, env_name: str) -> str | None:
+    return _tenant_env(action, env_name) or _empty_to_none(os.getenv(env_name))
+
+
+def _has_tenant_env(action: WorldAction, *env_names: str) -> bool:
+    return any(_tenant_env(action, name) is not None for name in env_names)
+
+
+def _has_any_tenant_env(action: WorldAction, env_prefix: str) -> bool:
+    scoped_name = _tenant_env_name(action, env_prefix)
+    if not scoped_name:
+        return False
+    return any(
+        name.startswith(scoped_name) and _empty_to_none(value) is not None
+        for name, value in os.environ.items()
+    )
+
+
+def _env_int_for_action(action: WorldAction, env_name: str, *, default: int) -> int:
+    value = _env_for_action(action, env_name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"{env_name} must be an integer") from exc
+
+
+def _env_bool_for_action(action: WorldAction, env_name: str, *, default: bool) -> bool:
+    value = _env_for_action(action, env_name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _csv_set_for_action(
+    action: WorldAction,
+    env_name: str,
+    *,
+    default: set[str],
+) -> set[str]:
+    value = _tenant_env(action, env_name)
+    if value is None:
+        return set(default)
+    return _csv_set(value)
 
 
 def _env_bool(name: str, *, default: bool = False) -> bool:

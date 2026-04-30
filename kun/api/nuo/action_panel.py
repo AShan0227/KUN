@@ -317,6 +317,7 @@ async def _preview_for_row(
         return await gateway.preview(
             WorldAction(
                 action_id=row.action_id,
+                tenant_id=row.tenant_id,
                 task_ref=row.task_ref,
                 action_type=row.action_type,
                 target_ref=row.target_ref,

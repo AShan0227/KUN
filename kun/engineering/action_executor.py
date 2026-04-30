@@ -140,6 +140,7 @@ async def execute_approved_action_once(
             gateway_result = await get_world_gateway().execute_approved(
                 WorldAction(
                     action_id=action.action_id,
+                    tenant_id=tenant_id,
                     task_ref=task_ref,
                     action_type=action.action_type,
                     target_ref=action.target_ref,

@@ -21,7 +21,7 @@ def _safe_prod_settings() -> Settings:
         default_tenant_id=None,
         auth_secret=None,
         auth_secrets=(
-            "new-prod-key-7f1b9c2d4e6a8b0c9d3e5f7a," "old-prod-key-8a2c4e6f0b1d3f5a7c9e0d2b"
+            "new-prod-key-7f1b9c2d4e6a8b0c9d3e5f7a,old-prod-key-8a2c4e6f0b1d3f5a7c9e0d2b"
         ),
         pg_dsn="postgresql+asyncpg://kun_app:prod-app-pw@db.internal:5432/kun",
         pg_admin_dsn="postgresql+asyncpg://kun_admin:prod-admin-pw@db.internal:5432/kun",
@@ -77,7 +77,7 @@ def test_preflight_accepts_auth_secret_rotation_list(tmp_path: Path) -> None:
         update={
             "auth_secret": None,
             "auth_secrets": (
-                "new-prod-key-7f1b9c2d4e6a8b0c9d3e5f7a," "old-prod-key-8a2c4e6f0b1d3f5a7c9e0d2b"
+                "new-prod-key-7f1b9c2d4e6a8b0c9d3e5f7a,old-prod-key-8a2c4e6f0b1d3f5a7c9e0d2b"
             ),
         }
     )
@@ -147,7 +147,7 @@ def test_secret_audit_blocks_default_database_credentials() -> None:
         default_tenant_id=None,
         auth_secret=None,
         auth_secrets=(
-            "new-prod-key-7f1b9c2d4e6a8b0c9d3e5f7a," "old-prod-key-8a2c4e6f0b1d3f5a7c9e0d2b"
+            "new-prod-key-7f1b9c2d4e6a8b0c9d3e5f7a,old-prod-key-8a2c4e6f0b1d3f5a7c9e0d2b"
         ),
         pg_dsn="postgresql+asyncpg://kun_app:kun_app@db.internal:5432/kun",
         pg_admin_dsn="postgresql+asyncpg://kun:kun@db.internal:5432/kun",

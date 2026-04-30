@@ -429,6 +429,59 @@ async def test_world_gateway_email_send_handler_can_use_injected_sender(tmp_path
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_world_gateway_email_send_uses_tenant_scoped_config(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    sent: list[EmailMessage] = []
+
+    async def sender(message: EmailMessage) -> dict[str, Any]:
+        sent.append(message)
+        return {"provider_message_id": "smtp-tenant"}
+
+    monkeypatch.setenv("KUN_TENANT_TENANT_A_WORLD_SMTP_FROM", "tenant-a@example.com")
+    monkeypatch.setenv("KUN_TENANT_TENANT_A_WORLD_SMTP_HOST", "smtp.tenant-a.example.com")
+
+    gateway = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[
+            EmailSendHandler(
+                output_root=tmp_path,
+                smtp_host="smtp.global.example.com",
+                smtp_port=587,
+                smtp_username=None,
+                smtp_password=None,
+                smtp_from="global@example.com",
+                sender=sender,
+            )
+        ],
+    )
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-email-tenant",
+            tenant_id="tenant-a",
+            task_ref="task-1",
+            action_type="email.send",
+            target_ref="user@example.com",
+            risk_level="high",
+            payload={
+                "subject": "Hi",
+                "body": "Tenant send",
+                "to": "user@example.com",
+                "external_dispatch_confirmed": True,
+            },
+        )
+    )
+
+    assert sent[0]["From"] == "tenant-a@example.com"
+    assert result.audit["smtp_host"] == "smtp.tenant-a.example.com"
+    assert result.audit["tenant_scoped_config"] is True
+    assert result.audit["config_source"] == "tenant_override"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_world_gateway_blocks_real_email_without_external_confirmation(tmp_path) -> None:
     sent: list[EmailMessage] = []
 
@@ -515,6 +568,53 @@ async def test_world_gateway_enterprise_api_requires_allowlisted_https_host(tmp_
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_world_gateway_enterprise_api_uses_tenant_allowlist_and_auth(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    captured_headers: dict[str, str] = {}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        captured_headers.update(dict(request.headers))
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setenv("KUN_TENANT_TENANT_A_WORLD_API_ALLOWED_HOSTS", "api.tenant-a.example.com")
+    monkeypatch.setenv("KUN_TENANT_TENANT_A_WORLD_API_AUTH_HEADER", "X-API-Key")
+    monkeypatch.setenv("KUN_TENANT_TENANT_A_WORLD_API_AUTH_VALUE", "tenant-secret")
+
+    handler = EnterpriseApiPostHandler(
+        output_root=tmp_path,
+        allowed_hosts={"api.global.example.com"},
+        client=httpx.AsyncClient(transport=httpx.MockTransport(responder)),
+    )
+    gateway = WorldGateway(artifact_root=tmp_path, handlers=[handler])
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-api-tenant",
+            tenant_id="tenant-a",
+            task_ref="task-1",
+            action_type="enterprise_api.post",
+            target_ref="https://api.tenant-a.example.com/orders",
+            risk_level="high",
+            payload={
+                "json": {"order_id": "o-tenant"},
+                "external_dispatch_confirmed": True,
+            },
+        )
+    )
+
+    assert result.external_dispatched is True
+    assert result.audit["host"] == "api.tenant-a.example.com"
+    assert result.audit["allowed_hosts"] == ["api.tenant-a.example.com"]
+    assert result.audit["tenant_scoped_config"] is True
+    assert result.audit["auth_source"] == "tenant_override"
+    assert captured_headers["x-api-key"] == "tenant-secret"
+    assert '"X-API-Key": "[redacted]"' in result.rendered_payload
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_world_gateway_browser_execute_uses_injected_runner_and_allowlist(tmp_path) -> None:
     async def runner(plan: dict[str, Any]) -> dict[str, Any]:
         return {"executed": True, "steps_seen": len(plan["steps"])}
@@ -562,6 +662,51 @@ async def test_world_gateway_browser_execute_uses_injected_runner_and_allowlist(
                 payload={"steps": [{"kind": "pay", "selector": "#pay"}]},
             )
         )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_gateway_browser_execute_uses_tenant_allowlist(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    async def runner(plan: dict[str, Any]) -> dict[str, Any]:
+        return {"executed": True, "allowed_hosts_seen": plan["allowed_hosts"]}
+
+    monkeypatch.setenv(
+        "KUN_TENANT_TENANT_A_WORLD_BROWSER_ALLOWED_HOSTS",
+        "browser.tenant-a.example.com",
+    )
+    gateway = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[
+            BrowserExecuteHandler(
+                output_root=tmp_path,
+                allowed_hosts={"browser.global.example.com"},
+                runner=runner,
+            )
+        ],
+    )
+
+    result = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-browser-tenant",
+            tenant_id="tenant-a",
+            task_ref="task-1",
+            action_type="browser.execute",
+            target_ref="https://browser.tenant-a.example.com",
+            risk_level="high",
+            payload={
+                "external_dispatch_confirmed": True,
+                "steps": [{"kind": "screenshot", "path": "done.png"}],
+            },
+        )
+    )
+
+    assert result.external_dispatched is True
+    assert result.audit["allowed_hosts"] == ["browser.tenant-a.example.com"]
+    assert result.audit["tenant_scoped_config"] is True
+    assert result.audit["allowed_hosts_seen"] == ["browser.tenant-a.example.com"]
 
 
 @pytest.mark.unit
