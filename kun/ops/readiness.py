@@ -43,6 +43,7 @@ async def run_readiness_report(
     include_db_mission: bool = False,
     include_db_account: bool = False,
     include_db_state_ledger_repair: bool = False,
+    include_db_long_horizon_drill: bool = False,
     run_alembic_heads: bool = True,
 ) -> ReadinessReport:
     """Run the current readiness gates and return one compact report."""
@@ -58,6 +59,7 @@ async def run_readiness_report(
             include_db_mission=include_db_mission,
             include_db_account=include_db_account,
             include_db_state_ledger_repair=include_db_state_ledger_repair,
+            include_db_long_horizon_drill=include_db_long_horizon_drill,
         )
 
     blockers = _blockers(

@@ -61,6 +61,7 @@ async def run_v4_dogfood(
     include_db_mission: bool = False,
     include_db_account: bool = False,
     include_db_state_ledger_repair: bool = False,
+    include_db_long_horizon_drill: bool = False,
 ) -> DogfoodReport:
     """Run low-risk V4 dogfood checks."""
 
@@ -77,6 +78,8 @@ async def run_v4_dogfood(
         scenarios.append(await _scenario_account_ledger_db(tenant_id=tenant_id, secret=secret))
     if include_db_state_ledger_repair:
         scenarios.append(await _scenario_state_ledger_repair_db(tenant_id=tenant_id))
+    if include_db_long_horizon_drill:
+        scenarios.append(await _scenario_long_horizon_drill_db(tenant_id=tenant_id))
     if any(item.status == "block" for item in scenarios):
         status: DogfoodStatus = "block"
     elif any(item.status == "warn" for item in scenarios):
@@ -330,6 +333,188 @@ async def _scenario_mission_resume_db(*, tenant_id: str) -> DogfoodScenarioResul
             status="block",
             summary="Mission 真实 DB 续跑 dogfood 无法执行。",
             evidence={"task_id": task_id, "error": f"{type(exc).__name__}: {exc}"},
+            next_step="确认本地 Postgres 已启动、Alembic 已升级、RLS app/admin DSN 配好。",
+        )
+
+
+async def _scenario_long_horizon_drill_db(*, tenant_id: str) -> DogfoodScenarioResult:
+    """Run a time-compressed multi-cycle Mission dogfood against the database.
+
+    This is not a claim that KUN has operated a product for a real week.  It is
+    a deterministic drill that exercises the same durable path several times:
+    queued Mission task -> worker continuation -> runtime outcome -> mission
+    review -> story replay.
+    """
+
+    try:
+        from kun.core.db import session_scope
+        from kun.core.ids import new_id
+        from kun.core.orm import RuntimeStateRow, TaskRow
+        from kun.core.tenancy import TenantContext, tenant_scope
+        from kun.datamodel.mission import MissionCreate, MissionNextStep, MissionReview
+        from kun.engineering.mission_control import (
+            attach_task_to_mission,
+            create_mission,
+            get_mission,
+            get_mission_story,
+            record_mission_review,
+        )
+        from kun.engineering.mission_worker import MissionOrchestratorRunner, MissionResumeWorker
+        from kun.engineering.orchestrator import TaskResult
+    except Exception as exc:  # pragma: no cover - import failures are deployment issues
+        return DogfoodScenarioResult(
+            scenario_id="long_horizon_drill_db",
+            status="block",
+            summary="长期 Mission drill 依赖导入失败。",
+            evidence={"error": f"{type(exc).__name__}: {exc}"},
+            next_step="先修 Mission / worker / story replay 依赖导入。",
+        )
+
+    task_ids = [new_id("task") for _ in range(3)]
+    try:
+        mission = await create_mission(
+            MissionCreate(
+                title="V4 dogfood time-compressed product ops",
+                objective="用三轮压缩演练验证长期任务可以连续推进、复盘和回放。",
+                risk_level="medium",
+                budget_cap_usd=1.0,
+                success_metrics=[
+                    "three mission tasks complete",
+                    "mission review history is recorded",
+                    "mission story can replay events",
+                ],
+                strategy={"dogfood_kind": "time_compressed_long_horizon", "logical_days": 7},
+            ),
+            tenant_id=tenant_id,
+            user_id="dogfood-user",
+        )
+        async with session_scope(tenant_id=tenant_id) as s:
+            for idx, task_id in enumerate(task_ids, start=1):
+                s.add(
+                    TaskRow(
+                        task_id=task_id,
+                        tenant_id=tenant_id,
+                        fingerprint=f"dogfood-long-horizon-{task_id}",
+                        task_type=f"dogfood.product_ops.day_{idx}",
+                        risk_level="medium",
+                        complexity_score=0.45,
+                        user_id="dogfood-user",
+                        estimated_cost_usd=0.05,
+                        estimated_duration_sec=5.0,
+                        success_criteria_short=f"Logical day {idx} produces a checkpoint.",
+                        spec_json={
+                            "goal_detail": f"推进长期运营演练第 {idx} 轮。",
+                            "success_metrics": [f"day {idx} checkpoint recorded"],
+                            "constraints": [
+                                "No real external dispatch",
+                                "Keep cost below drill budget",
+                            ],
+                        },
+                    )
+                )
+                s.add(
+                    RuntimeStateRow(
+                        state_id=new_id("runtime"),
+                        task_ref=task_id,
+                        tenant_id=tenant_id,
+                        current_step=0,
+                        total_planned_steps=1,
+                        status="queued",
+                        blob={"dogfood": True, "logical_day": idx},
+                    )
+                )
+        for idx, task_id in enumerate(task_ids, start=1):
+            await attach_task_to_mission(
+                tenant_id=tenant_id,
+                mission_id=mission.mission_id,
+                task_id=task_id,
+                role="daily_ops",
+                sequence_no=idx,
+                checkpoint={"logical_day": idx, "expected": "checkpoint"},
+            )
+
+        class FakeMissionOrchestrator:
+            async def run_mission_continuation(
+                self,
+                request: object,
+                resume_prompt: str,
+                *,
+                output_kind: str,
+            ) -> TaskResult:
+                task_ref = getattr(request, "task_id", "unknown")
+                return TaskResult(
+                    task_id=new_id("task"),
+                    status="done",
+                    answer=f"{output_kind}:{task_ref}:{resume_prompt[:60]}",
+                    cost_usd_equivalent=0.03,
+                    tokens_in=20,
+                    tokens_out=24,
+                    duration_sec=0.2,
+                )
+
+        worker = MissionResumeWorker(
+            runner=MissionOrchestratorRunner(cast(Any, FakeMissionOrchestrator()))
+        )
+        resume_statuses: list[str] = []
+        for idx in range(1, 4):
+            with tenant_scope(TenantContext(tenant_id=tenant_id)):
+                results = await worker.run_once(tenant_id=tenant_id, limit=1)
+            resume_statuses.extend(item.status for item in results)
+            await record_mission_review(
+                MissionReview(
+                    summary=f"第 {idx} 轮演练完成，继续推进下一轮。",
+                    budget_notes="成本在 dogfood 预算内。",
+                    risk_notes="没有真实外发。",
+                    next_step=MissionNextStep(
+                        summary=f"推进第 {idx + 1} 轮" if idx < 3 else "整理长期运营复盘",
+                        reason="压缩演练需要连续 checkpoint。",
+                        task_id=task_ids[idx] if idx < 3 else None,
+                        action_type="continue" if idx < 3 else "review",
+                    ),
+                ),
+                tenant_id=tenant_id,
+                mission_id=mission.mission_id,
+            )
+
+        snapshot = await get_mission(tenant_id=tenant_id, mission_id=mission.mission_id)
+        story = await get_mission_story(
+            tenant_id=tenant_id,
+            mission_id=mission.mission_id,
+            history_limit_per_task=50,
+        )
+        ok = (
+            snapshot is not None
+            and snapshot.status == "done"
+            and resume_statuses.count("completed") == 3
+            and story is not None
+            and story.task_count == 3
+            and story.event_count >= 3
+            and story.total_event_cost_usd <= 1.0
+        )
+        return DogfoodScenarioResult(
+            scenario_id="long_horizon_drill_db",
+            status="pass" if ok else "block",
+            summary="时间压缩长期 Mission drill 可连续推进、复盘并回放故事线。"
+            if ok
+            else "时间压缩长期 Mission drill 没有跑通。",
+            evidence={
+                "mission_id": mission.mission_id,
+                "task_ids": task_ids,
+                "resume_statuses": resume_statuses,
+                "mission_status": snapshot.status if snapshot else None,
+                "story_task_count": story.task_count if story else None,
+                "story_event_count": story.event_count if story else None,
+                "story_cost_usd": story.total_event_cost_usd if story else None,
+                "honest_limit": "time-compressed drill; not a real cross-week production run",
+            },
+            next_step="" if ok else "检查 Mission worker 多轮 claim、review 写回和 story replay。",
+        )
+    except Exception as exc:
+        return DogfoodScenarioResult(
+            scenario_id="long_horizon_drill_db",
+            status="block",
+            summary="长期 Mission drill 无法执行。",
+            evidence={"task_ids": task_ids, "error": f"{type(exc).__name__}: {exc}"},
             next_step="确认本地 Postgres 已启动、Alembic 已升级、RLS app/admin DSN 配好。",
         )
 

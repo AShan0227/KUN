@@ -552,6 +552,35 @@ async def test_v4_dogfood_can_include_db_state_ledger_repair_scenario(
 
 
 @pytest.mark.unit
+async def test_v4_dogfood_can_include_db_long_horizon_drill_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_long_horizon_scenario(
+        *,
+        tenant_id: str,
+    ) -> dogfood_module.DogfoodScenarioResult:
+        assert tenant_id == "tenant-dogfood"
+        return dogfood_module.DogfoodScenarioResult(
+            scenario_id="long_horizon_drill_db",
+            status="pass",
+            summary="fake long horizon pass",
+        )
+
+    monkeypatch.setattr(
+        dogfood_module,
+        "_scenario_long_horizon_drill_db",
+        fake_long_horizon_scenario,
+    )
+
+    report = await dogfood_module.run_v4_dogfood(
+        tenant_id="tenant-dogfood",
+        include_db_long_horizon_drill=True,
+    )
+
+    assert any(item.scenario_id == "long_horizon_drill_db" for item in report.scenarios)
+
+
+@pytest.mark.unit
 def test_ops_dogfood_cli_outputs_scenarios() -> None:
     result = CliRunner().invoke(
         app,
@@ -577,12 +606,14 @@ def test_ops_dogfood_cli_can_request_db_mission_scenario(
         include_db_mission: bool = False,
         include_db_account: bool = False,
         include_db_state_ledger_repair: bool = False,
+        include_db_long_horizon_drill: bool = False,
     ) -> dogfood_module.DogfoodReport:
         assert tenant_id == "tenant-cli"
         assert repo_root is None
         assert secret.startswith("dogfood-secret-")
         assert include_db_account is False
         assert include_db_state_ledger_repair is False
+        assert include_db_long_horizon_drill is False
         calls.append(include_db_mission)
         return dogfood_module.DogfoodReport(
             status="pass",
@@ -629,11 +660,13 @@ def test_ops_dogfood_cli_can_request_db_account_scenario(
         include_db_mission: bool = False,
         include_db_account: bool = False,
         include_db_state_ledger_repair: bool = False,
+        include_db_long_horizon_drill: bool = False,
     ) -> dogfood_module.DogfoodReport:
         assert tenant_id == "tenant-cli"
         assert repo_root is None
         assert include_db_mission is False
         assert include_db_state_ledger_repair is False
+        assert include_db_long_horizon_drill is False
         assert secret.startswith("dogfood-secret-")
         calls.append(include_db_account)
         return dogfood_module.DogfoodReport(
@@ -681,11 +714,13 @@ def test_ops_dogfood_cli_can_request_db_state_ledger_repair_scenario(
         include_db_mission: bool = False,
         include_db_account: bool = False,
         include_db_state_ledger_repair: bool = False,
+        include_db_long_horizon_drill: bool = False,
     ) -> dogfood_module.DogfoodReport:
         assert tenant_id == "tenant-cli"
         assert repo_root is None
         assert include_db_mission is False
         assert include_db_account is False
+        assert include_db_long_horizon_drill is False
         assert secret.startswith("dogfood-secret-")
         calls.append(include_db_state_ledger_repair)
         return dogfood_module.DogfoodReport(
@@ -717,6 +752,60 @@ def test_ops_dogfood_cli_can_request_db_state_ledger_repair_scenario(
     assert result.exit_code == 0
     assert calls == [True]
     assert "state_ledger_repair_db" in result.output
+
+
+@pytest.mark.unit
+def test_ops_dogfood_cli_can_request_db_long_horizon_drill_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[bool] = []
+
+    async def fake_run_v4_dogfood(
+        *,
+        tenant_id: str = "u-sylvan",
+        repo_root: Path | None = None,
+        secret: str = "dogfood-secret-" + "x" * 32,
+        include_db_mission: bool = False,
+        include_db_account: bool = False,
+        include_db_state_ledger_repair: bool = False,
+        include_db_long_horizon_drill: bool = False,
+    ) -> dogfood_module.DogfoodReport:
+        assert tenant_id == "tenant-cli"
+        assert repo_root is None
+        assert include_db_mission is False
+        assert include_db_account is False
+        assert include_db_state_ledger_repair is False
+        assert secret.startswith("dogfood-secret-")
+        calls.append(include_db_long_horizon_drill)
+        return dogfood_module.DogfoodReport(
+            status="pass",
+            scenarios=[
+                dogfood_module.DogfoodScenarioResult(
+                    scenario_id="long_horizon_drill_db",
+                    status="pass",
+                    summary="fake long horizon pass",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(dogfood_module, "run_v4_dogfood", fake_run_v4_dogfood)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "ops",
+            "dogfood",
+            "--tenant",
+            "tenant-cli",
+            "--include-db-long-horizon-drill",
+            "--json",
+            "--no-fail-on-blocker",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [True]
+    assert "long_horizon_drill_db" in result.output
 
 
 @pytest.mark.unit

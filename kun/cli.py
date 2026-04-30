@@ -777,6 +777,11 @@ def ops_readiness(
         "--include-db-state-ledger-repair",
         help="dogfood 里额外跑真实数据库 StateLedger repair smoke",
     ),
+    include_db_long_horizon_drill: bool = typer.Option(
+        False,
+        "--include-db-long-horizon-drill",
+        help="dogfood 里额外跑时间压缩的多轮长期 Mission drill",
+    ),
     skip_alembic: bool = typer.Option(False, "--skip-alembic", help="跳过 alembic heads 检查"),
     fail_on_blocker: bool = typer.Option(
         True,
@@ -795,6 +800,7 @@ def ops_readiness(
             include_db_mission=include_db_mission,
             include_db_account=include_db_account,
             include_db_state_ledger_repair=include_db_state_ledger_repair,
+            include_db_long_horizon_drill=include_db_long_horizon_drill,
             run_alembic_heads=not skip_alembic,
         )
     )
@@ -1254,6 +1260,11 @@ def ops_dogfood(
         "--include-db-state-ledger-repair",
         help="额外跑真实数据库 StateLedger repair smoke；需要本地 Postgres/Alembic 可用",
     ),
+    include_db_long_horizon_drill: bool = typer.Option(
+        False,
+        "--include-db-long-horizon-drill",
+        help="额外跑时间压缩的多轮长期 Mission drill；需要本地 Postgres/Alembic 可用",
+    ),
     fail_on_blocker: bool = typer.Option(
         True,
         "--fail-on-blocker/--no-fail-on-blocker",
@@ -1270,6 +1281,7 @@ def ops_dogfood(
             include_db_mission=include_db_mission,
             include_db_account=include_db_account,
             include_db_state_ledger_repair=include_db_state_ledger_repair,
+            include_db_long_horizon_drill=include_db_long_horizon_drill,
         )
     )
     if json_output:

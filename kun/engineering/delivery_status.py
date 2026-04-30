@@ -102,6 +102,7 @@ def get_v3_delivery_status(
                 "Mission continuation 完成后会自动写入下一步建议和 last_continuation 摘要，下一轮续跑能消费",
                 "自动续跑 worker 默认已接入 cron，但只处理已排队、未超过尝试次数、未被预算/权限挡住的 Mission task；可用 KUN_MISSION_RESUME_WORKER_ENABLED=0 关闭",
                 "ops dogfood --include-db-mission 可跑真实数据库 Mission 续跑 smoke",
+                "ops dogfood --include-db-long-horizon-drill 可跑时间压缩的多轮 Mission 演练，验证连续推进、复盘和故事线回放",
                 "普通任务的 pending action 审批通过后会排入 continuation，API 后台和 cron worker 都能恢复执行",
             ],
             evidence_refs=[
@@ -117,10 +118,10 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "续跑还不是原 TaskRow 原地恢复，而是 continuation task 挂回 Mission",
-                "自动续跑已经默认打开，但还缺跨周真实产品运营 dogfood 来验证长期稳定性和成本边界",
+                "自动续跑已经默认打开，并有时间压缩多轮 drill；但还缺真实跨周产品运营 dogfood 来验证长期稳定性和成本边界",
                 "StateLedger 持久化是第一版当前快照 cache；已有漂移审计和单任务修复命令，但尚未做全业务对象确定性事件溯源",
                 "Mission 复盘和 continuation 摘要只做轻量权重/档位 nudging，还没训练长期策略模型",
-                "还没有跑跨周真实产品运营 dogfood",
+                "还没有跑真实跨周产品运营 dogfood；目前只有时间压缩多轮 drill",
                 "普通任务 continuation 采用子任务续跑并回写原任务视图，还不是原 TaskRow 原地续跑",
             ],
             next_steps=[
@@ -323,6 +324,7 @@ def get_v3_delivery_status(
                 "ops dogfood --include-db-mission 可额外验证 Mission/RuntimeState/Orchestrator runner 的真实 DB 续跑闭环",
                 "ops dogfood --include-db-account 可额外验证账号账本、token 使用账本、refresh session、成员邀请和接受邀请的真实 DB smoke",
                 "ops dogfood --include-db-state-ledger-repair 可额外验证 EventRow 回放修复 state_ledger_entries 的真实 DB smoke",
+                "ops dogfood --include-db-long-horizon-drill 可额外验证长期 Mission 多轮推进、复盘和故事线回放",
                 "ops delivery-status CLI 可直接查看 ready / partial / not_ready，防止伪功能被误认为已完成",
                 "CI 会检查 scripts/alembic 的 ruff/format，并在 honesty gate 里检查 Alembic 单 head",
                 "ops release-check CLI 会检查 V4 release checklist、preflight、legal guard、git dirty/tag、rollback/hotfix 文档",
