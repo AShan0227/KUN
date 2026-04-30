@@ -1403,6 +1403,7 @@ class Orchestrator:
                     context_asset_ids=context_asset_ids,
                     watchtower_decision=watchtower_decision,
                     active_protocol=active_protocol,
+                    decision_ticket_ids=[ticket.ticket_id for ticket in decision_tickets],
                 )
                 await self._record_process_memory(
                     tenant_id=tenant.tenant_id,
@@ -2119,6 +2120,7 @@ class Orchestrator:
         context_asset_ids: list[str],
         watchtower_decision: Any,
         active_protocol: Any,
+        decision_ticket_ids: list[str],
     ) -> None:
         if self.credit_assignment is None:
             return
@@ -2127,8 +2129,14 @@ class Orchestrator:
             "memory": list(context_asset_ids),
             "skill": skill_ids,
             "model": [response.model or "unknown"],
+            "llm_route": [
+                f"{response.provider or 'unknown'}:{response.model or 'unknown'}:{response.tier}"
+            ],
+            "execution_mode": [task_ref.meta.execution_mode],
             "role_template": [role_template_id],
         }
+        if decision_ticket_ids:
+            resources["decision_ticket"] = list(decision_ticket_ids)
         if watchtower_decision is not None:
             strategy_pack_id = getattr(watchtower_decision, "strategy_pack_id", "")
             if strategy_pack_id:
@@ -2153,6 +2161,8 @@ class Orchestrator:
                     "cost_usd_equivalent": response.cost_usd_equivalent,
                     "tokens": response.usage.total(),
                     "risk_level": task_ref.meta.risk_level,
+                    "execution_mode": task_ref.meta.execution_mode,
+                    "decision_ticket_ids": list(decision_ticket_ids),
                 },
             )
         except Exception:

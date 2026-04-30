@@ -15,6 +15,7 @@
 - [ ] 本地跑过:
 
 ```bash
+uv run kun ops preflight
 uv run --extra dev ruff check .
 uv run --extra dev ruff format --check kun tests alembic
 uv run --extra dev mypy kun
@@ -29,6 +30,12 @@ uv run --extra dev pytest
 
 ```bash
 scripts/dogfood_v22.sh
+```
+
+- [ ] 跑过 V4 低风险 smoke:
+
+```bash
+uv run kun ops dogfood --tenant u-sylvan
 ```
 
 - [ ] 跑过 CLI demo:
@@ -87,6 +94,8 @@ uv run alembic upgrade head
   - `KUN_INPUT_TRANSLATOR_ENABLED`
 - [ ] 生产默认不打开高成本实验流量, ENSEMBLE / lab / dogfood 有明确预算和 kill switch.
 - [ ] LLM provider failover / billing / GitHub Actions quota 正常.
+- [ ] production 模式已用 `uv run kun ops preflight` 重新跑过且没有 blocker.
+- [ ] 每个 dogfood 租户都有 `uv run kun ops onboard-tenant` 生成的启动包；没有继续使用裸 `X-Tenant-Id`.
 
 ## 7. Tag 操作模板
 

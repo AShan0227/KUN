@@ -11,6 +11,7 @@ import base64
 import hashlib
 import hmac
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -69,6 +70,21 @@ def verify_bearer_token(header_value: str | None, secret: str) -> AuthClaims:
     return claims
 
 
+def verify_bearer_token_any(header_value: str | None, secrets: Iterable[str]) -> AuthClaims:
+    """Verify a bearer token against active rotation secrets."""
+
+    errors: list[str] = []
+    for secret in secrets:
+        try:
+            return verify_bearer_token(header_value, secret)
+        except AuthTokenError as exc:
+            errors.append(str(exc))
+    if not errors:
+        raise AuthTokenError("no auth secrets configured")
+    # Keep response small; callers do not need every old-secret mismatch.
+    raise AuthTokenError(errors[-1])
+
+
 def _claims_from_payload(data: dict[str, Any]) -> AuthClaims:
     tenant_id = str(data.get("tenant_id") or data.get("tenant") or "").strip()
     if not tenant_id:
@@ -115,4 +131,10 @@ def _signature(payload_b64: str, secret: str) -> str:
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
-__all__ = ["AuthClaims", "AuthTokenError", "sign_auth_token", "verify_bearer_token"]
+__all__ = [
+    "AuthClaims",
+    "AuthTokenError",
+    "sign_auth_token",
+    "verify_bearer_token",
+    "verify_bearer_token_any",
+]

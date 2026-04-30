@@ -25,8 +25,17 @@ def main() -> None:
     parser.add_argument("--ttl-sec", type=int, default=86400)
     args = parser.parse_args()
     secret = os.environ.get("KUN_AUTH_SECRET", "")
+    if not secret:
+        secret = next(
+            (
+                item.strip()
+                for item in os.environ.get("KUN_AUTH_SECRETS", "").split(",")
+                if len(item.strip()) >= 32
+            ),
+            "",
+        )
     if len(secret) < 32:
-        raise SystemExit("KUN_AUTH_SECRET must be set to at least 32 characters")
+        raise SystemExit("KUN_AUTH_SECRET or KUN_AUTH_SECRETS must include a 32+ character secret")
     token = sign_auth_token(
         {
             "tenant_id": args.tenant,

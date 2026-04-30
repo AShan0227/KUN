@@ -311,15 +311,18 @@ async def tenant_middleware(
     cfg = settings()
     auth_header = request.headers.get("Authorization")
     if auth_header:
-        if not cfg.auth_secret:
+        auth_secrets = cfg.auth_secret_candidates()
+        if not auth_secrets:
             return JSONResponse(
                 status_code=401,
-                content={"detail": "KUN_AUTH_SECRET is required for bearer auth"},
+                content={
+                    "detail": "KUN_AUTH_SECRET or KUN_AUTH_SECRETS is required for bearer auth"
+                },
             )
-        from kun.security.auth import AuthTokenError, verify_bearer_token
+        from kun.security.auth import AuthTokenError, verify_bearer_token_any
 
         try:
-            ctx = verify_bearer_token(auth_header, cfg.auth_secret).to_tenant_context()
+            ctx = verify_bearer_token_any(auth_header, auth_secrets).to_tenant_context()
         except AuthTokenError as exc:
             return JSONResponse(status_code=401, content={"detail": str(exc)})
     elif cfg.env == "production":

@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     default_tenant_id: str | None = "u-sylvan"
     auth_secret: str | None = None
+    # Optional comma-separated secret list for zero-downtime rotation.  The
+    # first secret is used by operators to mint new tokens; all listed secrets
+    # are accepted for verification.
+    auth_secrets: str | None = None
 
     @field_validator("default_tenant_id", mode="before")
     @classmethod
@@ -93,13 +97,32 @@ class Settings(BaseSettings):
             return issues
         if self.default_tenant_id:
             issues.append("KUN_DEFAULT_TENANT_ID must be blank in production")
-        if not self.auth_secret or len(self.auth_secret) < 32:
-            issues.append("KUN_AUTH_SECRET must be set to at least 32 characters")
+        if not self.auth_secret_candidates():
+            issues.append(
+                "KUN_AUTH_SECRET or KUN_AUTH_SECRETS must contain at least one 32+ character secret"
+            )
         if "kun:kun@" in self.pg_dsn:
             issues.append("KUN_PG_DSN must use the non-admin app role in production")
         if self.s3_access_key == "minio" or self.s3_secret_key == "minio123":
             issues.append("S3/MinIO default credentials must be changed in production")
         return issues
+
+    def auth_secret_candidates(self) -> list[str]:
+        """Return active auth secrets, newest/primary first."""
+
+        secrets: list[str] = []
+        for raw in (self.auth_secret, self.auth_secrets):
+            if not raw:
+                continue
+            secrets.extend(item.strip() for item in raw.split(",") if item.strip())
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for secret in secrets:
+            if len(secret) < 32 or secret in seen:
+                continue
+            deduped.append(secret)
+            seen.add(secret)
+        return deduped
 
 
 @cache

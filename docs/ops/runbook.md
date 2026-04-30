@@ -29,6 +29,59 @@ curl http://localhost:8000/healthz
 # 期望: {"status": "ok", "version": "..."}
 ```
 
+### 上线前硬检查
+
+```bash
+uv run kun ops preflight
+uv run kun ops preflight --json
+```
+
+它检查的是“能不能安全上线”，不是产品宣传：
+
+- production 下默认租户必须为空，不能静默落到 `u-sylvan`
+- `KUN_AUTH_SECRET` 或 `KUN_AUTH_SECRETS` 必须至少包含一个足够长的 secret
+- `KUN_PG_DSN` 必须用 `kun_app` 这种非管理员应用账号
+- S3/MinIO 不能用默认密钥
+- alembic 必须单 head
+- 备份脚本和恢复 smoke 脚本必须存在
+- delivery status 不能把没接入主流程的能力标成 ready
+
+有 blocker 时命令返回非零退出码，CI/release 应该直接拦住。
+
+### 租户启动包
+
+生产模式不再信任裸 `X-Tenant-Id`。给一个租户发起 dogfood 前，先生成签名 token：
+
+```bash
+export KUN_AUTH_SECRET="至少 32 位的随机字符串"
+# 轮换期也可以:
+# export KUN_AUTH_SECRETS="新 secret,旧 secret"
+uv run kun ops onboard-tenant \
+  --tenant u-sylvan \
+  --user petrarain \
+  --scopes world:approve,world:dispatch \
+  --output /tmp/kun-u-sylvan-onboarding.json
+```
+
+这只是当前阶段的安全启动包，不是完整账号体系。它会输出 Bearer token、smoke curl，以及还缺什么：注册登录、组织成员、账单、集中密钥轮换。
+
+### V4 低风险 dogfood
+
+```bash
+uv run kun ops dogfood --tenant u-sylvan
+uv run kun ops dogfood --tenant u-sylvan --json
+```
+
+这条命令只跑低风险、可重复的验收：
+
+- preflight 能跑，且没有 blocker
+- delivery status 没把半成品冒充 ready
+- 租户启动 token 能验签
+- WorldGateway 的低风险 `local_file.write` handler 可预览、可执行、可审计
+- 关键边界仍然诚实暴露：生产级部署是 `not_ready`，长周期任务是 `partial`
+
+它不是“鲲已经能自动运营公司”的验收。真正长周期 dogfood 要另起真实 Mission，用用户目标、预算、外部动作和复盘跑完整周期。
+
 ### 跑一次 task
 
 ```bash
@@ -77,6 +130,7 @@ KUN_TASK_MAX_DURATION_SEC=1800
 # 多租户 (production 必须显式, dev 可设 default)
 KUN_DEFAULT_TENANT_ID=                  # production 必须空
 KUN_AUTH_SECRET=please-use-32+-chars    # production 必须有；API 不再信任裸 X-Tenant-Id
+KUN_AUTH_SECRETS=new-secret,old-secret  # 可选；轮换期同时验多个 secret
 
 # 低峰期 context/memory 瘦身
 KUN_CONTEXT_MAINTENANCE_ENABLED=1

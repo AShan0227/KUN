@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from kun.security.auth import AuthTokenError, sign_auth_token, verify_bearer_token
+from kun.security.auth import (
+    AuthTokenError,
+    sign_auth_token,
+    verify_bearer_token,
+    verify_bearer_token_any,
+)
 
 
 @pytest.mark.unit
@@ -48,3 +53,14 @@ def test_signed_auth_token_rejects_expired() -> None:
 
     with pytest.raises(AuthTokenError, match="expired"):
         verify_bearer_token(f"Bearer {token}", "x" * 40)
+
+
+@pytest.mark.unit
+def test_verify_bearer_token_any_accepts_rotation_secret() -> None:
+    old_secret = "old-" + "x" * 40
+    new_secret = "new-" + "y" * 40
+    token = sign_auth_token({"tenant_id": "tenant-rotate"}, old_secret)
+
+    claims = verify_bearer_token_any(f"Bearer {token}", [new_secret, old_secret])
+
+    assert claims.tenant_id == "tenant-rotate"

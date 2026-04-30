@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from kun.api.blackboard import (
+    _request_identity,
     register_data_source,
     reset_data_sources,
 )
@@ -18,6 +19,7 @@ from kun.api.blackboard import (
 )
 from kun.api.blackboard_data_sources import _entry_from_runtime_rows
 from kun.core.orm import RuntimeStateRow, TaskRow
+from kun.core.tenancy import TenantContext, tenant_scope
 from kun.engineering.budget_tracker import (
     BEHAVIOR_BY_LEVEL,
     BudgetTracker,
@@ -67,6 +69,39 @@ def test_blackboard_tasks_with_data_source(bb_client: TestClient) -> None:
     assert len(body) == 1
     assert body[0]["task_id"] == "tk-1"
     assert body[0]["status"] == "running"
+
+
+def test_blackboard_identity_uses_signed_context_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "kun.api.blackboard.settings",
+        lambda: SimpleNamespace(env="production"),
+    )
+
+    with tenant_scope(TenantContext(tenant_id="token-tenant", user_id="token-user")):
+        tenant_id, user_id = _request_identity(
+            x_user_id="header-user",
+            x_tenant_id="spoofed-tenant",
+        )
+
+    assert tenant_id == "token-tenant"
+    assert user_id == "token-user"
+
+
+def test_blackboard_identity_keeps_dev_header_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "kun.api.blackboard.settings",
+        lambda: SimpleNamespace(env="dev"),
+    )
+
+    tenant_id, user_id = _request_identity(
+        x_user_id="header-user",
+        x_tenant_id="dev-tenant",
+    )
+
+    assert tenant_id == "dev-tenant"
+    assert user_id == "header-user"
 
 
 def test_blackboard_state_default_empty(bb_client: TestClient) -> None:

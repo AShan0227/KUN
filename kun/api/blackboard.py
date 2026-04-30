@@ -21,7 +21,9 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from kun.core.config import settings
 from kun.core.state_ledger import StateLedgerEntry
+from kun.core.tenancy import current_tenant
 
 router = APIRouter(prefix="/api/blackboard", tags=["blackboard"])
 
@@ -121,48 +123,71 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+def _request_identity(
+    *,
+    x_user_id: str | None = None,
+    x_tenant_id: str | None = None,
+) -> tuple[str, str]:
+    """Resolve blackboard identity from trusted tenant context.
+
+    In production the middleware already resolves tenant/user from a signed
+    Bearer token.  Blackboard endpoints must not silently trust X-Tenant-Id.
+    In dev/test we keep the header fallback so old local scripts still work.
+    """
+
+    ctx = current_tenant()
+    tenant_id = ctx.tenant_id
+    if settings().env != "production" and x_tenant_id:
+        tenant_id = x_tenant_id
+    user_id = ctx.user_id or x_user_id or "u-anon"
+    return tenant_id, user_id
+
+
 @router.get("/tasks", response_model=list[TaskBoardItem])
 async def get_tasks(
-    x_user_id: Annotated[str, Header(alias="X-User-Id")],
-    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-Id")] = None,
     status: str | None = Query(None),
 ) -> list[TaskBoardItem]:
     """任务看板."""
     fn = _data_sources.get("tasks")
     if fn is None:
         return []
-    items = await _maybe_await(fn(tenant_id=x_tenant_id, user_id=x_user_id, status=status))
+    tenant_id, user_id = _request_identity(x_user_id=x_user_id, x_tenant_id=x_tenant_id)
+    items = await _maybe_await(fn(tenant_id=tenant_id, user_id=user_id, status=status))
     return [TaskBoardItem(**i) if isinstance(i, dict) else i for i in items]
 
 
 @router.get("/events", response_model=list[EventStreamItem])
 async def get_events(
-    x_user_id: Annotated[str, Header(alias="X-User-Id")],
-    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-Id")] = None,
     limit: int = Query(50, ge=1, le=500),
 ) -> list[EventStreamItem]:
     """事件流 (近期 N 条)."""
     fn = _data_sources.get("events")
     if fn is None:
         return []
-    items = await _maybe_await(fn(tenant_id=x_tenant_id, user_id=x_user_id, limit=limit))
+    tenant_id, user_id = _request_identity(x_user_id=x_user_id, x_tenant_id=x_tenant_id)
+    items = await _maybe_await(fn(tenant_id=tenant_id, user_id=user_id, limit=limit))
     return [EventStreamItem(**i) if isinstance(i, dict) else i for i in items]
 
 
 @router.get("/state", response_model=GlobalStateView)
 async def get_state(
-    x_user_id: Annotated[str, Header(alias="X-User-Id")],
-    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-Id")] = None,
 ) -> GlobalStateView:
     """全局状态区."""
     fn = _data_sources.get("state")
+    tenant_id, user_id = _request_identity(x_user_id=x_user_id, x_tenant_id=x_tenant_id)
     if fn is None:
         return GlobalStateView(
-            tenant_id=x_tenant_id,
-            user_id=x_user_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
             last_update=datetime.now(UTC).isoformat(),
         )
-    state = await _maybe_await(fn(tenant_id=x_tenant_id, user_id=x_user_id))
+    state = await _maybe_await(fn(tenant_id=tenant_id, user_id=user_id))
     if isinstance(state, dict):
         return GlobalStateView(**state)
     if isinstance(state, GlobalStateView):
@@ -172,44 +197,47 @@ async def get_state(
 
 @router.get("/state-ledger", response_model=list[StateLedgerEntry])
 async def get_state_ledger_list(
-    x_user_id: Annotated[str, Header(alias="X-User-Id")],
-    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-Id")] = None,
 ) -> list[StateLedgerEntry]:
     """当前活跃任务状态账本."""
     fn = _data_sources.get("state_ledger")
     if fn is None:
         return []
-    items = await _maybe_await(fn(tenant_id=x_tenant_id, user_id=x_user_id))
+    tenant_id, user_id = _request_identity(x_user_id=x_user_id, x_tenant_id=x_tenant_id)
+    items = await _maybe_await(fn(tenant_id=tenant_id, user_id=user_id))
     return [StateLedgerEntry.model_validate(item) for item in items]
 
 
 @router.get("/state-ledger/history", response_model=list[StateLedgerHistoryItem])
 async def get_state_ledger_history(
-    x_user_id: Annotated[str, Header(alias="X-User-Id")],
-    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-Id")] = None,
     limit: int = Query(100, ge=1, le=500),
 ) -> list[StateLedgerHistoryItem]:
     """长期状态账本：从 EventRow 回放最近事件。"""
     fn = _data_sources.get("state_ledger_history")
     if fn is None:
         return []
-    items = await _maybe_await(fn(tenant_id=x_tenant_id, user_id=x_user_id, limit=limit))
+    tenant_id, user_id = _request_identity(x_user_id=x_user_id, x_tenant_id=x_tenant_id)
+    items = await _maybe_await(fn(tenant_id=tenant_id, user_id=user_id, limit=limit))
     return [StateLedgerHistoryItem.model_validate(item) for item in items]
 
 
 @router.get("/state-ledger/{task_id}/history", response_model=list[StateLedgerHistoryItem])
 async def get_state_ledger_task_history(
     task_id: str,
-    x_user_id: Annotated[str, Header(alias="X-User-Id")],
-    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-Id")] = None,
     limit: int = Query(100, ge=1, le=500),
 ) -> list[StateLedgerHistoryItem]:
     """某个任务的长期状态账本：从 EventRow 回放。"""
     fn = _data_sources.get("state_ledger_history")
     if fn is None:
         return []
+    tenant_id, user_id = _request_identity(x_user_id=x_user_id, x_tenant_id=x_tenant_id)
     items = await _maybe_await(
-        fn(tenant_id=x_tenant_id, user_id=x_user_id, task_id=task_id, limit=limit)
+        fn(tenant_id=tenant_id, user_id=user_id, task_id=task_id, limit=limit)
     )
     return [StateLedgerHistoryItem.model_validate(item) for item in items]
 
@@ -217,14 +245,15 @@ async def get_state_ledger_task_history(
 @router.get("/state-ledger/{task_id}", response_model=StateLedgerEntry)
 async def get_state_ledger_task(
     task_id: str,
-    x_user_id: Annotated[str, Header(alias="X-User-Id")],
-    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-Id")] = None,
 ) -> StateLedgerEntry:
     """某个任务的状态账本快照."""
     fn = _data_sources.get("state_ledger")
     if fn is None:
         raise HTTPException(404, "state ledger not found")
-    item = await _maybe_await(fn(tenant_id=x_tenant_id, user_id=x_user_id, task_id=task_id))
+    tenant_id, user_id = _request_identity(x_user_id=x_user_id, x_tenant_id=x_tenant_id)
+    item = await _maybe_await(fn(tenant_id=tenant_id, user_id=user_id, task_id=task_id))
     if item is None:
         raise HTTPException(404, "state ledger not found")
     return StateLedgerEntry.model_validate(item)
@@ -233,7 +262,7 @@ async def get_state_ledger_task(
 @router.get("/workspace/{task_id}", response_model=WorkspaceView)
 async def get_workspace(
     task_id: str,
-    x_user_id: Annotated[str, Header(alias="X-User-Id")],
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
 ) -> WorkspaceView:
     """共享工作区."""
     fn = _data_sources.get("workspace")
@@ -242,7 +271,8 @@ async def get_workspace(
             task_id=task_id,
             last_update=datetime.now(UTC).isoformat(),
         )
-    ws = await _maybe_await(fn(task_id=task_id, user_id=x_user_id))
+    _tenant_id, user_id = _request_identity(x_user_id=x_user_id)
+    ws = await _maybe_await(fn(task_id=task_id, user_id=user_id))
     if ws is None:
         raise HTTPException(404, "workspace not found")
     if isinstance(ws, dict):
@@ -255,13 +285,14 @@ async def get_workspace(
 @router.get("/assets/{task_id}", response_model=AssetPoolSliceView)
 async def get_assets(
     task_id: str,
-    x_user_id: Annotated[str, Header(alias="X-User-Id")],
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
 ) -> AssetPoolSliceView:
     """资产池活跃切片."""
     fn = _data_sources.get("assets")
     if fn is None:
         return AssetPoolSliceView(task_id=task_id)
-    assets = await _maybe_await(fn(task_id=task_id, user_id=x_user_id))
+    _tenant_id, user_id = _request_identity(x_user_id=x_user_id)
+    assets = await _maybe_await(fn(task_id=task_id, user_id=user_id))
     if isinstance(assets, dict):
         return AssetPoolSliceView(**assets)
     if isinstance(assets, AssetPoolSliceView):
@@ -273,8 +304,8 @@ async def get_assets(
 @router.get("/full/{task_id}")
 async def get_full_for_agent(
     task_id: str,
-    x_user_id: Annotated[str, Header(alias="X-User-Id")],
-    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-Id")] = None,
 ) -> dict[str, Any]:
     """对 agent: 完整 JSON dump (state + workspace + assets + events)."""
     state_fn = _data_sources.get("state")
@@ -282,36 +313,33 @@ async def get_full_for_agent(
     ws_fn = _data_sources.get("workspace")
     assets_fn = _data_sources.get("assets")
     events_fn = _data_sources.get("events")
+    tenant_id, user_id = _request_identity(x_user_id=x_user_id, x_tenant_id=x_tenant_id)
     return {
         "rendered_for": "agent",
         "task_id": task_id,
         "state": (
-            await _maybe_await(state_fn(tenant_id=x_tenant_id, user_id=x_user_id))
-            if state_fn
-            else {}
+            await _maybe_await(state_fn(tenant_id=tenant_id, user_id=user_id)) if state_fn else {}
         ),
         "state_ledger": (
-            await _maybe_await(ledger_fn(tenant_id=x_tenant_id, user_id=x_user_id, task_id=task_id))
+            await _maybe_await(ledger_fn(tenant_id=tenant_id, user_id=user_id, task_id=task_id))
             if ledger_fn
             else {}
         ),
         "state_ledger_history": (
             await _maybe_await(
                 _data_sources["state_ledger_history"](
-                    tenant_id=x_tenant_id, user_id=x_user_id, task_id=task_id, limit=100
+                    tenant_id=tenant_id, user_id=user_id, task_id=task_id, limit=100
                 )
             )
             if "state_ledger_history" in _data_sources
             else []
         ),
-        "workspace": (
-            await _maybe_await(ws_fn(task_id=task_id, user_id=x_user_id)) if ws_fn else {}
-        ),
+        "workspace": (await _maybe_await(ws_fn(task_id=task_id, user_id=user_id)) if ws_fn else {}),
         "assets": (
-            await _maybe_await(assets_fn(task_id=task_id, user_id=x_user_id)) if assets_fn else {}
+            await _maybe_await(assets_fn(task_id=task_id, user_id=user_id)) if assets_fn else {}
         ),
         "events": (
-            await _maybe_await(events_fn(tenant_id=x_tenant_id, user_id=x_user_id, limit=100))
+            await _maybe_await(events_fn(tenant_id=tenant_id, user_id=user_id, limit=100))
             if events_fn
             else []
         ),

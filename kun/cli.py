@@ -19,6 +19,7 @@ app = typer.Typer(add_completion=False, no_args_is_help=True)
 security_app = typer.Typer(add_completion=False, no_args_is_help=True)
 promises_app = typer.Typer(add_completion=False, no_args_is_help=True)
 release_app = typer.Typer(add_completion=False, no_args_is_help=True)
+ops_app = typer.Typer(add_completion=False, no_args_is_help=True, help="生产准入 / 租户启动工具")
 protocol_app = typer.Typer(add_completion=False, no_args_is_help=True)
 qi_app = typer.Typer(
     add_completion=False, no_args_is_help=True, help="启 (Qi) — KUN 子模式: 探索/沉淀协议 (V2.3)"
@@ -33,6 +34,7 @@ console = Console()
 app.add_typer(security_app, name="security")
 app.add_typer(promises_app, name="promises")
 app.add_typer(release_app, name="release")
+app.add_typer(ops_app, name="ops")
 app.add_typer(protocol_app, name="protocol")
 app.add_typer(qi_app, name="qi")
 app.add_typer(lab_app, name="lab")
@@ -459,6 +461,137 @@ def release_notes(
         return
     output.write_text(notes)
     console.print(f"[green]Release notes written[/]: {output}")
+
+
+@ops_app.command("preflight")
+def ops_preflight(
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+    fail_on_blocker: bool = typer.Option(
+        True,
+        "--fail-on-blocker/--no-fail-on-blocker",
+        help="有 blocker 时返回非零退出码",
+    ),
+    skip_alembic: bool = typer.Option(False, "--skip-alembic", help="跳过 alembic heads 检查"),
+) -> None:
+    """上线前硬检查：配置、迁移、备份脚本、能力边界诚实性。"""
+
+    from kun.ops.preflight import run_preflight
+
+    report = run_preflight(run_alembic_heads=not skip_alembic)
+    if json_output:
+        console.print_json(data=report.model_dump(mode="json"))
+    else:
+        table = Table(title=f"KUN production preflight — {report.status}")
+        table.add_column("severity")
+        table.add_column("check")
+        table.add_column("detail")
+        table.add_column("action")
+        color = {"ok": "green", "warn": "yellow", "blocker": "red"}
+        for check in report.checks:
+            table.add_row(
+                f"[{color[check.severity]}]{check.severity}[/]",
+                check.title,
+                check.detail,
+                check.suggested_action or "-",
+            )
+        console.print(table)
+        console.print(
+            "[dim]delivery summary: "
+            + json.dumps(report.delivery_summary, ensure_ascii=False)
+            + "[/]"
+        )
+    if fail_on_blocker and report.status == "block":
+        raise typer.Exit(code=2)
+
+
+@ops_app.command("onboard-tenant")
+def ops_onboard_tenant(
+    tenant: str = typer.Option(..., "--tenant", help="租户 ID"),
+    user: str = typer.Option("", "--user", help="可选 user_id"),
+    scopes: str = typer.Option(
+        "world:approve,world:dispatch",
+        "--scopes",
+        help="逗号分隔权限 scope",
+    ),
+    audience: str = typer.Option("developer", "--audience", help="novice/developer/expert"),
+    ttl_sec: int = typer.Option(86400, "--ttl-sec", min=60),
+    api_origin: str = typer.Option("http://localhost:8000", "--api-origin"),
+    output: Path | None = typer.Option(None, "--output", help="写入 JSON 文件"),
+) -> None:
+    """生成一个租户启动包：签名 token + smoke curl + 边界说明。"""
+
+    import os
+
+    from kun.ops.tenant_onboarding import create_tenant_onboarding_pack
+
+    secret = os.environ.get("KUN_AUTH_SECRET", "")
+    if not secret:
+        secret = next(
+            (
+                item.strip()
+                for item in os.environ.get("KUN_AUTH_SECRETS", "").split(",")
+                if len(item.strip()) >= 32
+            ),
+            "",
+        )
+    if audience not in {"novice", "developer", "expert"}:
+        console.print("[red]audience 必须是 novice/developer/expert[/]")
+        raise typer.Exit(code=2)
+    try:
+        pack = create_tenant_onboarding_pack(
+            tenant_id=tenant,
+            user_id=user or None,
+            scopes=[item.strip() for item in scopes.split(",") if item.strip()],
+            audience=audience,  # type: ignore[arg-type]
+            ttl_sec=ttl_sec,
+            api_origin=api_origin,
+            secret=secret,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2) from exc
+    payload = pack.model_dump(mode="json")
+    if output is not None:
+        output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        console.print(f"[green]tenant onboarding pack written[/]: {output}")
+    else:
+        console.print_json(data=payload)
+
+
+@ops_app.command("dogfood")
+def ops_dogfood(
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+    fail_on_blocker: bool = typer.Option(
+        True,
+        "--fail-on-blocker/--no-fail-on-blocker",
+        help="有 blocker 时返回非零退出码",
+    ),
+) -> None:
+    """跑 V4 低风险 dogfood：preflight、租户 token、WorldGateway、诚实状态。"""
+
+    from kun.ops.dogfood import run_v4_dogfood
+
+    report = asyncio.run(run_v4_dogfood(tenant_id=tenant))
+    if json_output:
+        console.print_json(data=report.model_dump(mode="json"))
+    else:
+        table = Table(title=f"KUN V4 dogfood — {report.status}")
+        table.add_column("status")
+        table.add_column("scenario")
+        table.add_column("summary")
+        table.add_column("next")
+        color = {"pass": "green", "warn": "yellow", "block": "red"}
+        for item in report.scenarios:
+            table.add_row(
+                f"[{color[item.status]}]{item.status}[/]",
+                item.scenario_id,
+                item.summary,
+                item.next_step or "-",
+            )
+        console.print(table)
+    if fail_on_blocker and report.status == "block":
+        raise typer.Exit(code=2)
 
 
 @app.command()

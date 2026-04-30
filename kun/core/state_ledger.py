@@ -5,9 +5,9 @@ V3-2 first cut:
 - EventRow remains the append-only audit log.
 - StateLedger is the hot current-state view used by orchestrator/runtime/blackboard.
 
-This module is intentionally lightweight and in-memory. It is not pretending to
-be durable storage yet; it gives the running system one shared, queryable view of
-"what KUN is doing, why, and where it is".
+This module is intentionally lightweight and in-memory. Durable history is
+served by blackboard_data_sources from EventRow; this hot ledger only answers
+"what KUN is doing right now, why, and where it is".
 """
 
 from __future__ import annotations
