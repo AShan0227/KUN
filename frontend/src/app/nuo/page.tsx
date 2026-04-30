@@ -302,11 +302,14 @@ const WORLD_SECRET_OPTIONS = [
   "KUN_WORLD_SMTP_FROM",
   "KUN_WORLD_SMTP_USERNAME",
   "KUN_WORLD_SMTP_PASSWORD",
+  "KUN_WORLD_SMTP_TLS",
   "KUN_WORLD_BROWSER_EXECUTE_ENABLED",
   "KUN_WORLD_BROWSER_ALLOWED_HOSTS",
-  "KUN_WORLD_ENTERPRISE_API_POST_ENABLED",
-  "KUN_WORLD_ENTERPRISE_API_BASE_URL",
-  "KUN_WORLD_ENTERPRISE_API_TOKEN",
+  "KUN_WORLD_API_POST_ENABLED",
+  "KUN_WORLD_API_ALLOWED_HOSTS",
+  "KUN_WORLD_API_AUTH_HEADER",
+  "KUN_WORLD_API_AUTH_VALUE",
+  "KUN_WORLD_API_TIMEOUT_SEC",
 ] as const;
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -814,8 +817,8 @@ export default function NuoDashboard() {
               <div>
                 <div className="text-sm font-medium">外部动作配置</div>
                 <p className="text-xs text-gray-500 mt-1">
-                  这里只写入 KUN_WORLD_* 配置，用来给邮件、浏览器、企业 API
-                  这些 handler 补密钥或开关。值不会回显；这还是本地 JSON secret store，
+                  这里只写入真实 WorldGateway 会读取的 KUN_WORLD_* 配置，用来给邮件、浏览器、企业 API
+                  这些 handler 补密钥、白名单或开关。值不会回显；这还是本地 JSON secret store，
                   不是云 KMS、自动轮换或完整租户密钥平台。
                 </p>
               </div>
