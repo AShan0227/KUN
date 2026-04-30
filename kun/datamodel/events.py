@@ -74,8 +74,10 @@ EventKind = Literal[
     "guard.budget.exceeded",
     "guard.anomaly.detected",
     # Context
+    "context.selected",
     "context.updated",
     "context.forgotten",
+    "skill.selected",
     "memory.writeback.recorded",
     "credit.assignment.completed",
     # Evaluation / Validation

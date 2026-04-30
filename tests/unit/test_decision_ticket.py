@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import ClassVar
 
+from kun.context.packer import ContextPack, PackedContextItem
 from kun.datamodel.decision_ticket import (
+    ticket_from_context_selection,
     ticket_from_delivery_review,
     ticket_from_llm_route,
     ticket_from_protocol_applied,
     ticket_from_route_choice,
+    ticket_from_skill_selection,
     ticket_from_validation_tier,
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
@@ -118,6 +122,58 @@ def test_llm_route_ticket_wraps_actual_model_choice() -> None:
     assert ticket.selected_action == "codex-mcp:gpt-5.5:top"
     assert ticket.evidence["provider"] == "codex-mcp"
     assert ticket.metadata["step_id"] == 2
+
+
+def test_context_selection_ticket_records_selected_assets() -> None:
+    pack = ContextPack(
+        items=[
+            PackedContextItem(
+                asset_id="asset-1",
+                asset_kind="memory",
+                relevance_score=0.91,
+                title="上次复盘",
+            )
+        ]
+    )
+
+    ticket = ticket_from_context_selection(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        risk_level="medium",
+        execution_mode="MAX",
+        context_limit=3,
+        context_pack=pack,
+    )
+
+    assert ticket.phase == "context"
+    assert ticket.decision_point == "context_selected"
+    assert ticket.status == "selected"
+    assert ticket.metadata["asset_ids"] == ["asset-1"]
+    assert ticket.evidence["asset_kinds"] == ["memory"]
+
+
+def test_skill_selection_ticket_records_candidate_skills() -> None:
+    skill = SimpleNamespace(
+        skill_id="lesson_planner",
+        manifest=SimpleNamespace(
+            description="Plan lessons",
+            maturity="stable",
+        ),
+    )
+
+    ticket = ticket_from_skill_selection(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        risk_level="low",
+        top_k=3,
+        skills=[skill],
+    )
+
+    assert ticket.phase == "skill"
+    assert ticket.decision_point == "skill_selected"
+    assert ticket.status == "selected"
+    assert ticket.metadata["skill_ids"] == ["lesson_planner"]
+    assert ticket.evidence["skills"][0]["description"] == "Plan lessons"
 
 
 def test_protocol_applied_ticket_wraps_protocol_registry_choice() -> None:

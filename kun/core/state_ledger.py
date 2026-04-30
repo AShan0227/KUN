@@ -170,6 +170,16 @@ class StateLedger:
                 entry.execution_mode = str(
                     ticket.metadata.get("execution_mode") or entry.execution_mode
                 )
+            elif ticket.decision_point == "context_selected":
+                asset_ids = ticket.metadata.get("asset_ids")
+                if isinstance(asset_ids, list):
+                    entry.context_asset_ids = [str(asset_id) for asset_id in asset_ids]
+                entry.decision_reason = ticket.reason or entry.decision_reason
+            elif ticket.decision_point == "skill_selected":
+                skill_ids = ticket.metadata.get("skill_ids")
+                if isinstance(skill_ids, list):
+                    entry.skill_hints = [str(skill_id) for skill_id in skill_ids]
+                entry.decision_reason = ticket.reason or entry.decision_reason
             elif ticket.decision_point == "protocol_applied":
                 entry.decision_reason = ticket.reason or entry.decision_reason
                 entry.execution_mode = str(

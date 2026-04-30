@@ -43,10 +43,12 @@ from kun.core.orm import IdempotencyRow, MissionRow, RuntimeStateRow, TaskResult
 from kun.core.tenancy import current_tenant
 from kun.datamodel.decision_ticket import (
     DecisionTicket,
+    ticket_from_context_selection,
     ticket_from_delivery_review,
     ticket_from_llm_route,
     ticket_from_protocol_applied,
     ticket_from_route_choice,
+    ticket_from_skill_selection,
     ticket_from_validation_tier,
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
@@ -973,6 +975,27 @@ class Orchestrator:
             task_ref.meta.task_id,
             asset_ids=context_asset_ids,
         )
+        context_ticket = ticket_from_context_selection(
+            tenant_id=tenant.tenant_id,
+            task_id=task_ref.meta.task_id,
+            risk_level=task_ref.meta.risk_level,
+            execution_mode=_task_mode,
+            context_limit=_context_limit,
+            context_pack=context_pack,
+            mission_id=_mission_id_from_task(task_ref),
+        )
+        decision_tickets.append(context_ticket)
+        self._record_state_ledger("record_decision_ticket", context_ticket)
+        async with session_scope(tenant_id=tenant.tenant_id) as s:
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant.tenant_id,
+                    event_type="context.selected",
+                    payload=context_ticket.event_payload(),
+                    task_ref=task_ref.meta.task_id,
+                ),
+            )
         if context_pack.items:
             yield OrchestratorEvent(
                 kind="action_plan",
@@ -980,6 +1003,7 @@ class Orchestrator:
                     "stage": "context_preheat",
                     "asset_ids": context_asset_ids,
                     "mode": _task_mode,
+                    "decision_ticket": context_ticket.event_payload(),
                 },
             )
 
@@ -987,12 +1011,33 @@ class Orchestrator:
             max(3, len(watchtower_decision.skill_hints)) if watchtower_decision is not None else 3
         )
         skill_candidates = self.skill_selector.select(task_ref, top_k=_skill_top_k)
+        skill_ticket = ticket_from_skill_selection(
+            tenant_id=tenant.tenant_id,
+            task_id=task_ref.meta.task_id,
+            risk_level=task_ref.meta.risk_level,
+            top_k=_skill_top_k,
+            skills=skill_candidates,
+            mission_id=_mission_id_from_task(task_ref),
+        )
+        decision_tickets.append(skill_ticket)
+        self._record_state_ledger("record_decision_ticket", skill_ticket)
+        async with session_scope(tenant_id=tenant.tenant_id) as s:
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant.tenant_id,
+                    event_type="skill.selected",
+                    payload=skill_ticket.event_payload(),
+                    task_ref=task_ref.meta.task_id,
+                ),
+            )
         if skill_candidates:
             yield OrchestratorEvent(
                 kind="action_plan",
                 data={
                     "stage": "skill_selection",
                     "candidates": [s.skill_id for s in skill_candidates],
+                    "decision_ticket": skill_ticket.event_payload(),
                 },
             )
 

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from kun.context.packer import ContextPack, PackedContextItem
 from kun.core.state_ledger import StateLedger
 from kun.datamodel.decision_ticket import (
+    ticket_from_context_selection,
     ticket_from_llm_route,
     ticket_from_protocol_applied,
+    ticket_from_skill_selection,
     ticket_from_validation_tier,
 )
 from kun.datamodel.runtime import RuntimeState, StepRecord
@@ -154,6 +159,51 @@ def test_state_ledger_applies_validation_tier_ticket_to_current_view() -> None:
     assert snapshot.current_tier == "tier3"
     assert snapshot.decision_reason.startswith("Validation tier tier3")
     assert snapshot.latest_decision_ticket["decision_point"] == "validation_tier_selected"
+
+
+def test_state_ledger_applies_context_and_skill_selection_tickets() -> None:
+    ledger = StateLedger()
+    owner = Owner(tenant_id="tenant-a", user_id="user-a")
+    task = _task_ref(owner, "选择上下文和技能")
+    ledger.record_task_created(task, tenant_id=owner.tenant_id)
+
+    context_ticket = ticket_from_context_selection(
+        tenant_id=owner.tenant_id,
+        task_id=task.meta.task_id,
+        risk_level="low",
+        execution_mode="SMART",
+        context_limit=1,
+        context_pack=ContextPack(
+            items=[
+                PackedContextItem(
+                    asset_id="asset-1",
+                    asset_kind="memory",
+                    relevance_score=0.8,
+                )
+            ]
+        ),
+    )
+    skill_ticket = ticket_from_skill_selection(
+        tenant_id=owner.tenant_id,
+        task_id=task.meta.task_id,
+        risk_level="low",
+        top_k=3,
+        skills=[
+            SimpleNamespace(
+                skill_id="lesson_planner",
+                manifest=SimpleNamespace(description="Plan lessons", maturity="stable"),
+            )
+        ],
+    )
+    ledger.record_decision_ticket(context_ticket)
+    ledger.record_decision_ticket(skill_ticket)
+
+    snapshot = ledger.snapshot(task.meta.task_id)
+
+    assert snapshot is not None
+    assert snapshot.context_asset_ids == ["asset-1"]
+    assert snapshot.skill_hints == ["lesson_planner"]
+    assert snapshot.decision_ticket_ids == [context_ticket.ticket_id, skill_ticket.ticket_id]
 
 
 def test_state_ledger_records_world_action_execution() -> None:

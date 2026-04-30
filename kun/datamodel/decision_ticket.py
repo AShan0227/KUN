@@ -242,6 +242,108 @@ def ticket_from_route_choice(
     )
 
 
+def ticket_from_context_selection(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    execution_mode: str,
+    context_limit: int,
+    context_pack: Any,
+    mission_id: str | None = None,
+) -> DecisionTicket:
+    """Wrap ContextPacker output as a V4 decision ticket."""
+
+    items = list(getattr(context_pack, "items", []) or [])
+    asset_ids = [
+        str(getattr(item, "asset_id", "")) for item in items if getattr(item, "asset_id", "")
+    ]
+    kinds = [str(getattr(item, "asset_kind", "")) for item in items]
+    scores = [float(getattr(item, "relevance_score", 0.0) or 0.0) for item in items]
+    status: DecisionStatus = "selected" if asset_ids else "skipped"
+    reason = (
+        f"ContextPacker selected {len(asset_ids)} assets for mode={execution_mode}"
+        if asset_ids
+        else f"ContextPacker selected no assets for mode={execution_mode}"
+    )
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="context",
+        decision_point="context_selected",
+        source_module="context.packer",
+        selected_action=",".join(asset_ids) if asset_ids else "none",
+        status=status,
+        reason=reason,
+        confidence=0.7 if asset_ids else 0.45,
+        risk_level=risk_level,
+        inputs_summary={
+            "execution_mode": execution_mode,
+            "context_limit": context_limit,
+        },
+        evidence={
+            "asset_ids": asset_ids,
+            "asset_kinds": kinds,
+            "relevance_scores": scores,
+        },
+        metadata={
+            "asset_ids": asset_ids,
+            "asset_count": len(asset_ids),
+            "context_limit": context_limit,
+            "execution_mode": execution_mode,
+        },
+    )
+
+
+def ticket_from_skill_selection(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    top_k: int,
+    skills: list[Any],
+    mission_id: str | None = None,
+) -> DecisionTicket:
+    """Wrap SkillSelector candidates as a V4 decision ticket."""
+
+    skill_ids = [
+        str(getattr(skill, "skill_id", "")) for skill in skills if getattr(skill, "skill_id", "")
+    ]
+    status: DecisionStatus = "selected" if skill_ids else "skipped"
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="skill",
+        decision_point="skill_selected",
+        source_module="skills.selector",
+        selected_action=",".join(skill_ids) if skill_ids else "none",
+        status=status,
+        reason=(
+            f"SkillSelector selected {len(skill_ids)} candidates"
+            if skill_ids
+            else "SkillSelector found no matching candidate"
+        ),
+        confidence=0.72 if skill_ids else 0.4,
+        risk_level=risk_level,
+        inputs_summary={"top_k": top_k},
+        evidence={
+            "skills": [
+                {
+                    "skill_id": str(getattr(skill, "skill_id", "")),
+                    "description": str(
+                        getattr(getattr(skill, "manifest", None), "description", "")
+                    ),
+                    "maturity": str(getattr(getattr(skill, "manifest", None), "maturity", "")),
+                }
+                for skill in skills
+            ],
+        },
+        metadata={"skill_ids": skill_ids, "skill_count": len(skill_ids), "top_k": top_k},
+    )
+
+
 def ticket_from_llm_route(
     *,
     tenant_id: str,
@@ -530,10 +632,12 @@ __all__ = [
     "DecisionStatus",
     "DecisionTicket",
     "DecisionTicketRef",
+    "ticket_from_context_selection",
     "ticket_from_delivery_review",
     "ticket_from_llm_route",
     "ticket_from_protocol_applied",
     "ticket_from_route_choice",
+    "ticket_from_skill_selection",
     "ticket_from_validation_tier",
     "ticket_from_value_gate_decision",
     "ticket_from_watchtower_decision",
