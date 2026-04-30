@@ -206,3 +206,61 @@ def test_get_router_can_disable_only_claude_cli(monkeypatch):
         assert router.providers["coding"].name == "codex-mcp"
     finally:
         reset_router()
+
+
+@pytest.mark.unit
+def test_codex_primary_does_not_fallback_to_claude_unless_allowed(monkeypatch):
+    """KUN_LLM_PRIMARY=codex 时 Claude 不再误抢主链路."""
+    from kun.interface.llm.claude_code_provider import ClaudeCodeProvider
+    from kun.interface.llm.codex_cli_provider import CodexCliProvider
+    from kun.interface.llm.codex_mcp_provider import CodexMcpProvider
+
+    reset_router()
+    monkeypatch.setenv("KUN_LLM_PRIMARY", "codex")
+    monkeypatch.delenv("KUN_ALLOW_CLAUDE_FALLBACK", raising=False)
+    monkeypatch.delenv("KUN_DISABLE_CLI_OAUTH", raising=False)
+    monkeypatch.delenv("KUN_DISABLE_CLAUDE_CLI", raising=False)
+    monkeypatch.delenv("KUN_DISABLE_CODEX_CLI", raising=False)
+    monkeypatch.delenv("KUN_OFOX_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    monkeypatch.setattr(ClaudeCodeProvider, "available", staticmethod(lambda: True))
+    monkeypatch.setattr(CodexMcpProvider, "available", staticmethod(lambda: False))
+    monkeypatch.setattr(CodexCliProvider, "available", staticmethod(lambda: False))
+
+    try:
+        router = get_router()
+        assert router.providers["top"].name == "stub"
+        assert router.providers["coding"].name == "stub"
+    finally:
+        reset_router()
+
+
+@pytest.mark.unit
+def test_codex_primary_can_opt_into_claude_fallback(monkeypatch):
+    """需要 Claude 兜底时必须显式打开 KUN_ALLOW_CLAUDE_FALLBACK."""
+    from kun.interface.llm.claude_code_provider import ClaudeCodeProvider
+    from kun.interface.llm.codex_cli_provider import CodexCliProvider
+    from kun.interface.llm.codex_mcp_provider import CodexMcpProvider
+
+    reset_router()
+    monkeypatch.setenv("KUN_LLM_PRIMARY", "codex")
+    monkeypatch.setenv("KUN_ALLOW_CLAUDE_FALLBACK", "1")
+    monkeypatch.delenv("KUN_DISABLE_CLI_OAUTH", raising=False)
+    monkeypatch.delenv("KUN_DISABLE_CLAUDE_CLI", raising=False)
+    monkeypatch.delenv("KUN_DISABLE_CODEX_CLI", raising=False)
+    monkeypatch.delenv("KUN_OFOX_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    monkeypatch.setattr(ClaudeCodeProvider, "available", staticmethod(lambda: True))
+    monkeypatch.setattr(CodexMcpProvider, "available", staticmethod(lambda: False))
+    monkeypatch.setattr(CodexCliProvider, "available", staticmethod(lambda: False))
+
+    try:
+        router = get_router()
+        assert router.providers["top"].name == "claude-code-cli"
+        assert router.providers["coding"].name == "claude-code-cli"
+    finally:
+        reset_router()

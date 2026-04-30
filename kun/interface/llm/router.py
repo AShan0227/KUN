@@ -429,6 +429,8 @@ def get_router() -> LLMRouter:
     Disable only codex (keep Claude CLI): KUN_DISABLE_CODEX_CLI=1.
     Disable only Claude CLI (keep Codex): KUN_DISABLE_CLAUDE_CLI=1.
     Force one primary family with KUN_LLM_PRIMARY=auto|codex|claude|anthropic|minimax|stub.
+    When KUN_LLM_PRIMARY=codex, Claude fallback is disabled by default; set
+    KUN_ALLOW_CLAUDE_FALLBACK=1 if you intentionally want Claude as a backup.
     Override codex model id: KUN_CODEX_MCP_MODEL=gpt-5.5.
     """
     global _router
@@ -446,6 +448,7 @@ def get_router() -> LLMRouter:
     cli_disabled = os.getenv("KUN_DISABLE_CLI_OAUTH") == "1"
     claude_disabled = os.getenv("KUN_DISABLE_CLAUDE_CLI") == "1"
     codex_disabled = os.getenv("KUN_DISABLE_CODEX_CLI") == "1"
+    allow_claude_fallback = os.getenv("KUN_ALLOW_CLAUDE_FALLBACK") == "1"
     has_claude_cli = ClaudeCodeProvider.available() and not cli_disabled and not claude_disabled
     # Prefer MCP (works with ChatGPT accounts; default model is GPT-5.5);
     # fall back to exec CLI only when the user has an OpenAI API key account.
@@ -535,14 +538,17 @@ def get_router() -> LLMRouter:
         install_stub_family_for_main_tiers()
         installed_main = True
 
+    def should_consider_claude_fallback() -> bool:
+        return primary_family != "codex" or allow_claude_fallback
+
     if installed_main:
         pass
-    elif has_claude_cli:
+    elif should_consider_claude_fallback() and has_claude_cli:
         log.info("router.claude_code_cli", hint="using logged-in claude CLI OAuth")
         providers["top"] = ClaudeCodeProvider(tier="top")
         providers["strong"] = ClaudeCodeProvider(tier="strong")
         providers["cheap"] = ClaudeCodeProvider(tier="cheap")
-    elif has_ofox or has_anthropic:
+    elif should_consider_claude_fallback() and (has_ofox or has_anthropic):
         providers["top"] = AnthropicProvider(model_id="claude-opus-4-7", tier="top")
         providers["strong"] = AnthropicProvider(model_id="claude-sonnet-4-6", tier="strong")
         providers["cheap"] = AnthropicProvider(model_id="claude-haiku-4-5-20251001", tier="cheap")
@@ -564,7 +570,7 @@ def get_router() -> LLMRouter:
         providers["coding"] = CodexCliProvider(tier="coding", model_id="gpt-5")
     elif has_openai or has_ofox:
         providers["coding"] = OpenAIProvider(model_id="gpt-5", tier="coding")
-    elif has_claude_cli:
+    elif should_consider_claude_fallback() and has_claude_cli:
         # Fallback within the OAuth family — claude-code CLI for coding too
         providers["coding"] = ClaudeCodeProvider(tier="coding")
     elif has_minimax:

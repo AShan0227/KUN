@@ -52,10 +52,13 @@ KUN_ENV=production
 # NATS
 NATS_URL=nats://nats:4222
 
-# LLM provider (优先级: claude-cli > anthropic api > minimax > stub)
-KUN_OFOX_API_KEY=...        # 或
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...        # for codex
+# LLM provider (默认: Codex MCP / GPT-5.5; Claude 只作为显式 opt-in)
+KUN_LLM_PRIMARY=codex
+KUN_CODEX_MCP_MODEL=gpt-5.5
+KUN_DISABLE_CLAUDE_CLI=1
+OPENAI_API_KEY=sk-...        # 可选 direct API fallback; ChatGPT 账号优先走 Codex MCP
+KUN_OFOX_API_KEY=...         # 可选 Anthropic/OFOX fallback
+ANTHROPIC_API_KEY=sk-ant-... # 可选 Anthropic fallback
 MINIMAX_API_KEY=...          # 兜底
 
 # V2.2 wire 开关 (默认开)

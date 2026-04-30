@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from time import monotonic
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -535,7 +536,54 @@ async def load_resource_credit_scores(
     return scores
 
 
+async def hydrate_contribution_tracker_from_db(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    resource_kinds: Iterable[str] | None = None,
+    limit: int = 500,
+    min_interval_sec: float = 300.0,
+) -> int:
+    """Seed the in-process contribution tracker from durable DB stats.
+
+    这一步是 V4 里 MoE 闭环的关键补线：资源信用已经写进
+    ``resource_credit_stats``，但进程重启后 Watchtower 只看热 cache 会变笨。
+    在守望决策前按租户轻量预热一次，让策略包 / skill / memory 的历史信用
+    能继续影响本次路径选择。
+    """
+    if not tenant_id:
+        return 0
+    kinds = tuple(sorted({str(kind) for kind in (resource_kinds or []) if str(kind)}))
+    cache_key = (tenant_id, kinds)
+    now = monotonic()
+    last = _hydration_last_run.get(cache_key)
+    if last is not None and min_interval_sec > 0 and now - last < min_interval_sec:
+        return 0
+
+    stmt = (
+        select(ResourceCreditRow)
+        .where(ResourceCreditRow.tenant_id == tenant_id)
+        .order_by(ResourceCreditRow.updated_at.desc())
+        .limit(max(1, int(limit)))
+    )
+    if kinds:
+        stmt = stmt.where(ResourceCreditRow.resource_kind.in_(kinds))
+    result = await session.execute(stmt)
+    rows = result.scalars().all()
+    tracker = get_contribution_tracker()
+    for row in rows:
+        tracker.seed_counts(
+            row.resource_key,
+            used_count=row.used_count,
+            pass_count=row.pass_count,
+            critical_count=row.critical_count,
+        )
+    _hydration_last_run[cache_key] = now
+    return len(rows)
+
+
 _tracker: ContributionTracker | None = None
+_hydration_last_run: dict[tuple[str, tuple[str, ...]], float] = {}
 
 
 def get_contribution_tracker() -> ContributionTracker:
@@ -549,6 +597,7 @@ def get_contribution_tracker() -> ContributionTracker:
 def reset_contribution_tracker() -> None:
     global _tracker
     _tracker = None
+    _hydration_last_run.clear()
 
 
 __all__ = [
@@ -562,6 +611,7 @@ __all__ = [
     "contribution_score_from_counts",
     "get_contribution_tracker",
     "heuristic_reflector",
+    "hydrate_contribution_tracker_from_db",
     "llm_reflector_factory",
     "load_resource_credit_scores",
     "make_resource_key",

@@ -10,9 +10,12 @@ from kun.engineering.credit_assignment import (
     ResourceCreditDelta,
     StepCredit,
     contribution_score_from_counts,
+    get_contribution_tracker,
     heuristic_reflector,
+    hydrate_contribution_tracker_from_db,
     make_resource_key,
     persist_resource_credit_report,
+    reset_contribution_tracker,
     split_resource_key,
 )
 from sqlalchemy.dialects import postgresql
@@ -201,6 +204,45 @@ async def test_persist_resource_credit_report_builds_atomic_upsert() -> None:
     assert "ON CONFLICT" in session.sql
     assert "resource_credit_stats" in session.sql
     assert "used_count" in session.sql
+
+
+@pytest.mark.asyncio
+async def test_hydrate_contribution_tracker_from_db_seeds_hot_cache() -> None:
+    class Row:
+        resource_key = "strategy_pack:education"
+        used_count = 3
+        pass_count = 3
+        critical_count = 3
+
+    class Result:
+        def scalars(self) -> Result:
+            return self
+
+        def all(self) -> list[Row]:
+            return [Row()]
+
+    class FakeSession:
+        async def execute(self, _stmt: Any) -> Result:
+            return Result()
+
+    reset_contribution_tracker()
+    try:
+        count = await hydrate_contribution_tracker_from_db(
+            FakeSession(),  # type: ignore[arg-type]
+            tenant_id="u-sylvan",
+            resource_kinds=["strategy_pack"],
+            min_interval_sec=0,
+        )
+        assert count == 1
+        assert (
+            get_contribution_tracker().contribution_score(
+                "education",
+                "strategy_pack",
+            )
+            == 1.0
+        )
+    finally:
+        reset_contribution_tracker()
 
 
 # ---- reset_task ----

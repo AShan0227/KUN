@@ -61,6 +61,7 @@ from kun.engineering.credit_assignment import (
     CreditAssignment,
     get_contribution_tracker,
     heuristic_reflector,
+    hydrate_contribution_tracker_from_db,
     persist_resource_credit_report,
 )
 from kun.engineering.validation import ValidationPipeline, pick_tier
@@ -608,6 +609,13 @@ class Orchestrator:
             and _os.getenv("KUN_WATCHTOWER_DECISION_PLANE_ENABLED", "1") == "1"
         ):
             try:
+                async with session_scope(tenant_id=tenant.tenant_id) as s:
+                    await hydrate_contribution_tracker_from_db(
+                        s,
+                        tenant_id=tenant.tenant_id,
+                        resource_kinds=("strategy_pack",),
+                        limit=200,
+                    )
                 watchtower_decision = self.decision_plane.decide(
                     task_ref,
                     active_protocol=active_protocol,
