@@ -2435,6 +2435,7 @@ class Orchestrator:
             "memory": _dedupe_strings(memory_asset_ids),
             "skill": skill_ids,
             "model": [response.model or "unknown"],
+            "model_tier": [str(response.tier)],
             "llm_route": [
                 f"{response.provider or 'unknown'}:{response.model or 'unknown'}:{response.tier}"
             ],

@@ -267,6 +267,8 @@ class LLMRouter:
                 )
                 span.set_attribute("kun.strategy_matcher_engaged", True)
 
+            decision = await self._maybe_override_with_credit(decision, request)
+
             span.set_attribute("kun.purpose", str(purpose))
             span.set_attribute("kun.primary_tier", str(decision.primary_tier))
             span.set_attribute("kun.fallback_tier", str(decision.fallback_tier))
@@ -337,6 +339,75 @@ class LLMRouter:
             span.set_attribute("kun.cost_usd_equivalent", result.cost_usd_equivalent)
             return result
 
+    async def _maybe_override_with_credit(
+        self,
+        decision: RouteDecision,
+        request: LLMRequest,
+    ) -> RouteDecision:
+        """Use proven historical credits to adjust the chosen tier.
+
+        这层是 MoE / 最佳路径学习的热路径接入点: Orchestrator 已经把
+        ``model`` / ``model_tier`` / ``llm_route`` 写进 resource_credit_stats,
+        router 这里把这些经验读回来。为了避免过度工程化拖慢简单任务, 只有
+        历史差距足够明显时才覆盖原 4 层路由结论。
+        """
+
+        if os.getenv("KUN_LLM_CREDIT_ROUTING_ENABLED", "1") != "1":
+            return decision
+        if decision.primary_tier in {"fallback", "coding"}:
+            return decision
+
+        profile = request.profile
+        if profile and (profile.force_fallback or profile.needs_coding):
+            return decision
+        if profile and profile.risk_level == "critical":
+            return decision
+
+        candidate_tiers = [
+            cast_tier(tier)
+            for tier in ("top", "strong", "cheap")
+            if cast_tier(tier) in self.providers
+        ]
+        if decision.primary_tier not in candidate_tiers or len(candidate_tiers) < 2:
+            return decision
+
+        scored = await _score_tier_credit_candidates(self.providers, candidate_tiers)
+        if not scored:
+            return decision
+
+        baseline = scored.get(decision.primary_tier, 0.0)
+        best_tier, best_score = max(
+            scored.items(),
+            key=lambda item: (item[1], -_tier_strength_rank(item[0])),
+        )
+        if best_tier == decision.primary_tier:
+            return decision
+
+        min_score = _credit_routing_min_score()
+        min_delta = _credit_routing_min_delta()
+        if best_score < min_score or (best_score - baseline) < min_delta:
+            return decision
+
+        # 高风险任务允许经验把模型升档, 不允许因为历史便宜路线不错就降档。
+        if (
+            profile
+            and profile.risk_level == "high"
+            and _tier_strength_rank(best_tier) < _tier_strength_rank(decision.primary_tier)
+        ):
+            return decision
+
+        return RouteDecision(
+            purpose=decision.purpose,
+            primary_tier=best_tier,
+            fallback_tier=decision.fallback_tier,
+            rationale=(
+                decision.rationale
+                + " | credit-routing:"
+                + f" {decision.primary_tier}→{best_tier}"
+                + f" score={best_score:.2f} baseline={baseline:.2f}"
+            ),
+        )
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
 async def _invoke_with_retry(provider: LLMProvider, request: LLMRequest) -> LLMResponse:
@@ -348,6 +419,80 @@ def _ab_roll() -> float:
     import random
 
     return random.random()
+
+
+async def _score_tier_credit_candidates(
+    providers: dict[ModelTier, LLMProvider],
+    candidate_tiers: list[ModelTier],
+) -> dict[ModelTier, float]:
+    """Score model tiers from hot + durable resource credits."""
+
+    from kun.engineering.credit_assignment import get_contribution_tracker
+
+    tier_keys: dict[ModelTier, list[str]] = {}
+    for tier in candidate_tiers:
+        provider = providers.get(tier)
+        if provider is None:
+            continue
+        keys = [
+            f"model:{provider.model_id}",
+            f"model_tier:{tier}",
+            f"llm_route:{provider.name}:{provider.model_id}:{tier}",
+        ]
+        tier_keys[tier] = keys
+
+    all_keys = [key for keys in tier_keys.values() for key in keys]
+    durable_scores = await _load_route_credit_scores(all_keys)
+    tracker = get_contribution_tracker()
+
+    scored: dict[ModelTier, float] = {}
+    for tier, keys in tier_keys.items():
+        hot = max((tracker.contribution_score(key) for key in keys), default=0.0)
+        durable = max((durable_scores.get(key, 0.0) for key in keys), default=0.0)
+        scored[tier] = max(hot, durable)
+    return scored
+
+
+async def _load_route_credit_scores(resource_keys: list[str]) -> dict[str, float]:
+    """Load durable route credit scores without making router startup DB-bound."""
+
+    if not resource_keys:
+        return {}
+    try:
+        from kun.core.db import session_scope
+        from kun.core.tenancy import current_tenant
+        from kun.engineering.credit_assignment import load_resource_credit_scores
+
+        tenant = current_tenant()
+        async with session_scope(tenant_id=tenant.tenant_id) as session:
+            return await load_resource_credit_scores(
+                session,
+                tenant_id=tenant.tenant_id,
+                resource_keys=resource_keys,
+            )
+    except Exception as exc:
+        log.debug("router.credit_scores_skipped", error=str(exc))
+        return {}
+
+
+def _tier_strength_rank(tier: ModelTier) -> int:
+    """Higher means stronger/more expensive reasoning tier."""
+
+    return {"cheap": 1, "strong": 2, "top": 3, "coding": 3, "fallback": 0}.get(tier, 0)
+
+
+def _credit_routing_min_score() -> float:
+    try:
+        return max(0.0, min(1.0, float(os.getenv("KUN_LLM_CREDIT_ROUTING_MIN_SCORE", "0.75"))))
+    except ValueError:
+        return 0.75
+
+
+def _credit_routing_min_delta() -> float:
+    try:
+        return max(0.0, min(1.0, float(os.getenv("KUN_LLM_CREDIT_ROUTING_MIN_DELTA", "0.25"))))
+    except ValueError:
+        return 0.25
 
 
 async def _emit_fallback_event(

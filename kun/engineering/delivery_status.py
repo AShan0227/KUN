@@ -213,6 +213,7 @@ def get_v3_delivery_status(
                 "启的问题信号可持久化到 qi_problem_signals，重启后不会全部丢失",
                 "任务结果记忆会携带 strategy_pack / execution_mode / skill / context / decision_path，供相似召回和信用分配复用",
                 "SkillSelector 会消费 MoE 贡献信用热缓存，让同类候选里历史贡献高的 skill 前排",
+                "LLMRouter 会消费模型档位/模型/路线贡献信用，在真实调用前对模型档位做谨慎覆盖",
             ],
             evidence_refs=[
                 "kun/memory/writeback.py",
@@ -232,7 +233,7 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "相似任务召回目前是确定性轻量检索，还不是向量库 / 跨租户匿名经验池",
-                "贡献信用对模型路由还需要真实样本和阈值校准",
+                "贡献信用对模型路由已进热路径，但还需要真实 dogfood 样本校准阈值",
             ],
             next_steps=[
                 "用真实 dogfood 样本校准相似经验权重，避免过拟合单次成功路径",

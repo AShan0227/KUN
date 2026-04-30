@@ -185,7 +185,11 @@ async def _state_source_async(tenant_id: str, user_id: str) -> dict[str, Any]:
                     )
     except Exception:
         logger.exception("blackboard.state_source failed")
-    ledger_data = await _state_ledger_source_async(tenant_id=tenant_id, task_id=None)
+    ledger_data = await _state_ledger_source_async(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        task_id=None,
+    )
     if isinstance(ledger_data, list):
         ledger_entries = ledger_data
 
@@ -216,28 +220,61 @@ async def _state_ledger_source(
     task_id: str | None = None,
     **_: Any,
 ) -> list[dict[str, Any]] | dict[str, Any] | None:
-    return await _state_ledger_source_async(tenant_id=tenant_id, task_id=task_id)
+    return await _state_ledger_source_async(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        task_id=task_id,
+    )
 
 
 async def _state_ledger_source_async(
     *,
     tenant_id: str,
+    user_id: str | None = None,
     task_id: str | None = None,
 ) -> list[dict[str, Any]] | dict[str, Any] | None:
     try:
         ledger = get_state_ledger()
         if task_id is not None:
             entry = ledger.snapshot(task_id)
-            if entry is None or entry.tenant_id != tenant_id:
-                return await _runtime_state_ledger_source(tenant_id=tenant_id, task_id=task_id)
+            if (
+                entry is None
+                or entry.tenant_id != tenant_id
+                or not _matches_user(entry.user_id, user_id)
+            ):
+                runtime_entry = await _runtime_state_ledger_source(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    task_id=task_id,
+                )
+                if runtime_entry is not None:
+                    return runtime_entry
+                return await _replayed_state_ledger_source(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    task_id=task_id,
+                )
             return entry.model_dump(mode="json")
         hot_entries = [
-            entry.model_dump(mode="json") for entry in ledger.active_snapshots(tenant_id=tenant_id)
+            entry.model_dump(mode="json")
+            for entry in ledger.active_snapshots(tenant_id=tenant_id)
+            if _matches_user(entry.user_id, user_id)
         ]
         if hot_entries:
             return hot_entries
-        fallback = await _runtime_state_ledger_source(tenant_id=tenant_id, task_id=None)
-        return fallback if isinstance(fallback, list) else []
+        fallback = await _runtime_state_ledger_source(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            task_id=None,
+        )
+        if isinstance(fallback, list) and fallback:
+            return fallback
+        replayed = await _replayed_state_ledger_source(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            task_id=None,
+        )
+        return replayed if isinstance(replayed, list) else []
     except Exception:
         logger.exception("blackboard.state_ledger_source failed")
         return None if task_id is not None else []
@@ -321,6 +358,7 @@ async def _state_ledger_story_source(
 async def _runtime_state_ledger_source(
     *,
     tenant_id: str,
+    user_id: str | None,
     task_id: str | None,
 ) -> list[dict[str, Any]] | dict[str, Any] | None:
     """Hydrate a readable ledger view from durable task/runtime snapshots.
@@ -343,6 +381,8 @@ async def _runtime_state_ledger_source(
             stmt = stmt.where(TaskRow.task_id == task_id).limit(1)
         else:
             stmt = stmt.where(RuntimeStateRow.status.in_(("queued", "running", "paused"))).limit(50)
+        if user_id and user_id != "u-anon":
+            stmt = stmt.where(TaskRow.user_id == user_id)
         rows = (await session.execute(stmt)).all()
 
     entries = [
@@ -351,6 +391,120 @@ async def _runtime_state_ledger_source(
     if task_id is not None:
         return entries[0] if entries else None
     return entries
+
+
+async def _replayed_state_ledger_source(
+    *,
+    tenant_id: str,
+    user_id: str | None,
+    task_id: str | None,
+) -> list[dict[str, Any]] | dict[str, Any] | None:
+    """Recover the ledger main view from durable EventRow history."""
+
+    histories: dict[str, list[dict[str, Any]]] = {}
+    tasks: dict[str, TaskRow] = {}
+    async with session_scope(tenant_id=tenant_id) as session:
+        stmt = (
+            select(EventRow, TaskRow)
+            .outerjoin(
+                TaskRow,
+                (TaskRow.tenant_id == EventRow.tenant_id) & (TaskRow.task_id == EventRow.task_ref),
+            )
+            .where(EventRow.tenant_id == tenant_id, EventRow.task_ref.is_not(None))
+            .order_by(desc(EventRow.occurred_at))
+            .limit(500 if task_id is None else 200)
+        )
+        if task_id is not None:
+            stmt = stmt.where(EventRow.task_ref == task_id)
+        if user_id and user_id != "u-anon":
+            stmt = stmt.where(TaskRow.user_id == user_id)
+        rows = (await session.execute(stmt)).all()
+
+    for raw in rows:
+        event, task = _event_task_pair(raw)
+        if event is None or not event.task_ref:
+            continue
+        histories.setdefault(event.task_ref, []).append(
+            _state_ledger_history_item_from_event(event)
+        )
+        if task is not None:
+            tasks[event.task_ref] = task
+
+    entries: list[dict[str, Any]] = []
+    for replay_task_id, history in histories.items():
+        story = replay_state_ledger_story(
+            replay_task_id,
+            history,
+            timeline_limit=20,
+            history_limit_reached=len(history) >= (200 if task_id else 500),
+        )
+        entry = _entry_from_replayed_story(
+            story,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            task=tasks.get(replay_task_id),
+        )
+        if task_id is None and entry.status not in {"queued", "running", "paused"}:
+            continue
+        entries.append(entry.model_dump(mode="json"))
+
+    entries.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    if task_id is not None:
+        return entries[0] if entries else None
+    return entries[:50]
+
+
+def _entry_from_replayed_story(
+    story: dict[str, Any],
+    *,
+    tenant_id: str,
+    user_id: str | None,
+    task: TaskRow | None,
+) -> StateLedgerEntry:
+    task_user_id = task.user_id if task is not None else user_id
+    title = task.success_criteria_short if task is not None else ""
+    status = str(story.get("status") or "queued")
+    if status not in {"queued", "running", "paused", "done", "failed", "cancelled"}:
+        status = "queued"
+    first_seen = _parse_dt(story.get("first_seen_at")) or datetime.now(UTC)
+    last_seen = _parse_dt(story.get("last_seen_at")) or first_seen
+    entry = StateLedgerEntry(
+        task_id=str(story.get("task_id") or ""),
+        tenant_id=tenant_id,
+        user_id=task_user_id,
+        project_id=task.project_id if task is not None else None,
+        task_type=task.task_type if task is not None else "",
+        title=title,
+        current_goal=_goal_from_task(task) if task is not None else title,
+        status=cast(Any, status),
+        current_action=str(story.get("current_action") or ""),
+        current_risk=task.risk_level if task is not None else "low",
+        complexity_score=task.complexity_score if task is not None else 0.0,
+        budget_estimated_usd=task.estimated_cost_usd if task is not None else 0.0,
+        cost_so_far_usd=float(story.get("total_cost_usd") or 0.0),
+        pending_confirmations=[
+            str(item) for item in story.get("pending_confirmations", []) if item
+        ],
+        pending_reason=str(story.get("latest_reason") or ""),
+        alert_flags=[str(item) for item in story.get("risk_flags", []) if item],
+        decision_ticket_ids=[str(item) for item in story.get("decision_ticket_ids", []) if item],
+        context_asset_ids=[str(item) for item in story.get("context_asset_ids", []) if item],
+        skill_hints=[str(item) for item in story.get("skill_refs", []) if item],
+        started_at=first_seen,
+        updated_at=last_seen,
+    )
+    for item in story.get("timeline", [])[-5:]:
+        if not isinstance(item, dict):
+            continue
+        entry.recent_events.append(
+            StateLedgerTrail(
+                at=_parse_dt(item.get("occurred_at")) or last_seen,
+                kind=str(item.get("event_type") or "event.replayed"),
+                summary=str(item.get("summary") or item.get("reason") or ""),
+                data={"source": "events_replay", "event_id": str(item.get("event_id") or "")},
+            )
+        )
+    return entry
 
 
 def _entry_from_runtime_rows(task: TaskRow, runtime: RuntimeStateRow) -> StateLedgerEntry:
@@ -456,14 +610,13 @@ def _event_reason(payload: dict[str, Any], ticket: dict[str, Any]) -> str:
 
 
 def _event_cost(
-    event_type: str,
+    _event_type: str,
     payload: dict[str, Any],
     ticket: dict[str, Any] | None = None,
 ) -> float:
-    # `accumulated_cost_usd` is a running total.  It is useful for a single
-    # event, but summing it across a story double-counts. Prefer per-event
-    # deltas/actual costs when available.
-    for key in ("cost_delta_usd", "cost_usd", "cost_usd_equivalent", "cost_usd_actual"):
+    # Running totals such as `accumulated_cost_usd` double-count in replay.
+    # Only per-event deltas or actual costs are safe to add across history.
+    for key in ("cost_delta_usd", "cost_usd", "cost_usd_actual"):
         value = payload.get(key)
         try:
             if value is not None:
@@ -474,29 +627,13 @@ def _event_cost(
         for source in (ticket, ticket.get("metadata"), ticket.get("evidence")):
             if not isinstance(source, dict):
                 continue
-            for key in ("cost_estimate_usd", "cost_usd", "used_usd"):
+            for key in ("cost_delta_usd", "cost_usd", "cost_usd_actual"):
                 value = source.get(key)
                 try:
                     if value is not None:
                         return round(float(value), 6)
                 except (TypeError, ValueError):
                     continue
-    runtime = payload.get("runtime")
-    if isinstance(runtime, dict):
-        for key in ("accumulated_cost_usd_equivalent", "accumulated_cost_usd_actual"):
-            value = runtime.get(key)
-            try:
-                if value is not None:
-                    return round(float(value), 6)
-            except (TypeError, ValueError):
-                continue
-    if event_type in {"task.done", "task.failed", "task.timed_out"}:
-        value = payload.get("accumulated_cost_usd")
-        try:
-            if value is not None:
-                return round(float(value), 6)
-        except (TypeError, ValueError):
-            return 0.0
     return 0.0
 
 
@@ -505,6 +642,44 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value)
     return text if text else None
+
+
+def _matches_user(entry_user_id: str | None, requested_user_id: str | None) -> bool:
+    return (
+        not requested_user_id or requested_user_id == "u-anon" or entry_user_id == requested_user_id
+    )
+
+
+def _event_task_pair(raw: Any) -> tuple[EventRow | None, TaskRow | None]:
+    if isinstance(raw, EventRow):
+        return raw, None
+    if isinstance(raw, tuple):
+        event = raw[0] if raw and isinstance(raw[0], EventRow) else None
+        task = raw[1] if len(raw) > 1 and isinstance(raw[1], TaskRow) else None
+        return event, task
+    try:
+        event = raw[0] if isinstance(raw[0], EventRow) else None
+        task = raw[1] if isinstance(raw[1], TaskRow) else None
+        return event, task
+    except (IndexError, KeyError, TypeError):
+        pass
+    event = getattr(raw, "EventRow", None)
+    task = getattr(raw, "TaskRow", None)
+    return (
+        event if isinstance(event, EventRow) else None,
+        task if isinstance(task, TaskRow) else None,
+    )
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 async def _workspace_source(

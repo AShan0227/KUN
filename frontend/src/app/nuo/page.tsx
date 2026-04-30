@@ -169,6 +169,34 @@ type WorldGatewayHandlerHealthResponse = {
   handlers: WorldHandlerHealth[];
 };
 
+type WorldHandlerAutoDecision = {
+  action_type: string;
+  recommended_status: string;
+  applied: boolean;
+  can_auto_apply: boolean;
+  requires_human_confirmation: boolean;
+  risk_level: string;
+  data_quality: string;
+  reason: string;
+  risk_summary: {
+    failure_rate?: number;
+    failure_rate_status?: string;
+    missing_compensation?: boolean;
+    external_dispatch_risk?: boolean;
+    missing_secrets?: boolean;
+    missing_handler_count?: number;
+    policy_blocked_count?: number;
+    total_seen?: number;
+  };
+};
+
+type WorldHandlerAutoReport = {
+  tenant_id: string;
+  dry_run: boolean;
+  decisions: WorldHandlerAutoDecision[];
+  applied_count: number;
+};
+
 type ActionDecisionResult = {
   action_id: string;
   status: string;
@@ -215,10 +243,12 @@ export default function NuoDashboard() {
   const [worldHealthSummary, setWorldHealthSummary] = useState<Record<string, number>>({});
   const [worldArtifactRoot, setWorldArtifactRoot] = useState("");
   const [unsupportedPolicy, setUnsupportedPolicy] = useState("");
+  const [autoControlReport, setAutoControlReport] = useState<WorldHandlerAutoReport | null>(null);
   const [actionNotice, setActionNotice] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [decideBusy, setDecideBusy] = useState<string | null>(null);
   const [expandBusy, setExpandBusy] = useState<string | null>(null);
+  const [autoControlBusy, setAutoControlBusy] = useState<"check" | "apply" | null>(null);
 
   const reload = useCallback(() => {
     Promise.all([
@@ -340,6 +370,30 @@ export default function NuoDashboard() {
     }
   }, [findingCursor, findingHasMore, diagnoseHint]);
 
+  const runAutoControl = useCallback(
+    async (dryRun: boolean) => {
+      setAutoControlBusy(dryRun ? "check" : "apply");
+      try {
+        const report = await fetchJson<WorldHandlerAutoReport>(
+          `/nuo/actions/handler-control/auto-quarantine/run?dry_run=${dryRun ? "true" : "false"}`,
+          { method: "POST" },
+        );
+        setAutoControlReport(report);
+        setActionNotice(
+          dryRun
+            ? `傩看完了：发现 ${report.decisions.length} 个需要处理的执行器。`
+            : `傩已处理 ${report.applied_count} 个低风险问题，高风险项留给你确认。`,
+        );
+        reload();
+      } catch (e) {
+        setErr(String(e));
+      } finally {
+        setAutoControlBusy(null);
+      }
+    },
+    [reload],
+  );
+
   if (err) return <div className="p-6 text-kun-bad">{err}</div>;
   if (!health || !budget) return <div className="p-6 text-gray-500">加载中...</div>;
 
@@ -438,6 +492,58 @@ export default function NuoDashboard() {
                 .join(" · ")}
             </p>
           )}
+          <div className="mt-3 rounded border border-gray-200 bg-gray-50 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-medium">傩能看病，也能先治小问题</div>
+                <p className="text-xs text-gray-500 mt-1">
+                  先列出失败率、缺补偿、真实外发、缺密钥这些风险。真会影响外部系统的项，只提醒你确认。
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  className="rounded bg-gray-900 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                  disabled={autoControlBusy !== null}
+                  onClick={() => runAutoControl(true)}
+                >
+                  看一遍
+                </button>
+                <button
+                  className="rounded bg-kun-good px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                  disabled={autoControlBusy !== null}
+                  onClick={() => runAutoControl(false)}
+                >
+                  处理低风险
+                </button>
+              </div>
+            </div>
+            {autoControlReport && (
+              <div className="mt-3 space-y-2">
+                <div className="text-xs text-gray-500">
+                  {autoControlReport.dry_run ? "只看没动" : "已尝试处理"} · 已处理{" "}
+                  {autoControlReport.applied_count} 个
+                </div>
+                {autoControlReport.decisions.length === 0 && (
+                  <div className="text-xs text-gray-400">暂时没有需要傩处理的执行器。</div>
+                )}
+                {autoControlReport.decisions.map((decision) => (
+                  <div key={decision.action_type} className="rounded border bg-white p-2 text-xs">
+                    <div className="flex flex-wrap justify-between gap-2">
+                      <span className="font-medium">{decision.action_type}</span>
+                      <span className={decision.can_auto_apply ? "text-kun-good" : "text-kun-warn"}>
+                        {decision.can_auto_apply ? "可自动处理" : "要你确认"} ·{" "}
+                        {decision.risk_level}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-gray-600">{decision.reason}</div>
+                    <div className="mt-1 text-gray-400">
+                      {autoDecisionRiskSummary(decision)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="grid md:grid-cols-2 gap-3 mt-3">
             {worldHandlers.map((handler) => (
               <div key={handler.action_type} className="border rounded p-3 text-sm">
@@ -783,6 +889,29 @@ function HandlerHealthLine({ card }: { card?: WorldHandlerHealth }) {
       {issues}
     </div>
   );
+}
+
+function autoDecisionRiskSummary(decision: WorldHandlerAutoDecision) {
+  const risk = decision.risk_summary;
+  const failure =
+    typeof risk.failure_rate === "number"
+      ? `失败率 ${(risk.failure_rate * 100).toFixed(0)}%`
+      : "失败率拿不到";
+  const failureStatus = risk.failure_rate_status === "partial" ? "（数据不全）" : "";
+  const items = [
+    `${failure}${failureStatus}`,
+    risk.missing_compensation ? "缺补偿" : "有补偿",
+    risk.external_dispatch_risk ? "会真实外发" : "不会真实外发",
+    risk.missing_secrets ? "缺密钥或配置" : "密钥配置看起来齐",
+  ];
+  if (typeof risk.missing_handler_count === "number" && risk.missing_handler_count > 0) {
+    items.push(`缺执行器 ${risk.missing_handler_count} 次`);
+  }
+  if (typeof risk.policy_blocked_count === "number" && risk.policy_blocked_count > 0) {
+    items.push(`被拦 ${risk.policy_blocked_count} 次`);
+  }
+  if (decision.data_quality === "partial") items.push("部分数据拿不到");
+  return items.join(" · ");
 }
 
 function gatewayPreviewLabel(preview: GatewayPreview) {

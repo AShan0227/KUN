@@ -706,25 +706,9 @@ def _story_event_cost(
     for source in (item, payload, ticket.get("metadata"), ticket.get("evidence")):
         if not isinstance(source, Mapping):
             continue
-        for key in (
-            "cost_delta_usd",
-            "cost_usd",
-            "cost_estimate_usd",
-            "cost_usd_equivalent",
-            "cost_usd_actual",
-            "used_usd",
-        ):
+        for key in ("cost_delta_usd", "cost_usd", "cost_usd_actual"):
             try:
                 value = source.get(key)
-                if value is not None:
-                    return round(float(value), 6)
-            except (TypeError, ValueError):
-                continue
-    runtime = payload.get("runtime")
-    if isinstance(runtime, Mapping):
-        for key in ("accumulated_cost_usd_equivalent", "accumulated_cost_usd_actual"):
-            try:
-                value = runtime.get(key)
                 if value is not None:
                     return round(float(value), 6)
             except (TypeError, ValueError):

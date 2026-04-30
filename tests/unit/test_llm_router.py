@@ -148,6 +148,71 @@ async def test_router_ab_ratio_clamped_to_unit_interval():
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_router_credit_can_upgrade_real_hot_path(monkeypatch):
+    """历史信用差距明显时, invoke 真会改 primary_tier, 不只写报告."""
+
+    from kun.engineering.credit_assignment import get_contribution_tracker
+
+    get_contribution_tracker().reset()
+    providers = {
+        "top": StubProvider(model_id="model-top", tier="top"),
+        "strong": StubProvider(model_id="model-strong", tier="strong"),
+        "cheap": StubProvider(model_id="model-cheap", tier="cheap"),
+        "fallback": StubProvider(model_id="model-fallback", tier="fallback"),
+    }
+    router = LLMRouter(providers)
+
+    async def fake_load_scores(resource_keys: list[str]) -> dict[str, float]:
+        assert "model_tier:strong" in resource_keys
+        return {"model:strong-model": 0.95, "model_tier:strong": 0.95}
+
+    monkeypatch.setattr("kun.interface.llm.router._load_route_credit_scores", fake_load_scores)
+    monkeypatch.setenv("KUN_LLM_CREDIT_ROUTING_ENABLED", "1")
+
+    response = await router.invoke(
+        LLMRequest(messages=[LLMMessage(role="user", content="tiny")]),
+        purpose="execution",
+    )
+
+    assert response.model == "model-strong"
+    assert response.tier == "strong"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_router_credit_does_not_downgrade_high_risk(monkeypatch):
+    """高风险任务可以被经验升档, 但不能被经验降档。"""
+
+    from kun.engineering.credit_assignment import get_contribution_tracker
+
+    get_contribution_tracker().reset()
+    providers = {
+        "top": StubProvider(model_id="model-top", tier="top"),
+        "strong": StubProvider(model_id="model-strong", tier="strong"),
+        "cheap": StubProvider(model_id="model-cheap", tier="cheap"),
+        "fallback": StubProvider(model_id="model-fallback", tier="fallback"),
+    }
+    router = LLMRouter(providers)
+
+    async def fake_load_scores(_resource_keys: list[str]) -> dict[str, float]:
+        return {"model_tier:cheap": 1.0}
+
+    monkeypatch.setattr("kun.interface.llm.router._load_route_credit_scores", fake_load_scores)
+    monkeypatch.setenv("KUN_LLM_CREDIT_ROUTING_ENABLED", "1")
+
+    response = await router.invoke(
+        LLMRequest(
+            messages=[LLMMessage(role="user", content="x" * 500)],
+            profile=TaskProfile(risk_level="high"),
+        ),
+        purpose="execution",
+    )
+
+    assert response.tier == "top"
+
+
+@pytest.mark.unit
 def test_get_router_can_force_codex_as_primary(monkeypatch):
     """Claude 挂了时可以显式把 Codex MCP 设成主力档位."""
     from kun.interface.llm.claude_code_provider import ClaudeCodeProvider

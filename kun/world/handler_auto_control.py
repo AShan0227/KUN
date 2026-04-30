@@ -15,7 +15,12 @@ class WorldHandlerAutoControlDecision(BaseModel):
     action_type: str
     recommended_status: str = "enabled"
     applied: bool = False
+    can_auto_apply: bool = False
+    requires_human_confirmation: bool = True
+    risk_level: str = "medium"
+    data_quality: str = "partial"
     reason: str = ""
+    risk_summary: dict[str, object] = Field(default_factory=dict)
     evidence: dict[str, object] = Field(default_factory=dict)
 
 
@@ -55,6 +60,8 @@ async def run_world_handler_auto_quarantine(
     if not dry_run and decisions:
         async with session_scope(tenant_id=tenant_id) as s:
             for decision in decisions:
+                if not decision.can_auto_apply:
+                    continue
                 await set_world_handler_control(
                     s,
                     tenant_id=tenant_id,
@@ -93,10 +100,20 @@ def _decision_for_card(
         reasons.append("NUO 当前体检状态为 blocked")
     if not reasons:
         return None
+    risk_level = _decision_risk_level(card)
+    can_auto_apply = risk_level == "low"
+    recommended_status = "quarantined" if can_auto_apply else "review_required"
+    if not can_auto_apply:
+        reasons.append("这类问题需要你确认，傩只提醒，不会自动关掉")
     return WorldHandlerAutoControlDecision(
         action_type=card.action_type,
-        recommended_status="quarantined",
+        recommended_status=recommended_status,
+        can_auto_apply=can_auto_apply,
+        requires_human_confirmation=not can_auto_apply,
+        risk_level=risk_level,
+        data_quality=_data_quality(card),
         reason="；".join(dict.fromkeys(reasons)),
+        risk_summary=_risk_summary(card),
         evidence={
             "status": card.status,
             "total_seen": card.total_seen,
@@ -107,6 +124,31 @@ def _decision_for_card(
             "issues": card.issues,
         },
     )
+
+
+def _decision_risk_level(card: WorldHandlerHealthCard) -> str:
+    if card.external_dispatched or card.static_risk == "high":
+        return "high"
+    if card.dynamic_risk == "high" or card.static_risk == "medium":
+        return "medium"
+    return "low"
+
+
+def _data_quality(card: WorldHandlerHealthCard) -> str:
+    return "complete" if card.total_seen > 0 else "partial"
+
+
+def _risk_summary(card: WorldHandlerHealthCard) -> dict[str, object]:
+    return {
+        "failure_rate": card.failure_rate,
+        "failure_rate_status": "complete" if card.total_seen > 0 else "partial",
+        "missing_compensation": not card.has_compensation,
+        "external_dispatch_risk": card.external_dispatched,
+        "missing_secrets": not card.configured,
+        "missing_handler_count": card.missing_handler_count,
+        "policy_blocked_count": card.policy_blocked_count,
+        "total_seen": card.total_seen,
+    }
 
 
 __all__ = [
