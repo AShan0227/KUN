@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from kun.context.maintenance import ContextMaintenanceReport, run_context_maintenance
+from kun.core.config import settings
 from kun.core.db import session_scope
 from kun.core.orm import EventRow, PendingActionRow, TaskRow
-from kun.core.tenancy import current_tenant
+from kun.core.tenancy import current_tenant, has_scope
 from kun.engineering.credit_assignment import (
     ResourceCreditSummary,
     load_top_resource_credit,
@@ -22,8 +26,38 @@ from kun.engineering.delivery_status import (
 )
 from kun.engineering.nuo_system_health import collect_system_health_report
 from kun.ops.secret_audit import SecretAuditReport, audit_runtime_secrets
+from kun.ops.secret_store import (
+    SECRET_STORE_FILE_ENV,
+    SecretStoreWriteResult,
+    upsert_secret_store_value,
+)
 
 router = APIRouter()
+
+
+class SecretStoreSetRequest(BaseModel):
+    """Safe NUO secret-store write request.
+
+    The value is accepted in the request body but never returned by the API.
+    This endpoint intentionally only supports KUN_WORLD_* keys because it is
+    for external-action handler credentials, not general auth or database
+    secrets.
+    """
+
+    name: str = Field(min_length=1, max_length=128)
+    value: str = Field(min_length=1, max_length=8192)
+    scope: str = Field(default="tenant", pattern="^(tenant|global)$")
+
+
+class SecretStoreSetResponse(BaseModel):
+    path: str
+    scope: str
+    tenant_id: str = ""
+    name: str
+    tenant_count: int = 0
+    global_key_count: int = 0
+    honest_limits: list[str]
+    message: str
 
 
 @router.get("/summary")
@@ -103,6 +137,39 @@ async def secret_audit() -> SecretAuditReport:
     return audit_runtime_secrets()
 
 
+@router.post("/secret-store/set", response_model=SecretStoreSetResponse)
+async def set_secret_store_value(req: SecretStoreSetRequest) -> SecretStoreSetResponse:
+    """Write one WorldGateway secret into the configured local secret store.
+
+    This is a deliberately narrow bridge for dogfood and self-hosted setups:
+    - requires a configured KUN_SECRET_STORE_FILE;
+    - only writes KUN_WORLD_* keys;
+    - does not echo the value back;
+    - production requires a world:dispatch/account:admin-style operator scope.
+    """
+    tenant = current_tenant()
+    _require_secret_write_scope()
+    raw_path = os.getenv(SECRET_STORE_FILE_ENV, "").strip()
+    if not raw_path:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "KUN_SECRET_STORE_FILE is not configured; set it before writing "
+                "WorldGateway secrets through NUO."
+            ),
+        )
+    try:
+        result = upsert_secret_store_value(
+            path=Path(raw_path),
+            tenant_id=tenant.tenant_id if req.scope == "tenant" else "",
+            name=req.name,
+            value=req.value,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _secret_write_response(result)
+
+
 @router.get("/resource-credit", response_model=list[ResourceCreditSummary])
 async def resource_credit_report(
     kind: str | None = Query(default=None, max_length=64),
@@ -139,4 +206,29 @@ async def run_context_maintenance_once(
         tenant_id=tenant.tenant_id,
         dry_run=dry_run,
         max_assets=max_assets,
+    )
+
+
+def _require_secret_write_scope() -> None:
+    tenant = current_tenant()
+    if settings().env != "production" and not tenant.scopes:
+        return
+    if has_scope("world:dispatch", ctx=tenant) or has_scope("account:admin", ctx=tenant):
+        return
+    raise HTTPException(status_code=403, detail="world:dispatch or account:admin scope required")
+
+
+def _secret_write_response(result: SecretStoreWriteResult) -> SecretStoreSetResponse:
+    return SecretStoreSetResponse(
+        path=result.path,
+        scope=result.scope,
+        tenant_id=result.tenant_id,
+        name=result.name,
+        tenant_count=result.tenant_count,
+        global_key_count=result.global_key_count,
+        honest_limits=list(result.honest_limits),
+        message=(
+            "Secret store updated. Value is hidden. This is a local JSON bridge, "
+            "not cloud KMS or automatic rotation."
+        ),
     )

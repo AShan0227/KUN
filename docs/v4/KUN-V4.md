@@ -975,12 +975,13 @@ V4 继续坚持：
 - `POST /nuo/accounts/members/invite`：可写入成员邀请账本；不会伪装成已经发出邀请邮件或完成成员登录。
 - `kun ops dogfood --include-db-account`：可显式跑账号账本、token 使用账本、refresh session、成员邀请和接受邀请的真实 DB smoke。
 - `kun ops secret-store-set`：可把 `KUN_WORLD_*` 外部动作配置写入本地 JSON secret store；这仍不是云 KMS。
+- `POST /nuo/health/secret-store/set`：可从 NUO 受控写入 `KUN_WORLD_*` 外部动作配置，响应不回显密钥值；生产环境仍需要 operator scope。
 
 仍不能承诺：
 
 - 不能说 KUN 已经能无人长期运营一个产品。现在是 Mission 续跑闭环和 DB smoke，不是跨周真实运营验证。
-- 不能说 WorldGateway 已有完整真实世界能力。邮件、浏览器、企业 API 已有 opt-in handler，但支付、公开发布、租户密钥治理、补偿演练仍未完成。
-- 不能说生产级部署完成。密码/OAuth、完整设备指纹和异常登录风控、邀请邮件发送、集中密钥管理、线上备份恢复演练仍是缺口。
+- 不能说 WorldGateway 已有完整真实世界能力。邮件、浏览器、企业 API 已有 opt-in handler，但支付、公开发布、生产级云 KMS/自动轮换、补偿演练仍未完成。
+- 不能说生产级部署完成。密码/OAuth、完整设备指纹和异常登录风控、邀请邮件发送、托管 Secret Manager、线上备份恢复演练仍是缺口。
 
 ## 19. V4 最小可测试产品形态
 

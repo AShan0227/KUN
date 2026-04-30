@@ -41,7 +41,7 @@ export KUN_SECRET_STORE_FILE=.kun/secrets.json
 uv run kun ops secret-store-set --tenant <tenant> --name KUN_WORLD_SMTP_HOST --value <smtp-host>
 ```
 
-这个工具只允许写 `KUN_WORLD_*`，并且不会回显密钥值。它不是云 KMS；生产环境仍要补托管 Secret Manager、轮换和审计。
+这个工具只允许写 `KUN_WORLD_*`，并且不会回显密钥值。NUO 也提供 `POST /nuo/health/secret-store/set` 做同样的受控写入，方便后续接前端配置入口。它们都不是云 KMS；生产环境仍要补托管 Secret Manager、轮换和审计。
 
 发布前建议额外跑：
 
