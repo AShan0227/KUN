@@ -49,7 +49,8 @@ uv run kun ops secret-store-set --tenant <tenant> --name KUN_WORLD_SMTP_HOST --v
 uv run kun ops dogfood --tenant <tenant> --include-db-account
 ```
 
-这会验证账号账本、refresh session、成员邀请写库链路；它仍不会发送邀请邮件。
+这会验证账号账本、token 使用账本、refresh session、成员邀请、一次性接受 token
+和接受邀请写库链路；它仍不会发送邀请邮件。
 
 ## 3. Tag
 
