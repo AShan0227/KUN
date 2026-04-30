@@ -9,6 +9,7 @@ health.
 from __future__ import annotations
 
 import hashlib
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -16,7 +17,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 
 from kun.core.db import session_scope
-from kun.core.orm import EventRow, PendingActionRow, RuntimeStateRow, TaskRow
+from kun.core.orm import (
+    EventRow,
+    MissionRow,
+    MissionTaskRow,
+    PendingActionRow,
+    RuntimeStateRow,
+    TaskRow,
+)
 from kun.engineering.concurrency import scan_active_resource_conflicts
 from kun.engineering.delivery_status import get_v3_delivery_status, validate_delivery_status
 from kun.ops.secret_audit import SecretAuditItem, audit_runtime_secrets
@@ -54,6 +62,8 @@ class SystemHealthReport(BaseModel):
     outbox_lag: int = 0
     pending_approvals: int = 0
     stale_runtime_count: int = 0
+    resumable_mission_task_count: int = 0
+    mission_resume_worker_enabled: bool = False
     active_resource_conflicts: int = 0
     delivery_status_issues: list[str] = Field(default_factory=list)
     secret_audit_summary: dict[str, int] = Field(default_factory=dict)
@@ -132,10 +142,34 @@ async def collect_system_health_report(
             ).scalar_one()
             or 0
         )
+        max_attempts = int(os.getenv("KUN_MISSION_REAPER_MAX_ATTEMPTS", "3"))
+        resumable_mission_task_count = int(
+            (
+                await s.execute(
+                    select(func.count())
+                    .select_from(MissionTaskRow)
+                    .join(RuntimeStateRow, RuntimeStateRow.task_ref == MissionTaskRow.task_id)
+                    .join(MissionRow, MissionRow.mission_id == MissionTaskRow.mission_id)
+                    .where(
+                        MissionTaskRow.tenant_id == tenant_id,
+                        RuntimeStateRow.tenant_id == tenant_id,
+                        MissionRow.tenant_id == tenant_id,
+                        MissionRow.status.in_(("planned", "running", "paused")),
+                        MissionTaskRow.status.in_(
+                            ("planned", "queued", "running", "paused", "blocked")
+                        ),
+                        RuntimeStateRow.status == "queued",
+                        MissionTaskRow.resume_attempts < max_attempts,
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
         active_resource_conflicts = len(
             await scan_active_resource_conflicts(s, tenant_id=tenant_id)
         )
 
+    mission_resume_worker_enabled = os.getenv("KUN_MISSION_RESUME_WORKER_ENABLED", "0") == "1"
     delivery_issues = validate_delivery_status(get_v3_delivery_status())
     secret_audit = audit_runtime_secrets()
     world_handlers = await collect_world_handler_health(tenant_id=tenant_id)
@@ -143,6 +177,8 @@ async def collect_system_health_report(
         outbox_lag=outbox_lag,
         pending_approvals=pending_approvals,
         stale_runtime_count=stale_runtime_count,
+        resumable_mission_task_count=resumable_mission_task_count,
+        mission_resume_worker_enabled=mission_resume_worker_enabled,
         active_resource_conflicts=active_resource_conflicts,
         delivery_issues=delivery_issues,
         secret_audit_items=secret_audit.items,
@@ -156,6 +192,8 @@ async def collect_system_health_report(
         outbox_lag=outbox_lag,
         pending_approvals=pending_approvals,
         stale_runtime_count=stale_runtime_count,
+        resumable_mission_task_count=resumable_mission_task_count,
+        mission_resume_worker_enabled=mission_resume_worker_enabled,
         active_resource_conflicts=active_resource_conflicts,
         delivery_status_issues=delivery_issues,
         secret_audit_summary=secret_audit.summary,
@@ -175,6 +213,8 @@ def _findings(
     delivery_issues: list[str],
     secret_audit_items: list[SecretAuditItem],
     world_handlers: list[WorldHandlerHealthCard],
+    resumable_mission_task_count: int = 0,
+    mission_resume_worker_enabled: bool = False,
 ) -> list[SystemHealthFinding]:
     findings: list[SystemHealthFinding] = []
     if outbox_lag > 0:
@@ -197,6 +237,23 @@ def _findings(
                 title="存在卡住的运行时任务",
                 detail=f"{stale_runtime_count} 个 queued/running 任务超过阈值没有更新。",
                 suggested_action="让 Mission reaper 标记、恢复或升级人工处理。",
+            )
+        )
+    if resumable_mission_task_count > 0 and not mission_resume_worker_enabled:
+        findings.append(
+            SystemHealthFinding(
+                finding_id="mission_resume_worker_disabled",
+                severity="warn",
+                subsystem="mission",
+                title="Mission 有可推进任务，但自动续跑未开启",
+                detail=(
+                    f"{resumable_mission_task_count} 个 Mission task 已排队，"
+                    "但 KUN_MISSION_RESUME_WORKER_ENABLED 不是 1。"
+                ),
+                suggested_action=(
+                    "如果你希望 KUN 自动推进长期任务，显式开启 "
+                    "KUN_MISSION_RESUME_WORKER_ENABLED=1；否则在首页手动推进。"
+                ),
             )
         )
     if active_resource_conflicts > 0:

@@ -36,6 +36,8 @@ def test_system_health_surfaces_limited_real_world_handler_as_finding() -> None:
         outbox_lag=0,
         pending_approvals=0,
         stale_runtime_count=0,
+        resumable_mission_task_count=0,
+        mission_resume_worker_enabled=False,
         active_resource_conflicts=0,
         delivery_issues=[],
         secret_audit_items=[],
@@ -46,3 +48,19 @@ def test_system_health_surfaces_limited_real_world_handler_as_finding() -> None:
     assert findings[0].finding_id == "world:email.send"
     assert findings[0].severity == "warn"
     assert "真实外发风险高" in findings[0].detail
+
+
+def test_system_health_surfaces_disabled_mission_resume_worker() -> None:
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        resumable_mission_task_count=2,
+        mission_resume_worker_enabled=False,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[],
+        world_handlers=[],
+    )
+
+    assert any(item.finding_id == "mission_resume_worker_disabled" for item in findings)

@@ -89,6 +89,7 @@ def get_v3_delivery_status(
                 "idle-batch 有部分复盘和学习能力",
                 "Mission 级预算已滚动汇总并可超预算暂停",
                 "Mission reaper 可处理 queued/running 卡死任务",
+                "NUO 深度体检会识别：有 Mission 可推进但自动续跑 worker 未开启",
                 "Mission 可记录下一步和复盘摘要",
                 "Mission 续跑 prompt 会带上最近复盘、预算提醒、风险提醒和下一步动作",
                 "Mission 复盘中的预算/风险/不确定性会影响下一次 Watchtower 策略权重和执行档位",
@@ -107,6 +108,7 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "续跑还不是原 TaskRow 原地恢复，而是 continuation task 挂回 Mission",
+                "自动续跑默认仍是 opt-in（KUN_MISSION_RESUME_WORKER_ENABLED=1），避免静默烧钱或触发外部动作",
                 "StateLedger 还不是完整确定性快照重建器；目前能重建任务故事和缺口，但不能还原每个运行时字段",
                 "Mission 复盘和 continuation 摘要只做轻量权重/档位 nudging，还没训练长期策略模型",
                 "还没有跑跨周真实产品运营 dogfood",
