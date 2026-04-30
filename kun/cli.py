@@ -1243,6 +1243,11 @@ def ops_dogfood(
         "--include-db-account",
         help="额外跑真实数据库账号账本 / session / 成员邀请 smoke；需要本地 Postgres/Alembic 可用",
     ),
+    include_db_state_ledger_repair: bool = typer.Option(
+        False,
+        "--include-db-state-ledger-repair",
+        help="额外跑真实数据库 StateLedger repair smoke；需要本地 Postgres/Alembic 可用",
+    ),
     fail_on_blocker: bool = typer.Option(
         True,
         "--fail-on-blocker/--no-fail-on-blocker",
@@ -1258,6 +1263,7 @@ def ops_dogfood(
             tenant_id=tenant,
             include_db_mission=include_db_mission,
             include_db_account=include_db_account,
+            include_db_state_ledger_repair=include_db_state_ledger_repair,
         )
     )
     if json_output:

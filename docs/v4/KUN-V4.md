@@ -821,6 +821,7 @@ V4 继续坚持：
 7. **State Ledger 仍不是完整事件溯源系统**
    - 当前已有热状态、历史事件回放、任务 story 摘要和漂移审计。
    - 已补 `kun ops state-ledger-repair`：可以先 dry-run 看当前快照和 EventRow 回放差异，再用 `--apply` 修复单个任务的 `state_ledger_entries`。
+   - `kun ops dogfood --include-db-state-ledger-repair` 可把这条修复链路纳入真实数据库 smoke。
    - 但还不能从事件完整重建所有业务对象，也还没有跨 Mission 的长期运营故事线。
 
 8. **Decision Ticket 已经进入很多关键路径，但仍需收尾**

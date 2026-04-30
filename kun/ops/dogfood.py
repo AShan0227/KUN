@@ -60,6 +60,7 @@ async def run_v4_dogfood(
     secret: str = "dogfood-secret-" + "x" * 32,
     include_db_mission: bool = False,
     include_db_account: bool = False,
+    include_db_state_ledger_repair: bool = False,
 ) -> DogfoodReport:
     """Run low-risk V4 dogfood checks."""
 
@@ -74,6 +75,8 @@ async def run_v4_dogfood(
         scenarios.append(await _scenario_mission_resume_db(tenant_id=tenant_id))
     if include_db_account:
         scenarios.append(await _scenario_account_ledger_db(tenant_id=tenant_id, secret=secret))
+    if include_db_state_ledger_repair:
+        scenarios.append(await _scenario_state_ledger_repair_db(tenant_id=tenant_id))
     if any(item.status == "block" for item in scenarios):
         status: DogfoodStatus = "block"
     elif any(item.status == "warn" for item in scenarios):
@@ -454,6 +457,124 @@ async def _scenario_account_ledger_db(*, tenant_id: str, secret: str) -> Dogfood
             status="block",
             summary="账号账本 DB dogfood 无法执行。",
             evidence={"tenant_id": tenant_id, "error": f"{type(exc).__name__}: {exc}"},
+            next_step="确认本地 Postgres 已启动、Alembic 已升级、RLS app/admin DSN 配好。",
+        )
+
+
+async def _scenario_state_ledger_repair_db(*, tenant_id: str) -> DogfoodScenarioResult:
+    """Run one StateLedger repair smoke against the configured DB."""
+
+    try:
+        from sqlalchemy import select
+
+        from kun.core.db import session_scope
+        from kun.core.ids import new_id
+        from kun.core.orm import EventRow, StateLedgerEntryRow, TaskRow
+        from kun.ops.state_ledger_repair import repair_state_ledger_snapshot
+    except Exception as exc:  # pragma: no cover - import failures are deployment issues
+        return DogfoodScenarioResult(
+            scenario_id="state_ledger_repair_db",
+            status="block",
+            summary="StateLedger repair DB dogfood 依赖导入失败。",
+            evidence={"error": f"{type(exc).__name__}: {exc}"},
+            next_step="先修 StateLedger / EventRow / repair 依赖导入。",
+        )
+
+    task_id = new_id("task")
+    try:
+        async with session_scope(tenant_id=tenant_id) as s:
+            s.add(
+                TaskRow(
+                    task_id=task_id,
+                    tenant_id=tenant_id,
+                    fingerprint=f"dogfood-ledger-repair-{task_id}",
+                    task_type="dogfood.state_ledger_repair",
+                    risk_level="low",
+                    complexity_score=0.2,
+                    user_id="dogfood-user",
+                    estimated_cost_usd=0.05,
+                    estimated_duration_sec=5.0,
+                    success_criteria_short="StateLedger repair dogfood reaches done.",
+                    spec_json={"goal_detail": "Verify EventRow can repair current ledger."},
+                )
+            )
+            s.add(
+                EventRow(
+                    event_id=new_id("event"),
+                    tenant_id=tenant_id,
+                    event_type="task.created",
+                    subject="StateLedger repair dogfood task created",
+                    payload={"reason": "dogfood created"},
+                    task_ref=task_id,
+                )
+            )
+            s.add(
+                EventRow(
+                    event_id=new_id("event"),
+                    tenant_id=tenant_id,
+                    event_type="task.done",
+                    subject="StateLedger repair dogfood task done",
+                    payload={"status": "done", "cost_delta_usd": 0.02},
+                    task_ref=task_id,
+                )
+            )
+            s.add(
+                StateLedgerEntryRow(
+                    tenant_id=tenant_id,
+                    task_id=task_id,
+                    user_id="dogfood-user",
+                    status="running",
+                    snapshot_json={
+                        "tenant_id": tenant_id,
+                        "task_id": task_id,
+                        "user_id": "dogfood-user",
+                        "status": "running",
+                        "current_action": "stale snapshot",
+                        "cost_so_far_usd": 0.0,
+                    },
+                )
+            )
+
+        result = await repair_state_ledger_snapshot(
+            tenant_id=tenant_id,
+            task_id=task_id,
+            user_id="dogfood-user",
+            apply=True,
+        )
+        async with session_scope(tenant_id=tenant_id) as s:
+            repaired = (
+                await s.execute(
+                    select(StateLedgerEntryRow).where(
+                        StateLedgerEntryRow.tenant_id == tenant_id,
+                        StateLedgerEntryRow.task_id == task_id,
+                    )
+                )
+            ).scalar_one_or_none()
+        status = repaired.status if repaired is not None else "missing"
+        snapshot = repaired.snapshot_json if repaired is not None else {}
+        ok = result.applied and status == "done" and snapshot.get("cost_so_far_usd") == 0.02
+        return DogfoodScenarioResult(
+            scenario_id="state_ledger_repair_db",
+            status="pass" if ok else "block",
+            summary="StateLedger repair 可从 EventRow 回放修复当前快照。"
+            if ok
+            else "StateLedger repair 没能修复当前快照。",
+            evidence={
+                "task_id": task_id,
+                "applied": result.applied,
+                "diff_count": len(result.diffs),
+                "event_count": result.event_count,
+                "status_after": status,
+                "cost_after": snapshot.get("cost_so_far_usd"),
+            },
+            next_step="" if ok else "检查 EventRow 回放、StateLedger repair 和 RLS 写回路径。",
+        )
+    except Exception as exc:
+        return DogfoodScenarioResult(
+            scenario_id="state_ledger_repair_db",
+            status="block",
+            summary="StateLedger repair DB dogfood 无法执行。",
+            evidence={"task_id": task_id, "error": f"{type(exc).__name__}: {exc}"},
             next_step="确认本地 Postgres 已启动、Alembic 已升级、RLS app/admin DSN 配好。",
         )
 
