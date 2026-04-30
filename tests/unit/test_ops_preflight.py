@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 from kun.cli import app
 from kun.core.config import Settings
+from kun.ops import account_sessions as account_sessions_module
 from kun.ops import dogfood as dogfood_module
 from kun.ops.account_registry import build_unpersisted_bootstrap, hash_bearer_token
+from kun.ops.account_sessions import SessionTokenPair
 from kun.ops.dogfood import run_v4_dogfood
 from kun.ops.preflight import run_preflight
 from kun.ops.secret_audit import audit_runtime_secrets
@@ -400,6 +403,61 @@ def test_ops_preflight_cli_can_skip_alembic(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert result.exit_code == 0
     assert "KUN production preflight" in result.output
+
+
+@pytest.mark.unit
+def test_ops_account_session_cli_issues_refresh_pair(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = "s" * 40
+    monkeypatch.setenv("KUN_AUTH_SECRET", secret)
+
+    @asynccontextmanager
+    async def fake_session_scope(**_kwargs):
+        yield object()
+
+    async def fake_issue_session_token_pair(*_args, **kwargs):
+        assert kwargs["tenant_id"] == "tenant-session"
+        assert kwargs["user_id"] == "user-session"
+        assert kwargs["secret"] == secret
+        return SessionTokenPair(
+            tenant_id="tenant-session",
+            user_id="user-session",
+            audience="developer",
+            scopes=["chat:write"],
+            access_token_id="acc-cli",
+            access_token="access.raw",
+            access_expires_at=123,
+            refresh_token_id="rfr-cli",
+            refresh_token="refresh.raw",
+            refresh_expires_at=456,
+            honest_limits=["最小 refresh-token 生命周期"],
+        )
+
+    monkeypatch.setattr("kun.core.db.session_scope", fake_session_scope)
+    monkeypatch.setattr(
+        account_sessions_module,
+        "issue_session_token_pair",
+        fake_issue_session_token_pair,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "ops",
+            "account-session",
+            "--tenant",
+            "tenant-session",
+            "--user",
+            "user-session",
+            "--scopes",
+            "chat:write",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["access_token_id"] == "acc-cli"
+    assert payload["refresh_token_id"] == "rfr-cli"
+    assert payload["refresh_token"] == "refresh.raw"
 
 
 @pytest.mark.unit

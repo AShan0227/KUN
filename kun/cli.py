@@ -947,6 +947,72 @@ def ops_revoke_token(
         raise typer.Exit(code=1)
 
 
+@ops_app.command("account-session")
+def ops_account_session(
+    tenant: str = typer.Option(..., "--tenant", help="租户 ID"),
+    user: str = typer.Option(..., "--user", help="user_id"),
+    scopes: str = typer.Option(
+        "chat:write,world:approve",
+        "--scopes",
+        help="逗号分隔权限 scope",
+    ),
+    audience: str = typer.Option("developer", "--audience", help="novice/developer/expert"),
+    access_ttl_sec: int = typer.Option(900, "--access-ttl-sec", min=60),
+    refresh_ttl_sec: int = typer.Option(2_592_000, "--refresh-ttl-sec", min=300),
+    output: Path | None = typer.Option(None, "--output", help="写入 JSON 文件"),
+) -> None:
+    """签发最小 access+refresh 会话包，并写入 token 账本。
+
+    这不是登录/OAuth。它是 operator 管理阶段的真实入口：管理员先用
+    account-bootstrap 建好租户，再用这里签发可撤销、可审计、可续期的会话 token。
+    """
+
+    import os
+
+    from kun.core.db import session_scope
+    from kun.ops.account_sessions import issue_session_token_pair
+
+    secret = os.environ.get("KUN_AUTH_SECRET", "")
+    if not secret:
+        secret = next(
+            (
+                item.strip()
+                for item in os.environ.get("KUN_AUTH_SECRETS", "").split(",")
+                if len(item.strip()) >= 32
+            ),
+            "",
+        )
+    if audience not in {"novice", "developer", "expert"}:
+        console.print("[red]audience 必须是 novice/developer/expert[/]")
+        raise typer.Exit(code=2)
+    cleaned_scopes = [item.strip() for item in scopes.split(",") if item.strip()]
+
+    async def _issue() -> dict[str, Any]:
+        async with session_scope(tenant_id=tenant) as s:
+            pair = await issue_session_token_pair(
+                s,
+                tenant_id=tenant,
+                user_id=user,
+                scopes=cleaned_scopes,
+                audience=audience,  # type: ignore[arg-type]
+                access_ttl_sec=access_ttl_sec,
+                refresh_ttl_sec=refresh_ttl_sec,
+                secret=secret,
+            )
+        return pair.model_dump(mode="json")
+
+    try:
+        payload = asyncio.run(_issue())
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2) from exc
+    if output is not None:
+        output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        console.print(f"[green]tenant account session written[/]: {output}")
+    else:
+        console.print_json(data=payload)
+
+
 @ops_app.command("dogfood")
 def ops_dogfood(
     tenant: str = typer.Option("u-sylvan", "--tenant"),

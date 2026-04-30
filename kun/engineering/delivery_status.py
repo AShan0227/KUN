@@ -278,6 +278,7 @@ def get_v3_delivery_status(
                 "ops account-bootstrap CLI 可把租户、owner 成员、token 签发记录写入持久账本",
                 "production API 会检查账号账本里的 revoked token，已撤销 token 会被拒绝",
                 "账号会话已有最小 refresh token 闭环：refresh/access token 入账、refresh 续短期 access、refresh token 不能访问普通 API",
+                "ops account-session CLI 可签发持久入账的 access+refresh 会话包，避免 refresh 功能只停在测试里",
                 "NUO 账号面板可查看当前租户账号、成员和 token 签发账本，且不会暴露 raw bearer token",
                 "NUO 账号面板可撤销当前租户已签发 token，生产请求中间件会消费撤销结果",
                 "ops dogfood CLI 可跑 V4 低风险 smoke，验证 preflight / token / WorldGateway / 诚实边界",
