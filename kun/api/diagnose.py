@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from kun.api.runtime import get_diagnose_runner
 from kun.core.ids import new_id
+from kun.core.tenancy import current_tenant
 from kun.security.diagnose_runner import DiagnoseRequest, DiagnoseTrigger
 from kun.security.fix_handlers import get_fix_audit_log
 
@@ -36,15 +37,15 @@ async def diagnose_run(
     payload: DiagnoseRunPayload,
     request: Request,
     x_user_id: Annotated[str, Header(alias="X-User-Id")],
-    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
 ) -> dict[str, Any]:
     """触发一次诊断."""
+    tenant = current_tenant()
     runner = get_diagnose_runner(request.app)
     req = DiagnoseRequest(
         request_id=new_id("diag"),
         trigger=payload.trigger,
         user_id=x_user_id,
-        tenant_id=x_tenant_id,
+        tenant_id=tenant.tenant_id,
         hint_text=payload.hint_text,
     )
     report = await runner.run(req)

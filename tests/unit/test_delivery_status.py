@@ -23,6 +23,8 @@ def test_delivery_status_is_honest_about_incomplete_capabilities() -> None:
     assert by_id["production_deployment"].status == "not_ready"
     assert by_id["world_gateway"].can_claim_complete is False
     assert any("local_file.write" in item for item in by_id["world_gateway"].done)
+    assert any("统一 apiClient" in item for item in by_id["production_deployment"].done)
+    assert any("没有登录 UI" in item for item in by_id["production_deployment"].missing)
     assert validate_delivery_status(items) == []
 
 

@@ -211,12 +211,12 @@ def get_billing_dashboard(
 def _resolve_identity(x_tenant_id: str | None, x_user_id: str | None) -> tuple[str, str]:
     if x_tenant_id:
         tenant_id = x_tenant_id.strip()
-        user_id = (x_user_id or "u-anon").strip()
+        user_id = (x_user_id or tenant_id).strip()
         return tenant_id, user_id
 
     ctx = current_tenant()
     tenant_id = ctx.tenant_id.strip()
-    user_id = (x_user_id or ctx.user_id or "u-anon").strip()
+    user_id = (x_user_id or ctx.user_id or tenant_id).strip()
     return tenant_id, user_id
 
 

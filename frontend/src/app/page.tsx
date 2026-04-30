@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { apiFetch, kunWebSocketUrl } from "@/kunApiClient";
 
 /**
  * KUN 主工作区 — 对话框主入口 (ADR-010).
@@ -48,18 +49,6 @@ type GraphNeighbor = {
   hops: number;
   score: number;
 };
-
-const API_ORIGIN =
-  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_ORIGIN) || "";
-
-const WS_URL = (() => {
-  if (typeof window === "undefined") return "";
-  // 优先用 NEXT_PUBLIC_API_ORIGIN (跨 origin 部署时), 否则同源
-  const base = API_ORIGIN || `${window.location.protocol}//${window.location.host}`;
-  const proto = base.startsWith("https") ? "wss:" : "ws:";
-  const host = base.replace(/^https?:\/\//, "");
-  return `${proto}//${host}/ws?tenant_id=u-sylvan&user_id=sylvan`;
-})();
 
 type QiStatus = {
   window_active: boolean;
@@ -400,10 +389,8 @@ export default function Home() {
   const refreshDashboard = useCallback(async (cancelledRef?: { current: boolean }) => {
     try {
       const [qiRes, protoRes] = await Promise.all([
-        fetch(`${API_ORIGIN}/api/qi/status`, {
-          headers: { "X-Tenant-Id": "u-sylvan" },
-        }).catch(() => null),
-        fetch(`${API_ORIGIN}/api/protocols?tenant=u-sylvan`).catch(() => null),
+        apiFetch("/api/qi/status").catch(() => null),
+        apiFetch("/api/protocols").catch(() => null),
       ]);
       if (cancelledRef?.current) return;
       if (qiRes && qiRes.ok) {
@@ -414,40 +401,20 @@ export default function Home() {
         const data = await protoRes.json();
         setProtocols(data as Protocol[]);
       }
-      const stateRes = await fetch(`${API_ORIGIN}/api/blackboard/state`, {
-        headers: {
-          "X-Tenant-Id": "u-sylvan",
-          "X-User-Id": "sylvan",
-        },
-      }).catch(() => null);
+      const stateRes = await apiFetch("/api/blackboard/state").catch(() => null);
       if (!cancelledRef?.current && stateRes && stateRes.ok) {
         setGlobalState((await stateRes.json()) as GlobalState);
       }
-      const missionRes = await fetch(`${API_ORIGIN}/api/missions?limit=5`, {
-        headers: {
-          "X-Tenant-Id": "u-sylvan",
-          "X-User-Id": "sylvan",
-        },
-      }).catch(() => null);
+      const missionRes = await apiFetch("/api/missions?limit=5").catch(() => null);
       if (!cancelledRef?.current && missionRes && missionRes.ok) {
         setMissions((await missionRes.json()) as MissionSnapshot[]);
       }
-      const actionRes = await fetch(`${API_ORIGIN}/nuo/actions/pending?limit=3`, {
-        headers: {
-          "X-Tenant-Id": "u-sylvan",
-          "X-User-Id": "sylvan",
-        },
-      }).catch(() => null);
+      const actionRes = await apiFetch("/nuo/actions/pending?limit=3").catch(() => null);
       if (!cancelledRef?.current && actionRes && actionRes.ok) {
         const page = (await actionRes.json()) as PendingActionPage;
         setPendingActions(page.actions ?? []);
       }
-      const deliveryRes = await fetch(`${API_ORIGIN}/nuo/health/delivery-status`, {
-        headers: {
-          "X-Tenant-Id": "u-sylvan",
-          "X-User-Id": "sylvan",
-        },
-      }).catch(() => null);
+      const deliveryRes = await apiFetch("/nuo/health/delivery-status").catch(() => null);
       if (!cancelledRef?.current && deliveryRes && deliveryRes.ok) {
         setDeliveryStatus((await deliveryRes.json()) as DeliveryStatusResponse);
       }
@@ -468,8 +435,9 @@ export default function Home() {
   }, [refreshDashboard]);
 
   useEffect(() => {
-    if (!WS_URL) return;
-    const ws = new WebSocket(WS_URL);
+    const wsUrl = kunWebSocketUrl();
+    if (!wsUrl) return;
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     ws.onopen = () => setConnected(true);
     ws.onclose = () => setConnected(false);
@@ -536,12 +504,10 @@ export default function Home() {
     async (actionId: string, decision: "approve" | "reject") => {
       setActionBusy(actionId);
       try {
-        const res = await fetch(`${API_ORIGIN}/nuo/actions/${actionId}/decision`, {
+        const res = await apiFetch(`/nuo/actions/${actionId}/decision`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "X-Tenant-Id": "u-sylvan",
-            "X-User-Id": "sylvan",
           },
           body: JSON.stringify({ decision }),
         });
@@ -589,14 +555,8 @@ export default function Home() {
     setMissionStoryBusyId(id);
     setMissionStoryErrorById((items) => ({ ...items, [id]: "" }));
     try {
-      const res = await fetch(
-        `${API_ORIGIN}/api/missions/${encodeURIComponent(id)}/story?history_limit_per_task=80`,
-        {
-          headers: {
-            "X-Tenant-Id": "u-sylvan",
-            "X-User-Id": "sylvan",
-          },
-        },
+      const res = await apiFetch(
+        `/api/missions/${encodeURIComponent(id)}/story?history_limit_per_task=80`,
       );
       if (!res.ok) throw new Error(await res.text());
       const payload = (await res.json()) as MissionStory;
@@ -627,12 +587,10 @@ export default function Home() {
       setMissionNextStepBusyId(id);
       setMissionNextStepNoticeById((items) => ({ ...items, [id]: "正在更新下一步..." }));
       try {
-        const res = await fetch(`${API_ORIGIN}/api/missions/${encodeURIComponent(id)}/next-step`, {
+        const res = await apiFetch(`/api/missions/${encodeURIComponent(id)}/next-step`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "X-Tenant-Id": "u-sylvan",
-            "X-User-Id": "sylvan",
           },
           body: JSON.stringify({
             summary,
@@ -665,12 +623,8 @@ export default function Home() {
     setMissionBusy(true);
     setMissionNotice("");
     try {
-      const res = await fetch(`${API_ORIGIN}/api/missions/resume-worker/run-once?limit=5`, {
+      const res = await apiFetch("/api/missions/resume-worker/run-once?limit=5", {
         method: "POST",
-        headers: {
-          "X-Tenant-Id": "u-sylvan",
-          "X-User-Id": "sylvan",
-        },
       });
       const payload = (await res.json().catch(() => [])) as MissionResumeResult[];
       if (!res.ok) throw new Error(JSON.stringify(payload));
@@ -692,12 +646,7 @@ export default function Home() {
     const id = taskId.trim();
     if (!id) return null;
     try {
-      const res = await fetch(`${API_ORIGIN}/api/tasks/${encodeURIComponent(id)}/status`, {
-        headers: {
-          "X-Tenant-Id": "u-sylvan",
-          "X-User-Id": "sylvan",
-        },
-      });
+      const res = await apiFetch(`/api/tasks/${encodeURIComponent(id)}/status`);
       if (!res.ok) throw new Error(await res.text());
       const payload = (await res.json()) as TaskControlStatus;
       setTaskControlStatusById((items) => ({ ...items, [id]: payload }));
@@ -716,12 +665,10 @@ export default function Home() {
       setTaskControlBusyId(id);
       setTaskControlNoticeById((items) => ({ ...items, [id]: "正在发送停止信号..." }));
       try {
-        const res = await fetch(`${API_ORIGIN}/api/tasks/${encodeURIComponent(id)}/kill`, {
+        const res = await apiFetch(`/api/tasks/${encodeURIComponent(id)}/kill`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "X-Tenant-Id": "u-sylvan",
-            "X-User-Id": "sylvan",
           },
           body: JSON.stringify({ reason: "user_requested_stop_from_task_detail" }),
         });
@@ -767,12 +714,7 @@ export default function Home() {
     setTaskDetailLoading(true);
     setTaskDetailError("");
     try {
-      const res = await fetch(`${API_ORIGIN}/api/blackboard/full/${encodeURIComponent(id)}`, {
-        headers: {
-          "X-Tenant-Id": "u-sylvan",
-          "X-User-Id": "sylvan",
-        },
-      });
+      const res = await apiFetch(`/api/blackboard/full/${encodeURIComponent(id)}`);
       if (!res.ok) throw new Error(await res.text());
       setTaskDetail((await res.json()) as TaskDetail);
       void loadTaskControlStatus(id);
@@ -808,12 +750,7 @@ export default function Home() {
         source_id: id,
         hops: "1",
       });
-      const res = await fetch(`/api/graph/relationships?${params.toString()}`, {
-        headers: {
-          "X-Tenant-Id": "u-sylvan",
-          "X-User-Id": "sylvan",
-        },
-      });
+      const res = await apiFetch(`/api/graph/relationships?${params.toString()}`);
       if (!res.ok) throw new Error(await res.text());
       const data = (await res.json()) as GraphNeighbor[];
       setGraphNeighbors(data);
@@ -1326,8 +1263,8 @@ export default function Home() {
                     <button
                       className="border rounded px-2 py-0.5 hover:bg-gray-50 flex-1"
                       onClick={async () => {
-                        await fetch(`${API_ORIGIN}/api/qi/release`, { method: "POST" });
-                        const r = await fetch(`${API_ORIGIN}/api/qi/status`);
+                        await apiFetch("/api/qi/release", { method: "POST" });
+                        const r = await apiFetch("/api/qi/status");
                         if (r.ok) setQiStatus(await r.json());
                       }}
                     >
@@ -1337,8 +1274,8 @@ export default function Home() {
                     <button
                       className="border rounded px-2 py-0.5 hover:bg-blue-50 bg-blue-50/30 flex-1"
                       onClick={async () => {
-                        await fetch(`${API_ORIGIN}/api/qi/force_active`, { method: "POST" });
-                        const r = await fetch(`${API_ORIGIN}/api/qi/status`);
+                        await apiFetch("/api/qi/force_active", { method: "POST" });
+                        const r = await apiFetch("/api/qi/status");
                         if (r.ok) setQiStatus(await r.json());
                       }}
                     >
@@ -1349,7 +1286,7 @@ export default function Home() {
                     className="border rounded px-2 py-0.5 hover:bg-gray-50"
                     title="跑一次 Darwin 探索 (30 秒, 真调 LLM)"
                     onClick={async () => {
-                      const r = await fetch(`${API_ORIGIN}/api/qi/trigger_explore`, {
+                      const r = await apiFetch("/api/qi/trigger_explore", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ job: "darwin" }),
@@ -1357,7 +1294,7 @@ export default function Home() {
                       const data = await r.json();
                       alert(`Darwin 探索完成: ${JSON.stringify(data)}`);
                       // 刷新协议库
-                      const pr = await fetch(`${API_ORIGIN}/api/protocols?tenant=u-sylvan`);
+                      const pr = await apiFetch("/api/protocols");
                       if (pr.ok) setProtocols(await pr.json());
                     }}
                   >

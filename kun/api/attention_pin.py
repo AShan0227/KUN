@@ -19,6 +19,7 @@ from kun.core.attention_anchor import (
     AttentionAnchor,
     get_manager,
 )
+from kun.core.tenancy import current_tenant
 
 
 class PinCreateRequest(BaseModel):
@@ -60,7 +61,6 @@ router = APIRouter(prefix="/api/preferences", tags=["attention-pin"])
 def create_pin(
     body: PinCreateRequest,
     x_user_id: Annotated[str, Header(alias="X-User-Id")],
-    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
 ) -> PinResponse:
     """用户显式 pin 一个资产.
 
@@ -78,7 +78,7 @@ def create_pin(
         expires_at=expires,
         created_by="user_explicit",
         reason=body.reason,
-        tenant_id=x_tenant_id,
+        tenant_id=current_tenant().tenant_id,
         user_id=x_user_id,
         project_id=body.project_id,
     )

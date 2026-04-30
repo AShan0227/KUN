@@ -97,10 +97,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         from kun.context.seeds import seed_default
 
-        default_tenant = settings().default_tenant_id or "u-sylvan"
-        seeded = await seed_default(tenant_id=default_tenant)
-        if seeded:
-            log.info("context.seeds.applied", tenant_id=default_tenant, count=seeded)
+        default_tenant = settings().default_tenant_id
+        if default_tenant:
+            seeded = await seed_default(tenant_id=default_tenant)
+            if seeded:
+                log.info("context.seeds.applied", tenant_id=default_tenant, count=seeded)
     except Exception as e:
         log.warning("context.seeds.startup_failed", error=str(e))
 
@@ -127,14 +128,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Default ON in dev, off in production until we've verified it.
     import os
 
-    if os.getenv("KUN_IDLE_BATCH_ENABLED", "1") == "1":
+    default_tenant = settings().default_tenant_id
+    if os.getenv("KUN_IDLE_BATCH_ENABLED", "1") == "1" and default_tenant:
         from kun.engineering.idle_batch import idle_batch_worker
 
         idle_interval = int(os.getenv("KUN_IDLE_BATCH_INTERVAL_SEC", "3600"))
         app.state.idle_batch_task = asyncio.create_task(
             idle_batch_worker(
                 interval_sec=idle_interval,
-                tenant_id=settings().default_tenant_id or "u-sylvan",
+                tenant_id=default_tenant,
             )
         )
         log.info("idle_batch.scheduled", interval_sec=idle_interval)
@@ -146,10 +148,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from kun.engineering.precipitation_idle_step import get_kp
 
         sched = get_cron_scheduler(app)
-        default_tenant = settings().default_tenant_id or "u-sylvan"
+        if default_tenant:
 
-        async def _hourly_idle_batch() -> None:
-            await _run_idle_steps(default_tenant)
+            async def _hourly_idle_batch() -> None:
+                await _run_idle_steps(default_tenant)
+
+            sched.register("idle_batch_hourly", "@hourly", _hourly_idle_batch)
 
         async def _daily_kp() -> None:
             await get_kp().run_scheduled("daily")
@@ -157,11 +161,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async def _weekly_kp() -> None:
             await get_kp().run_scheduled("weekly")
 
-        sched.register("idle_batch_hourly", "@hourly", _hourly_idle_batch)
         sched.register("kp_daily", "@daily", _daily_kp)
         sched.register("kp_weekly", "@weekly", _weekly_kp)
 
-        if os.getenv("KUN_CONTEXT_MAINTENANCE_ENABLED", "1") == "1":
+        if default_tenant and os.getenv("KUN_CONTEXT_MAINTENANCE_ENABLED", "1") == "1":
             from kun.context.maintenance import run_context_maintenance
 
             async def _daily_context_maintenance() -> None:
@@ -173,7 +176,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
             sched.register("nuo_context_maintenance_daily", "@daily", _daily_context_maintenance)
 
-        if os.getenv("KUN_MISSION_RESUME_WORKER_ENABLED", "0") == "1":
+        if default_tenant and os.getenv("KUN_MISSION_RESUME_WORKER_ENABLED", "0") == "1":
             from kun.api.runtime import get_mission_resume_worker
 
             async def _mission_resume_once() -> None:
@@ -181,7 +184,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
             sched.register("mission_resume_every_minute", "* * * * *", _mission_resume_once)
 
-        if os.getenv("KUN_MISSION_REAPER_ENABLED", "1") == "1":
+        if default_tenant and os.getenv("KUN_MISSION_REAPER_ENABLED", "1") == "1":
             from datetime import timedelta
 
             from kun.engineering.mission_reaper import reap_stale_mission_tasks
@@ -198,7 +201,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
             sched.register("mission_reaper_every_5_minutes", "*/5 * * * *", _mission_reaper_once)
 
-        if os.getenv("KUN_TASK_RESUME_WORKER_ENABLED", "1") == "1":
+        if default_tenant and os.getenv("KUN_TASK_RESUME_WORKER_ENABLED", "1") == "1":
             from kun.api.runtime import get_pending_task_resume_worker
 
             async def _pending_task_resume_once() -> None:
@@ -213,6 +216,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # 前会 require_qi_active 守门, 窗口外 skip.
         if (
             os.getenv("KUN_QI_CRON_ENABLED", "1") == "1"
+            and default_tenant
             and getattr(app.state, "protocol_registry", None) is not None
         ):
             from kun.qi.cron_jobs import register_qi_cron_jobs
@@ -234,7 +238,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         # V2.3: gauge metrics collector — 30s tick set qi_window_active /
         # pheromone_total_strength / capability_card_cache_hit_rate
-        if os.getenv("KUN_V23_METRICS_COLLECTOR_ENABLED", "1") == "1":
+        if default_tenant and os.getenv("KUN_V23_METRICS_COLLECTOR_ENABLED", "1") == "1":
             from kun.qi.metrics_collector import start_v23_metrics_collector
 
             app.state.v23_metrics_task = asyncio.create_task(

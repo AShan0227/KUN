@@ -52,11 +52,9 @@ async def run_task(
     translated = await translate_chat_input(req.message, req.attachments)
     user_message = translated.message
     fast = get_fast_path(request.app)
-    user_id = x_user_id or "u-anon"
-    try:
-        tenant_id = current_tenant().tenant_id
-    except Exception:
-        tenant_id = "u-sylvan"
+    tenant = current_tenant()
+    tenant_id = tenant.tenant_id
+    user_id = x_user_id or tenant.user_id or tenant_id
 
     # V2.1 §17.4a 快速路径
     fp_decision = fast.try_fast(

@@ -1,12 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-
-const API_BASE =
-  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_ORIGIN) || "";
-const TENANT = "u-sylvan";
-const USER = "sylvan";
-const FETCH_HEADERS: HeadersInit = { "X-Tenant-Id": TENANT, "X-User-Id": USER };
+import { apiFetch } from "@/kunApiClient";
 
 type PromiseBody = {
   commitments: string[];
@@ -43,10 +38,7 @@ type UpcomingChange = {
 };
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { ...FETCH_HEADERS, ...(init?.headers || {}) },
-  });
+  const r = await apiFetch(path, init);
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return r.json() as Promise<T>;
 }

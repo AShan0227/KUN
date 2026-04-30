@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { apiFetch } from "@/kunApiClient";
 
 /**
  * 傩 · 管家视图 (ADR-012).
@@ -13,12 +14,6 @@ import { useCallback, useEffect, useState } from "react";
  *
  * Fetch base 用 NEXT_PUBLIC_API_ORIGIN, 缺省 '' 走相对路径 (next rewrite 转 8000).
  */
-
-const API_BASE =
-  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_ORIGIN) || "";
-
-const TENANT = "u-sylvan"; // dev default; future: from auth
-const FETCH_HEADERS: HeadersInit = { "X-Tenant-Id": TENANT };
 
 type Health = {
   tenant_id: string;
@@ -290,10 +285,7 @@ type ActionDecisionResult = {
 };
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { ...FETCH_HEADERS, ...(init?.headers || {}) },
-  });
+  const r = await apiFetch(path, init);
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return r.json() as Promise<T>;
 }

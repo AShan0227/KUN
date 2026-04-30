@@ -40,7 +40,7 @@ class DiagnoseFindingList(BaseModel):
 @router.get("/findings", response_model=DiagnoseFindingList)
 async def list_diagnose_findings(
     request: Request,
-    x_user_id: Annotated[str, Header(alias="X-User-Id")] = "u-sylvan",
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     hint_text: str = Query(default=""),
     limit: int = Query(default=3, ge=1, le=50),
     expand_after: str | None = Query(default=None),
@@ -48,12 +48,13 @@ async def list_diagnose_findings(
 ) -> DiagnoseFindingList:
     """Run a lightweight NUO diagnosis and return highest-severity findings first."""
     tenant = current_tenant()
+    user_id = x_user_id or tenant.user_id or tenant.tenant_id
     runner = get_diagnose_runner(request.app)
     report = await runner.run(
         DiagnoseRequest(
             request_id=new_id("diag"),
             trigger="user_health_check_button",
-            user_id=x_user_id,
+            user_id=user_id,
             tenant_id=tenant.tenant_id,
             hint_text=hint_text,
         )

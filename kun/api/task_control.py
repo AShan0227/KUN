@@ -62,7 +62,7 @@ async def kill_task(
     task_id: str,
     body: KillRequest,
     request: Request,
-    x_user_id: Annotated[str, Header(alias="X-User-Id")] = "u-anon",
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
 ) -> KillResponse:
     """V2.1 §5.2.3 / T55: 发 kill 信号. SLA ≤500ms."""
     ks = get_kill_switch(request.app)
@@ -77,6 +77,7 @@ async def kill_task(
         )
     try:
         tenant = current_tenant()
+        requested_by = x_user_id or tenant.user_id or tenant.tenant_id
         async with session_scope(tenant_id=tenant.tenant_id) as s:
             await emit(
                 s,
@@ -87,7 +88,7 @@ async def kill_task(
                         "task_id": task_id,
                         "status": "requested",
                         "reason": body.reason,
-                        "requested_by": x_user_id,
+                        "requested_by": requested_by,
                     },
                     task_ref=task_id,
                 ),

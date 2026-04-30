@@ -171,7 +171,7 @@ def _request_identity(
     tenant_id = ctx.tenant_id
     if settings().env != "production" and x_tenant_id:
         tenant_id = x_tenant_id
-    user_id = ctx.user_id or x_user_id or "u-anon"
+    user_id = ctx.user_id or x_user_id or tenant_id
     return tenant_id, user_id
 
 

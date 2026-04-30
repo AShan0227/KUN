@@ -848,10 +848,7 @@ async def _assets_source_async(task_id: str, user_id: str) -> dict[str, Any]:
             logger.debug("attention_anchor list failed (non-fatal)")
 
         # 2. AssetStore 拉 active 资产 (按 kind 分组, top 5/类)
-        try:
-            tenant_id = current_tenant().tenant_id
-        except Exception:
-            tenant_id = "u-sylvan"
+        tenant_id = current_tenant().tenant_id
 
         store = get_store()
         # capability_card 不在 AssetStore 的合法 kind 集合里 (单独 ORM 表), 跳过 store 拉
