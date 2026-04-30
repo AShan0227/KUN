@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from kun.core.orm import TenantMemberRow
 from kun.ops.account_registry import (
+    accept_tenant_member_invite,
     build_bootstrap_token,
     hash_bearer_token,
     invite_tenant_member,
@@ -117,3 +119,36 @@ async def test_invite_tenant_member_keeps_existing_active_status() -> None:
     assert invited.role == "admin"
     assert len(fake_session.statements) == 2
     assert any("不会自动发送邮件" in item for item in invited.honest_limits)
+
+
+@pytest.mark.unit
+async def test_accept_tenant_member_invite_marks_member_active() -> None:
+    row = TenantMemberRow(
+        tenant_id="tenant-a",
+        user_id="member-a",
+        role="viewer",
+        scopes=["account:read"],
+        status="invited",
+    )
+    fake_session = _SequenceSession([_ScalarResult(row), _ScalarResult(rowcount=1)])
+
+    accepted = await accept_tenant_member_invite(
+        fake_session,  # type: ignore[arg-type]
+        tenant_id="tenant-a",
+        user_id="member-a",
+    )
+
+    assert accepted.status == "active"
+    assert accepted.role == "viewer"
+    assert accepted.scopes == ["account:read"]
+    assert len(fake_session.statements) == 2
+
+
+@pytest.mark.unit
+async def test_accept_tenant_member_invite_rejects_missing_invite() -> None:
+    with pytest.raises(ValueError, match="not found"):
+        await accept_tenant_member_invite(
+            _SequenceSession([_ScalarResult(None)]),  # type: ignore[arg-type]
+            tenant_id="tenant-a",
+            user_id="missing",
+        )

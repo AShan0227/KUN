@@ -21,6 +21,8 @@ from kun.core.tenancy import current_tenant
 from kun.ops.account_registry import (
     Audience,
     TenantAccountRecord,
+    TenantMemberAccepted,
+    accept_tenant_member_invite,
     revoke_token_issue,
     upsert_tenant_account_member,
 )
@@ -86,6 +88,32 @@ class SignupResponse(BaseModel):
     refresh_expires_at: int
     scopes: list[str]
     audience: Audience
+    honest_limits: list[str]
+
+
+class AcceptInviteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    invite_code: str = Field(min_length=1)
+    tenant_id: str = Field(min_length=1, max_length=80)
+    user_id: str = Field(min_length=1, max_length=120)
+    audience: Audience = "developer"
+
+
+class AcceptInviteResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    user_id: str
+    role: str
+    status: str
+    scopes: list[str]
+    access_token_id: str
+    access_token: str
+    access_expires_at: int
+    refresh_token_id: str
+    refresh_token: str
+    refresh_expires_at: int
     honest_limits: list[str]
 
 
@@ -176,6 +204,50 @@ async def signup(payload: SignupRequest) -> SignupResponse:
             metadata={"source": "api.auth.signup"},
         )
     return _signup_response(account, pair)
+
+
+@router.post("/invite/accept", response_model=AcceptInviteResponse)
+async def accept_invite(payload: AcceptInviteRequest) -> AcceptInviteResponse:
+    """Accept an invited member row and issue a refreshable session."""
+
+    cfg = settings()
+    if not cfg.self_signup_enabled:
+        raise HTTPException(status_code=403, detail="invite acceptance is disabled")
+    expected_invite = (cfg.self_signup_invite_code or "").strip()
+    if not expected_invite:
+        raise HTTPException(
+            status_code=503,
+            detail="KUN_SELF_SIGNUP_INVITE_CODE is required when invite acceptance is enabled",
+        )
+    if payload.invite_code.strip() != expected_invite:
+        raise HTTPException(status_code=403, detail="invalid invite code")
+    secrets = cfg.auth_secret_candidates()
+    if not secrets:
+        raise HTTPException(
+            status_code=503,
+            detail="KUN_AUTH_SECRET or KUN_AUTH_SECRETS is required for invite acceptance",
+        )
+    tenant_id = payload.tenant_id.strip()
+    user_id = payload.user_id.strip()
+    async with session_scope(tenant_id=tenant_id) as s:
+        try:
+            accepted = await accept_tenant_member_invite(
+                s,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        pair = await issue_session_token_pair(
+            s,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            scopes=accepted.scopes,
+            audience=payload.audience,
+            secret=secrets[0],
+            metadata={"source": "api.auth.invite_accept", "role": accepted.role},
+        )
+    return _accept_invite_response(accepted, pair)
 
 
 @router.get("/session/me", response_model=CurrentSessionResponse)
@@ -337,6 +409,29 @@ def _signup_response(
             "这是邀请码注册 + refresh session，不是密码登录 / OAuth / 设备风控。",
             "注册默认关闭；必须显式设置 KUN_SELF_SIGNUP_ENABLED=true 和邀请码。",
             "账单仍是记录字段，不代表已经接入真实支付。",
+        ],
+    )
+
+
+def _accept_invite_response(
+    accepted: TenantMemberAccepted,
+    pair: SessionTokenPair,
+) -> AcceptInviteResponse:
+    return AcceptInviteResponse(
+        tenant_id=accepted.tenant_id,
+        user_id=accepted.user_id,
+        role=accepted.role,
+        status=accepted.status,
+        scopes=pair.scopes,
+        access_token_id=pair.access_token_id,
+        access_token=pair.access_token,
+        access_expires_at=pair.access_expires_at,
+        refresh_token_id=pair.refresh_token_id,
+        refresh_token=pair.refresh_token,
+        refresh_expires_at=pair.refresh_expires_at,
+        honest_limits=[
+            *accepted.honest_limits,
+            "接受邀请会签发 refresh session；仍没有设备指纹和异常登录风控。",
         ],
     )
 

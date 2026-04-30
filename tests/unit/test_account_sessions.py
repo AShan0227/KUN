@@ -411,6 +411,113 @@ def test_signup_api_rejects_bad_invite(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.unit
+def test_accept_invite_api_activates_member_and_issues_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "s" * 40
+
+    class _FakeSettings:
+        self_signup_enabled = True
+        self_signup_invite_code = "invite-123"
+
+        def auth_secret_candidates(self) -> list[str]:
+            return [secret]
+
+    async def fake_accept(*_args: object, **kwargs: object) -> session_api.TenantMemberAccepted:
+        assert kwargs["tenant_id"] == "tenant-a"
+        assert kwargs["user_id"] == "member-a"
+        return session_api.TenantMemberAccepted(
+            tenant_id="tenant-a",
+            user_id="member-a",
+            role="viewer",
+            scopes=["account:read"],
+            status="active",
+        )
+
+    async def fake_issue(*_args: object, **kwargs: object) -> session_api.SessionTokenPair:
+        assert kwargs["scopes"] == ["account:read"]
+        assert kwargs["metadata"] == {"source": "api.auth.invite_accept", "role": "viewer"}
+        return session_api.SessionTokenPair(
+            tenant_id="tenant-a",
+            user_id="member-a",
+            audience="developer",
+            scopes=["account:read"],
+            access_token_id="acc-invite",
+            access_token=sign_auth_token(
+                {
+                    "tenant_id": "tenant-a",
+                    "user_id": "member-a",
+                    "jti": "acc-invite",
+                    "token_type": "access",
+                },
+                secret,
+            ),
+            access_expires_at=456,
+            refresh_token_id="rfr-invite",
+            refresh_token=sign_auth_token(
+                {
+                    "tenant_id": "tenant-a",
+                    "user_id": "member-a",
+                    "jti": "rfr-invite",
+                    "token_type": "refresh",
+                },
+                secret,
+            ),
+            refresh_expires_at=789,
+        )
+
+    monkeypatch.setattr(session_api, "settings", lambda: _FakeSettings())
+    monkeypatch.setattr(session_api, "session_scope", lambda **_kwargs: _FakeScope())
+    monkeypatch.setattr(session_api, "accept_tenant_member_invite", fake_accept)
+    monkeypatch.setattr(session_api, "issue_session_token_pair", fake_issue)
+
+    response = TestClient(_api_app()).post(
+        "/api/auth/invite/accept",
+        json={
+            "invite_code": "invite-123",
+            "tenant_id": "tenant-a",
+            "user_id": "member-a",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "active"
+    assert body["access_token_id"] == "acc-invite"
+    assert body["refresh_token_id"] == "rfr-invite"
+    assert any("没有设备指纹" in item for item in body["honest_limits"])
+
+
+@pytest.mark.unit
+def test_accept_invite_api_rejects_missing_invite(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeSettings:
+        self_signup_enabled = True
+        self_signup_invite_code = "invite-123"
+
+        def auth_secret_candidates(self) -> list[str]:
+            return ["s" * 40]
+
+    async def fake_accept(*_args: object, **_kwargs: object) -> session_api.TenantMemberAccepted:
+        raise ValueError("tenant member invitation not found")
+
+    monkeypatch.setattr(session_api, "settings", lambda: _FakeSettings())
+    monkeypatch.setattr(session_api, "session_scope", lambda **_kwargs: _FakeScope())
+    monkeypatch.setattr(session_api, "accept_tenant_member_invite", fake_accept)
+
+    response = TestClient(_api_app()).post(
+        "/api/auth/invite/accept",
+        json={
+            "invite_code": "invite-123",
+            "tenant_id": "tenant-a",
+            "user_id": "missing",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "tenant member invitation not found"
+
+
+@pytest.mark.unit
 def test_current_session_reports_context() -> None:
     with tenant_scope(
         TenantContext(

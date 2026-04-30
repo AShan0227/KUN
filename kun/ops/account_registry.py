@@ -74,6 +74,19 @@ class TenantMemberInvite(BaseModel):
     honest_limits: list[str] = Field(default_factory=list)
 
 
+class TenantMemberAccepted(BaseModel):
+    """Result of accepting a previously written tenant member invitation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    user_id: str
+    role: MemberRole
+    scopes: list[str] = Field(default_factory=list)
+    status: str = "active"
+    honest_limits: list[str] = Field(default_factory=list)
+
+
 def hash_bearer_token(token: str) -> str:
     """Hash a bearer token for audit correlation without storing the secret."""
 
@@ -354,6 +367,52 @@ async def invite_tenant_member(
     )
 
 
+async def accept_tenant_member_invite(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    user_id: str,
+) -> TenantMemberAccepted:
+    """Mark an invited member active and return their role/scopes."""
+
+    cleaned_tenant = _required("tenant_id", tenant_id)
+    cleaned_user = _required("user_id", user_id)
+    row = (
+        await session.execute(
+            select(TenantMemberRow).where(
+                TenantMemberRow.tenant_id == cleaned_tenant,
+                TenantMemberRow.user_id == cleaned_user,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise ValueError("tenant member invitation not found")
+    if row.status == "disabled":
+        raise ValueError("tenant member invitation is disabled")
+    now = datetime.now(UTC)
+    await session.execute(
+        update(TenantMemberRow)
+        .where(
+            TenantMemberRow.tenant_id == cleaned_tenant,
+            TenantMemberRow.user_id == cleaned_user,
+        )
+        .values(status="active", updated_at=now)
+    )
+    return TenantMemberAccepted(
+        tenant_id=cleaned_tenant,
+        user_id=cleaned_user,
+        role=_member_role(row.role),
+        scopes=[str(scope).strip() for scope in row.scopes if str(scope).strip()]
+        if isinstance(row.scopes, list)
+        else [],
+        status="active",
+        honest_limits=[
+            "这是邀请接受账本流程，不是邮件邀请系统。",
+            "当前使用全局邀请码守门；后续需要 per-invite token、过期时间和邮件发送。",
+        ],
+    )
+
+
 async def is_token_revoked(
     session: AsyncSession,
     *,
@@ -456,6 +515,16 @@ def _required(field: str, value: str) -> str:
     return cleaned
 
 
+def _member_role(value: str) -> MemberRole:
+    if value == "owner":
+        return "owner"
+    if value == "admin":
+        return "admin"
+    if value == "viewer":
+        return "viewer"
+    return "member"
+
+
 def _honest_limits() -> list[str]:
     return [
         "这是账号/组织/token 签发账本的第一版，不是完整自助注册系统。",
@@ -469,7 +538,9 @@ __all__ = [
     "MemberRole",
     "TenantAccountBootstrap",
     "TenantAccountRecord",
+    "TenantMemberAccepted",
     "TenantMemberInvite",
+    "accept_tenant_member_invite",
     "bootstrap_tenant_account",
     "build_bootstrap_token",
     "build_unpersisted_bootstrap",
