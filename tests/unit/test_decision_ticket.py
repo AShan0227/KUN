@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from kun.datamodel.decision_ticket import (
+    ticket_from_route_choice,
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
     ticket_from_world_policy,
@@ -63,6 +64,36 @@ def test_value_gate_ticket_maps_intervention_status() -> None:
     assert ticket.decision_point == "value_gate"
     assert ticket.status == "escalated"
     assert ticket.metadata["step_id"] == 2
+
+
+def test_route_choice_ticket_wraps_role_and_model_purpose() -> None:
+    from kun.brain.router import TaskRouter
+    from kun.datamodel.task import Owner, TaskMeta
+
+    owner = Owner(tenant_id="tenant-1")
+    meta = TaskMeta(
+        fingerprint=TaskMeta.compute_fingerprint("write code", owner),
+        owner=owner,
+        task_type="coding.python",
+        risk_level="medium",
+        complexity_score=0.6,
+        estimated_cost_usd=0.4,
+        success_criteria_short="write code",
+    )
+    choice = TaskRouter().choose(meta)
+
+    ticket = ticket_from_route_choice(
+        tenant_id="tenant-1",
+        task_id=meta.task_id,
+        risk_level=meta.risk_level,
+        estimated_cost_usd=meta.estimated_cost_usd,
+        choice=choice,
+    )
+
+    assert ticket.phase == "routing"
+    assert ticket.decision_point == "role_model_selected"
+    assert ticket.selected_action == "rt-coder:coding"
+    assert ticket.metadata["purpose"] == "coding"
 
 
 def test_world_policy_ticket_blocks_missing_handler() -> None:

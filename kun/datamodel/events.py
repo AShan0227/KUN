@@ -20,6 +20,7 @@ EventKind = Literal[
     # Task lifecycle
     "task.created",
     "task.started",
+    "task.route.selected",
     "task.step.completed",
     "task.pre_conflict_detected",
     "task.pending_actions.created",

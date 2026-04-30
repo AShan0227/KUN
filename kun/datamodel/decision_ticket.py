@@ -196,6 +196,50 @@ def ticket_from_value_gate_decision(
     )
 
 
+def ticket_from_route_choice(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    estimated_cost_usd: float | None,
+    choice: Any,
+    mission_id: str | None = None,
+) -> DecisionTicket:
+    """Wrap TaskRouter choice as a V4 decision ticket."""
+
+    role_template_id = str(getattr(choice, "role_template_id", "rt-default"))
+    purpose = str(getattr(choice, "purpose", "execution"))
+    profile = getattr(choice, "task_profile", None)
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="routing",
+        decision_point="role_model_selected",
+        source_module="brain.task_router",
+        selected_action=f"{role_template_id}:{purpose}",
+        status="selected",
+        reason=f"TaskRouter selected role_template={role_template_id}, purpose={purpose}",
+        confidence=0.65,
+        risk_level=risk_level,
+        cost_estimate_usd=estimated_cost_usd,
+        inputs_summary={
+            "task_id": task_id,
+            "risk_level": risk_level,
+            "estimated_cost_usd": estimated_cost_usd,
+        },
+        evidence={
+            "role_template_id": role_template_id,
+            "purpose": purpose,
+            "task_profile": _model_dump_or_value(profile),
+        },
+        metadata={
+            "role_template_id": role_template_id,
+            "purpose": purpose,
+        },
+    )
+
+
 def ticket_from_world_policy(
     *,
     tenant_id: str,
@@ -260,6 +304,7 @@ __all__ = [
     "DecisionStatus",
     "DecisionTicket",
     "DecisionTicketRef",
+    "ticket_from_route_choice",
     "ticket_from_value_gate_decision",
     "ticket_from_watchtower_decision",
     "ticket_from_world_policy",

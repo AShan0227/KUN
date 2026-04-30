@@ -43,6 +43,7 @@ from kun.core.orm import IdempotencyRow, RuntimeStateRow, TaskResultRow, TaskRow
 from kun.core.tenancy import current_tenant
 from kun.datamodel.decision_ticket import (
     DecisionTicket,
+    ticket_from_route_choice,
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
 )
@@ -688,6 +689,34 @@ class Orchestrator:
 
         # 4. Route (pick role + model purpose)
         choice = self.task_router.choose(task_ref.meta)
+        route_ticket = ticket_from_route_choice(
+            tenant_id=tenant.tenant_id,
+            task_id=task_ref.meta.task_id,
+            risk_level=task_ref.meta.risk_level,
+            estimated_cost_usd=task_ref.meta.estimated_cost_usd,
+            choice=choice,
+            mission_id=_mission_id_from_task(task_ref),
+        )
+        decision_tickets.append(route_ticket)
+        self._record_state_ledger("record_decision_ticket", route_ticket)
+        async with session_scope(tenant_id=tenant.tenant_id) as s:
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant.tenant_id,
+                    event_type="task.route.selected",
+                    payload=route_ticket.event_payload(),
+                    task_ref=task_ref.meta.task_id,
+                ),
+            )
+        yield OrchestratorEvent(
+            kind="action_plan",
+            data={
+                "stage": "task_route",
+                "task_id": task_ref.meta.task_id,
+                "decision_ticket": route_ticket.event_payload(),
+            },
+        )
 
         # 5. Pre-start safety: conflict scan + pending side-effect actions.
         pending_actions = pending_actions_for(task_ref)
