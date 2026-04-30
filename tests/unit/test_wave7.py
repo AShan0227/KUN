@@ -209,6 +209,17 @@ def test_blackboard_state_ledger_history_endpoints(bb_client: TestClient) -> Non
     assert task_history.status_code == 200
     assert task_history.json()[0]["task_id"] == "tk-1"
 
+    story = bb_client.get(
+        "/api/blackboard/state-ledger/tk-1/story",
+        headers={"X-User-Id": "u-1", "X-Tenant-Id": "t-1"},
+    )
+    assert story.status_code == 200
+    assert story.json()["task_id"] == "tk-1"
+    assert story.json()["event_count"] == 1
+    assert story.json()["decision_count"] == 1
+    assert story.json()["total_cost_usd"] == 0.01
+    assert story.json()["latest_reason"] == "命中运营策略包"
+
 
 def test_blackboard_workspace_default(bb_client: TestClient) -> None:
     resp = bb_client.get("/api/blackboard/workspace/tk-1", headers={"X-User-Id": "u-1"})

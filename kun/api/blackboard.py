@@ -63,6 +63,20 @@ class StateLedgerHistoryItem(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class StateLedgerStory(BaseModel):
+    """Compact story replayed from durable State Ledger history."""
+
+    task_id: str
+    event_count: int = 0
+    decision_count: int = 0
+    total_cost_usd: float = 0.0
+    first_seen_at: str | None = None
+    last_seen_at: str | None = None
+    latest_event_type: str = ""
+    latest_reason: str = ""
+    timeline: list[StateLedgerHistoryItem] = Field(default_factory=list)
+
+
 class GlobalStateView(BaseModel):
     """全局状态区 (对人 5 个核心信息块)."""
 
@@ -242,6 +256,32 @@ async def get_state_ledger_task_history(
     return [StateLedgerHistoryItem.model_validate(item) for item in items]
 
 
+@router.get("/state-ledger/{task_id}/story", response_model=StateLedgerStory)
+async def get_state_ledger_task_story(
+    task_id: str,
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-Id")] = None,
+    limit: int = Query(100, ge=1, le=500),
+) -> StateLedgerStory:
+    """某个任务的长期状态故事：从 EventRow 回放成可读摘要。"""
+    fn = _data_sources.get("state_ledger_story")
+    if fn is None:
+        history_fn = _data_sources.get("state_ledger_history")
+        if history_fn is None:
+            return StateLedgerStory(task_id=task_id)
+        tenant_id, user_id = _request_identity(x_user_id=x_user_id, x_tenant_id=x_tenant_id)
+        items = await _maybe_await(
+            history_fn(tenant_id=tenant_id, user_id=user_id, task_id=task_id, limit=limit)
+        )
+        history = [StateLedgerHistoryItem.model_validate(item) for item in items]
+        return _story_from_history(task_id, history)
+    tenant_id, user_id = _request_identity(x_user_id=x_user_id, x_tenant_id=x_tenant_id)
+    item = await _maybe_await(
+        fn(tenant_id=tenant_id, user_id=user_id, task_id=task_id, limit=limit)
+    )
+    return StateLedgerStory.model_validate(item)
+
+
 @router.get("/state-ledger/{task_id}", response_model=StateLedgerEntry)
 async def get_state_ledger_task(
     task_id: str,
@@ -334,6 +374,15 @@ async def get_full_for_agent(
             if "state_ledger_history" in _data_sources
             else []
         ),
+        "state_ledger_story": (
+            await _maybe_await(
+                _data_sources["state_ledger_story"](
+                    tenant_id=tenant_id, user_id=user_id, task_id=task_id, limit=100
+                )
+            )
+            if "state_ledger_story" in _data_sources
+            else {}
+        ),
         "workspace": (await _maybe_await(ws_fn(task_id=task_id, user_id=user_id)) if ws_fn else {}),
         "assets": (
             await _maybe_await(assets_fn(task_id=task_id, user_id=user_id)) if assets_fn else {}
@@ -347,12 +396,32 @@ async def get_full_for_agent(
     }
 
 
+def _story_from_history(
+    task_id: str,
+    history: list[StateLedgerHistoryItem],
+) -> StateLedgerStory:
+    timeline = sorted(history, key=lambda item: item.occurred_at)
+    latest = timeline[-1] if timeline else None
+    return StateLedgerStory(
+        task_id=task_id,
+        event_count=len(timeline),
+        decision_count=sum(1 for item in timeline if item.decision_ticket_id),
+        total_cost_usd=round(sum(item.cost_usd for item in timeline), 4),
+        first_seen_at=timeline[0].occurred_at if timeline else None,
+        last_seen_at=latest.occurred_at if latest else None,
+        latest_event_type=latest.event_type if latest else "",
+        latest_reason=latest.reason if latest else "",
+        timeline=timeline[-20:],
+    )
+
+
 __all__ = [
     "AssetPoolSliceView",
     "EventStreamItem",
     "GlobalStateView",
     "StateLedgerEntry",
     "StateLedgerHistoryItem",
+    "StateLedgerStory",
     "TaskBoardItem",
     "WorkspaceView",
     "register_data_source",

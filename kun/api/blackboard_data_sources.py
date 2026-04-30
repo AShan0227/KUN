@@ -29,6 +29,7 @@ def install_blackboard_data_sources() -> None:
     register_data_source("state", _state_source)
     register_data_source("state_ledger", _state_ledger_source)
     register_data_source("state_ledger_history", _state_ledger_history_source)
+    register_data_source("state_ledger_story", _state_ledger_story_source)
     register_data_source("workspace", _workspace_source)
     register_data_source("assets", _assets_source)
 
@@ -299,6 +300,34 @@ async def _state_ledger_history_source_async(
     except Exception:
         logger.exception("blackboard.state_ledger_history_source failed")
     return out
+
+
+async def _state_ledger_story_source(
+    *,
+    tenant_id: str,
+    user_id: str,
+    task_id: str,
+    limit: int = 100,
+    **_: Any,
+) -> dict[str, Any]:
+    history = await _state_ledger_history_source_async(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        limit=limit,
+    )
+    timeline = sorted(history, key=lambda item: str(item.get("occurred_at") or ""))
+    latest = timeline[-1] if timeline else None
+    return {
+        "task_id": task_id,
+        "event_count": len(timeline),
+        "decision_count": sum(1 for item in timeline if item.get("decision_ticket_id")),
+        "total_cost_usd": round(sum(float(item.get("cost_usd") or 0.0) for item in timeline), 4),
+        "first_seen_at": timeline[0]["occurred_at"] if timeline else None,
+        "last_seen_at": latest["occurred_at"] if latest else None,
+        "latest_event_type": str(latest.get("event_type") or "") if latest else "",
+        "latest_reason": str(latest.get("reason") or "") if latest else "",
+        "timeline": timeline[-20:],
+    }
 
 
 async def _runtime_state_ledger_source(

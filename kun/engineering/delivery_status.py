@@ -84,6 +84,7 @@ def get_v3_delivery_status(
                 "首页长期目标卡可手动点“推进一次”",
                 "pending approval 通过后可解除任务暂停",
                 "StateLedger history 可从 EventRow 回放长期事件",
+                "StateLedger story 可把某个任务的事件历史压成可读时间线、成本和决策摘要",
                 "idle-batch 有部分复盘和学习能力",
                 "Mission 级预算已滚动汇总并可超预算暂停",
                 "Mission reaper 可处理 queued/running 卡死任务",
