@@ -119,6 +119,24 @@ type GlobalState = {
   active_state_ledger: LedgerEntry[];
 };
 
+type DeliveryStatus = "ready" | "partial" | "audit_only" | "not_ready";
+
+type DeliveryCapability = {
+  capability_id: string;
+  label: string;
+  status: DeliveryStatus;
+  user_visible: boolean;
+  summary: string;
+  missing: string[];
+  next_steps: string[];
+};
+
+type DeliveryStatusResponse = {
+  items: DeliveryCapability[];
+  summary: Record<DeliveryStatus, number>;
+  validation_issues: string[];
+};
+
 type MissionSnapshot = {
   mission_id: string;
   title: string;
@@ -282,6 +300,7 @@ export default function Home() {
   const [qiStatus, setQiStatus] = useState<QiStatus | null>(null);
   const [protocols, setProtocols] = useState<Protocol[]>([]);
   const [globalState, setGlobalState] = useState<GlobalState | null>(null);
+  const [deliveryStatus, setDeliveryStatus] = useState<DeliveryStatusResponse | null>(null);
   const [missions, setMissions] = useState<MissionSnapshot[]>([]);
   const [missionBusy, setMissionBusy] = useState(false);
   const [missionNotice, setMissionNotice] = useState("");
@@ -343,6 +362,15 @@ export default function Home() {
       if (!cancelledRef?.current && actionRes && actionRes.ok) {
         const page = (await actionRes.json()) as PendingActionPage;
         setPendingActions(page.actions ?? []);
+      }
+      const deliveryRes = await fetch(`${API_ORIGIN}/nuo/health/delivery-status`, {
+        headers: {
+          "X-Tenant-Id": "u-sylvan",
+          "X-User-Id": "sylvan",
+        },
+      }).catch(() => null);
+      if (!cancelledRef?.current && deliveryRes && deliveryRes.ok) {
+        setDeliveryStatus((await deliveryRes.json()) as DeliveryStatusResponse);
       }
     } catch {
       // ignore polling errors
@@ -642,6 +670,13 @@ export default function Home() {
     0,
   );
   const pendingDecisionCount = Math.max(ledgerPendingCount, pendingActions.length);
+  const deliverySummary = deliveryStatus?.summary;
+  const deliveryBoundaryCount =
+    (deliverySummary?.partial ?? 0) +
+    (deliverySummary?.audit_only ?? 0) +
+    (deliverySummary?.not_ready ?? 0);
+  const visibleDeliveryGaps =
+    deliveryStatus?.items.filter((item) => item.user_visible && item.status !== "ready") ?? [];
 
   return (
     <div className="grid grid-cols-[1fr_360px] gap-4 p-4 h-full">
@@ -672,7 +707,7 @@ export default function Home() {
             <MiniCard
               label="风险"
               value={globalState?.health_indicator ?? "unknown"}
-              hint={`告警 ${globalState?.urgent_alert_count ?? 0}`}
+              hint={`告警 ${globalState?.urgent_alert_count ?? 0} · 边界 ${deliveryBoundaryCount}`}
             />
             <MiniCard
               label="待确认"
@@ -973,6 +1008,45 @@ export default function Home() {
         </div>
         <div className="flex-1 space-y-2">
           {/* V2.3: 启 (Qi) 状态卡 + toggle 按钮 */}
+          {deliveryStatus && (
+            <div className="bg-white rounded p-2 border border-gray-200 text-xs space-y-2">
+              <div className="font-medium flex justify-between">
+                <span>能力边界</span>
+                <a href="/nuo" className="text-kun-accent hover:underline">
+                  去傩查看
+                </a>
+              </div>
+              <div className="grid grid-cols-4 gap-1 text-center">
+                <BoundaryCount label="可测" value={deliverySummary?.ready ?? 0} />
+                <BoundaryCount label="半闭环" value={deliverySummary?.partial ?? 0} />
+                <BoundaryCount label="仅审计" value={deliverySummary?.audit_only ?? 0} />
+                <BoundaryCount label="未就绪" value={deliverySummary?.not_ready ?? 0} />
+              </div>
+              {deliveryStatus.validation_issues.length > 0 && (
+                <div className="rounded bg-red-50 px-2 py-1 text-kun-bad">
+                  诚实状态异常：{deliveryStatus.validation_issues[0]}
+                </div>
+              )}
+              {visibleDeliveryGaps.length > 0 ? (
+                <div className="space-y-1">
+                  {visibleDeliveryGaps.slice(0, 3).map((item) => (
+                    <div key={item.capability_id} className="border-t pt-1">
+                      <div className="flex justify-between gap-2">
+                        <span className="truncate font-medium">{item.label}</span>
+                        <span className={deliveryStatusClass(item.status)}>
+                          {deliveryStatusLabel(item.status)}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 truncate text-gray-500">{item.summary}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-gray-500">当前用户可见能力都标为可测。</div>
+              )}
+            </div>
+          )}
+
           <div className="bg-white rounded p-2 border border-gray-200 text-xs space-y-1">
             <div className="font-medium flex justify-between">
               <span>🌙 启 (Qi) 状态</span>
@@ -1452,6 +1526,29 @@ function MiniCard({
       <div className="mt-1 text-gray-400">{hint}</div>
     </div>
   );
+}
+
+function BoundaryCount({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded border border-gray-100 bg-gray-50 px-1 py-1">
+      <div className="font-semibold">{value}</div>
+      <div className="text-[11px] text-gray-400">{label}</div>
+    </div>
+  );
+}
+
+function deliveryStatusLabel(status: DeliveryStatus) {
+  if (status === "ready") return "可测";
+  if (status === "partial") return "半闭环";
+  if (status === "audit_only") return "仅审计";
+  return "未就绪";
+}
+
+function deliveryStatusClass(status: DeliveryStatus) {
+  if (status === "ready") return "shrink-0 text-kun-good";
+  if (status === "partial") return "shrink-0 text-kun-warn";
+  if (status === "audit_only") return "shrink-0 text-gray-500";
+  return "shrink-0 text-kun-bad";
 }
 
 function formatMain(msg: WireMessage): string {
