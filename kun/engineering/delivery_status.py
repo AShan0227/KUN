@@ -90,6 +90,7 @@ def get_v3_delivery_status(
                 "StateLedger replay 会从 EventRow 重建推断状态、外部动作、模型/skill/context 路径、风险和账本缺口",
                 "StateLedger audit 可对比当前快照和 EventRow 回放故事，标出状态漂移、成本漂移和历史缺口",
                 "傩深度体检会抽检 StateLedger 当前快照和 EventRow 回放，发现状态/成本漂移会生成 finding",
+                "默认 StateLedger 通用读路径会读取 state_ledger_entries，黑板不再是唯一能跨重启读当前快照的消费者",
                 "idle-batch 有部分复盘和学习能力",
                 "Mission 级预算已滚动汇总并可超预算暂停",
                 "Mission reaper 可处理 queued/running 卡死任务",

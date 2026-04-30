@@ -135,26 +135,34 @@ class StateLedgerDatabaseStore:
     def get(self, *, task_id: str, tenant_id: str) -> StateLedgerEntry | None:
         if not self._enable_reads:
             return None
-        return cast(
-            StateLedgerEntry | None,
-            self._runner.submit(
-                _load_state_ledger_entry(task_id=task_id, tenant_id=tenant_id),
-                wait=True,
-                timeout=self._read_timeout_sec,
-            ),
-        )
+        try:
+            return cast(
+                StateLedgerEntry | None,
+                self._runner.submit(
+                    _load_state_ledger_entry(task_id=task_id, tenant_id=tenant_id),
+                    wait=True,
+                    timeout=self._read_timeout_sec,
+                ),
+            )
+        except Exception:
+            logger.exception("state_ledger.read_failed", extra={"task_id": task_id})
+            return None
 
     def list_active(self, *, tenant_id: str, limit: int = 50) -> list[StateLedgerEntry]:
         if not self._enable_reads:
             return []
-        return cast(
-            list[StateLedgerEntry],
-            self._runner.submit(
-                _list_active_state_ledger_entries(tenant_id=tenant_id, limit=limit),
-                wait=True,
-                timeout=self._read_timeout_sec,
-            ),
-        )
+        try:
+            return cast(
+                list[StateLedgerEntry],
+                self._runner.submit(
+                    _list_active_state_ledger_entries(tenant_id=tenant_id, limit=limit),
+                    wait=True,
+                    timeout=self._read_timeout_sec,
+                ),
+            )
+        except Exception:
+            logger.exception("state_ledger.list_active_failed")
+            return []
 
     def flush(self, *, timeout_sec: float = 2.0) -> None:
         with self._lock:
@@ -779,7 +787,7 @@ class StateLedger:
             logger.exception("state_ledger.persist_failed", extra={"task_id": entry.task_id})
 
 
-_default_ledger = StateLedger(store=StateLedgerDatabaseStore(enable_reads=False))
+_default_ledger = StateLedger(store=StateLedgerDatabaseStore(enable_reads=True))
 
 
 def get_state_ledger() -> StateLedger:
