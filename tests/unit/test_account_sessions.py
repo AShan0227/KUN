@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from kun.api import session as session_api
 from kun.core.orm import TenantTokenIssueRow
+from kun.core.tenancy import TenantContext, tenant_scope
 from kun.ops.account_registry import hash_bearer_token
 from kun.ops.account_sessions import (
     SessionTokenError,
@@ -23,6 +24,14 @@ class _ScalarResult:
 
     def scalar_one_or_none(self) -> Any:
         return self.value
+
+
+class _ScalarsResult:
+    def __init__(self, values: list[Any]) -> None:
+        self.values = values
+
+    def scalars(self) -> list[Any]:
+        return self.values
 
 
 class _FakeSession:
@@ -399,3 +408,100 @@ def test_signup_api_rejects_bad_invite(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert response.status_code == 403
     assert response.json()["detail"] == "invalid invite code"
+
+
+@pytest.mark.unit
+def test_current_session_reports_context() -> None:
+    with tenant_scope(
+        TenantContext(
+            tenant_id="tenant-a",
+            user_id="user-a",
+            scopes=("chat:write",),
+            audience="expert",
+        )
+    ):
+        response = TestClient(_api_app()).get("/api/auth/session/me")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tenant_id"] == "tenant-a"
+    assert body["user_id"] == "user-a"
+    assert body["scopes"] == ["chat:write"]
+    assert body["audience"] == "expert"
+
+
+@pytest.mark.unit
+def test_current_user_sessions_hide_token_hash(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime.now(UTC)
+    row = TenantTokenIssueRow(
+        tenant_id="tenant-a",
+        token_id="acc-a",
+        token_hash="secret-hash",
+        user_id="user-a",
+        audience="developer",
+        scopes=["chat:write"],
+        status="issued",
+        expires_at=now + timedelta(minutes=15),
+        metadata_json={"kind": "access"},
+    )
+
+    monkeypatch.setattr(
+        session_api,
+        "session_scope",
+        lambda **_kwargs: _FakeScope(_FakeSession([_ScalarsResult([row])])),
+    )
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a", user_id="user-a")):
+        response = TestClient(_api_app()).get("/api/auth/session/tokens")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tokens"][0]["token_id"] == "acc-a"
+    assert body["tokens"][0]["token_kind"] == "access"
+    assert "token_hash" not in response.text
+    assert "secret-hash" not in response.text
+
+
+@pytest.mark.unit
+def test_revoke_own_session_rejects_other_user_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        session_api,
+        "session_scope",
+        lambda **_kwargs: _FakeScope(_FakeSession([_ScalarResult("other-user")])),
+    )
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a", user_id="user-a")):
+        response = TestClient(_api_app()).post("/api/auth/session/tokens/tok-a/revoke")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "cannot revoke another user's token"
+
+
+@pytest.mark.unit
+def test_revoke_own_session_calls_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_session = _FakeSession([_ScalarResult("user-a")])
+    called: dict[str, Any] = {}
+
+    async def fake_revoke_token_issue(
+        _session: object,
+        *,
+        tenant_id: str,
+        token_id: str,
+        reason: str,
+    ) -> bool:
+        called.update({"tenant_id": tenant_id, "token_id": token_id, "reason": reason})
+        return True
+
+    monkeypatch.setattr(session_api, "session_scope", lambda **_kwargs: _FakeScope(fake_session))
+    monkeypatch.setattr(session_api, "revoke_token_issue", fake_revoke_token_issue)
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a", user_id="user-a")):
+        response = TestClient(_api_app()).post("/api/auth/session/tokens/tok-a/revoke")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "revoked"
+    assert called == {
+        "tenant_id": "tenant-a",
+        "token_id": "tok-a",
+        "reason": "self_session_revoke",
+    }

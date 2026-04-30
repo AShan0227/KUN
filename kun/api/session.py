@@ -12,10 +12,18 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 
 from kun.core.config import settings
 from kun.core.db import session_scope
-from kun.ops.account_registry import Audience, TenantAccountRecord, upsert_tenant_account_member
+from kun.core.orm import TenantTokenIssueRow
+from kun.core.tenancy import current_tenant
+from kun.ops.account_registry import (
+    Audience,
+    TenantAccountRecord,
+    revoke_token_issue,
+    upsert_tenant_account_member,
+)
 from kun.ops.account_sessions import (
     AccessTokenRefresh,
     SessionTokenError,
@@ -81,6 +89,44 @@ class SignupResponse(BaseModel):
     honest_limits: list[str]
 
 
+class CurrentSessionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    user_id: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+    audience: Audience
+    honest_limits: list[str]
+
+
+class SessionTokenSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token_id: str
+    token_kind: str
+    status: str
+    expires_at: str | None = None
+    revoked_at: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+
+
+class CurrentUserSessionsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    user_id: str
+    tokens: list[SessionTokenSummary]
+    honest_limits: list[str]
+
+
+class RevokeOwnSessionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token_id: str
+    status: str
+    message: str
+
+
 @router.post("/signup", response_model=SignupResponse)
 async def signup(payload: SignupRequest) -> SignupResponse:
     """Create a tenant account and a refreshable session, if invite signup is enabled."""
@@ -130,6 +176,90 @@ async def signup(payload: SignupRequest) -> SignupResponse:
             metadata={"source": "api.auth.signup"},
         )
     return _signup_response(account, pair)
+
+
+@router.get("/session/me", response_model=CurrentSessionResponse)
+async def current_session() -> CurrentSessionResponse:
+    """Return the authenticated tenant/user context without exposing secrets."""
+
+    tenant = current_tenant()
+    return CurrentSessionResponse(
+        tenant_id=tenant.tenant_id,
+        user_id=tenant.user_id,
+        scopes=list(tenant.scopes),
+        audience=tenant.audience,
+        honest_limits=[
+            "这里只返回当前请求上下文，不代表完整设备识别或异常登录风控。",
+        ],
+    )
+
+
+@router.get("/session/tokens", response_model=CurrentUserSessionsResponse)
+async def current_user_sessions() -> CurrentUserSessionsResponse:
+    """List the current user's issued access/refresh tokens for this tenant."""
+
+    tenant = current_tenant()
+    if not tenant.user_id:
+        raise HTTPException(status_code=400, detail="authenticated user_id is required")
+    async with session_scope(tenant_id=tenant.tenant_id) as s:
+        rows = (
+            await s.execute(
+                select(TenantTokenIssueRow)
+                .where(
+                    TenantTokenIssueRow.tenant_id == tenant.tenant_id,
+                    TenantTokenIssueRow.user_id == tenant.user_id,
+                )
+                .order_by(TenantTokenIssueRow.created_at.desc())
+            )
+        ).scalars()
+        tokens = [_token_summary(row) for row in rows]
+    return CurrentUserSessionsResponse(
+        tenant_id=tenant.tenant_id,
+        user_id=tenant.user_id,
+        tokens=tokens,
+        honest_limits=[
+            "这是最小会话列表：能看 token 账本状态，但还没有设备指纹、IP 历史或异常登录风控。",
+            "这里不会返回原始 token 或哈希值。",
+        ],
+    )
+
+
+@router.post("/session/tokens/{token_id}/revoke", response_model=RevokeOwnSessionResponse)
+async def revoke_own_session(token_id: str) -> RevokeOwnSessionResponse:
+    """Revoke one token owned by the current authenticated user."""
+
+    cleaned = token_id.strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="token_id is required")
+    tenant = current_tenant()
+    if not tenant.user_id:
+        raise HTTPException(status_code=400, detail="authenticated user_id is required")
+    async with session_scope(tenant_id=tenant.tenant_id) as s:
+        row = (
+            await s.execute(
+                select(TenantTokenIssueRow.user_id).where(
+                    TenantTokenIssueRow.tenant_id == tenant.tenant_id,
+                    TenantTokenIssueRow.token_id == cleaned,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="token not found")
+        if row != tenant.user_id and "account:admin" not in tenant.scopes:
+            raise HTTPException(status_code=403, detail="cannot revoke another user's token")
+        revoked = await revoke_token_issue(
+            s,
+            tenant_id=tenant.tenant_id,
+            token_id=cleaned,
+            reason="self_session_revoke",
+        )
+    if not revoked:
+        raise HTTPException(status_code=404, detail="issued token not found")
+    return RevokeOwnSessionResponse(
+        token_id=cleaned,
+        status="revoked",
+        message="Token 已撤销；生产请求中间件会拒绝这条 token 后续访问。",
+    )
 
 
 @router.post("/session/refresh", response_model=RefreshSessionResponse)
@@ -214,3 +344,17 @@ def _signup_response(
 def _clean_scopes(scopes: list[str]) -> list[str]:
     cleaned = [str(scope).strip() for scope in scopes if str(scope).strip()]
     return cleaned or ["chat:write", "world:approve"]
+
+
+def _token_summary(row: TenantTokenIssueRow) -> SessionTokenSummary:
+    metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+    return SessionTokenSummary(
+        token_id=row.token_id,
+        token_kind=str(metadata.get("kind") or "unknown"),
+        status=row.status,
+        expires_at=row.expires_at.isoformat() if row.expires_at is not None else None,
+        revoked_at=row.revoked_at.isoformat() if row.revoked_at is not None else None,
+        scopes=[str(scope) for scope in row.scopes if str(scope).strip()]
+        if isinstance(row.scopes, list)
+        else [],
+    )
