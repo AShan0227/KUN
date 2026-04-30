@@ -21,6 +21,7 @@ from kun.core.db import session_scope
 from kun.core.events import emit
 from kun.core.orm import PendingActionRow, RuntimeStateRow, TaskResultRow
 from kun.core.state_ledger import get_state_ledger
+from kun.datamodel.decision_ticket import ticket_from_world_policy
 from kun.datamodel.events import Event
 from kun.datamodel.runtime import TaskStatus
 from kun.world.gateway import WorldAction, WorldGatewayResult, get_world_gateway
@@ -98,7 +99,68 @@ async def execute_approved_action_once(
                 message=_execution_failed_message(exc),
             )
 
-        action.payload = _executor_payload(action.payload, now, gateway_result=gateway_result)
+        world_ticket = ticket_from_world_policy(
+            tenant_id=tenant_id,
+            task_id=task_ref,
+            action_id=action.action_id,
+            action_type=action.action_type,
+            risk_level=action.risk_level,
+            gateway_mode=gateway_result.gateway_mode,
+            external_dispatched=gateway_result.external_dispatched,
+            requires_handler=gateway_result.requires_handler,
+            policy=_dict_or_empty(gateway_result.audit.get("policy")),
+            reason=gateway_result.message,
+        )
+        if _gateway_result_blocks_resume(gateway_result):
+            action.payload = _executor_blocked_payload(
+                action.payload,
+                now,
+                gateway_result=gateway_result,
+                decision_ticket=world_ticket.event_payload(),
+            )
+            action.status = "cancelled"
+            action.updated_at = now
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant_id,
+                    event_type="task.pending_action.blocked",
+                    payload={
+                        "task_id": task_ref,
+                        "action_id": action.action_id,
+                        "action_type": action.action_type,
+                        "target_ref": action.target_ref,
+                        "executor_mode": gateway_result.gateway_mode,
+                        "external_dispatched": gateway_result.external_dispatched,
+                        "requires_handler": gateway_result.requires_handler,
+                        "capability_status": gateway_result.capability_status,
+                        "decision_ticket": world_ticket.event_payload(),
+                        "reason": gateway_result.message,
+                    },
+                    task_ref=task_ref,
+                ),
+            )
+            get_state_ledger().record_decision_ticket(world_ticket)
+            get_state_ledger().record_paused(
+                task_ref,
+                reason=_execution_blocked_message(gateway_result),
+                pending_confirmations=[action.action_id],
+            )
+            return ActionExecutionResult(
+                action_id=action_id,
+                task_ref=task_ref,
+                action_status="cancelled",
+                task_status="paused",
+                message=_execution_blocked_message(gateway_result),
+                gateway_result=gateway_result,
+            )
+
+        action.payload = _executor_payload(
+            action.payload,
+            now,
+            gateway_result=gateway_result,
+            decision_ticket=world_ticket.event_payload(),
+        )
         action.status = "executed"
         action.executed_at = now
         action.updated_at = now
@@ -117,6 +179,7 @@ async def execute_approved_action_once(
                     "external_dispatched": gateway_result.external_dispatched,
                     "requires_handler": gateway_result.requires_handler,
                     "handler_id": gateway_result.audit.get("handler_id"),
+                    "decision_ticket": world_ticket.event_payload(),
                 },
                 task_ref=task_ref,
             ),
@@ -131,6 +194,7 @@ async def execute_approved_action_once(
             handler_id=_optional_str(gateway_result.audit.get("handler_id")),
             artifact_ref=_optional_str(gateway_result.audit.get("artifact_ref")),
             message=gateway_result.message,
+            decision_ticket=world_ticket,
         )
 
         unresolved = await s.execute(_count_unresolved_actions_stmt(tenant_id, task_ref))
@@ -164,6 +228,10 @@ async def execute_approved_action_once(
                     },
                     task_ref=task_ref,
                 ),
+            )
+            get_state_ledger().record_resumed(
+                task_ref,
+                reason="all_pending_actions_executed",
             )
 
         return ActionExecutionResult(
@@ -237,6 +305,7 @@ def _executor_payload(
     now: datetime,
     *,
     gateway_result: WorldGatewayResult | None = None,
+    decision_ticket: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     merged = dict(payload)
     gateway = gateway_result.model_dump(mode="json") if gateway_result is not None else {}
@@ -245,7 +314,27 @@ def _executor_payload(
         "status": "executed",
         "executed_at": now.isoformat(),
         "gateway": gateway,
+        "decision_ticket": decision_ticket or {},
         "note": _executor_note(gateway_result),
+    }
+    return merged
+
+
+def _executor_blocked_payload(
+    payload: dict[str, Any],
+    now: datetime,
+    *,
+    gateway_result: WorldGatewayResult,
+    decision_ticket: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    merged = dict(payload)
+    merged["executor"] = {
+        "mode": "approval_gate",
+        "status": "blocked",
+        "executed_at": now.isoformat(),
+        "gateway": gateway_result.model_dump(mode="json"),
+        "decision_ticket": decision_ticket or {},
+        "note": _execution_blocked_message(gateway_result),
     }
     return merged
 
@@ -283,6 +372,23 @@ def _execution_failed_message(exc: Exception) -> str:
     return f"Action execution failed; task remains paused for review. Gateway error: {exc}"
 
 
+def _execution_blocked_message(gateway_result: WorldGatewayResult) -> str:
+    if gateway_result.gateway_mode == "policy_blocked":
+        return (
+            "Action was approved by the user, but World Gateway policy blocked execution; "
+            "task remains paused."
+        )
+    if gateway_result.requires_handler:
+        return (
+            "Action was approved by the user, but no World Gateway handler is attached; "
+            "task remains paused."
+        )
+    return (
+        "Action was approved by the user, but World Gateway could not safely complete it; "
+        "task remains paused."
+    )
+
+
 def _execution_message(
     task_status: TaskStatus | None,
     gateway_result: WorldGatewayResult | None = None,
@@ -304,6 +410,18 @@ def _optional_str(value: object) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _dict_or_empty(value: object) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _gateway_result_blocks_resume(gateway_result: WorldGatewayResult) -> bool:
+    return (
+        gateway_result.requires_handler
+        or gateway_result.gateway_mode == "policy_blocked"
+        or gateway_result.capability_status in {"missing_handler", "preview_failed"}
+    )
 
 
 __all__ = ["ActionExecutionResult", "execute_approved_action_once"]

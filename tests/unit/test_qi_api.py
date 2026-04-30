@@ -69,6 +69,31 @@ def test_qi_status_endpoint_with_runtime() -> None:
     assert data["protocol_count"] == 0  # 空 registry
 
 
+def test_qi_status_reads_existing_problem_queue_without_sampling() -> None:
+    from kun.qi.problem_queue import QiProblemQueue, QiProblemSignal
+
+    app = _app_with_state()
+    queue = QiProblemQueue()
+    queue.enqueue(
+        QiProblemSignal.build(
+            tenant_id="u-sylvan",
+            category="world_gateway",
+            severity="warn",
+            summary="WorldGateway handler 缺补偿",
+            source="test",
+        )
+    )
+    app.state.qi_problem_queue = queue
+
+    client = TestClient(app)
+    r = client.get("/api/qi/status")
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["problem_signal_count"] == 1
+    assert data["top_problem"] == "WorldGateway handler 缺补偿"
+
+
 def test_qi_force_active_endpoint() -> None:
     app = _app_with_state()
     client = TestClient(app)

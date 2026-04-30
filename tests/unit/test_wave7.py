@@ -141,6 +141,40 @@ def test_blackboard_state_ledger_endpoints(bb_client: TestClient) -> None:
     assert one.json()["current_goal"] == "帮用户完成任务"
 
 
+def test_blackboard_state_ledger_history_endpoints(bb_client: TestClient) -> None:
+    def source(**kw):
+        task_id = kw.get("task_id")
+        return [
+            {
+                "event_id": "evt-1",
+                "event_type": "watchtower.decision_plan.created",
+                "occurred_at": "2026-04-29T10:00:00Z",
+                "task_id": task_id or "tk-1",
+                "summary": "守望生成策略单",
+                "reason": "命中运营策略包",
+                "cost_usd": 0.01,
+                "decision_ticket_id": "dt-1",
+                "payload": {"decision_ticket": {"ticket_id": "dt-1"}},
+            }
+        ]
+
+    register_data_source("state_ledger_history", source)
+
+    all_history = bb_client.get(
+        "/api/blackboard/state-ledger/history",
+        headers={"X-User-Id": "u-1", "X-Tenant-Id": "t-1"},
+    )
+    assert all_history.status_code == 200
+    assert all_history.json()[0]["decision_ticket_id"] == "dt-1"
+
+    task_history = bb_client.get(
+        "/api/blackboard/state-ledger/tk-1/history",
+        headers={"X-User-Id": "u-1", "X-Tenant-Id": "t-1"},
+    )
+    assert task_history.status_code == 200
+    assert task_history.json()[0]["task_id"] == "tk-1"
+
+
 def test_blackboard_workspace_default(bb_client: TestClient) -> None:
     resp = bb_client.get("/api/blackboard/workspace/tk-1", headers={"X-User-Id": "u-1"})
     assert resp.status_code == 200

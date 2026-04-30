@@ -85,7 +85,7 @@ async def _qi_darwin_godel_explore(app: Any, tenant_id: str) -> None:
         from kun.qi.darwin_godel import DarwinGodelLoop
 
         router = get_router()
-        explore_prompt = _pick_explore_prompt()
+        explore_prompt = await _pick_explore_prompt(app=app, tenant_id=tenant_id)
 
         async def round_runner(prompt: str, strategy: dict[str, Any]) -> tuple[float, float]:
             """单轮: 调 LLM, 返 (score, cost). score 基于 content 长度 + finish_reason."""
@@ -157,7 +157,7 @@ async def _qi_ai_scientist_explore(app: Any, tenant_id: str) -> None:
         from kun.qi.darwin_godel import DarwinGodelLoop
 
         router = get_router()
-        explore_prompt = _pick_explore_prompt(prefer="research")
+        explore_prompt = await _pick_explore_prompt(prefer="research", app=app, tenant_id=tenant_id)
 
         async def round_runner(prompt: str, strategy: dict[str, Any]) -> tuple[float, float]:
             req = LLMRequest(
@@ -208,9 +208,31 @@ _EXPLORE_PROMPTS = [
 ]
 
 
-def _pick_explore_prompt(*, prefer: str | None = None) -> str:
+async def _pick_explore_prompt(
+    *,
+    prefer: str | None = None,
+    app: Any | None = None,
+    tenant_id: str | None = None,
+) -> str:
     """轮换 explore prompts. prefer 给个偏好类目."""
     import random
+
+    if app is not None and tenant_id:
+        try:
+            from kun.qi.problem_queue import (
+                collect_problem_signals,
+                get_qi_problem_queue,
+                prompt_for_problem,
+            )
+
+            queue = getattr(app.state, "qi_problem_queue", None) or get_qi_problem_queue()
+            app.state.qi_problem_queue = queue
+            queue.enqueue_many(await collect_problem_signals(tenant_id))
+            signal = queue.pick(tenant_id)
+            if signal is not None:
+                return prompt_for_problem(signal)
+        except Exception:
+            log.debug("qi.problem_prompt_failed", exc_info=True)
 
     if prefer:
         candidates = [p for k, p in _EXPLORE_PROMPTS if k == prefer]
@@ -219,9 +241,7 @@ def _pick_explore_prompt(*, prefer: str | None = None) -> str:
     return random.choice(_EXPLORE_PROMPTS)[1]
 
 
-async def _emerge_protocol_from_darwin(
-    app: Any, tenant_id: str, prompt: str, result: Any
-) -> None:
+async def _emerge_protocol_from_darwin(app: Any, tenant_id: str, prompt: str, result: Any) -> None:
     """Darwin 探索完 → 涌现 1 个 experimental protocol → registry.save.
 
     简化: 不看 best_round.strategy 细节, 只把 task_type 推断出来 + 标 experimental.

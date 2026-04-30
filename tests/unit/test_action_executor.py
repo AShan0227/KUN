@@ -8,10 +8,13 @@ import pytest
 from kun.engineering.action_executor import (
     _claim_approved_action_stmt,
     _count_unresolved_actions_stmt,
+    _execution_blocked_message,
     _execution_failed_message,
     _execution_message,
+    _executor_blocked_payload,
     _executor_error_payload,
     _executor_payload,
+    _gateway_result_blocks_resume,
     _mark_task_result_queued_stmt,
     _unblock_paused_runtime_stmt,
 )
@@ -111,6 +114,53 @@ def test_executor_payload_is_honest_when_handler_is_missing() -> None:
     payload = _executor_payload({}, now, gateway_result=gateway_result)
 
     assert "no delivery handler" in payload["executor"]["note"]
+
+
+@pytest.mark.unit
+def test_gateway_blocked_result_must_not_resume_task() -> None:
+    blocked = WorldGatewayResult(
+        action_id="act-1",
+        gateway_mode="policy_blocked",
+        capability_status="supported_execute",
+        external_dispatched=False,
+        requires_handler=False,
+        message="blocked",
+    )
+    missing = WorldGatewayResult(
+        action_id="act-2",
+        gateway_mode="approval_gate",
+        capability_status="missing_handler",
+        external_dispatched=False,
+        requires_handler=True,
+    )
+    executed = WorldGatewayResult(
+        action_id="act-3",
+        gateway_mode="handler_drafted",
+        capability_status="supported_draft",
+        external_dispatched=False,
+        requires_handler=False,
+    )
+
+    assert _gateway_result_blocks_resume(blocked) is True
+    assert _gateway_result_blocks_resume(missing) is True
+    assert _gateway_result_blocks_resume(executed) is False
+
+
+@pytest.mark.unit
+def test_executor_blocked_payload_is_not_marked_executed() -> None:
+    now = datetime.now(UTC)
+    gateway_result = WorldGatewayResult(
+        action_id="act-1",
+        gateway_mode="policy_blocked",
+        external_dispatched=False,
+        requires_handler=False,
+    )
+
+    payload = _executor_blocked_payload({}, now, gateway_result=gateway_result)
+
+    assert payload["executor"]["status"] == "blocked"
+    assert "remains paused" in payload["executor"]["note"]
+    assert "policy blocked" in _execution_blocked_message(gateway_result)
 
 
 @pytest.mark.unit

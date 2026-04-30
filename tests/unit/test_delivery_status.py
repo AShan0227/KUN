@@ -1,5 +1,7 @@
 """Honest delivery status for NUO/KUN."""
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from kun.api.nuo.health_panel import router
@@ -35,8 +37,8 @@ def test_delivery_status_endpoint() -> None:
     assert any(item["capability_id"] == "world_gateway" for item in body["items"])
 
 
-def test_delivery_status_derives_world_gateway_capabilities_from_registry(tmp_path) -> None:
-    async def sender(_message):
+def test_delivery_status_derives_world_gateway_capabilities_from_registry(tmp_path: Path) -> None:
+    async def sender(_message: object) -> dict[str, str]:
         return {"provider_message_id": "smtp-test"}
 
     gateway = WorldGateway(

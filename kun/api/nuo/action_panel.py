@@ -22,6 +22,11 @@ from kun.world.gateway import (
     WorldHandlerDescriptor,
     get_world_gateway,
 )
+from kun.world.handler_health import (
+    WorldHandlerHealthCard,
+    collect_world_handler_health,
+    summarize_handler_health,
+)
 
 router = APIRouter()
 
@@ -75,6 +80,12 @@ class WorldGatewayHandlersResponse(BaseModel):
         "没有 handler 的 action 只会生成审计包，并明确 requires_handler=true；"
         "不会假装已经真实外发。"
     )
+
+
+class WorldGatewayHandlerHealthResponse(BaseModel):
+    tenant_id: str
+    summary: dict[str, int]
+    handlers: list[WorldHandlerHealthCard]
 
 
 @router.get("/pending", response_model=PendingActionList)
@@ -141,6 +152,18 @@ async def list_world_gateway_handlers() -> WorldGatewayHandlersResponse:
         tenant_id=tenant.tenant_id,
         artifact_root=str(gateway.artifact_root),
         handlers=gateway.handler_descriptors(),
+    )
+
+
+@router.get("/handler-health", response_model=WorldGatewayHandlerHealthResponse)
+async def list_world_gateway_handler_health() -> WorldGatewayHandlerHealthResponse:
+    """Show which external handlers are reliable, risky, or misconfigured."""
+    tenant = current_tenant()
+    cards = await collect_world_handler_health(tenant_id=tenant.tenant_id)
+    return WorldGatewayHandlerHealthResponse(
+        tenant_id=tenant.tenant_id,
+        summary=summarize_handler_health(cards),
+        handlers=cards,
     )
 
 

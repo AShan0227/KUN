@@ -33,7 +33,7 @@ from kun.qi.verification_auto_gen import (
 
 @pytest.mark.asyncio
 async def test_auto_promote_low_score_kept() -> None:
-    """darwin_best_score < 0.5 → 不 promote."""
+    """真实 replay/canary 证据低于阈值 → 不 promote."""
     registry = ProtocolRegistry(InMemoryProtocolStorage())
     proto = Protocol(
         protocol_id="x.test",
@@ -42,7 +42,7 @@ async def test_auto_promote_low_score_kept() -> None:
         status="experimental",
         trigger=ProtocolTrigger(task_type_pattern="x.*"),
         execution=ProtocolExecution(),
-        metadata={"darwin_best_score": 0.3, "runs": 5},
+        metadata={"promotion_evidence": {"win_rate": 0.3, "runs": 5, "source": "replay"}},
     )
     await registry.save(proto)
     app = SimpleNamespace(state=SimpleNamespace(protocol_registry=registry))
@@ -53,7 +53,7 @@ async def test_auto_promote_low_score_kept() -> None:
 
 @pytest.mark.asyncio
 async def test_auto_promote_high_score_advances() -> None:
-    """experimental + score >= 0.5 + runs >= 5 → shadow."""
+    """experimental + 真实证据 win_rate >= 0.5 + runs >= 5 → shadow."""
     registry = ProtocolRegistry(InMemoryProtocolStorage())
     proto = Protocol(
         protocol_id="x.test",
@@ -62,7 +62,7 @@ async def test_auto_promote_high_score_advances() -> None:
         status="experimental",
         trigger=ProtocolTrigger(task_type_pattern="x.*"),
         execution=ProtocolExecution(),
-        metadata={"darwin_best_score": 0.8, "runs": 10},
+        metadata={"promotion_evidence": {"win_rate": 0.8, "runs": 10, "source": "replay"}},
     )
     await registry.save(proto)
     app = SimpleNamespace(state=SimpleNamespace(protocol_registry=registry))
@@ -70,6 +70,28 @@ async def test_auto_promote_high_score_advances() -> None:
     assert result["promoted"] == 1
     listed = await registry.list_all("u-test")
     assert listed[0].status == "shadow"
+
+
+@pytest.mark.asyncio
+async def test_auto_promote_darwin_score_alone_is_not_enough() -> None:
+    """Darwin 分数只能说明值得实验，不能伪装成真实晋升证据。"""
+    registry = ProtocolRegistry(InMemoryProtocolStorage())
+    proto = Protocol(
+        protocol_id="x.test",
+        version="1.0.0",
+        tenant_id="u-test",
+        status="experimental",
+        trigger=ProtocolTrigger(task_type_pattern="x.*"),
+        execution=ProtocolExecution(),
+        metadata={"darwin_best_score": 0.99, "runs": 99},
+    )
+    await registry.save(proto)
+    app = SimpleNamespace(state=SimpleNamespace(protocol_registry=registry))
+    result = await auto_promote_protocols(app, "u-test")
+    assert result["promoted"] == 0
+    assert result["blocked_no_evidence"] == 1
+    listed = await registry.list_all("u-test")
+    assert listed[0].status == "experimental"
 
 
 @pytest.mark.asyncio

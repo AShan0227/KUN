@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from kun.context.assets import AssetKind, LayeredAsset
+from kun.context.importance import ImportanceScore, ImportanceScorer
 from kun.context.storage import AssetStore, get_store
 from kun.datamodel.task import TaskRef
 
@@ -22,6 +23,7 @@ class PackedContextItem(BaseModel):
     title: str = ""
     tags: list[str] = Field(default_factory=list)
     summary: str = ""
+    score_rationale: str = ""
 
 
 class ContextPack(BaseModel):
@@ -53,6 +55,7 @@ class ContextPacker:
 
     def __init__(self, store: AssetStore | None = None) -> None:
         self._store = store or get_store()
+        self._scorer = ImportanceScorer()
 
     async def pack_query(
         self,
@@ -86,27 +89,8 @@ class ContextPacker:
                 logger.debug("packer.pack_query store_list_failed kind=%s err=%s", kind, exc)
                 continue
 
-        scored: list[tuple[float, LayeredAsset]] = []
-        for asset in candidates:
-            score = _score_asset(asset, query_terms)
-            if score > 0:
-                scored.append((score, asset))
-        scored.sort(key=lambda item: (-item[0], item[1].asset_id))
-        return ContextPack(
-            items=[
-                PackedContextItem(
-                    asset_id=asset.asset_id,
-                    asset_kind=asset.asset_kind,
-                    relevance_score=score,
-                    title=str(
-                        asset.l1_metadata.get("title") or asset.l1_metadata.get("name") or ""
-                    ),
-                    tags=asset.tags,
-                    summary=asset.l2_summary or _metadata_summary(asset),
-                )
-                for score, asset in scored[:limit]
-            ]
-        )
+        scored = await self._rank_assets(candidates, query=query)
+        return ContextPack(items=[_to_packed(score, asset) for asset, score in scored[:limit]])
 
     async def pack(
         self,
@@ -126,28 +110,9 @@ class ContextPacker:
                 await self._store.list(tenant_id=tenant_id, asset_kind=kind, limit=100)
             )
 
-        scored: list[tuple[float, LayeredAsset]] = []
-        for asset in candidates:
-            score = _score_asset(asset, query_terms)
-            if score > 0:
-                scored.append((score, asset))
-
-        scored.sort(key=lambda item: (-item[0], item[1].asset_id))
-        return ContextPack(
-            items=[
-                PackedContextItem(
-                    asset_id=asset.asset_id,
-                    asset_kind=asset.asset_kind,
-                    relevance_score=score,
-                    title=str(
-                        asset.l1_metadata.get("title") or asset.l1_metadata.get("name") or ""
-                    ),
-                    tags=asset.tags,
-                    summary=asset.l2_summary or _metadata_summary(asset),
-                )
-                for score, asset in scored[:limit]
-            ]
-        )
+        query = _task_query(task_ref)
+        scored = await self._rank_assets(candidates, query=query)
+        return ContextPack(items=[_to_packed(score, asset) for asset, score in scored[:limit]])
 
     def pack_anchor_then_expand(
         self,
@@ -179,7 +144,7 @@ class ContextPacker:
             ValueEstimator,
         )
 
-        async def _build_scored() -> list[tuple[float, LayeredAsset]]:
+        async def _build_scored() -> list[tuple[LayeredAsset, ImportanceScore]]:
             query_terms = _task_terms(task_ref)
             if not query_terms:
                 return []
@@ -188,25 +153,9 @@ class ContextPacker:
                 candidates.extend(
                     await self._store.list(tenant_id=tenant_id, asset_kind=kind, limit=100)
                 )
-            scored_pairs: list[tuple[float, LayeredAsset]] = []
-            for asset in candidates:
-                score = _score_asset(asset, query_terms)
-                if score > 0:
-                    scored_pairs.append((score, asset))
-            scored_pairs.sort(key=lambda item: (-item[0], item[1].asset_id))
-            return scored_pairs
+            return await self._rank_assets(candidates, query=_task_query(task_ref))
 
-        scored_cache: list[list[tuple[float, LayeredAsset]]] = []  # 避免多次 fetch
-
-        def _to_packed(score: float, asset: LayeredAsset) -> PackedContextItem:
-            return PackedContextItem(
-                asset_id=asset.asset_id,
-                asset_kind=asset.asset_kind,
-                relevance_score=score,
-                title=str(asset.l1_metadata.get("title") or asset.l1_metadata.get("name") or ""),
-                tags=asset.tags,
-                summary=asset.l2_summary or _metadata_summary(asset),
-            )
+        scored_cache: list[list[tuple[LayeredAsset, ImportanceScore]]] = []  # 避免多次 fetch
 
         async def anchor_fn() -> PackedContextItem:
             if not scored_cache:
@@ -214,7 +163,7 @@ class ContextPacker:
             scored = scored_cache[0]
             if not scored:
                 raise StopAsyncIteration
-            score, asset = scored[0]
+            asset, score = scored[0]
             return _to_packed(score, asset)
 
         async def expand_fn(
@@ -224,7 +173,7 @@ class ContextPacker:
             idx = len(prior)
             if idx >= len(scored):
                 return None
-            score, asset = scored[idx]
+            asset, score = scored[idx]
             return _to_packed(score, asset)
 
         criterion: MarginalROIStopCriterion | None = None
@@ -248,6 +197,40 @@ class ContextPacker:
             value_estimator=estimator,
         )
 
+    async def _rank_assets(
+        self,
+        candidates: list[LayeredAsset],
+        *,
+        query: str,
+    ) -> list[tuple[LayeredAsset, ImportanceScore]]:
+        """统一用 ImportanceScorer 排序，并接入历史贡献度。
+
+        这里是 V4 里的关键补线：过去 contribution / credit 已经会累计，
+        但 ContextPacker 没吃到，资产选择仍像关键词搜索。现在相关资产之间
+        会按 semantic/frequency/recency/contribution 综合排序。
+        """
+        if not candidates:
+            return []
+
+        from kun.engineering.credit_assignment import get_contribution_tracker
+
+        tracker = get_contribution_tracker()
+        kind_by_asset_id = {asset.asset_id: asset.asset_kind for asset in candidates}
+        scored = await self._scorer.score_with_contribution_boost(
+            candidates,
+            query=query,
+            contribution_lookup=lambda asset_id: tracker.contribution_score(
+                asset_id, str(kind_by_asset_id.get(asset_id, "memory"))
+            ),
+        )
+        filtered = [
+            (asset, score)
+            for asset, score in scored
+            if score.semantic > 0 or score.dependency > 0 or score.pin > 0
+        ]
+        filtered.sort(key=lambda item: (-item[1].overall, item[0].asset_id))
+        return filtered
+
 
 def _task_terms(task_ref: TaskRef) -> set[str]:
     parts = [
@@ -264,6 +247,35 @@ def _task_terms(task_ref: TaskRef) -> set[str]:
             ]
         )
     return _terms(" ".join(parts))
+
+
+def _task_query(task_ref: TaskRef) -> str:
+    parts = [
+        task_ref.meta.task_type,
+        task_ref.meta.success_criteria_short,
+    ]
+    if task_ref.spec is not None:
+        parts.extend(
+            [
+                task_ref.spec.goal_detail,
+                " ".join(task_ref.spec.success_metrics),
+                " ".join(task_ref.spec.required_skills),
+                " ".join(task_ref.spec.required_tools),
+            ]
+        )
+    return " ".join(part for part in parts if part)
+
+
+def _to_packed(score: ImportanceScore, asset: LayeredAsset) -> PackedContextItem:
+    return PackedContextItem(
+        asset_id=asset.asset_id,
+        asset_kind=asset.asset_kind,
+        relevance_score=score.overall,
+        title=str(asset.l1_metadata.get("title") or asset.l1_metadata.get("name") or ""),
+        tags=asset.tags,
+        summary=asset.l2_summary or _metadata_summary(asset),
+        score_rationale=score.rationale,
+    )
 
 
 def _score_asset(asset: LayeredAsset, query_terms: set[str]) -> float:

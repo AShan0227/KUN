@@ -182,6 +182,7 @@ type TaskDetail = {
   rendered_for?: string;
   task_id: string;
   state_ledger?: LedgerEntry | null;
+  state_ledger_history?: StateLedgerHistoryItem[];
   workspace?: {
     artifacts?: Array<Record<string, unknown>>;
     handoff_packets?: Array<Record<string, unknown>>;
@@ -196,6 +197,17 @@ type TaskDetail = {
     severity?: string;
   }>;
   rendered_at?: string;
+};
+
+type StateLedgerHistoryItem = {
+  event_id: string;
+  event_type: string;
+  occurred_at: string;
+  task_id?: string | null;
+  summary?: string;
+  reason?: string;
+  cost_usd?: number;
+  decision_ticket_id?: string | null;
 };
 
 export default function Home() {
@@ -915,6 +927,7 @@ function TaskDetailPanel({
   const ledger = detail?.state_ledger ?? null;
   const artifacts = detail?.workspace?.artifacts ?? [];
   const trails = ledger?.recent_events ?? [];
+  const history = detail?.state_ledger_history ?? [];
 
   return (
     <div className="rounded border border-kun-accent/30 bg-blue-50/30 p-3 text-xs">
@@ -991,6 +1004,27 @@ function TaskDetailPanel({
                 <span className="text-gray-400">{event.kind || "event"}</span>
                 <span className="mx-1">·</span>
                 <span>{event.summary || "无摘要"}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div className="mt-3">
+          <div className="font-medium">长期记录</div>
+          <div className="mt-1 space-y-1">
+            {history.slice(0, 5).map((event) => (
+              <div key={event.event_id} className="rounded bg-white px-2 py-1 text-gray-600">
+                <div className="flex justify-between gap-2">
+                  <span className="truncate text-gray-500">{event.event_type}</span>
+                  <span className="shrink-0 text-gray-400">
+                    ${numberValue(event.cost_usd).toFixed(4)}
+                  </span>
+                </div>
+                <div className="truncate">
+                  {event.reason || event.summary || event.decision_ticket_id || "无摘要"}
+                </div>
               </div>
             ))}
           </div>

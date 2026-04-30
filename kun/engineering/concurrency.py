@@ -281,6 +281,47 @@ async def scan_pre_conflicts(
     return PreConflictReport(resources=incoming, conflicts=conflicts)
 
 
+async def scan_active_resource_conflicts(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+) -> list[ConflictFinding]:
+    """Scan already-active tasks for conflicting resource intents.
+
+    `scan_pre_conflicts` protects the entrance. This function is for NUO:
+    periodically ask “do we already have two active tasks fighting over the
+    same resource?” so conflicts do not hide after a resume/rebase/manual edit.
+    """
+    result = await session.execute(
+        select(TaskRow, RuntimeStateRow.status)
+        .join(RuntimeStateRow, RuntimeStateRow.task_ref == TaskRow.task_id)
+        .where(TaskRow.tenant_id == tenant_id)
+        .where(RuntimeStateRow.status.in_(_ACTIVE_RUNTIME_STATUSES))
+    )
+    active = [
+        (cast(TaskRow, row[0]), cast(str, row[1]), _derive_resource_intents_from_task_row(row[0]))
+        for row in result.all()
+    ]
+    conflicts: list[ConflictFinding] = []
+    for left_idx, (left_task, left_status, left_intents) in enumerate(active):
+        for right_task, right_status, right_intents in active[left_idx + 1 :]:
+            pair_conflicts = _compare_resource_intents(
+                task_id=right_task.task_id,
+                status=right_status,
+                existing=left_intents,
+                incoming=right_intents,
+            )
+            for conflict in pair_conflicts:
+                if conflict.reason:
+                    continue
+                conflict.reason = (
+                    f"active task {left_task.task_id} ({left_status}) conflicts "
+                    f"with {right_task.task_id}"
+                )
+            conflicts.extend(pair_conflicts)
+    return conflicts
+
+
 def derive_resource_intents(task_ref: TaskRef) -> list[ResourceIntent]:
     """Derive conservative resource intents from TASK.md L1/L2."""
     intents: dict[str, ResourceIntent] = {}

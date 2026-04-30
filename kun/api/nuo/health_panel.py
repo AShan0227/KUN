@@ -15,6 +15,7 @@ from kun.engineering.delivery_status import (
     get_v3_delivery_status,
     validate_delivery_status,
 )
+from kun.engineering.nuo_system_health import collect_system_health_report
 
 router = APIRouter()
 
@@ -80,3 +81,11 @@ async def delivery_status() -> dict[str, Any]:
         "summary": delivery_status_summary(),
         "validation_issues": validate_delivery_status(),
     }
+
+
+@router.get("/report")
+async def system_health_report() -> dict[str, Any]:
+    """Deep NUO report: real subsystem health, not just a dashboard count."""
+    tenant = current_tenant()
+    report = await collect_system_health_report(tenant_id=tenant.tenant_id)
+    return report.model_dump(mode="json")

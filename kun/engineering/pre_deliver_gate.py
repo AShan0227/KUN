@@ -222,8 +222,7 @@ class PreDeliverGate:
             # 协议要求的 verification 已在 Check 1 跑过 (因为 protocol consume 把它加到 task_spec)
             # 这里只验"协议出现 + 至少一项 verification 通过" — 防协议被 silently skip
             protocol_check_passed = any(
-                c.passed and c.name.startswith("verification.")
-                for c in verdict.checks
+                c.passed and c.name.startswith("verification.") for c in verdict.checks
             )
             verdict.checks.append(
                 GateCheckResult(

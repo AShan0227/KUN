@@ -24,6 +24,7 @@ EventKind = Literal[
     "task.pre_conflict_detected",
     "task.pending_actions.created",
     "task.pending_action.executed",
+    "task.pending_action.blocked",
     "task.pending_action.execution_failed",
     "task.paused",
     "task.paused.preflight",
@@ -63,6 +64,7 @@ EventKind = Literal[
     # Watchtower / Guard
     "watchtower.intervention",
     "watchtower.decision_plan.created",
+    "value_gate.decision.created",
     "guard.budget.exceeded",
     "guard.anomaly.detected",
     # Context

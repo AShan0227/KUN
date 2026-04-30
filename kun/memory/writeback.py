@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from kun.context.assets import AssetLayer, LayeredAsset
 from kun.context.storage import AssetStore, get_store
+from kun.datamodel.decision_ticket import DecisionTicket
 from kun.datamodel.runtime import RuntimeState, StepRecord
 from kun.datamodel.task import TaskRef
 
@@ -49,12 +50,14 @@ class MemoryWriteback:
         tenant_id: str,
         task_ref: TaskRef,
         decision: Any,
+        decision_ticket: DecisionTicket | None = None,
     ) -> MemoryWritebackResult:
         strategy_pack_id = str(getattr(decision, "strategy_pack_id", "default"))
         execution_mode = str(getattr(decision, "execution_mode", task_ref.meta.execution_mode))
         metric_dimensions = list(getattr(decision, "metric_dimensions", []) or [])
         skill_hints = list(getattr(decision, "skill_hints", []) or [])
         reason = str(getattr(decision, "reason", ""))
+        ticket_ref = decision_ticket.ref().model_dump(mode="json") if decision_ticket else None
         summary = (
             f"元决策: task_type={task_ref.meta.task_type}; "
             f"strategy={strategy_pack_id}; mode={execution_mode}; "
@@ -72,6 +75,7 @@ class MemoryWriteback:
                 "metric_dimensions": metric_dimensions,
                 "skill_hints": skill_hints,
                 "reason": reason,
+                "decision_ticket": ticket_ref,
             },
             summary=summary,
             layer=AssetLayer.L2_PROJECT,
@@ -148,7 +152,9 @@ class MemoryWriteback:
         validation_score: float | None,
         surprise_score: float,
         score_overall: float | None = None,
+        decision_tickets: list[DecisionTicket] | None = None,
     ) -> MemoryWritebackResult:
+        ticket_refs = [ticket.ref().model_dump(mode="json") for ticket in decision_tickets or []]
         summary = (
             f"任务结果: status={status}; outcome={validation_outcome}; "
             f"score={score_overall if score_overall is not None else validation_score}; "
@@ -170,6 +176,7 @@ class MemoryWriteback:
                 "cost_usd": runtime.accumulated_cost_usd_equivalent,
                 "tokens": runtime.accumulated_tokens,
                 "step_count": len(runtime.completed_steps),
+                "decision_tickets": ticket_refs,
             },
             summary=summary,
             layer=AssetLayer.L2_PROJECT if status == "done" else AssetLayer.L1_TASK,

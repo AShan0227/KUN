@@ -220,9 +220,7 @@ def doctor(
     if not issues:
         console.print("[bold green]✓ KUN doctor: 全部检查通过, ready to go.[/]")
     else:
-        console.print(
-            f"[bold yellow]⚠ KUN doctor: {len(issues)} 个问题需注意.[/]"
-        )
+        console.print(f"[bold yellow]⚠ KUN doctor: {len(issues)} 个问题需注意.[/]")
         if fix:
             console.print("[cyan]--fix 模式: 尝试自动修复...[/]")
             # Auto-fix: alembic upgrade head (最常见问题)

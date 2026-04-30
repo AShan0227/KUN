@@ -47,6 +47,20 @@ class EventStreamItem(BaseModel):
     severity: Literal["info", "warn", "error", "critical"] = "info"
 
 
+class StateLedgerHistoryItem(BaseModel):
+    """Durable history item replayed from EventRow."""
+
+    event_id: str
+    event_type: str
+    occurred_at: str
+    task_id: str | None = None
+    summary: str = ""
+    reason: str = ""
+    cost_usd: float = 0.0
+    decision_ticket_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class GlobalStateView(BaseModel):
     """全局状态区 (对人 5 个核心信息块)."""
 
@@ -169,6 +183,37 @@ async def get_state_ledger_list(
     return [StateLedgerEntry.model_validate(item) for item in items]
 
 
+@router.get("/state-ledger/history", response_model=list[StateLedgerHistoryItem])
+async def get_state_ledger_history(
+    x_user_id: Annotated[str, Header(alias="X-User-Id")],
+    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
+    limit: int = Query(100, ge=1, le=500),
+) -> list[StateLedgerHistoryItem]:
+    """长期状态账本：从 EventRow 回放最近事件。"""
+    fn = _data_sources.get("state_ledger_history")
+    if fn is None:
+        return []
+    items = await _maybe_await(fn(tenant_id=x_tenant_id, user_id=x_user_id, limit=limit))
+    return [StateLedgerHistoryItem.model_validate(item) for item in items]
+
+
+@router.get("/state-ledger/{task_id}/history", response_model=list[StateLedgerHistoryItem])
+async def get_state_ledger_task_history(
+    task_id: str,
+    x_user_id: Annotated[str, Header(alias="X-User-Id")],
+    x_tenant_id: Annotated[str, Header(alias="X-Tenant-Id")] = "u-sylvan",
+    limit: int = Query(100, ge=1, le=500),
+) -> list[StateLedgerHistoryItem]:
+    """某个任务的长期状态账本：从 EventRow 回放。"""
+    fn = _data_sources.get("state_ledger_history")
+    if fn is None:
+        return []
+    items = await _maybe_await(
+        fn(tenant_id=x_tenant_id, user_id=x_user_id, task_id=task_id, limit=limit)
+    )
+    return [StateLedgerHistoryItem.model_validate(item) for item in items]
+
+
 @router.get("/state-ledger/{task_id}", response_model=StateLedgerEntry)
 async def get_state_ledger_task(
     task_id: str,
@@ -250,6 +295,15 @@ async def get_full_for_agent(
             if ledger_fn
             else {}
         ),
+        "state_ledger_history": (
+            await _maybe_await(
+                _data_sources["state_ledger_history"](
+                    tenant_id=x_tenant_id, user_id=x_user_id, task_id=task_id, limit=100
+                )
+            )
+            if "state_ledger_history" in _data_sources
+            else []
+        ),
         "workspace": (
             await _maybe_await(ws_fn(task_id=task_id, user_id=x_user_id)) if ws_fn else {}
         ),
@@ -270,6 +324,7 @@ __all__ = [
     "EventStreamItem",
     "GlobalStateView",
     "StateLedgerEntry",
+    "StateLedgerHistoryItem",
     "TaskBoardItem",
     "WorkspaceView",
     "register_data_source",

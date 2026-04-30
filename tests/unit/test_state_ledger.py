@@ -116,6 +116,37 @@ def test_state_ledger_records_world_action_execution() -> None:
     assert trail.data["external_dispatched"] is False
 
 
+def test_state_ledger_clears_action_type_confirmation_and_resumes() -> None:
+    ledger = StateLedger()
+    owner = Owner(tenant_id="tenant-a", user_id="user-a")
+    task = _task_ref(owner, "生成邮件草稿")
+    ledger.record_task_created(task, tenant_id=owner.tenant_id)
+    ledger.record_paused(
+        task.meta.task_id,
+        reason="等待审批",
+        pending_confirmations=["email.draft"],
+    )
+
+    ledger.record_world_action_executed(
+        task.meta.task_id,
+        action_id="act-1",
+        action_type="email.draft",
+        gateway_mode="handler_drafted",
+        external_dispatched=False,
+        requires_handler=False,
+        message="Email draft created. It was not sent.",
+    )
+    ledger.record_resumed(task.meta.task_id, reason="all_pending_actions_executed")
+
+    snapshot = ledger.snapshot(task.meta.task_id)
+
+    assert snapshot is not None
+    assert snapshot.status == "queued"
+    assert snapshot.pending_confirmations == []
+    assert snapshot.pending_reason == ""
+    assert snapshot.recent_events[-1].kind == "task.resumed"
+
+
 def test_state_ledger_records_missing_world_handler_as_pending_reason() -> None:
     ledger = StateLedger()
     owner = Owner(tenant_id="tenant-a", user_id="user-a")

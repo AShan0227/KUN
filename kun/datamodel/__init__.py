@@ -10,6 +10,7 @@ from kun.datamodel.capability import (
     QualityMetrics,
     Stats,
 )
+from kun.datamodel.decision_ticket import DecisionTicket, DecisionTicketRef
 from kun.datamodel.events import Event, EventKind
 from kun.datamodel.handoff import (
     HandoffL1,
@@ -38,6 +39,8 @@ __all__ = [
     "Capability",
     "CapabilityCard",
     "DecayModel",
+    "DecisionTicket",
+    "DecisionTicketRef",
     "EntityRef",
     "EntityRelationship",
     "Event",

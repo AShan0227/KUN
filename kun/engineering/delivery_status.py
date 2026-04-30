@@ -8,6 +8,7 @@ audited placeholders for production capability.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -28,6 +29,7 @@ class DeliveryCapability(BaseModel):
     done: list[str] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
 
     @property
     def can_claim_complete(self) -> bool:
@@ -55,6 +57,11 @@ def get_v3_delivery_status(
                 "本机已切到 gpt-5.5",
                 "保留 MiniMax fallback",
             ],
+            evidence_refs=[
+                "kun/interface/llm/router.py",
+                "kun/interface/llm/codex_mcp_provider.py",
+                "tests/unit/test_llm_router.py",
+            ],
             next_steps=[
                 "按任务类型自动学习 gpt-5.5 / fallback 的最佳切换策略",
                 "把模型结果继续写回 capability_card",
@@ -76,13 +83,23 @@ def get_v3_delivery_status(
                 "续跑结果会写回 Mission checkpoint，并记录 source_task_id / executed_task_id",
                 "首页长期目标卡可手动点“推进一次”",
                 "pending approval 通过后可解除任务暂停",
+                "StateLedger history 可从 EventRow 回放长期事件",
                 "idle-batch 有部分复盘和学习能力",
+            ],
+            evidence_refs=[
+                "kun/engineering/mission_worker.py",
+                "kun/engineering/mission_control.py",
+                "kun/api/blackboard.py",
+                "kun/api/blackboard_data_sources.py",
+                "tests/unit/test_mission_worker.py",
+                "tests/unit/test_mission_control.py",
+                "tests/unit/test_wave7.py",
             ],
             missing=[
                 "续跑还不是原 TaskRow 原地恢复，而是 continuation task 挂回 Mission",
                 "失败续跑策略还只是尝试次数限制",
                 "跨天/跨周任务的预算、风险、里程碑管理",
-                "StateLedger 仍是热视图，不是长期持久化账本",
+                "StateLedger 还不是完整事件溯源重建器，暂时只做历史事件回放",
             ],
             next_steps=[
                 "补 failure reaper，处理 running/queued 卡死的 mission task",
@@ -98,6 +115,10 @@ def get_v3_delivery_status(
                 "首页主入口是对话 + 简单任务状态",
                 "黑板 state ledger 可被前端读取",
                 "NUO 有独立入口",
+            ],
+            evidence_refs=[
+                "frontend/src/app/page.tsx",
+                "kun/api/blackboard.py",
             ],
             missing=[
                 "任务详情页",
@@ -120,6 +141,12 @@ def get_v3_delivery_status(
                 "待审批动作",
                 "诊断和能力画像",
             ],
+            evidence_refs=[
+                "kun/api/nuo/health_panel.py",
+                "kun/api/nuo/action_panel.py",
+                "kun/engineering/nuo_system_health.py",
+                "tests/unit/test_delivery_status.py",
+            ],
             missing=[
                 "用户侧只显示健康 / 成本 / 权限 / 风险的极简入口",
                 "高级诊断默认折叠",
@@ -141,6 +168,12 @@ def get_v3_delivery_status(
                 "模型/路径选择的元决策记忆已写入",
                 "scorecard 进入事件和 capability writeback 来源",
             ],
+            evidence_refs=[
+                "kun/memory/writeback.py",
+                "kun/context/packer.py",
+                "kun/engineering/orchestrator.py",
+                "tests/unit/test_v3_memory_scoring_gateway.py",
+            ],
             missing=[
                 "定期蒸馏",
                 "遗忘/衰减",
@@ -161,6 +194,11 @@ def get_v3_delivery_status(
                 "Alembic 单 head",
                 "RLS 应用账号路径已设计",
                 "Grafana / Prometheus / OTEL 本地栈存在",
+            ],
+            evidence_refs=[
+                "docker-compose.dev.yml",
+                "alembic/versions",
+                "docs/DEPLOY.md",
             ],
             missing=[
                 "正式用户账号体系",
@@ -195,6 +233,11 @@ def _world_gateway_delivery_status(
             done=[
                 "高风险动作进入 pending approval",
                 "审批链不会把未知动作伪装成已执行",
+            ],
+            evidence_refs=[
+                "kun/world/gateway.py",
+                "kun/engineering/action_executor.py",
+                "tests/unit/test_action_executor.py",
             ],
             missing=[
                 f"handler 注册表读取失败: {type(exc).__name__}",
@@ -248,6 +291,13 @@ def _world_gateway_delivery_status(
         summary=summary,
         done=done,
         missing=missing,
+        evidence_refs=[
+            "kun/world/gateway.py",
+            "kun/world/handler_health.py",
+            "tests/unit/test_action_executor.py",
+            "tests/unit/test_delivery_status.py",
+            "tests/unit/test_world_handler_health.py",
+        ],
         next_steps=[
             "按租户配置真实 email / browser / enterprise API handler",
             "给每个真实 handler 补租户级密钥、重试、补偿、回滚演练",
@@ -283,11 +333,26 @@ def validate_delivery_status(items: list[DeliveryCapability] | None = None) -> l
             problems.append(f"{item.capability_id}: ready capability still has missing items")
         if item.status == "ready" and not item.done:
             problems.append(f"{item.capability_id}: ready capability has no done evidence")
+        if item.status == "ready" and not item.evidence_refs:
+            problems.append(f"{item.capability_id}: ready capability has no machine evidence refs")
+        missing_refs = [ref for ref in item.evidence_refs if not _evidence_ref_exists(ref)]
+        if item.status == "ready" and missing_refs:
+            problems.append(
+                f"{item.capability_id}: ready capability references missing evidence {missing_refs}"
+            )
         if item.status in {"partial", "audit_only", "not_ready"} and not item.missing:
             problems.append(
                 f"{item.capability_id}: incomplete capability must explain missing items"
             )
     return problems
+
+
+def _evidence_ref_exists(ref: str) -> bool:
+    path = Path(ref)
+    if path.exists():
+        return True
+    root = Path(__file__).resolve().parents[2]
+    return (root / ref).exists()
 
 
 __all__ = [

@@ -18,6 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kun.datamodel.decision_ticket import DecisionTicket
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
 from kun.datamodel.task import TaskRef
 
@@ -62,6 +63,8 @@ class StateLedgerEntry(BaseModel):
     skill_hints: list[str] = Field(default_factory=list)
     risk_watch: list[str] = Field(default_factory=list)
     alert_flags: list[str] = Field(default_factory=list)
+    decision_ticket_ids: list[str] = Field(default_factory=list)
+    latest_decision_ticket: dict[str, Any] | None = None
     current_model: str = ""
     current_provider: str = ""
     current_tier: str = ""
@@ -144,6 +147,38 @@ class StateLedger:
                     "strategy_pack_id": entry.strategy_pack_id,
                     "execution_mode": entry.execution_mode,
                     "context_limit": entry.context_limit,
+                },
+            )
+
+    def record_decision_ticket(self, ticket: DecisionTicket) -> None:
+        """Record a V4 decision ticket in the hot task view.
+
+        The durable source of truth remains EventRow.  The ledger only keeps a
+        compact recent list so humans and LLMs can explain current execution.
+        """
+        with self._lock:
+            entry = self._ensure(ticket.task_id)
+            if not entry.tenant_id:
+                entry.tenant_id = ticket.tenant_id
+            if ticket.ticket_id not in entry.decision_ticket_ids:
+                entry.decision_ticket_ids.append(ticket.ticket_id)
+                entry.decision_ticket_ids = entry.decision_ticket_ids[-30:]
+            entry.latest_decision_ticket = ticket.event_payload()
+            if ticket.decision_point == "strategy_selected":
+                entry.decision_reason = ticket.reason or entry.decision_reason
+                entry.strategy_pack_id = str(ticket.metadata.get("strategy_pack_id") or "")
+                entry.execution_mode = str(
+                    ticket.metadata.get("execution_mode") or entry.execution_mode
+                )
+            entry.add_trail(
+                "decision.ticket",
+                f"{ticket.decision_point}: {ticket.selected_action}",
+                {
+                    "ticket_id": ticket.ticket_id,
+                    "phase": ticket.phase,
+                    "decision_point": ticket.decision_point,
+                    "status": ticket.status,
+                    "reason": ticket.reason,
                 },
             )
 
@@ -230,6 +265,15 @@ class StateLedger:
                 {"pending_confirmations": entry.pending_confirmations},
             )
 
+    def record_resumed(self, task_id: str, *, reason: str) -> None:
+        """Reflect a durable runtime resume in the hot ledger view."""
+        with self._lock:
+            entry = self._ensure(task_id)
+            entry.status = "queued"
+            entry.pending_reason = ""
+            entry.pending_confirmations = []
+            entry.add_trail("task.resumed", reason)
+
     def record_world_action_executed(
         self,
         task_id: str,
@@ -242,11 +286,13 @@ class StateLedger:
         handler_id: str | None = None,
         artifact_ref: str | None = None,
         message: str = "",
+        decision_ticket: DecisionTicket | None = None,
     ) -> None:
         with self._lock:
             entry = self._ensure(task_id)
+            resolved_aliases = {action_id, action_type}
             entry.pending_confirmations = [
-                item for item in entry.pending_confirmations if item != action_id
+                item for item in entry.pending_confirmations if item not in resolved_aliases
             ]
             entry.current_action = f"World action {action_type}: {gateway_mode}"
             if message:
@@ -262,8 +308,14 @@ class StateLedger:
                     "requires_handler": requires_handler,
                     "handler_id": handler_id or "",
                     "artifact_ref": artifact_ref or "",
+                    "decision_ticket_id": decision_ticket.ticket_id if decision_ticket else "",
                 },
             )
+            if decision_ticket is not None:
+                if decision_ticket.ticket_id not in entry.decision_ticket_ids:
+                    entry.decision_ticket_ids.append(decision_ticket.ticket_id)
+                    entry.decision_ticket_ids = entry.decision_ticket_ids[-30:]
+                entry.latest_decision_ticket = decision_ticket.event_payload()
 
     def record_finished(self, task_id: str, *, runtime: RuntimeState) -> None:
         with self._lock:

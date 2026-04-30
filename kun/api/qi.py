@@ -25,6 +25,8 @@ class QiStatusResponse(BaseModel):
     qi_force_active: bool
     protocol_count: int = 0
     pheromone_strength: float = 0.0
+    problem_signal_count: int = 0
+    top_problem: str = ""
 
 
 class QiActionResponse(BaseModel):
@@ -82,6 +84,18 @@ async def qi_status(request: Request) -> QiStatusResponse:
                 sum(v for (t, *_), v in pher_storage._edges.items() if t == tenant_id)
             )
 
+    problem_signal_count = 0
+    top_problem = ""
+    with contextlib.suppress(Exception):
+        from kun.qi.problem_queue import get_qi_problem_queue
+
+        queue = getattr(request.app.state, "qi_problem_queue", None) or get_qi_problem_queue()
+        request.app.state.qi_problem_queue = queue
+        problems = queue.list(tenant_id, limit=1)
+        problem_signal_count = len(queue.list(tenant_id, limit=1000))
+        if problems:
+            top_problem = problems[0].summary
+
     return QiStatusResponse(
         window_active=_qi_window_active(request),
         daily_limit_usd=daily_limit,
@@ -91,6 +105,8 @@ async def qi_status(request: Request) -> QiStatusResponse:
         qi_force_active=os.getenv("KUN_QI_FORCE_ACTIVE", "0") == "1",
         protocol_count=proto_count,
         pheromone_strength=pher_total,
+        problem_signal_count=problem_signal_count,
+        top_problem=top_problem,
     )
 
 
@@ -117,9 +133,7 @@ class TriggerExploreRequest(BaseModel):
 
 
 @router.post("/trigger_explore", response_model=dict[str, Any])
-async def qi_trigger_explore(
-    payload: TriggerExploreRequest, request: Request
-) -> dict[str, Any]:
+async def qi_trigger_explore(payload: TriggerExploreRequest, request: Request) -> dict[str, Any]:
     """手动触发启窗口里的 cron job (Darwin / AI Scientist / PC train).
 
     用户在前端按"立即跑一次探索"时调. 不阻塞: 跑完返结果摘要.
@@ -131,7 +145,12 @@ async def qi_trigger_explore(
         from kun.qi.cron_jobs import _qi_darwin_godel_explore
 
         await _qi_darwin_godel_explore(request.app, tenant_id)
-        return {"ok": True, "job": "darwin", "tenant": tenant_id, "note": "see backend logs for qi_darwin.done"}
+        return {
+            "ok": True,
+            "job": "darwin",
+            "tenant": tenant_id,
+            "note": "see backend logs for qi_darwin.done",
+        }
     if payload.job == "ai_scientist":
         from kun.qi.cron_jobs import _qi_ai_scientist_explore
 

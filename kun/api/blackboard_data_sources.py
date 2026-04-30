@@ -28,6 +28,7 @@ def install_blackboard_data_sources() -> None:
     register_data_source("events", _events_source)
     register_data_source("state", _state_source)
     register_data_source("state_ledger", _state_ledger_source)
+    register_data_source("state_ledger_history", _state_ledger_history_source)
     register_data_source("workspace", _workspace_source)
     register_data_source("assets", _assets_source)
 
@@ -223,6 +224,70 @@ async def _state_ledger_source_async(
         return None if task_id is not None else []
 
 
+async def _state_ledger_history_source(
+    *,
+    tenant_id: str,
+    user_id: str,
+    task_id: str | None = None,
+    limit: int = 100,
+    **_: Any,
+) -> list[dict[str, Any]]:
+    return await _state_ledger_history_source_async(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        limit=limit,
+    )
+
+
+async def _state_ledger_history_source_async(
+    *,
+    tenant_id: str,
+    task_id: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Replay durable task history from EventRow.
+
+    Hot StateLedger answers “现在怎样”。这个接口回答“过去发生过什么”。
+    """
+    out: list[dict[str, Any]] = []
+    try:
+        async with session_scope(tenant_id=tenant_id) as session:
+            stmt = (
+                select(EventRow)
+                .where(EventRow.tenant_id == tenant_id)
+                .order_by(desc(EventRow.occurred_at))
+                .limit(limit)
+            )
+            if task_id is not None:
+                stmt = stmt.where(EventRow.task_ref == task_id)
+            rows = list((await session.execute(stmt)).scalars().all())
+        for row in rows:
+            payload = row.payload if isinstance(row.payload, dict) else {}
+            ticket = payload.get("decision_ticket")
+            if isinstance(ticket, dict):
+                decision_ticket_id = ticket.get("ticket_id")
+                reason = str(ticket.get("reason") or "")
+            else:
+                decision_ticket_id = None
+                reason = str(payload.get("reason") or payload.get("message") or "")
+            out.append(
+                {
+                    "event_id": row.event_id,
+                    "event_type": row.event_type,
+                    "occurred_at": row.occurred_at.isoformat(),
+                    "task_id": row.task_ref,
+                    "summary": row.subject[:200],
+                    "reason": reason,
+                    "cost_usd": _event_cost(payload),
+                    "decision_ticket_id": decision_ticket_id,
+                    "payload": payload,
+                }
+            )
+    except Exception:
+        logger.exception("blackboard.state_ledger_history_source failed")
+    return out
+
+
 async def _runtime_state_ledger_source(
     *,
     tenant_id: str,
@@ -315,6 +380,26 @@ def _last_step_summary(blob: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _event_cost(payload: dict[str, Any]) -> float:
+    for key in ("cost_usd", "cost_usd_equivalent", "cost_usd_actual"):
+        value = payload.get(key)
+        try:
+            if value is not None:
+                return round(float(value), 6)
+        except (TypeError, ValueError):
+            continue
+    runtime = payload.get("runtime")
+    if isinstance(runtime, dict):
+        for key in ("accumulated_cost_usd_equivalent", "accumulated_cost_usd_actual"):
+            value = runtime.get(key)
+            try:
+                if value is not None:
+                    return round(float(value), 6)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
 
 
 async def _workspace_source(

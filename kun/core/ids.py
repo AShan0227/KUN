@@ -35,6 +35,7 @@ EntityKind = Literal[
     "preheat",  # ContextPreheat
     "patch",  # PanoramaPatch (§7.7)
     "diag",  # DiagnoseRun (§10.6)
+    "decision",  # V4 DecisionTicket
     "anchor",  # alias for aa
     "incident",  # IncidentResponse event
     "mission",  # Long-horizon mission
@@ -65,6 +66,7 @@ _PREFIX: Final[dict[EntityKind, str]] = {
     "preheat": "ph",
     "patch": "pat",
     "diag": "diag",
+    "decision": "dt",
     "anchor": "aa",
     "incident": "inc",
     "mission": "msn",

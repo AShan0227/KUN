@@ -41,6 +41,11 @@ from kun.core.metrics import (
 )
 from kun.core.orm import IdempotencyRow, RuntimeStateRow, TaskResultRow, TaskRow
 from kun.core.tenancy import current_tenant
+from kun.datamodel.decision_ticket import (
+    DecisionTicket,
+    ticket_from_value_gate_decision,
+    ticket_from_watchtower_decision,
+)
 from kun.datamodel.events import Event
 from kun.datamodel.mission import ResumeRequest
 from kun.datamodel.notification import Notification
@@ -581,6 +586,7 @@ class Orchestrator:
         # V3: Watchtower Decision Plane consume — task 启动前选 StrategyPack,
         # 并真实影响 execution_mode / context_limit / required_skills.
         watchtower_decision: Any = None
+        decision_tickets: list[DecisionTicket] = []
         if (
             self.decision_plane is not None
             and _os.getenv("KUN_WATCHTOWER_DECISION_PLANE_ENABLED", "1") == "1"
@@ -590,12 +596,22 @@ class Orchestrator:
                     task_ref,
                     active_protocol=active_protocol,
                 )
+                watchtower_ticket = ticket_from_watchtower_decision(
+                    tenant_id=tenant.tenant_id,
+                    task_id=task_ref.meta.task_id,
+                    risk_level=task_ref.meta.risk_level,
+                    estimated_cost_usd=task_ref.meta.estimated_cost_usd,
+                    decision=watchtower_decision,
+                    mission_id=_mission_id_from_task(task_ref),
+                )
+                decision_tickets.append(watchtower_ticket)
                 self.decision_plane.apply(task_ref, watchtower_decision)
                 self._record_state_ledger(
                     "record_decision",
                     task_ref.meta.task_id,
                     watchtower_decision,
                 )
+                self._record_state_ledger("record_decision_ticket", watchtower_ticket)
                 async with session_scope(tenant_id=tenant.tenant_id) as s:
                     await emit(
                         s,
@@ -605,6 +621,7 @@ class Orchestrator:
                             payload={
                                 "task_id": task_ref.meta.task_id,
                                 **watchtower_decision.event_payload(),
+                                "decision_ticket": watchtower_ticket.event_payload(),
                             },
                             task_ref=task_ref.meta.task_id,
                         ),
@@ -615,12 +632,14 @@ class Orchestrator:
                         "stage": "watchtower_decision",
                         "task_id": task_ref.meta.task_id,
                         **watchtower_decision.event_payload(),
+                        "decision_ticket": watchtower_ticket.event_payload(),
                     },
                 )
                 await self._record_meta_decision_memory(
                     tenant_id=tenant.tenant_id,
                     task_ref=task_ref,
                     decision=watchtower_decision,
+                    decision_ticket=watchtower_ticket,
                 )
             except Exception:
                 log.exception("watchtower.decision_plane.failed (non-fatal)")
@@ -1105,6 +1124,32 @@ class Orchestrator:
                             prior_value_history=list(self._value_history),
                             context=_gate_ctx,
                         )
+                        value_ticket = ticket_from_value_gate_decision(
+                            tenant_id=tenant.tenant_id,
+                            task_id=task_ref.meta.task_id,
+                            step_id=step_plan.step_id,
+                            decision=gate_decision,
+                            risk_level=task_ref.meta.risk_level,
+                        )
+                        decision_tickets.append(value_ticket)
+                        self._record_state_ledger("record_decision_ticket", value_ticket)
+                        async with session_scope(tenant_id=tenant.tenant_id) as s:
+                            await emit(
+                                s,
+                                Event.build(
+                                    tenant_id=tenant.tenant_id,
+                                    event_type="value_gate.decision.created",
+                                    payload={
+                                        "task_id": task_ref.meta.task_id,
+                                        "step_id": step_plan.step_id,
+                                        "decision": gate_decision.decision,
+                                        "reason": gate_decision.reason,
+                                        "expected_value": gate_decision.expected_value,
+                                        "decision_ticket": value_ticket.event_payload(),
+                                    },
+                                    task_ref=task_ref.meta.task_id,
+                                ),
+                            )
                         if gate_decision.decision in ("stop", "escalate"):
                             yield OrchestratorEvent(
                                 kind="value_gate_intervention",
@@ -1113,6 +1158,7 @@ class Orchestrator:
                                     "decision": gate_decision.decision,
                                     "reason": gate_decision.reason,
                                     "expected_value": gate_decision.expected_value,
+                                    "decision_ticket": value_ticket.event_payload(),
                                 },
                             )
                             # stop / escalate 都中止当前 step loop
@@ -1132,6 +1178,7 @@ class Orchestrator:
                                     "step_id": step_plan.step_id,
                                     "reason": gate_decision.reason,
                                     "expected_value": gate_decision.expected_value,
+                                    "decision_ticket": value_ticket.event_payload(),
                                 },
                             )
                             continue
@@ -1872,6 +1919,7 @@ class Orchestrator:
             validation_score=validation_score,
             surprise_score=surprise,
             score_overall=scorecard.overall if scorecard is not None else None,
+            decision_tickets=decision_tickets,
         )
 
         answer = await self._translate_answer(
@@ -1923,6 +1971,7 @@ class Orchestrator:
         tenant_id: str,
         task_ref: TaskRef,
         decision: Any,
+        decision_ticket: DecisionTicket | None = None,
     ) -> None:
         if self.memory_writeback is None:
             return
@@ -1931,6 +1980,7 @@ class Orchestrator:
                 tenant_id=tenant_id,
                 task_ref=task_ref,
                 decision=decision,
+                decision_ticket=decision_ticket,
             )
             async with session_scope(tenant_id=tenant_id) as s:
                 await emit(
@@ -1997,6 +2047,7 @@ class Orchestrator:
         validation_score: float | None,
         surprise_score: float,
         score_overall: float | None,
+        decision_tickets: list[DecisionTicket] | None = None,
     ) -> None:
         if self.memory_writeback is None:
             return
@@ -2011,6 +2062,7 @@ class Orchestrator:
                 validation_score=validation_score,
                 surprise_score=surprise_score,
                 score_overall=score_overall,
+                decision_tickets=decision_tickets or [],
             )
             async with session_scope(tenant_id=tenant_id) as s:
                 await emit(
@@ -2706,6 +2758,16 @@ def _compute_surprise_score(meta: TaskMeta, runtime: RuntimeState) -> float:
         step_dev = max(0.0, runtime.current_step / runtime.total_planned_steps - 1.0)
     score = 0.35 * cost_dev + 0.20 * step_dev
     return min(1.0, score)
+
+
+def _mission_id_from_task(task_ref: TaskRef) -> str | None:
+    """Best-effort mission id extraction without adding a hard mission dependency."""
+    if task_ref.spec is None:
+        return None
+    parent = task_ref.spec.parent_task_id
+    if parent and parent.startswith("msn-"):
+        return parent
+    return None
 
 
 __all__ = ["Orchestrator", "OrchestratorEvent", "TaskResult"]

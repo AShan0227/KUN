@@ -37,6 +37,7 @@ async def auto_promote_protocols(app: Any, tenant_id: str) -> dict[str, Any]:
     promoted = 0
     kept = 0
     skipped = 0
+    blocked_no_evidence = 0
 
     try:
         all_protocols = await registry.list_all(tenant_id)
@@ -48,11 +49,32 @@ async def auto_promote_protocols(app: Any, tenant_id: str) -> dict[str, Any]:
         if proto.status not in _PROMOTE_RULES:
             continue
         rule = _PROMOTE_RULES[proto.status]
-        # 简化: 没真 task_runs 计数, 用 metadata.darwin_best_score 当 win_rate 代理
-        # V2.4 加真 task outcome counter
         meta = proto.metadata or {}
-        score = float(meta.get("darwin_best_score", 0.0))
-        runs = int(meta.get("runs", 1))  # 默认 1 次
+        evidence = _promotion_evidence(meta)
+        if evidence is None:
+            blocked_no_evidence += 1
+            kept += 1
+            log.info(
+                "auto_promote.blocked_no_evidence",
+                protocol_id=proto.protocol_id,
+                version=proto.version,
+                status=proto.status,
+            )
+            continue
+
+        score = evidence["win_rate"]
+        runs = int(evidence["runs"])
+        guardrail_pass = bool(evidence.get("guardrail_pass", True))
+        if not guardrail_pass:
+            skipped += 1
+            log.info(
+                "auto_promote.blocked_guardrail",
+                protocol_id=proto.protocol_id,
+                version=proto.version,
+                status=proto.status,
+                source=evidence.get("source", ""),
+            )
+            continue
 
         if runs >= int(rule["min_runs"]) and score >= float(rule["min_win_rate"]):
             try:
@@ -67,14 +89,63 @@ async def auto_promote_protocols(app: Any, tenant_id: str) -> dict[str, Any]:
                     from_status=proto.status,
                     to_status=rule["next"],
                     score=score,
+                    runs=runs,
+                    evidence_source=evidence.get("source", ""),
                 )
             except Exception as e:
-                log.debug("auto_promote.promote_failed", protocol_id=proto.protocol_id, error=str(e))
+                log.debug(
+                    "auto_promote.promote_failed", protocol_id=proto.protocol_id, error=str(e)
+                )
                 skipped += 1
         else:
             kept += 1
 
-    return {"promoted": promoted, "kept": kept, "skipped": skipped}
+    return {
+        "promoted": promoted,
+        "kept": kept,
+        "skipped": skipped,
+        "blocked_no_evidence": blocked_no_evidence,
+    }
+
+
+def _promotion_evidence(meta: dict[str, Any]) -> dict[str, Any] | None:
+    """读取真实晋升证据。
+
+    以前这里把 darwin_best_score 当 win_rate 用，容易把“LLM 写得像样”
+    误判成“真实任务效果好”。V4 改成必须有 replay/canary/benchmark
+    这类外部证据，Darwin 分数只能证明“值得进入实验”，不能直接晋升。
+    """
+    raw = meta.get("promotion_evidence")
+    if isinstance(raw, dict):
+        runs = raw.get("runs")
+        if runs is None:
+            runs = raw.get("sample_size", 0)
+        win_rate = raw.get("win_rate")
+        if win_rate is None:
+            win_rate = raw.get("success_rate", 0.0)
+        try:
+            return {
+                "runs": max(0, int(runs)),
+                "win_rate": max(0.0, min(1.0, float(win_rate))),
+                "guardrail_pass": bool(raw.get("guardrail_pass", True)),
+                "source": str(raw.get("source") or "promotion_evidence"),
+            }
+        except (TypeError, ValueError):
+            return None
+
+    # Backward-compatible explicit fields, but still require the evidence prefix.
+    if "evidence_runs" in meta or "evidence_win_rate" in meta:
+        try:
+            return {
+                "runs": max(0, int(meta.get("evidence_runs", 0))),
+                "win_rate": max(0.0, min(1.0, float(meta.get("evidence_win_rate", 0.0)))),
+                "guardrail_pass": bool(meta.get("evidence_guardrail_pass", True)),
+                "source": str(meta.get("evidence_source") or "metadata"),
+            }
+        except (TypeError, ValueError):
+            return None
+
+    return None
 
 
 __all__ = ["auto_promote_protocols"]
