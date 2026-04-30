@@ -6,6 +6,7 @@ conditions that make a real KUN instance unsafe to expose.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from collections.abc import Sequence
@@ -16,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kun.core.config import Settings, settings
 from kun.engineering.delivery_status import delivery_status_summary, validate_delivery_status
+from kun.world.handler_health import EXPECTED_REAL_WORLD_HANDLERS
 
 PreflightSeverity = Literal["ok", "warn", "blocker"]
 
@@ -67,6 +69,7 @@ def run_preflight(
     root = repo_root or Path.cwd()
     checks: list[PreflightCheck] = []
     checks.extend(_config_checks(active))
+    checks.extend(_world_gateway_config_checks())
     checks.extend(_tooling_checks(root, run_alembic_heads=run_alembic_heads))
     checks.extend(_delivery_honesty_checks())
 
@@ -152,6 +155,41 @@ def _tooling_checks(root: Path, *, run_alembic_heads: bool) -> list[PreflightChe
     return checks
 
 
+def _world_gateway_config_checks() -> list[PreflightCheck]:
+    """Catch half-enabled real-world handlers before startup.
+
+    Disabled real handlers are allowed because not every tenant needs email /
+    browser / enterprise API on day one.  But once an operator sets an enable
+    flag, missing required env means the gateway would fail at runtime, so it is
+    a deployment blocker.
+    """
+
+    checks: list[PreflightCheck] = []
+    for action_type, (enable_env, required_envs) in EXPECTED_REAL_WORLD_HANDLERS.items():
+        enabled = _env_truthy(os.getenv(enable_env))
+        missing = [name for name in required_envs if not (os.getenv(name) or "").strip()]
+        if enabled and missing:
+            checks.append(
+                PreflightCheck(
+                    check_id=f"world_handler_config:{action_type}",
+                    severity="blocker",
+                    title=f"WorldGateway {action_type} 配置不完整",
+                    detail=f"{enable_env}=true，但缺少 {', '.join(missing)}",
+                    suggested_action="补齐 env，或关闭对应 KUN_WORLD_*_ENABLED 开关。",
+                )
+            )
+        elif enabled:
+            checks.append(
+                PreflightCheck(
+                    check_id=f"world_handler_config:{action_type}",
+                    severity="ok",
+                    title=f"WorldGateway {action_type} 基础配置通过",
+                    detail=f"{enable_env}=true，必需 env 已提供。",
+                )
+            )
+    return checks
+
+
 def _alembic_heads_check(root: Path) -> PreflightCheck:
     uv_bin = shutil.which("uv")
     if uv_bin is None:
@@ -222,6 +260,12 @@ def _delivery_honesty_checks() -> list[PreflightCheck]:
 
 def _non_empty_lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _env_truthy(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def has_blockers(checks: Sequence[PreflightCheck]) -> bool:

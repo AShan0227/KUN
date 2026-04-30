@@ -81,6 +81,58 @@ def test_preflight_accepts_auth_secret_rotation_list(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_preflight_blocks_half_enabled_world_gateway_handler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "backup_postgres.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (scripts / "restore_postgres_smoke.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    monkeypatch.setenv("KUN_WORLD_EMAIL_SEND_ENABLED", "true")
+    monkeypatch.delenv("KUN_WORLD_SMTP_HOST", raising=False)
+    monkeypatch.delenv("KUN_WORLD_SMTP_FROM", raising=False)
+
+    report = run_preflight(
+        cfg=_safe_prod_settings(),
+        repo_root=tmp_path,
+        run_alembic_heads=False,
+    )
+
+    assert report.status == "block"
+    assert any(check.check_id == "world_handler_config:email.send" for check in report.blockers)
+    details = " ".join(check.detail for check in report.blockers)
+    assert "KUN_WORLD_SMTP_HOST" in details
+    assert "KUN_WORLD_SMTP_FROM" in details
+
+
+@pytest.mark.unit
+def test_preflight_accepts_enabled_world_gateway_handler_with_required_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "backup_postgres.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (scripts / "restore_postgres_smoke.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    monkeypatch.setenv("KUN_WORLD_EMAIL_SEND_ENABLED", "true")
+    monkeypatch.setenv("KUN_WORLD_SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("KUN_WORLD_SMTP_FROM", "kun@example.com")
+
+    report = run_preflight(
+        cfg=_safe_prod_settings(),
+        repo_root=tmp_path,
+        run_alembic_heads=False,
+    )
+
+    assert report.status == "pass"
+    assert any(
+        check.check_id == "world_handler_config:email.send" and check.severity == "ok"
+        for check in report.checks
+    )
+
+
+@pytest.mark.unit
 def test_tenant_onboarding_pack_mints_verifiable_token() -> None:
     secret = "s" * 40
     pack = create_tenant_onboarding_pack(

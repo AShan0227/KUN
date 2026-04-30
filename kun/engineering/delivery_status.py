@@ -224,6 +224,7 @@ def get_v3_delivery_status(
                 "NUO 外部动作审批支持 world:approve / world:dispatch scope 守门",
                 "已补 Postgres backup 和 restore smoke 脚本",
                 "生产 ready 自检会标出 auth / RLS / 默认密钥问题",
+                "ops preflight 会阻断半启用的真实 WorldGateway handler 配置，避免上线后才发现密钥/env 缺失",
                 "Mission reaper、context maintenance、resource credit 已补 Prometheus 指标",
                 "ops preflight CLI 可在上线前检查配置、迁移、备份脚本和能力边界诚实性",
                 "ops onboard-tenant CLI 可生成租户启动 token、权限 scope 和 smoke curl",
