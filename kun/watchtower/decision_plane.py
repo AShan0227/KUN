@@ -111,22 +111,33 @@ class WatchtowerDecisionPlane:
             self.packs = builtin_strategy_packs()
 
     def decide(
-        self, task_ref: TaskRef, *, active_protocol: Any | None = None
+        self,
+        task_ref: TaskRef,
+        *,
+        active_protocol: Any | None = None,
+        mission_strategy: dict[str, Any] | None = None,
     ) -> WatchtowerDecision:
         pack, pack_score = self._select_pack(task_ref)
         protocol_mode = _protocol_execution_mode(active_protocol)
+        mission_adjustment = _mission_strategy_adjustment(mission_strategy)
         mode_source: Literal["watchtower", "protocol", "forced"] = "watchtower"
         if protocol_mode is not None:
             execution_mode = protocol_mode
             mode_source = "protocol"
         else:
             execution_mode = self._choose_execution_mode(task_ref, pack)
+        if mission_adjustment.min_execution_mode is not None:
+            execution_mode = _max_execution_mode(
+                execution_mode, mission_adjustment.min_execution_mode
+            )
 
         context_limit = pack.context_limits.get(
             execution_mode,
             {"FAST": 0, "SMART": 1, "MAX": 3, "ENSEMBLE": 3}[execution_mode],
         )
-        metric_dimensions = _dedupe([*BASE_METRICS, *pack.metric_dimensions])
+        metric_dimensions = _dedupe(
+            [*BASE_METRICS, *pack.metric_dimensions, *mission_adjustment.metric_dimensions]
+        )
         reward_weights = dict(pack.reward_weights)
         if active_protocol is not None:
             protocol_weights = getattr(active_protocol, "reward_weights", None)
@@ -138,8 +149,9 @@ class WatchtowerDecisionPlane:
                         if _is_number(value)
                     }
                 )
+        _apply_reward_boosts(reward_weights, mission_adjustment.reward_weight_boosts)
 
-        alert_flags = self._alert_flags(task_ref, pack)
+        alert_flags = _dedupe([*self._alert_flags(task_ref, pack), *mission_adjustment.alert_flags])
         reason = (
             f"命中策略包 {pack.pack_id}; "
             f"match_score={pack_score:.2f}; "
@@ -147,6 +159,8 @@ class WatchtowerDecisionPlane:
         )
         if mode_source == "protocol":
             reason += "; execution_mode 来自 active protocol"
+        if mission_adjustment.reason:
+            reason += f"; mission_review={mission_adjustment.reason}"
 
         return WatchtowerDecision(
             strategy_pack_id=pack.pack_id,
@@ -167,6 +181,7 @@ class WatchtowerDecisionPlane:
                 "task_type": task_ref.meta.task_type,
                 "risk_level": task_ref.meta.risk_level,
                 "complexity_score": task_ref.meta.complexity_score,
+                "mission_review_adjustments": mission_adjustment.model_dump(mode="json"),
             },
         )
 
@@ -425,8 +440,98 @@ def _strategy_credit_bonus(pack_id: str) -> float:
     return min(0.35, max(0.0, score) * 0.35)
 
 
+class MissionStrategyAdjustment(BaseModel):
+    """Small mission-review signal consumed by Watchtower.
+
+    Mission review should not blindly override execution.  It nudges sparse
+    MoE scoring: budget review makes cost more visible, risk review makes risk
+    more visible, and unstable missions avoid FAST mode.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reward_weight_boosts: dict[str, float] = Field(default_factory=dict)
+    metric_dimensions: list[str] = Field(default_factory=list)
+    alert_flags: list[str] = Field(default_factory=list)
+    min_execution_mode: ExecutionMode | None = None
+    reason: str = ""
+
+
+def _mission_strategy_adjustment(
+    mission_strategy: dict[str, Any] | None,
+) -> MissionStrategyAdjustment:
+    if not isinstance(mission_strategy, dict):
+        return MissionStrategyAdjustment()
+    last_review = mission_strategy.get("last_review")
+    if not isinstance(last_review, dict):
+        return MissionStrategyAdjustment()
+
+    summary = str(last_review.get("summary") or "").strip()
+    budget_notes = str(last_review.get("budget_notes") or "").strip()
+    risk_notes = str(last_review.get("risk_notes") or "").strip()
+    reason_parts: list[str] = []
+    boosts: dict[str, float] = {}
+    dimensions: list[str] = []
+    flags: list[str] = []
+    min_mode: ExecutionMode | None = None
+
+    if budget_notes:
+        boosts["cost"] = 0.12
+        boosts["budget_adherence"] = 0.10
+        dimensions.append("budget_adherence")
+        flags.append("mission_review_budget_attention")
+        reason_parts.append("budget")
+        if _contains_any(budget_notes, ("超预算", "超支", "burn", "expensive", "cost")):
+            min_mode = "SMART"
+
+    if risk_notes:
+        boosts["risk"] = 0.14
+        boosts["reversibility"] = 0.08
+        dimensions.append("risk_followup")
+        flags.append("mission_review_risk_attention")
+        reason_parts.append("risk")
+        min_mode = _max_execution_mode(min_mode or "FAST", "SMART")
+        if _contains_any(risk_notes, ("高风险", "不可逆", "合规", "安全", "越权", "critical")):
+            min_mode = _max_execution_mode(min_mode, "MAX")
+
+    review_text = " ".join(part for part in (summary, budget_notes, risk_notes) if part)
+    if _contains_any(review_text, ("不确定", "分歧", "失败", "卡住", "异常", "反复")):
+        boosts["success_rate"] = 0.08
+        dimensions.append("recovery_confidence")
+        flags.append("mission_review_uncertainty_attention")
+        min_mode = _max_execution_mode(min_mode or "FAST", "SMART")
+        reason_parts.append("uncertainty")
+
+    return MissionStrategyAdjustment(
+        reward_weight_boosts=boosts,
+        metric_dimensions=_dedupe(dimensions),
+        alert_flags=_dedupe(flags),
+        min_execution_mode=min_mode,
+        reason="+".join(reason_parts),
+    )
+
+
+def _apply_reward_boosts(weights: dict[str, float], boosts: dict[str, float]) -> None:
+    for key, boost in boosts.items():
+        current = float(weights.get(key, 0.0))
+        weights[key] = round(min(0.75, max(current, current + float(boost))), 4)
+
+
+def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
+    lowered = text.lower()
+    return any(needle.lower() in lowered for needle in needles)
+
+
+_MODE_RANK: dict[ExecutionMode, int] = {"FAST": 0, "SMART": 1, "MAX": 2, "ENSEMBLE": 3}
+
+
+def _max_execution_mode(left: ExecutionMode, right: ExecutionMode) -> ExecutionMode:
+    return left if _MODE_RANK[left] >= _MODE_RANK[right] else right
+
+
 __all__ = [
     "BASE_METRICS",
+    "MissionStrategyAdjustment",
     "StrategyPack",
     "WatchtowerDecision",
     "WatchtowerDecisionPlane",

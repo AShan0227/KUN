@@ -39,7 +39,7 @@ from kun.core.metrics import (
     task_started_total,
     task_surprise_score,
 )
-from kun.core.orm import IdempotencyRow, RuntimeStateRow, TaskResultRow, TaskRow
+from kun.core.orm import IdempotencyRow, MissionRow, RuntimeStateRow, TaskResultRow, TaskRow
 from kun.core.tenancy import current_tenant
 from kun.datamodel.decision_ticket import (
     DecisionTicket,
@@ -52,7 +52,7 @@ from kun.datamodel.events import Event
 from kun.datamodel.mission import ResumeRequest
 from kun.datamodel.notification import Notification
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
-from kun.datamodel.task import Owner, TaskMeta, TaskRef
+from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
 from kun.engineering.capability_writeback import Outcome, TaskOutcome, record_outcome
 from kun.engineering.concurrency import (
     enqueue_pending_actions,
@@ -247,10 +247,22 @@ class Orchestrator:
 
     # ----------------------------- public entry -----------------------------
 
-    async def run(self, user_message: str, *, output_kind: str = "user") -> TaskResult:
+    async def run(
+        self,
+        user_message: str,
+        *,
+        output_kind: str = "user",
+        mission_id: str | None = None,
+        mission_strategy: dict[str, Any] | None = None,
+    ) -> TaskResult:
         """Non-streaming entry. Useful for tests / HTTP POST."""
         final: TaskResult | None = None
-        async for ev in self.stream(user_message, output_kind=output_kind):
+        async for ev in self.stream(
+            user_message,
+            output_kind=output_kind,
+            mission_id=mission_id,
+            mission_strategy=mission_strategy,
+        ):
             if ev.kind == "done":
                 final = TaskResult.model_validate(ev.data["result"])
         if final is None:
@@ -285,7 +297,16 @@ class Orchestrator:
                     task_ref=request.task_id,
                 ),
             )
-        return await self.run(resume_prompt, output_kind=output_kind)
+        mission_strategy = await _load_mission_strategy(
+            tenant_id=tenant.tenant_id,
+            mission_id=request.mission_id,
+        )
+        return await self.run(
+            resume_prompt,
+            output_kind=output_kind,
+            mission_id=request.mission_id,
+            mission_strategy=mission_strategy,
+        )
 
     async def stream(
         self,
@@ -293,6 +314,8 @@ class Orchestrator:
         *,
         max_duration_sec: float | None = None,
         output_kind: str = "user",
+        mission_id: str | None = None,
+        mission_strategy: dict[str, Any] | None = None,
     ) -> AsyncIterator[OrchestratorEvent]:
         """Streaming entry. Yields OrchestratorEvents for WebSocket.
 
@@ -362,6 +385,7 @@ class Orchestrator:
         # 1. 意图理解 -> TaskRef
         yield OrchestratorEvent(kind="thinking", data={"stage": "intent"})
         task_ref = await self.intent.interpret(user_message, owner=owner)
+        _attach_task_parent(task_ref, mission_id)
 
         # 1.5 V2.1 wire (M3.3, opt-in) + V2.2 §19.3/C25 wire (always on if panorama enabled):
         # FAST/SMART/MAX 模式按需展开 panorama 模块, 不一次性构造 12 个.
@@ -621,6 +645,7 @@ class Orchestrator:
                 watchtower_decision = self.decision_plane.decide(
                     task_ref,
                     active_protocol=active_protocol,
+                    mission_strategy=mission_strategy,
                 )
                 watchtower_ticket = ticket_from_watchtower_decision(
                     tenant_id=tenant.tenant_id,
@@ -2953,6 +2978,55 @@ def _mission_id_from_task(task_ref: TaskRef) -> str | None:
     if parent and parent.startswith("msn-"):
         return parent
     return None
+
+
+def _attach_task_parent(task_ref: TaskRef, mission_id: str | None) -> None:
+    """Attach durable Mission identity to a continuation TaskRef.
+
+    Mission worker creates a new continuation task rather than mutating the
+    original TaskRow in-place.  Without this parent pointer, Watchtower,
+    DecisionTicket, StateLedger, and credit assignment cannot attribute the
+    continuation back to the long-horizon mission.
+    """
+
+    if not mission_id:
+        return
+    if task_ref.spec is None:
+        task_ref.spec = TaskSpec(goal_detail=task_ref.meta.success_criteria_short)
+    task_ref.spec.parent_task_id = mission_id
+
+
+async def _load_mission_strategy(*, tenant_id: str, mission_id: str) -> dict[str, Any]:
+    """Load compact Mission strategy state for Watchtower.
+
+    This deliberately returns only strategy-like fields.  The full mission
+    remains owned by mission_control; Orchestrator only consumes review signals
+    so the next run can adjust cost/risk/recovery attention.
+    """
+
+    try:
+        async with session_scope(tenant_id=tenant_id) as s:
+            row = (
+                await s.execute(
+                    select(MissionRow).where(
+                        MissionRow.tenant_id == tenant_id,
+                        MissionRow.mission_id == mission_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return {}
+            strategy = dict(row.strategy_json or {})
+            strategy["mission_id"] = row.mission_id
+            strategy["mission_risk_level"] = row.risk_level
+            strategy["mission_budget_cap_usd"] = row.budget_cap_usd
+            strategy["mission_budget_used_usd"] = row.budget_used_usd
+            if row.next_step_json:
+                strategy["next_step"] = dict(row.next_step_json)
+            return strategy
+    except Exception:
+        log.exception("mission.strategy_load_failed", mission_id=mission_id)
+        return {}
 
 
 __all__ = ["Orchestrator", "OrchestratorEvent", "TaskResult"]

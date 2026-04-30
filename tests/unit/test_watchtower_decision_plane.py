@@ -131,6 +131,31 @@ def test_decision_plane_flags_domain_drift() -> None:
 
 
 @pytest.mark.unit
+def test_decision_plane_uses_mission_review_as_strategy_signal() -> None:
+    task_ref = _task_ref(text="继续推进这个长期运营任务", complexity=0.1)
+
+    decision = WatchtowerDecisionPlane().decide(
+        task_ref,
+        mission_strategy={
+            "last_review": {
+                "summary": "上一轮卡住且结果不确定",
+                "budget_notes": "已经超预算，需要控制 burn",
+                "risk_notes": "存在高风险外发和不可逆动作",
+            }
+        },
+    )
+
+    assert decision.execution_mode in {"MAX", "ENSEMBLE"}
+    assert "budget_adherence" in decision.metric_dimensions
+    assert "risk_followup" in decision.metric_dimensions
+    assert "mission_review_budget_attention" in decision.alert_flags
+    assert "mission_review_risk_attention" in decision.alert_flags
+    assert decision.reward_weights["cost"] >= 0.10
+    assert decision.reward_weights["risk"] > 0.05
+    assert decision.metadata["mission_review_adjustments"]["reason"] == "budget+risk+uncertainty"
+
+
+@pytest.mark.unit
 def test_decision_plane_uses_strategy_credit_as_moe_tie_breaker() -> None:
     reset_contribution_tracker()
     try:
