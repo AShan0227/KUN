@@ -1,0 +1,66 @@
+# KUN V4 Release Checklist
+
+这份清单只做一件事：防止“能不能发版”靠感觉。正式打 tag 前，先跑机器检查，再人工确认。
+
+## 1. Release Gate
+
+```bash
+uv run kun ops release-check --tag v4.0.0 --require-ready
+```
+
+内部测试版如果仍有 partial 能力，可以先不加 `--require-ready`，但对外说明必须继续诚实。
+
+## 2. Backup / Restore
+
+打 tag 前必须完成：
+
+- `uv run kun ops preflight`
+- `scripts/backup_postgres.sh` 在目标环境可用
+- `scripts/restore_postgres_smoke.sh` 在目标环境可用
+- `uv run python scripts/backup_restore_drill.py --dry-run`
+
+没有真实数据库/S3 restore 演练时，只能发内部测试版，不能宣称生产级完成。
+
+## 3. Tag
+
+```bash
+git status --short
+uv run kun ops release-check --tag v4.0.0 --require-ready
+git tag -a v4.0.0 -m "KUN v4.0.0"
+git push origin v4.0.0
+```
+
+## 4. Rollback
+
+发现 blocker 后：
+
+```bash
+git checkout <last-good-tag>
+uv run kun ops preflight --no-fail-on-blocker
+uv run kun ops readiness --no-fail-on-blocker
+```
+
+如果涉及数据库迁移，先确认 downgrade 路径和备份，再回滚应用。不能在没有备份的情况下直接降库。
+
+## 5. Hotfix
+
+热修流程：
+
+```bash
+git checkout -b hotfix/<short-name> <last-good-tag>
+# 修复 + 测试
+uv run kun ops release-check --tag v4.0.1 --require-ready
+git tag -a v4.0.1 -m "KUN v4.0.1 hotfix"
+git push origin hotfix/<short-name>
+git push origin v4.0.1
+```
+
+## 6. Legal / IP
+
+公开仓库发版前必须通过：
+
+```bash
+uv run python scripts/check_legal_guard.py
+```
+
+不要把未公开商业方案、客户信息、密钥、投资材料、内部 GTM 细节放进 public repo。

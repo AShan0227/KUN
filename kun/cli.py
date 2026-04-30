@@ -668,6 +668,56 @@ def ops_readiness(
         raise typer.Exit(code=2)
 
 
+@ops_app.command("release-check")
+def ops_release_check(
+    tag: str = typer.Option(..., "--tag", help="准备创建的 release tag，例如 v4.0.0"),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+    allow_dirty: bool = typer.Option(False, "--allow-dirty", help="允许脏工作区，只给 warning"),
+    skip_git: bool = typer.Option(False, "--skip-git", help="跳过 git dirty/tag 检查"),
+    skip_alembic: bool = typer.Option(False, "--skip-alembic", help="跳过 alembic heads 检查"),
+    require_ready: bool = typer.Option(
+        False,
+        "--require-ready",
+        help="要求所有用户可见能力都是 ready；适合正式生产 release",
+    ),
+    fail_on_blocker: bool = typer.Option(
+        True,
+        "--fail-on-blocker/--no-fail-on-blocker",
+        help="有 blocker 时返回非零退出码",
+    ),
+) -> None:
+    """检查能不能打 release tag：tag、rollback、hotfix、preflight、legal guard。"""
+
+    from kun.ops.release_gate import run_release_gate
+
+    report = run_release_gate(
+        release_tag=tag,
+        allow_dirty=allow_dirty,
+        run_git=not skip_git,
+        run_alembic_heads=not skip_alembic,
+        require_ready=require_ready,
+    )
+    if json_output:
+        console.print_json(data=report.model_dump(mode="json"))
+    else:
+        table = Table(title=f"KUN release gate — {tag} — {report.status}")
+        table.add_column("severity")
+        table.add_column("check")
+        table.add_column("detail")
+        table.add_column("action")
+        color = {"ok": "green", "warn": "yellow", "blocker": "red"}
+        for check in report.checks:
+            table.add_row(
+                f"[{color[check.severity]}]{check.severity}[/]",
+                check.title,
+                check.detail,
+                check.suggested_action or "-",
+            )
+        console.print(table)
+    if fail_on_blocker and report.status == "block":
+        raise typer.Exit(code=2)
+
+
 @ops_app.command("credit-report")
 def ops_credit_report(
     tenant: str = typer.Option("u-sylvan", "--tenant", help="租户 ID"),
