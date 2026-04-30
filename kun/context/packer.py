@@ -230,6 +230,21 @@ class ContextPacker:
             value_estimator=estimator,
         )
 
+    async def recall_process_experiences(
+        self,
+        task_ref: TaskRef,
+        *,
+        tenant_id: str,
+    ) -> list[PackedProcessExperience]:
+        """Recall process memories for paths that do anchor-expand loading.
+
+        SMART mode gets process memories through `pack()`. MAX / ENSEMBLE use
+        anchor-expand for assets, so they need an explicit hook to avoid losing
+        the most useful "how did similar tasks actually run" hints.
+        """
+
+        return await self._recall_process_experiences(task_ref, tenant_id=tenant_id)
+
     async def _rank_assets(
         self,
         candidates: list[LayeredAsset],

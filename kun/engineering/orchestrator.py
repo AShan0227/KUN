@@ -1020,7 +1020,14 @@ class Orchestrator:
                     context_items.append(item)
                     if len(context_items) >= _context_limit:
                         break
-                context_pack = ContextPack(items=context_items)
+                process_experiences = await self.context_packer.recall_process_experiences(
+                    task_ref,
+                    tenant_id=tenant.tenant_id,
+                )
+                context_pack = ContextPack(
+                    items=context_items,
+                    process_experiences=process_experiences,
+                )
             else:
                 context_pack = await self.context_packer.pack(
                     task_ref,

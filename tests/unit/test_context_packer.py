@@ -211,6 +211,34 @@ async def test_context_packer_adds_recalled_execution_process_hint() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_context_packer_exposes_process_experiences_for_anchor_expand_paths() -> None:
+    store = InMemoryAssetStore()
+    process = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={
+            "memory_layer": "execution_process",
+            "task_type": "coding.python.pytest",
+            "step_id": 2,
+            "skill_used": "coding-pytest",
+        },
+        summary="执行过程: step=2; skill=coding-pytest; MAX 模式也要带上历史执行经验。",
+        tags=["v3", "execution_process", "coding.python.pytest", "coding-pytest", "pytest"],
+    )
+    await store.put(process)
+
+    experiences = await ContextPacker(store).recall_process_experiences(
+        _task(),
+        tenant_id="u-sylvan",
+    )
+
+    assert experiences
+    assert experiences[0].asset_id == process.asset_id
+    assert "MAX 模式" in experiences[0].summary
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_context_packer_uses_durable_resource_credit(monkeypatch: pytest.MonkeyPatch) -> None:
     store = InMemoryAssetStore()
     low = LayeredAsset.build(
