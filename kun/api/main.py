@@ -325,6 +325,19 @@ async def tenant_middleware(
             ctx = verify_bearer_token_any(auth_header, auth_secrets).to_tenant_context()
         except AuthTokenError as exc:
             return JSONResponse(status_code=401, content={"detail": str(exc)})
+        if cfg.env == "production":
+            try:
+                revoked = await _is_auth_token_revoked(
+                    tenant_id=ctx.tenant_id,
+                    auth_header=auth_header,
+                )
+            except Exception as exc:
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": f"token revocation check failed: {exc}"},
+                )
+            if revoked:
+                return JSONResponse(status_code=401, content={"detail": "bearer token revoked"})
     elif cfg.env == "production":
         return JSONResponse(
             status_code=401,
@@ -353,6 +366,16 @@ async def tenant_middleware(
         )
     with tenant_scope(ctx):
         return await call_next(request)
+
+
+async def _is_auth_token_revoked(*, tenant_id: str, auth_header: str) -> bool:
+    from kun.core.db import session_scope
+    from kun.ops.account_registry import hash_bearer_token, is_token_revoked
+    from kun.security.auth import extract_bearer_token
+
+    token_hash = hash_bearer_token(extract_bearer_token(auth_header))
+    async with session_scope(tenant_id=tenant_id) as s:
+        return await is_token_revoked(s, tenant_id=tenant_id, token_hash=token_hash)
 
 
 @app.get("/metrics")

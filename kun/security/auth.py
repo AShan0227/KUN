@@ -30,6 +30,7 @@ class AuthClaims:
     scopes: tuple[str, ...] = ()
     audience: Audience = "developer"
     exp: int | None = None
+    token_id: str | None = None
 
     def to_tenant_context(self) -> TenantContext:
         return TenantContext(
@@ -49,9 +50,7 @@ def sign_auth_token(claims: dict[str, Any], secret: str) -> str:
 
 
 def verify_bearer_token(header_value: str | None, secret: str) -> AuthClaims:
-    if not header_value or not header_value.lower().startswith("bearer "):
-        raise AuthTokenError("missing bearer token")
-    token = header_value.split(" ", 1)[1].strip()
+    token = extract_bearer_token(header_value)
     try:
         payload_b64, sig = token.rsplit(".", 1)
     except ValueError as exc:
@@ -85,6 +84,17 @@ def verify_bearer_token_any(header_value: str | None, secrets: Iterable[str]) ->
     raise AuthTokenError(errors[-1])
 
 
+def extract_bearer_token(header_value: str | None) -> str:
+    """Return the raw bearer token without the ``Bearer`` prefix."""
+
+    if not header_value or not header_value.lower().startswith("bearer "):
+        raise AuthTokenError("missing bearer token")
+    token = header_value.split(" ", 1)[1].strip()
+    if not token:
+        raise AuthTokenError("missing bearer token")
+    return token
+
+
 def _claims_from_payload(data: dict[str, Any]) -> AuthClaims:
     tenant_id = str(data.get("tenant_id") or data.get("tenant") or "").strip()
     if not tenant_id:
@@ -113,6 +123,7 @@ def _claims_from_payload(data: dict[str, Any]) -> AuthClaims:
         scopes=scopes,
         audience=audience,
         exp=exp,
+        token_id=str(data["jti"]) if data.get("jti") is not None else None,
     )
 
 
@@ -134,6 +145,7 @@ def _signature(payload_b64: str, secret: str) -> str:
 __all__ = [
     "AuthClaims",
     "AuthTokenError",
+    "extract_bearer_token",
     "sign_auth_token",
     "verify_bearer_token",
     "verify_bearer_token_any",

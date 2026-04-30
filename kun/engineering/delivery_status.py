@@ -248,6 +248,7 @@ def get_v3_delivery_status(
                 "ops secret-audit / NUO secret-audit 可检查默认密码、缺失密钥和半启用外部 handler",
                 "ops onboard-tenant CLI 可生成租户启动 token、权限 scope 和 smoke curl",
                 "ops account-bootstrap CLI 可把租户、owner 成员、token 签发记录写入持久账本",
+                "production API 会检查账号账本里的 revoked token，已撤销 token 会被拒绝",
                 "ops dogfood CLI 可跑 V4 低风险 smoke，验证 preflight / token / WorldGateway / 诚实边界",
                 "ops dogfood --include-db-mission 可额外验证 Mission/RuntimeState/Orchestrator runner 的真实 DB 续跑闭环",
                 "ops delivery-status CLI 可直接查看 ready / partial / not_ready，防止伪功能被误认为已完成",
@@ -262,6 +263,7 @@ def get_v3_delivery_status(
                 "kun/ops/secret_audit.py",
                 "kun/ops/tenant_onboarding.py",
                 "kun/ops/account_registry.py",
+                "kun/api/main.py",
                 "kun/ops/backup_restore.py",
                 "kun/ops/dogfood.py",
                 "scripts/backup_restore_drill.py",
@@ -271,7 +273,7 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "完整自助注册 / 登录 / 密码或 OAuth 账号体系",
-                "token 撤销强制拦截和会话管理",
+                "完整会话管理、刷新 token、设备登录态",
                 "集中密钥管理和轮换",
                 "正式 release/tag 流程",
                 "真实数据库/S3 环境的备份恢复演练",
@@ -280,7 +282,7 @@ def get_v3_delivery_status(
             ],
             next_steps=[
                 "把 release checklist 升级到 V4，并明确 tag / rollback / hotfix 流程",
-                "把账号账本升级成自助注册、成员管理和 token revoke enforcement",
+                "把账号账本升级成自助注册、成员管理和完整会话体系",
                 "做真实环境备份/恢复 smoke test",
             ],
         ),

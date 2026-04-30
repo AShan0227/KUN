@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -215,6 +216,56 @@ async def bootstrap_tenant_account(
     )
 
 
+async def is_token_revoked(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    token_hash: str,
+) -> bool:
+    """Return whether a bearer token hash has been revoked for a tenant.
+
+    Missing rows are allowed so older operator-minted tokens do not break
+    immediately after the ledger migration. Once a token is issued through the
+    account ledger, revocation becomes enforceable.
+    """
+
+    result = await session.execute(
+        select(TenantTokenIssueRow.status).where(
+            TenantTokenIssueRow.tenant_id == tenant_id,
+            TenantTokenIssueRow.token_hash == token_hash,
+        )
+    )
+    status = result.scalar_one_or_none()
+    return status == "revoked"
+
+
+async def revoke_token_issue(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    token_id: str,
+    reason: str = "",
+) -> bool:
+    """Mark an issued tenant token as revoked."""
+
+    now = datetime.now(UTC)
+    result = await session.execute(
+        update(TenantTokenIssueRow)
+        .where(
+            TenantTokenIssueRow.tenant_id == tenant_id,
+            TenantTokenIssueRow.token_id == token_id,
+            TenantTokenIssueRow.status == "issued",
+        )
+        .values(
+            status="revoked",
+            revoked_at=now,
+            updated_at=now,
+            metadata_json={"revoked_reason": reason.strip()} if reason.strip() else {},
+        )
+    )
+    return bool(getattr(result, "rowcount", 0))
+
+
 def build_unpersisted_bootstrap(
     *,
     tenant_id: str,
@@ -283,4 +334,6 @@ __all__ = [
     "build_bootstrap_token",
     "build_unpersisted_bootstrap",
     "hash_bearer_token",
+    "is_token_revoked",
+    "revoke_token_issue",
 ]

@@ -861,6 +861,42 @@ def ops_account_bootstrap(
         console.print_json(data=payload)
 
 
+@ops_app.command("revoke-token")
+def ops_revoke_token(
+    tenant: str = typer.Option(..., "--tenant", help="租户 ID"),
+    token_id: str = typer.Option(..., "--token-id", help="account-bootstrap 返回的 token_id"),
+    reason: str = typer.Option("", "--reason", help="撤销原因，只存摘要不存 token"),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+) -> None:
+    """撤销租户 token 签发记录。
+
+    API production middleware 会拒绝通过账号账本签发且已 revoked 的 token。
+    """
+
+    from kun.core.db import session_scope
+    from kun.ops.account_registry import revoke_token_issue
+
+    async def _revoke() -> bool:
+        async with session_scope(tenant_id=tenant) as s:
+            return await revoke_token_issue(
+                s,
+                tenant_id=tenant,
+                token_id=token_id,
+                reason=reason,
+            )
+
+    revoked = asyncio.run(_revoke())
+    payload = {"tenant_id": tenant, "token_id": token_id, "revoked": revoked}
+    if json_output:
+        console.print_json(data=payload)
+    elif revoked:
+        console.print(f"[green]token revoked[/]: {tenant}/{token_id}")
+    else:
+        console.print(f"[yellow]token not found or already revoked[/]: {tenant}/{token_id}")
+    if not revoked:
+        raise typer.Exit(code=1)
+
+
 @ops_app.command("dogfood")
 def ops_dogfood(
     tenant: str = typer.Option("u-sylvan", "--tenant"),
