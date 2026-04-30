@@ -21,6 +21,12 @@ context_cache_cost_savings_usd = Counter(
     ["tenant_id"],
 )
 
+context_maintenance_findings_total = Counter(
+    "kun_context_maintenance_findings_total",
+    "NUO context maintenance findings by action",
+    ["tenant_id", "action", "dry_run"],
+)
+
 # ============== LLM / Router ==============
 
 llm_request_total = Counter(
@@ -66,6 +72,12 @@ watchtower_rule_latency_seconds = Histogram(
     "kun_watchtower_rule_latency_seconds",
     "Rule evaluation latency",
     ["rule_id"],
+)
+
+resource_credit_update_total = Counter(
+    "kun_resource_credit_update_total",
+    "Durable MoE resource credit updates by resource kind",
+    ["tenant_id", "resource_kind"],
 )
 
 # ============== Quality / Evaluation ==============
@@ -211,6 +223,12 @@ task_surprise_score = Histogram(
     "Task surprise scores (ADR-015)",
     ["task_type"],
     buckets=(0.1, 0.3, 0.5, 0.6, 0.8, 1.0),
+)
+
+mission_reaper_actions_total = Counter(
+    "kun_mission_reaper_actions_total",
+    "Mission reaper actions by outcome",
+    ["tenant_id", "outcome"],
 )
 
 # ============== V2.3 启 (Qi) — protocol / pheromone / PC / anti-gaming ==============

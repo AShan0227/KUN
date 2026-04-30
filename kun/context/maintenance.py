@@ -16,6 +16,7 @@ from kun.context.assets import AssetKind, LayeredAsset
 from kun.context.storage import AssetStore, get_store
 from kun.core.db import session_scope
 from kun.core.events import emit
+from kun.core.metrics import context_maintenance_findings_total
 from kun.datamodel.events import Event, EventKind
 
 log = logging.getLogger(__name__)
@@ -131,6 +132,7 @@ async def run_context_maintenance(
             report.kept += 1
             if len(report.findings) < 50:
                 report.findings.append(_finding(asset, "keep", "healthy", dry_run))
+    _emit_metrics(report)
     return report
 
 
@@ -174,6 +176,24 @@ def _compress_summary(text: str, *, max_chars: int = 900) -> str:
     if len(text) <= max_chars:
         return text
     return text[: max_chars - 20].rstrip() + " ... [compressed]"
+
+
+def _emit_metrics(report: ContextMaintenanceReport) -> None:
+    dry_run = "true" if report.dry_run else "false"
+    counts = {
+        "compress": report.compressed,
+        "soft_forget": report.soft_forgotten,
+        "hard_delete": report.hard_deleted,
+        "duplicate": report.duplicate_candidates,
+        "keep": report.kept,
+    }
+    for action, count in counts.items():
+        if count > 0:
+            context_maintenance_findings_total.labels(
+                tenant_id=report.tenant_id,
+                action=action,
+                dry_run=dry_run,
+            ).inc(count)
 
 
 _ASSET_KINDS: tuple[AssetKind, ...] = (

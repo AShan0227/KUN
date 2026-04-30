@@ -61,6 +61,7 @@ from kun.engineering.credit_assignment import (
     CreditAssignment,
     get_contribution_tracker,
     heuristic_reflector,
+    persist_resource_credit_report,
 )
 from kun.engineering.validation import ValidationPipeline, pick_tier
 from kun.interface.adapters import translate_for
@@ -2073,8 +2074,9 @@ class Orchestrator:
                 outcome,
                 reflector=heuristic_reflector,
             )
-            get_contribution_tracker().update_from_report(report)
             async with session_scope(tenant_id=tenant_id) as s:
+                deltas = await persist_resource_credit_report(s, tenant_id=tenant_id, report=report)
+                get_contribution_tracker().update_from_deltas(deltas)
                 await emit(
                     s,
                     Event.build(
@@ -2086,6 +2088,7 @@ class Orchestrator:
                             "step_count": len(report.step_credits),
                             "critical_path_step_ids": report.critical_path_step_ids,
                             "total_immediate_reward": report.total_immediate_reward,
+                            "resource_count": len(deltas),
                         },
                         task_ref=task_ref.meta.task_id,
                     ),

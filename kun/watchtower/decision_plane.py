@@ -18,6 +18,7 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from kun.datamodel.task import ExecutionMode, TaskRef
+from kun.engineering.credit_assignment import get_contribution_tracker
 
 BASE_METRICS = [
     "success_rate",
@@ -183,7 +184,10 @@ class WatchtowerDecisionPlane:
         task_ref.spec.required_skills = existing
 
     def _select_pack(self, task_ref: TaskRef) -> tuple[StrategyPack, float]:
-        scored = [(pack, pack.match_score(task_ref)) for pack in self.packs]
+        scored = [
+            (pack, _pack_base_score(pack, task_ref) + _strategy_credit_bonus(pack.pack_id))
+            for pack in self.packs
+        ]
         scored.sort(key=lambda item: (-item[1], item[0].pack_id))
         best, score = scored[0]
         if score <= 0:
@@ -400,6 +404,25 @@ def _is_number(value: object) -> bool:
         return True
     except (TypeError, ValueError):
         return False
+
+
+def _pack_base_score(pack: StrategyPack, task_ref: TaskRef) -> float:
+    if pack.pack_id == "default":
+        return 0.0
+    return pack.match_score(task_ref)
+
+
+def _strategy_credit_bonus(pack_id: str) -> float:
+    """Hot MoE feedback: historically useful strategy packs get a small boost.
+
+    The base keyword/task-type match still dominates.  Credit only breaks ties
+    or nudges similar packs, which keeps simple deterministic routing stable.
+    """
+    try:
+        score = get_contribution_tracker().contribution_score(pack_id, "strategy_pack")
+    except Exception:
+        return 0.0
+    return min(0.35, max(0.0, score) * 0.35)
 
 
 __all__ = [

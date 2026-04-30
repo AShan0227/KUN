@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
+
 import pytest
 from kun.context.assets import LayeredAsset
 from kun.context.packer import ContextPacker
@@ -174,6 +178,52 @@ async def test_context_packer_penalizes_failed_memories() -> None:
 
     assert [item.asset_id for item in pack.items][:2] == [good.asset_id, bad.asset_id]
     assert "quality_delta" in pack.items[0].score_rationale
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_uses_durable_resource_credit(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = InMemoryAssetStore()
+    low = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest low"},
+        summary="pytest 修复 复现 回归",
+        tags=["pytest"],
+    )
+    hot = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest hot"},
+        summary="pytest 修复 复现 回归",
+        tags=["pytest"],
+    )
+    await store.put(low)
+    await store.put(hot)
+
+    @asynccontextmanager
+    async def fake_session_scope(**_kwargs: Any) -> AsyncIterator[object]:
+        yield object()
+
+    async def fake_load_scores(
+        _session: object,
+        *,
+        tenant_id: str,
+        resource_keys: list[str],
+    ) -> dict[str, float]:
+        assert tenant_id == "u-sylvan"
+        assert f"memory:{hot.asset_id}" in resource_keys
+        return {f"memory:{hot.asset_id}": 1.0}
+
+    monkeypatch.setattr("kun.core.db.session_scope", fake_session_scope)
+    monkeypatch.setattr(
+        "kun.engineering.credit_assignment.load_resource_credit_scores", fake_load_scores
+    )
+
+    pack = await ContextPacker(store).pack_query("pytest 修复", tenant_id="u-sylvan", limit=1)
+
+    assert [item.asset_id for item in pack.items] == [hot.asset_id]
+    assert "contribution=1.00" in pack.items[0].score_rationale
 
 
 @pytest.mark.unit

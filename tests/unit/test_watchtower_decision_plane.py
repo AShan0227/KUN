@@ -7,6 +7,11 @@ import pytest
 from kun.context.packer import ContextPack
 from kun.core.state_ledger import StateLedger
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
+from kun.engineering.credit_assignment import (
+    ResourceCreditDelta,
+    get_contribution_tracker,
+    reset_contribution_tracker,
+)
 from kun.engineering.orchestrator import Orchestrator
 from kun.interface.llm import LLMRouter
 from kun.interface.llm.base import LLMResponse, UsageInfo
@@ -123,6 +128,35 @@ def test_decision_plane_flags_domain_drift() -> None:
 
     assert decision.strategy_pack_id == "education"
     assert "education_task_contains_commercial_or_financial_terms" in decision.alert_flags
+
+
+@pytest.mark.unit
+def test_decision_plane_uses_strategy_credit_as_moe_tie_breaker() -> None:
+    reset_contribution_tracker()
+    try:
+        get_contribution_tracker().update_from_deltas(
+            {
+                "strategy_pack:education": ResourceCreditDelta(
+                    resource_key="strategy_pack:education",
+                    resource_kind="strategy_pack",
+                    resource_id="education",
+                    used_count=2,
+                    pass_count=2,
+                    critical_count=2,
+                    credit_total=2.0,
+                )
+            }
+        )
+        task_ref = _task_ref(
+            task_type="general",
+            text="帮我把这个学习产品做商业化方案",
+        )
+
+        decision = WatchtowerDecisionPlane().decide(task_ref)
+
+        assert decision.strategy_pack_id == "education"
+    finally:
+        reset_contribution_tracker()
 
 
 @pytest.mark.unit

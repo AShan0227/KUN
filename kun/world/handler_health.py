@@ -7,6 +7,7 @@ plain health card.  It deliberately treats "executed but missing handler" and
 
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from typing import Any, Literal
 
@@ -18,6 +19,21 @@ from kun.core.orm import PendingActionRow
 from kun.world.gateway import WorldGateway, WorldHandlerDescriptor, get_world_gateway
 
 HandlerHealthStatus = Literal["ready", "limited", "blocked", "unregistered"]
+
+EXPECTED_REAL_WORLD_HANDLERS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "email.send": (
+        "KUN_WORLD_EMAIL_SEND_ENABLED",
+        ("KUN_WORLD_SMTP_HOST", "KUN_WORLD_SMTP_FROM"),
+    ),
+    "enterprise_api.post": (
+        "KUN_WORLD_API_POST_ENABLED",
+        ("KUN_WORLD_API_ALLOWED_HOSTS",),
+    ),
+    "browser.execute": (
+        "KUN_WORLD_BROWSER_EXECUTE_ENABLED",
+        ("KUN_WORLD_BROWSER_ALLOWED_HOSTS",),
+    ),
+}
 
 
 class WorldHandlerHealthCard(BaseModel):
@@ -80,7 +96,11 @@ def build_world_handler_health(
     rows: list[PendingActionRow],
 ) -> list[WorldHandlerHealthCard]:
     descriptor_by_type = {item.action_type: item for item in descriptors}
-    action_types = set(descriptor_by_type) | {row.action_type for row in rows}
+    action_types = (
+        set(descriptor_by_type)
+        | {row.action_type for row in rows}
+        | set(EXPECTED_REAL_WORLD_HANDLERS)
+    )
     cards = [
         _build_card(action_type, descriptor_by_type.get(action_type), rows)
         for action_type in sorted(action_types)
@@ -112,6 +132,7 @@ def _build_card(
     issues: list[str] = []
     if descriptor is None:
         issues.append("没有注册 WorldGateway handler")
+        issues.extend(_expected_config_issues(action_type))
     else:
         if descriptor.external_dispatched and descriptor.requires_external_dispatch_confirmation:
             issues.append("真实外发动作必须保留人工确认")
@@ -254,6 +275,8 @@ def _recommendation(
     descriptor: WorldHandlerDescriptor | None,
 ) -> str:
     if status == "unregistered":
+        if issues:
+            return "先补 handler 或配置缺失环境变量；未补齐前不要执行这种外部动作。"
         return "不要执行这种外部动作；先补 handler 或改成草稿/dry-run。"
     if status == "blocked":
         return "暂停自动执行，必须人工确认并排查失败原因。"
@@ -268,7 +291,28 @@ def _status_rank(status: HandlerHealthStatus) -> int:
     return {"blocked": 0, "unregistered": 1, "limited": 2, "ready": 3}[status]
 
 
+def _expected_config_issues(action_type: str) -> list[str]:
+    expected = EXPECTED_REAL_WORLD_HANDLERS.get(action_type)
+    if expected is None:
+        return []
+    enable_env, required_envs = expected
+    issues: list[str] = []
+    if not _env_truthy(os.getenv(enable_env)):
+        issues.append(f"未启用 {enable_env}=true")
+    missing = [name for name in required_envs if not (os.getenv(name) or "").strip()]
+    if missing:
+        issues.append("缺少环境变量: " + ", ".join(missing))
+    return issues
+
+
+def _env_truthy(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 __all__ = [
+    "EXPECTED_REAL_WORLD_HANDLERS",
     "HandlerHealthStatus",
     "WorldHandlerHealthCard",
     "build_world_handler_health",

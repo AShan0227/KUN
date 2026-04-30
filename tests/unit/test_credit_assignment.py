@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from kun.engineering.credit_assignment import (
     CreditAssignment,
+    ResourceCreditDelta,
     StepCredit,
+    contribution_score_from_counts,
     heuristic_reflector,
+    make_resource_key,
+    persist_resource_credit_report,
+    split_resource_key,
 )
+from sqlalchemy.dialects import postgresql
 
 # ---- record_step ----
 
@@ -120,6 +128,79 @@ async def test_aggregate_zero_reward_uses_baseline() -> None:
     report = await ca.finalize_task("tk-5", "pass")
     agg = ca.aggregate_resource_credits(report)
     assert agg["skill:s1"] > 0  # 用 baseline
+
+
+@pytest.mark.asyncio
+async def test_aggregate_resource_deltas_counts_success_and_critical_path() -> None:
+    ca = CreditAssignment(critical_boost_factor=2.0)
+    ca.record_step("tk-delta", 1, {"memory": ["m1"], "model": ["gpt-5.5"]}, immediate_reward=0.8)
+    ca.record_step("tk-delta", 2, {"memory": ["m1"]}, immediate_reward=0.1)
+    report = await ca.finalize_task("tk-delta", "pass", reflector=heuristic_reflector)
+
+    deltas = ca.aggregate_resource_deltas(report)
+
+    assert set(deltas) == {"memory:m1", "model:gpt-5.5"}
+    assert deltas["memory:m1"].used_count == 2
+    assert deltas["memory:m1"].pass_count == 2
+    assert deltas["memory:m1"].critical_count == 1
+    assert deltas["memory:m1"].credit_total > 0
+    assert deltas["model:gpt-5.5"].resource_kind == "model"
+    assert deltas["model:gpt-5.5"].resource_id == "gpt-5.5"
+
+
+def test_contribution_tracker_updates_from_deltas() -> None:
+    from kun.engineering.credit_assignment import ContributionTracker
+
+    tracker = ContributionTracker()
+    tracker.update_from_deltas(
+        {
+            "memory:m1": ResourceCreditDelta(
+                resource_key="memory:m1",
+                resource_kind="memory",
+                resource_id="m1",
+                used_count=2,
+                pass_count=2,
+                critical_count=1,
+                credit_total=1.0,
+            )
+        }
+    )
+    assert tracker.contribution_score("m1", "memory") == 0.75
+
+
+def test_resource_key_helpers_and_score_clamp() -> None:
+    assert split_resource_key("memory:m1") == ("memory", "m1")
+    assert split_resource_key("legacy-id") == ("memory", "legacy-id")
+    assert make_resource_key("skill", "s1") == "skill:s1"
+    assert make_resource_key("skill", "skill:s1") == "skill:s1"
+    assert contribution_score_from_counts(used_count=0, pass_count=10, critical_count=10) == 0.0
+    assert contribution_score_from_counts(used_count=2, pass_count=9, critical_count=1) == 0.75
+
+
+@pytest.mark.asyncio
+async def test_persist_resource_credit_report_builds_atomic_upsert() -> None:
+    class FakeSession:
+        sql = ""
+
+        async def execute(self, stmt: Any) -> None:
+            self.sql = str(
+                stmt.compile(
+                    dialect=postgresql.dialect(),
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
+
+    ca = CreditAssignment()
+    ca.record_step("tk-sql", 1, {"memory": ["m1"]}, immediate_reward=0.7)
+    report = await ca.finalize_task("tk-sql", "pass", reflector=heuristic_reflector)
+    session = FakeSession()
+
+    deltas = await persist_resource_credit_report(session, tenant_id="u-sylvan", report=report)  # type: ignore[arg-type]
+
+    assert "memory:m1" in deltas
+    assert "ON CONFLICT" in session.sql
+    assert "resource_credit_stats" in session.sql
+    assert "used_count" in session.sql
 
 
 # ---- reset_task ----

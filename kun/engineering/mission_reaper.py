@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from kun.core.db import session_scope
 from kun.core.events import emit
+from kun.core.metrics import mission_reaper_actions_total
 from kun.core.orm import MissionRow, MissionTaskRow, RuntimeStateRow
 from kun.datamodel.events import Event
 
@@ -102,6 +103,10 @@ async def reap_stale_mission_tasks(
                 reason=reason,
             )
             results.append(result)
+            mission_reaper_actions_total.labels(
+                tenant_id=tenant_id,
+                outcome=action,
+            ).inc()
             await emit(
                 s,
                 Event.build(

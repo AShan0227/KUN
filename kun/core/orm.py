@@ -475,6 +475,50 @@ class CapabilityCardRow(Base):
     )
 
 
+# ============== RESOURCE CREDIT STATS ==============
+
+
+class ResourceCreditRow(Base):
+    """Durable MoE credit stats for resources used during task execution."""
+
+    __tablename__ = "resource_credit_stats"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    resource_key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    resource_kind: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    resource_id: Mapped[str] = mapped_column(String(192), nullable=False)
+
+    used_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pass_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    critical_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    credit_total: Mapped[float] = mapped_column(nullable=False, default=0.0)
+
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        nullable=False,
+        index=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        nullable=False,
+        onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        CheckConstraint("length(resource_key) > 0", name="resource_credit_key_not_empty"),
+        CheckConstraint("length(resource_kind) > 0", name="resource_credit_kind_not_empty"),
+        CheckConstraint("length(resource_id) > 0", name="resource_credit_id_not_empty"),
+        CheckConstraint("used_count >= 0", name="resource_credit_used_nonnegative"),
+        CheckConstraint("pass_count >= 0", name="resource_credit_pass_nonnegative"),
+        CheckConstraint("critical_count >= 0", name="resource_credit_critical_nonnegative"),
+        CheckConstraint("credit_total >= 0", name="resource_credit_total_nonnegative"),
+        Index("ix_resource_credit_tenant_kind", "tenant_id", "resource_kind"),
+        Index("ix_resource_credit_tenant_resource", "tenant_id", "resource_kind", "resource_id"),
+    )
+
+
 # ============== ENTITY RELATIONSHIPS ==============
 
 

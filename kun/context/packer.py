@@ -221,16 +221,43 @@ class ContextPacker:
         if not candidates:
             return []
 
-        from kun.engineering.credit_assignment import get_contribution_tracker
+        from kun.core.db import session_scope
+        from kun.engineering.credit_assignment import (
+            get_contribution_tracker,
+            load_resource_credit_scores,
+            make_resource_key,
+        )
 
         tracker = get_contribution_tracker()
         kind_by_asset_id = {asset.asset_id: asset.asset_kind for asset in candidates}
+        resource_keys = [
+            make_resource_key(str(kind_by_asset_id.get(asset.asset_id, "memory")), asset.asset_id)
+            for asset in candidates
+        ]
+        durable_scores: dict[str, float] = {}
+        try:
+            tenant_id = str(candidates[0].tenant_id)
+            async with session_scope(tenant_id=tenant_id) as s:
+                durable_scores = await load_resource_credit_scores(
+                    s,
+                    tenant_id=tenant_id,
+                    resource_keys=resource_keys,
+                )
+        except Exception:
+            log.debug("context_packer.load_resource_credit_scores_failed", exc_info=True)
+
+        def _contribution_lookup(asset_id: str) -> float:
+            kind = str(kind_by_asset_id.get(asset_id, "memory"))
+            key = make_resource_key(kind, asset_id)
+            return max(
+                tracker.contribution_score(asset_id, kind),
+                durable_scores.get(key, 0.0),
+            )
+
         scored = await self._scorer.score_with_contribution_boost(
             candidates,
             query=query,
-            contribution_lookup=lambda asset_id: tracker.contribution_score(
-                asset_id, str(kind_by_asset_id.get(asset_id, "memory"))
-            ),
+            contribution_lookup=_contribution_lookup,
         )
         scored = [(asset, _quality_adjusted_score(asset, score)) for asset, score in scored]
         filtered = [

@@ -23,10 +23,17 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from kun.core.metrics import resource_credit_update_total
+from kun.core.orm import ResourceCreditRow
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +106,18 @@ class TaskCreditReport(BaseModel):
     critical_path_step_ids: list[int] = Field(default_factory=list)
     reflection_summary: str = ""
     completed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ResourceCreditDelta(BaseModel):
+    """一个 task 对某个资源产生的可持久化信用增量."""
+
+    resource_key: str
+    resource_kind: str
+    resource_id: str
+    used_count: int = 0
+    pass_count: int = 0
+    critical_count: int = 0
+    credit_total: float = 0.0
 
 
 class CreditAssignment:
@@ -232,6 +251,40 @@ class CreditAssignment:
                 agg[resource_key] = agg.get(resource_key, 0.0) + share * base
         return agg
 
+    def aggregate_resource_deltas(
+        self,
+        report: TaskCreditReport,
+    ) -> dict[str, ResourceCreditDelta]:
+        """把 task report 汇总成 DB 可 upsert 的资源信用增量.
+
+        这比 ``aggregate_resource_credits`` 更适合长期 MoE 学习:
+        - used_count: 资源被用过几次
+        - pass_count: 资源参与过多少 pass/partial 任务
+        - critical_count: 资源是否在关键路径上
+        - credit_total: 资源拿到的加权信用总分
+        """
+        is_pass = report.task_outcome in ("pass", "partial")
+        deltas: dict[str, ResourceCreditDelta] = {}
+        for step in report.step_credits:
+            base = step.immediate_reward if step.immediate_reward > 0 else 0.5
+            for resource_key, share in step.credit_share.items():
+                kind, resource_id = split_resource_key(resource_key)
+                delta = deltas.setdefault(
+                    resource_key,
+                    ResourceCreditDelta(
+                        resource_key=resource_key,
+                        resource_kind=kind,
+                        resource_id=resource_id,
+                    ),
+                )
+                delta.used_count += 1
+                if is_pass:
+                    delta.pass_count += 1
+                if step.is_critical_path:
+                    delta.critical_count += 1
+                delta.credit_total += max(0.0, share * base)
+        return deltas
+
     def reset_task(self, task_id: str) -> None:
         """task 完成后清理 (避免 _step_credits 内存持续增长)."""
         self._step_credits.pop(task_id, None)
@@ -337,16 +390,149 @@ class ContributionTracker:
                     m += 1
                 self._stats[resource_key] = (n, k, m)
 
+    def update_from_deltas(self, deltas: dict[str, ResourceCreditDelta]) -> None:
+        """用 DB 同构的 delta 更新进程内热 cache."""
+        for resource_key, delta in deltas.items():
+            n, k, m = self._stats.get(resource_key, (0, 0, 0))
+            self._stats[resource_key] = (
+                n + delta.used_count,
+                k + delta.pass_count,
+                m + delta.critical_count,
+            )
+
+    def seed_counts(
+        self,
+        resource_key: str,
+        *,
+        used_count: int,
+        pass_count: int,
+        critical_count: int,
+    ) -> None:
+        """从持久化统计灌入热 cache, 不覆盖更高的本地计数."""
+        n, k, m = self._stats.get(resource_key, (0, 0, 0))
+        self._stats[resource_key] = (
+            max(n, used_count),
+            max(k, pass_count),
+            max(m, critical_count),
+        )
+
     def contribution_score(self, asset_id: str, kind: str = "memory") -> float:
         """查 contribution score [0..1]. asset_id 可裸 id, 自动加 kind 前缀."""
         key = asset_id if ":" in asset_id else f"{kind}:{asset_id}"
         n, k, m = self._stats.get(key, (0, 0, 0))
-        if n == 0:
-            return 0.0
-        return 0.5 * (k / n) + 0.5 * (m / n)
+        return contribution_score_from_counts(used_count=n, pass_count=k, critical_count=m)
 
     def reset(self) -> None:
         self._stats.clear()
+
+
+def split_resource_key(resource_key: str) -> tuple[str, str]:
+    """Split ``kind:id`` with a safe fallback for legacy bare ids."""
+    kind, sep, resource_id = resource_key.partition(":")
+    if not sep:
+        return "memory", resource_key
+    return kind or "memory", resource_id or resource_key
+
+
+def make_resource_key(kind: str, resource_id: str) -> str:
+    return resource_id if ":" in resource_id else f"{kind}:{resource_id}"
+
+
+def contribution_score_from_counts(
+    *,
+    used_count: int,
+    pass_count: int,
+    critical_count: int,
+) -> float:
+    if used_count <= 0:
+        return 0.0
+    safe_pass = max(0, min(pass_count, used_count))
+    safe_critical = max(0, min(critical_count, used_count))
+    return 0.5 * (safe_pass / used_count) + 0.5 * (safe_critical / used_count)
+
+
+async def persist_resource_credit_report(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    report: TaskCreditReport,
+) -> dict[str, ResourceCreditDelta]:
+    """Persist task credit deltas with an atomic Postgres upsert."""
+    deltas = CreditAssignment().aggregate_resource_deltas(report)
+    if not deltas:
+        return {}
+    now = datetime.now(UTC)
+    rows = [
+        {
+            "tenant_id": tenant_id,
+            "resource_key": delta.resource_key,
+            "resource_kind": delta.resource_kind,
+            "resource_id": delta.resource_id,
+            "used_count": delta.used_count,
+            "pass_count": delta.pass_count,
+            "critical_count": delta.critical_count,
+            "credit_total": delta.credit_total,
+            "last_seen_at": now,
+            "updated_at": now,
+        }
+        for delta in deltas.values()
+    ]
+    stmt = pg_insert(ResourceCreditRow).values(rows)
+    excluded = stmt.excluded
+    upsert = stmt.on_conflict_do_update(
+        index_elements=[ResourceCreditRow.tenant_id, ResourceCreditRow.resource_key],
+        set_={
+            "resource_kind": excluded.resource_kind,
+            "resource_id": excluded.resource_id,
+            "used_count": ResourceCreditRow.used_count + excluded.used_count,
+            "pass_count": ResourceCreditRow.pass_count + excluded.pass_count,
+            "critical_count": ResourceCreditRow.critical_count + excluded.critical_count,
+            "credit_total": ResourceCreditRow.credit_total + excluded.credit_total,
+            "last_seen_at": excluded.last_seen_at,
+            "updated_at": now,
+        },
+    )
+    await session.execute(upsert)
+    for delta in deltas.values():
+        resource_credit_update_total.labels(
+            tenant_id=tenant_id,
+            resource_kind=delta.resource_kind,
+        ).inc(delta.used_count)
+    return deltas
+
+
+async def load_resource_credit_scores(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    resource_keys: Iterable[str],
+) -> dict[str, float]:
+    """Load durable contribution scores for resource keys."""
+    keys = sorted({key for key in resource_keys if key})
+    if not keys:
+        return {}
+    result = await session.execute(
+        select(ResourceCreditRow).where(
+            ResourceCreditRow.tenant_id == tenant_id,
+            ResourceCreditRow.resource_key.in_(keys),
+        )
+    )
+    rows = result.scalars().all()
+    scores: dict[str, float] = {}
+    tracker = get_contribution_tracker()
+    for row in rows:
+        scores[row.resource_key] = contribution_score_from_counts(
+            used_count=row.used_count,
+            pass_count=row.pass_count,
+            critical_count=row.critical_count,
+        )
+        tracker.seed_counts(
+            row.resource_key,
+            used_count=row.used_count,
+            pass_count=row.pass_count,
+            critical_count=row.critical_count,
+        )
+    return scores
 
 
 _tracker: ContributionTracker | None = None
@@ -368,12 +554,18 @@ def reset_contribution_tracker() -> None:
 __all__ = [
     "ContributionTracker",
     "CreditAssignment",
+    "ResourceCreditDelta",
     "StageKind",
     "StageReward",
     "StepCredit",
     "TaskCreditReport",
+    "contribution_score_from_counts",
     "get_contribution_tracker",
     "heuristic_reflector",
     "llm_reflector_factory",
+    "load_resource_credit_scores",
+    "make_resource_key",
+    "persist_resource_credit_report",
     "reset_contribution_tracker",
+    "split_resource_key",
 ]

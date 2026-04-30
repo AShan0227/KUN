@@ -50,7 +50,7 @@ def test_handler_health_does_not_count_missing_handler_as_success(tmp_path: Path
     ]
 
     cards = build_world_handler_health(descriptors=[], rows=rows)
-    card = cards[0]
+    card = next(card for card in cards if card.action_type == "message.send")
 
     assert card.action_type == "message.send"
     assert card.status == "unregistered"
@@ -84,7 +84,7 @@ def test_handler_health_flags_real_external_handler_as_limited(tmp_path: Path) -
 
     descriptors = WorldGateway(artifact_root=tmp_path, handlers=[handler]).handler_descriptors()
     cards = build_world_handler_health(descriptors=descriptors, rows=rows)
-    card = cards[0]
+    card = next(card for card in cards if card.action_type == "email.send")
 
     assert card.action_type == "email.send"
     assert card.external_dispatched is True
@@ -126,3 +126,19 @@ def test_handler_health_counts_policy_blocked_as_risk(tmp_path: Path) -> None:
     assert cards["local_file.write"].policy_blocked_count == 1
     assert cards["local_file.write"].failure_rate == 1.0
     assert cards["email.draft"].rejected_count == 1
+
+
+def test_handler_health_surfaces_expected_real_handler_config_gaps(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("KUN_WORLD_EMAIL_SEND_ENABLED", raising=False)
+    monkeypatch.delenv("KUN_WORLD_SMTP_HOST", raising=False)
+    monkeypatch.delenv("KUN_WORLD_SMTP_FROM", raising=False)
+
+    cards = {card.action_type: card for card in build_world_handler_health(descriptors=[], rows=[])}
+
+    email = cards["email.send"]
+    assert email.status == "unregistered"
+    assert any("KUN_WORLD_EMAIL_SEND_ENABLED" in issue for issue in email.issues)
+    assert any("KUN_WORLD_SMTP_HOST" in issue for issue in email.issues)
+    assert "环境变量" in email.recommendation
