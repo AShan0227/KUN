@@ -915,6 +915,68 @@ def ops_credit_report(
     console.print(table)
 
 
+@ops_app.command("state-ledger-repair")
+def ops_state_ledger_repair(
+    tenant: str = typer.Option("u-sylvan", "--tenant", help="租户 ID"),
+    task_id: str = typer.Option(..., "--task-id", help="要修复/预览的 task_id"),
+    user: str | None = typer.Option(None, "--user", help="可选 user_id 过滤"),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="真正写回 state_ledger_entries；默认只 dry-run",
+    ),
+    limit: int = typer.Option(300, "--limit", min=10, max=1000, help="最多回放多少条事件"),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+) -> None:
+    """从 EventRow 长期事件账本重建 State Ledger 当前快照。
+
+    默认是 dry-run，只告诉你当前快照和回放快照差哪里。带 --apply 才写回。
+    """
+
+    from kun.ops.state_ledger_repair import repair_state_ledger_snapshot
+
+    result = asyncio.run(
+        repair_state_ledger_snapshot(
+            tenant_id=tenant,
+            task_id=task_id,
+            user_id=user,
+            apply=apply,
+            limit=limit,
+        )
+    )
+    payload = result.model_dump(mode="json")
+    if json_output:
+        console.print_json(data=payload)
+        return
+    title = "KUN State Ledger repair"
+    if apply:
+        title += " — applied"
+    table = Table(title=title)
+    table.add_column("field")
+    table.add_column("current")
+    table.add_column("replayed")
+    for diff in result.diffs:
+        table.add_row(diff.field, str(diff.current), str(diff.replayed))
+    console.print(table)
+    console.print(
+        "[dim]summary: "
+        + json.dumps(
+            {
+                "tenant_id": result.tenant_id,
+                "task_id": result.task_id,
+                "reason": result.reason,
+                "applied": result.applied,
+                "event_count": result.event_count,
+                "reconstruction_confidence": result.reconstruction_confidence,
+                "gaps": result.gaps,
+                "diff_count": len(result.diffs),
+            },
+            ensure_ascii=False,
+        )
+        + "[/]"
+    )
+
+
 @ops_app.command("onboard-tenant")
 def ops_onboard_tenant(
     tenant: str = typer.Option(..., "--tenant", help="租户 ID"),

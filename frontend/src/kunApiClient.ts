@@ -20,6 +20,13 @@ export type KunIdentity = {
   authToken?: string;
 };
 
+export type KunIdentitySource = {
+  identity: KunIdentity;
+  tenantIdSource: "saved" | "default";
+  userIdSource: "saved" | "default";
+  authTokenSource: "saved" | "empty";
+};
+
 function readLocalStorage(key: string): string {
   if (typeof window === "undefined") return "";
   try {
@@ -30,10 +37,22 @@ function readLocalStorage(key: string): string {
 }
 
 export function getKunIdentity(): KunIdentity {
+  return getKunIdentitySource().identity;
+}
+
+export function getKunIdentitySource(): KunIdentitySource {
+  const savedTenantId = readLocalStorage(STORAGE_KEYS.tenantId);
+  const savedUserId = readLocalStorage(STORAGE_KEYS.userId);
+  const savedAuthToken = readLocalStorage(STORAGE_KEYS.authToken);
   return {
-    tenantId: readLocalStorage(STORAGE_KEYS.tenantId) || DEFAULT_TENANT_ID,
-    userId: readLocalStorage(STORAGE_KEYS.userId) || DEFAULT_USER_ID,
-    authToken: readLocalStorage(STORAGE_KEYS.authToken) || undefined,
+    identity: {
+      tenantId: savedTenantId || DEFAULT_TENANT_ID,
+      userId: savedUserId || DEFAULT_USER_ID,
+      authToken: savedAuthToken || undefined,
+    },
+    tenantIdSource: savedTenantId ? "saved" : "default",
+    userIdSource: savedUserId ? "saved" : "default",
+    authTokenSource: savedAuthToken ? "saved" : "empty",
   };
 }
 
@@ -49,6 +68,13 @@ export function saveKunIdentity(identity: KunIdentity): void {
   } else {
     window.localStorage.removeItem(STORAGE_KEYS.authToken);
   }
+}
+
+export function clearKunIdentity(): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(STORAGE_KEYS.tenantId);
+  window.localStorage.removeItem(STORAGE_KEYS.userId);
+  window.localStorage.removeItem(STORAGE_KEYS.authToken);
 }
 
 function authHeaderValue(token: string): string {

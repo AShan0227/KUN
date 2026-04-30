@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiFetch, getKunIdentity, kunWebSocketUrl, saveKunIdentity } from "@/kunApiClient";
+import { SessionAccountEntry } from "@/components/SessionAccountEntry";
+import { apiFetch, getKunIdentitySource, kunWebSocketUrl } from "@/kunApiClient";
 
 /**
  * KUN 主工作区 — 对话框主入口 (ADR-010).
@@ -368,7 +369,7 @@ type StateLedgerAudit = {
 
 export default function Home() {
   const [identityOpen, setIdentityOpen] = useState(false);
-  const [identityDraft, setIdentityDraft] = useState(() => getKunIdentity());
+  const [identitySource, setIdentitySource] = useState(() => getKunIdentitySource());
   const [messages, setMessages] = useState<Msg[]>([]);
   const [side, setSide] = useState<SideMsg[]>([]);
   const [input, setInput] = useState("");
@@ -855,11 +856,11 @@ export default function Home() {
               <button
                 className="rounded border border-gray-200 px-2 py-0.5 text-xs hover:bg-gray-50"
                 onClick={() => {
-                  setIdentityDraft(getKunIdentity());
+                  setIdentitySource(getKunIdentitySource());
                   setIdentityOpen((value) => !value);
                 }}
               >
-                {identityDraft.tenantId} / {identityDraft.userId}
+                {identitySource.identity.tenantId} / {identitySource.identity.userId}
               </button>
               {connected ? (
                 <span className="text-kun-good">● 已连接</span>
@@ -869,40 +870,8 @@ export default function Home() {
             </div>
           </div>
           {identityOpen && (
-            <div className="mt-2 grid grid-cols-1 gap-2 rounded border border-gray-200 bg-gray-50 p-2 text-xs md:grid-cols-[1fr_1fr_1.5fr_auto]">
-              <input
-                className="rounded border border-gray-200 px-2 py-1"
-                placeholder="tenant_id"
-                value={identityDraft.tenantId}
-                onChange={(event) =>
-                  setIdentityDraft((value) => ({ ...value, tenantId: event.target.value }))
-                }
-              />
-              <input
-                className="rounded border border-gray-200 px-2 py-1"
-                placeholder="user_id"
-                value={identityDraft.userId}
-                onChange={(event) =>
-                  setIdentityDraft((value) => ({ ...value, userId: event.target.value }))
-                }
-              />
-              <input
-                className="rounded border border-gray-200 px-2 py-1"
-                placeholder="Bearer token，可空"
-                value={identityDraft.authToken ?? ""}
-                onChange={(event) =>
-                  setIdentityDraft((value) => ({ ...value, authToken: event.target.value }))
-                }
-              />
-              <button
-                className="rounded border border-gray-300 bg-white px-3 py-1 hover:bg-gray-100"
-                onClick={() => {
-                  saveKunIdentity(identityDraft);
-                  window.location.reload();
-                }}
-              >
-                保存并重连
-              </button>
+            <div className="mt-2">
+              <SessionAccountEntry compact />
             </div>
           )}
         </header>
