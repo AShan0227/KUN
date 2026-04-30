@@ -90,6 +90,7 @@ def get_v3_delivery_status(
                 "Mission 可记录下一步和复盘摘要",
                 "Mission 续跑 prompt 会带上最近复盘、预算提醒、风险提醒和下一步动作",
                 "Mission 复盘中的预算/风险/不确定性会影响下一次 Watchtower 策略权重和执行档位",
+                "ops dogfood --include-db-mission 可跑真实数据库 Mission 续跑 smoke",
             ],
             evidence_refs=[
                 "kun/engineering/mission_worker.py",
@@ -105,6 +106,7 @@ def get_v3_delivery_status(
                 "续跑还不是原 TaskRow 原地恢复，而是 continuation task 挂回 Mission",
                 "StateLedger 还不是完整事件溯源重建器，暂时只做历史事件回放",
                 "Mission 复盘只做轻量权重/档位 nudging，还没训练长期策略模型",
+                "还没有跑跨周真实产品运营 dogfood",
             ],
             next_steps=[
                 "让 Mission review 结果进一步反向影响 Watchtower Decision Plane 权重",
@@ -226,6 +228,7 @@ def get_v3_delivery_status(
                 "ops preflight CLI 可在上线前检查配置、迁移、备份脚本和能力边界诚实性",
                 "ops onboard-tenant CLI 可生成租户启动 token、权限 scope 和 smoke curl",
                 "ops dogfood CLI 可跑 V4 低风险 smoke，验证 preflight / token / WorldGateway / 诚实边界",
+                "ops dogfood --include-db-mission 可额外验证 Mission/RuntimeState/Orchestrator runner 的真实 DB 续跑闭环",
                 "ops delivery-status CLI 可直接查看 ready / partial / not_ready，防止伪功能被误认为已完成",
             ],
             evidence_refs=[
@@ -243,7 +246,7 @@ def get_v3_delivery_status(
                 "集中密钥管理和轮换",
                 "线上 CI/release/tag",
                 "真实环境备份恢复演练",
-                "真实长周期 Mission dogfood 验收场景",
+                "跨周真实产品运营 dogfood 验收场景",
                 "租户自助注册 / 组织成员 / 账单闭环",
             ],
             next_steps=[

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -58,6 +58,7 @@ async def run_v4_dogfood(
     tenant_id: str = "u-sylvan",
     repo_root: Path | None = None,
     secret: str = "dogfood-secret-" + "x" * 32,
+    include_db_mission: bool = False,
 ) -> DogfoodReport:
     """Run low-risk V4 dogfood checks."""
 
@@ -68,6 +69,8 @@ async def run_v4_dogfood(
         await _scenario_world_gateway_file_write(),
         _scenario_delivery_boundaries_are_visible(),
     ]
+    if include_db_mission:
+        scenarios.append(await _scenario_mission_resume_db(tenant_id=tenant_id))
     if any(item.status == "block" for item in scenarios):
         status: DogfoodStatus = "block"
     elif any(item.status == "warn" for item in scenarios):
@@ -191,6 +194,138 @@ def _scenario_delivery_boundaries_are_visible() -> DogfoodScenarioResult:
         },
         next_step="" if ok else "恢复 delivery_status 的诚实状态。",
     )
+
+
+async def _scenario_mission_resume_db(*, tenant_id: str) -> DogfoodScenarioResult:
+    """Run one real Mission resume loop against the configured database.
+
+    This is opt-in because it needs the local Postgres/Alembic state.  It is not
+    a fake in-memory unit check: it writes a Mission, TASK.md row, RuntimeState,
+    asks MissionResumeWorker to claim it, and verifies the durable mission status
+    moved to done.
+    """
+
+    try:
+        from kun.core.db import session_scope
+        from kun.core.ids import new_id
+        from kun.core.orm import RuntimeStateRow, TaskRow
+        from kun.core.tenancy import TenantContext, tenant_scope
+        from kun.datamodel.mission import MissionCreate
+        from kun.engineering.mission_control import (
+            attach_task_to_mission,
+            create_mission,
+            get_mission,
+        )
+        from kun.engineering.mission_worker import MissionOrchestratorRunner, MissionResumeWorker
+        from kun.engineering.orchestrator import TaskResult
+    except Exception as exc:  # pragma: no cover - import failures are deployment issues
+        return DogfoodScenarioResult(
+            scenario_id="mission_resume_db",
+            status="block",
+            summary="Mission DB dogfood 依赖导入失败。",
+            evidence={"error": f"{type(exc).__name__}: {exc}"},
+            next_step="先修 Mission / Orchestrator 依赖导入。",
+        )
+
+    task_id = new_id("task")
+    try:
+        mission = await create_mission(
+            MissionCreate(
+                title="V4 dogfood long-horizon mission",
+                objective="验证 Mission 可以从 queued task 续跑并写回状态。",
+                risk_level="low",
+                budget_cap_usd=1.0,
+                success_metrics=["mission task reaches done"],
+            ),
+            tenant_id=tenant_id,
+            user_id="dogfood-user",
+        )
+        async with session_scope(tenant_id=tenant_id) as s:
+            s.add(
+                TaskRow(
+                    task_id=task_id,
+                    tenant_id=tenant_id,
+                    fingerprint=f"dogfood-{task_id}",
+                    task_type="dogfood.mission_resume",
+                    risk_level="low",
+                    complexity_score=0.2,
+                    user_id="dogfood-user",
+                    estimated_cost_usd=0.05,
+                    estimated_duration_sec=5.0,
+                    success_criteria_short="Mission resume dogfood reaches done.",
+                    spec_json={
+                        "goal_detail": "Complete one deterministic Mission resume smoke.",
+                        "success_metrics": ["Mission status becomes done"],
+                        "constraints": ["No real external dispatch"],
+                    },
+                )
+            )
+            s.add(
+                RuntimeStateRow(
+                    state_id=new_id("runtime"),
+                    task_ref=task_id,
+                    tenant_id=tenant_id,
+                    current_step=0,
+                    total_planned_steps=1,
+                    status="queued",
+                    blob={"dogfood": True},
+                )
+            )
+        await attach_task_to_mission(
+            tenant_id=tenant_id,
+            mission_id=mission.mission_id,
+            task_id=task_id,
+            checkpoint={"dogfood": True},
+        )
+
+        class FakeMissionOrchestrator:
+            async def run_mission_continuation(
+                self,
+                _request: Any,
+                resume_prompt: str,
+                *,
+                output_kind: str,
+            ) -> TaskResult:
+                return TaskResult(
+                    task_id=new_id("task"),
+                    status="done",
+                    answer=f"{output_kind}: {resume_prompt[:80]}",
+                    cost_usd_equivalent=0.01,
+                    tokens_in=10,
+                    tokens_out=12,
+                    duration_sec=0.1,
+                )
+
+        worker = MissionResumeWorker(
+            runner=MissionOrchestratorRunner(cast(Any, FakeMissionOrchestrator()))
+        )
+        with tenant_scope(TenantContext(tenant_id=tenant_id)):
+            results = await worker.run_once(tenant_id=tenant_id, limit=5)
+        snapshot = await get_mission(tenant_id=tenant_id, mission_id=mission.mission_id)
+        completed = [item for item in results if item.status == "completed"]
+        ok = bool(completed) and snapshot is not None and snapshot.status == "done"
+        return DogfoodScenarioResult(
+            scenario_id="mission_resume_db",
+            status="pass" if ok else "block",
+            summary="Mission 真实 DB 续跑闭环可跑通。" if ok else "Mission 真实 DB 续跑没有完成。",
+            evidence={
+                "mission_id": mission.mission_id,
+                "task_id": task_id,
+                "resume_statuses": [item.status for item in results],
+                "mission_status": snapshot.status if snapshot else None,
+            },
+            next_step=""
+            if ok
+            else "检查 MissionResumeWorker / RuntimeState / Orchestrator runner 接线。",
+        )
+    except Exception as exc:
+        return DogfoodScenarioResult(
+            scenario_id="mission_resume_db",
+            status="block",
+            summary="Mission 真实 DB 续跑 dogfood 无法执行。",
+            evidence={"task_id": task_id, "error": f"{type(exc).__name__}: {exc}"},
+            next_step="确认本地 Postgres 已启动、Alembic 已升级、RLS app/admin DSN 配好。",
+        )
 
 
 __all__ = [

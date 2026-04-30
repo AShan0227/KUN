@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from kun.cli import app
 from kun.core.config import Settings
+from kun.ops import dogfood as dogfood_module
 from kun.ops.dogfood import run_v4_dogfood
 from kun.ops.preflight import run_preflight
 from kun.ops.tenant_onboarding import create_tenant_onboarding_pack
@@ -151,6 +152,28 @@ async def test_v4_dogfood_smoke_runs_without_external_services() -> None:
 
 
 @pytest.mark.unit
+async def test_v4_dogfood_can_include_db_mission_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_mission_scenario(*, tenant_id: str) -> dogfood_module.DogfoodScenarioResult:
+        assert tenant_id == "tenant-dogfood"
+        return dogfood_module.DogfoodScenarioResult(
+            scenario_id="mission_resume_db",
+            status="pass",
+            summary="fake mission pass",
+        )
+
+    monkeypatch.setattr(dogfood_module, "_scenario_mission_resume_db", fake_mission_scenario)
+
+    report = await dogfood_module.run_v4_dogfood(
+        tenant_id="tenant-dogfood",
+        include_db_mission=True,
+    )
+
+    assert any(item.scenario_id == "mission_resume_db" for item in report.scenarios)
+
+
+@pytest.mark.unit
 def test_ops_dogfood_cli_outputs_scenarios() -> None:
     result = CliRunner().invoke(
         app,
@@ -160,6 +183,54 @@ def test_ops_dogfood_cli_outputs_scenarios() -> None:
     assert result.exit_code == 0
     assert '"status"' in result.output
     assert "world_gateway_low_risk_handler" in result.output
+
+
+@pytest.mark.unit
+def test_ops_dogfood_cli_can_request_db_mission_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[bool] = []
+
+    async def fake_run_v4_dogfood(
+        *,
+        tenant_id: str = "u-sylvan",
+        repo_root: Path | None = None,
+        secret: str = "dogfood-secret-" + "x" * 32,
+        include_db_mission: bool = False,
+    ) -> dogfood_module.DogfoodReport:
+        assert tenant_id == "tenant-cli"
+        assert repo_root is None
+        assert secret.startswith("dogfood-secret-")
+        calls.append(include_db_mission)
+        return dogfood_module.DogfoodReport(
+            status="pass",
+            scenarios=[
+                dogfood_module.DogfoodScenarioResult(
+                    scenario_id="mission_resume_db",
+                    status="pass",
+                    summary="fake mission pass",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(dogfood_module, "run_v4_dogfood", fake_run_v4_dogfood)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "ops",
+            "dogfood",
+            "--tenant",
+            "tenant-cli",
+            "--include-db-mission",
+            "--json",
+            "--no-fail-on-blocker",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [True]
+    assert "mission_resume_db" in result.output
 
 
 @pytest.mark.unit

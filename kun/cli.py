@@ -627,6 +627,11 @@ def ops_onboard_tenant(
 def ops_dogfood(
     tenant: str = typer.Option("u-sylvan", "--tenant"),
     json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+    include_db_mission: bool = typer.Option(
+        False,
+        "--include-db-mission",
+        help="额外跑真实数据库 Mission 续跑 smoke；需要本地 Postgres/Alembic 可用",
+    ),
     fail_on_blocker: bool = typer.Option(
         True,
         "--fail-on-blocker/--no-fail-on-blocker",
@@ -637,7 +642,7 @@ def ops_dogfood(
 
     from kun.ops.dogfood import run_v4_dogfood
 
-    report = asyncio.run(run_v4_dogfood(tenant_id=tenant))
+    report = asyncio.run(run_v4_dogfood(tenant_id=tenant, include_db_mission=include_db_mission))
     if json_output:
         console.print_json(data=report.model_dump(mode="json"))
     else:
