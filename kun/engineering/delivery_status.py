@@ -226,6 +226,7 @@ def get_v3_delivery_status(
                 "ops preflight CLI 可在上线前检查配置、迁移、备份脚本和能力边界诚实性",
                 "ops onboard-tenant CLI 可生成租户启动 token、权限 scope 和 smoke curl",
                 "ops dogfood CLI 可跑 V4 低风险 smoke，验证 preflight / token / WorldGateway / 诚实边界",
+                "ops delivery-status CLI 可直接查看 ready / partial / not_ready，防止伪功能被误认为已完成",
             ],
             evidence_refs=[
                 "docker-compose.dev.yml",
@@ -234,6 +235,7 @@ def get_v3_delivery_status(
                 "kun/ops/preflight.py",
                 "kun/ops/tenant_onboarding.py",
                 "kun/ops/dogfood.py",
+                "kun/cli.py",
                 "tests/unit/test_ops_preflight.py",
             ],
             missing=[

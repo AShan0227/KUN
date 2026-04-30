@@ -160,3 +160,21 @@ def test_ops_dogfood_cli_outputs_scenarios() -> None:
     assert result.exit_code == 0
     assert '"status"' in result.output
     assert "world_gateway_low_risk_handler" in result.output
+
+
+@pytest.mark.unit
+def test_ops_delivery_status_cli_outputs_honest_boundaries() -> None:
+    result = CliRunner().invoke(app, ["ops", "delivery-status", "--json"])
+
+    assert result.exit_code == 0
+    assert '"capability_id": "production_deployment"' in result.output
+    assert '"status": "not_ready"' in result.output
+    assert '"validation_issues": []' in result.output
+
+
+@pytest.mark.unit
+def test_ops_delivery_status_can_fail_release_gate_on_not_ready() -> None:
+    result = CliRunner().invoke(app, ["ops", "delivery-status", "--fail-on-not-ready"])
+
+    assert result.exit_code == 3
+    assert "KUN delivery status" in result.output

@@ -504,6 +504,71 @@ def ops_preflight(
         raise typer.Exit(code=2)
 
 
+@ops_app.command("delivery-status")
+def ops_delivery_status(
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+    fail_on_issue: bool = typer.Option(
+        True,
+        "--fail-on-issue/--no-fail-on-issue",
+        help="能力边界标注不诚实时返回非零退出码",
+    ),
+    fail_on_not_ready: bool = typer.Option(
+        False,
+        "--fail-on-not-ready",
+        help="仍有用户可见能力不是 ready 时返回非零退出码；适合 release gate",
+    ),
+) -> None:
+    """查看 KUN 现在到底哪些能力真能承诺，哪些还只是 partial。"""
+
+    from kun.engineering.delivery_status import (
+        delivery_status_summary,
+        get_v3_delivery_status,
+        validate_delivery_status,
+    )
+
+    items = get_v3_delivery_status()
+    issues = validate_delivery_status(items)
+    payload = {
+        "items": [item.model_dump(mode="json") for item in items],
+        "summary": delivery_status_summary(),
+        "validation_issues": issues,
+    }
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        table = Table(title="KUN delivery status — 诚实能力边界")
+        table.add_column("status")
+        table.add_column("capability")
+        table.add_column("summary")
+        table.add_column("missing")
+        color = {
+            "ready": "green",
+            "partial": "yellow",
+            "audit_only": "cyan",
+            "not_ready": "red",
+        }
+        for item in items:
+            missing = "；".join(item.missing[:3])
+            if len(item.missing) > 3:
+                missing += f"；另 {len(item.missing) - 3} 项"
+            table.add_row(
+                f"[{color[item.status]}]{item.status}[/]",
+                item.label,
+                item.summary,
+                missing or "-",
+            )
+        console.print(table)
+        console.print("[dim]summary: " + json.dumps(payload["summary"], ensure_ascii=False) + "[/]")
+        if issues:
+            console.print("[red]validation issues:[/]")
+            for issue in issues:
+                console.print(f"  - {issue}")
+    if fail_on_issue and issues:
+        raise typer.Exit(code=2)
+    if fail_on_not_ready and any(item.user_visible and item.status != "ready" for item in items):
+        raise typer.Exit(code=3)
+
+
 @ops_app.command("onboard-tenant")
 def ops_onboard_tenant(
     tenant: str = typer.Option(..., "--tenant", help="租户 ID"),
