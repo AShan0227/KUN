@@ -96,6 +96,7 @@ def get_v3_delivery_status(
                 "Mission 续跑 prompt 会带上最近复盘、预算提醒、风险提醒和下一步动作",
                 "Mission 复盘中的预算/风险/不确定性会影响下一次 Watchtower 策略权重和执行档位",
                 "Mission continuation 完成后会自动写入下一步建议和 last_continuation 摘要，下一轮续跑能消费",
+                "自动续跑 worker 默认已接入 cron，但只处理已排队、未超过尝试次数、未被预算/权限挡住的 Mission task；可用 KUN_MISSION_RESUME_WORKER_ENABLED=0 关闭",
                 "ops dogfood --include-db-mission 可跑真实数据库 Mission 续跑 smoke",
                 "普通任务的 pending action 审批通过后会排入 continuation，API 后台和 cron worker 都能恢复执行",
             ],
@@ -112,7 +113,7 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "续跑还不是原 TaskRow 原地恢复，而是 continuation task 挂回 Mission",
-                "自动续跑默认仍是 opt-in（KUN_MISSION_RESUME_WORKER_ENABLED=1），避免静默烧钱或触发外部动作",
+                "自动续跑已经默认打开，但还缺跨周真实产品运营 dogfood 来验证长期稳定性和成本边界",
                 "StateLedger 持久化是第一版当前快照 cache；EventRow 仍是历史源，尚未做完整确定性快照重建",
                 "Mission 复盘和 continuation 摘要只做轻量权重/档位 nudging，还没训练长期策略模型",
                 "还没有跑跨周真实产品运营 dogfood",

@@ -176,7 +176,7 @@ async def collect_system_health_report(
             await scan_active_resource_conflicts(s, tenant_id=tenant_id)
         )
 
-    mission_resume_worker_enabled = os.getenv("KUN_MISSION_RESUME_WORKER_ENABLED", "0") == "1"
+    mission_resume_worker_enabled = os.getenv("KUN_MISSION_RESUME_WORKER_ENABLED", "1") == "1"
     delivery_issues = validate_delivery_status(get_v3_delivery_status())
     secret_audit = audit_runtime_secrets()
     world_handlers = await collect_world_handler_health(tenant_id=tenant_id)
@@ -260,11 +260,11 @@ def _findings(
                 title="Mission 有可推进任务，但自动续跑未开启",
                 detail=(
                     f"{resumable_mission_task_count} 个 Mission task 已排队，"
-                    "但 KUN_MISSION_RESUME_WORKER_ENABLED 不是 1。"
+                    "但 KUN_MISSION_RESUME_WORKER_ENABLED 被关闭。"
                 ),
                 suggested_action=(
-                    "如果你希望 KUN 自动推进长期任务，显式开启 "
-                    "KUN_MISSION_RESUME_WORKER_ENABLED=1；否则在首页手动推进。"
+                    "如果你希望 KUN 自动推进长期任务，保持 "
+                    "KUN_MISSION_RESUME_WORKER_ENABLED=1；如需停掉自动续跑，再手动设为 0。"
                 ),
             )
         )

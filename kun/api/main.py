@@ -176,7 +176,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
             sched.register("nuo_context_maintenance_daily", "@daily", _daily_context_maintenance)
 
-        if default_tenant and os.getenv("KUN_MISSION_RESUME_WORKER_ENABLED", "0") == "1":
+        if default_tenant and os.getenv("KUN_MISSION_RESUME_WORKER_ENABLED", "1") == "1":
             from kun.api.runtime import get_mission_resume_worker
 
             async def _mission_resume_once() -> None:
