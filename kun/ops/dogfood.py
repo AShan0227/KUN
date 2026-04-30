@@ -338,7 +338,9 @@ async def _scenario_account_ledger_db(*, tenant_id: str, secret: str) -> Dogfood
         from kun.core.db import session_scope
         from kun.ops.account_registry import (
             accept_tenant_member_invite,
+            hash_bearer_token,
             invite_tenant_member,
+            record_token_usage,
             upsert_tenant_account_member,
         )
         from kun.ops.account_sessions import issue_session_token_pair, refresh_session_access_token
@@ -376,6 +378,13 @@ async def _scenario_account_ledger_db(*, tenant_id: str, secret: str) -> Dogfood
                 audience="developer",
                 metadata={"source": "ops.dogfood.account_ledger"},
             )
+            usage_recorded = await record_token_usage(
+                s,
+                tenant_id=tenant_id,
+                token_hash=hash_bearer_token(pair.access_token),
+                ip_hash="dogfood-ip-hash",
+                user_agent="kun-dogfood",
+            )
             refreshed = await refresh_session_access_token(
                 s,
                 refresh_token=pair.refresh_token,
@@ -410,6 +419,7 @@ async def _scenario_account_ledger_db(*, tenant_id: str, secret: str) -> Dogfood
             )
         ok = (
             account.persisted
+            and usage_recorded
             and pair.refresh_token_id == refreshed.refresh_token_id
             and invited.status in {"invited", "active"}
             and accepted.status == "active"
@@ -418,13 +428,14 @@ async def _scenario_account_ledger_db(*, tenant_id: str, secret: str) -> Dogfood
         return DogfoodScenarioResult(
             scenario_id="account_ledger_db",
             status="pass" if ok else "block",
-            summary="账号账本、refresh session、成员邀请和接受邀请 DB smoke 可跑通。"
+            summary="账号账本、token 使用账本、refresh session、成员邀请和接受邀请 DB smoke 可跑通。"
             if ok
             else "账号账本 DB smoke 没有跑通。",
             evidence={
                 "tenant_id": tenant_id,
                 "owner_user_id": owner_user_id,
                 "access_token_id": pair.access_token_id,
+                "usage_recorded": usage_recorded,
                 "refresh_token_id": pair.refresh_token_id,
                 "refreshed_access_token_id": refreshed.access_token_id,
                 "invited_user_id": invited.user_id,
