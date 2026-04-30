@@ -61,6 +61,7 @@ jobs:
       # without an honest missing list.
       - run: uv run kun ops delivery-status --json
       - run: uv run kun ops preflight --skip-alembic --no-fail-on-blocker --json
+      - run: uv run kun ops readiness --skip-alembic --no-fail-on-blocker --json
 
   integration-tests:
     name: Integration tests

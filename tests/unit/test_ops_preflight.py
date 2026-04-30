@@ -367,3 +367,27 @@ def test_ops_secret_audit_cli_outputs_json(monkeypatch: pytest.MonkeyPatch) -> N
     assert result.exit_code == 0
     assert '"status"' in result.output
     assert '"items"' in result.output
+
+
+@pytest.mark.unit
+def test_ops_readiness_cli_outputs_aggregate_report(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KUN_ENV", "dev")
+    monkeypatch.delenv("KUN_AUTH_SECRET", raising=False)
+    monkeypatch.delenv("KUN_AUTH_SECRETS", raising=False)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "ops",
+            "readiness",
+            "--json",
+            "--skip-alembic",
+            "--no-fail-on-blocker",
+        ],
+        env={**os.environ, "KUN_ENV": "dev"},
+    )
+
+    assert result.exit_code == 0
+    assert '"preflight"' in result.output
+    assert '"secret_audit"' in result.output
+    assert '"delivery_summary"' in result.output

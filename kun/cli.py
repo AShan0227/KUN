@@ -605,6 +605,69 @@ def ops_secret_audit(
         raise typer.Exit(code=2)
 
 
+@ops_app.command("readiness")
+def ops_readiness(
+    tenant: str = typer.Option("u-sylvan", "--tenant", help="租户 ID"),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+    include_dogfood: bool = typer.Option(
+        False,
+        "--include-dogfood",
+        help="同时跑低风险 dogfood；默认只跑静态/轻量门禁",
+    ),
+    include_db_mission: bool = typer.Option(
+        False,
+        "--include-db-mission",
+        help="dogfood 里额外跑真实数据库 Mission 续跑 smoke",
+    ),
+    skip_alembic: bool = typer.Option(False, "--skip-alembic", help="跳过 alembic heads 检查"),
+    fail_on_blocker: bool = typer.Option(
+        True,
+        "--fail-on-blocker/--no-fail-on-blocker",
+        help="发现 blocker 时返回非零退出码",
+    ),
+) -> None:
+    """正式测试前的一条命令：preflight + secret-audit + delivery + 可选 dogfood。"""
+
+    from kun.ops.readiness import run_readiness_report
+
+    report = asyncio.run(
+        run_readiness_report(
+            tenant_id=tenant,
+            include_dogfood=include_dogfood,
+            include_db_mission=include_db_mission,
+            run_alembic_heads=not skip_alembic,
+        )
+    )
+    payload = report.model_dump(mode="json")
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        table = Table(title=f"KUN readiness — {report.status}")
+        table.add_column("section")
+        table.add_column("status")
+        table.add_column("summary")
+        table.add_row("preflight", report.preflight.status, str(report.preflight.delivery_summary))
+        table.add_row("secret-audit", report.secret_audit.status, str(report.secret_audit.summary))
+        table.add_row("delivery", "-", json.dumps(report.delivery_summary, ensure_ascii=False))
+        if report.dogfood is not None:
+            table.add_row(
+                "dogfood",
+                report.dogfood.status,
+                f"{len(report.dogfood.scenarios)} scenarios",
+            )
+        console.print(table)
+        if report.blockers:
+            console.print("[red]blockers:[/]")
+            for item in report.blockers[:12]:
+                console.print(f"  - {item}")
+        if report.next_steps:
+            console.print("[dim]next:[/]")
+            for item in report.next_steps:
+                console.print(f"  - {item}")
+    if fail_on_blocker and report.status == "block":
+        raise typer.Exit(code=2)
+
+
 @ops_app.command("credit-report")
 def ops_credit_report(
     tenant: str = typer.Option("u-sylvan", "--tenant", help="租户 ID"),

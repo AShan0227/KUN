@@ -36,6 +36,8 @@ uv run kun ops preflight
 uv run kun ops preflight --json
 uv run kun ops secret-audit
 uv run kun ops secret-audit --json
+uv run kun ops readiness --skip-alembic
+uv run kun ops readiness --include-dogfood --skip-alembic
 ```
 
 它检查的是“能不能安全上线”，不是产品宣传：
@@ -50,6 +52,8 @@ uv run kun ops secret-audit --json
 - delivery status 不能把没接入主流程的能力标成 ready
 
 有 blocker 时命令返回非零退出码，CI/release 应该直接拦住。
+
+`readiness` 是给正式测试前用的一条总命令：它把 preflight、secret-audit、delivery-status 汇总到一份报告；加 `--include-dogfood` 时再跑低风险 dogfood。
 
 ### 能力边界自检
 

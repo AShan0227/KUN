@@ -962,6 +962,7 @@ V4 继续坚持：
 - `kun ops dogfood --include-db-mission`：可显式跑真实数据库 Mission 续跑 smoke。
 - `kun ops preflight`：会阻断“真实外部 handler 开关已开但 env/密钥没配全”的半启用状态。
 - `kun ops secret-audit` 和 `/nuo/health/secret-audit`：可检查默认数据库密码、认证密钥轮换、对象存储默认密钥、真实外部 handler 半配置。
+- `kun ops readiness`：把 preflight、secret-audit、delivery-status 和可选 dogfood 汇成一份正式测试报告。
 - `/nuo/health/resource-credit` 和 `kun ops credit-report`：可查看 memory / skill / model / decision 等资源的持久贡献信用。
 - `/api/blackboard/state-ledger/{task_id}/story`：可把某个任务的长期事件历史压成可读故事线。
 
