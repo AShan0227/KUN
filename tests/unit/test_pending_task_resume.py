@@ -6,6 +6,8 @@ from typing import cast
 import pytest
 from kun.core.orm import TaskRow
 from kun.engineering.pending_task_resume import (
+    PendingTaskResumeResult,
+    PendingTaskResumeWorker,
     _build_resume_prompt_from_task,
     _event_type_for_status,
     _resume_request_from_result_json,
@@ -63,3 +65,38 @@ def test_resume_request_from_result_json_requires_real_resume_marker() -> None:
         )
         == {}
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pending_task_resume_worker_runs_explicit_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def fake_resume_once(
+        *,
+        tenant_id: str,
+        task_id: str,
+        orchestrator: object,
+    ) -> PendingTaskResumeResult:
+        assert orchestrator is fake_orchestrator
+        calls.append((tenant_id, task_id))
+        return PendingTaskResumeResult(
+            source_task_id=task_id,
+            continuation_task_id=f"{task_id}-cont",
+            status="completed",
+            final_status="done",
+            message="ok",
+        )
+
+    fake_orchestrator = object()
+    monkeypatch.setattr(
+        "kun.engineering.pending_task_resume.resume_unblocked_task_once", fake_resume_once
+    )
+
+    worker = PendingTaskResumeWorker(fake_orchestrator, max_tasks_per_run=10)  # type: ignore[arg-type]
+    results = await worker.run_once(tenant_id="tenant-a", task_ids=["task-1", "task-2"])
+
+    assert calls == [("tenant-a", "task-1"), ("tenant-a", "task-2")]
+    assert [result.continuation_task_id for result in results] == ["task-1-cont", "task-2-cont"]

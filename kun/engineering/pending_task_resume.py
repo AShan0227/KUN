@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from kun.core.db import session_scope
 from kun.core.events import emit
-from kun.core.orm import RuntimeStateRow, TaskResultRow, TaskRow
+from kun.core.orm import MissionTaskRow, RuntimeStateRow, TaskResultRow, TaskRow
 from kun.core.tenancy import TenantContext, tenant_scope
 from kun.datamodel.events import Event
 from kun.datamodel.runtime import TaskStatus
@@ -34,6 +34,84 @@ class PendingTaskResumeResult(BaseModel):
     status: Literal["completed", "skipped", "failed"]
     final_status: TaskStatus | None = None
     message: str = ""
+
+
+class PendingTaskResumeWorker:
+    """Durable scanner for ordinary tasks waiting for continuation.
+
+    Approval API already triggers one background resume attempt.  This worker
+    is the safety net: if the API process crashes after marking a task queued,
+    cron can pick it up later.  It only scans rows with an explicit
+    ``resume_request`` marker, so normal queued tasks are not accidentally run.
+    """
+
+    def __init__(self, orchestrator: Orchestrator, *, max_tasks_per_run: int = 5) -> None:
+        self.orchestrator = orchestrator
+        self.max_tasks_per_run = max(1, min(max_tasks_per_run, 50))
+
+    async def run_once(
+        self,
+        *,
+        tenant_id: str,
+        task_ids: list[str] | None = None,
+    ) -> list[PendingTaskResumeResult]:
+        targets = task_ids or await find_resume_ready_task_ids(
+            tenant_id=tenant_id,
+            limit=self.max_tasks_per_run,
+        )
+        results: list[PendingTaskResumeResult] = []
+        for task_id in targets[: self.max_tasks_per_run]:
+            results.append(
+                await resume_unblocked_task_once(
+                    tenant_id=tenant_id,
+                    task_id=task_id,
+                    orchestrator=self.orchestrator,
+                )
+            )
+        return results
+
+
+async def find_resume_ready_task_ids(*, tenant_id: str, limit: int = 20) -> list[str]:
+    """Find ordinary queued tasks that explicitly requested continuation."""
+
+    safe_limit = max(1, min(limit, 100))
+    async with session_scope(tenant_id=tenant_id) as s:
+        mission_exists = (
+            select(MissionTaskRow.task_id)
+            .where(
+                MissionTaskRow.tenant_id == tenant_id,
+                MissionTaskRow.task_id == TaskRow.task_id,
+            )
+            .exists()
+        )
+        rows = (
+            await s.execute(
+                select(TaskRow.task_id, TaskResultRow.result_json)
+                .join(
+                    RuntimeStateRow,
+                    (RuntimeStateRow.task_ref == TaskRow.task_id)
+                    & (RuntimeStateRow.tenant_id == TaskRow.tenant_id),
+                )
+                .join(
+                    TaskResultRow,
+                    (TaskResultRow.task_id == TaskRow.task_id)
+                    & (TaskResultRow.tenant_id == TaskRow.tenant_id),
+                )
+                .where(
+                    TaskRow.tenant_id == tenant_id,
+                    RuntimeStateRow.status == "queued",
+                    TaskResultRow.status == "queued",
+                    ~mission_exists,
+                )
+                .order_by(RuntimeStateRow.last_updated.asc())
+                .limit(safe_limit)
+            )
+        ).all()
+    return [
+        str(task_id)
+        for task_id, result_json in rows
+        if _resume_request_from_result_json(dict(result_json or {}))
+    ]
 
 
 async def resume_unblocked_task_once(
@@ -396,5 +474,7 @@ def _event_type_for_status(
 
 __all__ = [
     "PendingTaskResumeResult",
+    "PendingTaskResumeWorker",
+    "find_resume_ready_task_ids",
     "resume_unblocked_task_once",
 ]

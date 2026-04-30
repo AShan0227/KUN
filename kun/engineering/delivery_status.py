@@ -95,6 +95,7 @@ def get_v3_delivery_status(
                 "Mission 复盘中的预算/风险/不确定性会影响下一次 Watchtower 策略权重和执行档位",
                 "Mission continuation 完成后会自动写入下一步建议和 last_continuation 摘要，下一轮续跑能消费",
                 "ops dogfood --include-db-mission 可跑真实数据库 Mission 续跑 smoke",
+                "普通任务的 pending action 审批通过后会排入 continuation，API 后台和 cron worker 都能恢复执行",
             ],
             evidence_refs=[
                 "kun/engineering/mission_worker.py",
@@ -112,6 +113,7 @@ def get_v3_delivery_status(
                 "StateLedger 还不是完整确定性快照重建器；目前能重建任务故事和缺口，但不能还原每个运行时字段",
                 "Mission 复盘和 continuation 摘要只做轻量权重/档位 nudging，还没训练长期策略模型",
                 "还没有跑跨周真实产品运营 dogfood",
+                "普通任务 continuation 采用子任务续跑并回写原任务视图，还不是原 TaskRow 原地续跑",
             ],
             next_steps=[
                 "让 Mission review 结果进一步反向影响 Watchtower Decision Plane 权重",

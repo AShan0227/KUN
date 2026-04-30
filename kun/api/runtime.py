@@ -26,6 +26,7 @@ from kun.engineering.idle_batch import (
 from kun.engineering.marginal_roi import ModulePresets
 from kun.engineering.mission_worker import MissionOrchestratorRunner, MissionResumeWorker
 from kun.engineering.orchestrator import Orchestrator
+from kun.engineering.pending_task_resume import PendingTaskResumeWorker
 from kun.engineering.precipitation import (
     KnowledgePrecipitation,
     NarrativeDistillStep,
@@ -370,6 +371,7 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     app.state.mission_resume_worker = MissionResumeWorker(
         runner=MissionOrchestratorRunner(orchestrator)
     )
+    app.state.pending_task_resume_worker = PendingTaskResumeWorker(orchestrator)
 
     app.state.fast_path = FastPathRouter(
         # M3.2 暂用空 lookup, M3.3 接真 cache / template / history
@@ -445,6 +447,10 @@ def get_cron_scheduler(app: _AppWithState) -> CronScheduler:
 
 def get_mission_resume_worker(app: _AppWithState) -> MissionResumeWorker:
     return cast(MissionResumeWorker, app.state.mission_resume_worker)
+
+
+def get_pending_task_resume_worker(app: _AppWithState) -> PendingTaskResumeWorker:
+    return cast(PendingTaskResumeWorker, app.state.pending_task_resume_worker)
 
 
 def get_value_gate(app: _AppWithState) -> ValueGate | None:
