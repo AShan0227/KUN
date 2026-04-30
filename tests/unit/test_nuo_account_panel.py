@@ -160,6 +160,13 @@ def test_invite_member_requires_admin_scope() -> None:
 @pytest.mark.unit
 def test_invite_member_writes_invitation_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
     called: dict[str, Any] = {}
+    invite_expires_at = datetime.now(UTC) + timedelta(days=7)
+
+    class _FakeSettings:
+        env = "production"
+
+        def auth_secret_candidates(self) -> list[str]:
+            return ["s" * 40]
 
     @asynccontextmanager
     async def fake_scope(*_: Any, **__: Any):
@@ -173,9 +180,13 @@ def test_invite_member_writes_invitation_ledger(monkeypatch: pytest.MonkeyPatch)
             role=kwargs["role"],
             scopes=kwargs["scopes"],
             status="invited",
+            acceptance_token_id="tok-invite",
+            acceptance_token="invite.raw",
+            invite_expires_at=invite_expires_at,
             honest_limits=["不会自动发送邮件"],
         )
 
+    monkeypatch.setattr(account_panel, "settings", lambda: _FakeSettings())
     monkeypatch.setattr(account_panel, "session_scope", fake_scope)
     monkeypatch.setattr(account_panel, "invite_tenant_member", fake_invite_tenant_member)
 
@@ -195,12 +206,17 @@ def test_invite_member_writes_invitation_ledger(monkeypatch: pytest.MonkeyPatch)
     body = response.json()
     assert body["status"] == "invited"
     assert body["role"] == "viewer"
+    assert body["acceptance_token_id"] == "tok-invite"
+    assert body["acceptance_token"] == "invite.raw"
     assert "尚未发送邮件" in body["message"]
     assert called == {
         "tenant_id": "tenant-a",
         "user_id": "new-user",
         "role": "viewer",
         "scopes": ["account:read"],
+        "invite_secret": "s" * 40,
+        "invite_ttl_sec": 604800,
+        "invited_by_user_id": "owner-a",
     }
 
 

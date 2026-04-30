@@ -19,7 +19,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from kun.core.orm import TenantAccountRow, TenantMemberRow, TenantTokenIssueRow
-from kun.security.auth import sign_auth_token
+from kun.security.auth import AuthTokenError, sign_auth_token, verify_bearer_token_any
 
 Audience = Literal["novice", "developer", "expert"]
 MemberRole = Literal["owner", "admin", "member", "viewer"]
@@ -71,6 +71,9 @@ class TenantMemberInvite(BaseModel):
     role: MemberRole
     scopes: list[str] = Field(default_factory=list)
     status: str = "invited"
+    acceptance_token_id: str | None = None
+    acceptance_token: str | None = None
+    invite_expires_at: datetime | None = None
     honest_limits: list[str] = Field(default_factory=list)
 
 
@@ -124,6 +127,40 @@ def build_bootstrap_token(
             "audience": audience,
             "exp": expires_at,
             "jti": stable_token_id,
+        },
+        secret,
+    )
+    return stable_token_id, token, expires_at
+
+
+def build_member_invite_token(
+    *,
+    tenant_id: str,
+    user_id: str,
+    secret: str,
+    ttl_sec: int = 604800,
+    token_id: str | None = None,
+) -> tuple[str, str, int]:
+    """Mint a one-time tenant member invite token.
+
+    The caller stores only ``hash_bearer_token(token)``.  The raw token is
+    returned once so an operator/UI can deliver it through a controlled channel.
+    """
+
+    cleaned_tenant = _required("tenant_id", tenant_id)
+    cleaned_user = _required("user_id", user_id)
+    if len(secret) < 32:
+        raise ValueError("secret must be at least 32 characters")
+    expires_at = int(time.time()) + max(60, ttl_sec)
+    stable_token_id = token_id or _token_id(cleaned_tenant, f"invite-{cleaned_user}", expires_at)
+    token = sign_auth_token(
+        {
+            "tenant_id": cleaned_tenant,
+            "user_id": cleaned_user,
+            "audience": "developer",
+            "exp": expires_at,
+            "jti": stable_token_id,
+            "token_type": "tenant_invite",
         },
         secret,
     )
@@ -317,12 +354,16 @@ async def invite_tenant_member(
     user_id: str,
     role: MemberRole = "member",
     scopes: list[str],
+    invite_secret: str | None = None,
+    invite_ttl_sec: int = 604800,
+    invited_by_user_id: str | None = None,
 ) -> TenantMemberInvite:
     """Create/update an invited tenant member without sending external email."""
 
     cleaned_tenant = _required("tenant_id", tenant_id)
     cleaned_user = _required("user_id", user_id)
     cleaned_scopes = [scope.strip() for scope in scopes if scope.strip()]
+    cleaned_inviter = invited_by_user_id.strip() if invited_by_user_id else None
     existing = (
         await session.execute(
             select(TenantMemberRow.status).where(
@@ -333,6 +374,19 @@ async def invite_tenant_member(
     ).scalar_one_or_none()
     status = "active" if existing == "active" else "invited"
     now = datetime.now(UTC)
+    acceptance_token_id: str | None = None
+    acceptance_token: str | None = None
+    invite_expires_at: datetime | None = None
+    invite_token_hash: str | None = None
+    if status == "invited" and invite_secret:
+        acceptance_token_id, acceptance_token, expires_at = build_member_invite_token(
+            tenant_id=cleaned_tenant,
+            user_id=cleaned_user,
+            secret=invite_secret,
+            ttl_sec=invite_ttl_sec,
+        )
+        invite_expires_at = datetime.fromtimestamp(expires_at, UTC)
+        invite_token_hash = hash_bearer_token(acceptance_token)
     stmt = (
         pg_insert(TenantMemberRow)
         .values(
@@ -341,6 +395,10 @@ async def invite_tenant_member(
             role=role,
             scopes=cleaned_scopes,
             status=status,
+            invite_token_hash=invite_token_hash,
+            invite_expires_at=invite_expires_at,
+            invite_accepted_at=None if status == "invited" else now,
+            invited_by_user_id=cleaned_inviter,
             updated_at=now,
         )
         .on_conflict_do_update(
@@ -349,6 +407,10 @@ async def invite_tenant_member(
                 "role": role,
                 "scopes": cleaned_scopes,
                 "status": status,
+                "invite_token_hash": invite_token_hash,
+                "invite_expires_at": invite_expires_at,
+                "invite_accepted_at": None if status == "invited" else now,
+                "invited_by_user_id": cleaned_inviter,
                 "updated_at": now,
             },
         )
@@ -360,9 +422,13 @@ async def invite_tenant_member(
         role=role,
         scopes=cleaned_scopes,
         status=status,
+        acceptance_token_id=acceptance_token_id,
+        acceptance_token=acceptance_token,
+        invite_expires_at=invite_expires_at,
         honest_limits=[
             "这里只写入成员邀请账本，不会自动发送邮件。",
-            "被邀请成员仍需要管理员签发 session 或后续接入接受邀请流程。",
+            "如果返回 acceptance_token，它只在响应中出现一次；数据库只保存 hash。",
+            "邮件发送、链接点击追踪和账单闭环仍未完成。",
         ],
     )
 
@@ -372,11 +438,14 @@ async def accept_tenant_member_invite(
     *,
     tenant_id: str,
     user_id: str,
+    invite_token: str | None = None,
+    auth_secrets: list[str] | None = None,
 ) -> TenantMemberAccepted:
     """Mark an invited member active and return their role/scopes."""
 
     cleaned_tenant = _required("tenant_id", tenant_id)
     cleaned_user = _required("user_id", user_id)
+    cleaned_token = invite_token.strip() if invite_token else None
     row = (
         await session.execute(
             select(TenantMemberRow).where(
@@ -389,14 +458,30 @@ async def accept_tenant_member_invite(
         raise ValueError("tenant member invitation not found")
     if row.status == "disabled":
         raise ValueError("tenant member invitation is disabled")
+    if row.status != "invited":
+        raise ValueError("tenant member invitation is not pending")
     now = datetime.now(UTC)
+    if cleaned_token is not None:
+        _validate_member_invite_token(
+            token=cleaned_token,
+            auth_secrets=auth_secrets or [],
+            tenant_id=cleaned_tenant,
+            user_id=cleaned_user,
+            expected_hash=row.invite_token_hash,
+            invite_expires_at=row.invite_expires_at,
+            now=now,
+        )
     await session.execute(
         update(TenantMemberRow)
         .where(
             TenantMemberRow.tenant_id == cleaned_tenant,
             TenantMemberRow.user_id == cleaned_user,
         )
-        .values(status="active", updated_at=now)
+        .values(
+            status="active",
+            invite_accepted_at=now,
+            updated_at=now,
+        )
     )
     return TenantMemberAccepted(
         tenant_id=cleaned_tenant,
@@ -525,6 +610,34 @@ def _member_role(value: str) -> MemberRole:
     return "member"
 
 
+def _validate_member_invite_token(
+    *,
+    token: str,
+    auth_secrets: list[str],
+    tenant_id: str,
+    user_id: str,
+    expected_hash: str | None,
+    invite_expires_at: datetime | None,
+    now: datetime,
+) -> None:
+    if not auth_secrets:
+        raise ValueError("invite token cannot be verified without auth secrets")
+    if not expected_hash:
+        raise ValueError("tenant member invitation has no token")
+    try:
+        claims = verify_bearer_token_any(f"Bearer {token}", auth_secrets)
+    except AuthTokenError as exc:
+        raise ValueError("invalid invite token") from exc
+    if claims.token_type != "tenant_invite":
+        raise ValueError("invalid invite token type")
+    if claims.tenant_id != tenant_id or claims.user_id != user_id:
+        raise ValueError("invite token does not match invitation")
+    if invite_expires_at is not None and invite_expires_at <= now:
+        raise ValueError("invite token expired")
+    if hash_bearer_token(token) != expected_hash:
+        raise ValueError("invite token hash mismatch")
+
+
 def _honest_limits() -> list[str]:
     return [
         "这是账号/组织/token 签发账本的第一版，不是完整自助注册系统。",
@@ -543,6 +656,7 @@ __all__ = [
     "accept_tenant_member_invite",
     "bootstrap_tenant_account",
     "build_bootstrap_token",
+    "build_member_invite_token",
     "build_unpersisted_bootstrap",
     "hash_bearer_token",
     "invite_tenant_member",

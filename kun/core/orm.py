@@ -923,6 +923,14 @@ class TenantMemberRow(Base):
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="owner")
     scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+    invite_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    invite_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    invite_accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    invited_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
@@ -941,6 +949,7 @@ class TenantMemberRow(Base):
             name="tenant_member_status_valid",
         ),
         Index("ix_tenant_members_tenant_status", "tenant_id", "status"),
+        Index("ix_tenant_members_invite_expires", "tenant_id", "invite_expires_at"),
     )
 
 

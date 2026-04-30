@@ -91,6 +91,7 @@ class InviteMemberRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=120)
     role: MemberRole = "member"
     scopes: list[str] = Field(default_factory=lambda: ["chat:write"])
+    invite_ttl_sec: int = Field(default=604800, ge=60, le=2592000)
 
 
 class InviteMemberResponse(BaseModel):
@@ -101,6 +102,9 @@ class InviteMemberResponse(BaseModel):
     role: MemberRole
     scopes: list[str]
     status: str
+    acceptance_token_id: str | None = None
+    acceptance_token: str | None = None
+    invite_expires_at: datetime | None = None
     message: str
     honest_limits: list[str]
 
@@ -172,6 +176,7 @@ async def invite_member(payload: InviteMemberRequest) -> InviteMemberResponse:
 
     _require_scope_when_enforced("account:admin")
     tenant = current_tenant()
+    secrets = settings().auth_secret_candidates()
     async with session_scope(tenant_id=tenant.tenant_id) as s:
         invited = await invite_tenant_member(
             s,
@@ -179,14 +184,25 @@ async def invite_member(payload: InviteMemberRequest) -> InviteMemberResponse:
             user_id=payload.user_id,
             role=payload.role,
             scopes=_string_list(payload.scopes),
+            invite_secret=secrets[0] if secrets else None,
+            invite_ttl_sec=payload.invite_ttl_sec,
+            invited_by_user_id=tenant.user_id,
         )
+    message = "成员邀请已写入账本；尚未发送邮件。"
+    if invited.acceptance_token:
+        message += " 已生成一次性接受 token，请通过可信渠道交给被邀请成员。"
+    else:
+        message += " 未生成一次性接受 token，因为当前没有可用 KUN_AUTH_SECRET。"
     return InviteMemberResponse(
         tenant_id=invited.tenant_id,
         user_id=invited.user_id,
         role=invited.role,
         scopes=invited.scopes,
         status=invited.status,
-        message="成员邀请已写入账本；尚未发送邮件，也尚未签发 session。",
+        acceptance_token_id=invited.acceptance_token_id,
+        acceptance_token=invited.acceptance_token,
+        invite_expires_at=invited.invite_expires_at,
+        message=message,
         honest_limits=invited.honest_limits,
     )
 

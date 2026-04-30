@@ -389,11 +389,15 @@ async def _scenario_account_ledger_db(*, tenant_id: str, secret: str) -> Dogfood
                 user_id=invited_user_id,
                 role="viewer",
                 scopes=["account:read"],
+                invite_secret=secret,
+                invited_by_user_id=owner_user_id,
             )
             accepted = await accept_tenant_member_invite(
                 s,
                 tenant_id=tenant_id,
                 user_id=invited_user_id,
+                invite_token=invited.acceptance_token,
+                auth_secrets=[secret],
             )
             invited_pair = await issue_session_token_pair(
                 s,
@@ -425,6 +429,7 @@ async def _scenario_account_ledger_db(*, tenant_id: str, secret: str) -> Dogfood
                 "refreshed_access_token_id": refreshed.access_token_id,
                 "invited_user_id": invited.user_id,
                 "invite_status": invited.status,
+                "acceptance_token_id": invited.acceptance_token_id,
                 "accepted_status": accepted.status,
                 "accepted_role": accepted.role,
                 "invited_access_token_id": invited_pair.access_token_id,

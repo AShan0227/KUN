@@ -489,6 +489,68 @@ def test_accept_invite_api_activates_member_and_issues_session(
 
 
 @pytest.mark.unit
+def test_accept_invite_api_accepts_one_time_token_without_global_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "s" * 40
+
+    class _FakeSettings:
+        self_signup_enabled = True
+        self_signup_invite_code = None
+
+        def auth_secret_candidates(self) -> list[str]:
+            return [secret]
+
+    async def fake_accept(*_args: object, **kwargs: object) -> session_api.TenantMemberAccepted:
+        assert kwargs["invite_token"] == "invite.raw"
+        assert kwargs["auth_secrets"] == [secret]
+        return session_api.TenantMemberAccepted(
+            tenant_id="tenant-a",
+            user_id="member-a",
+            role="viewer",
+            scopes=["account:read"],
+            status="active",
+        )
+
+    async def fake_issue(*_args: object, **_kwargs: object) -> session_api.SessionTokenPair:
+        return session_api.SessionTokenPair(
+            tenant_id="tenant-a",
+            user_id="member-a",
+            audience="developer",
+            scopes=["account:read"],
+            access_token_id="acc-token",
+            access_token=sign_auth_token(
+                {"tenant_id": "tenant-a", "user_id": "member-a", "jti": "acc-token"},
+                secret,
+            ),
+            access_expires_at=111,
+            refresh_token_id="rfr-token",
+            refresh_token=sign_auth_token(
+                {"tenant_id": "tenant-a", "user_id": "member-a", "jti": "rfr-token"},
+                secret,
+            ),
+            refresh_expires_at=222,
+        )
+
+    monkeypatch.setattr(session_api, "settings", lambda: _FakeSettings())
+    monkeypatch.setattr(session_api, "session_scope", lambda **_kwargs: _FakeScope())
+    monkeypatch.setattr(session_api, "accept_tenant_member_invite", fake_accept)
+    monkeypatch.setattr(session_api, "issue_session_token_pair", fake_issue)
+
+    response = TestClient(_api_app()).post(
+        "/api/auth/invite/accept",
+        json={
+            "invite_token": "invite.raw",
+            "tenant_id": "tenant-a",
+            "user_id": "member-a",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["refresh_token_id"] == "rfr-token"
+
+
+@pytest.mark.unit
 def test_accept_invite_api_rejects_missing_invite(monkeypatch: pytest.MonkeyPatch) -> None:
     class _FakeSettings:
         self_signup_enabled = True

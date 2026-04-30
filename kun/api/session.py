@@ -94,7 +94,8 @@ class SignupResponse(BaseModel):
 class AcceptInviteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    invite_code: str = Field(min_length=1)
+    invite_code: str | None = Field(default=None, min_length=1)
+    invite_token: str | None = Field(default=None, min_length=1)
     tenant_id: str = Field(min_length=1, max_length=80)
     user_id: str = Field(min_length=1, max_length=120)
     audience: Audience = "developer"
@@ -213,14 +214,16 @@ async def accept_invite(payload: AcceptInviteRequest) -> AcceptInviteResponse:
     cfg = settings()
     if not cfg.self_signup_enabled:
         raise HTTPException(status_code=403, detail="invite acceptance is disabled")
-    expected_invite = (cfg.self_signup_invite_code or "").strip()
-    if not expected_invite:
-        raise HTTPException(
-            status_code=503,
-            detail="KUN_SELF_SIGNUP_INVITE_CODE is required when invite acceptance is enabled",
-        )
-    if payload.invite_code.strip() != expected_invite:
-        raise HTTPException(status_code=403, detail="invalid invite code")
+    invite_token = payload.invite_token.strip() if payload.invite_token else None
+    if invite_token is None:
+        expected_invite = (cfg.self_signup_invite_code or "").strip()
+        if not expected_invite:
+            raise HTTPException(
+                status_code=503,
+                detail="KUN_SELF_SIGNUP_INVITE_CODE is required when invite acceptance is enabled",
+            )
+        if not payload.invite_code or payload.invite_code.strip() != expected_invite:
+            raise HTTPException(status_code=403, detail="invalid invite code")
     secrets = cfg.auth_secret_candidates()
     if not secrets:
         raise HTTPException(
@@ -235,6 +238,8 @@ async def accept_invite(payload: AcceptInviteRequest) -> AcceptInviteResponse:
                 s,
                 tenant_id=tenant_id,
                 user_id=user_id,
+                invite_token=invite_token,
+                auth_secrets=secrets,
             )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

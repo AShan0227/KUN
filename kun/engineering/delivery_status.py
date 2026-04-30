@@ -281,7 +281,7 @@ def get_v3_delivery_status(
                 "账号会话已有最小 refresh token 闭环：refresh/access token 入账、refresh 续短期 access、refresh token 不能访问普通 API",
                 "ops account-session CLI 可签发持久入账的 access+refresh 会话包，避免 refresh 功能只停在测试里",
                 "已补默认关闭的邀请码注册 API：可创建租户账本、owner 和 access+refresh 会话，但必须显式配置邀请码",
-                "已补默认关闭的邀请接受 API：可把 invited 成员激活并签发 access+refresh 会话",
+                "已补默认关闭的邀请接受 API：可用全局邀请码或一次性邀请 token 激活 invited 成员并签发 access+refresh 会话",
                 "已补最小用户会话自助面板 API：查看当前 session、列出自己的 token、撤销自己的 token",
                 "NUO 账号面板可查看当前租户账号、成员和 token 签发账本，且不会暴露 raw bearer token",
                 "NUO 账号面板可写入成员邀请账本；不会伪装成已发送邮件或已完成成员登录",
@@ -324,7 +324,7 @@ def get_v3_delivery_status(
                 "云 KMS / 托管 Secret Manager、自动轮换和租户自助密钥配置",
                 "真实数据库/S3 环境的备份恢复演练",
                 "跨周真实产品运营 dogfood 验收场景",
-                "成员邀请邮件发送、per-invite 一次性 token 和账单闭环",
+                "成员邀请邮件发送和账单闭环",
             ],
             next_steps=[
                 "把账号账本升级成自助注册、成员管理和完整会话体系",

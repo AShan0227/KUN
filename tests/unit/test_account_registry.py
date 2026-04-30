@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -7,6 +8,7 @@ from kun.core.orm import TenantMemberRow
 from kun.ops.account_registry import (
     accept_tenant_member_invite,
     build_bootstrap_token,
+    build_member_invite_token,
     hash_bearer_token,
     invite_tenant_member,
     is_token_revoked,
@@ -122,6 +124,31 @@ async def test_invite_tenant_member_keeps_existing_active_status() -> None:
 
 
 @pytest.mark.unit
+async def test_invite_tenant_member_can_issue_one_time_acceptance_token() -> None:
+    secret = "x" * 40
+    fake_session = _SequenceSession([_ScalarResult(None), _ScalarResult(rowcount=1)])
+
+    invited = await invite_tenant_member(
+        fake_session,  # type: ignore[arg-type]
+        tenant_id="tenant-a",
+        user_id="member-a",
+        role="viewer",
+        scopes=["account:read"],
+        invite_secret=secret,
+        invited_by_user_id="owner-a",
+    )
+
+    assert invited.status == "invited"
+    assert invited.acceptance_token_id
+    assert invited.acceptance_token
+    assert invited.invite_expires_at is not None
+    claims = verify_bearer_token(f"Bearer {invited.acceptance_token}", secret)
+    assert claims.token_type == "tenant_invite"
+    assert claims.tenant_id == "tenant-a"
+    assert claims.user_id == "member-a"
+
+
+@pytest.mark.unit
 async def test_accept_tenant_member_invite_marks_member_active() -> None:
     row = TenantMemberRow(
         tenant_id="tenant-a",
@@ -142,6 +169,56 @@ async def test_accept_tenant_member_invite_marks_member_active() -> None:
     assert accepted.role == "viewer"
     assert accepted.scopes == ["account:read"]
     assert len(fake_session.statements) == 2
+
+
+@pytest.mark.unit
+async def test_accept_tenant_member_invite_verifies_one_time_token() -> None:
+    secret = "x" * 40
+    _token_id, token, _expires_at = build_member_invite_token(
+        tenant_id="tenant-a",
+        user_id="member-a",
+        secret=secret,
+    )
+    row = TenantMemberRow(
+        tenant_id="tenant-a",
+        user_id="member-a",
+        role="viewer",
+        scopes=["account:read"],
+        status="invited",
+        invite_token_hash=hash_bearer_token(token),
+        invite_expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    fake_session = _SequenceSession([_ScalarResult(row), _ScalarResult(rowcount=1)])
+
+    accepted = await accept_tenant_member_invite(
+        fake_session,  # type: ignore[arg-type]
+        tenant_id="tenant-a",
+        user_id="member-a",
+        invite_token=token,
+        auth_secrets=[secret],
+    )
+
+    assert accepted.status == "active"
+    assert accepted.role == "viewer"
+    assert len(fake_session.statements) == 2
+
+
+@pytest.mark.unit
+async def test_accept_tenant_member_invite_rejects_replayed_active_invite() -> None:
+    row = TenantMemberRow(
+        tenant_id="tenant-a",
+        user_id="member-a",
+        role="viewer",
+        scopes=["account:read"],
+        status="active",
+    )
+
+    with pytest.raises(ValueError, match="not pending"):
+        await accept_tenant_member_invite(
+            _SequenceSession([_ScalarResult(row)]),  # type: ignore[arg-type]
+            tenant_id="tenant-a",
+            user_id="member-a",
+        )
 
 
 @pytest.mark.unit
