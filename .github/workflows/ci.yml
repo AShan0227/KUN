@@ -21,8 +21,8 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --extra dev
-      - run: uv run ruff check kun tests
-      - run: uv run ruff format --check kun tests
+      - run: uv run ruff check kun tests scripts alembic
+      - run: uv run ruff format --check kun tests scripts alembic
 
   typecheck:
     name: Typecheck (mypy, soft)
@@ -59,6 +59,7 @@ jobs:
       # This intentionally does not require every capability to be ready.
       # It only blocks fake readiness: ready with missing evidence / partial
       # without an honest missing list.
+      - run: uv run alembic heads
       - run: uv run kun ops delivery-status --json
       - run: uv run kun ops preflight --skip-alembic --no-fail-on-blocker --json
       - run: uv run kun ops readiness --skip-alembic --no-fail-on-blocker --json

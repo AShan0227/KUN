@@ -250,8 +250,10 @@ def get_v3_delivery_status(
                 "ops dogfood CLI 可跑 V4 低风险 smoke，验证 preflight / token / WorldGateway / 诚实边界",
                 "ops dogfood --include-db-mission 可额外验证 Mission/RuntimeState/Orchestrator runner 的真实 DB 续跑闭环",
                 "ops delivery-status CLI 可直接查看 ready / partial / not_ready，防止伪功能被误认为已完成",
+                "CI 会检查 scripts/alembic 的 ruff/format，并在 honesty gate 里检查 Alembic 单 head",
             ],
             evidence_refs=[
+                ".github/workflows/ci.yml",
                 "docker-compose.dev.yml",
                 "alembic/versions",
                 "docs/DEPLOY.md",
@@ -268,13 +270,13 @@ def get_v3_delivery_status(
             missing=[
                 "完整正式用户账号体系",
                 "集中密钥管理和轮换",
-                "线上 CI/release/tag",
+                "正式 release/tag 流程",
                 "真实数据库/S3 环境的备份恢复演练",
                 "跨周真实产品运营 dogfood 验收场景",
                 "租户自助注册 / 组织成员 / 账单闭环",
             ],
             next_steps=[
-                "把 ops preflight 接入 release checklist 和 CI",
+                "把 release checklist 升级到 V4，并明确 tag / rollback / hotfix 流程",
                 "把租户启动包升级成正式账号/组织体系",
                 "做真实环境备份/恢复 smoke test",
             ],
