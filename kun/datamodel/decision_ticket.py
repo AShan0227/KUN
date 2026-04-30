@@ -240,6 +240,60 @@ def ticket_from_route_choice(
     )
 
 
+def ticket_from_delivery_review(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    verdict: Any,
+    mission_id: str | None = None,
+) -> DecisionTicket:
+    """Wrap PreDeliverGate verdict as a V4 decision ticket."""
+
+    final_status = str(getattr(verdict, "final_status", "done"))
+    passed = bool(getattr(verdict, "passed", False))
+    status: DecisionStatus = (
+        "allowed"
+        if passed and final_status == "done"
+        else "needs_review"
+        if final_status == "needs_review"
+        else "failed"
+    )
+    checks = list(getattr(verdict, "checks", []) or [])
+    failed_checks = [check for check in checks if not bool(getattr(check, "passed", False))]
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="delivery",
+        decision_point="delivery_review",
+        source_module="engineering.pre_deliver_gate",
+        selected_action=final_status,
+        status=status,
+        reason=str(getattr(verdict, "reason_summary", "")),
+        confidence=0.85 if passed else 0.55,
+        risk_level=risk_level,
+        inputs_summary={
+            "check_count": len(checks),
+            "fail_count": len(failed_checks),
+        },
+        evidence={
+            "passed": passed,
+            "final_status": final_status,
+            "checks": [
+                {
+                    "name": str(getattr(check, "name", "")),
+                    "passed": bool(getattr(check, "passed", False)),
+                    "severity": str(getattr(check, "severity", "")),
+                    "reason": str(getattr(check, "reason", "")),
+                }
+                for check in checks
+            ],
+        },
+        metadata={"final_status": final_status, "passed": passed},
+    )
+
+
 def ticket_from_world_policy(
     *,
     tenant_id: str,
@@ -304,6 +358,7 @@ __all__ = [
     "DecisionStatus",
     "DecisionTicket",
     "DecisionTicketRef",
+    "ticket_from_delivery_review",
     "ticket_from_route_choice",
     "ticket_from_value_gate_decision",
     "ticket_from_watchtower_decision",

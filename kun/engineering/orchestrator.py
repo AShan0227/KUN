@@ -43,6 +43,7 @@ from kun.core.orm import IdempotencyRow, RuntimeStateRow, TaskResultRow, TaskRow
 from kun.core.tenancy import current_tenant
 from kun.datamodel.decision_ticket import (
     DecisionTicket,
+    ticket_from_delivery_review,
     ticket_from_route_choice,
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
@@ -1683,6 +1684,15 @@ class Orchestrator:
                         },
                     )
 
+                delivery_ticket = ticket_from_delivery_review(
+                    tenant_id=tenant.tenant_id,
+                    task_id=task_ref.meta.task_id,
+                    risk_level=task_ref.meta.risk_level,
+                    verdict=verdict,
+                    mission_id=_mission_id_from_task(task_ref),
+                )
+                decision_tickets.append(delivery_ticket)
+                self._record_state_ledger("record_decision_ticket", delivery_ticket)
                 yield OrchestratorEvent(
                     kind="delivery.review_done",
                     data={
@@ -1690,6 +1700,7 @@ class Orchestrator:
                         "passed": verdict.passed,
                         "final_status": verdict.final_status,
                         "reason_summary": verdict.reason_summary,
+                        "decision_ticket": delivery_ticket.event_payload(),
                         "checks": [
                             {
                                 "name": c.name,
@@ -1714,6 +1725,7 @@ class Orchestrator:
                                 "reason_summary": verdict.reason_summary,
                                 "check_count": len(verdict.checks),
                                 "fail_count": sum(1 for c in verdict.checks if not c.passed),
+                                "decision_ticket": delivery_ticket.event_payload(),
                             },
                             task_ref=task_ref.meta.task_id,
                         ),

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from kun.datamodel.decision_ticket import (
+    ticket_from_delivery_review,
     ticket_from_route_choice,
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
@@ -112,3 +113,31 @@ def test_world_policy_ticket_blocks_missing_handler() -> None:
     assert ticket.decision_point == "world_policy"
     assert ticket.status == "blocked"
     assert ticket.metadata["action_type"] == "payment.send"
+
+
+def test_delivery_review_ticket_maps_needs_review() -> None:
+    from kun.engineering.pre_deliver_gate import GateCheckResult, PreDeliverVerdict
+
+    ticket = ticket_from_delivery_review(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        risk_level="high",
+        verdict=PreDeliverVerdict(
+            passed=False,
+            final_status="needs_review",
+            reason_summary="anti gaming finding",
+            checks=[
+                GateCheckResult(
+                    name="anti_gaming.fake_completion",
+                    passed=False,
+                    severity="high",
+                    reason="claimed done without evidence",
+                )
+            ],
+        ),
+    )
+
+    assert ticket.phase == "delivery"
+    assert ticket.decision_point == "delivery_review"
+    assert ticket.status == "needs_review"
+    assert ticket.evidence["checks"][0]["name"] == "anti_gaming.fake_completion"

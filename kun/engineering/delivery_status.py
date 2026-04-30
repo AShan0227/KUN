@@ -179,6 +179,7 @@ def get_v3_delivery_status(
                 "ContextPacker 已按持久贡献度、验证结果和质量分排序",
                 "Watchtower Decision Plane 会用 strategy_pack 历史信用做 MoE 式轻量加权",
                 "TaskRouter 角色/模型用途选择已进入统一 DecisionTicket 和 StateLedger",
+                "PreDeliverGate 交付审核结果已进入统一 DecisionTicket 和 StateLedger",
                 "NUO context maintenance 可压缩过长摘要、软遗忘/硬删除长期未用资产",
             ],
             evidence_refs=[
