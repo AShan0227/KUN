@@ -224,6 +224,38 @@ def test_handler_health_block_prevents_external_execution() -> None:
 
 
 @pytest.mark.unit
+def test_handler_health_blocks_limited_external_handler_without_compensation() -> None:
+    card = WorldHandlerHealthCard(
+        action_type="email.send",
+        status="limited",
+        external_dispatched=True,
+        registered=True,
+        configured=True,
+        has_compensation=False,
+        recommendation="保留人工确认；先补齐补偿和失败复盘。",
+        issues=["补偿策略不清楚"],
+    )
+
+    assert _handler_health_blocks_execution(card) is True
+
+
+@pytest.mark.unit
+def test_handler_health_blocks_limited_handler_missing_config() -> None:
+    card = WorldHandlerHealthCard(
+        action_type="enterprise_api.post",
+        status="limited",
+        external_dispatched=True,
+        registered=True,
+        configured=False,
+        has_compensation=True,
+        recommendation="补齐租户密钥后再执行。",
+        issues=["缺少全局或租户级环境变量"],
+    )
+
+    assert _handler_health_blocks_execution(card) is True
+
+
+@pytest.mark.unit
 def test_world_action_credit_tracks_handler_action_and_policy_ticket() -> None:
     gateway_result = WorldGatewayResult(
         action_id="act-1",

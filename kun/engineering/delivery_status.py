@@ -153,20 +153,23 @@ def get_v3_delivery_status(
                 "默认只露健康 / 成本 / 权限 / 风险，高级诊断折叠",
                 "idle-batch 会定期生成 NUO 深度体检摘要并写入事件账本",
                 "NUO 深度体检发现会进入 StateLedger 当前状态视图，任务看板能看到系统风险",
+                "Pending action executor 会消费 WorldGateway handler 体检，缺配置/缺补偿/blocked 时拦截真实外发",
             ],
             evidence_refs=[
                 "kun/api/nuo/health_panel.py",
                 "kun/api/nuo/action_panel.py",
                 "kun/engineering/nuo_system_health.py",
+                "kun/engineering/action_executor.py",
                 "tests/unit/test_delivery_status.py",
+                "tests/unit/test_action_executor.py",
             ],
             missing=[
                 "定期 NUO 体检已进入当前状态账本，但还没做浏览器/移动端主动推送",
-                "把 handler 健康结果接入自动限权 / 降级",
+                "handler 健康已能拦截真实外发，但还没有持久化降级配置和自动恢复流程",
             ],
             next_steps=[
                 "把高风险 NUO finding 推送到用户看板 / StateLedger 当前快照",
-                "失败率高的外部 handler 自动降级为人工确认",
+                "给外部 handler 增加持久化 disable / quarantine / restore 流程",
             ],
         ),
         DeliveryCapability(

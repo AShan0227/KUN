@@ -588,7 +588,11 @@ async def _collect_handler_health_card(
 
 
 def _handler_health_blocks_execution(card: WorldHandlerHealthCard) -> bool:
-    return card.status in {"blocked", "unregistered"}
+    return (
+        card.status in {"blocked", "unregistered"}
+        or not card.configured
+        or (card.external_dispatched and not card.has_compensation)
+    )
 
 
 def _handler_health_blocked_result(
