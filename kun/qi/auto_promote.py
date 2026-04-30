@@ -38,8 +38,19 @@ async def auto_promote_protocols(app: Any, tenant_id: str) -> dict[str, Any]:
     kept = 0
     skipped = 0
     blocked_no_evidence = 0
+    replay_evidence: dict[str, Any] | None = None
 
     try:
+        if os.getenv("KUN_PROTOCOL_REPLAY_EVALUATOR_ENABLED", "1") == "1":
+            try:
+                from kun.qi.protocol_replay import ProtocolReplayEvaluator
+
+                replay_evidence = await ProtocolReplayEvaluator().evaluate_missing_evidence(
+                    registry,
+                    tenant_id,
+                )
+            except Exception as e:
+                log.warning("auto_promote.replay_evidence_failed", error=str(e))
         all_protocols = await registry.list_all(tenant_id)
     except Exception as e:
         log.warning("auto_promote.list_failed", error=str(e))
@@ -105,6 +116,7 @@ async def auto_promote_protocols(app: Any, tenant_id: str) -> dict[str, Any]:
         "kept": kept,
         "skipped": skipped,
         "blocked_no_evidence": blocked_no_evidence,
+        "replay_evidence": replay_evidence,
     }
 
 

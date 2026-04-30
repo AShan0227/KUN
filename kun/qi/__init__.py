@@ -69,6 +69,11 @@ from kun.qi.protocol import (
     reset_protocol_registry,
     set_protocol_registry,
 )
+from kun.qi.protocol_replay import (
+    PROMOTION_EVIDENCE_SOURCE,
+    ProtocolReplayAssessment,
+    ProtocolReplayEvaluator,
+)
 from kun.qi.window import (
     QiWindowConfig,
     QiWindowError,
@@ -81,6 +86,7 @@ __all__ = [
     "PHEROMONE_DECAY_RATE",
     "PHEROMONE_MAX",
     "PHEROMONE_REINFORCE_INCREMENT",
+    "PROMOTION_EVIDENCE_SOURCE",
     "AIScientistTreeSearch",
     "CandidateGenerator",
     "DarwinExplorationResult",
@@ -99,6 +105,8 @@ __all__ = [
     "ProtocolExecution",
     "ProtocolHermesTemplate",
     "ProtocolRegistry",
+    "ProtocolReplayAssessment",
+    "ProtocolReplayEvaluator",
     "ProtocolSkillStep",
     "ProtocolStatus",
     "ProtocolStorage",
