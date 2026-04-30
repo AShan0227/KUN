@@ -23,11 +23,16 @@ from kun.engineering.action_executor import (
     _gateway_result_blocks_resume,
     _handler_health_blocked_result,
     _handler_health_blocks_execution,
+    _handler_health_unknown_blocked_result,
     _health_lookup_failed_card,
+    _idempotency_blocked_result,
     _mark_task_result_queued_stmt,
+    _missing_idempotency_blocked_result,
     _resume_request_payload,
     _unblock_paused_runtime_stmt,
     _world_action_credit_inputs,
+    _world_action_has_explicit_idempotency_key,
+    _world_action_idempotency_key,
 )
 from kun.qi.problem_queue import get_qi_problem_queue, reset_qi_problem_queue
 from kun.world.gateway import WorldGatewayResult
@@ -460,6 +465,96 @@ def test_fail_world_action_execution_records_error() -> None:
     assert row.last_error == "browser crashed"
     assert row.audit_json["error"] == "browser crashed"
     assert row.completed_at == now
+
+
+@pytest.mark.unit
+def test_world_action_idempotency_key_prefers_explicit_payload_key() -> None:
+    action = type(
+        "Action",
+        (),
+        {
+            "action_id": "act-1",
+            "payload": {"idempotency_key": "send-user-42-v1"},
+        },
+    )()
+
+    assert _world_action_idempotency_key(action) == "send-user-42-v1"
+    assert _world_action_has_explicit_idempotency_key(action) is True
+
+
+@pytest.mark.unit
+def test_missing_idempotency_key_blocks_fail_closed_external_action() -> None:
+    action = type(
+        "Action",
+        (),
+        {
+            "action_id": "act-1",
+            "action_type": "enterprise_api.post",
+            "risk_level": "high",
+            "payload": {},
+        },
+    )()
+
+    result = _missing_idempotency_blocked_result(
+        action=action,
+        idempotency_key=_world_action_idempotency_key(action),
+    )
+
+    assert _world_action_has_explicit_idempotency_key(action) is False
+    assert result.gateway_mode == "policy_blocked"
+    assert result.external_dispatched is False
+    assert result.audit["reliability_guard"]["status"] == "blocked"
+    assert result.audit["reliability_guard"]["fallback_idempotency_key"] == "act-1"
+    assert "explicit idempotency_key" in result.audit["reliability_guard"]["reasons"][0]
+
+
+@pytest.mark.unit
+def test_idempotency_blocked_result_records_prior_execution_without_dispatch() -> None:
+    action = type(
+        "Action",
+        (),
+        {
+            "action_id": "act-2",
+            "action_type": "email.send",
+            "risk_level": "high",
+        },
+    )()
+    prior = WorldActionExecutionRow(
+        tenant_id="tenant-1",
+        action_id="act-1",
+        task_ref="task-1",
+        action_type="email.send",
+        target_ref="user@example.com",
+        idempotency_key="send-user-42-v1",
+        status="executed",
+        attempt_count=1,
+    )
+
+    result = _idempotency_blocked_result(
+        action=action,
+        duplicate_execution=prior,
+        idempotency_key="send-user-42-v1",
+    )
+
+    assert result.gateway_mode == "policy_blocked"
+    assert result.external_dispatched is False
+    assert result.audit["reliability_guard"]["status"] == "blocked"
+    assert result.audit["reliability_guard"]["duplicate_action_id"] == "act-1"
+    assert "duplicate idempotency key" in result.audit["reliability_guard"]["reasons"][0]
+
+
+@pytest.mark.unit
+def test_handler_health_unknown_fail_closed_result_exposes_guard_reason() -> None:
+    result = _handler_health_unknown_blocked_result(
+        action_id="act-1",
+        action_type="browser.execute",
+    )
+
+    assert result.gateway_mode == "policy_blocked"
+    assert result.requires_handler is True
+    assert result.audit["reliability_guard"]["status"] == "blocked"
+    assert "health/control state is unknown" in result.audit["reliability_guard"]["reasons"][0]
+    assert "handler_health_known" in result.permissions_required
 
 
 @pytest.mark.unit

@@ -30,19 +30,26 @@ class ProductionValueEstimator:
     """信号驱动的 expected_value 估算.
 
     Args:
-        capability_weight: capability_score 权重. 默认 0.5.
-        budget_weight: 预算剩余权重. 默认 0.3.
+        capability_weight: capability_score 权重. 默认 0.35.
+        budget_weight: 预算剩余权重. 默认 0.25.
         multi_judge_weight: 上一步 multi_judge consensus 权重. 默认 0.2.
+        history_weight: ValueGate 历史贡献信用权重. 默认 0.2.
         floor: value 下限 (无信号兜底). 默认 0.5.
     """
 
-    capability_weight: float = 0.5
-    budget_weight: float = 0.3
+    capability_weight: float = 0.35
+    budget_weight: float = 0.25
     multi_judge_weight: float = 0.2
+    history_weight: float = 0.2
     floor: float = 0.5
 
     def __post_init__(self) -> None:
-        total = self.capability_weight + self.budget_weight + self.multi_judge_weight
+        total = (
+            self.capability_weight
+            + self.budget_weight
+            + self.multi_judge_weight
+            + self.history_weight
+        )
         if abs(total - 1.0) > 0.01:
             logger.warning("ProductionValueEstimator weights sum to %.2f, expected 1.0", total)
 
@@ -69,14 +76,18 @@ class ProductionValueEstimator:
         # 3. 上一步 multi_judge consensus (默认 0.7 中立)
         judge_value = self._multi_judge_value(ctx)
 
+        # 4. 跨任务 ValueGate 历史信用
+        history_value = self._history_value(ctx)
+
         # 加权求和
         total = (
             self.capability_weight * cap_value
             + self.budget_weight * budget_value
             + self.multi_judge_weight * judge_value
+            + self.history_weight * history_value
         )
         # 兜底: 任何信号都没拿到 → floor
-        if cap_value == 0.0 and budget_value == 1.0 and judge_value == 0.7:
+        if cap_value == 0.0 and budget_value == 1.0 and judge_value == 0.7 and history_value == 0.0:
             return self.floor
 
         return max(0.0, min(1.0, total))
@@ -129,6 +140,28 @@ class ProductionValueEstimator:
         if consensus is None:
             return 0.7  # 中立
         return max(0.0, min(1.0, float(consensus)))
+
+    def _history_value(self, ctx: dict[str, Any]) -> float:
+        """Read durable/hot ValueGate resource credit seeded by Orchestrator."""
+
+        raw_keys = ctx.get("value_gate_resource_keys") or []
+        if not isinstance(raw_keys, list):
+            return 0.0
+        try:
+            from kun.engineering.credit_assignment import get_contribution_tracker
+
+            tracker = get_contribution_tracker()
+            scores = []
+            for raw in raw_keys:
+                if not raw:
+                    continue
+                # Use the full durable key.  Some ids intentionally contain
+                # colons, e.g. ``value_gate:task_type:ops.workflow``.
+                scores.append(tracker.contribution_score(str(raw)))
+            return max(scores) if scores else 0.0
+        except Exception:
+            logger.exception("value_gate.history_lookup_failed")
+            return 0.0
 
 
 __all__ = ["ProductionValueEstimator"]

@@ -216,12 +216,15 @@ def get_v3_delivery_status(
                 "idle-batch 会把情节规则蒸馏为 methodology 资产，供 ContextPacker 后续复用",
                 "NUO / CLI 可查看 resource_credit_stats 里的 top 贡献资源，避免信用只停留在流水账",
                 "相似任务的结果记忆 / 元决策记忆会召回成小证据包，接入 Watchtower Decision Plane",
+                "相似任务的执行过程记忆会召回成过程经验摘要，并进入 ContextPacker prompt 摘要",
                 "启的问题信号可持久化到 qi_problem_signals，重启后不会全部丢失",
                 "任务结果记忆会携带 strategy_pack / execution_mode / skill / context / decision_path，供相似召回和信用分配复用",
                 "SkillSelector 会消费 MoE 贡献信用热缓存，让同类候选里历史贡献高的 skill 前排",
                 "LLMRouter 会消费模型档位/模型/路线贡献信用，在真实调用前对模型档位做谨慎覆盖",
                 "Orchestrator 选 skill 前会预热持久 skill 贡献信用，并走 graph/capability 选择器",
                 "required_skills / Watchtower skill_hints 是强信号，但不再绕过贡献信用和能力卡排序",
+                "ValueGate 会把 task_type / execution_mode / strategy_pack / step skill 写入贡献信用",
+                "ProductionValueEstimator 会读取 ValueGate 历史信用，让同类任务的过往效果影响是否继续投入",
             ],
             evidence_refs=[
                 "kun/memory/writeback.py",
@@ -242,8 +245,9 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "相似任务召回目前是确定性轻量检索，还不是向量库 / 跨租户匿名经验池",
+                "执行过程经验目前只进入上下文提示，还没有直接改写 Watchtower 策略权重或 step 级 action choice",
                 "贡献信用对模型路由已进热路径，但还需要真实 dogfood 样本校准阈值",
-                "ValueGate 仍主要靠启发式估值，step outcome 还没训练成跨任务 gate estimator",
+                "ValueGate 已接轻量历史信用，但还没用真实 dogfood 样本训练成稳定的跨任务 gate estimator",
             ],
             next_steps=[
                 "用真实 dogfood 样本校准相似经验权重，避免过拟合单次成功路径",
@@ -366,6 +370,7 @@ def _world_gateway_delivery_status(
         "傩可从 world_action_executions 账本识别重试/补偿/缺幂等风险，不会默认重复真实外发",
         "任务 preflight 会尽量生成 WorldGateway 已注册的低风险动作类型：email.draft / local_file.write / webhook.post_dry_run / browser.plan",
         "真实外发和高风险动作读取 handler health/control 失败时默认 fail-closed，避免绕过傩控制",
+        "真实外发和高风险动作必须带显式 idempotency_key，重复幂等键会被代码和 DB partial unique index 双层拦截",
     ]
     done.extend(_handler_done_line(item) for item in descriptors)
 

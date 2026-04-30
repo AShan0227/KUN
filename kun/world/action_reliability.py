@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import desc, select
 
 from kun.core.db import session_scope
@@ -36,6 +36,8 @@ class WorldActionReliabilityItem(BaseModel):
     compensation_status: str = "not_needed"
     retry_status: str = "not_needed"
     idempotency_status: str = "unknown"
+    reliability_guard_status: str = "unknown"
+    guard_reasons: list[str] = Field(default_factory=list)
     last_error: str = ""
     updated_at: datetime | None = None
 
@@ -88,6 +90,7 @@ def summarize_reliability(items: list[WorldActionReliabilityItem]) -> dict[str, 
         "needs_compensation_review": 0,
         "needs_investigation": 0,
         "auto_retry_allowed": 0,
+        "guard_blocked": 0,
     }
     for item in items:
         if item.recommended_action == "review_retry":
@@ -98,6 +101,8 @@ def summarize_reliability(items: list[WorldActionReliabilityItem]) -> dict[str, 
             summary["needs_investigation"] += 1
         if item.can_auto_retry:
             summary["auto_retry_allowed"] += 1
+        if item.reliability_guard_status == "blocked":
+            summary["guard_blocked"] += 1
     return summary
 
 
@@ -108,6 +113,8 @@ def _item_from_row(row: Any) -> WorldActionReliabilityItem:
     retry_policy = str(row.retry_policy or "")
     compensation_strategy = str(row.compensation_strategy or "")
     idempotency_key = str(row.idempotency_key or "")
+    audit = _dict_or_empty(getattr(row, "audit_json", None))
+    guard_status, guard_reasons = _reliability_guard(audit)
 
     compensation_status = _compensation_status(
         status=status,
@@ -126,6 +133,7 @@ def _item_from_row(row: Any) -> WorldActionReliabilityItem:
         requires_handler=requires_handler,
         compensation_status=compensation_status,
         retry_status=retry_status,
+        reliability_guard_status=guard_status,
         last_error=str(row.last_error or ""),
     )
     return WorldActionReliabilityItem(
@@ -144,6 +152,8 @@ def _item_from_row(row: Any) -> WorldActionReliabilityItem:
         compensation_status=compensation_status,
         retry_status=retry_status,
         idempotency_status=idempotency_status,
+        reliability_guard_status=guard_status,
+        guard_reasons=guard_reasons,
         last_error=str(row.last_error or ""),
         updated_at=getattr(row, "updated_at", None),
     )
@@ -198,7 +208,10 @@ def _recommendation(
     compensation_status: str,
     retry_status: str,
     last_error: str,
+    reliability_guard_status: str = "unknown",
 ) -> tuple[ReliabilityAction, str]:
+    if reliability_guard_status == "blocked":
+        return "investigate", "外部动作执行前可靠性护栏已拦截；需要查看 guard_reasons 后重新审批。"
     if requires_handler:
         return "investigate", "缺少真实执行器；先补 handler 或改用已支持动作。"
     if compensation_status in {"missing", "needed"}:
@@ -231,6 +244,21 @@ def _has_clear_compensation(strategy: str) -> bool:
         "cannot_recall",
     )
     return not any(marker in text for marker in weak_markers)
+
+
+def _reliability_guard(audit: dict[str, Any]) -> tuple[str, list[str]]:
+    guard = audit.get("reliability_guard")
+    if not isinstance(guard, dict):
+        return "unknown", []
+    status = str(guard.get("status") or "unknown")
+    reasons = guard.get("reasons")
+    if not isinstance(reasons, list):
+        reasons = []
+    return status, [str(reason) for reason in reasons if str(reason).strip()]
+
+
+def _dict_or_empty(value: object) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
 
 
 __all__ = [

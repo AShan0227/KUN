@@ -1,8 +1,8 @@
 """Recall compact similar-task experience for Watchtower routing.
 
 This is deliberately not a full vector database.  It is the first honest loop:
-past task result / meta-decision memories are searched deterministically, then
-Watchtower gets a small evidence packet before picking a sparse strategy pack.
+past task result / meta-decision / execution-process memories are searched
+deterministically, then routing and context packing get a small evidence packet.
 """
 
 from __future__ import annotations
@@ -30,6 +30,11 @@ class SimilarTaskExperience(BaseModel):
     tags: list[str] = Field(default_factory=list)
     strategy_pack_id: str | None = None
     execution_mode: ExecutionMode | None = None
+    step_id: int | None = None
+    skill_used: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    tier: str | None = None
     validation_outcome: str | None = None
     status: str | None = None
     score_overall: float | None = None
@@ -67,7 +72,8 @@ async def recall_similar_task_experiences(
     bridge from memory writeback into MoE routing:
     - task_result tells us whether a path worked;
     - meta_decision tells us which strategy/model/skills were chosen;
-    - matching task_type/tags/text turns those into sparse strategy evidence.
+    - execution_process tells us concrete step/tool/model experience;
+    - matching task_type/tags/text turns those into sparse strategy/context evidence.
     """
 
     target_store = store or get_store()
@@ -127,6 +133,39 @@ def summarize_strategy_votes(
     }
 
 
+def summarize_execution_process_experiences(
+    experiences: list[SimilarTaskExperience],
+    *,
+    limit: int = 3,
+) -> list[str]:
+    """Return compact prompt-ready hints from related execution-process memories."""
+
+    process_experiences = [
+        experience
+        for experience in experiences
+        if experience.memory_layer == "execution_process" and experience.similarity_score > 0
+    ]
+    process_experiences.sort(
+        key=lambda item: (
+            -item.similarity_score,
+            item.step_id if item.step_id is not None else 9999,
+            item.asset_id,
+        )
+    )
+
+    lines: list[str] = []
+    for experience in process_experiences[: max(0, limit)]:
+        route = " / ".join(
+            part for part in [experience.skill_used, experience.model, experience.tier] if part
+        )
+        prefix = f"step={experience.step_id}" if experience.step_id is not None else "step=?"
+        if route:
+            prefix = f"{prefix}; {route}"
+        text = _compact(experience.summary, max_chars=220)
+        lines.append(f"{prefix}; similarity={experience.similarity_score:.2f}; {text}")
+    return lines
+
+
 def _experience_from_asset(
     *,
     asset: LayeredAsset,
@@ -136,7 +175,7 @@ def _experience_from_asset(
 ) -> SimilarTaskExperience | None:
     metadata = asset.l1_metadata
     memory_layer = str(metadata.get("memory_layer") or "")
-    if memory_layer not in {"task_result", "meta_decision"}:
+    if memory_layer not in {"task_result", "meta_decision", "execution_process"}:
         return None
     task_type = str(metadata.get("task_type") or "")
     if not task_type:
@@ -163,6 +202,11 @@ def _experience_from_asset(
         tags=list(asset.tags),
         strategy_pack_id=_optional_str(metadata.get("strategy_pack_id")),
         execution_mode=_execution_mode(metadata.get("execution_mode")),
+        step_id=_optional_int(metadata.get("step_id")),
+        skill_used=_optional_str(metadata.get("skill_used")),
+        provider=_optional_str(metadata.get("provider")),
+        model=_optional_str(metadata.get("model")),
+        tier=_optional_str(metadata.get("tier")),
         validation_outcome=_optional_str(metadata.get("validation_outcome")),
         status=_optional_str(metadata.get("status")),
         score_overall=_optional_float(metadata.get("score_overall")),
@@ -258,14 +302,31 @@ def _optional_float(value: Any) -> float | None:
         return None
 
 
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _execution_mode(value: Any) -> ExecutionMode | None:
     if value in {"FAST", "SMART", "MAX", "ENSEMBLE"}:
         return cast(ExecutionMode, value)
     return None
 
 
+def _compact(text: str, *, max_chars: int) -> str:
+    compact = " ".join(text.strip().split())
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max_chars - 3].rstrip() + "..."
+
+
 __all__ = [
     "SimilarTaskExperience",
     "recall_similar_task_experiences",
+    "summarize_execution_process_experiences",
     "summarize_strategy_votes",
 ]

@@ -29,24 +29,41 @@ class PackedContextItem(BaseModel):
     score_rationale: str = ""
 
 
+class PackedProcessExperience(BaseModel):
+    """One recalled execution-process hint for prompt context."""
+
+    asset_id: str
+    summary: str
+    similarity_score: float = Field(ge=0.0)
+
+
 class ContextPack(BaseModel):
     """A small, prompt-ready slice of the context system."""
 
     items: list[PackedContextItem] = Field(default_factory=list)
+    process_experiences: list[PackedProcessExperience] = Field(default_factory=list)
 
     def summary(self, *, max_chars: int = 1800) -> str:
-        if not self.items:
+        if not self.items and not self.process_experiences:
             return ""
-        lines = ["相关上下文资产 (L1/L2 摘要):"]
-        for item in self.items:
-            title = f"{item.asset_kind}:{item.asset_id}"
-            if item.title:
-                title = f"{title} — {item.title}"
-            lines.append(f"- {title}")
-            if item.tags:
-                lines.append(f"  tags: {', '.join(item.tags[:6])}")
-            if item.summary:
-                lines.append(f"  summary: {item.summary}")
+        lines: list[str] = []
+        if self.items:
+            lines.append("相关上下文资产 (L1/L2 摘要):")
+            for item in self.items:
+                title = f"{item.asset_kind}:{item.asset_id}"
+                if item.title:
+                    title = f"{title} — {item.title}"
+                lines.append(f"- {title}")
+                if item.tags:
+                    lines.append(f"  tags: {', '.join(item.tags[:6])}")
+                if item.summary:
+                    lines.append(f"  summary: {item.summary}")
+        if self.process_experiences:
+            if lines:
+                lines.append("")
+            lines.append("相关执行过程经验:")
+            for experience in self.process_experiences:
+                lines.append(f"- {experience.summary}")
         text = "\n".join(lines)
         if len(text) <= max_chars:
             return text
@@ -119,7 +136,14 @@ class ContextPacker:
         scored = await self._rank_assets(candidates, query=query)
         selected = scored[:limit]
         await self._touch_selected(selected)
-        return ContextPack(items=[_to_packed(score, asset) for asset, score in selected])
+        process_experiences = await self._recall_process_experiences(
+            task_ref,
+            tenant_id=tenant_id,
+        )
+        return ContextPack(
+            items=[_to_packed(score, asset) for asset, score in selected],
+            process_experiences=process_experiences,
+        )
 
     def pack_anchor_then_expand(
         self,
@@ -280,6 +304,53 @@ class ContextPacker:
                 log.debug("context_packer.touch_selected_failed", exc_info=True)
                 continue
 
+    async def _recall_process_experiences(
+        self,
+        task_ref: TaskRef,
+        *,
+        tenant_id: str,
+    ) -> list[PackedProcessExperience]:
+        try:
+            from kun.memory.similar_task_recall import (
+                recall_similar_task_experiences,
+                summarize_execution_process_experiences,
+            )
+
+            experiences = await recall_similar_task_experiences(
+                tenant_id=tenant_id,
+                task_ref=task_ref,
+                store=self._store,
+                limit=12,
+            )
+            process_by_asset_id = {
+                experience.asset_id: experience
+                for experience in experiences
+                if experience.memory_layer == "execution_process"
+            }
+            ordered_process_ids = [
+                experience.asset_id
+                for experience in sorted(
+                    process_by_asset_id.values(),
+                    key=lambda item: (
+                        -item.similarity_score,
+                        item.step_id if item.step_id is not None else 9999,
+                        item.asset_id,
+                    ),
+                )
+            ]
+            summaries = summarize_execution_process_experiences(experiences)
+            return [
+                PackedProcessExperience(
+                    asset_id=asset_id,
+                    summary=summary,
+                    similarity_score=process_by_asset_id[asset_id].similarity_score,
+                )
+                for asset_id, summary in zip(ordered_process_ids, summaries, strict=False)
+            ]
+        except Exception:
+            log.debug("context_packer.process_experience_recall_failed", exc_info=True)
+            return []
+
 
 def _task_terms(task_ref: TaskRef) -> set[str]:
     parts = [
@@ -402,4 +473,9 @@ def _terms(text: str) -> set[str]:
     return {part.lower() for part in re.findall(r"[\w.-]+", text) if len(part) >= 2}
 
 
-__all__ = ["ContextPack", "ContextPacker", "PackedContextItem"]
+__all__ = [
+    "ContextPack",
+    "ContextPacker",
+    "PackedContextItem",
+    "PackedProcessExperience",
+]

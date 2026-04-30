@@ -22,6 +22,7 @@ from kun.interface.llm.stub_provider import StubProvider
 from kun.memory.similar_task_recall import (
     SimilarTaskExperience,
     recall_similar_task_experiences,
+    summarize_execution_process_experiences,
     summarize_strategy_votes,
 )
 from kun.watchtower.decision_plane import WatchtowerDecisionPlane
@@ -228,6 +229,47 @@ async def test_similar_task_recall_extracts_strategy_votes_from_memory() -> None
     assert experiences[0].strategy_pack_id == "commercialization"
     assert experiences[0].positive_weight > 0
     assert summarize_strategy_votes(experiences)["commercialization"] > 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_similar_task_recall_returns_execution_process_experience() -> None:
+    store = InMemoryAssetStore()
+    task_ref = _task_ref(
+        task_type="coding.python.pytest",
+        text="修复 pytest 失败并输出回归报告",
+    )
+    process = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={
+            "memory_layer": "execution_process",
+            "task_type": "coding.python.pytest",
+            "step_id": 2,
+            "skill_used": "coding-pytest",
+            "provider": "stub",
+            "model": "gpt-test",
+            "tier": "cheap",
+            "cost_usd": 0.02,
+        },
+        summary="执行过程: step=2; skill=coding-pytest; 先复现 pytest 失败，再最小修复并回归。",
+        layer=AssetLayer.L1_TASK,
+        tags=["v3", "execution_process", "coding.python.pytest", "coding-pytest", "pytest"],
+    )
+    await store.put(process)
+
+    experiences = await recall_similar_task_experiences(
+        tenant_id="u-sylvan",
+        task_ref=task_ref,
+        store=store,
+    )
+
+    assert experiences[0].memory_layer == "execution_process"
+    assert experiences[0].skill_used == "coding-pytest"
+    assert experiences[0].model == "gpt-test"
+    process_summaries = summarize_execution_process_experiences(experiences)
+    assert process_summaries
+    assert "先复现 pytest 失败" in process_summaries[0]
 
 
 @pytest.mark.unit

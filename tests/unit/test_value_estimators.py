@@ -33,6 +33,7 @@ async def test_budget_used_up_lowers_value() -> None:
         capability_weight=0.0,
         budget_weight=1.0,
         multi_judge_weight=0.0,
+        history_weight=0.0,
     )
     v_full = await est.estimate({"accumulated_cost_usd": 0, "budget_usd": 10})
     v_empty = await est.estimate({"accumulated_cost_usd": 10, "budget_usd": 10})
@@ -51,6 +52,7 @@ async def test_multi_judge_consensus_lifts_value() -> None:
         capability_weight=0.0,
         budget_weight=0.0,
         multi_judge_weight=1.0,
+        history_weight=0.0,
     )
     v_high = await est.estimate({"last_multi_judge_consensus": 0.95})
     v_low = await est.estimate({"last_multi_judge_consensus": 0.3})
@@ -80,10 +82,43 @@ async def test_capability_lookup_failure_returns_zero() -> None:
 
 @pytest.mark.asyncio
 async def test_negative_budget_remaining_clamps_to_zero() -> None:
-    est = ProductionValueEstimator(capability_weight=0.0, budget_weight=1.0, multi_judge_weight=0.0)
+    est = ProductionValueEstimator(
+        capability_weight=0.0,
+        budget_weight=1.0,
+        multi_judge_weight=0.0,
+        history_weight=0.0,
+    )
     v = await est.estimate({"accumulated_cost_usd": 100, "budget_usd": 10})
     # 超支 → budget remaining 应该 clamp 到 0
     assert v <= 0.5
+
+
+@pytest.mark.asyncio
+async def test_history_credit_lifts_value() -> None:
+    """ValueGate can read durable/hot resource credit preloaded by Orchestrator."""
+    from kun.engineering.credit_assignment import get_contribution_tracker
+
+    tracker = get_contribution_tracker()
+    tracker.reset()
+    try:
+        tracker.seed_counts(
+            "value_gate:task_type:ops.workflow",
+            used_count=10,
+            pass_count=10,
+            critical_count=10,
+        )
+        est = ProductionValueEstimator(
+            capability_weight=0.0,
+            budget_weight=0.0,
+            multi_judge_weight=0.0,
+            history_weight=1.0,
+        )
+
+        v = await est.estimate({"value_gate_resource_keys": ["value_gate:task_type:ops.workflow"]})
+
+        assert v == 1.0
+    finally:
+        tracker.reset()
 
 
 # ---- 权重校验 ----
@@ -94,7 +129,7 @@ def test_weights_warn_when_not_sum_to_one(caplog: pytest.LogCaptureFixture) -> N
 
     with caplog.at_level(logging.WARNING):
         ProductionValueEstimator(capability_weight=0.3, budget_weight=0.3, multi_judge_weight=0.3)
-    # 0.9 ≠ 1.0 → warning
+    # 0.3 + 0.3 + 0.3 + default history 0.2 = 1.1 → warning
     assert any("weights sum" in r.message.lower() for r in caplog.records)
 
 

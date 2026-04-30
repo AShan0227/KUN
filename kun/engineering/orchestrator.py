@@ -1342,6 +1342,18 @@ class Orchestrator:
                             _gate_ctx["strategy_pack_id"] = watchtower_decision.strategy_pack_id
                             _gate_ctx["metric_dimensions"] = watchtower_decision.metric_dimensions
                             _gate_ctx["reward_weights"] = watchtower_decision.reward_weights
+                        _gate_ctx["value_gate_resource_keys"] = _value_gate_resource_keys(
+                            task_ref=task_ref,
+                            step_skill=getattr(step_plan, "skill", ""),
+                            execution_mode=_exec_mode,
+                            watchtower_decision=watchtower_decision,
+                        )
+                        async with session_scope(tenant_id=tenant.tenant_id) as s:
+                            await load_resource_credit_scores(
+                                s,
+                                tenant_id=tenant.tenant_id,
+                                resource_keys=_gate_ctx["value_gate_resource_keys"],
+                            )
                         gate_decision = await self.value_gate.check_step(
                             task_ref=task_ref,
                             step_plan=step_plan,
@@ -2475,7 +2487,14 @@ class Orchestrator:
             ],
             "execution_mode": [task_ref.meta.execution_mode],
             "role_template": [role_template_id],
+            "value_gate": _value_gate_credit_resources(
+                task_ref=task_ref,
+                execution_mode=task_ref.meta.execution_mode,
+                watchtower_decision=watchtower_decision,
+            ),
         }
+        if skill_ids:
+            resources["value_gate_action"] = skill_ids
         if decision_ticket_ids:
             resources["decision_ticket"] = list(decision_ticket_ids)
         if watchtower_decision is not None:
@@ -3396,6 +3415,54 @@ def _watchtower_similar_experience_asset_ids(watchtower_decision: Any) -> list[s
         if isinstance(asset_id, str) and asset_id:
             out.append(asset_id)
     return out
+
+
+def _value_gate_credit_resources(
+    *,
+    task_ref: TaskRef,
+    execution_mode: str,
+    watchtower_decision: Any,
+) -> list[str]:
+    """Return stable resource ids for cross-task ValueGate learning.
+
+    ``persist_resource_credit_report`` stores these under the ``value_gate``
+    kind, so the durable keys become ``value_gate:<id>``.  The ids are compact
+    and intentionally task-type level rather than task-id level; otherwise the
+    gate would only learn one-off facts and never generalize.
+    """
+
+    resources: list[str] = []
+    task_type = getattr(task_ref.meta, "task_type", "")
+    if task_type:
+        resources.append(f"task_type:{task_type}")
+    if execution_mode:
+        resources.append(f"execution_mode:{execution_mode}")
+    strategy_pack_id = getattr(watchtower_decision, "strategy_pack_id", "") or ""
+    if strategy_pack_id:
+        resources.append(f"strategy_pack:{strategy_pack_id}")
+    return _dedupe_strings(resources)
+
+
+def _value_gate_resource_keys(
+    *,
+    task_ref: TaskRef,
+    step_skill: str,
+    execution_mode: str,
+    watchtower_decision: Any,
+) -> list[str]:
+    """Return durable resource keys that the ValueGate estimator should preload."""
+
+    keys = [
+        f"value_gate:{resource_id}"
+        for resource_id in _value_gate_credit_resources(
+            task_ref=task_ref,
+            execution_mode=execution_mode,
+            watchtower_decision=watchtower_decision,
+        )
+    ]
+    if step_skill and step_skill != "llm.direct":
+        keys.append(f"value_gate_action:{step_skill}")
+    return _dedupe_strings(keys)
 
 
 def _context_resource_ids(context_pack: ContextPack) -> list[str]:

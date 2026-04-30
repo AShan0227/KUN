@@ -85,3 +85,36 @@ def test_reliability_investigates_missing_handler() -> None:
     assert items[0].recommended_action == "investigate"
     assert "缺少真实执行器" in items[0].reason
     assert summarize_reliability(items)["needs_investigation"] == 1
+
+
+def test_reliability_surfaces_execution_guard_blocks() -> None:
+    items = reliability_items_from_rows(
+        [
+            SimpleNamespace(
+                action_id="act-4",
+                task_ref="task-4",
+                action_type="email.send",
+                status="blocked",
+                attempt_count=1,
+                handler_id="email.send.smtp.v1",
+                external_dispatched=False,
+                requires_handler=False,
+                compensation_strategy="无法自动撤回已送达邮件；只能发送更正邮件",
+                retry_policy="不自动重试",
+                idempotency_key="send-user-42-v1",
+                last_error="duplicate idempotency key",
+                audit_json={
+                    "reliability_guard": {
+                        "status": "blocked",
+                        "reasons": ["duplicate idempotency key already executed"],
+                    }
+                },
+                updated_at=None,
+            )
+        ]
+    )
+
+    assert items[0].recommended_action == "investigate"
+    assert items[0].reliability_guard_status == "blocked"
+    assert items[0].guard_reasons == ["duplicate idempotency key already executed"]
+    assert summarize_reliability(items)["guard_blocked"] == 1

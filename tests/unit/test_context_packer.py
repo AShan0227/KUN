@@ -182,6 +182,35 @@ async def test_context_packer_penalizes_failed_memories() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_context_packer_adds_recalled_execution_process_hint() -> None:
+    store = InMemoryAssetStore()
+    process = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={
+            "memory_layer": "execution_process",
+            "task_type": "coding.python.pytest",
+            "step_id": 1,
+            "skill_used": "coding-pytest",
+            "model": "gpt-test",
+            "tier": "cheap",
+        },
+        summary="执行过程: step=1; skill=coding-pytest; 先复现 pytest 报错，再做最小修复。",
+        tags=["v3", "execution_process", "coding.python.pytest", "coding-pytest", "pytest"],
+    )
+    await store.put(process)
+
+    pack = await ContextPacker(store).pack(_task(), tenant_id="u-sylvan", limit=1)
+
+    assert pack.process_experiences
+    assert pack.process_experiences[0].asset_id == process.asset_id
+    summary = pack.summary()
+    assert "相关执行过程经验" in summary
+    assert "先复现 pytest 报错" in summary
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_context_packer_uses_durable_resource_credit(monkeypatch: pytest.MonkeyPatch) -> None:
     store = InMemoryAssetStore()
     low = LayeredAsset.build(
