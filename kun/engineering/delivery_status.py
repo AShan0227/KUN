@@ -88,6 +88,7 @@ def get_v3_delivery_status(
                 "StateLedger 当前快照已新增 state_ledger_entries 持久表；全局热账本会异步 upsert，黑板读路径会先读 DB 再叠加内存热态",
                 "Mission story 可把一个长期目标下的多个 task 账本聚合成总故事线、成本、决策数和下一步",
                 "StateLedger replay 会从 EventRow 重建推断状态、外部动作、模型/skill/context 路径、风险和账本缺口",
+                "StateLedger audit 可对比当前快照和 EventRow 回放故事，标出状态漂移、成本漂移和历史缺口",
                 "idle-batch 有部分复盘和学习能力",
                 "Mission 级预算已滚动汇总并可超预算暂停",
                 "Mission reaper 可处理 queued/running 卡死任务",
@@ -114,7 +115,7 @@ def get_v3_delivery_status(
             missing=[
                 "续跑还不是原 TaskRow 原地恢复，而是 continuation task 挂回 Mission",
                 "自动续跑已经默认打开，但还缺跨周真实产品运营 dogfood 来验证长期稳定性和成本边界",
-                "StateLedger 持久化是第一版当前快照 cache；EventRow 仍是历史源，尚未做完整确定性快照重建",
+                "StateLedger 持久化是第一版当前快照 cache；已有漂移审计，但尚未做完整确定性快照重建",
                 "Mission 复盘和 continuation 摘要只做轻量权重/档位 nudging，还没训练长期策略模型",
                 "还没有跑跨周真实产品运营 dogfood",
                 "普通任务 continuation 采用子任务续跑并回写原任务视图，还不是原 TaskRow 原地续跑",

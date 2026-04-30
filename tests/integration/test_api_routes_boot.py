@@ -25,6 +25,7 @@ def test_routes_registered():
         "/api/blackboard/state-ledger/history",
         "/api/blackboard/state-ledger/{task_id}/history",
         "/api/blackboard/state-ledger/{task_id}/story",
+        "/api/blackboard/state-ledger/{task_id}/audit",
         "/ws",
         "/nuo/health/summary",
         "/nuo/health/delivery-status",

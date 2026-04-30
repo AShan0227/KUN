@@ -233,6 +233,36 @@ def test_blackboard_state_ledger_history_endpoints(bb_client: TestClient) -> Non
     assert story.json()["latest_reason"] == "命中运营策略包"
 
 
+def test_blackboard_state_ledger_audit_endpoint(bb_client: TestClient) -> None:
+    register_data_source(
+        "state_ledger_audit",
+        lambda **kw: {
+            "task_id": kw["task_id"],
+            "tenant_id": kw["tenant_id"],
+            "snapshot_source": "persistent",
+            "snapshot_found": True,
+            "replay_found": True,
+            "snapshot_status": "running",
+            "replay_status": "running",
+            "status_matches": True,
+            "event_count": 3,
+            "decision_count": 1,
+            "reconstruction_confidence": 0.8,
+            "drift_detected": False,
+            "issues": [],
+        },
+    )
+
+    resp = bb_client.get(
+        "/api/blackboard/state-ledger/tk-1/audit",
+        headers={"X-User-Id": "u-1", "X-Tenant-Id": "t-1"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["snapshot_source"] == "persistent"
+    assert resp.json()["status_matches"] is True
+
+
 def test_blackboard_workspace_default(bb_client: TestClient) -> None:
     resp = bb_client.get("/api/blackboard/workspace/tk-1", headers={"X-User-Id": "u-1"})
     assert resp.status_code == 200

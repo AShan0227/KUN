@@ -788,7 +788,7 @@ V4 继续坚持：
 6. Mission worker 已经能接 Orchestrator runner 做 continuation。
 7. NUO 页面已经有健康、成本、权限、风险、能力边界入口。
 8. Delivery Status 已有 API 和 CLI，可直接检查 ready / partial / not_ready，防止伪功能。
-9. State Ledger 已有当前热视图、EventRow 历史回放、任务 story 摘要。
+9. State Ledger 已有当前热视图、EventRow 历史回放、任务 story 摘要和快照/回放漂移审计。
 10. WorldGateway handler 健康、半启用真实 handler 配置、resource credit top 贡献资源已经进入傩/ops 视图。
 
 ### 17.2 还不能吹成完整闭环的部分
@@ -819,7 +819,7 @@ V4 继续坚持：
    - 但这还不是完整 Secret Manager；密钥轮换、租户自助配置、支付/公开发布动作、补偿演练还没完成。
 
 7. **State Ledger 仍不是完整事件溯源系统**
-   - 当前已有热状态、历史事件回放、任务 story 摘要。
+   - 当前已有热状态、历史事件回放、任务 story 摘要和漂移审计。
    - 但还不能从事件完整重建所有业务对象，也还没有跨 Mission 的长期运营故事线。
 
 8. **Decision Ticket 已经进入很多关键路径，但仍需收尾**
@@ -966,6 +966,7 @@ V4 继续坚持：
 - `kun ops readiness`：把 preflight、secret-audit、delivery-status 和可选 dogfood 汇成一份正式测试报告。
 - `/nuo/health/resource-credit` 和 `kun ops credit-report`：可查看 memory / skill / model / decision 等资源的持久贡献信用。
 - `/api/blackboard/state-ledger/{task_id}/story`：可把某个任务的长期事件历史压成可读故事线。
+- `/api/blackboard/state-ledger/{task_id}/audit`：可对比当前快照和 EventRow 回放故事，标出状态/成本漂移和历史缺口。
 - 主工作区已经显示能力边界数量和 top 用户可见缺口，避免用户把 partial / audit_only 当成 ready。
 - 傩系统体检的 warn/error/critical finding 已进入黑板全局状态，主工作区可看到系统风险并跳转到傩处理。
 - `POST /api/auth/signup`：默认关闭的邀请码注册入口，可创建租户账本、owner 和 access+refresh 会话；这不是密码登录 / OAuth。

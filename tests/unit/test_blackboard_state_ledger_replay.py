@@ -71,6 +71,54 @@ def test_history_item_uses_step_delta_cost_not_accumulated_total() -> None:
     assert item["cost_usd"] == 0.03
 
 
+def test_state_ledger_audit_flags_status_and_cost_drift() -> None:
+    audit = sources._state_ledger_audit_from_snapshot_and_story(
+        task_id="task-1",
+        tenant_id="tenant-1",
+        snapshot={
+            "task_id": "task-1",
+            "tenant_id": "tenant-1",
+            "status": "running",
+            "cost_so_far_usd": 0.25,
+            "updated_at": "2026-04-30T00:01:00+00:00",
+        },
+        story={
+            "task_id": "task-1",
+            "event_count": 3,
+            "decision_count": 1,
+            "status": "done",
+            "total_cost_usd": 0.1,
+            "last_seen_at": "2026-04-30T00:00:00+00:00",
+            "reconstruction_confidence": 0.7,
+            "gaps": ["missing_task_created_event"],
+        },
+        snapshot_source="persistent",
+    )
+
+    assert audit["snapshot_found"] is True
+    assert audit["replay_found"] is True
+    assert audit["snapshot_source"] == "persistent"
+    assert audit["status_matches"] is False
+    assert audit["drift_detected"] is True
+    assert audit["issues"] == ["status_drift", "cost_drift", "missing_task_created_event"]
+    assert audit["cost_delta_usd"] == 0.15
+
+
+def test_state_ledger_audit_is_honest_when_history_is_missing() -> None:
+    audit = sources._state_ledger_audit_from_snapshot_and_story(
+        task_id="task-1",
+        tenant_id="tenant-1",
+        snapshot={"task_id": "task-1", "status": "paused"},
+        story={"task_id": "task-1", "event_count": 0, "status": "unknown"},
+        snapshot_source="hot",
+    )
+
+    assert audit["snapshot_found"] is True
+    assert audit["replay_found"] is False
+    assert audit["drift_detected"] is False
+    assert audit["issues"] == ["missing_durable_history"]
+
+
 @pytest.mark.asyncio
 async def test_state_ledger_main_source_reads_persistent_snapshot_first(
     monkeypatch: pytest.MonkeyPatch,

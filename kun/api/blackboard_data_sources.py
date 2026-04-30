@@ -35,6 +35,7 @@ def install_blackboard_data_sources() -> None:
     register_data_source("state_ledger", _state_ledger_source)
     register_data_source("state_ledger_history", _state_ledger_history_source)
     register_data_source("state_ledger_story", _state_ledger_story_source)
+    register_data_source("state_ledger_audit", _state_ledger_audit_source)
     register_data_source("workspace", _workspace_source)
     register_data_source("assets", _assets_source)
 
@@ -433,6 +434,127 @@ async def _state_ledger_story_source(
     )
 
 
+async def _state_ledger_audit_source(
+    *,
+    tenant_id: str,
+    user_id: str,
+    task_id: str,
+    limit: int = 100,
+    **_: Any,
+) -> dict[str, Any]:
+    """Compare the current snapshot with the EventRow replay story."""
+
+    snapshot, source = await _state_ledger_snapshot_for_audit(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        task_id=task_id,
+    )
+    story = await _state_ledger_story_source(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        task_id=task_id,
+        limit=limit,
+    )
+    return _state_ledger_audit_from_snapshot_and_story(
+        task_id=task_id,
+        tenant_id=tenant_id,
+        snapshot=snapshot,
+        story=story,
+        snapshot_source=source,
+    )
+
+
+async def _state_ledger_snapshot_for_audit(
+    *,
+    tenant_id: str,
+    user_id: str | None,
+    task_id: str,
+) -> tuple[dict[str, Any] | None, str]:
+    ledger = get_state_ledger()
+    hot = ledger.snapshot(task_id, tenant_id=tenant_id)
+    if hot is not None and _matches_user(hot.user_id, user_id):
+        return hot.model_dump(mode="json"), "hot"
+
+    persisted = await _persistent_state_ledger_source(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        task_id=task_id,
+    )
+    if isinstance(persisted, dict):
+        return persisted, "persistent"
+
+    runtime = await _runtime_state_ledger_source(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        task_id=task_id,
+    )
+    if isinstance(runtime, dict):
+        return runtime, "runtime"
+
+    replayed = await _replayed_state_ledger_source(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        task_id=task_id,
+    )
+    if isinstance(replayed, dict):
+        return replayed, "events_replay"
+
+    return None, "missing"
+
+
+def _state_ledger_audit_from_snapshot_and_story(
+    *,
+    task_id: str,
+    tenant_id: str,
+    snapshot: dict[str, Any] | None,
+    story: dict[str, Any],
+    snapshot_source: str,
+) -> dict[str, Any]:
+    snapshot = snapshot or {}
+    snapshot_found = bool(snapshot)
+    event_count = _int_value(story.get("event_count"))
+    replay_found = event_count > 0
+    snapshot_status = str(snapshot.get("status") or "missing")
+    replay_status = str(story.get("status") or "unknown")
+    status_matches = snapshot_found and replay_found and snapshot_status == replay_status
+    snapshot_cost = _float_value(snapshot.get("cost_so_far_usd"))
+    replay_cost = _float_value(story.get("total_cost_usd"))
+    cost_delta = round(snapshot_cost - replay_cost, 6)
+    issues: list[str] = []
+    if not snapshot_found:
+        issues.append("missing_current_snapshot")
+    if not replay_found:
+        issues.append("missing_durable_history")
+    if snapshot_found and replay_found and not status_matches:
+        issues.append("status_drift")
+    if abs(cost_delta) > 0.01:
+        issues.append("cost_drift")
+    gaps = story.get("gaps")
+    if isinstance(gaps, list):
+        issues.extend(str(item) for item in gaps if item)
+
+    return {
+        "task_id": task_id,
+        "tenant_id": tenant_id,
+        "snapshot_source": snapshot_source if snapshot_found else "missing",
+        "snapshot_found": snapshot_found,
+        "replay_found": replay_found,
+        "snapshot_status": snapshot_status,
+        "replay_status": replay_status,
+        "status_matches": status_matches,
+        "snapshot_updated_at": _optional_str(snapshot.get("updated_at")),
+        "replay_last_seen_at": _optional_str(story.get("last_seen_at")),
+        "event_count": event_count,
+        "decision_count": _int_value(story.get("decision_count")),
+        "snapshot_cost_usd": snapshot_cost,
+        "replay_cost_usd": replay_cost,
+        "cost_delta_usd": cost_delta,
+        "reconstruction_confidence": _float_value(story.get("reconstruction_confidence")),
+        "drift_detected": any(item.endswith("_drift") for item in issues),
+        "issues": issues,
+    }
+
+
 async def _runtime_state_ledger_source(
     *,
     tenant_id: str,
@@ -731,6 +853,20 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value)
     return text if text else None
+
+
+def _int_value(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _float_value(value: Any) -> float:
+    try:
+        return round(float(value or 0.0), 6)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _matches_user(entry_user_id: str | None, requested_user_id: str | None) -> bool:

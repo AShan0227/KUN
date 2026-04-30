@@ -94,6 +94,33 @@ class StateLedgerStory(BaseModel):
     timeline: list[StateLedgerHistoryItem] = Field(default_factory=list)
 
 
+class StateLedgerAudit(BaseModel):
+    """Compare current State Ledger snapshot with replayed durable events.
+
+    这不是“完整事件溯源已完成”的证明，只是给 NUO/开发者一个诚实的
+    漂移检查：当前快照和长期事件回放是否还能对上。
+    """
+
+    task_id: str
+    tenant_id: str = ""
+    snapshot_source: str = "missing"
+    snapshot_found: bool = False
+    replay_found: bool = False
+    snapshot_status: str = "missing"
+    replay_status: str = "unknown"
+    status_matches: bool = False
+    snapshot_updated_at: str | None = None
+    replay_last_seen_at: str | None = None
+    event_count: int = 0
+    decision_count: int = 0
+    snapshot_cost_usd: float = 0.0
+    replay_cost_usd: float = 0.0
+    cost_delta_usd: float = 0.0
+    reconstruction_confidence: float = 0.0
+    drift_detected: bool = False
+    issues: list[str] = Field(default_factory=list)
+
+
 class GlobalStateView(BaseModel):
     """全局状态区 (对人 5 个核心信息块)."""
 
@@ -300,6 +327,45 @@ async def get_state_ledger_task_story(
     return StateLedgerStory.model_validate(item)
 
 
+@router.get("/state-ledger/{task_id}/audit", response_model=StateLedgerAudit)
+async def get_state_ledger_task_audit(
+    task_id: str,
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-Id")] = None,
+    limit: int = Query(100, ge=1, le=500),
+) -> StateLedgerAudit:
+    """审计某个任务：当前快照和长期事件回放是否漂移."""
+    fn = _data_sources.get("state_ledger_audit")
+    tenant_id, user_id = _request_identity(x_user_id=x_user_id, x_tenant_id=x_tenant_id)
+    if fn is not None:
+        item = await _maybe_await(
+            fn(tenant_id=tenant_id, user_id=user_id, task_id=task_id, limit=limit)
+        )
+        return StateLedgerAudit.model_validate(item)
+
+    ledger_fn = _data_sources.get("state_ledger")
+    story_fn = _data_sources.get("state_ledger_story")
+    snapshot = (
+        await _maybe_await(ledger_fn(tenant_id=tenant_id, user_id=user_id, task_id=task_id))
+        if ledger_fn
+        else None
+    )
+    story = (
+        await _maybe_await(
+            story_fn(tenant_id=tenant_id, user_id=user_id, task_id=task_id, limit=limit)
+        )
+        if story_fn
+        else {"task_id": task_id}
+    )
+    return _audit_from_snapshot_and_story(
+        task_id=task_id,
+        tenant_id=tenant_id,
+        snapshot=snapshot,
+        story=story,
+        snapshot_source="blackboard",
+    )
+
+
 @router.get("/state-ledger/{task_id}", response_model=StateLedgerEntry)
 async def get_state_ledger_task(
     task_id: str,
@@ -401,6 +467,15 @@ async def get_full_for_agent(
             if "state_ledger_story" in _data_sources
             else {}
         ),
+        "state_ledger_audit": (
+            await _maybe_await(
+                _data_sources["state_ledger_audit"](
+                    tenant_id=tenant_id, user_id=user_id, task_id=task_id, limit=100
+                )
+            )
+            if "state_ledger_audit" in _data_sources
+            else {}
+        ),
         "workspace": (await _maybe_await(ws_fn(task_id=task_id, user_id=user_id)) if ws_fn else {}),
         "assets": (
             await _maybe_await(assets_fn(task_id=task_id, user_id=user_id)) if assets_fn else {}
@@ -427,10 +502,87 @@ def _story_from_history(
     )
 
 
+def _audit_from_snapshot_and_story(
+    *,
+    task_id: str,
+    tenant_id: str,
+    snapshot: Any,
+    story: Any,
+    snapshot_source: str,
+) -> StateLedgerAudit:
+    snapshot_data = _model_or_dict(snapshot)
+    story_data = _model_or_dict(story)
+    snapshot_found = bool(snapshot_data)
+    replay_found = int(story_data.get("event_count") or 0) > 0
+    snapshot_status = str(snapshot_data.get("status") or "missing")
+    replay_status = str(story_data.get("status") or "unknown")
+    status_matches = snapshot_found and replay_found and snapshot_status == replay_status
+    snapshot_cost = _float_value(snapshot_data.get("cost_so_far_usd"))
+    replay_cost = _float_value(story_data.get("total_cost_usd"))
+    cost_delta = round(snapshot_cost - replay_cost, 6)
+    issues: list[str] = []
+    if not snapshot_found:
+        issues.append("missing_current_snapshot")
+    if not replay_found:
+        issues.append("missing_durable_history")
+    if snapshot_found and replay_found and not status_matches:
+        issues.append("status_drift")
+    if abs(cost_delta) > 0.01:
+        issues.append("cost_drift")
+    for gap in story_data.get("gaps", []) if isinstance(story_data.get("gaps"), list) else []:
+        if gap:
+            issues.append(str(gap))
+    return StateLedgerAudit(
+        task_id=task_id,
+        tenant_id=tenant_id,
+        snapshot_source=snapshot_source if snapshot_found else "missing",
+        snapshot_found=snapshot_found,
+        replay_found=replay_found,
+        snapshot_status=snapshot_status,
+        replay_status=replay_status,
+        status_matches=status_matches,
+        snapshot_updated_at=_optional_text(snapshot_data.get("updated_at")),
+        replay_last_seen_at=_optional_text(story_data.get("last_seen_at")),
+        event_count=int(story_data.get("event_count") or 0),
+        decision_count=int(story_data.get("decision_count") or 0),
+        snapshot_cost_usd=snapshot_cost,
+        replay_cost_usd=replay_cost,
+        cost_delta_usd=cost_delta,
+        reconstruction_confidence=_float_value(story_data.get("reconstruction_confidence")),
+        drift_detected=any(item.endswith("_drift") for item in issues),
+        issues=issues,
+    )
+
+
+def _model_or_dict(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _float_value(value: Any) -> float:
+    try:
+        return round(float(value or 0.0), 6)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
+
+
 __all__ = [
     "AssetPoolSliceView",
     "EventStreamItem",
     "GlobalStateView",
+    "StateLedgerAudit",
     "StateLedgerEntry",
     "StateLedgerHistoryItem",
     "StateLedgerStory",
