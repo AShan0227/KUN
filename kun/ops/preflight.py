@@ -19,6 +19,7 @@ from kun.core.config import Settings, settings
 from kun.engineering.delivery_status import delivery_status_summary, validate_delivery_status
 from kun.ops.secret_audit import audit_runtime_secrets
 from kun.world.handler_health import EXPECTED_REAL_WORLD_HANDLERS
+from kun.world.tenant_env import missing_required_world_env
 
 PreflightSeverity = Literal["ok", "warn", "blocker"]
 
@@ -189,7 +190,7 @@ def _world_gateway_config_checks() -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
     for action_type, (enable_env, required_envs) in EXPECTED_REAL_WORLD_HANDLERS.items():
         enabled = _env_truthy(os.getenv(enable_env))
-        missing = [name for name in required_envs if not (os.getenv(name) or "").strip()]
+        missing = missing_required_world_env(required_envs)
         if enabled and missing:
             checks.append(
                 PreflightCheck(
@@ -206,7 +207,10 @@ def _world_gateway_config_checks() -> list[PreflightCheck]:
                     check_id=f"world_handler_config:{action_type}",
                     severity="ok",
                     title=f"WorldGateway {action_type} 基础配置通过",
-                    detail=f"{enable_env}=true，必需 env 已提供。",
+                    detail=(
+                        f"{enable_env}=true，必需 env 已提供。"
+                        " 可用全局 env，也可用 KUN_TENANT_<TENANT>_* 租户级 env。"
+                    ),
                 )
             )
     return checks

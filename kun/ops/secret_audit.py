@@ -15,6 +15,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kun.core.config import Settings, settings
 from kun.world.handler_health import EXPECTED_REAL_WORLD_HANDLERS
+from kun.world.tenant_env import (
+    has_any_scoped_env,
+    missing_required_world_env,
+)
 
 AuditSeverity = Literal["ok", "warn", "blocker"]
 AuditArea = Literal[
@@ -278,7 +282,7 @@ def _world_gateway_items(env: Mapping[str, str]) -> list[SecretAuditItem]:
     items: list[SecretAuditItem] = []
     for action_type, (enable_env, required_envs) in EXPECTED_REAL_WORLD_HANDLERS.items():
         enabled = _env_truthy(env.get(enable_env))
-        missing = [name for name in required_envs if not env.get(name, "").strip()]
+        missing = missing_required_world_env(required_envs, env=env)
         if enabled and missing:
             items.append(
                 SecretAuditItem(
@@ -296,13 +300,17 @@ def _world_gateway_items(env: Mapping[str, str]) -> list[SecretAuditItem]:
             extra = _world_gateway_extra_risks(action_type, env)
             items.extend(extra)
             if not extra:
+                scoped = [name for name in required_envs if has_any_scoped_env(name, env=env)]
                 items.append(
                     SecretAuditItem(
                         item_id=f"world_gateway.{action_type}.configured",
                         area="world_gateway",
                         severity="ok",
                         title=f"{action_type} 基础配置通过",
-                        detail="真实外部 handler 已启用，必需 env 已提供；执行仍需权限和人工确认。",
+                        detail=(
+                            "真实外部 handler 已启用，必需 env 已提供；执行仍需权限和人工确认。"
+                            + (" 检测到租户级配置覆盖: " + ", ".join(scoped) if scoped else "")
+                        ),
                         env_vars=[enable_env, *required_envs],
                     )
                 )

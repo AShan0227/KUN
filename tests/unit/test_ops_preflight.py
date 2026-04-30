@@ -141,6 +141,35 @@ def test_preflight_accepts_enabled_world_gateway_handler_with_required_env(
 
 
 @pytest.mark.unit
+def test_preflight_accepts_enabled_world_gateway_handler_with_tenant_scoped_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "backup_postgres.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (scripts / "restore_postgres_smoke.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    monkeypatch.setenv("KUN_WORLD_EMAIL_SEND_ENABLED", "true")
+    monkeypatch.delenv("KUN_WORLD_SMTP_HOST", raising=False)
+    monkeypatch.delenv("KUN_WORLD_SMTP_FROM", raising=False)
+    monkeypatch.setenv("KUN_TENANT_TENANT_A_WORLD_SMTP_HOST", "smtp.tenant-a.example.com")
+    monkeypatch.setenv("KUN_TENANT_TENANT_A_WORLD_SMTP_FROM", "tenant-a@example.com")
+
+    report = run_preflight(
+        cfg=_safe_prod_settings(),
+        repo_root=tmp_path,
+        run_alembic_heads=False,
+    )
+
+    assert report.status == "pass"
+    world_checks = [
+        check for check in report.checks if check.check_id == "world_handler_config:email.send"
+    ]
+    assert world_checks and world_checks[0].severity == "ok"
+    assert "租户级 env" in world_checks[0].detail
+
+
+@pytest.mark.unit
 def test_secret_audit_blocks_default_database_credentials() -> None:
     cfg = Settings(
         env="production",
@@ -179,6 +208,25 @@ def test_secret_audit_detects_partial_enterprise_api_auth() -> None:
     assert any(
         item.item_id == "world_gateway.enterprise_api.partial_auth" for item in report.blockers
     )
+
+
+@pytest.mark.unit
+def test_secret_audit_accepts_tenant_scoped_world_gateway_required_env() -> None:
+    report = audit_runtime_secrets(
+        cfg=_safe_prod_settings(),
+        environ={
+            "KUN_WORLD_EMAIL_SEND_ENABLED": "true",
+            "KUN_TENANT_TENANT_A_WORLD_SMTP_HOST": "smtp.tenant-a.example.com",
+            "KUN_TENANT_TENANT_A_WORLD_SMTP_FROM": "tenant-a@example.com",
+        },
+    )
+
+    assert report.status == "pass"
+    configured = [
+        item for item in report.items if item.item_id == "world_gateway.email.send.configured"
+    ]
+    assert configured
+    assert "租户级配置覆盖" in configured[0].detail
 
 
 @pytest.mark.unit

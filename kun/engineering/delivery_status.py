@@ -311,6 +311,8 @@ def _world_gateway_delivery_status(
         "真实外部动作缺少 external_dispatch_confirmed=true 时会被策略层拦截",
         "NUO 判断 handler blocked/unregistered 时，审批后执行器会拦截并保持任务暂停",
         "WorldGateway 执行结果会回写 world_action / world_handler / world_policy 决策票据信用",
+        "真实 handler 执行时可按租户读取 SMTP / 企业 API / 浏览器白名单覆盖配置",
+        "傩体检、secret audit、preflight 已识别 KUN_TENANT_<TENANT>_* 租户级外部动作配置",
     ]
     done.extend(_handler_done_line(item) for item in descriptors)
 
@@ -323,7 +325,7 @@ def _world_gateway_delivery_status(
         missing.append("企业 API handler（enterprise_api.post 未注册；需 HTTPS host 白名单）")
     missing.extend(
         [
-            "外部系统密钥轮换和租户级密钥隔离",
+            "集中 Secret Manager、密钥轮换和租户自助密钥配置",
             "支付 / 发布等更高风险动作",
         ]
     )
@@ -350,7 +352,7 @@ def _world_gateway_delivery_status(
         ],
         next_steps=[
             "按租户配置真实 email / browser / enterprise API handler",
-            "给每个真实 handler 补租户级密钥、重试、补偿、回滚演练",
+            "把 env 级租户覆盖升级成集中 Secret Manager、轮换、重试、补偿、回滚演练",
             "把 handler 健康状态进一步接入自动限权 / 租户配置引导",
         ],
     )

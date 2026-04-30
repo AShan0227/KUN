@@ -17,6 +17,7 @@ from sqlalchemy import select
 from kun.core.db import session_scope
 from kun.core.orm import PendingActionRow
 from kun.world.gateway import WorldGateway, WorldHandlerDescriptor, get_world_gateway
+from kun.world.tenant_env import missing_required_world_env
 
 HandlerHealthStatus = Literal["ready", "limited", "blocked", "unregistered"]
 
@@ -132,7 +133,8 @@ def _build_card(
     issues: list[str] = []
     if descriptor is None:
         issues.append("没有注册 WorldGateway handler")
-        issues.extend(_expected_config_issues(action_type))
+        tenant_id = relevant[0].tenant_id if relevant else ""
+        issues.extend(_expected_config_issues(action_type, tenant_id=tenant_id))
     else:
         if descriptor.external_dispatched and descriptor.requires_external_dispatch_confirmation:
             issues.append("真实外发动作必须保留人工确认")
@@ -291,7 +293,7 @@ def _status_rank(status: HandlerHealthStatus) -> int:
     return {"blocked": 0, "unregistered": 1, "limited": 2, "ready": 3}[status]
 
 
-def _expected_config_issues(action_type: str) -> list[str]:
+def _expected_config_issues(action_type: str, *, tenant_id: str = "") -> list[str]:
     expected = EXPECTED_REAL_WORLD_HANDLERS.get(action_type)
     if expected is None:
         return []
@@ -299,9 +301,14 @@ def _expected_config_issues(action_type: str) -> list[str]:
     issues: list[str] = []
     if not _env_truthy(os.getenv(enable_env)):
         issues.append(f"未启用 {enable_env}=true")
-    missing = [name for name in required_envs if not (os.getenv(name) or "").strip()]
+    missing = missing_required_world_env(required_envs, tenant_id=tenant_id)
     if missing:
-        issues.append("缺少环境变量: " + ", ".join(missing))
+        if tenant_id:
+            issues.append(
+                "缺少全局或租户级环境变量: " + ", ".join(missing) + f" (tenant={tenant_id})"
+            )
+        else:
+            issues.append("缺少全局或任意租户级环境变量: " + ", ".join(missing))
     return issues
 
 

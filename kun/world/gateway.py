@@ -27,6 +27,15 @@ import httpx
 from pydantic import BaseModel, Field
 
 from kun.interface.hermes import DefaultHermesAdapter, HermesAdapter
+from kun.world.tenant_env import (
+    csv_set_for_tenant,
+    env_bool_for_tenant,
+    env_for_tenant,
+    env_int_for_tenant,
+    has_any_tenant_env_prefix,
+    has_tenant_env,
+    tenant_env,
+)
 
 _PREVIEW_MAX_CHARS = 12_000
 
@@ -570,44 +579,43 @@ class EmailSendHandler(WorldActionHandler):
         )
 
     def _config_for(self, action: WorldAction) -> dict[str, Any]:
-        host = _env_for_action(action, "KUN_WORLD_SMTP_HOST") or self.smtp_host
-        from_addr = _env_for_action(action, "KUN_WORLD_SMTP_FROM") or self.smtp_from
+        host = env_for_tenant(action.tenant_id, "KUN_WORLD_SMTP_HOST") or self.smtp_host
+        from_addr = env_for_tenant(action.tenant_id, "KUN_WORLD_SMTP_FROM") or self.smtp_from
         if not host or not from_addr:
             raise ValueError(
                 "email.send requires SMTP host/from via global env or tenant-scoped env"
             )
 
-        tenant_credential_override = _has_tenant_env(
-            action,
+        tenant_credential_override = has_tenant_env(
+            action.tenant_id,
             "KUN_WORLD_SMTP_USERNAME",
             "KUN_WORLD_SMTP_PASSWORD",
         )
         if tenant_credential_override:
-            username = _empty_to_none(_tenant_env(action, "KUN_WORLD_SMTP_USERNAME"))
-            password = _empty_to_none(_tenant_env(action, "KUN_WORLD_SMTP_PASSWORD"))
+            username = _empty_to_none(tenant_env(action.tenant_id, "KUN_WORLD_SMTP_USERNAME"))
+            password = _empty_to_none(tenant_env(action.tenant_id, "KUN_WORLD_SMTP_PASSWORD"))
         else:
             username = self.smtp_username
             password = self.smtp_password
 
+        has_scoped = has_any_tenant_env_prefix(action.tenant_id, "KUN_WORLD_SMTP_")
         return {
             "smtp_host": host,
-            "smtp_port": _env_int_for_action(
-                action,
+            "smtp_port": env_int_for_tenant(
+                action.tenant_id,
                 "KUN_WORLD_SMTP_PORT",
                 default=self.smtp_port,
             ),
             "smtp_username": username,
             "smtp_password": password,
             "smtp_from": from_addr,
-            "use_tls": _env_bool_for_action(
-                action,
+            "use_tls": env_bool_for_tenant(
+                action.tenant_id,
                 "KUN_WORLD_SMTP_TLS",
                 default=self.use_tls,
             ),
-            "tenant_scoped_config": _has_any_tenant_env(action, "KUN_WORLD_SMTP_"),
-            "config_source": (
-                "tenant_override" if _has_any_tenant_env(action, "KUN_WORLD_SMTP_") else "global"
-            ),
+            "tenant_scoped_config": has_scoped,
+            "config_source": "tenant_override" if has_scoped else "global",
         }
 
     def _message(
@@ -772,8 +780,8 @@ class EnterpriseApiPostHandler(WorldActionHandler):
     def _request(self, action: WorldAction) -> dict[str, Any]:
         url = str(action.payload.get("url") or action.target_ref or "").strip()
         parsed = urlparse(url)
-        allowed_hosts = _csv_set_for_action(
-            action,
+        allowed_hosts = csv_set_for_tenant(
+            action.tenant_id,
             "KUN_WORLD_API_ALLOWED_HOSTS",
             default=self.allowed_hosts,
         )
@@ -788,6 +796,7 @@ class EnterpriseApiPostHandler(WorldActionHandler):
             headers[auth_header] = auth_value
         if "Idempotency-Key" not in headers:
             headers["Idempotency-Key"] = action.action_id
+        has_scoped = has_any_tenant_env_prefix(action.tenant_id, "KUN_WORLD_API_")
         return {
             "method": "POST",
             "url": url,
@@ -795,23 +804,21 @@ class EnterpriseApiPostHandler(WorldActionHandler):
             "headers": headers,
             "json": action.payload.get("json", action.payload.get("body", {})),
             "allowed_hosts": sorted(allowed_hosts),
-            "tenant_scoped_config": _has_any_tenant_env(action, "KUN_WORLD_API_"),
-            "config_source": (
-                "tenant_override" if _has_any_tenant_env(action, "KUN_WORLD_API_") else "global"
-            ),
+            "tenant_scoped_config": has_scoped,
+            "config_source": "tenant_override" if has_scoped else "global",
             "auth_source": auth_source,
         }
 
     def _auth_for(self, action: WorldAction) -> tuple[str | None, str | None, str]:
-        tenant_auth_override = _has_tenant_env(
-            action,
+        tenant_auth_override = has_tenant_env(
+            action.tenant_id,
             "KUN_WORLD_API_AUTH_HEADER",
             "KUN_WORLD_API_AUTH_VALUE",
         )
         if tenant_auth_override:
             return (
-                _empty_to_none(_tenant_env(action, "KUN_WORLD_API_AUTH_HEADER")),
-                _empty_to_none(_tenant_env(action, "KUN_WORLD_API_AUTH_VALUE")),
+                _empty_to_none(tenant_env(action.tenant_id, "KUN_WORLD_API_AUTH_HEADER")),
+                _empty_to_none(tenant_env(action.tenant_id, "KUN_WORLD_API_AUTH_VALUE")),
                 "tenant_override",
             )
         return self.auth_header, self.auth_value, "global"
@@ -913,8 +920,8 @@ class BrowserExecuteHandler(WorldActionHandler):
     def _plan(self, action: WorldAction) -> dict[str, Any]:
         url = str(action.payload.get("url") or action.target_ref or "").strip()
         parsed = urlparse(url)
-        allowed_hosts = _csv_set_for_action(
-            action,
+        allowed_hosts = csv_set_for_tenant(
+            action.tenant_id,
             "KUN_WORLD_BROWSER_ALLOWED_HOSTS",
             default=self.allowed_hosts,
         )
@@ -936,6 +943,7 @@ class BrowserExecuteHandler(WorldActionHandler):
             steps.append(
                 {k: v for k, v in raw.items() if k in {"kind", "type", "selector", "text", "path"}}
             )
+        has_scoped = has_any_tenant_env_prefix(action.tenant_id, "KUN_WORLD_BROWSER_")
         return {
             "url": url,
             "host": parsed.hostname or "",
@@ -944,10 +952,8 @@ class BrowserExecuteHandler(WorldActionHandler):
             "task_ref": action.task_ref,
             "action_id": action.action_id,
             "allowed_hosts": sorted(allowed_hosts),
-            "tenant_scoped_config": _has_any_tenant_env(action, "KUN_WORLD_BROWSER_"),
-            "config_source": (
-                "tenant_override" if _has_any_tenant_env(action, "KUN_WORLD_BROWSER_") else "global"
-            ),
+            "tenant_scoped_config": has_scoped,
+            "config_source": "tenant_override" if has_scoped else "global",
         }
 
 
@@ -1257,73 +1263,6 @@ def _empty_to_none(value: str | None) -> str | None:
         return None
     value = value.strip()
     return value or None
-
-
-def _tenant_env_key(tenant_id: str) -> str:
-    """Return the safe tenant key used by env-scoped world credentials."""
-    return "".join(ch if ch.isalnum() else "_" for ch in tenant_id.upper()).strip("_")
-
-
-def _tenant_env_name(action: WorldAction, env_name: str) -> str | None:
-    tenant_key = _tenant_env_key(action.tenant_id)
-    if not tenant_key:
-        return None
-    suffix = env_name.removeprefix("KUN_")
-    return f"KUN_TENANT_{tenant_key}_{suffix}"
-
-
-def _tenant_env(action: WorldAction, env_name: str) -> str | None:
-    scoped_name = _tenant_env_name(action, env_name)
-    if not scoped_name:
-        return None
-    return _empty_to_none(os.getenv(scoped_name))
-
-
-def _env_for_action(action: WorldAction, env_name: str) -> str | None:
-    return _tenant_env(action, env_name) or _empty_to_none(os.getenv(env_name))
-
-
-def _has_tenant_env(action: WorldAction, *env_names: str) -> bool:
-    return any(_tenant_env(action, name) is not None for name in env_names)
-
-
-def _has_any_tenant_env(action: WorldAction, env_prefix: str) -> bool:
-    scoped_name = _tenant_env_name(action, env_prefix)
-    if not scoped_name:
-        return False
-    return any(
-        name.startswith(scoped_name) and _empty_to_none(value) is not None
-        for name, value in os.environ.items()
-    )
-
-
-def _env_int_for_action(action: WorldAction, env_name: str, *, default: int) -> int:
-    value = _env_for_action(action, env_name)
-    if value is None:
-        return default
-    try:
-        return int(value)
-    except ValueError as exc:
-        raise ValueError(f"{env_name} must be an integer") from exc
-
-
-def _env_bool_for_action(action: WorldAction, env_name: str, *, default: bool) -> bool:
-    value = _env_for_action(action, env_name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _csv_set_for_action(
-    action: WorldAction,
-    env_name: str,
-    *,
-    default: set[str],
-) -> set[str]:
-    value = _tenant_env(action, env_name)
-    if value is None:
-        return set(default)
-    return _csv_set(value)
 
 
 def _env_bool(name: str, *, default: bool = False) -> bool:

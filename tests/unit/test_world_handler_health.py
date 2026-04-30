@@ -142,3 +142,26 @@ def test_handler_health_surfaces_expected_real_handler_config_gaps(
     assert any("KUN_WORLD_EMAIL_SEND_ENABLED" in issue for issue in email.issues)
     assert any("KUN_WORLD_SMTP_HOST" in issue for issue in email.issues)
     assert "环境变量" in email.recommendation
+
+
+def test_handler_health_accepts_tenant_scoped_expected_handler_config(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("KUN_WORLD_EMAIL_SEND_ENABLED", "true")
+    monkeypatch.delenv("KUN_WORLD_SMTP_HOST", raising=False)
+    monkeypatch.delenv("KUN_WORLD_SMTP_FROM", raising=False)
+    monkeypatch.setenv("KUN_TENANT_TENANT_1_WORLD_SMTP_HOST", "smtp.tenant.example.com")
+    monkeypatch.setenv("KUN_TENANT_TENANT_1_WORLD_SMTP_FROM", "tenant@example.com")
+
+    cards = {
+        card.action_type: card
+        for card in build_world_handler_health(
+            descriptors=[],
+            rows=[_row("act-tenant", "email.send", "approved")],
+        )
+    }
+
+    email = cards["email.send"]
+    assert email.status == "unregistered"
+    assert not any("KUN_WORLD_EMAIL_SEND_ENABLED" in issue for issue in email.issues)
+    assert not any("SMTP_HOST" in issue for issue in email.issues)
