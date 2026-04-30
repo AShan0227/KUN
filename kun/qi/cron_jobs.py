@@ -39,6 +39,7 @@ async def _qi_predictive_coding_train(app: Any, tenant_id: str) -> None:
         log_singleton = get_prediction_log()
         trainer = PredictionTrainer(log_singleton)
         model = await trainer.train()
+        installed = _install_prediction_model(app, model) if model.sample_size > 0 else False
         model_path = os.getenv("KUN_PC_MODEL_PATH")
         if model_path:
             save_model(model, model_path)
@@ -46,6 +47,7 @@ async def _qi_predictive_coding_train(app: Any, tenant_id: str) -> None:
                 "qi_pc_train.saved",
                 path=model_path,
                 sample_size=model.sample_size,
+                hot_installed=installed,
                 tenant=tenant_id,
             )
         else:
@@ -53,6 +55,7 @@ async def _qi_predictive_coding_train(app: Any, tenant_id: str) -> None:
                 "qi_pc_train.done_no_save",
                 sample_size=model.sample_size,
                 version=model.version,
+                hot_installed=installed,
                 tenant=tenant_id,
             )
     except Exception:
@@ -329,6 +332,25 @@ def _check_qi_active(app: Any) -> bool:
 
         return is_qi_window_active(qi_window)
     except Exception:
+        return False
+
+
+def _install_prediction_model(app: Any, model: Any) -> bool:
+    """Hot-install the trained predictive model into the running orchestrator.
+
+    Saving a model file is useful across restarts, but Qi should also influence
+    the current process after training succeeds.  Empty/no-data models are not
+    installed by the caller, so this hook only represents real learned samples.
+    """
+
+    try:
+        app.state.predictive_coding_provider = model
+        orchestrator = getattr(app.state, "orchestrator", None)
+        if orchestrator is not None:
+            orchestrator.prediction_provider = model
+        return True
+    except Exception:
+        log.exception("qi_pc_train.hot_install_failed")
         return False
 
 

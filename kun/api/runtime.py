@@ -295,7 +295,8 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
 
     # V2.3 Wire 41/42: Predictive Coding hook (插件式)
     # 默认装 in-memory log + InMemoryUpdater. 启训完输出 prediction_model 后,
-    # prediction_provider 会 load model. 没装 → 鲲行为完全不变.
+    # cron 会热安装到 app.state/orchestrator；重启时也可从 KUN_PC_MODEL_PATH load.
+    # 没装 → 鲲行为完全不变.
     pc_provider = None
     pc_updater = None
     if _os.getenv("KUN_PREDICTIVE_CODING_ENABLED", "1") == "1":

@@ -9,6 +9,11 @@ from unittest.mock import patch
 import pytest
 from kun.engineering.cron_scheduler import CronScheduler
 from kun.qi.cron_jobs import register_qi_cron_jobs
+from kun.qi.predictive_coding import (
+    PredictionRecord,
+    get_prediction_log,
+    reset_prediction_log,
+)
 
 
 def _app_with_state() -> SimpleNamespace:
@@ -51,6 +56,48 @@ async def test_qi_cron_pc_train_runs_when_force_active() -> None:
     ):
         # 守门通过, train() 跑 (log 空 → 返 placeholder model, 无 save_path → 不写文件)
         await _qi_predictive_coding_train(app, "u-test")
+    assert getattr(app.state, "predictive_coding_provider", None) is None
+
+
+@pytest.mark.asyncio
+async def test_qi_cron_pc_train_hot_installs_model_with_samples() -> None:
+    """启训练出非空模型后，当前运行中的 orchestrator 立即吃到 prediction_provider."""
+    from datetime import UTC, datetime
+
+    from kun.qi.cron_jobs import _qi_predictive_coding_train
+
+    reset_prediction_log()
+    log = get_prediction_log()
+    await log.append(
+        PredictionRecord(
+            timestamp=datetime.now(UTC),
+            task_type="writing.greeting",
+            step_id=1,
+            state={"task_type": "writing.greeting"},
+            expected={"cost_usd": 0.5},
+            actual={"cost_usd": 0.2, "duration_sec": 3.0, "tokens": 80.0},
+            error={"cost_usd": -0.3},
+        )
+    )
+    orchestrator = SimpleNamespace(prediction_provider=None)
+    app = _app_with_state()
+    app.state.orchestrator = orchestrator
+
+    with patch.dict(
+        os.environ,
+        {
+            "KUN_QI_ENABLED": "1",
+            "KUN_QI_FORCE_ACTIVE": "1",
+        },
+        clear=False,
+    ):
+        await _qi_predictive_coding_train(app, "u-test")
+
+    provider = app.state.predictive_coding_provider
+    assert provider is orchestrator.prediction_provider
+    assert provider.sample_size == 1
+    assert provider.predict({"task_type": "writing.greeting"})["cost_usd"] == pytest.approx(0.2)
+    reset_prediction_log()
 
 
 @pytest.mark.asyncio
