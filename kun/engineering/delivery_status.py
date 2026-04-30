@@ -278,6 +278,7 @@ def get_v3_delivery_status(
                 "ops preflight 会阻断半启用的真实 WorldGateway handler 配置，避免上线后才发现密钥/env 缺失",
                 "Mission reaper、context maintenance、resource credit 已补 Prometheus 指标",
                 "ops preflight CLI 可在上线前检查配置、迁移、备份脚本和能力边界诚实性",
+                "ops backup-drill-create / backup-drill-restore-dry-run 可做本地关键配置包和 no-write restore 演练",
                 "ops secret-audit / NUO secret-audit 可检查默认密码、缺失密钥和半启用外部 handler",
                 "支持 KUN_SECRET_STORE_FILE 外部 JSON secret store，WorldGateway 租户级密钥不再只能散落在 env",
                 "ops secret-store-set 可把 KUN_WORLD_* 租户外部动作配置写入本地 JSON secret store，输出不会回显密钥值",

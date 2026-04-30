@@ -5,11 +5,13 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from kun.cli import app
 from kun.ops.backup_restore import (
     create_backup_package,
     load_manifest,
     restore_dry_run,
 )
+from typer.testing import CliRunner
 
 
 def test_backup_package_writes_manifest_and_archive(tmp_path: Path) -> None:
@@ -121,3 +123,51 @@ def test_restore_dry_run_finds_missing_archive_entry(tmp_path: Path) -> None:
     assert report.status == "block"
     assert report.archive_sha256_ok is False
     assert report.missing_from_archive == ["config/b.txt"]
+
+
+def test_ops_backup_drill_cli_create_and_restore_dry_run(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = repo / "config"
+    config.mkdir()
+    (config / "app.yaml").write_text("setting: ok\n", encoding="utf-8")
+    backup_dir = tmp_path / "backups"
+    runner = CliRunner()
+
+    create = runner.invoke(
+        app,
+        [
+            "ops",
+            "backup-drill-create",
+            "--repo-root",
+            str(repo),
+            "--output-dir",
+            str(backup_dir),
+            "--source",
+            str(config),
+            "--json",
+        ],
+    )
+
+    assert create.exit_code == 0
+    payload = json.loads(create.output)
+    manifest_path = backup_dir / Path(payload["archive_path"]).name.replace(
+        ".tar.gz",
+        ".manifest.json",
+    )
+    assert manifest_path.exists()
+
+    restore = runner.invoke(
+        app,
+        [
+            "ops",
+            "backup-drill-restore-dry-run",
+            str(manifest_path),
+            "--restore-root",
+            str(tmp_path / "restore"),
+            "--json",
+        ],
+    )
+
+    assert restore.exit_code == 0
+    assert json.loads(restore.output)["status"] == "pass"

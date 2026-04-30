@@ -663,6 +663,96 @@ def ops_secret_store_set(
         console.print("[dim]value hidden; this is not cloud KMS or automatic rotation.[/]")
 
 
+@ops_app.command("backup-drill-create")
+def ops_backup_drill_create(
+    repo_root: Path = typer.Option(Path.cwd(), "--repo-root", help="KUN repo root"),
+    output_dir: Path = typer.Option(Path("backups"), "--output-dir", help="备份包输出目录"),
+    source: list[Path] | None = typer.Option(
+        None,
+        "--source",
+        help="要打包的路径；可重复传。默认使用 KUN 关键配置/运维路径。",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+) -> None:
+    """创建本地备份演练包 + manifest。
+
+    这是本地文件级 drill，不等于云备份；真实数据库仍要跑
+    scripts/backup_postgres.sh 和 restore_postgres_smoke.sh。
+    """
+
+    from kun.ops.backup_restore import (
+        create_backup_package,
+        default_allowed_roots,
+        default_backup_sources,
+    )
+
+    root = repo_root.resolve()
+    sources = source or default_backup_sources(root)
+    allowed = default_allowed_roots(root)
+    if source:
+        allowed.extend(raw.resolve() for raw in source)
+    try:
+        manifest = create_backup_package(
+            source_paths=sources,
+            output_dir=output_dir,
+            repo_root=root,
+            allowed_roots=allowed,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2) from exc
+    payload = manifest.model_dump(mode="json")
+    if json_output:
+        console.print_json(data=payload)
+        return
+    console.print(
+        f"[green]backup drill package created[/]: {manifest.archive_path} "
+        f"({manifest.file_count} files, {manifest.total_bytes} bytes)"
+    )
+    console.print("[dim]manifest is next to the archive; run backup-drill-restore-dry-run.[/]")
+
+
+@ops_app.command("backup-drill-restore-dry-run")
+def ops_backup_drill_restore_dry_run(
+    manifest: Path = typer.Argument(..., help="*.manifest.json from backup-drill-create"),
+    restore_root: Path = typer.Option(
+        Path(".kun-restore-dry-run"),
+        "--restore-root",
+        help="dry-run 目标目录；不会写入文件，只检查覆盖/缺失/校验。",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+    fail_on_blocker: bool = typer.Option(
+        True,
+        "--fail-on-blocker/--no-fail-on-blocker",
+        help="校验失败时返回非零退出码",
+    ),
+) -> None:
+    """验证备份包可恢复，但不写入/覆盖任何文件。"""
+
+    from kun.ops.backup_restore import restore_dry_run
+
+    report = restore_dry_run(manifest_path=manifest, restore_root=restore_root)
+    payload = report.model_dump(mode="json")
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        color = {"pass": "green", "warn": "yellow", "block": "red"}[report.status]
+        console.print(
+            f"[{color}]restore dry-run {report.status}[/]: "
+            f"{report.would_restore_count}/{report.file_count} files would restore"
+        )
+        if report.would_overwrite:
+            console.print(f"[yellow]would overwrite[/]: {', '.join(report.would_overwrite[:5])}")
+        if report.missing_from_archive:
+            console.print(f"[red]missing[/]: {', '.join(report.missing_from_archive[:5])}")
+        if report.sha256_mismatches:
+            console.print(f"[red]sha256 mismatch[/]: {', '.join(report.sha256_mismatches[:5])}")
+        if report.notes:
+            console.print("[dim]" + "；".join(report.notes) + "[/]")
+    if fail_on_blocker and report.status == "block":
+        raise typer.Exit(code=2)
+
+
 @ops_app.command("readiness")
 def ops_readiness(
     tenant: str = typer.Option("u-sylvan", "--tenant", help="租户 ID"),
