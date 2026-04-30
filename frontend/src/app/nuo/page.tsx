@@ -174,6 +174,23 @@ type ReadinessReport = {
   delivery_summary?: Record<string, number>;
 };
 
+type SecretAuditItem = {
+  item_id: string;
+  area: string;
+  severity: "ok" | "warn" | "blocker";
+  title: string;
+  detail: string;
+  suggested_action?: string;
+  env_vars?: string[];
+};
+
+type SecretAuditReport = {
+  env: string;
+  status: "pass" | "warn" | "block";
+  summary: Record<string, number>;
+  items: SecretAuditItem[];
+};
+
 type WorldHandler = {
   action_type: string;
   handler_id: string;
@@ -340,6 +357,7 @@ export default function NuoDashboard() {
   const [capability, setCapability] = useState<CapabilitySnapshot[]>([]);
   const [delivery, setDelivery] = useState<DeliveryCapability[]>([]);
   const [readiness, setReadiness] = useState<ReadinessReport | null>(null);
+  const [secretAudit, setSecretAudit] = useState<SecretAuditReport | null>(null);
   const [worldHandlers, setWorldHandlers] = useState<WorldHandler[]>([]);
   const [worldHealth, setWorldHealth] = useState<WorldHandlerHealth[]>([]);
   const [worldHealthSummary, setWorldHealthSummary] = useState<Record<string, number>>({});
@@ -375,12 +393,13 @@ export default function NuoDashboard() {
       fetchJson<{ snapshots: CapabilitySnapshot[] }>("/nuo/capability/summary"),
       fetchJson<{ items: DeliveryCapability[] }>("/nuo/health/delivery-status"),
       fetchJson<ReadinessReport>("/nuo/health/readiness"),
+      fetchJson<SecretAuditReport>("/nuo/health/secret-audit"),
       fetchJson<WorldGatewayHandlers>("/nuo/actions/handlers"),
       fetchJson<WorldGatewayHandlerHealthResponse>("/nuo/actions/handler-health"),
       fetchJson<AnchorPage<PendingAction>>("/nuo/actions/recent?limit=5"),
       fetchJson<WorldActionReliabilityResponse>("/nuo/actions/execution-reliability?limit=8"),
     ])
-      .then(([h, report, b, a, d, c, ds, ready, wg, wh, recent, reliability]) => {
+      .then(([h, report, b, a, d, c, ds, ready, secrets, wg, wh, recent, reliability]) => {
         setHealth(h);
         setSystemReport(report);
         setBudget(b);
@@ -397,6 +416,7 @@ export default function NuoDashboard() {
         setCapability(c.snapshots || []);
         setDelivery(ds.items || []);
         setReadiness(ready);
+        setSecretAudit(secrets);
         setWorldHandlers(wg.handlers || []);
         setWorldHealth(wh.handlers || []);
         setWorldHealthSummary(wh.summary || {});
@@ -726,6 +746,55 @@ export default function NuoDashboard() {
             <div className="mt-3 text-xs text-gray-500">
               下一步：{readiness.next_steps.slice(0, 2).join("；")}
             </div>
+          )}
+        </section>
+      )}
+
+      {secretAudit && (
+        <section className="bg-white rounded-lg shadow-sm p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-medium">密钥 / 外部配置体检</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                这里只展示风险和缺口，不展示任何密钥值。环境：{secretAudit.env}
+              </p>
+            </div>
+            <SecretAuditPill status={secretAudit.status} />
+          </div>
+          <div className="grid grid-cols-3 gap-3 mt-3">
+            <MiniMetric label="阻塞" value={secretAudit.summary.blocker ?? 0} />
+            <MiniMetric label="提醒" value={secretAudit.summary.warn ?? 0} />
+            <MiniMetric label="通过" value={secretAudit.summary.ok ?? 0} />
+          </div>
+          {secretAudit.items.some((item) => item.severity !== "ok") ? (
+            <div className="mt-3 space-y-2">
+              {secretAudit.items
+                .filter((item) => item.severity !== "ok")
+                .slice(0, 4)
+                .map((item) => (
+                  <div key={item.item_id} className="rounded border bg-gray-50 p-2 text-xs">
+                    <div className="flex flex-wrap justify-between gap-2">
+                      <span className="font-medium">{item.title}</span>
+                      <span
+                        className={
+                          item.severity === "blocker" ? "text-kun-bad" : "text-kun-warn"
+                        }
+                      >
+                        {item.severity}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-gray-600">{item.detail}</p>
+                    {item.suggested_action && (
+                      <p className="mt-1 text-gray-400">{item.suggested_action}</p>
+                    )}
+                    {(item.env_vars || []).length > 0 && (
+                      <p className="mt-1 text-gray-400">配置：{item.env_vars?.join(" / ")}</p>
+                    )}
+                  </div>
+                ))}
+            </div>
+          ) : (
+            <p className="mt-3 text-xs text-gray-400">暂未发现密钥和外部配置风险。</p>
           )}
         </section>
       )}
@@ -1236,6 +1305,17 @@ function StatusPill({ status }: { status: DeliveryCapability["status"] }) {
 
 function ReadinessPill({ status }: { status: ReadinessReport["status"] }) {
   const label = status === "pass" ? "可测" : status === "block" ? "有阻塞" : "可测但有提醒";
+  const color =
+    status === "pass"
+      ? "bg-kun-good text-white"
+      : status === "block"
+        ? "bg-kun-bad text-white"
+        : "bg-kun-warn text-white";
+  return <span className={`${color} rounded px-2 py-1 text-xs whitespace-nowrap`}>{label}</span>;
+}
+
+function SecretAuditPill({ status }: { status: SecretAuditReport["status"] }) {
+  const label = status === "pass" ? "安全" : status === "block" ? "有阻塞" : "有提醒";
   const color =
     status === "pass"
       ? "bg-kun-good text-white"

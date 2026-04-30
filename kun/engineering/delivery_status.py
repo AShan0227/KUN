@@ -299,6 +299,7 @@ def get_v3_delivery_status(
                 "ops preflight CLI 可在上线前检查配置、迁移、备份脚本和能力边界诚实性",
                 "ops backup-drill-create / backup-drill-restore-dry-run 可做本地关键配置包和 no-write restore 演练",
                 "ops secret-audit / NUO secret-audit 可检查默认密码、缺失密钥和半启用外部 handler",
+                "NUO 面板会展示 secret-audit 摘要和阻塞/提醒项，密钥风险不再只藏在 API 里",
                 "支持 KUN_SECRET_STORE_FILE 外部 JSON secret store，WorldGateway 租户级密钥不再只能散落在 env",
                 "ops secret-store-set 可把 KUN_WORLD_* 租户外部动作配置写入本地 JSON secret store，输出不会回显密钥值",
                 "NUO /nuo/health/secret-store/set 可受控写入 KUN_WORLD_* 外部动作配置，响应不回显密钥值",
