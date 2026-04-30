@@ -41,6 +41,7 @@ DecisionPoint = Literal[
     "value_gate",
     "world_policy",
     "delivery_review",
+    "validation_tier_selected",
     "memory_writeback",
     "qi_experiment",
     "nuo_diagnosis",
@@ -409,6 +410,62 @@ def ticket_from_delivery_review(
     )
 
 
+def ticket_from_validation_tier(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    complexity_score: float,
+    tier: str,
+    execution_mode: str,
+    mode_override_reason: str = "",
+    mission_id: str | None = None,
+) -> DecisionTicket:
+    """Wrap ValidationPipeline tier selection as a V4 decision ticket."""
+
+    risk_high = risk_level in {"high", "critical"}
+    complexity_high = complexity_score >= 0.5
+    reason = (
+        f"Validation tier {tier} selected by execution_mode={execution_mode}"
+        if mode_override_reason
+        else f"Validation tier {tier} selected by risk={risk_level}, "
+        f"complexity={complexity_score:.2f}"
+    )
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="delivery",
+        decision_point="validation_tier_selected",
+        source_module="engineering.validation",
+        selected_action=tier,
+        status="selected",
+        reason=reason,
+        confidence=0.78,
+        risk_level=risk_level,
+        inputs_summary={
+            "risk_level": risk_level,
+            "complexity_score": complexity_score,
+            "execution_mode": execution_mode,
+            "mode_override_reason": mode_override_reason,
+        },
+        evidence={
+            "tier": tier,
+            "risk_high": risk_high,
+            "complexity_high": complexity_high,
+            "execution_mode": execution_mode,
+            "mode_override_reason": mode_override_reason,
+        },
+        metadata={
+            "validation_tier": tier,
+            "risk_level": risk_level,
+            "complexity_score": complexity_score,
+            "execution_mode": execution_mode,
+            "mode_override_reason": mode_override_reason,
+        },
+    )
+
+
 def ticket_from_world_policy(
     *,
     tenant_id: str,
@@ -477,6 +534,7 @@ __all__ = [
     "ticket_from_llm_route",
     "ticket_from_protocol_applied",
     "ticket_from_route_choice",
+    "ticket_from_validation_tier",
     "ticket_from_value_gate_decision",
     "ticket_from_watchtower_decision",
     "ticket_from_world_policy",

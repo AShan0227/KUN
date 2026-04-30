@@ -47,6 +47,7 @@ from kun.datamodel.decision_ticket import (
     ticket_from_llm_route,
     ticket_from_protocol_applied,
     ticket_from_route_choice,
+    ticket_from_validation_tier,
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
 )
@@ -1950,6 +1951,44 @@ class Orchestrator:
         validation_score: float | None = None
         if status == "done":
             tier = pick_tier(task_ref.meta)
+            validation_ticket = ticket_from_validation_tier(
+                tenant_id=tenant.tenant_id,
+                task_id=task_ref.meta.task_id,
+                risk_level=task_ref.meta.risk_level,
+                complexity_score=task_ref.meta.complexity_score,
+                tier=tier,
+                execution_mode=task_ref.meta.execution_mode,
+                mode_override_reason=task_ref.meta.mode_override_reason,
+                mission_id=_mission_id_from_task(task_ref),
+            )
+            decision_tickets.append(validation_ticket)
+            self._record_state_ledger("record_decision_ticket", validation_ticket)
+            async with session_scope(tenant_id=tenant.tenant_id) as s:
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant.tenant_id,
+                        event_type="validation.tier.selected",
+                        payload={
+                            "task_id": task_ref.meta.task_id,
+                            "tier": tier,
+                            "risk_level": task_ref.meta.risk_level,
+                            "complexity_score": task_ref.meta.complexity_score,
+                            "execution_mode": task_ref.meta.execution_mode,
+                            "mode_override_reason": task_ref.meta.mode_override_reason,
+                            "decision_ticket": validation_ticket.event_payload(),
+                        },
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+            yield OrchestratorEvent(
+                kind="insight",
+                data={
+                    "stage": "validation_tier",
+                    "tier": tier,
+                    "decision_ticket": validation_ticket.event_payload(),
+                },
+            )
             # tier0 — cheapest path. We still run a structural sanity check
             # (R-A4) so an empty / trivially-broken answer trips a "partial"
             # outcome instead of silently passing.

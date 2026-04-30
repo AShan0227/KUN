@@ -79,6 +79,7 @@ EventKind = Literal[
     "memory.writeback.recorded",
     "credit.assignment.completed",
     # Evaluation / Validation
+    "validation.tier.selected",
     "validation.run.completed",
     "scorecard.created",
     "debate.triggered",

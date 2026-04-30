@@ -189,6 +189,11 @@ class StateLedger:
                 entry.decision_reason = ticket.reason or entry.decision_reason
             elif ticket.decision_point in {"delivery_review", "world_policy"}:
                 entry.decision_reason = ticket.reason or entry.decision_reason
+            elif ticket.decision_point == "validation_tier_selected":
+                entry.current_tier = str(
+                    ticket.metadata.get("validation_tier") or entry.current_tier
+                )
+                entry.decision_reason = ticket.reason or entry.decision_reason
             entry.add_trail(
                 "decision.ticket",
                 f"{ticket.decision_point}: {ticket.selected_action}",

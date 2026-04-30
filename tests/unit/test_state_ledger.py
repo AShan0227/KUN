@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from kun.core.state_ledger import StateLedger
-from kun.datamodel.decision_ticket import ticket_from_llm_route, ticket_from_protocol_applied
+from kun.datamodel.decision_ticket import (
+    ticket_from_llm_route,
+    ticket_from_protocol_applied,
+    ticket_from_validation_tier,
+)
 from kun.datamodel.runtime import RuntimeState, StepRecord
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
 from kun.qi.protocol import Protocol, ProtocolExecution, ProtocolTrigger
@@ -126,6 +130,30 @@ def test_state_ledger_applies_protocol_and_llm_route_tickets_to_current_view() -
     assert snapshot.current_model == "gpt-5.5"
     assert snapshot.current_tier == "top"
     assert snapshot.decision_ticket_ids == [protocol_ticket.ticket_id, llm_ticket.ticket_id]
+
+
+def test_state_ledger_applies_validation_tier_ticket_to_current_view() -> None:
+    ledger = StateLedger()
+    owner = Owner(tenant_id="tenant-a", user_id="user-a")
+    task = _task_ref(owner, "验证交付")
+    ledger.record_task_created(task, tenant_id=owner.tenant_id)
+
+    ticket = ticket_from_validation_tier(
+        tenant_id=owner.tenant_id,
+        task_id=task.meta.task_id,
+        risk_level="high",
+        complexity_score=0.7,
+        tier="tier3",
+        execution_mode="SMART",
+    )
+    ledger.record_decision_ticket(ticket)
+
+    snapshot = ledger.snapshot(task.meta.task_id)
+
+    assert snapshot is not None
+    assert snapshot.current_tier == "tier3"
+    assert snapshot.decision_reason.startswith("Validation tier tier3")
+    assert snapshot.latest_decision_ticket["decision_point"] == "validation_tier_selected"
 
 
 def test_state_ledger_records_world_action_execution() -> None:

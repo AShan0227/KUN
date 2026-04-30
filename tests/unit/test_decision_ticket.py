@@ -7,6 +7,7 @@ from kun.datamodel.decision_ticket import (
     ticket_from_llm_route,
     ticket_from_protocol_applied,
     ticket_from_route_choice,
+    ticket_from_validation_tier,
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
     ticket_from_world_policy,
@@ -202,3 +203,23 @@ def test_delivery_review_ticket_maps_needs_review() -> None:
     assert ticket.decision_point == "delivery_review"
     assert ticket.status == "needs_review"
     assert ticket.evidence["checks"][0]["name"] == "anti_gaming.fake_completion"
+
+
+def test_validation_tier_ticket_records_risk_and_mode_context() -> None:
+    ticket = ticket_from_validation_tier(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        risk_level="critical",
+        complexity_score=0.8,
+        tier="tier3",
+        execution_mode="MAX",
+        mode_override_reason="protocol forced deep validation",
+    )
+
+    assert ticket.phase == "delivery"
+    assert ticket.decision_point == "validation_tier_selected"
+    assert ticket.selected_action == "tier3"
+    assert ticket.status == "selected"
+    assert ticket.metadata["validation_tier"] == "tier3"
+    assert ticket.evidence["risk_high"] is True
+    assert ticket.evidence["complexity_high"] is True
