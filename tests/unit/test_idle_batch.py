@@ -168,8 +168,10 @@ async def test_health_report_step_uses_data_source_snapshot() -> None:
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_health_report_step_collects_nuo_report_and_emits_event(monkeypatch) -> None:
+    from kun.core.state_ledger import get_state_ledger, reset_state_ledger
     from kun.engineering.nuo_system_health import SystemHealthFinding, SystemHealthReport
 
+    reset_state_ledger()
     events = []
 
     async def fake_collect_system_health_report(*, tenant_id: str) -> SystemHealthReport:
@@ -212,6 +214,12 @@ async def test_health_report_step_collects_nuo_report_and_emits_event(monkeypatc
     assert len(events) == 1
     assert getattr(events[0], "event_type") == "nuo.health_report.generated"
     assert getattr(events[0], "payload")["top_findings"][0]["finding_id"] == "f-1"
+    ledger_entry = get_state_ledger().snapshot("system:nuo:t-1")
+    assert ledger_entry is not None
+    assert ledger_entry.status == "paused"
+    assert ledger_entry.current_risk == "medium"
+    assert "f-1" in ledger_entry.alert_flags
+    reset_state_ledger()
 
 
 @pytest.mark.unit

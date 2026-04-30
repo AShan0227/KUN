@@ -330,10 +330,12 @@ class HealthReportStep(IdleBatchStep):
 
         from kun.core.db import session_scope
         from kun.core.events import emit
+        from kun.core.state_ledger import get_state_ledger
         from kun.datamodel.events import Event
         from kun.engineering.nuo_system_health import collect_system_health_report
 
         report = await collect_system_health_report(tenant_id=tenant_id)
+        get_state_ledger().record_system_health_report(report)
         summary = {
             "total_tasks": report.total_tasks,
             "runtime_by_status": report.runtime_by_status,

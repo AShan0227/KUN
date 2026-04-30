@@ -149,6 +149,7 @@ def get_v3_delivery_status(
                 "Context / memory 瘦身维护 dry-run 和真实执行入口",
                 "默认只露健康 / 成本 / 权限 / 风险，高级诊断折叠",
                 "idle-batch 会定期生成 NUO 深度体检摘要并写入事件账本",
+                "NUO 深度体检发现会进入 StateLedger 当前状态视图，任务看板能看到系统风险",
             ],
             evidence_refs=[
                 "kun/api/nuo/health_panel.py",
@@ -157,7 +158,7 @@ def get_v3_delivery_status(
                 "tests/unit/test_delivery_status.py",
             ],
             missing=[
-                "定期 NUO 体检暂时写事件账本，还没主动推送给用户",
+                "定期 NUO 体检已进入当前状态账本，但还没做浏览器/移动端主动推送",
                 "把 handler 健康结果接入自动限权 / 降级",
             ],
             next_steps=[

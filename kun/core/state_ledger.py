@@ -317,6 +317,75 @@ class StateLedger:
                     entry.decision_ticket_ids = entry.decision_ticket_ids[-30:]
                 entry.latest_decision_ticket = decision_ticket.event_payload()
 
+    def record_system_health_report(self, report: Any) -> StateLedgerEntry:
+        """Expose NUO system findings in the current-state view.
+
+        NUO is the system housekeeper.  A deep health report should not live
+        only in append-only events; serious findings need to be visible in the
+        same blackboard/status surface that humans and LLMs already consume.
+        """
+
+        tenant_id = str(getattr(report, "tenant_id", ""))
+        task_id = f"system:nuo:{tenant_id or 'unknown'}"
+        findings = list(getattr(report, "findings", []) or [])
+        severity = str(getattr(report, "worst_severity", "info"))
+        risk_by_severity = {
+            "info": "low",
+            "warn": "medium",
+            "error": "high",
+            "critical": "critical",
+        }
+        status: TaskStatus = "done" if severity == "info" else "paused"
+        top_findings = findings[:10]
+        with self._lock:
+            entry = self._entries.get(task_id)
+            if entry is None:
+                entry = StateLedgerEntry(
+                    task_id=task_id,
+                    tenant_id=tenant_id,
+                    task_type="system.nuo.health",
+                    title="NUO 系统体检",
+                    current_goal="诊断 KUN 的任务、事件、外部动作、能力边界和运行风险",
+                    status=status,
+                    execution_mode="SMART",
+                )
+                self._entries[task_id] = entry
+            entry.status = status
+            entry.current_risk = risk_by_severity.get(severity, "medium")
+            entry.current_action = f"NUO 发现 {len(findings)} 个系统体检项"
+            entry.decision_reason = f"NUO health worst_severity={severity}"
+            entry.alert_flags = [
+                str(getattr(finding, "finding_id", ""))
+                for finding in top_findings
+                if str(getattr(finding, "severity", "info")) in {"warn", "error", "critical"}
+            ]
+            entry.pending_reason = (
+                "；".join(str(getattr(finding, "title", "")) for finding in top_findings[:3])
+                if findings
+                else ""
+            )
+            entry.add_trail(
+                "nuo.health_report.generated",
+                entry.decision_reason,
+                {
+                    "worst_severity": severity,
+                    "findings": len(findings),
+                    "outbox_lag": int(getattr(report, "outbox_lag", 0) or 0),
+                    "pending_approvals": int(getattr(report, "pending_approvals", 0) or 0),
+                    "top_findings": [
+                        {
+                            "finding_id": str(getattr(finding, "finding_id", "")),
+                            "severity": str(getattr(finding, "severity", "")),
+                            "subsystem": str(getattr(finding, "subsystem", "")),
+                            "title": str(getattr(finding, "title", "")),
+                            "suggested_action": str(getattr(finding, "suggested_action", "")),
+                        }
+                        for finding in top_findings
+                    ],
+                },
+            )
+            return entry.model_copy(deep=True)
+
     def record_finished(self, task_id: str, *, runtime: RuntimeState) -> None:
         with self._lock:
             entry = self._ensure(task_id)
