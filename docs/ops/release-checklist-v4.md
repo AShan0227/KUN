@@ -32,6 +32,14 @@ uv run kun ops release-check --tag v4.0.0 --require-ready
 
 不开放注册时，保持 `KUN_SELF_SIGNUP_ENABLED=false`。
 
+发布前建议额外跑：
+
+```bash
+uv run kun ops dogfood --tenant <tenant> --include-db-account
+```
+
+这会验证账号账本、refresh session、成员邀请写库链路；它仍不会发送邀请邮件。
+
 ## 3. Tag
 
 ```bash

@@ -619,6 +619,11 @@ def ops_readiness(
         "--include-db-mission",
         help="dogfood 里额外跑真实数据库 Mission 续跑 smoke",
     ),
+    include_db_account: bool = typer.Option(
+        False,
+        "--include-db-account",
+        help="dogfood 里额外跑真实数据库账号账本 / session / 成员邀请 smoke",
+    ),
     skip_alembic: bool = typer.Option(False, "--skip-alembic", help="跳过 alembic heads 检查"),
     fail_on_blocker: bool = typer.Option(
         True,
@@ -635,6 +640,7 @@ def ops_readiness(
             tenant_id=tenant,
             include_dogfood=include_dogfood,
             include_db_mission=include_db_mission,
+            include_db_account=include_db_account,
             run_alembic_heads=not skip_alembic,
         )
     )
@@ -1022,6 +1028,11 @@ def ops_dogfood(
         "--include-db-mission",
         help="额外跑真实数据库 Mission 续跑 smoke；需要本地 Postgres/Alembic 可用",
     ),
+    include_db_account: bool = typer.Option(
+        False,
+        "--include-db-account",
+        help="额外跑真实数据库账号账本 / session / 成员邀请 smoke；需要本地 Postgres/Alembic 可用",
+    ),
     fail_on_blocker: bool = typer.Option(
         True,
         "--fail-on-blocker/--no-fail-on-blocker",
@@ -1032,7 +1043,13 @@ def ops_dogfood(
 
     from kun.ops.dogfood import run_v4_dogfood
 
-    report = asyncio.run(run_v4_dogfood(tenant_id=tenant, include_db_mission=include_db_mission))
+    report = asyncio.run(
+        run_v4_dogfood(
+            tenant_id=tenant,
+            include_db_mission=include_db_mission,
+            include_db_account=include_db_account,
+        )
+    )
     if json_output:
         console.print_json(data=report.model_dump(mode="json"))
     else:

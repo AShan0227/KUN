@@ -59,6 +59,7 @@ async def run_v4_dogfood(
     repo_root: Path | None = None,
     secret: str = "dogfood-secret-" + "x" * 32,
     include_db_mission: bool = False,
+    include_db_account: bool = False,
 ) -> DogfoodReport:
     """Run low-risk V4 dogfood checks."""
 
@@ -71,6 +72,8 @@ async def run_v4_dogfood(
     ]
     if include_db_mission:
         scenarios.append(await _scenario_mission_resume_db(tenant_id=tenant_id))
+    if include_db_account:
+        scenarios.append(await _scenario_account_ledger_db(tenant_id=tenant_id, secret=secret))
     if any(item.status == "block" for item in scenarios):
         status: DogfoodStatus = "block"
     elif any(item.status == "warn" for item in scenarios):
@@ -324,6 +327,93 @@ async def _scenario_mission_resume_db(*, tenant_id: str) -> DogfoodScenarioResul
             status="block",
             summary="Mission 真实 DB 续跑 dogfood 无法执行。",
             evidence={"task_id": task_id, "error": f"{type(exc).__name__}: {exc}"},
+            next_step="确认本地 Postgres 已启动、Alembic 已升级、RLS app/admin DSN 配好。",
+        )
+
+
+async def _scenario_account_ledger_db(*, tenant_id: str, secret: str) -> DogfoodScenarioResult:
+    """Run one account ledger + session + invite smoke against the configured DB."""
+
+    try:
+        from kun.core.db import session_scope
+        from kun.ops.account_registry import invite_tenant_member, upsert_tenant_account_member
+        from kun.ops.account_sessions import issue_session_token_pair, refresh_session_access_token
+    except Exception as exc:  # pragma: no cover - import failures are deployment issues
+        return DogfoodScenarioResult(
+            scenario_id="account_ledger_db",
+            status="block",
+            summary="账号账本 DB dogfood 依赖导入失败。",
+            evidence={"error": f"{type(exc).__name__}: {exc}"},
+            next_step="先修账号账本 / session 依赖导入。",
+        )
+
+    owner_user_id = "dogfood-owner"
+    invited_user_id = "dogfood-invited"
+    try:
+        async with session_scope(tenant_id=tenant_id) as s:
+            account = await upsert_tenant_account_member(
+                s,
+                tenant_id=tenant_id,
+                organization_id=f"{tenant_id}-org",
+                display_name=f"{tenant_id} dogfood",
+                owner_user_id=owner_user_id,
+                scopes=["account:read", "account:admin", "chat:write"],
+                role="owner",
+                plan="dev",
+                billing_status="manual",
+                metadata={"source": "ops.dogfood.account_ledger"},
+            )
+            pair = await issue_session_token_pair(
+                s,
+                tenant_id=tenant_id,
+                user_id=owner_user_id,
+                secret=secret,
+                scopes=["account:read", "account:admin", "chat:write"],
+                audience="developer",
+                metadata={"source": "ops.dogfood.account_ledger"},
+            )
+            refreshed = await refresh_session_access_token(
+                s,
+                refresh_token=pair.refresh_token,
+                auth_secrets=[secret],
+                signing_secret=secret,
+                access_ttl_sec=300,
+            )
+            invited = await invite_tenant_member(
+                s,
+                tenant_id=tenant_id,
+                user_id=invited_user_id,
+                role="viewer",
+                scopes=["account:read"],
+            )
+        ok = (
+            account.persisted
+            and pair.refresh_token_id == refreshed.refresh_token_id
+            and invited.status in {"invited", "active"}
+        )
+        return DogfoodScenarioResult(
+            scenario_id="account_ledger_db",
+            status="pass" if ok else "block",
+            summary="账号账本、refresh session 和成员邀请 DB smoke 可跑通。"
+            if ok
+            else "账号账本 DB smoke 没有跑通。",
+            evidence={
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+                "access_token_id": pair.access_token_id,
+                "refresh_token_id": pair.refresh_token_id,
+                "refreshed_access_token_id": refreshed.access_token_id,
+                "invited_user_id": invited.user_id,
+                "invite_status": invited.status,
+            },
+            next_step="" if ok else "检查 tenant account / session / invite 写库链路。",
+        )
+    except Exception as exc:
+        return DogfoodScenarioResult(
+            scenario_id="account_ledger_db",
+            status="block",
+            summary="账号账本 DB dogfood 无法执行。",
+            evidence={"tenant_id": tenant_id, "error": f"{type(exc).__name__}: {exc}"},
             next_step="确认本地 Postgres 已启动、Alembic 已升级、RLS app/admin DSN 配好。",
         )
 

@@ -968,6 +968,7 @@ V4 继续坚持：
 - `/api/blackboard/state-ledger/{task_id}/story`：可把某个任务的长期事件历史压成可读故事线。
 - `POST /api/auth/signup`：默认关闭的邀请码注册入口，可创建租户账本、owner 和 access+refresh 会话；这不是密码登录 / OAuth。
 - `POST /nuo/accounts/members/invite`：可写入成员邀请账本；不会伪装成已经发出邀请邮件或完成成员登录。
+- `kun ops dogfood --include-db-account`：可显式跑账号账本、refresh session、成员邀请的真实 DB smoke。
 
 仍不能承诺：
 

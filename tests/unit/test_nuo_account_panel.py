@@ -11,6 +11,7 @@ from kun.api.nuo import account_panel
 from kun.api.nuo.account_panel import router
 from kun.core.orm import TenantAccountRow, TenantMemberRow, TenantTokenIssueRow
 from kun.core.tenancy import TenantContext, tenant_scope
+from kun.ops.account_registry import TenantMemberInvite
 
 
 class _ScalarResult:
@@ -166,7 +167,7 @@ def test_invite_member_writes_invitation_ledger(monkeypatch: pytest.MonkeyPatch)
 
     async def fake_invite_tenant_member(_session: object, **kwargs: Any):
         called.update(kwargs)
-        return account_panel.TenantMemberInvite(
+        return TenantMemberInvite(
             tenant_id=kwargs["tenant_id"],
             user_id=kwargs["user_id"],
             role=kwargs["role"],

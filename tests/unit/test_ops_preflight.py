@@ -496,6 +496,33 @@ async def test_v4_dogfood_can_include_db_mission_scenario(
 
 
 @pytest.mark.unit
+async def test_v4_dogfood_can_include_db_account_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_account_scenario(
+        *,
+        tenant_id: str,
+        secret: str,
+    ) -> dogfood_module.DogfoodScenarioResult:
+        assert tenant_id == "tenant-dogfood"
+        assert secret.startswith("dogfood-secret-")
+        return dogfood_module.DogfoodScenarioResult(
+            scenario_id="account_ledger_db",
+            status="pass",
+            summary="fake account pass",
+        )
+
+    monkeypatch.setattr(dogfood_module, "_scenario_account_ledger_db", fake_account_scenario)
+
+    report = await dogfood_module.run_v4_dogfood(
+        tenant_id="tenant-dogfood",
+        include_db_account=True,
+    )
+
+    assert any(item.scenario_id == "account_ledger_db" for item in report.scenarios)
+
+
+@pytest.mark.unit
 def test_ops_dogfood_cli_outputs_scenarios() -> None:
     result = CliRunner().invoke(
         app,
@@ -519,10 +546,12 @@ def test_ops_dogfood_cli_can_request_db_mission_scenario(
         repo_root: Path | None = None,
         secret: str = "dogfood-secret-" + "x" * 32,
         include_db_mission: bool = False,
+        include_db_account: bool = False,
     ) -> dogfood_module.DogfoodReport:
         assert tenant_id == "tenant-cli"
         assert repo_root is None
         assert secret.startswith("dogfood-secret-")
+        assert include_db_account is False
         calls.append(include_db_mission)
         return dogfood_module.DogfoodReport(
             status="pass",
@@ -553,6 +582,56 @@ def test_ops_dogfood_cli_can_request_db_mission_scenario(
     assert result.exit_code == 0
     assert calls == [True]
     assert "mission_resume_db" in result.output
+
+
+@pytest.mark.unit
+def test_ops_dogfood_cli_can_request_db_account_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[bool] = []
+
+    async def fake_run_v4_dogfood(
+        *,
+        tenant_id: str = "u-sylvan",
+        repo_root: Path | None = None,
+        secret: str = "dogfood-secret-" + "x" * 32,
+        include_db_mission: bool = False,
+        include_db_account: bool = False,
+    ) -> dogfood_module.DogfoodReport:
+        assert tenant_id == "tenant-cli"
+        assert repo_root is None
+        assert include_db_mission is False
+        assert secret.startswith("dogfood-secret-")
+        calls.append(include_db_account)
+        return dogfood_module.DogfoodReport(
+            status="pass",
+            scenarios=[
+                dogfood_module.DogfoodScenarioResult(
+                    scenario_id="account_ledger_db",
+                    status="pass",
+                    summary="fake account pass",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(dogfood_module, "run_v4_dogfood", fake_run_v4_dogfood)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "ops",
+            "dogfood",
+            "--tenant",
+            "tenant-cli",
+            "--include-db-account",
+            "--json",
+            "--no-fail-on-blocker",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [True]
+    assert "account_ledger_db" in result.output
 
 
 @pytest.mark.unit
@@ -612,3 +691,44 @@ def test_ops_readiness_cli_outputs_aggregate_report(monkeypatch: pytest.MonkeyPa
     assert '"preflight"' in result.output
     assert '"secret_audit"' in result.output
     assert '"delivery_summary"' in result.output
+
+
+@pytest.mark.unit
+def test_ops_readiness_cli_passes_db_account_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kun.ops import readiness as readiness_module
+
+    calls: list[dict[str, object]] = []
+
+    async def fake_run_readiness_report(**kwargs: object):
+        calls.append(kwargs)
+        return readiness_module.ReadinessReport(
+            status="pass",
+            tenant_id=str(kwargs["tenant_id"]),
+            preflight=run_preflight(run_alembic_heads=False),
+            secret_audit=audit_runtime_secrets(),
+            delivery_summary={},
+            blockers=[],
+            warnings=[],
+            next_steps=[],
+        )
+
+    monkeypatch.setattr(readiness_module, "run_readiness_report", fake_run_readiness_report)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "ops",
+            "readiness",
+            "--tenant",
+            "tenant-cli",
+            "--include-dogfood",
+            "--include-db-account",
+            "--json",
+            "--skip-alembic",
+            "--no-fail-on-blocker",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls[0]["include_db_account"] is True
+    assert calls[0]["include_dogfood"] is True
