@@ -281,6 +281,7 @@ def get_v3_delivery_status(
                 "ops account-session CLI 可签发持久入账的 access+refresh 会话包，避免 refresh 功能只停在测试里",
                 "已补默认关闭的邀请码注册 API：可创建租户账本、owner 和 access+refresh 会话，但必须显式配置邀请码",
                 "NUO 账号面板可查看当前租户账号、成员和 token 签发账本，且不会暴露 raw bearer token",
+                "NUO 账号面板可写入成员邀请账本；不会伪装成已发送邮件或已完成成员登录",
                 "NUO 账号面板可撤销当前租户已签发 token，生产请求中间件会消费撤销结果",
                 "ops dogfood CLI 可跑 V4 低风险 smoke，验证 preflight / token / WorldGateway / 诚实边界",
                 "ops dogfood --include-db-mission 可额外验证 Mission/RuntimeState/Orchestrator runner 的真实 DB 续跑闭环",
@@ -310,6 +311,7 @@ def get_v3_delivery_status(
                 "kun/cli.py",
                 "tests/unit/test_ops_preflight.py",
                 "tests/unit/test_account_sessions.py",
+                "tests/unit/test_nuo_account_panel.py",
                 "tests/unit/test_ops_backup_restore.py",
             ],
             missing=[
@@ -318,7 +320,7 @@ def get_v3_delivery_status(
                 "云 KMS / 托管 Secret Manager、自动轮换和租户自助密钥配置",
                 "真实数据库/S3 环境的备份恢复演练",
                 "跨周真实产品运营 dogfood 验收场景",
-                "组织成员自助邀请 / 账单闭环",
+                "成员邀请接受流程、邀请邮件发送和账单闭环",
             ],
             next_steps=[
                 "把账号账本升级成自助注册、成员管理和完整会话体系",

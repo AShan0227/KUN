@@ -18,7 +18,11 @@ from kun.core.config import settings
 from kun.core.db import session_scope
 from kun.core.orm import TenantAccountRow, TenantMemberRow, TenantTokenIssueRow
 from kun.core.tenancy import current_tenant, require_scope
-from kun.ops.account_registry import revoke_token_issue
+from kun.ops.account_registry import (
+    MemberRole,
+    invite_tenant_member,
+    revoke_token_issue,
+)
 
 router = APIRouter()
 
@@ -81,6 +85,26 @@ class RevokeTokenRequest(BaseModel):
     reason: str = Field(default="", max_length=500)
 
 
+class InviteMemberRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(min_length=1, max_length=120)
+    role: MemberRole = "member"
+    scopes: list[str] = Field(default_factory=lambda: ["chat:write"])
+
+
+class InviteMemberResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    user_id: str
+    role: MemberRole
+    scopes: list[str]
+    status: str
+    message: str
+    honest_limits: list[str]
+
+
 class RevokeTokenResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -135,6 +159,35 @@ async def account_summary() -> TenantAccountLedgerSummary:
             "refresh token 续期已有最小闭环，但这还不是完整自助注册 / OAuth / 设备登录态。",
             "账单字段仍是运营状态记录，不代表已经接入真实支付闭环。",
         ],
+    )
+
+
+@router.post("/members/invite", response_model=InviteMemberResponse)
+async def invite_member(payload: InviteMemberRequest) -> InviteMemberResponse:
+    """Add a member invitation row for the current tenant.
+
+    This is a ledger action only.  It does not send email or mint a session
+    token, so the UI/API cannot accidentally imply the invite was delivered.
+    """
+
+    _require_scope_when_enforced("account:admin")
+    tenant = current_tenant()
+    async with session_scope(tenant_id=tenant.tenant_id) as s:
+        invited = await invite_tenant_member(
+            s,
+            tenant_id=tenant.tenant_id,
+            user_id=payload.user_id,
+            role=payload.role,
+            scopes=_string_list(payload.scopes),
+        )
+    return InviteMemberResponse(
+        tenant_id=invited.tenant_id,
+        user_id=invited.user_id,
+        role=invited.role,
+        scopes=invited.scopes,
+        status=invited.status,
+        message="成员邀请已写入账本；尚未发送邮件，也尚未签发 session。",
+        honest_limits=invited.honest_limits,
     )
 
 

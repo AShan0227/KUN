@@ -61,6 +61,19 @@ class TenantAccountRecord(BaseModel):
     honest_limits: list[str] = Field(default_factory=list)
 
 
+class TenantMemberInvite(BaseModel):
+    """Durable member invitation ledger result."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    user_id: str
+    role: MemberRole
+    scopes: list[str] = Field(default_factory=list)
+    status: str = "invited"
+    honest_limits: list[str] = Field(default_factory=list)
+
+
 def hash_bearer_token(token: str) -> str:
     """Hash a bearer token for audit correlation without storing the secret."""
 
@@ -284,6 +297,63 @@ async def upsert_tenant_account_member(
     )
 
 
+async def invite_tenant_member(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    user_id: str,
+    role: MemberRole = "member",
+    scopes: list[str],
+) -> TenantMemberInvite:
+    """Create/update an invited tenant member without sending external email."""
+
+    cleaned_tenant = _required("tenant_id", tenant_id)
+    cleaned_user = _required("user_id", user_id)
+    cleaned_scopes = [scope.strip() for scope in scopes if scope.strip()]
+    existing = (
+        await session.execute(
+            select(TenantMemberRow.status).where(
+                TenantMemberRow.tenant_id == cleaned_tenant,
+                TenantMemberRow.user_id == cleaned_user,
+            )
+        )
+    ).scalar_one_or_none()
+    status = "active" if existing == "active" else "invited"
+    now = datetime.now(UTC)
+    stmt = (
+        pg_insert(TenantMemberRow)
+        .values(
+            tenant_id=cleaned_tenant,
+            user_id=cleaned_user,
+            role=role,
+            scopes=cleaned_scopes,
+            status=status,
+            updated_at=now,
+        )
+        .on_conflict_do_update(
+            index_elements=[TenantMemberRow.tenant_id, TenantMemberRow.user_id],
+            set_={
+                "role": role,
+                "scopes": cleaned_scopes,
+                "status": status,
+                "updated_at": now,
+            },
+        )
+    )
+    await session.execute(stmt)
+    return TenantMemberInvite(
+        tenant_id=cleaned_tenant,
+        user_id=cleaned_user,
+        role=role,
+        scopes=cleaned_scopes,
+        status=status,
+        honest_limits=[
+            "这里只写入成员邀请账本，不会自动发送邮件。",
+            "被邀请成员仍需要管理员签发 session 或后续接入接受邀请流程。",
+        ],
+    )
+
+
 async def is_token_revoked(
     session: AsyncSession,
     *,
@@ -399,10 +469,12 @@ __all__ = [
     "MemberRole",
     "TenantAccountBootstrap",
     "TenantAccountRecord",
+    "TenantMemberInvite",
     "bootstrap_tenant_account",
     "build_bootstrap_token",
     "build_unpersisted_bootstrap",
     "hash_bearer_token",
+    "invite_tenant_member",
     "is_token_revoked",
     "revoke_token_issue",
     "upsert_tenant_account_member",

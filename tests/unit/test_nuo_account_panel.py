@@ -139,6 +139,71 @@ def test_revoke_token_requires_admin_scope() -> None:
 
 
 @pytest.mark.unit
+def test_invite_member_requires_admin_scope() -> None:
+    with tenant_scope(
+        TenantContext(
+            tenant_id="tenant-a",
+            user_id="viewer-a",
+            scopes=("account:read",),
+        )
+    ):
+        response = TestClient(_app()).post(
+            "/members/invite",
+            json={"user_id": "new-user", "role": "member", "scopes": ["chat:write"]},
+        )
+
+    assert response.status_code == 403
+    assert "account:admin" in response.text
+
+
+@pytest.mark.unit
+def test_invite_member_writes_invitation_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict[str, Any] = {}
+
+    @asynccontextmanager
+    async def fake_scope(*_: Any, **__: Any):
+        yield object()
+
+    async def fake_invite_tenant_member(_session: object, **kwargs: Any):
+        called.update(kwargs)
+        return account_panel.TenantMemberInvite(
+            tenant_id=kwargs["tenant_id"],
+            user_id=kwargs["user_id"],
+            role=kwargs["role"],
+            scopes=kwargs["scopes"],
+            status="invited",
+            honest_limits=["不会自动发送邮件"],
+        )
+
+    monkeypatch.setattr(account_panel, "session_scope", fake_scope)
+    monkeypatch.setattr(account_panel, "invite_tenant_member", fake_invite_tenant_member)
+
+    with tenant_scope(
+        TenantContext(
+            tenant_id="tenant-a",
+            user_id="owner-a",
+            scopes=("account:admin",),
+        )
+    ):
+        response = TestClient(_app()).post(
+            "/members/invite",
+            json={"user_id": "new-user", "role": "viewer", "scopes": ["account:read"]},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "invited"
+    assert body["role"] == "viewer"
+    assert "尚未发送邮件" in body["message"]
+    assert called == {
+        "tenant_id": "tenant-a",
+        "user_id": "new-user",
+        "role": "viewer",
+        "scopes": ["account:read"],
+    }
+
+
+@pytest.mark.unit
 def test_revoke_token_calls_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     called: dict[str, Any] = {}
 

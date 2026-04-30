@@ -6,6 +6,7 @@ import pytest
 from kun.ops.account_registry import (
     build_bootstrap_token,
     hash_bearer_token,
+    invite_tenant_member,
     is_token_revoked,
     revoke_token_issue,
 )
@@ -29,6 +30,16 @@ class _FakeSession:
     async def execute(self, statement: Any) -> _ScalarResult:
         self.statements.append(statement)
         return self.result
+
+
+class _SequenceSession:
+    def __init__(self, results: list[_ScalarResult]) -> None:
+        self.results = results
+        self.statements: list[Any] = []
+
+    async def execute(self, statement: Any) -> _ScalarResult:
+        self.statements.append(statement)
+        return self.results.pop(0)
 
 
 @pytest.mark.unit
@@ -88,3 +99,21 @@ async def test_revoke_token_issue_returns_rowcount() -> None:
 
     assert ok is True
     assert missing is False
+
+
+@pytest.mark.unit
+async def test_invite_tenant_member_keeps_existing_active_status() -> None:
+    fake_session = _SequenceSession([_ScalarResult("active"), _ScalarResult(rowcount=1)])
+
+    invited = await invite_tenant_member(
+        fake_session,  # type: ignore[arg-type]
+        tenant_id="tenant-a",
+        user_id="member-a",
+        role="admin",
+        scopes=["account:read"],
+    )
+
+    assert invited.status == "active"
+    assert invited.role == "admin"
+    assert len(fake_session.statements) == 2
+    assert any("不会自动发送邮件" in item for item in invited.honest_limits)
