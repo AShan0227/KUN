@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from kun.context.packer import ContextPack, PackedContextItem
-from kun.core.state_ledger import StateLedger, replay_state_ledger_story
+from kun.core.state_ledger import StateLedger, StateLedgerEntry, replay_state_ledger_story
 from kun.datamodel.decision_ticket import (
     ticket_from_budget_policy,
     ticket_from_context_selection,
@@ -93,6 +93,53 @@ def test_state_ledger_active_snapshots_are_tenant_scoped() -> None:
     assert [entry.task_id for entry in active_a] == [task_a.meta.task_id]
 
 
+def test_state_ledger_persists_and_updates_current_snapshot() -> None:
+    store = _DictStateLedgerStore()
+    ledger = StateLedger(store=store)
+    owner = Owner(tenant_id="tenant-a", user_id="user-a")
+    task = _task_ref(owner, "持久账本", task_id="task-persist")
+
+    ledger.record_task_created(task, tenant_id=owner.tenant_id)
+    ledger.record_current_action(
+        task.meta.task_id,
+        step_id=2,
+        description="写入长期状态账本",
+        skill_hint="state_ledger",
+    )
+
+    persisted = store.get(task_id=task.meta.task_id, tenant_id=owner.tenant_id)
+
+    assert persisted is not None
+    assert persisted.current_step == 2
+    assert persisted.current_action == "写入长期状态账本"
+    assert persisted.current_skill == "state_ledger"
+
+
+def test_state_ledger_persistent_snapshots_are_tenant_scoped_after_rebuild() -> None:
+    store = _DictStateLedgerStore()
+    owner_a = Owner(tenant_id="tenant-a", user_id="user-a")
+    owner_b = Owner(tenant_id="tenant-b", user_id="user-b")
+    task_a = _task_ref(owner_a, "租户 A", task_id="task-shared")
+    task_b = _task_ref(owner_b, "租户 B", task_id="task-shared")
+    ledger_a = StateLedger(store=store)
+    ledger_b = StateLedger(store=store)
+
+    ledger_a.record_task_created(task_a, tenant_id=owner_a.tenant_id)
+    ledger_a.record_paused(task_a.meta.task_id, reason="tenant-a-only")
+    ledger_b.record_task_created(task_b, tenant_id=owner_b.tenant_id)
+
+    rebuilt = StateLedger(store=store)
+    snapshot_a = rebuilt.snapshot("task-shared", tenant_id="tenant-a")
+    snapshot_b = rebuilt.snapshot("task-shared", tenant_id="tenant-b")
+    active_a = rebuilt.active_snapshots(tenant_id="tenant-a")
+
+    assert snapshot_a is not None
+    assert snapshot_b is not None
+    assert snapshot_a.pending_reason == "tenant-a-only"
+    assert snapshot_b.pending_reason == ""
+    assert [entry.tenant_id for entry in active_a] == ["tenant-a"]
+
+
 def test_state_ledger_applies_protocol_and_llm_route_tickets_to_current_view() -> None:
     ledger = StateLedger()
     owner = Owner(tenant_id="tenant-a", user_id="user-a")
@@ -159,6 +206,7 @@ def test_state_ledger_applies_validation_tier_ticket_to_current_view() -> None:
     assert snapshot is not None
     assert snapshot.current_tier == "tier3"
     assert snapshot.decision_reason.startswith("Validation tier tier3")
+    assert snapshot.latest_decision_ticket is not None
     assert snapshot.latest_decision_ticket["decision_point"] == "validation_tier_selected"
 
 
@@ -230,6 +278,7 @@ def test_state_ledger_applies_budget_policy_ticket_to_cost_view() -> None:
     assert snapshot is not None
     assert snapshot.cost_so_far_usd == 1.2
     assert snapshot.decision_reason.startswith("Budget level CRITICAL")
+    assert snapshot.latest_decision_ticket is not None
     assert snapshot.latest_decision_ticket["decision_point"] == "budget_policy"
 
 
@@ -475,13 +524,37 @@ def test_state_ledger_replay_is_honest_about_missing_facts() -> None:
     assert "missing_decision_ticket_events" in story["gaps"]
 
 
-def _task_ref(owner: Owner, title: str) -> TaskRef:
+class _DictStateLedgerStore:
+    def __init__(self) -> None:
+        self.entries: dict[tuple[str, str], StateLedgerEntry] = {}
+
+    def save(self, entry: StateLedgerEntry) -> None:
+        self.entries[(entry.tenant_id, entry.task_id)] = entry.model_copy(deep=True)
+
+    def get(self, *, task_id: str, tenant_id: str) -> StateLedgerEntry | None:
+        entry = self.entries.get((tenant_id, task_id))
+        return entry.model_copy(deep=True) if entry is not None else None
+
+    def list_active(self, *, tenant_id: str, limit: int = 50) -> list[StateLedgerEntry]:
+        entries = [
+            entry
+            for (entry_tenant_id, _), entry in self.entries.items()
+            if entry_tenant_id == tenant_id and entry.status in {"queued", "running", "paused"}
+        ]
+        entries.sort(key=lambda item: item.updated_at, reverse=True)
+        return [entry.model_copy(deep=True) for entry in entries[:limit]]
+
+
+def _task_ref(owner: Owner, title: str, *, task_id: str | None = None) -> TaskRef:
+    meta_kwargs = {
+        "fingerprint": TaskMeta.compute_fingerprint(title, owner),
+        "task_type": "product.ops",
+        "owner": owner,
+        "success_criteria_short": title,
+    }
+    if task_id is not None:
+        meta_kwargs["task_id"] = task_id
     return TaskRef(
-        meta=TaskMeta(
-            fingerprint=TaskMeta.compute_fingerprint(title, owner),
-            task_type="product.ops",
-            owner=owner,
-            success_criteria_short=title,
-        ),
+        meta=TaskMeta(**meta_kwargs),
         spec=TaskSpec(goal_detail=title),
     )

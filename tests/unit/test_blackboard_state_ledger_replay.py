@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 from kun.api import blackboard_data_sources as sources
-from kun.core.orm import EventRow, TaskRow
-from kun.core.state_ledger import reset_state_ledger
+from kun.core.orm import EventRow, StateLedgerEntryRow, TaskRow
+from kun.core.state_ledger import StateLedgerEntry, reset_state_ledger
 
 
 def test_history_item_extracts_nested_decision_ticket() -> None:
@@ -69,6 +69,34 @@ def test_history_item_uses_step_delta_cost_not_accumulated_total() -> None:
     item = sources._state_ledger_history_item_from_event(row)
 
     assert item["cost_usd"] == 0.03
+
+
+@pytest.mark.asyncio
+async def test_state_ledger_main_source_reads_persistent_snapshot_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_state_ledger()
+    entry = StateLedgerEntry(
+        task_id="task-1",
+        tenant_id="tenant-1",
+        user_id="u-1",
+        title="Persisted task",
+        status="paused",
+        pending_reason="loaded from durable ledger",
+    )
+    fake_session = _FakeSession(persistent_rows=[_state_ledger_row(entry)])
+
+    monkeypatch.setattr(sources, "session_scope", lambda **_: _FakeScope(fake_session))
+
+    result = await sources._state_ledger_source_async(
+        tenant_id="tenant-1",
+        user_id="u-1",
+        task_id="task-1",
+    )
+
+    assert isinstance(result, dict)
+    assert result["status"] == "paused"
+    assert result["pending_reason"] == "loaded from durable ledger"
 
 
 @pytest.mark.asyncio
@@ -149,7 +177,7 @@ async def test_replayed_story_does_not_sum_accumulated_cost(
 def _event_row(
     *,
     event_type: str,
-    payload: dict,
+    payload: dict[str, Any],
     event_id: str = "evt-1",
     task_ref: str = "task-1",
 ) -> EventRow:
@@ -182,6 +210,19 @@ def _task_row(*, user_id: str) -> TaskRow:
     )
 
 
+def _state_ledger_row(entry: StateLedgerEntry) -> StateLedgerEntryRow:
+    return StateLedgerEntryRow(
+        tenant_id=entry.tenant_id,
+        task_id=entry.task_id,
+        user_id=entry.user_id,
+        project_id=entry.project_id,
+        status=entry.status,
+        snapshot_json=entry.model_dump(mode="json"),
+        created_at=entry.started_at,
+        updated_at=entry.updated_at,
+    )
+
+
 class _FakeResult:
     def __init__(self, rows: list[Any]) -> None:
         self._rows = rows
@@ -190,8 +231,19 @@ class _FakeResult:
         return self._rows
 
 
+class _FakeScalarResult(_FakeResult):
+    def scalars(self) -> _FakeScalarResult:
+        return self
+
+
 class _FakeSession:
-    def __init__(self, *, replay_rows: list[Any]) -> None:
+    def __init__(
+        self,
+        *,
+        replay_rows: list[Any] | None = None,
+        persistent_rows: list[Any] | None = None,
+    ) -> None:
+        self._persistent_rows = persistent_rows or []
         self._replay_rows = replay_rows
         self.saw_user_filter = False
 
@@ -199,9 +251,11 @@ class _FakeSession:
         sql = str(stmt)
         if "tasks.user_id" in sql:
             self.saw_user_filter = True
+        if "state_ledger_entries" in sql:
+            return _FakeScalarResult(self._persistent_rows)
         if "runtime_states" in sql:
             return _FakeResult([])
-        return _FakeResult(self._replay_rows)
+        return _FakeResult(self._replay_rows or [])
 
 
 class _FakeScope:

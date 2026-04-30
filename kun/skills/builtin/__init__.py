@@ -44,6 +44,26 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
         "description": "读 PDF 文件并抽取文本内容",
         "auto_trigger_when": [],
     },
+    "world-request": {
+        "description": (
+            "执行中发现需要外部动作时, 只生成待审批 WorldGateway 动作并暂停任务; "
+            "不会真实发送、支付、发布或控制浏览器。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action_type": {
+                    "type": "string",
+                    "description": "例如 email.draft / local_file.write / browser.plan",
+                },
+                "target_ref": {"type": "string"},
+                "risk_level": {"type": "string"},
+                "payload": {"type": "object"},
+            },
+            "required": ["action_type", "payload"],
+        },
+        "auto_trigger_when": [],
+    },
 }
 
 

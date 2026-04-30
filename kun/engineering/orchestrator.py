@@ -63,6 +63,7 @@ from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
 from kun.engineering.budget_tracker import HARD_BREAK_RATIO_TASK, BudgetTracker
 from kun.engineering.capability_writeback import Outcome, TaskOutcome, record_outcome
 from kun.engineering.concurrency import (
+    PendingActionSpec,
     enqueue_pending_actions,
     pending_actions_for,
     scan_pre_conflicts,
@@ -173,6 +174,16 @@ class TaskPausedByWatchtowerError(RuntimeError):
         super().__init__(f"task {task_id} paused by watchtower rules: {', '.join(rules_fired)}")
         self.task_id = task_id
         self.rules_fired = list(rules_fired)
+
+
+class TaskPausedByWorldActionError(RuntimeError):
+    """Raised when an execution-time skill requests a WorldGateway approval gate."""
+
+    def __init__(self, task_id: str, actions: list[PendingActionSpec]) -> None:
+        action_types = ", ".join(action.action_type for action in actions)
+        super().__init__(f"task {task_id} paused for world action approval: {action_types}")
+        self.task_id = task_id
+        self.actions = actions
 
 
 class TaskResult(BaseModel):
@@ -1129,6 +1140,28 @@ class Orchestrator:
             for s in skill_candidates
             if _skill_is_registered(s.skill_id)
         ]
+        if _skill_is_registered("world-request") and not any(
+            skill_id == "world-request" for skill_id, _, _ in skill_summaries
+        ):
+            skill_summaries.append(
+                (
+                    "world-request",
+                    (
+                        "执行中发现需要外部动作时使用。它只生成待审批 WorldGateway "
+                        "动作并暂停任务，不会真实外发。"
+                    ),
+                    {
+                        "type": "object",
+                        "properties": {
+                            "action_type": {"type": "string"},
+                            "target_ref": {"type": "string"},
+                            "risk_level": {"type": "string"},
+                            "payload": {"type": "object"},
+                        },
+                        "required": ["action_type", "payload"],
+                    },
+                )
+            )
         skill_directive = build_skill_directive(skill_summaries) if skill_summaries else ""
 
         # Proactive tool dispatch (主动用工具 layer 1) — scan the user message
@@ -2135,6 +2168,53 @@ class Orchestrator:
                     "rules_fired": exc.rules_fired,
                 },
             )
+        except TaskPausedByWorldActionError as exc:
+            status = "paused"
+            action_types = [action.action_type for action in exc.actions]
+            answer = (
+                "任务已暂停，执行过程中发现需要外部动作审批："
+                f"{', '.join(action_types)}。请在 NUO 的待审批动作里确认。"
+            )
+            self._record_state_ledger(
+                "record_paused",
+                task_ref.meta.task_id,
+                reason=answer,
+                pending_confirmations=action_types,
+            )
+            async with session_scope() as s:
+                await enqueue_pending_actions(
+                    s,
+                    tenant_id=tenant.tenant_id,
+                    task_ref=task_ref,
+                    actions=exc.actions,
+                )
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant.tenant_id,
+                        event_type="task.pending_actions.created",
+                        payload={
+                            "task_id": task_ref.meta.task_id,
+                            "source": "world_request_skill",
+                            "actions": [action.model_dump(mode="json") for action in exc.actions],
+                        },
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+            log.info(
+                "orchestrator.paused_for_world_action",
+                task_id=exc.task_id,
+                action_types=action_types,
+            )
+            yield OrchestratorEvent(
+                kind="guard_intervention",
+                data={
+                    "stage": "world_action_approval",
+                    "message": "task_paused_for_world_action",
+                    "task_id": exc.task_id,
+                    "pending_actions": [action.model_dump(mode="json") for action in exc.actions],
+                },
+            )
         except Exception as exc:
             status = "failed"
             log.exception("orchestrator.failed", error=str(exc))
@@ -2826,6 +2906,13 @@ class Orchestrator:
                 "step_description": step_description,
             },
         )
+        if loop_result.pause_requests:
+            pending_actions = _pending_actions_from_loop_pause(
+                task_id=task_ref.meta.task_id,
+                pause_requests=loop_result.pause_requests,
+            )
+            if pending_actions:
+                raise TaskPausedByWorldActionError(task_ref.meta.task_id, pending_actions)
         # Roll iteration cost / tokens back into a single LLMResponse so the
         # rest of orchestrator (StepRecord, capability writeback, NUO panel)
         # sees the full step weight, not just the final iteration.
@@ -3517,6 +3604,42 @@ def _context_resource_ids(context_pack: ContextPack) -> list[str]:
         for item in context_pack.items
         if item.asset_id and item.asset_kind
     ]
+
+
+def _pending_actions_from_loop_pause(
+    *,
+    task_id: str,
+    pause_requests: list[dict[str, Any]],
+) -> list[PendingActionSpec]:
+    actions: list[PendingActionSpec] = []
+    seen: set[str] = set()
+    for request in pause_requests:
+        metadata = request.get("metadata")
+        output = request.get("output")
+        candidates: list[Any] = []
+        if isinstance(metadata, dict):
+            raw_actions = metadata.get("pending_actions")
+            if isinstance(raw_actions, list):
+                candidates.extend(raw_actions)
+        if isinstance(output, dict) and isinstance(output.get("pending_action"), dict):
+            candidates.append(output["pending_action"])
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            try:
+                action = PendingActionSpec.model_validate(candidate)
+            except Exception:
+                log.warning(
+                    "orchestrator.world_action_pause_bad_spec",
+                    task_id=task_id,
+                    candidate=candidate,
+                )
+                continue
+            if action.action_id in seen:
+                continue
+            seen.add(action.action_id)
+            actions.append(action)
+    return actions
 
 
 def _dedupe_strings(values: list[str]) -> list[str]:

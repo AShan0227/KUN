@@ -322,6 +322,39 @@ class RuntimeStateRow(Base):
     )
 
 
+class StateLedgerEntryRow(Base):
+    """Durable current-state snapshot for one tenant task.
+
+    EventRow remains the append-only history. This table keeps the latest
+    StateLedgerEntry so API/process restarts do not erase the current view.
+    """
+
+    __tablename__ = "state_ledger_entries"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    project_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued", index=True)
+    snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'paused', 'done', 'failed', 'cancelled')",
+            name="state_ledger_status_valid",
+        ),
+        CheckConstraint("length(task_id) > 0", name="state_ledger_task_id_not_empty"),
+        Index("ix_state_ledger_tenant_status_updated", "tenant_id", "status", "updated_at"),
+        Index("ix_state_ledger_tenant_user_updated", "tenant_id", "user_id", "updated_at"),
+    )
+
+
 # ============== TASK RESULTS ==============
 
 

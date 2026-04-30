@@ -5,23 +5,33 @@ V3-2 first cut:
 - EventRow remains the append-only audit log.
 - StateLedger is the hot current-state view used by orchestrator/runtime/blackboard.
 
-This module is intentionally lightweight and in-memory. Durable history is
-served by blackboard_data_sources from EventRow; this hot ledger only answers
-"what KUN is doing right now, why, and where it is".
+V4 first durable cut:
+- StateLedgerEntryRow keeps the latest readable current-state snapshot.
+- EventRow still owns history; this table only solves restart-loss of current facts.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import asyncio
+import logging
+from collections.abc import Coroutine, Mapping, Sequence
+from concurrent.futures import Future, TimeoutError
 from datetime import UTC, datetime
-from threading import RLock
-from typing import Any
+from threading import Event, RLock, Thread
+from typing import Any, Protocol, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import desc, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from kun.core.db import session_scope
+from kun.core.orm import StateLedgerEntryRow
 from kun.datamodel.decision_ticket import DecisionTicket
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
 from kun.datamodel.task import TaskRef
+
+logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 class StateLedgerTrail(BaseModel):
@@ -88,16 +98,208 @@ class StateLedgerEntry(BaseModel):
         self.updated_at = datetime.now(UTC)
 
 
-class StateLedger:
-    """In-memory current-state ledger.
+class StateLedgerStore(Protocol):
+    """Sync facade used by StateLedger to persist/read current snapshots."""
 
-    The ledger is sync by design: callers update it on the hot path without
-    awaiting I/O. Durable persistence still belongs to RuntimeStateRow/EventRow.
+    def save(self, entry: StateLedgerEntry) -> None: ...
+
+    def get(self, *, task_id: str, tenant_id: str) -> StateLedgerEntry | None: ...
+
+    def list_active(self, *, tenant_id: str, limit: int = 50) -> list[StateLedgerEntry]: ...
+
+
+class StateLedgerDatabaseStore:
+    """Postgres-backed StateLedger store.
+
+    Writes are queued onto a private event loop so the sync ledger API does not
+    force orchestrator callers to await DB I/O. Reads block briefly because
+    blackboard restart recovery needs a real persisted answer.
     """
 
+    def __init__(self, *, read_timeout_sec: float = 1.0, enable_reads: bool = True) -> None:
+        self._runner = _AsyncLoopRunner()
+        self._read_timeout_sec = read_timeout_sec
+        self._enable_reads = enable_reads
+        self._pending: set[Future[None]] = set()
+        self._lock = RLock()
+
+    def save(self, entry: StateLedgerEntry) -> None:
+        future = cast(
+            Future[None],
+            self._runner.submit(_upsert_state_ledger_entry(entry), wait=False),
+        )
+        with self._lock:
+            self._pending.add(future)
+        future.add_done_callback(self._finish_write)
+
+    def get(self, *, task_id: str, tenant_id: str) -> StateLedgerEntry | None:
+        if not self._enable_reads:
+            return None
+        return cast(
+            StateLedgerEntry | None,
+            self._runner.submit(
+                _load_state_ledger_entry(task_id=task_id, tenant_id=tenant_id),
+                wait=True,
+                timeout=self._read_timeout_sec,
+            ),
+        )
+
+    def list_active(self, *, tenant_id: str, limit: int = 50) -> list[StateLedgerEntry]:
+        if not self._enable_reads:
+            return []
+        return cast(
+            list[StateLedgerEntry],
+            self._runner.submit(
+                _list_active_state_ledger_entries(tenant_id=tenant_id, limit=limit),
+                wait=True,
+                timeout=self._read_timeout_sec,
+            ),
+        )
+
+    def flush(self, *, timeout_sec: float = 2.0) -> None:
+        with self._lock:
+            pending = list(self._pending)
+        for future in pending:
+            try:
+                future.result(timeout=timeout_sec)
+            except Exception:
+                logger.exception("state_ledger.flush_failed")
+
+    def _finish_write(self, future: Future[None]) -> None:
+        with self._lock:
+            self._pending.discard(future)
+        try:
+            future.result()
+        except Exception:
+            logger.exception("state_ledger.persist_failed")
+
+
+class _AsyncLoopRunner:
     def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._ready = Event()
+        self._thread = Thread(target=self._run, name="state-ledger-db", daemon=True)
+        self._thread.start()
+        self._ready.wait(timeout=1.0)
+
+    def submit(
+        self,
+        coro: Coroutine[Any, Any, _T],
+        *,
+        wait: bool,
+        timeout: float | None = None,
+    ) -> _T | Future[_T]:
+        if self._loop is None:
+            raise RuntimeError("state ledger DB loop did not start")
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        if not wait:
+            return future
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError:
+            future.cancel()
+            raise
+
+    def _run(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._ready.set()
+        loop.run_forever()
+
+
+async def _upsert_state_ledger_entry(entry: StateLedgerEntry) -> None:
+    values = _entry_row_values(entry)
+    stmt = pg_insert(StateLedgerEntryRow).values(**values)
+    update_values = {
+        "user_id": stmt.excluded.user_id,
+        "project_id": stmt.excluded.project_id,
+        "status": stmt.excluded.status,
+        "snapshot_json": stmt.excluded.snapshot_json,
+        "updated_at": stmt.excluded.updated_at,
+    }
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[StateLedgerEntryRow.tenant_id, StateLedgerEntryRow.task_id],
+        set_=update_values,
+    )
+    async with session_scope(tenant_id=entry.tenant_id) as session:
+        await session.execute(stmt)
+
+
+async def _load_state_ledger_entry(*, task_id: str, tenant_id: str) -> StateLedgerEntry | None:
+    async with session_scope(tenant_id=tenant_id) as session:
+        row = (
+            await session.execute(
+                select(StateLedgerEntryRow).where(
+                    StateLedgerEntryRow.tenant_id == tenant_id,
+                    StateLedgerEntryRow.task_id == task_id,
+                )
+            )
+        ).scalar_one_or_none()
+    return _entry_from_row(row) if row is not None else None
+
+
+async def _list_active_state_ledger_entries(
+    *,
+    tenant_id: str,
+    limit: int = 50,
+) -> list[StateLedgerEntry]:
+    async with session_scope(tenant_id=tenant_id) as session:
+        rows = (
+            (
+                await session.execute(
+                    select(StateLedgerEntryRow)
+                    .where(
+                        StateLedgerEntryRow.tenant_id == tenant_id,
+                        StateLedgerEntryRow.status.in_(("queued", "running", "paused")),
+                    )
+                    .order_by(desc(StateLedgerEntryRow.updated_at))
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return [_entry_from_row(row) for row in rows]
+
+
+def _entry_row_values(entry: StateLedgerEntry) -> dict[str, Any]:
+    return {
+        "tenant_id": entry.tenant_id,
+        "task_id": entry.task_id,
+        "user_id": entry.user_id,
+        "project_id": entry.project_id,
+        "status": entry.status,
+        "snapshot_json": entry.model_dump(mode="json"),
+        "created_at": entry.started_at,
+        "updated_at": entry.updated_at,
+    }
+
+
+def _entry_from_row(row: StateLedgerEntryRow) -> StateLedgerEntry:
+    data = dict(row.snapshot_json or {})
+    data.setdefault("tenant_id", row.tenant_id)
+    data.setdefault("task_id", row.task_id)
+    data.setdefault("user_id", row.user_id)
+    data.setdefault("project_id", row.project_id)
+    data.setdefault("status", row.status)
+    data.setdefault("updated_at", row.updated_at)
+    return StateLedgerEntry.model_validate(data)
+
+
+class StateLedger:
+    """Current-state ledger with optional durable snapshots.
+
+    The write API stays sync because the orchestrator hot path already calls it
+    that way. A store can persist snapshots behind that sync boundary. Durable
+    EventRow is still the historical source; StateLedgerEntryRow is a restart
+    survival cache for the latest current view.
+    """
+
+    def __init__(self, *, store: StateLedgerStore | None = None) -> None:
         self._lock = RLock()
         self._entries: dict[str, StateLedgerEntry] = {}
+        self._store = store
 
     def record_task_created(
         self,
@@ -126,7 +328,7 @@ class StateLedger:
         entry.add_trail("task.created", "任务已登记", {"status": status})
         with self._lock:
             self._entries[entry.task_id] = entry
-            return entry.model_copy(deep=True)
+            return self._stored_copy(entry)
 
     def record_decision(self, task_id: str, decision: Any) -> None:
         with self._lock:
@@ -150,6 +352,7 @@ class StateLedger:
                     "context_limit": entry.context_limit,
                 },
             )
+            self._store_entry(entry)
 
     def record_decision_ticket(self, ticket: DecisionTicket) -> None:
         """Record a V4 decision ticket in the hot task view.
@@ -221,24 +424,28 @@ class StateLedger:
                     "reason": ticket.reason,
                 },
             )
+            self._store_entry(entry)
 
     def record_plan(self, task_id: str, *, total_steps: int) -> None:
         with self._lock:
             entry = self._ensure(task_id)
             entry.total_steps = max(0, total_steps)
             entry.add_trail("task.plan", f"执行计划共 {entry.total_steps} 步")
+            self._store_entry(entry)
 
     def record_running(self, task_id: str, *, runtime: RuntimeState) -> None:
         with self._lock:
             entry = self._ensure(task_id)
             _apply_runtime(entry, runtime)
             entry.add_trail("task.started", "任务开始执行")
+            self._store_entry(entry)
 
     def record_context(self, task_id: str, *, asset_ids: list[str]) -> None:
         with self._lock:
             entry = self._ensure(task_id)
             entry.context_asset_ids = list(asset_ids)
             entry.add_trail("context.preheated", "上下文已预热", {"asset_ids": asset_ids})
+            self._store_entry(entry)
 
     def record_current_action(
         self,
@@ -258,6 +465,7 @@ class StateLedger:
                 f"开始第 {step_id} 步",
                 {"step_id": step_id, "description": description, "skill_hint": skill_hint or ""},
             )
+            self._store_entry(entry)
 
     def record_step_completed(
         self,
@@ -286,6 +494,7 @@ class StateLedger:
                     "tokens": step.tokens_in + step.tokens_out,
                 },
             )
+            self._store_entry(entry)
 
     def record_paused(
         self,
@@ -304,6 +513,7 @@ class StateLedger:
                 reason,
                 {"pending_confirmations": entry.pending_confirmations},
             )
+            self._store_entry(entry)
 
     def record_resumed(self, task_id: str, *, reason: str) -> None:
         """Reflect a durable runtime resume in the hot ledger view."""
@@ -313,6 +523,7 @@ class StateLedger:
             entry.pending_reason = ""
             entry.pending_confirmations = []
             entry.add_trail("task.resumed", reason)
+            self._store_entry(entry)
 
     def record_world_action_executed(
         self,
@@ -356,6 +567,7 @@ class StateLedger:
                     entry.decision_ticket_ids.append(decision_ticket.ticket_id)
                     entry.decision_ticket_ids = entry.decision_ticket_ids[-30:]
                 entry.latest_decision_ticket = decision_ticket.event_payload()
+            self._store_entry(entry)
 
     def record_world_action_blocked(
         self,
@@ -406,6 +618,7 @@ class StateLedger:
                     entry.decision_ticket_ids.append(decision_ticket.ticket_id)
                     entry.decision_ticket_ids = entry.decision_ticket_ids[-30:]
                 entry.latest_decision_ticket = decision_ticket.event_payload()
+            self._store_entry(entry)
 
     def record_world_action_failed(
         self,
@@ -437,6 +650,7 @@ class StateLedger:
                     "error": error,
                 },
             )
+            self._store_entry(entry)
 
     def record_system_health_report(self, report: Any) -> StateLedgerEntry:
         """Expose NUO system findings in the current-state view.
@@ -505,7 +719,7 @@ class StateLedger:
                     ],
                 },
             )
-            return entry.model_copy(deep=True)
+            return self._stored_copy(entry)
 
     def record_finished(self, task_id: str, *, runtime: RuntimeState) -> None:
         with self._lock:
@@ -513,20 +727,29 @@ class StateLedger:
             _apply_runtime(entry, runtime)
             entry.finished_at = runtime.finished_at or datetime.now(UTC)
             entry.add_trail("task.finished", f"任务结束: {entry.status}")
+            self._store_entry(entry)
 
-    def snapshot(self, task_id: str) -> StateLedgerEntry | None:
+    def snapshot(self, task_id: str, *, tenant_id: str | None = None) -> StateLedgerEntry | None:
         with self._lock:
             entry = self._entries.get(task_id)
-            return entry.model_copy(deep=True) if entry is not None else None
+            if entry is not None and (tenant_id is None or entry.tenant_id == tenant_id):
+                return entry.model_copy(deep=True)
+        if self._store is None or tenant_id is None:
+            return None
+        return self._store.get(task_id=task_id, tenant_id=tenant_id)
 
     def active_snapshots(self, *, tenant_id: str | None = None) -> list[StateLedgerEntry]:
+        persisted: list[StateLedgerEntry] = []
+        if self._store is not None and tenant_id is not None:
+            persisted = self._store.list_active(tenant_id=tenant_id)
         with self._lock:
-            entries = [
-                entry
-                for entry in self._entries.values()
-                if entry.status in {"queued", "running", "paused"}
-                and (tenant_id is None or entry.tenant_id == tenant_id)
-            ]
+            by_key = {(entry.tenant_id, entry.task_id): entry for entry in persisted}
+            for entry in self._entries.values():
+                if entry.status in {"queued", "running", "paused"} and (
+                    tenant_id is None or entry.tenant_id == tenant_id
+                ):
+                    by_key[(entry.tenant_id, entry.task_id)] = entry
+            entries = list(by_key.values())
             entries.sort(key=lambda item: item.updated_at, reverse=True)
             return [entry.model_copy(deep=True) for entry in entries]
 
@@ -543,8 +766,20 @@ class StateLedger:
         self._entries[task_id] = entry
         return entry
 
+    def _stored_copy(self, entry: StateLedgerEntry) -> StateLedgerEntry:
+        self._store_entry(entry)
+        return entry.model_copy(deep=True)
 
-_default_ledger = StateLedger()
+    def _store_entry(self, entry: StateLedgerEntry) -> None:
+        if self._store is None or not entry.tenant_id:
+            return
+        try:
+            self._store.save(entry.model_copy(deep=True))
+        except Exception:
+            logger.exception("state_ledger.persist_failed", extra={"task_id": entry.task_id})
+
+
+_default_ledger = StateLedger(store=StateLedgerDatabaseStore(enable_reads=False))
 
 
 def get_state_ledger() -> StateLedger:

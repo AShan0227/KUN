@@ -79,6 +79,7 @@ class AgentLoopResult:
     total_cost_equivalent: float
     total_input_tokens: int
     total_output_tokens: int
+    pause_requests: list[dict[str, Any]] = field(default_factory=list)
 
 
 def parse_skill_calls(text: str) -> list[SkillInvocation]:
@@ -192,6 +193,7 @@ async def run_agent_loop(
     total_equiv = 0.0
     total_in = 0
     total_out = 0
+    pause_requests: list[dict[str, Any]] = []
 
     for i in range(max_iterations):
         request = initial_request.model_copy(update={"messages": messages})
@@ -221,6 +223,11 @@ async def run_agent_loop(
                     params=call.params,
                     context=hermes_context,
                 )
+            if hermes_context is not None:
+                dispatch_params = {
+                    **dispatch_params,
+                    "_kun_context": hermes_context,
+                }
             result = await skill_dispatch(call.name, dispatch_params)
             result_payload = result.model_dump(mode="json")
             if hermes_adapter is not None:
@@ -231,6 +238,20 @@ async def run_agent_loop(
                 )
             tool_results.append(result_payload)
         step.skill_results = tool_results
+
+        requested_pause = [
+            result
+            for result in tool_results
+            if isinstance(result.get("metadata"), dict)
+            and result["metadata"].get("requires_task_pause") is True
+        ]
+        if requested_pause:
+            pause_requests.extend(requested_pause)
+            log.info(
+                "agent_loop.pause_requested",
+                skill_ids=[result.get("skill_id") for result in requested_pause],
+            )
+            break
 
         # Continue the conversation: assistant said its piece, now feed
         # the tool results back as a user-role message.
@@ -261,6 +282,7 @@ async def run_agent_loop(
         total_cost_equivalent=total_equiv,
         total_input_tokens=total_in,
         total_output_tokens=total_out,
+        pause_requests=pause_requests,
     )
 
 

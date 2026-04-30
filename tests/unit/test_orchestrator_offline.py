@@ -18,6 +18,7 @@ from kun.interface.llm import LLMRouter
 from kun.interface.llm.base import LLMResponse, UsageInfo
 from kun.interface.llm.router import set_router
 from kun.interface.llm.stub_provider import StubProvider
+from kun.skills.dispatcher import autoload_builtins
 from kun.watchtower.engine import RuleEngine
 from kun.watchtower.rules import GuardRule, RuleAction, RuleTrigger
 
@@ -153,6 +154,25 @@ class _CostlyRoutingStub(_RoutingStub):
             self._builder = _intent_builder  # type: ignore[assignment]
         else:
             self._builder = _costly_exec_builder  # type: ignore[assignment]
+        return await StubProvider.invoke(self, request)
+
+
+class _WorldRequestRoutingStub(_RoutingStub):
+    async def invoke(self, request):
+        sys_text = " ".join(m.content for m in request.messages if m.role == "system")
+        if "意图理解层" in sys_text:
+            self._builder = _intent_builder  # type: ignore[assignment]
+        else:
+            self._builder = lambda _request: LLMResponse(
+                content=(
+                    '<skill name="world-request">'
+                    '{"action_type":"email.send","target_ref":"ops@example.com",'
+                    '"risk_level":"medium","payload":{"to":"ops@example.com",'
+                    '"subject":"Need approval","body":"Please review."}}'
+                    "</skill>"
+                ),
+                usage=UsageInfo(input_tokens=10, output_tokens=22),
+            )
         return await StubProvider.invoke(self, request)
 
 
@@ -483,6 +503,43 @@ async def test_watchtower_pause_rule_stops_hot_execution_loop(monkeypatch):
     result = TaskResult.model_validate(done.data["result"])
     assert result.status == "paused"
     assert "守望暂停" in result.answer
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_request_skill_pauses_and_enqueues_pending_action(monkeypatch):
+    autoload_builtins()
+    providers = {
+        "top": _WorldRequestRoutingStub(tier="top"),
+        "cheap": _WorldRequestRoutingStub(tier="cheap"),
+        "coding": _WorldRequestRoutingStub(tier="coding"),
+        "fallback": _WorldRequestRoutingStub(tier="fallback"),
+    }
+    set_router(LLMRouter(providers))
+    captured_actions = []
+
+    async def fake_enqueue(_session, *, tenant_id, task_ref, actions):
+        captured_actions.extend(actions)
+
+    monkeypatch.setattr("kun.engineering.orchestrator.enqueue_pending_actions", fake_enqueue)
+
+    events = []
+    async for ev in Orchestrator(output_translator=_identity_translator).stream(
+        "Please draft and send an approval email"
+    ):
+        events.append(ev)
+
+    done = next(ev for ev in events if ev.kind == "done")
+    result = TaskResult.model_validate(done.data["result"])
+    assert result.status == "paused"
+    assert "外部动作审批" in result.answer
+    assert [action.action_type for action in captured_actions] == ["email.draft"]
+    guard = next(
+        ev
+        for ev in events
+        if ev.kind == "guard_intervention" and ev.data["stage"] == "world_action_approval"
+    )
+    assert guard.data["pending_actions"][0]["action_type"] == "email.draft"
 
 
 @pytest.mark.unit

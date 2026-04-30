@@ -85,6 +85,7 @@ def get_v3_delivery_status(
                 "pending approval 通过后可解除任务暂停",
                 "StateLedger history 可从 EventRow 回放长期事件",
                 "StateLedger story 可把某个任务的事件历史压成可读时间线、成本和决策摘要",
+                "StateLedger 当前快照已新增 state_ledger_entries 持久表；全局热账本会异步 upsert，黑板读路径会先读 DB 再叠加内存热态",
                 "Mission story 可把一个长期目标下的多个 task 账本聚合成总故事线、成本、决策数和下一步",
                 "StateLedger replay 会从 EventRow 重建推断状态、外部动作、模型/skill/context 路径、风险和账本缺口",
                 "idle-batch 有部分复盘和学习能力",
@@ -112,7 +113,7 @@ def get_v3_delivery_status(
             missing=[
                 "续跑还不是原 TaskRow 原地恢复，而是 continuation task 挂回 Mission",
                 "自动续跑默认仍是 opt-in（KUN_MISSION_RESUME_WORKER_ENABLED=1），避免静默烧钱或触发外部动作",
-                "StateLedger 还不是完整确定性快照重建器；目前能重建任务故事和缺口，但不能还原每个运行时字段",
+                "StateLedger 持久化是第一版当前快照 cache；EventRow 仍是历史源，尚未做完整确定性快照重建",
                 "Mission 复盘和 continuation 摘要只做轻量权重/档位 nudging，还没训练长期策略模型",
                 "还没有跑跨周真实产品运营 dogfood",
                 "普通任务 continuation 采用子任务续跑并回写原任务视图，还不是原 TaskRow 原地续跑",
@@ -401,6 +402,7 @@ def _world_gateway_delivery_status(
         "傩体检、secret audit、preflight 已识别 KUN_TENANT_<TENANT>_* 租户级外部动作配置",
         "傩可从 world_action_executions 账本识别重试/补偿/缺幂等风险，不会默认重复真实外发",
         "任务 preflight 会尽量生成 WorldGateway 已注册的低风险动作类型：email.draft / local_file.write / webhook.post_dry_run / browser.plan",
+        "执行中 LLM 可通过 world-request 内置 skill 生成待审批动作并暂停任务，但真实外发仍必须走 NUO/WorldGateway 审批链",
         "真实外发和高风险动作读取 handler health/control 失败时默认 fail-closed，避免绕过傩控制",
         "真实外发和高风险动作必须带显式 idempotency_key，重复幂等键会被代码和 DB partial unique index 双层拦截",
     ]

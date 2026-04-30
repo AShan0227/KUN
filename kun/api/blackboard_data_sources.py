@@ -13,7 +13,7 @@ from sqlalchemy import desc, or_, select
 
 from kun.api.blackboard import register_data_source
 from kun.core.db import session_scope
-from kun.core.orm import EventRow, RuntimeStateRow, TaskRow
+from kun.core.orm import EventRow, RuntimeStateRow, StateLedgerEntryRow, TaskRow
 from kun.core.state_ledger import (
     StateLedgerEntry,
     StateLedgerTrail,
@@ -264,32 +264,51 @@ async def _state_ledger_source_async(
     try:
         ledger = get_state_ledger()
         if task_id is not None:
-            entry = ledger.snapshot(task_id)
-            if (
-                entry is None
-                or entry.tenant_id != tenant_id
-                or not _matches_user(entry.user_id, user_id)
-            ):
-                runtime_entry = await _runtime_state_ledger_source(
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    task_id=task_id,
-                )
-                if runtime_entry is not None:
-                    return runtime_entry
-                return await _replayed_state_ledger_source(
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    task_id=task_id,
-                )
-            return entry.model_dump(mode="json")
+            persisted_entry = await _persistent_state_ledger_source(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                task_id=task_id,
+            )
+            entry = ledger.snapshot(task_id, tenant_id=tenant_id)
+            if entry is not None and _matches_user(entry.user_id, user_id):
+                return entry.model_dump(mode="json")
+            if persisted_entry is not None:
+                return persisted_entry
+            runtime_entry = await _runtime_state_ledger_source(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                task_id=task_id,
+            )
+            if runtime_entry is not None:
+                return runtime_entry
+            return await _replayed_state_ledger_source(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                task_id=task_id,
+            )
+        persisted_entries = await _persistent_state_ledger_source(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            task_id=None,
+        )
+        if not isinstance(persisted_entries, list):
+            persisted_entries = []
+        merged_entries: dict[str, dict[str, Any]] = {
+            str(item.get("task_id") or ""): item
+            for item in persisted_entries
+            if isinstance(item, dict) and item.get("task_id")
+        }
         hot_entries = [
             entry.model_dump(mode="json")
             for entry in ledger.active_snapshots(tenant_id=tenant_id)
             if _matches_user(entry.user_id, user_id)
         ]
-        if hot_entries:
-            return hot_entries
+        for item in hot_entries:
+            merged_entries[str(item.get("task_id") or "")] = item
+        if merged_entries:
+            entries = list(merged_entries.values())
+            entries.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+            return entries[:50]
         fallback = await _runtime_state_ledger_source(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -305,6 +324,37 @@ async def _state_ledger_source_async(
         return replayed if isinstance(replayed, list) else []
     except Exception:
         logger.exception("blackboard.state_ledger_source failed")
+        return None if task_id is not None else []
+
+
+async def _persistent_state_ledger_source(
+    *,
+    tenant_id: str,
+    user_id: str | None,
+    task_id: str | None,
+) -> list[dict[str, Any]] | dict[str, Any] | None:
+    try:
+        async with session_scope(tenant_id=tenant_id) as session:
+            stmt = (
+                select(StateLedgerEntryRow)
+                .where(StateLedgerEntryRow.tenant_id == tenant_id)
+                .order_by(desc(StateLedgerEntryRow.updated_at))
+            )
+            if task_id is not None:
+                stmt = stmt.where(StateLedgerEntryRow.task_id == task_id).limit(1)
+            else:
+                stmt = stmt.where(StateLedgerEntryRow.status.in_(("queued", "running", "paused")))
+                stmt = stmt.limit(50)
+            if user_id and user_id != "u-anon":
+                stmt = stmt.where(StateLedgerEntryRow.user_id == user_id)
+            rows = (await session.execute(stmt)).scalars().all()
+
+        entries = [_state_ledger_entry_from_row(row).model_dump(mode="json") for row in rows]
+        if task_id is not None:
+            return entries[0] if entries else None
+        return entries
+    except Exception:
+        logger.exception("blackboard.state_ledger_persistent_source failed")
         return None if task_id is not None else []
 
 
@@ -480,6 +530,17 @@ async def _replayed_state_ledger_source(
     if task_id is not None:
         return entries[0] if entries else None
     return entries[:50]
+
+
+def _state_ledger_entry_from_row(row: StateLedgerEntryRow) -> StateLedgerEntry:
+    data = dict(row.snapshot_json or {})
+    data.setdefault("tenant_id", row.tenant_id)
+    data.setdefault("task_id", row.task_id)
+    data.setdefault("user_id", row.user_id)
+    data.setdefault("project_id", row.project_id)
+    data.setdefault("status", row.status)
+    data.setdefault("updated_at", row.updated_at)
+    return StateLedgerEntry.model_validate(data)
 
 
 def _entry_from_replayed_story(
