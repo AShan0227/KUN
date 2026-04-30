@@ -149,6 +149,7 @@ def _tooling_checks(root: Path, *, run_alembic_heads: bool) -> list[PreflightChe
     checks: list[PreflightCheck] = []
     backup_script = root / "scripts" / "backup_postgres.sh"
     restore_script = root / "scripts" / "restore_postgres_smoke.sh"
+    backup_drill_script = root / "scripts" / "backup_restore_drill.py"
     for check_id, label, path in (
         ("backup_script", "Postgres 备份脚本", backup_script),
         ("restore_script", "Postgres 恢复 smoke 脚本", restore_script),
@@ -162,6 +163,17 @@ def _tooling_checks(root: Path, *, run_alembic_heads: bool) -> list[PreflightChe
                 suggested_action="" if path.exists() else "补齐备份/恢复脚本后再上线。",
             )
         )
+    checks.append(
+        PreflightCheck(
+            check_id="backup_restore_drill_script",
+            severity="ok" if backup_drill_script.exists() else "warn",
+            title=f"本地备份恢复演练脚本{'存在' if backup_drill_script.exists() else '缺失'}",
+            detail=str(backup_drill_script),
+            suggested_action=""
+            if backup_drill_script.exists()
+            else "补齐演练脚本，至少让本地配置备份可校验。",
+        )
+    )
     if shutil.which("uv") is None:
         checks.append(
             PreflightCheck(

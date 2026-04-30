@@ -31,6 +31,14 @@ def _safe_prod_settings() -> Settings:
     )
 
 
+def _write_ops_scripts(root: Path) -> None:
+    scripts = root / "scripts"
+    scripts.mkdir()
+    (scripts / "backup_postgres.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (scripts / "restore_postgres_smoke.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (scripts / "backup_restore_drill.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+
 @pytest.mark.unit
 def test_preflight_blocks_unsafe_production_config(tmp_path: Path) -> None:
     cfg = Settings(
@@ -52,10 +60,7 @@ def test_preflight_blocks_unsafe_production_config(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_preflight_passes_core_checks_for_safe_config(tmp_path: Path) -> None:
-    scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    (scripts / "backup_postgres.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    (scripts / "restore_postgres_smoke.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    _write_ops_scripts(tmp_path)
 
     report = run_preflight(
         cfg=_safe_prod_settings(),
@@ -69,10 +74,7 @@ def test_preflight_passes_core_checks_for_safe_config(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_preflight_accepts_auth_secret_rotation_list(tmp_path: Path) -> None:
-    scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    (scripts / "backup_postgres.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    (scripts / "restore_postgres_smoke.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    _write_ops_scripts(tmp_path)
     cfg = _safe_prod_settings().model_copy(
         update={
             "auth_secret": None,
@@ -93,10 +95,7 @@ def test_preflight_blocks_half_enabled_world_gateway_handler(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    (scripts / "backup_postgres.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    (scripts / "restore_postgres_smoke.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    _write_ops_scripts(tmp_path)
     monkeypatch.setenv("KUN_WORLD_EMAIL_SEND_ENABLED", "true")
     monkeypatch.delenv("KUN_WORLD_SMTP_HOST", raising=False)
     monkeypatch.delenv("KUN_WORLD_SMTP_FROM", raising=False)
@@ -119,10 +118,7 @@ def test_preflight_accepts_enabled_world_gateway_handler_with_required_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    (scripts / "backup_postgres.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    (scripts / "restore_postgres_smoke.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    _write_ops_scripts(tmp_path)
     monkeypatch.setenv("KUN_WORLD_EMAIL_SEND_ENABLED", "true")
     monkeypatch.setenv("KUN_WORLD_SMTP_HOST", "smtp.example.com")
     monkeypatch.setenv("KUN_WORLD_SMTP_FROM", "kun@example.com")
@@ -145,10 +141,7 @@ def test_preflight_accepts_enabled_world_gateway_handler_with_tenant_scoped_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    (scripts / "backup_postgres.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    (scripts / "restore_postgres_smoke.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    _write_ops_scripts(tmp_path)
     monkeypatch.setenv("KUN_WORLD_EMAIL_SEND_ENABLED", "true")
     monkeypatch.delenv("KUN_WORLD_SMTP_HOST", raising=False)
     monkeypatch.delenv("KUN_WORLD_SMTP_FROM", raising=False)
