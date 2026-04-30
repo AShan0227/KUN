@@ -75,6 +75,36 @@ def test_emergent_switch_manager_wired_into_orchestrator() -> None:
     assert orch.emergent_switch_manager is mgr
 
 
+def test_kill_switch_wired_into_orchestrator(runtime_app) -> None:
+    """Task-control API 和 Orchestrator 必须共用一个 KillSwitch, 否则停止按钮是假闭环."""
+    ks = get_kill_switch(runtime_app)
+    orch = get_orchestrator(runtime_app)
+    assert orch.kill_switch is ks
+
+
+def test_task_control_kills_registered_task(runtime_app) -> None:
+    client = TestClient(runtime_app)
+    get_kill_switch(runtime_app).register_task("tk-live")
+
+    res = client.post(
+        "/api/tasks/tk-live/kill",
+        headers={"X-Tenant-Id": "u-sylvan", "X-User-Id": "sylvan"},
+        json={"reason": "unit_test_stop"},
+    )
+    assert res.status_code == 200
+    assert res.json()["killed"] is True
+
+    status = client.get(
+        "/api/tasks/tk-live/status",
+        headers={"X-Tenant-Id": "u-sylvan", "X-User-Id": "sylvan"},
+    )
+    assert status.status_code == 200
+    payload = status.json()
+    assert payload["registered"] is True
+    assert payload["is_killed"] is True
+    assert payload["kill_reason"] == "unit_test_stop"
+
+
 def test_cron_scheduler_singleton_in_app_state() -> None:
     from fastapi import FastAPI
     from kun.api.runtime import get_cron_scheduler

@@ -61,6 +61,10 @@ class KillSwitch:
         if task_id not in self._events:
             self._events[task_id] = asyncio.Event()
 
+    def is_registered(self, task_id: str) -> bool:
+        """Return whether this process can currently signal the task."""
+        return task_id in self._events
+
     def kill(self, task_id: str, reason: str = "user_interrupt") -> bool:
         """发出 kill 信号. 返 True 如果 task 在跑."""
         if task_id not in self._events:

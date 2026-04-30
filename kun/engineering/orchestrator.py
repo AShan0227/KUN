@@ -15,9 +15,10 @@ Pipeline (§5.1-5.3):
 
 from __future__ import annotations
 
+import asyncio
 import os as _os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol, cast
 
@@ -155,6 +156,15 @@ class TaskBudgetExceededError(RuntimeError):
         self.limit_usd = limit_usd
 
 
+class TaskCancelledByUserError(RuntimeError):
+    """Raised when the shared KillSwitch asks this task to stop."""
+
+    def __init__(self, task_id: str, reason: str) -> None:
+        super().__init__(f"task {task_id} cancelled by user: {reason}")
+        self.task_id = task_id
+        self.reason = reason
+
+
 class TaskResult(BaseModel):
     """Final result surfaced to the API / WebSocket."""
 
@@ -211,6 +221,7 @@ class Orchestrator:
         scoring_system: Any = None,
         credit_assignment: CreditAssignment | None = None,
         budget_tracker: BudgetTracker | None = None,
+        kill_switch: Any = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -268,6 +279,10 @@ class Orchestrator:
             if _os.getenv("KUN_BUDGET_TRACKER_ENABLED", "1") == "1"
             else None
         )
+        # Shared with /api/tasks/{id}/kill.  This is process-local by design:
+        # REST/WS can interrupt work running in this API process.  Durable
+        # queued/resume control is a separate worker concern.
+        self.kill_switch = kill_switch
         # 累计 step value history, 给 value_gate marginal_roi 用
         self._value_history: list[float] = []
 
@@ -574,6 +589,7 @@ class Orchestrator:
             tenant_id=tenant.tenant_id,
             status="queued",
         )
+        self._register_task_control(task_ref.meta.task_id)
         yield OrchestratorEvent(
             kind="action_plan",
             data={
@@ -944,6 +960,7 @@ class Orchestrator:
                 kind="done",
                 data={"result": paused_result.model_dump(mode="json")},
             )
+            self._cleanup_task_control(task_ref.meta.task_id)
             return
 
         # 6. Create RuntimeState
@@ -1153,6 +1170,7 @@ class Orchestrator:
 
         try:
             for step_plan in plan.steps:
+                self._raise_if_task_cancelled(task_ref.meta.task_id)
                 # Hard task-level deadline check (R-D1).
                 if time.monotonic() > deadline_monotonic:
                     raise TaskTimedOutError(
@@ -1422,28 +1440,34 @@ class Orchestrator:
                     step_span.set_attribute("kun.audience", tenant.audience)
                     step_span.set_attribute("kun.force_fallback", force_fallback)
                     if _exec_mode == "ENSEMBLE":
-                        answer, response, ensemble_payload = await self._execute_ensemble_step(
-                            task_ref=task_ref,
-                            step_description=step_plan.description,
-                            profile=exec_profile,
-                            skills_summary=self.skill_selector.summary(skill_candidates),
-                            skill_directive=skill_directive,
-                            context_summary=step_context_summary,
-                            prior_outputs=step_outputs,
-                            pre_dispatched_block=step_pre_dispatched,
+                        answer, response, ensemble_payload = await self._await_task_control(
+                            task_ref.meta.task_id,
+                            self._execute_ensemble_step(
+                                task_ref=task_ref,
+                                step_description=step_plan.description,
+                                profile=exec_profile,
+                                skills_summary=self.skill_selector.summary(skill_candidates),
+                                skill_directive=skill_directive,
+                                context_summary=step_context_summary,
+                                prior_outputs=step_outputs,
+                                pre_dispatched_block=step_pre_dispatched,
+                            ),
                         )
                         yield OrchestratorEvent(kind="ensemble_result", data=ensemble_payload)
                     else:
-                        answer, response = await self._execute_step(
-                            task_ref=task_ref,
-                            step_description=step_plan.description,
-                            purpose=choice.purpose,
-                            profile=exec_profile,
-                            skills_summary=self.skill_selector.summary(skill_candidates),
-                            skill_directive=skill_directive,
-                            context_summary=step_context_summary,
-                            prior_outputs=step_outputs,
-                            pre_dispatched_block=step_pre_dispatched,
+                        answer, response = await self._await_task_control(
+                            task_ref.meta.task_id,
+                            self._execute_step(
+                                task_ref=task_ref,
+                                step_description=step_plan.description,
+                                purpose=choice.purpose,
+                                profile=exec_profile,
+                                skills_summary=self.skill_selector.summary(skill_candidates),
+                                skill_directive=skill_directive,
+                                context_summary=step_context_summary,
+                                prior_outputs=step_outputs,
+                                pre_dispatched_block=step_pre_dispatched,
+                            ),
                         )
                     step_span.set_attribute("kun.provider", response.provider)
                     step_span.set_attribute("kun.model", response.model)
@@ -2040,6 +2064,19 @@ class Orchestrator:
                     "limit_usd": exc.limit_usd,
                 },
             )
+        except TaskCancelledByUserError as exc:
+            status = "cancelled"
+            answer = f"任务已按用户请求停止：{exc.reason}"
+            log.info("orchestrator.cancelled_by_user", task_id=exc.task_id, reason=exc.reason)
+            yield OrchestratorEvent(
+                kind="guard_intervention",
+                data={
+                    "stage": "task_control",
+                    "message": "task_cancelled_by_user",
+                    "task_id": exc.task_id,
+                    "reason": exc.reason,
+                },
+            )
         except Exception as exc:
             status = "failed"
             log.exception("orchestrator.failed", error=str(exc))
@@ -2073,7 +2110,7 @@ class Orchestrator:
                 s,
                 Event.build(
                     tenant_id=tenant.tenant_id,
-                    event_type="task.done" if status == "done" else "task.failed",
+                    event_type=_final_task_event_type(status),
                     payload={
                         "task_id": task_ref.meta.task_id,
                         "status": status,
@@ -2092,6 +2129,7 @@ class Orchestrator:
         # surprise_score (ADR-015)
         surprise = _compute_surprise_score(task_ref.meta, runtime)
         task_surprise_score.labels(task_type=task_ref.meta.task_type).observe(surprise)
+        self._cleanup_task_control(task_ref.meta.task_id)
 
         if surprise >= 0.6:
             notifications.append(
@@ -2326,6 +2364,42 @@ class Orchestrator:
         )
 
     # ---------------------------- helpers ----------------------------
+
+    def _register_task_control(self, task_id: str) -> None:
+        if self.kill_switch is None:
+            return
+        try:
+            self.kill_switch.register_task(task_id)
+        except Exception:
+            log.exception("task_control.register_failed", task_id=task_id)
+
+    def _cleanup_task_control(self, task_id: str) -> None:
+        if self.kill_switch is None:
+            return
+        try:
+            self.kill_switch.cleanup(task_id)
+        except Exception:
+            log.exception("task_control.cleanup_failed", task_id=task_id)
+
+    def _raise_if_task_cancelled(self, task_id: str) -> None:
+        if self.kill_switch is None or not self.kill_switch.is_killed(task_id):
+            return
+        signal = self.kill_switch.get_kill_signal(task_id)
+        raise TaskCancelledByUserError(task_id, signal.reason if signal else "user_interrupt")
+
+    async def _await_task_control[T](self, task_id: str, awaitable: Awaitable[T]) -> T:
+        if self.kill_switch is None:
+            return await awaitable
+        try:
+            return cast(T, await self.kill_switch.wait_or_proceed(task_id, awaitable))
+        except asyncio.CancelledError as exc:
+            if self.kill_switch.is_killed(task_id):
+                signal = self.kill_switch.get_kill_signal(task_id)
+                raise TaskCancelledByUserError(
+                    task_id,
+                    signal.reason if signal else "user_interrupt",
+                ) from exc
+            raise
 
     def _record_state_ledger(self, method_name: str, *args: Any, **kwargs: Any) -> None:
         if self.state_ledger is None:
@@ -3294,6 +3368,16 @@ def _dedupe_strings(values: list[str]) -> list[str]:
             seen.add(value)
             out.append(value)
     return out
+
+
+def _final_task_event_type(
+    status: TaskStatus,
+) -> Literal["task.done", "task.failed", "task.cancelled"]:
+    if status == "done":
+        return "task.done"
+    if status == "cancelled":
+        return "task.cancelled"
+    return "task.failed"
 
 
 async def _load_mission_strategy(*, tenant_id: str, mission_id: str) -> dict[str, Any]:

@@ -212,6 +212,23 @@ type TaskDetail = {
   rendered_at?: string;
 };
 
+type TaskControlStatus = {
+  task_id: string;
+  registered?: boolean;
+  is_killed: boolean;
+  kill_reason?: string | null;
+  is_timed_out: boolean;
+  timeout_reason: string;
+  timeout_action: string;
+};
+
+type TaskKillResponse = {
+  task_id: string;
+  killed: boolean;
+  reason: string;
+  requested_at: string;
+};
+
 type StateLedgerHistoryItem = {
   event_id: string;
   event_type: string;
@@ -275,6 +292,11 @@ export default function Home() {
   const [taskDetail, setTaskDetail] = useState<TaskDetail | null>(null);
   const [taskDetailLoading, setTaskDetailLoading] = useState(false);
   const [taskDetailError, setTaskDetailError] = useState("");
+  const [taskControlStatusById, setTaskControlStatusById] = useState<
+    Record<string, TaskControlStatus>
+  >({});
+  const [taskControlNoticeById, setTaskControlNoticeById] = useState<Record<string, string>>({});
+  const [taskControlBusyId, setTaskControlBusyId] = useState("");
   const wsRef = useRef<WebSocket | null>(null);
 
   const refreshDashboard = useCallback(async (cancelledRef?: { current: boolean }) => {
@@ -479,6 +501,77 @@ export default function Home() {
     }
   }, [refreshDashboard]);
 
+  const loadTaskControlStatus = useCallback(async (taskId: string) => {
+    const id = taskId.trim();
+    if (!id) return null;
+    try {
+      const res = await fetch(`${API_ORIGIN}/api/tasks/${encodeURIComponent(id)}/status`, {
+        headers: {
+          "X-Tenant-Id": "u-sylvan",
+          "X-User-Id": "sylvan",
+        },
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const payload = (await res.json()) as TaskControlStatus;
+      setTaskControlStatusById((items) => ({ ...items, [id]: payload }));
+      return payload;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "任务控制状态查询失败";
+      setTaskControlNoticeById((items) => ({ ...items, [id]: message }));
+      return null;
+    }
+  }, []);
+
+  const requestTaskStop = useCallback(
+    async (taskId: string) => {
+      const id = taskId.trim();
+      if (!id) return;
+      setTaskControlBusyId(id);
+      setTaskControlNoticeById((items) => ({ ...items, [id]: "正在发送停止信号..." }));
+      try {
+        const res = await fetch(`${API_ORIGIN}/api/tasks/${encodeURIComponent(id)}/kill`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Tenant-Id": "u-sylvan",
+            "X-User-Id": "sylvan",
+          },
+          body: JSON.stringify({ reason: "user_requested_stop_from_task_detail" }),
+        });
+        const raw = await res.text();
+        let payload: TaskKillResponse | string = raw;
+        if (raw) {
+          try {
+            payload = JSON.parse(raw) as TaskKillResponse;
+          } catch {
+            payload = raw;
+          }
+        }
+        if (!res.ok) {
+          const message =
+            typeof payload === "string"
+              ? payload
+              : `停止信号未发送成功：${payload.reason || res.statusText}`;
+          throw new Error(message);
+        }
+        const reason = typeof payload === "string" ? "" : payload.reason;
+        setTaskControlNoticeById((items) => ({
+          ...items,
+          [id]: `已向当前运行中的任务发送停止信号${reason ? `：${reason}` : ""}`,
+        }));
+        await loadTaskControlStatus(id);
+        await refreshDashboard();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "停止信号发送失败";
+        setTaskControlNoticeById((items) => ({ ...items, [id]: message }));
+        await loadTaskControlStatus(id);
+      } finally {
+        setTaskControlBusyId("");
+      }
+    },
+    [loadTaskControlStatus, refreshDashboard],
+  );
+
   const loadTaskDetail = useCallback(async (taskId: string) => {
     const id = taskId.trim();
     if (!id) return;
@@ -495,13 +588,14 @@ export default function Home() {
       });
       if (!res.ok) throw new Error(await res.text());
       setTaskDetail((await res.json()) as TaskDetail);
+      void loadTaskControlStatus(id);
     } catch (err) {
       setTaskDetail(null);
       setTaskDetailError(err instanceof Error ? err.message : "任务详情加载失败");
     } finally {
       setTaskDetailLoading(false);
     }
-  }, []);
+  }, [loadTaskControlStatus]);
 
   const toggleTaskDetail = useCallback(
     (taskId: string) => {
@@ -791,6 +885,13 @@ export default function Home() {
                               pendingActions={pendingActions.filter(
                                 (action) => action.task_ref === item.task_id,
                               )}
+                              taskControlStatus={taskControlStatusById[item.task_id]}
+                              taskControlNotice={taskControlNoticeById[item.task_id] ?? ""}
+                              taskControlBusy={taskControlBusyId === item.task_id}
+                              onRefreshTaskControl={() =>
+                                void loadTaskControlStatus(item.task_id)
+                              }
+                              onRequestTaskStop={() => void requestTaskStop(item.task_id)}
                             />
                           </div>
                         )}
@@ -811,6 +912,11 @@ export default function Home() {
                   pendingActions={pendingActions.filter(
                     (action) => action.task_ref === selectedTaskId,
                   )}
+                  taskControlStatus={taskControlStatusById[selectedTaskId]}
+                  taskControlNotice={taskControlNoticeById[selectedTaskId] ?? ""}
+                  taskControlBusy={taskControlBusyId === selectedTaskId}
+                  onRefreshTaskControl={() => void loadTaskControlStatus(selectedTaskId)}
+                  onRequestTaskStop={() => void requestTaskStop(selectedTaskId)}
                 />
             )}
             {globalState && activeLedger.length === 0 && (
@@ -1044,6 +1150,11 @@ function TaskDetailPanel({
   selectedTaskId,
   ledgerFallback,
   pendingActions,
+  taskControlStatus,
+  taskControlNotice,
+  taskControlBusy,
+  onRefreshTaskControl,
+  onRequestTaskStop,
 }: {
   detail: TaskDetail | null;
   loading: boolean;
@@ -1051,6 +1162,11 @@ function TaskDetailPanel({
   selectedTaskId: string;
   ledgerFallback?: LedgerEntry;
   pendingActions: PendingAction[];
+  taskControlStatus?: TaskControlStatus;
+  taskControlNotice: string;
+  taskControlBusy: boolean;
+  onRefreshTaskControl: () => void;
+  onRequestTaskStop: () => void;
 }) {
   const ledger = detail?.state_ledger ?? ledgerFallback ?? null;
   const artifacts = detail?.workspace?.artifacts ?? [];
@@ -1112,6 +1228,76 @@ function TaskDetailPanel({
           {ledger.decision_reason}
         </div>
       )}
+
+      <div className="mt-3 rounded bg-white p-2 text-gray-600">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <div className="font-medium text-gray-700">运行控制</div>
+            <div className="mt-0.5 text-gray-400">
+              这里只是给当前运行中的任务发停止信号，不等于改数据库任务状态。
+            </div>
+          </div>
+          <div className="flex shrink-0 gap-1">
+            <button
+              type="button"
+              className="rounded border border-gray-200 px-2 py-1 text-gray-600 hover:border-kun-accent hover:text-kun-accent disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!selectedTaskId || taskControlBusy}
+              onClick={onRefreshTaskControl}
+            >
+              查状态
+            </button>
+            <button
+              type="button"
+              className="rounded border border-red-200 px-2 py-1 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!selectedTaskId || taskControlBusy}
+              onClick={onRequestTaskStop}
+            >
+              {taskControlBusy ? "发送中..." : "请求停止当前任务"}
+            </button>
+          </div>
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <DetailCell
+            label="控制连接"
+            value={
+              taskControlStatus
+                ? taskControlStatus.registered
+                  ? "当前进程可停止"
+                  : "当前进程未注册"
+                : "未查询"
+            }
+          />
+          <DetailCell
+            label="停止信号"
+            value={
+              taskControlStatus
+                ? taskControlStatus.is_killed
+                  ? `已发送${taskControlStatus.kill_reason ? `：${taskControlStatus.kill_reason}` : ""}`
+                  : "未收到停止信号"
+                : "未查询"
+            }
+          />
+          <DetailCell
+            label="超时守卫"
+            value={
+              taskControlStatus
+                ? taskControlStatus.is_timed_out
+                  ? `${taskControlStatus.timeout_reason || "已超时"}${
+                      taskControlStatus.timeout_action
+                        ? ` · ${taskControlStatus.timeout_action}`
+                        : ""
+                    }`
+                  : "未超时"
+                : "未查询"
+            }
+          />
+        </div>
+        {taskControlNotice && (
+          <div className="mt-2 rounded bg-gray-50 px-2 py-1 text-gray-500">
+            {taskControlNotice.slice(0, 240)}
+          </div>
+        )}
+      </div>
 
       {story && story.event_count > 0 && (
         <div className="mt-3 rounded bg-white p-2 text-gray-600">

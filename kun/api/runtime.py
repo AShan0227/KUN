@@ -340,6 +340,11 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         except Exception:
             pass
 
+    # V2.1 safety singletons. KillSwitch must be created before Orchestrator
+    # so the task-control API and the actual runner share one signal source.
+    kill_switch = KillSwitch(sla_ms=500)
+    task_timeout = TaskTimeoutGuard()
+
     orchestrator = Orchestrator(
         rule_engine=rule_engine,
         emergent_switch_manager=emergent_switch_manager,
@@ -355,6 +360,7 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         hermes_adapter=hermes_adapter,
         memory_writeback=memory_writeback,
         scoring_system=scoring_system,
+        kill_switch=kill_switch,
     )
     app.state.rule_engine = rule_engine
     app.state.orchestrator = orchestrator
@@ -365,7 +371,6 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         runner=MissionOrchestratorRunner(orchestrator)
     )
 
-    # V2.1 safety singletons
     app.state.fast_path = FastPathRouter(
         # M3.2 暂用空 lookup, M3.3 接真 cache / template / history
         cache_lookup=None,
@@ -374,10 +379,10 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
         deterministic_types=("tools.echo",),
         user_trust_lookup=None,  # M3.3 接 capability_card 查 task_count
     )
-    app.state.kill_switch = KillSwitch(sla_ms=500)
+    app.state.kill_switch = kill_switch
     app.state.token_meter = TokenMeter()
     app.state.plan_only_gate = PlanOnlyGate()
-    app.state.task_timeout = TaskTimeoutGuard()
+    app.state.task_timeout = task_timeout
     app.state.zero_telemetry = ZeroTelemetryEnforcer()  # 默认关回传
     return orchestrator
 

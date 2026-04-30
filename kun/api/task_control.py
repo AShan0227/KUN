@@ -18,6 +18,13 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from kun.api.runtime import get_kill_switch, get_task_timeout
+from kun.core.db import session_scope
+from kun.core.events import emit
+from kun.core.logging import get_logger
+from kun.core.tenancy import current_tenant
+from kun.datamodel.events import Event
+
+log = get_logger("kun.api.task_control")
 
 router = APIRouter(prefix="/api/tasks", tags=["task-control"])
 
@@ -31,10 +38,12 @@ class KillResponse(BaseModel):
     killed: bool
     reason: str
     requested_at: str
+    registered: bool = True
 
 
 class TaskStatusResponse(BaseModel):
     task_id: str
+    registered: bool = False
     is_killed: bool
     kill_reason: str | None = None
     is_timed_out: bool = False
@@ -49,7 +58,7 @@ class RegisterRequest(BaseModel):
 
 
 @router.post("/{task_id}/kill", response_model=KillResponse)
-def kill_task(
+async def kill_task(
     task_id: str,
     body: KillRequest,
     request: Request,
@@ -59,12 +68,38 @@ def kill_task(
     ks = get_kill_switch(request.app)
     killed = ks.kill(task_id, reason=body.reason)
     if not killed:
-        raise HTTPException(404, f"task {task_id} not registered or already done")
+        raise HTTPException(
+            404,
+            (
+                f"task {task_id} is not registered in this API process. "
+                "It may already be finished, paused/queued, or running in another worker."
+            ),
+        )
+    try:
+        tenant = current_tenant()
+        async with session_scope(tenant_id=tenant.tenant_id) as s:
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant.tenant_id,
+                    event_type="task.cancelled",
+                    payload={
+                        "task_id": task_id,
+                        "status": "requested",
+                        "reason": body.reason,
+                        "requested_by": x_user_id,
+                    },
+                    task_ref=task_id,
+                ),
+            )
+    except Exception:
+        log.warning("task_control.kill_event_emit_failed", task_id=task_id, exc_info=True)
     return KillResponse(
         task_id=task_id,
         killed=True,
         reason=body.reason,
         requested_at=datetime.now(UTC).isoformat(),
+        registered=True,
     )
 
 
@@ -83,6 +118,7 @@ def get_task_status(
 
     return TaskStatusResponse(
         task_id=task_id,
+        registered=ks.is_registered(task_id),
         is_killed=is_killed,
         kill_reason=sig.reason if sig else None,
         is_timed_out=is_to,
