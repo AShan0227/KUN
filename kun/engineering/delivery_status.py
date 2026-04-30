@@ -129,10 +129,14 @@ def get_v3_delivery_status(
                 "首页主入口是对话 + 简单任务状态",
                 "黑板 state ledger 可被前端读取",
                 "NUO 有独立入口",
+                "主工作区会显示能力边界数量：可测 / 半闭环 / 仅审计 / 未就绪",
+                "主工作区会显示用户可见的 top 能力缺口，并跳转到傩查看详情",
+                "主工作区会显示傩发现的系统风险，避免风险只躲在 NUO 高级页",
             ],
             evidence_refs=[
                 "frontend/src/app/page.tsx",
                 "kun/api/blackboard.py",
+                "kun/api/blackboard_data_sources.py",
             ],
             missing=[
                 "更完整的节点图 / 高级调试视图",
@@ -165,10 +169,13 @@ def get_v3_delivery_status(
                 "NUO 可根据 handler 失败率、补偿缺口、配置缺口生成自动 quarantine 决策；默认 dry-run，确认后才写入",
                 "idle-batch 会定期跑 WorldGateway handler 自动 quarantine 建议，默认只报告不静默改控制",
                 "傩系统体检会扫描审批、暂停任务和 handler 控制之间的协同冲突",
+                "傩系统体检的 warn/error/critical findings 会进入 blackboard 全局状态，并显示在主工作区",
             ],
             evidence_refs=[
                 "kun/api/nuo/health_panel.py",
                 "kun/api/nuo/action_panel.py",
+                "kun/api/blackboard.py",
+                "kun/api/blackboard_data_sources.py",
                 "kun/world/handler_auto_control.py",
                 "kun/world/handler_control.py",
                 "kun/engineering/nuo_system_health.py",
@@ -179,12 +186,11 @@ def get_v3_delivery_status(
                 "tests/unit/test_system_coordination.py",
             ],
             missing=[
-                "定期 NUO 体检已进入当前状态账本，但还没做浏览器/移动端主动推送",
+                "定期 NUO 体检已进入主工作区和当前状态视图，但还没做浏览器/移动端主动推送",
                 "handler 自动 quarantine 已接入定时体检 dry-run，但真实自动执行仍需用户/运维确认",
                 "协同体检目前先发现冲突和给建议，还没有自动暂停/恢复所有冲突任务",
             ],
             next_steps=[
-                "把高风险 NUO finding 推送到用户看板 / StateLedger 当前快照",
                 "把 auto-quarantine 高风险建议推送到主看板，并保持真实外发默认人工确认",
                 "让守望消费协同体检结果，对低风险卡住任务做安全恢复，对高风险任务升级人工",
             ],
