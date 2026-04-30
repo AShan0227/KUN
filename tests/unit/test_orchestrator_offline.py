@@ -18,6 +18,8 @@ from kun.interface.llm import LLMRouter
 from kun.interface.llm.base import LLMResponse, UsageInfo
 from kun.interface.llm.router import set_router
 from kun.interface.llm.stub_provider import StubProvider
+from kun.watchtower.engine import RuleEngine
+from kun.watchtower.rules import GuardRule, RuleAction, RuleTrigger
 
 
 class _FakeSession:
@@ -439,6 +441,48 @@ async def test_orchestrator_pauses_side_effect_tasks_before_execution(monkeypatc
     assert result.status == "paused"
     assert "等待确认" in result.answer
     assert "email.draft" in result.answer
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_watchtower_pause_rule_stops_hot_execution_loop(monkeypatch):
+    providers = {
+        "top": _CostlyRoutingStub(tier="top"),
+        "cheap": _CostlyRoutingStub(tier="cheap"),
+        "coding": _CostlyRoutingStub(tier="coding"),
+        "fallback": _CostlyRoutingStub(tier="fallback"),
+    }
+    set_router(LLMRouter(providers))
+    rule_engine = RuleEngine(
+        rules=[
+            GuardRule(
+                id="unit_cost_runaway",
+                kind="guard",
+                description="pause when cost exceeds estimate",
+                trigger=RuleTrigger(
+                    event_type="task.step.completed",
+                    when=(
+                        "event['payload'].get('accumulated_cost_usd', 0) > "
+                        "event['payload'].get('estimated_cost_usd', 0) * 1.2"
+                    ),
+                ),
+                severity="high",
+                actions=[RuleAction(handler="pause_task")],
+            )
+        ]
+    )
+
+    orch = Orchestrator(output_translator=_identity_translator, rule_engine=rule_engine)
+    events = []
+    async for ev in orch.stream("Please greet the world"):
+        events.append(ev)
+
+    kinds = [ev.kind for ev in events]
+    assert "guard_intervention" in kinds
+    done = next(ev for ev in events if ev.kind == "done")
+    result = TaskResult.model_validate(done.data["result"])
+    assert result.status == "paused"
+    assert "守望暂停" in result.answer
 
 
 @pytest.mark.unit

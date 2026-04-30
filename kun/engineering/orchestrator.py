@@ -166,6 +166,15 @@ class TaskCancelledByUserError(RuntimeError):
         self.reason = reason
 
 
+class TaskPausedByWatchtowerError(RuntimeError):
+    """Raised when a Watchtower hard action pauses a task."""
+
+    def __init__(self, task_id: str, rules_fired: list[str]) -> None:
+        super().__init__(f"task {task_id} paused by watchtower rules: {', '.join(rules_fired)}")
+        self.task_id = task_id
+        self.rules_fired = list(rules_fired)
+
+
 class TaskResult(BaseModel):
     """Final result surfaced to the API / WebSocket."""
 
@@ -1746,6 +1755,8 @@ class Orchestrator:
                         kind="guard_intervention",
                         data={"rules_fired": fired},
                     )
+                    if _watchtower_pause_requested(self.rule_engine, fired):
+                        raise TaskPausedByWatchtowerError(task_ref.meta.task_id, fired)
 
                 if self.budget_tracker is not None:
                     budget_level = self.budget_tracker.consume(
@@ -2095,6 +2106,26 @@ class Orchestrator:
                     "message": "task_cancelled_by_user",
                     "task_id": exc.task_id,
                     "reason": exc.reason,
+                },
+            )
+        except TaskPausedByWatchtowerError as exc:
+            status = "paused"
+            answer = (
+                "任务已被守望暂停，原因是规则触发了硬暂停动作："
+                f"{', '.join(exc.rules_fired)}。请在任务看板或 NUO 中确认后再继续。"
+            )
+            log.warning(
+                "orchestrator.paused_by_watchtower",
+                task_id=exc.task_id,
+                rules_fired=exc.rules_fired,
+            )
+            yield OrchestratorEvent(
+                kind="guard_intervention",
+                data={
+                    "stage": "watchtower_hard_action",
+                    "message": "task_paused_by_watchtower",
+                    "task_id": exc.task_id,
+                    "rules_fired": exc.rules_fired,
                 },
             )
         except Exception as exc:
@@ -3493,12 +3524,31 @@ def _dedupe_strings(values: list[str]) -> list[str]:
 
 def _final_task_event_type(
     status: TaskStatus,
-) -> Literal["task.done", "task.failed", "task.cancelled"]:
+) -> Literal["task.done", "task.failed", "task.cancelled", "task.paused"]:
     if status == "done":
         return "task.done"
+    if status == "paused":
+        return "task.paused"
     if status == "cancelled":
         return "task.cancelled"
     return "task.failed"
+
+
+def _watchtower_pause_requested(rule_engine: RuleEngine, fired_rule_ids: list[str]) -> bool:
+    """Return True when a fired rule includes a hard pause action.
+
+    Rule handlers can update external state, but the orchestrator owns the hot
+    execution loop.  If the rule says "pause_task", the loop must stop in the
+    same process instead of continuing and later overwriting DB state to done.
+    """
+
+    fired = set(fired_rule_ids)
+    for rule in rule_engine.rules:
+        if rule.id not in fired:
+            continue
+        if any(action.handler == "pause_task" for action in rule.actions):
+            return True
+    return False
 
 
 async def _load_mission_strategy(*, tenant_id: str, mission_id: str) -> dict[str, Any]:
