@@ -9,6 +9,7 @@ from typing import cast
 import pytest
 from kun.api.nuo.action_panel import (
     _decision_message,
+    _decision_response_message,
     _decision_to_status,
     _decision_update_stmt,
     _page_actions_anchor,
@@ -16,6 +17,7 @@ from kun.api.nuo.action_panel import (
     _sort_actions_for_anchor,
 )
 from kun.core.orm import PendingActionRow
+from kun.engineering.action_executor import ActionExecutionResult
 from kun.world.gateway import WorldGatewayResult
 from sqlalchemy.dialects import postgresql
 
@@ -72,6 +74,22 @@ def test_decision_update_can_persist_external_dispatch_confirmation() -> None:
 @pytest.mark.unit
 def test_approved_decision_message_discloses_guarded_execution() -> None:
     assert "guarded approval gate" in _decision_message("approved")
+
+
+@pytest.mark.unit
+def test_decision_response_message_discloses_background_resume_schedule() -> None:
+    execution = ActionExecutionResult(
+        action_id="act-1",
+        task_ref="task-1",
+        action_status="executed",
+        task_status="queued",
+        message="Action executed. Task unblocked to queued.",
+    )
+
+    assert "Continuation resume has been scheduled" in _decision_response_message(
+        execution,
+        "approved",
+    )
 
 
 def _action(

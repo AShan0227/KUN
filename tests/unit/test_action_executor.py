@@ -20,6 +20,7 @@ from kun.engineering.action_executor import (
     _handler_health_blocked_result,
     _handler_health_blocks_execution,
     _mark_task_result_queued_stmt,
+    _resume_request_payload,
     _unblock_paused_runtime_stmt,
     _world_action_credit_inputs,
 )
@@ -56,27 +57,70 @@ def test_count_unresolved_actions_only_counts_open_gate_states() -> None:
 
 @pytest.mark.unit
 def test_unblock_runtime_sets_task_back_to_queued() -> None:
+    resume_request = _resume_request_payload("act-1", datetime.now(UTC))
+    compiled = _unblock_paused_runtime_stmt(
+        "u-sylvan",
+        "task-1",
+        datetime.now(UTC),
+        resume_request=resume_request,
+    ).compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+
+    assert "UPDATE runtime_states" in sql
+    assert "runtime_states.status = " in sql
+    assert "runtime_states.blob || " in sql
+    assert compiled.params["param_1"] == {"resume_request": resume_request}
+
+
+@pytest.mark.unit
+def test_unblock_runtime_can_stay_legacy_without_resume_request() -> None:
     sql = str(
-        _unblock_paused_runtime_stmt("u-sylvan", "task-1", datetime.now(UTC)).compile(
-            dialect=postgresql.dialect()
-        )
+        _unblock_paused_runtime_stmt(
+            "u-sylvan",
+            "task-1",
+            datetime.now(UTC),
+        ).compile(dialect=postgresql.dialect())
     )
 
     assert "UPDATE runtime_states" in sql
     assert "runtime_states.status = " in sql
+    assert "runtime_states.blob || " not in sql
 
 
 @pytest.mark.unit
 def test_mark_task_result_queued_updates_cached_json() -> None:
-    sql = str(
-        _mark_task_result_queued_stmt("u-sylvan", "task-1", datetime.now(UTC)).compile(
-            dialect=postgresql.dialect()
-        )
-    )
+    resume_request = _resume_request_payload("act-1", datetime.now(UTC))
+    compiled = _mark_task_result_queued_stmt(
+        "u-sylvan",
+        "task-1",
+        datetime.now(UTC),
+        resume_request=resume_request,
+    ).compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+    payload_patch = compiled.params["param_1"]
 
     assert "UPDATE task_results" in sql
     assert "result_json=(" in sql
     assert "||" in sql
+    assert payload_patch == {
+        "status": "queued",
+        "answer": "审批已通过，任务已解除阻塞，等待恢复执行。",
+        "resume_ready": True,
+        "resume_request": resume_request,
+    }
+
+
+@pytest.mark.unit
+def test_resume_request_payload_is_specific_and_retriable() -> None:
+    now = datetime.now(UTC)
+    payload = _resume_request_payload("act-1", now)
+
+    assert payload["needed"] is True
+    assert payload["status"] == "queued"
+    assert payload["reason"] == "all_pending_actions_executed"
+    assert payload["pending_action_ids"] == ["act-1"]
+    assert payload["attempts"] == 0
+    assert payload["requested_at"] == now.isoformat()
 
 
 @pytest.mark.unit

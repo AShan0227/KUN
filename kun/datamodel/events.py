@@ -37,6 +37,10 @@ EventKind = Literal[
     "task.done",
     "task.failed",
     "task.cancelled",
+    "task.continuation.enqueued",
+    "task.continuation.started",
+    "task.continuation.finished",
+    "task.continuation.failed",
     # Mission lifecycle
     "mission.created",
     "mission.started",

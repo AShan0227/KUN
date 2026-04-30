@@ -5,17 +5,19 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import literal, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 
+from kun.api.runtime import get_orchestrator
 from kun.core.config import settings
 from kun.core.db import session_scope
 from kun.core.orm import PendingActionRow
 from kun.core.tenancy import current_tenant, require_scope
 from kun.datamodel.runtime import TaskStatus
 from kun.engineering.action_executor import ActionExecutionResult, execute_approved_action_once
+from kun.engineering.pending_task_resume import resume_unblocked_task_once
 from kun.world.gateway import (
     WorldAction,
     WorldGateway,
@@ -259,6 +261,8 @@ async def list_recent_actions(
 async def decide_pending_action(
     action_id: str,
     req: ActionDecisionRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
 ) -> ActionDecisionResponse:
     """Approve/reject/cancel a pending side-effect action.
 
@@ -307,11 +311,18 @@ async def decide_pending_action(
             tenant_id=tenant.tenant_id,
             action_id=action_id,
         )
+        if execution is not None and execution.task_status == "queued":
+            background_tasks.add_task(
+                resume_unblocked_task_once,
+                tenant_id=tenant.tenant_id,
+                task_id=execution.task_ref,
+                orchestrator=get_orchestrator(request.app),
+            )
 
     return ActionDecisionResponse(
         action_id=action_id,
         status=cast(ActionStatus, execution.action_status if execution else new_status),
-        message=execution.message if execution else _decision_message(new_status),
+        message=_decision_response_message(execution, new_status),
         task_ref=execution.task_ref if execution else None,
         task_status=execution.task_status if execution else None,
         gateway=(
@@ -360,6 +371,17 @@ def _decision_message(status: ActionStatus) -> str:
     if status == "approved":
         return "Action approved. KUN will execute the guarded approval gate when possible."
     return f"Action marked {status}."
+
+
+def _decision_response_message(
+    execution: ActionExecutionResult | None,
+    new_status: ActionStatus,
+) -> str:
+    if execution is None:
+        return _decision_message(new_status)
+    if execution.task_status == "queued":
+        return f"{execution.message} Continuation resume has been scheduled in the background."
+    return execution.message
 
 
 def _decision_to_status(decision: ActionDecision) -> ActionStatus:

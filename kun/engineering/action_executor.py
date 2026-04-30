@@ -337,10 +337,25 @@ async def execute_approved_action_once(
                 gateway_result=gateway_result,
             )
 
-        unblocked = await s.execute(_unblock_paused_runtime_stmt(tenant_id, task_ref, now))
+        resume_request = _resume_request_payload(action.action_id, now)
+        unblocked = await s.execute(
+            _unblock_paused_runtime_stmt(
+                tenant_id,
+                task_ref,
+                now,
+                resume_request=resume_request,
+            )
+        )
         task_status: TaskStatus | None = "queued" if _rowcount(unblocked) > 0 else None
         if task_status == "queued":
-            await s.execute(_mark_task_result_queued_stmt(tenant_id, task_ref, now))
+            await s.execute(
+                _mark_task_result_queued_stmt(
+                    tenant_id,
+                    task_ref,
+                    now,
+                    resume_request=resume_request,
+                )
+            )
             await emit(
                 s,
                 Event.build(
@@ -350,6 +365,18 @@ async def execute_approved_action_once(
                         "task_id": task_ref,
                         "reason": "all_pending_actions_executed",
                         "resume_state": "queued",
+                    },
+                    task_ref=task_ref,
+                ),
+            )
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant_id,
+                    event_type="task.continuation.enqueued",
+                    payload={
+                        "task_id": task_ref,
+                        **resume_request,
                     },
                     task_ref=task_ref,
                 ),
@@ -393,7 +420,18 @@ def _count_unresolved_actions_stmt(tenant_id: str, task_ref: str) -> Any:
     )
 
 
-def _unblock_paused_runtime_stmt(tenant_id: str, task_ref: str, now: datetime) -> Any:
+def _unblock_paused_runtime_stmt(
+    tenant_id: str,
+    task_ref: str,
+    now: datetime,
+    *,
+    resume_request: dict[str, Any] | None = None,
+) -> Any:
+    values: dict[str, Any] = {"status": "queued", "finished_at": None, "last_updated": now}
+    if resume_request is not None:
+        values["blob"] = RuntimeStateRow.blob.op("||")(
+            literal({"resume_request": resume_request}, type_=JSONB)
+        )
     return (
         update(RuntimeStateRow)
         .where(
@@ -401,12 +439,19 @@ def _unblock_paused_runtime_stmt(tenant_id: str, task_ref: str, now: datetime) -
             RuntimeStateRow.task_ref == task_ref,
             RuntimeStateRow.status == "paused",
         )
-        .values(status="queued", finished_at=None, last_updated=now)
+        .values(**values)
     )
 
 
-def _mark_task_result_queued_stmt(tenant_id: str, task_ref: str, now: datetime) -> Any:
+def _mark_task_result_queued_stmt(
+    tenant_id: str,
+    task_ref: str,
+    now: datetime,
+    *,
+    resume_request: dict[str, Any] | None = None,
+) -> Any:
     answer = "审批已通过，任务已解除阻塞，等待恢复执行。"
+    resume_request = resume_request or _resume_request_payload("", now)
     return (
         update(TaskResultRow)
         .where(
@@ -419,10 +464,29 @@ def _mark_task_result_queued_stmt(tenant_id: str, task_ref: str, now: datetime) 
             answer=answer,
             updated_at=now,
             result_json=TaskResultRow.result_json.op("||")(
-                literal({"status": "queued", "answer": answer}, type_=JSONB)
+                literal(
+                    {
+                        "status": "queued",
+                        "answer": answer,
+                        "resume_ready": True,
+                        "resume_request": resume_request,
+                    },
+                    type_=JSONB,
+                )
             ),
         )
     )
+
+
+def _resume_request_payload(action_id: str, now: datetime) -> dict[str, Any]:
+    return {
+        "needed": True,
+        "status": "queued",
+        "reason": "all_pending_actions_executed",
+        "pending_action_ids": [action_id] if action_id else [],
+        "attempts": 0,
+        "requested_at": now.isoformat(),
+    }
 
 
 def _executor_payload(
