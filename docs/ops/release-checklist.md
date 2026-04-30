@@ -16,6 +16,7 @@
 
 ```bash
 uv run kun ops preflight
+uv run kun ops delivery-status --json
 uv run --extra dev ruff check .
 uv run --extra dev ruff format --check kun tests alembic
 uv run --extra dev mypy kun
@@ -106,6 +107,7 @@ uv run --extra dev ruff check .
 uv run --extra dev ruff format --check kun tests alembic
 uv run --extra dev mypy kun
 uv run --extra dev pytest
+uv run kun ops delivery-status --json
 uv run kun release notes --range v2.1.0..HEAD --output CHANGELOG-v2.2.md
 git add CHANGELOG-v2.2.md docs/ops/release-checklist.md docs/v2/KUN-V2.2-revisions.md
 git commit -m "docs(release): prepare v2.2.0 release"
