@@ -408,6 +408,49 @@ async def test_world_gateway_local_file_write_handler(tmp_path) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_world_gateway_can_require_persisted_approval_context(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KUN_WORLD_REQUIRE_APPROVAL_CONTEXT", "1")
+    gateway = WorldGateway(artifact_root=tmp_path)
+
+    blocked = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-file-blocked",
+            task_ref="task-1",
+            action_type="local_file.write",
+            target_ref="reports/blocked.txt",
+            risk_level="low",
+            payload={"content": "blocked"},
+        )
+    )
+
+    assert blocked.gateway_mode == "policy_blocked"
+    assert blocked.external_dispatched is False
+    assert "persisted_human_approval_context" in blocked.permissions_required
+    assert not (tmp_path / "files" / "reports" / "blocked.txt").exists()
+
+    allowed = await gateway.execute_approved(
+        WorldAction(
+            action_id="act-file-allowed",
+            task_ref="task-1",
+            action_type="local_file.write",
+            target_ref="reports/allowed.txt",
+            risk_level="low",
+            payload={"content": "allowed"},
+        ),
+        approval_context={"source": "pending_actions", "status": "approved"},
+    )
+
+    assert allowed.gateway_mode == "handler_executed"
+    assert allowed.external_dispatched is True
+    assert allowed.audit["approval_context"]["source"] == "pending_actions"
+    assert (tmp_path / "files" / "reports" / "allowed.txt").read_text(encoding="utf-8") == "allowed"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_world_gateway_local_file_preview_diff_without_writing(tmp_path) -> None:
     gateway = WorldGateway(artifact_root=tmp_path)
 

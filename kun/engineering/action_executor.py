@@ -299,7 +299,17 @@ async def execute_approved_action_once(
                     target_ref=action.target_ref,
                     risk_level=action.risk_level,
                     payload=action.payload,
-                )
+                ),
+                approval_context={
+                    "source": "pending_actions",
+                    "status": "approved",
+                    "tenant_id": tenant_id,
+                    "task_ref": task_ref,
+                    "action_id": action.action_id,
+                    "updated_at": action.updated_at.isoformat()
+                    if action.updated_at is not None
+                    else "",
+                },
             )
         except Exception as exc:
             action.payload = _executor_error_payload(action.payload, now, exc)

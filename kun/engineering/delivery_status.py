@@ -533,6 +533,7 @@ def _world_gateway_delivery_status(
         "真实外发和高风险动作读取 handler health/control 失败时默认 fail-closed，避免绕过傩控制",
         "真实外发和高风险动作必须带显式 idempotency_key，重复幂等键会被代码和 DB partial unique index 双层拦截",
         "真实 email.send 需要 KUN_WORLD_EMAIL_ALLOWED_DOMAINS 收件人域名白名单，避免 SMTP 配好后误发陌生域名",
+        "可开启 KUN_WORLD_REQUIRE_APPROVAL_CONTEXT，让 WorldGateway 真实执行必须带 pending_actions 持久审批上下文，防止直接调用执行路径",
     ]
     done.extend(_handler_done_line(item) for item in descriptors)
 

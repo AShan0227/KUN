@@ -1095,7 +1095,12 @@ class WorldGateway:
             message=handler_result.message,
         )
 
-    async def execute_approved(self, action: WorldAction) -> WorldGatewayResult:
+    async def execute_approved(
+        self,
+        action: WorldAction,
+        *,
+        approval_context: dict[str, Any] | None = None,
+    ) -> WorldGatewayResult:
         target = self._target_for(action.action_type)
         packet = await self._translate_packet(
             action,
@@ -1105,7 +1110,7 @@ class WorldGateway:
         now = datetime.now(UTC).isoformat()
         handler = self.handlers.get(action.action_type)
         if handler is not None:
-            policy = self._policy_for(action, handler)
+            policy = self._policy_for(action, handler, approval_context=approval_context)
             if not policy.allowed:
                 return WorldGatewayResult(
                     action_id=action.action_id,
@@ -1123,6 +1128,7 @@ class WorldGateway:
                         "requires_handler": False,
                         "handler_id": handler.handler_id,
                         "policy": policy.model_dump(mode="json"),
+                        "approval_context_present": approval_context is not None,
                     },
                     user_summary="审批已记录，但守望策略层拦截了真实执行。",
                     next_step=_policy_next_step(policy, handler),
@@ -1151,6 +1157,7 @@ class WorldGateway:
                     "handler_status": handler_result.status,
                     "artifact_ref": handler_result.artifact_ref,
                     "policy": policy.model_dump(mode="json"),
+                    "approval_context": _redact_approval_context(approval_context),
                     **handler_result.audit,
                 },
                 user_summary=_execution_summary(handler),
@@ -1209,6 +1216,8 @@ class WorldGateway:
         self,
         action: WorldAction,
         handler: WorldActionHandler,
+        *,
+        approval_context: dict[str, Any] | None = None,
     ) -> WorldPolicyDecision:
         risk = action.risk_level.strip().lower() or "medium"
         block_reasons: list[str] = []
@@ -1229,6 +1238,12 @@ class WorldGateway:
                 "需要用户明确确认这一步会影响外部世界。"
             )
             missing_permissions.append("external_dispatch_confirmation")
+
+        if _env_bool("KUN_WORLD_REQUIRE_APPROVAL_CONTEXT") and approval_context is None:
+            block_reasons.append(
+                "真实执行缺少持久化审批上下文；必须从 pending_actions 审批执行器进入。"
+            )
+            missing_permissions.append("persisted_human_approval_context")
 
         return WorldPolicyDecision(
             allowed=not block_reasons,
@@ -1375,6 +1390,16 @@ def _redact_request(request: dict[str, Any]) -> dict[str, Any]:
         if key.lower() in {"authorization", "proxy-authorization", "x-api-key"}:
             headers[key] = "[redacted]"
     return {**request, "headers": headers}
+
+
+def _redact_approval_context(context: dict[str, Any] | None) -> dict[str, Any]:
+    if not context:
+        return {}
+    safe = dict(context)
+    for key in list(safe):
+        if key.lower() in {"token", "secret", "password", "api_key", "authorization"}:
+            safe[key] = "[redacted]"
+    return safe
 
 
 def _assert_email_recipients_allowed(
