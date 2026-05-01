@@ -9,6 +9,7 @@ from kun.api.runtime import (
     get_emergent_switch_manager,
     get_fast_path,
     get_kill_switch,
+    get_multi_task_scheduler,
     get_orchestrator,
     get_plan_only_gate,
     get_task_timeout,
@@ -17,6 +18,7 @@ from kun.api.runtime import (
     install_runtime,
 )
 from kun.core.emergent_solution import EmergentSolutionLibrary
+from kun.core.multi_task_scheduler import MultiTaskScheduler
 from kun.engineering.emergent_switch import EmergentSwitchManager
 from kun.engineering.fast_path import FastPathRouter
 from kun.engineering.safety_guards import (
@@ -62,6 +64,7 @@ def test_install_runtime_creates_all_v2_singletons() -> None:
     assert isinstance(get_zero_telemetry(app), ZeroTelemetryEnforcer)
     assert isinstance(get_emergent_library(app), EmergentSolutionLibrary)
     assert isinstance(get_emergent_switch_manager(app), EmergentSwitchManager)
+    assert isinstance(get_multi_task_scheduler(app), MultiTaskScheduler)
 
 
 def test_emergent_switch_manager_wired_into_orchestrator() -> None:
@@ -115,6 +118,43 @@ def test_cron_scheduler_singleton_in_app_state() -> None:
     sched = get_cron_scheduler(app)
     assert isinstance(sched, CronScheduler)
     assert sched.list_jobs() == []  # lifespan registers jobs, install_runtime 不
+
+
+def test_task_scheduler_status_endpoint(runtime_app) -> None:
+    client = TestClient(runtime_app)
+
+    res = client.get(
+        "/api/tasks/scheduler/status",
+        headers={"X-Tenant-Id": "u-sylvan", "X-User-Id": "sylvan"},
+    )
+
+    assert res.status_code == 200
+    payload = res.json()
+    assert "lane_limits" in payload
+    assert "fast" in payload["lane_limits"]
+
+
+def test_task_scheduler_submit_endpoint(runtime_app) -> None:
+    async def fake_runner(task_ref):
+        return {"task_id": task_ref.meta.task_id}
+
+    runtime_app.state.multi_task_scheduler = MultiTaskScheduler(runner=fake_runner)
+    client = TestClient(runtime_app)
+
+    res = client.post(
+        "/api/tasks/scheduler/submit",
+        headers={"X-Tenant-Id": "u-sylvan", "X-User-Id": "sylvan"},
+        json={
+            "message": "后台跑一次启实验",
+            "task_type": "qi.experiment",
+            "lane": "qi",
+        },
+    )
+
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["scheduler_status"] in {"queued", "running", "done"}
+    assert payload["lane"] == "qi"
 
 
 def test_value_gate_default_enabled() -> None:

@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Protocol, cast
 
 from kun.core.emergent_solution import EmergentSolutionLibrary
+from kun.core.multi_task_scheduler import MultiTaskScheduler
 from kun.core.state_ledger import get_state_ledger
 from kun.engineering.capability_cache import CapabilityCardCache
 from kun.engineering.cron_scheduler import CronScheduler
@@ -368,6 +369,20 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     )
     app.state.rule_engine = rule_engine
     app.state.orchestrator = orchestrator
+
+    async def _scheduled_orchestrator_runner(task_ref: Any) -> Any:
+        message = ""
+        spec = getattr(task_ref, "spec", None)
+        if spec is not None:
+            message = str(getattr(spec, "goal_detail", "") or "")
+        if not message:
+            meta = getattr(task_ref, "meta", None)
+            message = str(getattr(meta, "success_criteria_short", "") or task_ref.l1_summary())
+        return await orchestrator.run(message)
+
+    app.state.multi_task_scheduler = MultiTaskScheduler(
+        runner=_scheduled_orchestrator_runner,
+    )
     # V3 Mission: durable resume worker with a real Orchestrator runner. This
     # turns queued mission tasks into actual execution attempts instead of a
     # permanent "needs executor" shell.
@@ -454,6 +469,10 @@ def get_mission_resume_worker(app: _AppWithState) -> MissionResumeWorker:
 
 def get_pending_task_resume_worker(app: _AppWithState) -> PendingTaskResumeWorker:
     return cast(PendingTaskResumeWorker, app.state.pending_task_resume_worker)
+
+
+def get_multi_task_scheduler(app: _AppWithState) -> MultiTaskScheduler:
+    return cast(MultiTaskScheduler, app.state.multi_task_scheduler)
 
 
 def get_value_gate(app: _AppWithState) -> ValueGate | None:

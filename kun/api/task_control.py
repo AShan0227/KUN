@@ -18,14 +18,16 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from kun.api.runtime import get_kill_switch, get_task_timeout
+from kun.api.runtime import get_kill_switch, get_multi_task_scheduler, get_task_timeout
 from kun.core.db import session_scope
 from kun.core.events import emit
 from kun.core.logging import get_logger
+from kun.core.multi_task_scheduler import SchedulerDashboard, TaskLane
 from kun.core.orm import TaskRow
 from kun.core.state_ledger import get_state_ledger
 from kun.core.tenancy import current_tenant, require_scope
 from kun.datamodel.events import Event
+from kun.datamodel.task import ExecutionMode, Owner, RiskLevel, TaskMeta, TaskRef, TaskSpec
 
 log = get_logger("kun.api.task_control")
 
@@ -80,6 +82,77 @@ class TaskMetadataUpdateResponse(BaseModel):
     updated: bool
     changed_fields: list[str]
     message: str
+
+
+class SchedulerSubmitRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=20_000)
+    task_type: str = "chat.unstructured"
+    risk_level: RiskLevel = "low"
+    complexity_score: float = Field(default=0.3, ge=0.0, le=1.0)
+    execution_mode: ExecutionMode = "SMART"
+    estimated_cost_usd: float = Field(default=0.05, ge=0.0)
+    success_criteria_short: str | None = Field(default=None, max_length=200)
+    lane: TaskLane | None = None
+
+
+class SchedulerSubmitResponse(BaseModel):
+    task_id: str
+    scheduler_status: str
+    lane: TaskLane
+    message: str
+
+
+@router.get("/scheduler/status", response_model=SchedulerDashboard)
+def get_scheduler_status(request: Request) -> SchedulerDashboard:
+    """查看 V5 多车道调度状态。
+
+    这给 NUO / 前端一个真实入口：能看到 fast/mission/qi/nuo/world/high_risk
+    当前各自排队和运行情况。
+    """
+
+    return get_multi_task_scheduler(request.app).dashboard()
+
+
+@router.post("/scheduler/submit", response_model=SchedulerSubmitResponse)
+async def submit_scheduler_task(
+    body: SchedulerSubmitRequest,
+    request: Request,
+) -> SchedulerSubmitResponse:
+    """把一个任务提交到 V5 多车道调度器。
+
+    这是轻量异步入口，不替代 /api/chat/run 的同步体验。普通前端可以继续同步跑；
+    长周期、后台实验、外部动作等可以走这里，避免互相抢资源。
+    """
+
+    _require_scope_when_enforced("task:write")
+    tenant = current_tenant()
+    owner = Owner(tenant_id=tenant.tenant_id, user_id=tenant.user_id)
+    short = (body.success_criteria_short or body.message[:180]).strip()
+    task_ref = TaskRef(
+        meta=TaskMeta(
+            fingerprint=TaskMeta.compute_fingerprint(body.message, owner),
+            task_type=body.task_type,
+            risk_level=body.risk_level,
+            complexity_score=body.complexity_score,
+            owner=owner,
+            estimated_cost_usd=body.estimated_cost_usd,
+            execution_mode=body.execution_mode,
+            success_criteria_short=short or "scheduled task",
+        ),
+        spec=TaskSpec(
+            goal_detail=body.message,
+            success_metrics=[short or "done"],
+        ),
+    )
+    scheduler = get_multi_task_scheduler(request.app)
+    task_id = await scheduler.submit(task_ref, lane=body.lane)
+    snapshot = scheduler.get_status(task_id)
+    return SchedulerSubmitResponse(
+        task_id=task_id,
+        scheduler_status=snapshot.status,
+        lane=snapshot.lane,
+        message="任务已进入 KUN 多车道调度器；可通过 /api/tasks/scheduler/status 查看排队和运行情况。",
+    )
 
 
 @router.post("/{task_id}/kill", response_model=KillResponse)

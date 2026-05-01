@@ -964,7 +964,7 @@ V5 必须防止“写了但没用”。
 | WorldGateway | 有 handler / 权限 / 审计；傩已能输出 handler 风险分、风险标签、租户密钥状态、失败率和补偿缺口，并把这些信号反馈给执行拦截/自动隔离 | 还要更多生产级 handler、真实补偿演练和线上密钥轮换 |
 | StateLedger | 已有快照和回放 | 还要更完整长期账本和信用归因 |
 | CodeCapability | 有基础方向 | 要成为核心能力闭环 |
-| 并发执行 | 有局部机制 | 还缺统一 lane scheduler |
+| 并发执行 | 已有 fast / mission / qi / nuo / world / high_risk 多车道调度器，并安装到 API runtime；`/api/tasks/scheduler/*` 可查看车道状态和提交异步任务 | 还要把更多后台 worker 和前端任务看板接入这个统一车道 |
 
 ## 18. V5 的核心护城河
 

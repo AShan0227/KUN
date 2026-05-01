@@ -57,6 +57,22 @@ class TaskStatusSnapshot(BaseModel):
     error: str = ""
 
 
+class SchedulerDashboard(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total: int = 0
+    queued: int = 0
+    running: int = 0
+    done: int = 0
+    failed: int = 0
+    cancelled: int = 0
+    running_global: int = 0
+    queue_depth: int = 0
+    lane_limits: dict[TaskLane, int] = Field(default_factory=dict)
+    running_by_lane: dict[TaskLane, int] = Field(default_factory=dict)
+    queued_by_lane: dict[TaskLane, int] = Field(default_factory=dict)
+
+
 class _TaskRecord:
     def __init__(self, task: TaskRef, future: asyncio.Future[TaskResult], lane: TaskLane) -> None:
         self.task = task
@@ -160,6 +176,35 @@ class MultiTaskScheduler:
         return [
             self._snapshot(record) for record in self._records.values() if record.user_id == user_id
         ]
+
+    def dashboard(self) -> SchedulerDashboard:
+        """Return a NUO/blackboard-friendly lane summary."""
+
+        counts: dict[SchedulerStatus, int] = {
+            "queued": 0,
+            "running": 0,
+            "done": 0,
+            "failed": 0,
+            "cancelled": 0,
+        }
+        queued_by_lane: dict[TaskLane, int] = {}
+        for record in self._records.values():
+            counts[record.status] += 1
+            if record.status == "queued":
+                queued_by_lane[record.lane] = queued_by_lane.get(record.lane, 0) + 1
+        return SchedulerDashboard(
+            total=len(self._records),
+            queued=counts["queued"],
+            running=counts["running"],
+            done=counts["done"],
+            failed=counts["failed"],
+            cancelled=counts["cancelled"],
+            running_global=self._running_global,
+            queue_depth=len(self._queue),
+            lane_limits=dict(self.max_concurrent_per_lane),
+            running_by_lane=dict(self._running_by_lane),
+            queued_by_lane=queued_by_lane,
+        )
 
     def _pump_locked(self) -> None:
         while self._queue and self._running_global < self.max_concurrent_global:
@@ -300,6 +345,7 @@ def route_task_lane(task: TaskRef) -> TaskLane:
 __all__ = [
     "DEFAULT_LANE_LIMITS",
     "MultiTaskScheduler",
+    "SchedulerDashboard",
     "SchedulerStatus",
     "TaskLane",
     "TaskResult",
