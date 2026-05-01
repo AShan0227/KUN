@@ -4,11 +4,13 @@ from types import SimpleNamespace
 from typing import ClassVar
 
 from kun.context.packer import ContextPack, PackedContextItem
+from kun.core.emergent_solution import EmergentSolution, EmergentSource
 from kun.datamodel.decision_ticket import (
     ticket_from_anti_gaming_finding,
     ticket_from_budget_policy,
     ticket_from_context_selection,
     ticket_from_delivery_review,
+    ticket_from_emergent_switch,
     ticket_from_llm_route,
     ticket_from_memory_policy_selection,
     ticket_from_preflight_guard,
@@ -370,6 +372,39 @@ def test_anti_gaming_ticket_records_fake_completion_finding() -> None:
     assert ticket.selected_action == "fake_completion"
     assert ticket.metadata["severity"] == "high"
     assert ticket.evidence["evidence"]["has_assets"] is False
+
+
+def test_emergent_switch_ticket_records_selected_solution() -> None:
+    solution = EmergentSolution(
+        task_type="coding.py",
+        discovered_by="external_scan",
+        source=EmergentSource(kind="github_issue"),
+        estimated_outcome_delta=0.3,
+        estimated_cost_delta=-0.1,
+        status="stable",
+    )
+    evaluation = SimpleNamespace(
+        should_switch=True,
+        switch_score=0.33,
+        chosen_solution=solution,
+        reason="signals=['external_emergent_found'] score=0.33",
+        blocked_by="",
+    )
+
+    ticket = ticket_from_emergent_switch(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        risk_level="medium",
+        step_id=2,
+        signals=["external_emergent_found"],
+        evaluation=evaluation,
+    )
+
+    assert ticket.phase == "watchtower"
+    assert ticket.decision_point == "emergent_switch"
+    assert ticket.status == "applied"
+    assert ticket.metadata["solution_id"] == solution.solution_id
+    assert ticket.evidence["switch_score"] == 0.33
 
 
 def test_protocol_applied_ticket_wraps_protocol_registry_choice() -> None:

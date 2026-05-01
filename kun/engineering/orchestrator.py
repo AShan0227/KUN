@@ -48,6 +48,7 @@ from kun.datamodel.decision_ticket import (
     ticket_from_budget_policy,
     ticket_from_context_selection,
     ticket_from_delivery_review,
+    ticket_from_emergent_switch,
     ticket_from_llm_route,
     ticket_from_memory_policy_selection,
     ticket_from_preflight_guard,
@@ -2089,6 +2090,30 @@ class Orchestrator:
                                     ),
                                     signals=signals,
                                 )
+                                switch_ticket = ticket_from_emergent_switch(
+                                    tenant_id=tenant.tenant_id,
+                                    task_id=task_ref.meta.task_id,
+                                    risk_level=task_ref.meta.risk_level,
+                                    step_id=step_record.step_id,
+                                    signals=list(signals),
+                                    evaluation=eval_result,
+                                    mission_id=_mission_id_from_task(task_ref),
+                                )
+                                decision_tickets.append(switch_ticket)
+                                self._record_state_ledger(
+                                    "record_decision_ticket",
+                                    switch_ticket,
+                                )
+                                async with session_scope(tenant_id=tenant.tenant_id) as s:
+                                    await emit(
+                                        s,
+                                        Event.build(
+                                            tenant_id=tenant.tenant_id,
+                                            event_type="emergent.switch.evaluated",
+                                            payload=switch_ticket.event_payload(),
+                                            task_ref=task_ref.meta.task_id,
+                                        ),
+                                    )
                                 if eval_result.should_switch and eval_result.chosen_solution:
                                     self.emergent_switch_manager.commit_switch(
                                         task_ref.meta.task_id
@@ -2102,6 +2127,7 @@ class Orchestrator:
                                             "solution_id": eval_result.chosen_solution.solution_id,
                                             "solution_status": eval_result.chosen_solution.status,
                                             "reason": eval_result.reason,
+                                            "decision_ticket": switch_ticket.event_payload(),
                                         },
                                     )
                                 elif eval_result.blocked_by:
@@ -2111,6 +2137,7 @@ class Orchestrator:
                                             "task_id": task_ref.meta.task_id,
                                             "blocked_by": eval_result.blocked_by,
                                             "switch_score": eval_result.switch_score,
+                                            "decision_ticket": switch_ticket.event_payload(),
                                         },
                                     )
                             except Exception:

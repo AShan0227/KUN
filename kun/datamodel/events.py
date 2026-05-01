@@ -98,6 +98,7 @@ EventKind = Literal[
     "experiment.created",
     "experiment.promoted",
     "experiment.rolled_back",
+    "emergent.switch.evaluated",
     # Notification
     "notification.emitted",
     "proactive.trigger_promoted",

@@ -36,6 +36,7 @@ DecisionPoint = Literal[
     "preflight_guard",
     "proactive_tool_dispatch",
     "strategy_selected",
+    "emergent_switch",
     "role_model_selected",
     "llm_model_selected",
     "context_selected",
@@ -672,6 +673,54 @@ def ticket_from_anti_gaming_finding(
     )
 
 
+def ticket_from_emergent_switch(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    step_id: int,
+    signals: list[str],
+    evaluation: Any,
+    mission_id: str | None = None,
+) -> DecisionTicket:
+    """Wrap dynamic mid-run path switch evaluation."""
+
+    should_switch = bool(getattr(evaluation, "should_switch", False))
+    chosen = getattr(evaluation, "chosen_solution", None)
+    solution_id = str(getattr(chosen, "solution_id", "") or "")
+    blocked_by = str(getattr(evaluation, "blocked_by", "") or "")
+    switch_score = _float_or_default(getattr(evaluation, "switch_score", None), 0.0)
+    status: DecisionStatus = "applied" if should_switch else "blocked"
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="watchtower",
+        decision_point="emergent_switch",
+        source_module="engineering.emergent_switch",
+        selected_action=solution_id if should_switch and solution_id else blocked_by or "no_switch",
+        status=status,
+        reason=str(getattr(evaluation, "reason", "") or blocked_by or "switch evaluated"),
+        confidence=max(0.0, min(1.0, switch_score)),
+        risk_level=risk_level,
+        inputs_summary={"step_id": step_id, "signals": list(signals)},
+        evidence={
+            "signals": list(signals),
+            "switch_score": switch_score,
+            "should_switch": should_switch,
+            "blocked_by": blocked_by,
+            "chosen_solution": _model_dump_or_value(chosen) if chosen is not None else {},
+        },
+        metadata={
+            "step_id": step_id,
+            "solution_id": solution_id,
+            "blocked_by": blocked_by,
+            "switch_score": switch_score,
+            "signals": list(signals),
+        },
+    )
+
+
 def ticket_from_budget_policy(
     *,
     tenant_id: str,
@@ -1031,6 +1080,7 @@ __all__ = [
     "ticket_from_budget_policy",
     "ticket_from_context_selection",
     "ticket_from_delivery_review",
+    "ticket_from_emergent_switch",
     "ticket_from_llm_route",
     "ticket_from_memory_policy_selection",
     "ticket_from_preflight_guard",
