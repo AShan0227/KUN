@@ -13,6 +13,7 @@ from kun.ops.account_registry import hash_bearer_token
 from kun.ops.account_sessions import (
     SessionTokenError,
     issue_session_token_pair,
+    issue_websocket_ticket,
     refresh_session_access_token,
 )
 from kun.security.auth import sign_auth_token, verify_bearer_token
@@ -87,6 +88,28 @@ async def test_issue_session_token_pair_mints_access_and_refresh_tokens() -> Non
     assert refresh_claims.token_type == "refresh"
     assert len(fake_session.statements) == 2
     assert any("不是完整自助注册" in item for item in pair.honest_limits)
+
+
+@pytest.mark.unit
+async def test_issue_websocket_ticket_mints_short_ws_token() -> None:
+    secret = "s" * 40
+    fake_session = _FakeSession()
+
+    ticket = await issue_websocket_ticket(
+        fake_session,  # type: ignore[arg-type]
+        tenant_id="tenant-a",
+        user_id="user-a",
+        secret=secret,
+        scopes=["chat:write"],
+        ttl_sec=60,
+    )
+
+    claims = verify_bearer_token(f"Bearer {ticket.ticket}", secret)
+    assert claims.tenant_id == "tenant-a"
+    assert claims.user_id == "user-a"
+    assert claims.token_type == "ws"
+    assert ticket.ticket_id.startswith("wst-")
+    assert ticket.expires_at - int(datetime.now(UTC).timestamp()) <= 60
 
 
 @pytest.mark.unit
@@ -597,6 +620,53 @@ def test_current_session_reports_context() -> None:
     assert body["user_id"] == "user-a"
     assert body["scopes"] == ["chat:write"]
     assert body["audience"] == "expert"
+
+
+@pytest.mark.unit
+def test_websocket_ticket_api_uses_current_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = "s" * 40
+
+    class _FakeSettings:
+        def auth_secret_candidates(self) -> list[str]:
+            return [secret]
+
+    async def fake_issue_ws_ticket(*_args: object, **kwargs: object) -> session_api.WebSocketTicket:
+        assert kwargs["tenant_id"] == "tenant-a"
+        assert kwargs["user_id"] == "user-a"
+        assert kwargs["scopes"] == ["chat:write"]
+        return session_api.WebSocketTicket(
+            tenant_id="tenant-a",
+            user_id="user-a",
+            audience="developer",
+            scopes=["chat:write"],
+            ticket_id="wst-test",
+            ticket=sign_auth_token(
+                {
+                    "tenant_id": "tenant-a",
+                    "user_id": "user-a",
+                    "jti": "wst-test",
+                    "token_type": "ws",
+                },
+                secret,
+            ),
+            expires_at=int((datetime.now(UTC) + timedelta(minutes=1)).timestamp()),
+            honest_limits=["短期 WebSocket 握手票据"],
+        )
+
+    monkeypatch.setattr(session_api, "settings", lambda: _FakeSettings())
+    monkeypatch.setattr(session_api, "session_scope", lambda **_kwargs: _FakeScope())
+    monkeypatch.setattr(session_api, "issue_websocket_ticket", fake_issue_ws_ticket)
+
+    with tenant_scope(
+        TenantContext(tenant_id="tenant-a", user_id="user-a", scopes=("chat:write",))
+    ):
+        response = TestClient(_api_app()).post("/api/auth/ws-ticket")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tenant_id"] == "tenant-a"
+    assert body["ticket_id"] == "wst-test"
+    assert verify_bearer_token(f"Bearer {body['ticket']}", secret).token_type == "ws"
 
 
 @pytest.mark.unit

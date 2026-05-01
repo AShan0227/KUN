@@ -207,7 +207,20 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   });
 }
 
-export function kunWebSocketUrl(): string {
+type WebSocketTicketResponse = {
+  ticket: string;
+  expires_at: number;
+};
+
+async function fetchKunWebSocketTicket(): Promise<WebSocketTicketResponse> {
+  const response = await apiFetch("/api/auth/ws-ticket", { method: "POST" });
+  if (!response.ok) {
+    throw new Error(`ws ticket failed: ${response.status}`);
+  }
+  return (await response.json()) as WebSocketTicketResponse;
+}
+
+export async function kunWebSocketUrl(): Promise<string> {
   if (typeof window === "undefined") return "";
   const identity = getKunIdentity();
   const base = API_ORIGIN || `${window.location.protocol}//${window.location.host}`;
@@ -215,7 +228,8 @@ export function kunWebSocketUrl(): string {
   const host = base.replace(/^https?:\/\//, "");
   const params = new URLSearchParams();
   if (identity.authToken) {
-    params.set("auth_token", identity.authToken);
+    const ticket = await fetchKunWebSocketTicket();
+    params.set("ws_ticket", ticket.ticket);
   } else {
     params.set("tenant_id", identity.tenantId);
     params.set("user_id", identity.userId);

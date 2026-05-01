@@ -221,15 +221,17 @@ async def _resolve_ws_tenant_context(ws: WebSocket) -> TenantContext:
     """Resolve WebSocket identity.
 
     Browsers cannot set custom Authorization headers for WebSocket handshakes.
-    We therefore accept an auth token query param in addition to Authorization.
-    Production must use a signed token; dev can still fall back to tenant/user
-    query params for local dogfood.
+    Production browser clients should first exchange their bearer session for a
+    short-lived `/api/auth/ws-ticket`, then pass it as `ws_ticket`.
+    Dev can still fall back to tenant/user query params for local dogfood.
     """
 
     cfg = settings()
     auth_header = ws.headers.get("authorization")
+    raw_ws_ticket = ws.query_params.get("ws_ticket") or ws.query_params.get("ticket")
     raw_query_token = (
-        ws.query_params.get("auth_token")
+        raw_ws_ticket
+        or ws.query_params.get("auth_token")
         or ws.query_params.get("access_token")
         or ws.query_params.get("token")
     )
@@ -245,6 +247,10 @@ async def _resolve_ws_tenant_context(ws: WebSocket) -> TenantContext:
         claims = verify_bearer_token_any(auth_header, secrets)
         if claims.token_type == "refresh":
             raise AuthTokenError("refresh token cannot open websocket sessions")
+        if raw_ws_ticket and claims.token_type != "ws":
+            raise AuthTokenError("ws_ticket token_type must be ws")
+        if cfg.env == "production" and raw_query_token and not raw_ws_ticket:
+            raise AuthTokenError("ws_ticket is required for browser websocket in production")
         if cfg.env == "production":
             revoked = await _check_and_record_ws_auth_token(
                 tenant_id=claims.tenant_id,

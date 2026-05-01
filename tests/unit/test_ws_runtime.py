@@ -145,6 +145,63 @@ async def test_ws_context_uses_signed_query_token(monkeypatch: pytest.MonkeyPatc
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_ws_context_uses_short_lived_ws_ticket_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "x" * 32
+    token = sign_auth_token(
+        {
+            "tenant_id": "tenant-ticket",
+            "user_id": "user-ticket",
+            "scopes": ["chat:write"],
+            "token_type": "ws",
+        },
+        secret,
+    )
+    monkeypatch.setattr(
+        ws_module,
+        "settings",
+        lambda: _Settings(env="production", secrets=[secret]),
+    )
+
+    async def fake_check_and_record(**_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(ws_module, "_check_and_record_ws_auth_token", fake_check_and_record)
+
+    ctx = await _resolve_ws_tenant_context(cast(Any, _FakeHandshake(query={"ws_ticket": token})))
+
+    assert ctx.tenant_id == "tenant-ticket"
+    assert ctx.user_id == "user-ticket"
+    assert ctx.scopes == ("chat:write",)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ws_context_rejects_access_token_query_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "x" * 32
+    token = sign_auth_token(
+        {
+            "tenant_id": "tenant-access",
+            "user_id": "user-access",
+            "token_type": "access",
+        },
+        secret,
+    )
+    monkeypatch.setattr(
+        ws_module,
+        "settings",
+        lambda: _Settings(env="production", secrets=[secret]),
+    )
+
+    with pytest.raises(AuthTokenError, match="ws_ticket is required"):
+        await _resolve_ws_tenant_context(cast(Any, _FakeHandshake(query={"auth_token": token})))
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_ws_context_requires_token_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         ws_module,

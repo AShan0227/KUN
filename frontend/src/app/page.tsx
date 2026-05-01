@@ -478,21 +478,31 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const wsUrl = kunWebSocketUrl();
-    if (!wsUrl) return;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => setConnected(false);
-    ws.onmessage = (e) => {
+    let closed = false;
+    void (async () => {
       try {
-        const msg = JSON.parse(e.data) as WireMessage;
-        dispatchIncoming(msg);
+        const wsUrl = await kunWebSocketUrl();
+        if (!wsUrl || closed) return;
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+        ws.onopen = () => setConnected(true);
+        ws.onclose = () => setConnected(false);
+        ws.onmessage = (e) => {
+          try {
+            const msg = JSON.parse(e.data) as WireMessage;
+            dispatchIncoming(msg);
+          } catch {
+            console.warn("bad ws frame", e.data);
+          }
+        };
       } catch {
-        console.warn("bad ws frame", e.data);
+        setConnected(false);
       }
+    })();
+    return () => {
+      closed = true;
+      wsRef.current?.close();
     };
-    return () => ws.close();
   }, []);
 
   const dispatchIncoming = (msg: WireMessage) => {

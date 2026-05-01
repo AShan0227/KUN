@@ -57,6 +57,21 @@ class AccessTokenRefresh(BaseModel):
     honest_limits: list[str] = Field(default_factory=list)
 
 
+class WebSocketTicket(BaseModel):
+    """Short-lived ticket used only for browser WebSocket handshakes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    user_id: str | None = None
+    audience: Audience
+    scopes: list[str] = Field(default_factory=list)
+    ticket_id: str
+    ticket: str
+    expires_at: int
+    honest_limits: list[str] = Field(default_factory=list)
+
+
 class SessionTokenError(ValueError):
     """Raised when a refresh token cannot be used."""
 
@@ -225,6 +240,65 @@ async def refresh_session_access_token(
     )
 
 
+async def issue_websocket_ticket(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    user_id: str | None,
+    secret: str,
+    scopes: list[str],
+    audience: Audience = "developer",
+    ttl_sec: int = 60,
+    metadata: dict[str, Any] | None = None,
+) -> WebSocketTicket:
+    """Mint a very short-lived ticket for browser WebSocket URLs."""
+
+    cleaned_tenant = _required("tenant_id", tenant_id)
+    cleaned_user = (user_id or "").strip() or None
+    cleaned_scopes = _clean_scopes(scopes)
+    if len(secret) < 32:
+        raise ValueError("secret must be at least 32 characters")
+    now_ts = int(time.time())
+    ticket_id = _token_id("wst", cleaned_tenant, cleaned_user or "anon")
+    expires_at = now_ts + max(30, min(ttl_sec, 5 * 60))
+    payload: dict[str, Any] = {
+        "tenant_id": cleaned_tenant,
+        "scopes": cleaned_scopes,
+        "audience": audience,
+        "exp": expires_at,
+        "jti": ticket_id,
+        "token_type": "ws",
+    }
+    if cleaned_user is not None:
+        payload["user_id"] = cleaned_user
+    ticket = sign_auth_token(payload, secret)
+    await _store_token_issue(
+        session,
+        tenant_id=cleaned_tenant,
+        token_id=ticket_id,
+        token=ticket,
+        user_id=cleaned_user,
+        audience=audience,
+        scopes=cleaned_scopes,
+        expires_at=expires_at,
+        metadata={**(metadata or {}), "source": "api.session.ws_ticket", "kind": "ws"},
+    )
+    return WebSocketTicket(
+        tenant_id=cleaned_tenant,
+        user_id=cleaned_user,
+        audience=audience,
+        scopes=cleaned_scopes,
+        ticket_id=ticket_id,
+        ticket=ticket,
+        expires_at=expires_at,
+        honest_limits=[
+            "这是短期 WebSocket 握手票据，不是长期登录态。",
+            "浏览器无法给 WebSocket 设置 Authorization header，所以先用 HTTP 换短票据。",
+            "后续仍需要更完整的设备态风控和服务端会话管理。",
+        ],
+    )
+
+
 def _sign_session_token(
     *,
     tenant_id: str,
@@ -337,6 +411,8 @@ __all__ = [
     "AccessTokenRefresh",
     "SessionTokenError",
     "SessionTokenPair",
+    "WebSocketTicket",
     "issue_session_token_pair",
+    "issue_websocket_ticket",
     "refresh_session_access_token",
 ]

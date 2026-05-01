@@ -30,7 +30,9 @@ from kun.ops.account_sessions import (
     AccessTokenRefresh,
     SessionTokenError,
     SessionTokenPair,
+    WebSocketTicket,
     issue_session_token_pair,
+    issue_websocket_ticket,
     refresh_session_access_token,
 )
 from kun.security.auth import AuthTokenError, extract_bearer_token, verify_bearer_token_any
@@ -156,6 +158,17 @@ class RevokeOwnSessionResponse(BaseModel):
     message: str
 
 
+class WebSocketTicketResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    user_id: str | None = None
+    ticket_id: str
+    ticket: str
+    expires_at: int
+    honest_limits: list[str]
+
+
 @router.post("/signup", response_model=SignupResponse)
 async def signup(payload: SignupRequest) -> SignupResponse:
     """Create a tenant account and a refreshable session, if invite signup is enabled."""
@@ -269,6 +282,31 @@ async def current_session() -> CurrentSessionResponse:
             "这里只返回当前请求上下文，不代表完整设备识别或异常登录风控。",
         ],
     )
+
+
+@router.post("/ws-ticket", response_model=WebSocketTicketResponse)
+async def websocket_ticket() -> WebSocketTicketResponse:
+    """Exchange the current bearer session for a short-lived WebSocket ticket."""
+
+    cfg = settings()
+    secrets = cfg.auth_secret_candidates()
+    if not secrets:
+        raise HTTPException(
+            status_code=503,
+            detail="KUN_AUTH_SECRET or KUN_AUTH_SECRETS is required for websocket tickets",
+        )
+    tenant = current_tenant()
+    async with session_scope(tenant_id=tenant.tenant_id) as s:
+        ticket = await issue_websocket_ticket(
+            s,
+            tenant_id=tenant.tenant_id,
+            user_id=tenant.user_id,
+            scopes=list(tenant.scopes),
+            audience=tenant.audience,
+            secret=secrets[0],
+            metadata={"source": "api.auth.ws_ticket"},
+        )
+    return _ws_ticket_response(ticket)
 
 
 @router.get("/session/tokens", response_model=CurrentUserSessionsResponse)
@@ -415,6 +453,17 @@ def _signup_response(
             "注册默认关闭；必须显式设置 KUN_SELF_SIGNUP_ENABLED=true 和邀请码。",
             "账单仍是记录字段，不代表已经接入真实支付。",
         ],
+    )
+
+
+def _ws_ticket_response(ticket: WebSocketTicket) -> WebSocketTicketResponse:
+    return WebSocketTicketResponse(
+        tenant_id=ticket.tenant_id,
+        user_id=ticket.user_id,
+        ticket_id=ticket.ticket_id,
+        ticket=ticket.ticket,
+        expires_at=ticket.expires_at,
+        honest_limits=ticket.honest_limits,
     )
 
 
