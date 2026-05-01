@@ -89,6 +89,7 @@ def test_unknown_high_risk_source_is_blocked() -> None:
     assert set(package.missing_evidence) >= {
         "source_repo_or_url",
         "known_license",
+        "legal_license_review",
         "sandbox_test_evidence",
         "human_security_review",
     }
@@ -145,6 +146,36 @@ def test_low_evidence_candidate_cannot_enter_production() -> None:
     assert "task_fit_evidence" in package.missing_evidence
     assert "candidate_summary_or_skill_md" in package.missing_evidence
     assert "known_license" in package.missing_evidence
+    assert "legal_license_review" in package.missing_evidence
+
+
+@pytest.mark.unit
+def test_copyleft_license_requires_legal_review_before_ready() -> None:
+    package = review_external_skill_candidate(
+        task_need="Review TypeScript pull requests.",
+        candidate={
+            "source_kind": "github_repo",
+            "repo": "example/gpl-review",
+            "url": "https://github.com/example/gpl-review",
+            "commit_sha": "abc123",
+            "name": "GPL review helper",
+            "description": "Review TypeScript diffs with compiler-aware advice.",
+            "license": "GPL-3.0",
+            "files": [
+                {
+                    "path": "SKILL.md",
+                    "content": "Review TypeScript code diffs and suggest tests.",
+                }
+            ],
+        },
+    )
+
+    assert package.status == "needs_evidence"
+    assert package.worth_review is True
+    assert "license_requires_legal_review" in package.safety_risks
+    assert "legal_license_review" in package.missing_evidence
+    assert package.auto_install_allowed is False
+    assert package.production_action is False
 
 
 @pytest.mark.unit
@@ -454,6 +485,7 @@ def test_low_evidence_external_skill_signal_keeps_missing_evidence() -> None:
     assert set(signal.evidence["missing_evidence"]) >= {
         "candidate_summary_or_skill_md",
         "known_license",
+        "legal_license_review",
         "task_fit_evidence",
     }
     assert signal.evidence["production_action"] is False

@@ -122,6 +122,13 @@ def _extract_csv_path(match: re.Match[str], _prompt: str) -> dict[str, Any] | No
     return {"path": path, "sql": "SELECT * FROM data LIMIT 10"}
 
 
+def _extract_code_path(match: re.Match[str], _prompt: str) -> dict[str, Any] | None:
+    path = match.group(0).strip().strip("`'\"，,。.;；:：)")
+    if len(path) < 3 or len(path) > 500:
+        return None
+    return {"path": path}
+
+
 # ============== Yaml-driven triggers (layer 2) ==============
 
 
@@ -248,6 +255,17 @@ DEFAULT_TRIGGERS: list[ToolTrigger] = [
         description="prompt 含 Python 代码块 → 自动执行",
         pattern=re.compile(r"```python\s*\n([\s\S]*?)```", re.MULTILINE),
         extract_params=_extract_python_code,
+    ),
+    # Code file path → code-review (read-only CodeCapability preflight)
+    ToolTrigger(
+        skill_id="code-review",
+        description="prompt 引用代码文件 → 自动做只读 CodeCapability 预检",
+        pattern=re.compile(
+            r"(?:[\w./~-]+)\."
+            r"(?:py|ts|tsx|js|jsx|go|rs|java|kt|swift|c|cc|cpp|h|hpp|sh|sql|toml|ya?ml)\b",
+            re.IGNORECASE,
+        ),
+        extract_params=_extract_code_path,
     ),
     # "最新 / 现在 / 今天 / 当前 / 实时" 等时效性词 → web-search
     ToolTrigger(

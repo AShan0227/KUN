@@ -26,6 +26,22 @@ from kun.engineering.external_scan import (
 from kun.qi.problem_queue import QiProblemSignal, persist_problem_signals
 
 ExternalSkillReviewStatus = Literal["blocked", "needs_evidence", "ready_for_human_review"]
+_LICENSE_NEEDS_LEGAL_REVIEW = {
+    "",
+    "unknown",
+    "noassertion",
+    "other",
+    "none",
+    "unlicensed",
+    "proprietary",
+    "all rights reserved",
+    "gpl-2.0",
+    "gpl-3.0",
+    "agpl-3.0",
+    "lgpl-2.1",
+    "lgpl-3.0",
+    "sspl-1.0",
+}
 
 
 class ExternalSkillReviewScorecard(BaseModel):
@@ -815,6 +831,8 @@ def _source_review_reasons(
 def _source_safety_risks(source: ExternalSkillSourceRegistration) -> list[str]:
     safety = source.safety
     risks = [f"risk_level:{safety.risk_level}"]
+    if _license_requires_legal_review(safety.license_id):
+        risks.append("license_requires_legal_review")
     if safety.license_unknown:
         risks.append("license_unknown")
     if safety.contains_execution_scripts:
@@ -839,6 +857,8 @@ def _source_missing_evidence(
         missing.append("source_repo_or_url")
     if source.safety.license_unknown:
         missing.append("known_license")
+    if _license_requires_legal_review(source.safety.license_id):
+        missing.append("legal_license_review")
     if not source.source.commit_sha:
         missing.append("pinned_source_revision_before_fetch")
     if task_fit < 0.65:
@@ -996,6 +1016,8 @@ def _review_reasons(
 def _safety_risks(candidate: ExternalSkillCandidate) -> list[str]:
     safety = candidate.safety
     risks = [f"risk_level:{safety.risk_level}"]
+    if _license_requires_legal_review(safety.license_id):
+        risks.append("license_requires_legal_review")
     if safety.license_unknown:
         risks.append("license_unknown")
     if safety.contains_execution_scripts:
@@ -1024,6 +1046,8 @@ def _missing_evidence(
         missing.append("pinned_commit_sha")
     if safety.license_unknown:
         missing.append("known_license")
+    if _license_requires_legal_review(safety.license_id):
+        missing.append("legal_license_review")
     if task_demand == "unknown":
         missing.append("clear_task_need")
     if task_fit < 0.65:
@@ -1072,6 +1096,13 @@ def _validation_steps(candidate: ExternalSkillCandidate, task_fit: float) -> lis
     if safety.risk_level in {"low", "medium"} and not safety.contains_execution_scripts:
         steps.append("dry_run_against_non_production_task")
     return steps
+
+
+def _license_requires_legal_review(license_id: str) -> bool:
+    """Copyleft / unknown / proprietary licenses never become ready by score alone."""
+
+    normalized = str(license_id or "unknown").strip().lower()
+    return normalized in _LICENSE_NEEDS_LEGAL_REVIEW
 
 
 def _signal_category(package: ExternalSkillReviewPackage) -> Literal["risk", "context"]:

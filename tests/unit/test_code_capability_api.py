@@ -292,6 +292,69 @@ def test_propose_change_api_records_event_and_state_ledger(
     assert credit.checks_passed is True
 
 
+@pytest.mark.unit
+def test_failed_propose_change_enters_qi_problem_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    app = _app(tmp_path, monkeypatch)
+    emitted: list[Any] = []
+    persisted_signals: list[Any] = []
+    credit_inputs: list[Any] = []
+
+    @asynccontextmanager
+    async def fake_session_scope(*, tenant_id: str | None = None) -> AsyncIterator[object]:
+        emitted.append({"tenant_id": tenant_id, "session": True})
+        yield object()
+
+    async def fake_emit(_session: object, event: object) -> None:
+        emitted.append(event)
+
+    async def fake_persist_credit(
+        _session: object, *, tenant_id: str, credit: object
+    ) -> dict[str, Any]:
+        credit_inputs.append({"tenant_id": tenant_id, "credit": credit})
+        return {}
+
+    async def fake_persist_problem_signals(signals: list[Any]) -> int:
+        persisted_signals.extend(signals)
+        return len(signals)
+
+    monkeypatch.setattr(code_api, "session_scope", fake_session_scope)
+    monkeypatch.setattr(code_api, "emit", fake_emit)
+    monkeypatch.setattr(code_api, "persist_code_change_credit_report", fake_persist_credit)
+    monkeypatch.setattr(code_api, "persist_problem_signals", fake_persist_problem_signals)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/code-capability/propose-change",
+        json={
+            "task_id": "task-code-fail-1",
+            "reason": "尝试危险改动",
+            "path": "module.py",
+            "replacement_content": "VALUE = eval('1')\n",
+        },
+        headers={"X-Scopes": "code:execute"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["phase"] == "review"
+    assert persisted_signals
+    signal = persisted_signals[0]
+    assert signal.source == "code_capability.propose_change"
+    assert signal.category == "delivery"
+    assert signal.severity == "error"
+    assert signal.task_type == "coding.code_capability"
+    assert signal.evidence["task_id"] == "task-code-fail-1"
+    assert signal.evidence["failure_phase"] == "review"
+    assert signal.evidence["queue_intent"] == "qi_code_failure_replay"
+    assert signal.evidence["review_findings"][0]["rule"] == "no-eval-exec"
+
+
 class _FakeLedger:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []

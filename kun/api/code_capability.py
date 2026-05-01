@@ -26,6 +26,7 @@ from kun.engineering.credit_assignment import (
     CodeChangeCreditInput,
     persist_code_change_credit_report,
 )
+from kun.qi.problem_queue import QiProblemSignal, persist_problem_signals
 from kun.skills.code_capability import CodeCapability
 from kun.skills.code_capability.executor import LintTool
 from kun.skills.code_capability.reviewer import ReviewFinding, ReviewResult
@@ -394,6 +395,70 @@ async def _record_change_observability(
                 extra={"task_id": task_id, "path": result.path},
                 exc_info=True,
             )
+    await _enqueue_code_change_problem_signal_if_needed(
+        tenant_id=tenant.tenant_id,
+        task_id=task_id,
+        result=result,
+        event_payload=event_payload,
+        checks_passed=checks_passed,
+    )
+
+
+async def _enqueue_code_change_problem_signal_if_needed(
+    *,
+    tenant_id: str,
+    task_id: str | None,
+    result: ChangeWorkflowResult,
+    event_payload: dict[str, Any],
+    checks_passed: bool,
+) -> None:
+    """Let Qi learn from real CodeCapability failures, not just finished tasks."""
+
+    if result.ok and not result.rolled_back and checks_passed:
+        return
+    severity = "error" if result.phase in {"input", "resolve", "review"} else "warning"
+    if result.rolled_back:
+        severity = "error"
+    failed_checks = sum(1 for lint in result.lint_results if not lint.ok) + sum(
+        1 for test in result.test_results if not test.ok
+    )
+    evidence = {
+        **event_payload,
+        "task_id": task_id,
+        "queue_intent": "qi_code_failure_replay",
+        "failure_phase": result.phase,
+        "failed_checks": failed_checks,
+        "review_findings": [
+            {
+                "severity": finding.severity,
+                "rule": finding.rule,
+                "message": finding.message,
+                "path": finding.path,
+                "line": finding.line,
+            }
+            for finding in (result.review.findings if result.review is not None else [])
+        ][:20],
+    }
+    try:
+        await persist_problem_signals(
+            [
+                QiProblemSignal.build(
+                    tenant_id=tenant_id,
+                    category="delivery",
+                    severity=severity,
+                    summary=f"CodeCapability change failed at {result.phase}: {result.path}",
+                    source="code_capability.propose_change",
+                    task_type="coding.code_capability",
+                    evidence=evidence,
+                )
+            ]
+        )
+    except Exception:
+        log.warning(
+            "code_capability.qi_problem_signal_failed",
+            extra={"task_id": task_id, "path": result.path, "phase": result.phase},
+            exc_info=True,
+        )
 
 
 async def _store_code_skill_draft(

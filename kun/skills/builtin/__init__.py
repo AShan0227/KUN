@@ -80,7 +80,16 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
                 },
             },
         },
-        "auto_trigger_when": ["code review", "diff review", "审查代码", "代码评审"],
+        "auto_trigger_when": [
+            {
+                "pattern": r"[\w./~-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|kt|swift|c|cc|cpp|h|hpp|sh|sql|toml|ya?ml)\b",
+                "extract": {
+                    "kind": "match_group_0",
+                    "param_name": "path",
+                    "max_len": 500,
+                },
+            }
+        ],
     },
     "code-propose-change": {
         "description": (
@@ -109,12 +118,7 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
             },
             "required": ["path"],
         },
-        "auto_trigger_when": [
-            "propose code change",
-            "generate patch",
-            "修代码",
-            "生成补丁",
-        ],
+        "auto_trigger_when": [],
     },
     "external-skill-scout": {
         "description": (
@@ -151,10 +155,14 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
             },
         },
         "auto_trigger_when": [
-            "need external skill",
-            "find skill",
-            "能力缺口",
-            "寻找外部 skill",
+            {
+                "pattern": r"(need external skill|find skill|能力缺口|寻找外部\s*skill|外部能力|缺少.*skill)",
+                "extract": {
+                    "kind": "search_query",
+                    "param_name": "task_need",
+                    "max_len": 500,
+                },
+            }
         ],
     },
     "external-skill-review": {
@@ -170,12 +178,7 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
             },
             "required": ["candidate"],
         },
-        "auto_trigger_when": [
-            "review external skill",
-            "external skill candidate",
-            "鉴别外部 skill",
-            "外部能力候选",
-        ],
+        "auto_trigger_when": [],
     },
 }
 

@@ -77,6 +77,7 @@ def test_default_triggers_cover_critical_skills() -> None:
     assert "pdf-read" in triggered_skill_ids
     assert "csv-query" in triggered_skill_ids
     assert "python-exec" in triggered_skill_ids
+    assert "code-review" in triggered_skill_ids
     assert "web-search" in triggered_skill_ids
 
 
@@ -123,7 +124,29 @@ def test_load_triggers_from_yaml_default_path_has_core_skills() -> None:
     """默认 yaml 文件存在时, 必须把 4 个核心触发器都加载出来."""
     triggers = load_triggers_from_yaml()
     skill_ids = {t.skill_id for t in triggers}
-    assert {"pdf-read", "csv-query", "python-exec", "web-search"} <= skill_ids
+    assert {"pdf-read", "csv-query", "python-exec", "code-review", "web-search"} <= skill_ids
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_proactive_dispatch_reviews_referenced_code_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """引用代码文件时, KUN 先跑只读 CodeCapability review, 再让 LLM 接着干."""
+    monkeypatch.setenv("KUN_CODE_CAPABILITY_WORKSPACE_ROOT", str(tmp_path))
+    target = tmp_path / "app.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+
+    result = await proactive_dispatch(prompt="帮我看下 app.py 有没有明显问题")
+
+    review = next((item for item in result.dispatched if item.skill_id == "code-review"), None)
+    assert review is not None
+    assert review.params == {"path": "app.py"}
+    assert review.result.ok is True
+    assert review.result.metadata["production_action"] is False
+    assert review.result.metadata["input_kind"] == "path"
+    assert "code-review" in result.to_prefix_message()
 
 
 @pytest.mark.unit
@@ -182,6 +205,28 @@ def test_skill_registry_match_auto_triggers_finds_starter_pack() -> None:
     skill_ids = {h[0] for h in hits}
     # data-csv-query 在 starter pack 里声明了 .csv 触发器
     assert "data-csv-query" in skill_ids
+
+
+@pytest.mark.unit
+def test_builtin_manifests_register_structured_auto_triggers() -> None:
+    """builtin manifest 不能只写字符串意图, 必须注册成可执行的结构化触发器."""
+    from kun.skills.loader import get_registry, reset_registry
+
+    reset_registry()
+    autoload_builtins()
+    reg = get_registry()
+
+    code_hits = reg.match_auto_triggers("请审查一下 src/app.py")
+    assert any(
+        skill_id == "code-review" and extract.get("param_name") == "path"
+        for skill_id, _pattern, extract in code_hits
+    )
+
+    scout_hits = reg.match_auto_triggers("这里有能力缺口, 需要寻找外部 skill")
+    assert any(
+        skill_id == "external-skill-scout" and extract.get("param_name") == "task_need"
+        for skill_id, _pattern, extract in scout_hits
+    )
 
 
 @pytest.mark.unit

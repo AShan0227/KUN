@@ -59,6 +59,15 @@ triggers:
       extra_params:
         timeout_sec: 30
 
+  # 代码文件 → code-review
+  - skill_id: code-review
+    description: "prompt 里引用了代码文件 → 自动做只读 CodeCapability 预检"
+    pattern: '(?:[\w./~-]+)\.(?:py|ts|tsx|js|jsx|go|rs|java|kt|swift|c|cc|cpp|h|hpp|sh|sql|toml|ya?ml)\b'
+    confidence: high
+    extract:
+      kind: match_group_0
+      param_name: path
+
   # 时效性词 → web-search
   - skill_id: web-search
     description: "prompt 含时效性关键词 → 联网搜索"
