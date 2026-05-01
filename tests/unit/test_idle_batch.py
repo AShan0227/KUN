@@ -340,6 +340,10 @@ async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch)
     queued = get_qi_problem_queue().list("t-1", limit=10)
     assert len(queued) == 2
     assert all(signal.source == "qi.idle_replay.candidate" for signal in queued)
+    assert all("strategy_pack_draft" in signal.evidence for signal in queued)
+    assert all(
+        signal.evidence["strategy_pack_draft"]["production_action"] is False for signal in queued
+    )
 
 
 @pytest.mark.unit

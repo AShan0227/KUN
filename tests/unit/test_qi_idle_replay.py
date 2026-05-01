@@ -90,6 +90,8 @@ def test_idle_replay_dict_input_and_signal_draft_are_review_only() -> None:
     assert signal.source == "qi.idle_replay.candidate"
     assert signal.evidence["production_action"] is False
     assert signal.evidence["candidate_id"] == candidate.candidate_id
+    assert signal.evidence["strategy_pack_draft"]["production_action"] is False
+    assert signal.evidence["strategy_pack_draft"]["requires_human_review"] is True
 
 
 def test_idle_replay_strategy_pack_draft_is_review_only() -> None:

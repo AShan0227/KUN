@@ -80,6 +80,7 @@ class StrategyCandidate(BaseModel):
                 "risk": self.risk,
                 "requires_strong_review": self.requires_strong_review,
                 "original_evidence": self.evidence,
+                "strategy_pack_draft": self.to_strategy_pack_draft().model_dump(mode="json"),
                 "production_action": False,
             },
         )
