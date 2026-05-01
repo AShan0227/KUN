@@ -66,6 +66,9 @@ dev = [
   "faker>=33.0.0",
   "freezegun>=1.5.0",
 ]
+compiler = [
+    "markitdown>=0.1.0",
+]
 
 [project.scripts]
 kun = "kun.cli:app"
