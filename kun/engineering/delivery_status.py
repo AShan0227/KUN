@@ -308,6 +308,8 @@ def get_v3_delivery_status(
                 "主工作区会注册本地 service worker，在页面后台也能显示当前浏览器的本机提醒；这不是远程 Push",
                 "NUO governance_recommendations 已有显式 apply 入口：目前只允许低风险 context maintenance dry-run/apply，高风险或需要人审的建议会返回结构化 blocked 和 action ticket",
                 "NUO 已有只读 context governance audit 入口，能把低价值、重复、高频可抽象、过期/长尾、缺信用归因资产暴露成 review-only 建议",
+                "idle-batch 已注册 coordination_remediation step：默认 dry-run 消费傩协同体检票据；显式设置 KUN_COORDINATION_REMEDIATION_MODE=auto_low_risk 后，只会触发已批准且低风险的卡住动作执行器",
+                "coordination_remediation 会阻断真实外发、高风险、handler 隔离、暂停无审批门等不适合自动处理的问题，把它们继续留给人工/NUO 治理队列",
             ],
             evidence_refs=[
                 "kun/api/nuo/health_panel.py",
@@ -318,6 +320,7 @@ def get_v3_delivery_status(
                 "kun/world/handler_control.py",
                 "kun/engineering/nuo_system_health.py",
                 "kun/context/governance_audit.py",
+                "kun/engineering/coordination_remediation.py",
                 "kun/engineering/action_executor.py",
                 "kun/qi/problem_queue.py",
                 "frontend/public/kun-notifications-sw.js",
@@ -327,11 +330,12 @@ def get_v3_delivery_status(
                 "tests/unit/test_system_coordination.py",
                 "tests/unit/test_nuo_system_health.py",
                 "tests/unit/test_context_governance_audit.py",
+                "tests/unit/test_coordination_remediation.py",
             ],
             missing=[
                 "已有当前浏览器本地 service worker 提醒；还没做远程 Push、移动端或多设备主动推送",
                 "handler 自动 quarantine 已接入定时体检 dry-run，但真实自动执行仍需用户/运维确认",
-                "协同体检目前会给 dry-run 处置票据，但还没有自动暂停/恢复所有冲突任务",
+                "协同体检已能默认 dry-run、显式开启后低风险触发执行器；但还没有自动暂停/恢复所有冲突任务，高风险仍必须人工",
                 "NUO 现在能生成统一治理建议，也有低风险显式 apply API；但还没有完整人工批准 UI 和多类治理动作执行器",
             ],
             next_steps=[

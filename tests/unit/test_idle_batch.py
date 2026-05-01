@@ -16,6 +16,7 @@ from kun.engineering.idle_batch import (
     CompilerSyncSourcesStep,
     ConsistencyTestStep,
     ContextGovernanceRuleDistillStep,
+    CoordinationRemediationStep,
     ExternalEmergentScanStep,
     ExternalSkillCandidateReviewStep,
     ExternalSkillScoutPlanStep,
@@ -170,6 +171,7 @@ def test_default_steps_registered():
     assert "qi_strategy_pack_review" in steps
     assert "qi_strategy_pack_rollout_plan" in steps
     assert "context_governance_rule_distill" in steps
+    assert "coordination_remediation" in steps
     assert "compiler_sync_sources" in steps
     assert "compiler_intake_review" in steps
     assert "external_skill_scout_plan" in steps
@@ -188,6 +190,53 @@ async def test_run_once_enabled_filter():
     assert reports[0].status == "ok"
     assert recorder.calls == 1
     assert reports[0].summary == {"tenant": "u-test", "calls": 1}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_coordination_remediation_step_defaults_to_dry_run(monkeypatch) -> None:
+    from datetime import timedelta
+
+    from kun.engineering.system_coordination import coordination_issues_from_rows
+
+    async def fake_collect_coordination_issues(**kwargs: Any) -> list[Any]:
+        now = datetime(2026, 1, 1, tzinfo=UTC)
+        return coordination_issues_from_rows(
+            pending_rows=[
+                SimpleNamespace(
+                    action_id="act-1",
+                    task_ref="task-1",
+                    action_type="email.draft",
+                    status="approved",
+                    updated_at=now - timedelta(minutes=10),
+                )
+            ],
+            runtime_rows=[],
+            control_rows=[],
+            now=now,
+            stale_after=timedelta(minutes=5),
+        )
+
+    async def fail_execute(**kwargs: Any) -> None:
+        raise AssertionError("dry-run must not execute approved actions")
+
+    monkeypatch.setattr(
+        "kun.engineering.coordination_remediation.collect_coordination_issues",
+        fake_collect_coordination_issues,
+    )
+    monkeypatch.setattr(
+        "kun.engineering.coordination_remediation.execute_approved_action_once",
+        fail_execute,
+    )
+    monkeypatch.delenv("KUN_COORDINATION_REMEDIATION_MODE", raising=False)
+
+    summary = await CoordinationRemediationStep().run("t-1")
+
+    assert summary["mode"] == "dry_run"
+    assert summary["issues"] == 1
+    assert summary["planned"] == 1
+    assert summary["executed"] == 0
+    assert summary["production_action"] is False
 
 
 @pytest.mark.unit

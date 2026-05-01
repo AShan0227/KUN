@@ -236,6 +236,7 @@ def _selected_step_names(enabled: set[str] | None) -> list[str]:
     priority = {
         "health_report": 0,
         "world_handler_auto_quarantine": 1,
+        "coordination_remediation": 1,
         "compiler_intake_review": 2,
         "external_skill_scout_plan": 2,
         "qi_idle_replay": 2,
@@ -507,6 +508,23 @@ class WorldHandlerAutoQuarantineStep(IdleBatchStep):
         # overnight NUO initially reports recommendations instead of silently
         # changing controls.
         report = await run_world_handler_auto_quarantine(tenant_id=tenant_id, dry_run=True)
+        return report.model_dump(mode="json")
+
+
+class CoordinationRemediationStep(IdleBatchStep):
+    """Let NUO consume coordination findings safely.
+
+    Default is dry-run.  Set ``KUN_COORDINATION_REMEDIATION_MODE=auto_low_risk``
+    to let NUO trigger only low-risk approved actions that already passed the
+    normal approval gate.  High-risk / real external actions stay manual.
+    """
+
+    step_id = "coordination_remediation"
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        from kun.engineering.coordination_remediation import run_coordination_remediation
+
+        report = await run_coordination_remediation(tenant_id=tenant_id)
         return report.model_dump(mode="json")
 
 
@@ -1313,6 +1331,7 @@ def register_default_steps() -> None:
         ABDecisionRollupStep(),
         HealthReportStep(),
         WorldHandlerAutoQuarantineStep(),
+        CoordinationRemediationStep(),
         QiIdleReplayStep(),
         QiStrategyPackReviewStep(),
         QiStrategyPackRolloutPlanStep(),
