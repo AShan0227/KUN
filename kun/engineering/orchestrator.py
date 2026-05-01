@@ -1038,9 +1038,11 @@ class Orchestrator:
                 async for item in self.context_packer.pack_anchor_then_expand(
                     task_ref,
                     tenant_id=tenant.tenant_id,
+                    kinds=memory_context_kwargs.get("kinds"),
                     max_rounds=_context_limit,
                     memory_layers=memory_context_kwargs.get("memory_layers"),
                     avoid_memory_layers=memory_context_kwargs.get("avoid_memory_layers"),
+                    preferred_tags=memory_context_kwargs.get("preferred_tags"),
                 ):
                     context_items.append(item)
                     if len(context_items) >= _context_limit:
@@ -1061,9 +1063,11 @@ class Orchestrator:
                 context_pack = await self.context_packer.pack(
                     task_ref,
                     tenant_id=tenant.tenant_id,
+                    kinds=memory_context_kwargs.get("kinds"),
                     limit=_context_limit,
                     memory_layers=memory_context_kwargs.get("memory_layers"),
                     avoid_memory_layers=memory_context_kwargs.get("avoid_memory_layers"),
+                    preferred_tags=memory_context_kwargs.get("preferred_tags"),
                 )
         else:
             context_pack = ContextPack()  # FAST 模式跳过, 空 pack
@@ -1378,6 +1382,7 @@ class Orchestrator:
                                     avoid_memory_layers=memory_context_kwargs.get(
                                         "avoid_memory_layers"
                                     ),
+                                    preferred_tags=memory_context_kwargs.get("preferred_tags"),
                                 )
                             except Exception:
                                 log.exception("hermes.use_memory pack_query failed")

@@ -16,6 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kun.context.assets import AssetKind
 from kun.datamodel.task import TaskRef
 
 
@@ -46,6 +47,8 @@ class MemoryPolicyTicket(BaseModel):
     use_memory: bool
     depth: MemoryDepth
     layers: list[MemoryLayer] = Field(default_factory=list)
+    asset_kinds: list[AssetKind] = Field(default_factory=list)
+    preferred_tags: list[str] = Field(default_factory=list)
     max_items: int = Field(default=0, ge=0)
     allow_mid_run_retrieval: bool = False
     avoid_layers: list[MemoryLayer] = Field(default_factory=list)
@@ -58,6 +61,8 @@ class MemoryPolicyTicket(BaseModel):
 
         return {
             "limit": self.max_items,
+            "kinds": list(self.asset_kinds),
+            "preferred_tags": list(self.preferred_tags),
             "memory_layers": [layer.value for layer in self.layers],
             "avoid_memory_layers": [layer.value for layer in self.avoid_layers],
         }
@@ -93,6 +98,14 @@ def decide_memory_policy(
     ]
     if pack_id:
         reason_parts.append(f"strategy_pack={pack_id}")
+    preferred_tags = _preferred_tags(
+        task_type=task_type,
+        text=text,
+        strategy_pack=strategy_pack,
+        watchtower_decision=watchtower_decision,
+    )
+    if preferred_tags:
+        reason_parts.append(f"preferred_tags={','.join(preferred_tags[:5])}")
 
     if _is_simple_task(task_ref, text=text) and not risky:
         if complexity <= 0.15:
@@ -100,6 +113,8 @@ def decide_memory_policy(
                 use_memory=False,
                 depth=MemoryDepth.NO_MEMORY,
                 layers=[],
+                asset_kinds=[],
+                preferred_tags=[],
                 max_items=0,
                 allow_mid_run_retrieval=False,
                 avoid_layers=[
@@ -114,6 +129,8 @@ def decide_memory_policy(
             use_memory=True,
             depth=MemoryDepth.LIGHT,
             layers=[MemoryLayer.TASK_RESULT],
+            asset_kinds=["memory"],
+            preferred_tags=preferred_tags[:4],
             max_items=1,
             allow_mid_run_retrieval=False,
             avoid_layers=[
@@ -126,6 +143,7 @@ def decide_memory_policy(
         )
 
     layers = _preferred_layers(task_type=task_type, text=text, pack_id=pack_id)
+    asset_kinds = _preferred_asset_kinds(task_type=task_type, text=text, pack_id=pack_id)
     max_items = _base_max_items(complexity)
     depth = _base_depth(complexity)
     allow_mid_run_retrieval = complexity >= 0.55
@@ -156,6 +174,8 @@ def decide_memory_policy(
         use_memory=True,
         depth=depth,
         layers=layers[:max_items],
+        asset_kinds=asset_kinds,
+        preferred_tags=preferred_tags[:8],
         max_items=max_items,
         allow_mid_run_retrieval=allow_mid_run_retrieval,
         avoid_layers=avoid_layers,
@@ -223,6 +243,49 @@ def _preferred_layers(
         MemoryLayer.METHODOLOGY,
         MemoryLayer.META_DECISION,
     ]
+
+
+def _preferred_asset_kinds(
+    *,
+    task_type: str,
+    text: str,
+    pack_id: str | None,
+) -> list[AssetKind]:
+    if _is_bug_or_code_task(task_type, text):
+        return ["memory", "methodology", "skill", "knowledge"]
+    if _is_strategy_or_ops_task(task_type, text, pack_id):
+        return ["memory", "methodology", "knowledge", "skill", "role_template"]
+    return ["memory", "knowledge", "methodology"]
+
+
+def _preferred_tags(
+    *,
+    task_type: str,
+    text: str,
+    strategy_pack: Any | None,
+    watchtower_decision: Any | None,
+) -> list[str]:
+    tags: list[str] = []
+    context_tags = getattr(strategy_pack, "context_tags", None)
+    if isinstance(context_tags, list):
+        tags.extend(str(tag) for tag in context_tags if str(tag))
+    methodology_refs = getattr(strategy_pack, "methodology_refs", None)
+    if isinstance(methodology_refs, list):
+        tags.extend(str(ref) for ref in methodology_refs if str(ref))
+    metadata = getattr(watchtower_decision, "metadata", None)
+    if isinstance(metadata, dict):
+        for key in ("context_tags", "methodology_refs"):
+            raw = metadata.get(key)
+            if isinstance(raw, list):
+                tags.extend(str(item) for item in raw if str(item))
+
+    if _is_bug_or_code_task(task_type, text):
+        tags.extend(["repo", "tests", "architecture", "debug"])
+    elif _is_strategy_or_ops_task(task_type, text, None):
+        tags.extend(["business", "product", "growth", "metrics"])
+    elif task_type.startswith(("education", "learning", "course", "teaching")):
+        tags.extend(["education", "curriculum", "learning_profile"])
+    return _dedupe_text([tag.lower() for tag in tags if tag])
 
 
 def _risk_trimmed_layers(layers: list[MemoryLayer]) -> list[MemoryLayer]:

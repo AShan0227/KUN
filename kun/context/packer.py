@@ -86,6 +86,7 @@ class ContextPacker:
         limit: int = 3,
         memory_layers: Iterable[str] | None = None,
         avoid_memory_layers: Iterable[str] | None = None,
+        preferred_tags: Iterable[str] | None = None,
     ) -> ContextPack:
         """Wire 33: 按 query 字符串拉相关 context (不依赖 task_ref).
 
@@ -117,7 +118,11 @@ class ContextPacker:
                 logger.debug("packer.pack_query store_list_failed kind=%s err=%s", kind, exc)
                 continue
 
-        scored = await self._rank_assets(candidates, query=query)
+        scored = await self._rank_assets(
+            candidates,
+            query=query,
+            preferred_tags=preferred_tags,
+        )
         selected = scored[:limit]
         await self._touch_selected(selected)
         return ContextPack(items=[_to_packed(score, asset) for asset, score in selected])
@@ -131,6 +136,7 @@ class ContextPacker:
         limit: int = 5,
         memory_layers: Iterable[str] | None = None,
         avoid_memory_layers: Iterable[str] | None = None,
+        preferred_tags: Iterable[str] | None = None,
     ) -> ContextPack:
         query_terms = _task_terms(task_ref)
         if not query_terms:
@@ -149,7 +155,11 @@ class ContextPacker:
             )
 
         query = _task_query(task_ref)
-        scored = await self._rank_assets(candidates, query=query)
+        scored = await self._rank_assets(
+            candidates,
+            query=query,
+            preferred_tags=preferred_tags,
+        )
         selected = scored[:limit]
         await self._touch_selected(selected)
         process_experiences = (
@@ -178,6 +188,7 @@ class ContextPacker:
         use_marginal_stop: bool = True,
         memory_layers: Iterable[str] | None = None,
         avoid_memory_layers: Iterable[str] | None = None,
+        preferred_tags: Iterable[str] | None = None,
     ) -> Any:
         """V2.2 §19.3 + §20.3: 按需扩展式 context 装载.
 
@@ -215,7 +226,11 @@ class ContextPacker:
                         avoided_layers=avoided_layers,
                     )
                 )
-            return await self._rank_assets(candidates, query=_task_query(task_ref))
+            return await self._rank_assets(
+                candidates,
+                query=_task_query(task_ref),
+                preferred_tags=preferred_tags,
+            )
 
         scored_cache: list[list[tuple[LayeredAsset, ImportanceScore]]] = []  # 避免多次 fetch
 
@@ -281,6 +296,7 @@ class ContextPacker:
         candidates: list[LayeredAsset],
         *,
         query: str,
+        preferred_tags: Iterable[str] | None = None,
     ) -> list[tuple[LayeredAsset, ImportanceScore]]:
         """统一用 ImportanceScorer 排序，并接入历史贡献度。
 
@@ -329,7 +345,18 @@ class ContextPacker:
             query=query,
             contribution_lookup=_contribution_lookup,
         )
-        scored = [(asset, _quality_adjusted_score(asset, score)) for asset, score in scored]
+        preferred_tag_set = _normalize_memory_layers(preferred_tags)
+        scored = [
+            (
+                asset,
+                _tag_adjusted_score(
+                    asset,
+                    _quality_adjusted_score(asset, score),
+                    preferred_tag_set,
+                ),
+            )
+            for asset, score in scored
+        ]
         filtered = [
             (asset, score)
             for asset, score in scored
@@ -550,6 +577,41 @@ def _quality_adjusted_score(asset: LayeredAsset, score: ImportanceScore) -> Impo
         pin=score.pin,
         contribution=score.contribution,
         rationale=f"{score.rationale}; quality_delta={quality_delta:+.2f}",
+    )
+
+
+def _tag_adjusted_score(
+    asset: LayeredAsset,
+    score: ImportanceScore,
+    preferred_tags: set[str],
+) -> ImportanceScore:
+    """Softly prefer assets from the active MoE strategy pack.
+
+    This is intentionally a boost, not a hard filter.  Hard filters make KUN
+    brittle when a task is misclassified; the boost still lets a clearly
+    relevant asset win even if it lacks the preferred tag.
+    """
+
+    if not preferred_tags:
+        return score
+    asset_tags = {tag.lower() for tag in asset.tags}
+    meta_tags_raw = asset.l1_metadata.get("context_tags")
+    if isinstance(meta_tags_raw, list):
+        asset_tags.update(str(tag).lower() for tag in meta_tags_raw if str(tag))
+    overlap = sorted(preferred_tags & asset_tags)
+    if not overlap:
+        return score
+    tag_delta = min(0.12, 0.04 * len(overlap))
+    adjusted = max(0.0, min(1.0, score.overall + tag_delta))
+    return ImportanceScore(
+        overall=adjusted,
+        semantic=score.semantic,
+        frequency=score.frequency,
+        recency=score.recency,
+        dependency=score.dependency,
+        pin=score.pin,
+        contribution=score.contribution,
+        rationale=f"{score.rationale}; strategy_tag_boost={tag_delta:+.2f} tags={','.join(overlap[:4])}",
     )
 
 

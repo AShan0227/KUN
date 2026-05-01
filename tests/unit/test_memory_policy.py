@@ -46,6 +46,8 @@ def test_simple_low_complexity_task_uses_no_memory() -> None:
     assert ticket.use_memory is False
     assert ticket.depth == MemoryDepth.NO_MEMORY
     assert ticket.layers == []
+    assert ticket.asset_kinds == []
+    assert ticket.preferred_tags == []
     assert ticket.max_items == 0
     assert ticket.allow_mid_run_retrieval is False
     assert MemoryLayer.META_DECISION in ticket.avoid_layers
@@ -66,6 +68,9 @@ def test_bug_code_task_prefers_process_and_behavior_memory() -> None:
     assert ticket.use_memory is True
     assert ticket.depth == MemoryDepth.TARGETED
     assert ticket.layers[:2] == [MemoryLayer.EXECUTION_PROCESS, MemoryLayer.BEHAVIOR]
+    assert ticket.asset_kinds == ["memory", "methodology", "skill", "knowledge"]
+    assert "repo" in ticket.preferred_tags
+    assert "tests" in ticket.preferred_tags
     assert ticket.max_items == 3
     assert ticket.allow_mid_run_retrieval is False
     assert "code_or_bug_prefers_process_behavior" in ticket.reason
@@ -84,6 +89,9 @@ def test_product_ops_strategy_task_prefers_meta_decision_and_methodology() -> No
 
     assert ticket.use_memory is True
     assert ticket.layers[:2] == [MemoryLayer.META_DECISION, MemoryLayer.METHODOLOGY]
+    assert ticket.asset_kinds == ["memory", "methodology", "knowledge", "skill", "role_template"]
+    assert "product" in ticket.preferred_tags
+    assert "growth" in ticket.preferred_tags
     assert ticket.max_items == 3
     assert ticket.allow_mid_run_retrieval is True
     assert "strategy_ops_prefers_meta_methodology" in ticket.reason
@@ -111,9 +119,35 @@ def test_high_risk_task_uses_few_precise_memories_and_marks_risk() -> None:
     assert ticket.risk is True
     assert ticket.max_items == 2
     assert len(ticket.layers) <= 2
+    assert "skill" in ticket.asset_kinds
     assert MemoryLayer.BEHAVIOR in ticket.avoid_layers
     assert ticket.allow_mid_run_retrieval is True
     assert "task_risk_high" in ticket.risk_flags
     assert "foreseen_high_risk" in ticket.risk_flags
     assert "high_estimated_cost" in ticket.risk_flags
     assert "risk_flags=" in ticket.reason
+
+
+@pytest.mark.unit
+def test_strategy_pack_context_tags_flow_into_memory_policy() -> None:
+    ticket = decide_memory_policy(
+        _task(
+            goal="给教育产品设计下周课程复习路径",
+            task_type="education.course.plan",
+            complexity_score=0.45,
+        ),
+        strategy_pack=SimpleNamespace(
+            pack_id="education",
+            context_tags=["education", "learning_profile"],
+            methodology_refs=["spaced_repetition"],
+        ),
+    )
+
+    assert ticket.use_memory is True
+    assert "education" in ticket.preferred_tags
+    assert "learning_profile" in ticket.preferred_tags
+    assert "spaced_repetition" in ticket.preferred_tags
+    assert "preferred_tags=" in ticket.reason
+    kwargs = ticket.as_context_packer_kwargs()
+    assert kwargs["kinds"]
+    assert kwargs["preferred_tags"]

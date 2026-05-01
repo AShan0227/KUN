@@ -322,6 +322,8 @@ def get_v3_delivery_status(
                 "守望决策层会生成 MemoryPolicyTicket，先决定是否用记忆、用哪几类记忆、最多拉几条",
                 "Orchestrator 已消费 MemoryPolicyTicket：no_memory 会跳过 context，max_items 会限制 context 拉取数量",
                 "ContextPacker 已消费 MemoryPolicyTicket 的 memory_layers / avoid_memory_layers，能按任务稀疏激活结果记忆、过程记忆、元决策和方法论",
+                "MemoryPolicyTicket 已携带 asset_kinds / preferred_tags，守望策略包能稀疏激活最相关的知识、skill、methodology 和 context 标签",
+                "ContextPacker 会软提升匹配策略标签的资产，不硬过滤，避免误分类时错杀真正相关资料",
                 "Context DecisionTicket 会记录 memory_policy，后续可追踪“为什么这次用了/没用记忆”",
                 "启 idle replay 已能从问题信号或历史任务生成 review-only 策略候选，用于后台探索更优路径",
                 "启 idle replay 已能把候选转成 review-only StrategyPack 草稿，并写入持久化 Qi 信号 evidence，供人/强模型/NUO 后续审查",
@@ -353,7 +355,7 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "相似任务召回目前是确定性轻量检索，还不是向量库 / 跨租户匿名经验池",
-                "MemoryPolicyTicket 已进入 ContextPacker 过滤，但还没接向量库、跨租户匿名经验池和更细的 step 级 action memory 过滤",
+                "MemoryPolicyTicket 已进入 ContextPacker 过滤和策略标签加权，但还没接向量库、跨租户匿名经验池和更细的 step 级 action memory 过滤",
                 "MemoryPolicyTicket 还没和 NUO 记忆治理结果、FadeMem 衰减、重复合并策略完全打通",
                 "Qi idle replay 目前是 heuristic_local 候选生成并接入 idle-batch，还没接真实本地模型、离线回放执行池、shadow/canary 推广链路",
                 "StrategyPack 草稿目前只做 review-only，不会自动 promotion，也还没接强模型复审和人工批准 UI",

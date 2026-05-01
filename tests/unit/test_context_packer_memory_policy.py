@@ -151,3 +151,38 @@ async def test_context_packer_requested_layers_gate_process_experience_hints() -
     assert result_only.process_experiences == []
     assert {item.title for item in process_allowed.items} == {"process"}
     assert process_allowed.process_experiences
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_preferred_tags_soft_boost_strategy_assets() -> None:
+    store = InMemoryAssetStore()
+    await store.put(
+        LayeredAsset.build(
+            asset_kind="knowledge",
+            tenant_id="tenant-memory-policy",
+            metadata={"title": "generic-course"},
+            summary="fix pytest payment parser course plan",
+            tags=["generic"],
+        )
+    )
+    await store.put(
+        LayeredAsset.build(
+            asset_kind="knowledge",
+            tenant_id="tenant-memory-policy",
+            metadata={"title": "education-course"},
+            summary="fix pytest payment parser course plan",
+            tags=["education"],
+        )
+    )
+
+    pack = await ContextPacker(store).pack(
+        _task(),
+        tenant_id="tenant-memory-policy",
+        kinds=["knowledge"],
+        limit=1,
+        preferred_tags=["education"],
+    )
+
+    assert [item.title for item in pack.items] == ["education-course"]
+    assert "strategy_tag_boost" in pack.items[0].score_rationale
