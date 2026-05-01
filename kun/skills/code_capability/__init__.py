@@ -9,6 +9,7 @@ from kun.skills.code_capability.debugger import CodeDebugger
 from kun.skills.code_capability.executor import CodeExecutor
 from kun.skills.code_capability.reader import CodeReader
 from kun.skills.code_capability.reviewer import CodeReviewer
+from kun.skills.code_capability.skill_draft import build_code_change_skill_draft_asset
 from kun.skills.code_capability.workflow import CodeChangeWorkflow
 from kun.skills.code_capability.writer import CodeWriter
 
@@ -53,4 +54,5 @@ __all__ = [
     "CodeReader",
     "CodeReviewer",
     "CodeWriter",
+    "build_code_change_skill_draft_asset",
 ]

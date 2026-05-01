@@ -6,14 +6,17 @@ from typing import Any
 
 import pytest
 from kun.engineering.credit_assignment import (
+    CodeChangeCreditInput,
     CreditAssignment,
     ResourceCreditDelta,
     StepCredit,
+    build_code_change_credit_report,
     contribution_score_from_counts,
     get_contribution_tracker,
     heuristic_reflector,
     hydrate_contribution_tracker_from_db,
     make_resource_key,
+    persist_code_change_credit_report,
     persist_resource_credit_report,
     reset_contribution_tracker,
     resource_credit_summaries_from_rows,
@@ -279,6 +282,98 @@ def test_summarize_resource_credit_deltas_groups_by_kind() -> None:
     assert by_kind["memory"].top_resource_keys == ["memory:m1"]
     assert by_kind["skill"].contribution_score == 1.0
     assert by_kind["skill"].top_resource_keys == ["skill:writer"]
+
+
+def test_build_code_change_credit_report_marks_successful_change_as_critical() -> None:
+    report = build_code_change_credit_report(
+        CodeChangeCreditInput(
+            task_id="task-code",
+            path="kun/example.py",
+            mode="dry_run",
+            phase="done",
+            ok=True,
+            checks_passed=True,
+            review_ok=True,
+            bytes_changed=42,
+        )
+    )
+
+    assert report.task_id == "task-code"
+    assert report.task_outcome == "pass"
+    assert report.critical_path_step_ids == [1]
+    step = report.step_credits[0]
+    assert step.is_critical_path is True
+    assert step.immediate_reward > 0.8
+    assert step.resources_used["code_capability"] == [
+        "workflow_propose_change",
+        "mode_dry_run",
+        "phase_done",
+        "ext_py",
+        "checks_passed",
+        "dry_run",
+        "review_passed",
+    ]
+    assert "code_capability:workflow_propose_change" in step.credit_share
+
+
+def test_build_code_change_credit_report_keeps_failure_as_negative_evidence() -> None:
+    report = build_code_change_credit_report(
+        CodeChangeCreditInput(
+            task_id="task-code-fail",
+            path="../bad.sh",
+            mode="apply",
+            phase="resolve",
+            ok=False,
+            checks_passed=False,
+            review_ok=False,
+            lint_failed_count=1,
+            test_failed_count=2,
+        )
+    )
+
+    assert report.task_outcome == "fail"
+    assert report.critical_path_step_ids == []
+    step = report.step_credits[0]
+    assert step.immediate_reward == 0.10
+    assert "review_failed" in step.resources_used["code_capability"]
+    assert "lint_failed" in step.resources_used["code_capability"]
+    assert "test_failed" in step.resources_used["code_capability"]
+
+
+@pytest.mark.asyncio
+async def test_persist_code_change_credit_report_builds_code_capability_upsert() -> None:
+    class FakeSession:
+        sql = ""
+
+        async def execute(self, stmt: Any) -> None:
+            self.sql = str(
+                stmt.compile(
+                    dialect=postgresql.dialect(),
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
+
+    session = FakeSession()
+    deltas = await persist_code_change_credit_report(
+        session,  # type: ignore[arg-type]
+        tenant_id="u-sylvan",
+        credit=CodeChangeCreditInput(
+            task_id="task-code-sql",
+            path="service.ts",
+            mode="apply",
+            phase="done",
+            ok=True,
+            applied=True,
+            checks_passed=True,
+            review_ok=True,
+            bytes_changed=100,
+        ),
+    )
+
+    assert "code_capability:workflow_propose_change" in deltas
+    assert deltas["code_capability:workflow_propose_change"].pass_count == 1
+    assert "resource_credit_stats" in session.sql
+    assert "code_capability" in session.sql
 
 
 def test_resource_key_helpers_and_score_clamp() -> None:

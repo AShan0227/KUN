@@ -647,7 +647,9 @@ review
 - HTTP 链路目前只开放只读 review/diff 与显式 sandbox run/check；路径必须留在 workspace root 内，路径逃逸会被拒绝。
 - HTTP 链路已接租户 scope 守门：生产或显式传 scopes 时，review 需要 `code:read`，run/check 需要 `code:execute`。
 - `propose-change` 已能把结果写入 `code.change.proposed` 事件；传入 `task_id` 时会进入 State Ledger，记录路径、模式、检查结果、回滚状态和 diff hash。
-- 完整自动 coding workflow 仍是 partial：尚未把 Orchestrator coding task、自动生成补丁、记忆写回和 skill draft 晋升串成闭环。
+- `propose-change` 已能把改动模式、文件后缀、review/check 结果写入 `resource_credit_stats`，并更新热贡献信用 cache，让守望/MoE 后续知道哪些编程路径更可靠。
+- 成功且通过检查的 `propose-change` 会生成 review-only 的 draft skill 资产；它不会自动注册、不会自动安装、不会进入生产路由，只供傩/启/人审核复用。
+- 完整自动 coding workflow 仍是 partial：尚未把 Orchestrator coding task、自动生成补丁和 skill draft 审批晋升串成闭环。
 
 ### 11.3 编程能力的安全边界
 
@@ -910,7 +912,8 @@ V5 必须防止“写了但没用”。
 
 - 已完成最小 runtime/API 接入：CodeCapability 不再只是单测模块，可由 API runtime 调用。
 - 已完成只读 review/diff 和显式 sandbox run/check。
-- 已完成 `propose-change` 的事件和 State Ledger 可观测闭环。
+- 已完成 `propose-change` 的事件、State Ledger 和资源信用写回闭环。
+- 已完成成功代码改动到 review-only draft skill 资产的沉淀入口，但还没有自动晋升。
 - 完整自动 coding workflow 仍未完成，不能宣称 KUN 已能自动编码、验证并沉淀 skill。
 
 - 一个临时数据处理脚本能生成、测试、运行、记录。
@@ -974,16 +977,16 @@ V5 必须防止“写了但没用”。
 | --- | --- | --- |
 | InputTranslator / OutputTranslator | 附件已走原始 bytes 编译；skill/task/protocol 已能编译成 LayeredAsset；任务启动会真实写入 task 资产 | 还要接企业资料 connector 和更深 Office/OCR 后端 |
 | Hermes | 已进入多处链路 | 和 Compiler / ProtocolPacket 更紧密 |
-| Watchtower DecisionPlane | 已有策略票据、MemoryPolicy、MoE 影子候选和 LLMRouteGovernor 热路径治理；模型调用前会过成本/信任/隐私咨询 | 继续用真实 dogfood 校准规则阈值 |
-| ContextPacker | 已接 importance / credit / MemoryPolicyTicket；能按任务稀疏选择记忆层、资产类型和策略标签 | 还要接向量库和跨租户匿名经验池 |
+| Watchtower DecisionPlane | 已有策略票据、MemoryInvocationPolicy、MemoryPolicy、MoE 影子候选和 LLMRouteGovernor 热路径治理；模型调用前会过成本/信任/隐私咨询 | 继续用真实 dogfood 校准规则阈值 |
+| ContextPacker | 已接 importance / credit / MemoryPolicyTicket；能按任务稀疏选择记忆层、资产类型和策略标签；MemoryInvocationPolicy 已能把任务类型、风险、复杂度、失败重试、显式模式和历史资源信用转成 ContextPacker 参数 | 还要接向量库、跨租户匿名经验池，以及把“哪条记忆真的帮到了任务”写回更细的信用归因 |
 | Similar task recall | 已有 | 还要影响更多执行动作 |
 | Context maintenance | 已有 dry-run / mutation；NUO report 会把瘦身、低价值、风险、compiler review/recompile 候选合并成治理信号 | 还要接更强语义合并和规则蒸馏 |
 | Qi problem queue | 已接 idle replay，能读真实问题信号和任务结果历史；NUO health findings 会写入 Qi problem queue，Qi StrategyPack 草案状态也会回到 NUO governance report | 还要接人工批准 UI 和真实 canary 实验 |
-| External skill discovery | 已有 `external_skill_candidate_review`：可从离线 GitHub repo / skill metadata 归一化候选，也可通过 `KUN_EXTERNAL_SKILL_GITHUB_REPOS` 显式抓取 GitHub repo 元数据；候选会做来源、许可、执行脚本、外部网络、密钥、文件写入、sandbox suitability 的保守鉴别，并以 review-only 送入 Qi 队列 | 自动安装、生产 skill 注册、arXiv/竞品 changelog 抓取器、人工批准 UI 仍未做 |
+| External skill discovery | 已有 `external_skill_candidate_review`：可从离线 GitHub repo / skill metadata 归一化候选，也可通过 `KUN_EXTERNAL_SKILL_GITHUB_REPOS` 显式抓取 GitHub repo 元数据；候选会做来源、许可、执行脚本、外部网络、密钥、文件写入、sandbox suitability 的保守鉴别，并以 review-only 送入 Qi 队列；`kun.qi.external_skill_review` 已能把“任务需求 + 外部 skill/工程行为模板候选”编成 review-only 安全包，输出适配任务类型、是否值得 review、缺失证据、风险和建议验证步骤 | 自动安装、生产 skill 注册、arXiv/竞品 changelog 抓取器、人工批准 UI 仍未做；外部候选仍禁止 auto-install，低证据候选不能进生产 |
 | AI Scientist tree search | 有基础 | 还要用于真实策略候选 |
 | WorldGateway | 有 handler / 权限 / 审计；傩已能输出 handler 风险分、风险标签、租户密钥状态、失败率和补偿缺口，并把这些信号反馈给执行拦截/自动隔离；高风险治理默认只给 dry-run 建议 | 还要更多生产级 handler、真实补偿演练和线上密钥轮换 |
 | StateLedger | 已有快照和回放 | 还要更完整长期账本和信用归因 |
-| CodeCapability | 已可被 API/runtime 调用：支持只读 review/diff、显式 sandbox run/check、默认 dry-run 的单文件 propose-change；apply 后检查失败会自动恢复原文件 | 还要接 Orchestrator coding task、StateLedger、记忆写回、skill draft 晋升和更强 sandbox |
+| CodeCapability | 已可被 API/runtime 调用：支持只读 review/diff、显式 sandbox run/check、默认 dry-run 的单文件 propose-change；apply 后检查失败会自动恢复原文件；propose-change 会写 resource_credit_stats 和热贡献缓存；成功且通过检查的改动会生成 review-only 的 draft skill LayeredAsset | 还要接 Orchestrator coding task、自动补丁生成、skill draft 审批晋升和更强 sandbox |
 | NUO governance report | 已统一覆盖 compiler、context/memory、skill、WorldGateway handler、Qi 草案、多车道调度和 production/deployment risk；已有低风险 governance apply API，只允许 context maintenance 显式 dry-run/apply，高风险会 blocked + action ticket | 还要把 governance_recommendations 做成完整人工批准 UI，并扩展更多低风险治理 action |
 | 并发执行 | 已有 fast / mission / qi / nuo / world / high_risk 多车道调度器，并安装到 API runtime；`/api/tasks/scheduler/*` 可查看车道状态和提交异步任务；NUO report 会检查必需 lane 和活跃任务压力 | 还要把更多后台 worker 和前端任务看板接入这个统一车道 |
 

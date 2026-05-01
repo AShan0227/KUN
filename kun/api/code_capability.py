@@ -16,14 +16,20 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from kun.api.runtime import get_code_capability
+from kun.context.storage import get_store
 from kun.core.config import settings
 from kun.core.db import session_scope
 from kun.core.events import emit
 from kun.core.tenancy import current_tenant, require_scope
 from kun.datamodel.events import Event
+from kun.engineering.credit_assignment import (
+    CodeChangeCreditInput,
+    persist_code_change_credit_report,
+)
 from kun.skills.code_capability import CodeCapability
 from kun.skills.code_capability.executor import LintTool
 from kun.skills.code_capability.reviewer import ReviewFinding, ReviewResult
+from kun.skills.code_capability.skill_draft import build_code_change_skill_draft_asset
 from kun.skills.code_capability.workflow import ChangeCheckSpec, ChangeWorkflowResult
 
 router = APIRouter(prefix="/api/code-capability", tags=["code-capability"])
@@ -284,6 +290,15 @@ async def _record_change_observability(
     task_id = payload.task_id
     reason = payload.reason.strip()
     checks_passed = _change_checks_passed(result)
+    diff_sha256 = hashlib.sha256(result.diff.encode("utf-8")).hexdigest() if result.diff else ""
+    skill_draft_asset_id = await _store_code_skill_draft(
+        tenant_id=tenant.tenant_id,
+        task_id=task_id,
+        result=result,
+        checks_passed=checks_passed,
+        reason=reason,
+        diff_sha256=diff_sha256,
+    )
     event_payload = {
         "task_id": task_id,
         "path": result.path,
@@ -303,10 +318,9 @@ async def _record_change_observability(
         "error": result.error[:500],
         "rollback_hint": result.rollback_hint[:500],
         "reason": reason,
-        "diff_sha256": hashlib.sha256(result.diff.encode("utf-8")).hexdigest()
-        if result.diff
-        else "",
+        "diff_sha256": diff_sha256,
         "diff_bytes": len(result.diff.encode("utf-8")),
+        "skill_draft_asset_id": skill_draft_asset_id,
     }
     ledger = getattr(request.app.state, "state_ledger", None)
     if task_id and ledger is not None and hasattr(ledger, "record_code_change"):
@@ -347,6 +361,70 @@ async def _record_change_observability(
             extra={"task_id": task_id, "path": result.path},
             exc_info=True,
         )
+    if task_id:
+        try:
+            async with session_scope(tenant_id=tenant.tenant_id) as session:
+                await persist_code_change_credit_report(
+                    session,
+                    tenant_id=tenant.tenant_id,
+                    credit=CodeChangeCreditInput(
+                        task_id=task_id,
+                        path=result.path,
+                        mode=result.mode,
+                        phase=result.phase,
+                        ok=result.ok,
+                        applied=result.applied,
+                        rolled_back=result.rolled_back,
+                        checks_passed=checks_passed,
+                        review_ok=result.review.ok if result.review is not None else None,
+                        lint_failed_count=sum(1 for lint in result.lint_results if not lint.ok),
+                        test_failed_count=sum(1 for test in result.test_results if not test.ok),
+                        bytes_changed=result.bytes_changed,
+                    ),
+                )
+        except Exception:
+            log.warning(
+                "code_capability.credit_persist_failed",
+                extra={"task_id": task_id, "path": result.path},
+                exc_info=True,
+            )
+
+
+async def _store_code_skill_draft(
+    *,
+    tenant_id: str,
+    task_id: str | None,
+    result: ChangeWorkflowResult,
+    checks_passed: bool,
+    reason: str,
+    diff_sha256: str,
+) -> str:
+    if not task_id or not result.ok or result.rolled_back:
+        return ""
+    asset = build_code_change_skill_draft_asset(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        path=result.path,
+        mode=result.mode,
+        phase=result.phase,
+        checks_passed=checks_passed,
+        review_ok=result.review.ok if result.review is not None else None,
+        bytes_changed=result.bytes_changed,
+        diff_sha256=diff_sha256,
+        reason=reason,
+    )
+    if asset is None:
+        return ""
+    try:
+        await get_store().put(asset)
+        return asset.asset_id
+    except Exception:
+        log.warning(
+            "code_capability.skill_draft_store_failed",
+            extra={"task_id": task_id, "path": result.path},
+            exc_info=True,
+        )
+        return ""
 
 
 def _change_checks_passed(result: ChangeWorkflowResult) -> bool:

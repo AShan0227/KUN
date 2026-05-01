@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import fnmatch
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,7 +21,7 @@ from kun.context.assets import LayeredAsset
 from kun.context.storage import AssetStore, get_store
 from kun.datamodel.task import ExecutionMode, TaskRef
 from kun.engineering.credit_assignment import get_contribution_tracker
-from kun.memory.policy import decide_memory_policy
+from kun.engineering.memory_invocation_policy import decide_memory_invocation_for_task
 from kun.memory.similar_task_recall import (
     SimilarTaskExperience,
     summarize_strategy_votes,
@@ -171,14 +170,11 @@ class WatchtowerDecisionPlane:
         _apply_reward_boosts(reward_weights, mission_adjustment.reward_weight_boosts)
 
         alert_flags = _dedupe([*self._alert_flags(task_ref, pack), *mission_adjustment.alert_flags])
-        memory_policy = decide_memory_policy(
+        memory_invocation = decide_memory_invocation_for_task(
             task_ref,
             strategy_pack=pack,
-            watchtower_decision=SimpleNamespace(
-                strategy_pack_id=pack.pack_id,
-                alert_flags=alert_flags,
-            ),
         )
+        memory_policy = memory_invocation.to_memory_policy_ticket()
         reason = (
             f"命中策略包 {pack.pack_id}; "
             f"match_score={pack_score:.2f}; "
@@ -239,6 +235,7 @@ class WatchtowerDecisionPlane:
                 ],
                 "similar_strategy_votes": strategy_votes,
                 "process_experience_skill_hints": process_skill_hints,
+                "memory_invocation_policy": memory_invocation.model_dump(mode="json"),
                 "memory_policy": memory_policy.model_dump(mode="json"),
                 "qi_shadow_strategy_candidates": shadow_matches,
                 "qi_shadow_candidate_count": len(shadow_matches),

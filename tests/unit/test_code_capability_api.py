@@ -212,6 +212,8 @@ def test_propose_change_api_records_event_and_state_ledger(
     ledger = _FakeLedger()
     app.state.state_ledger = ledger
     emitted: list[Any] = []
+    credit_inputs: list[Any] = []
+    draft_store = _FakeAssetStore()
 
     @asynccontextmanager
     async def fake_session_scope(*, tenant_id: str | None = None) -> AsyncIterator[object]:
@@ -221,8 +223,16 @@ def test_propose_change_api_records_event_and_state_ledger(
     async def fake_emit(_session: object, event: object) -> None:
         emitted.append(event)
 
+    async def fake_persist_credit(
+        _session: object, *, tenant_id: str, credit: object
+    ) -> dict[str, Any]:
+        credit_inputs.append({"tenant_id": tenant_id, "credit": credit})
+        return {}
+
     monkeypatch.setattr(code_api, "session_scope", fake_session_scope)
     monkeypatch.setattr(code_api, "emit", fake_emit)
+    monkeypatch.setattr(code_api, "persist_code_change_credit_report", fake_persist_credit)
+    monkeypatch.setattr(code_api, "get_store", lambda: draft_store)
 
     client = TestClient(app)
     response = client.post(
@@ -237,13 +247,20 @@ def test_propose_change_api_records_event_and_state_ledger(
     )
 
     assert response.status_code == 200
-    event = emitted[-1]
+    event = next(
+        item for item in emitted if getattr(item, "event_type", "") == "code.change.proposed"
+    )
     assert event.event_type == "code.change.proposed"
     assert event.task_ref == "task-code-1"
     assert event.payload["path"] == "module.py"
     assert event.payload["mode"] == "dry_run"
     assert event.payload["diff_sha256"]
+    assert event.payload["skill_draft_asset_id"] == draft_store.assets[0].asset_id
     assert "diff" not in event.payload
+    assert draft_store.assets[0].asset_kind == "skill"
+    assert draft_store.assets[0].l1_metadata["review_state"] == "draft_review_only"
+    assert draft_store.assets[0].l1_metadata["promotion_allowed"] is False
+    assert "draft_skill" in draft_store.assets[0].tags
     assert ledger.calls == [
         {
             "task_id": "task-code-1",
@@ -259,6 +276,15 @@ def test_propose_change_api_records_event_and_state_ledger(
             "bytes_changed": response.json()["bytes_changed"],
         }
     ]
+    assert credit_inputs
+    assert credit_inputs[0]["tenant_id"] == "tenant-code-test"
+    credit = credit_inputs[0]["credit"]
+    assert credit.task_id == "task-code-1"
+    assert credit.path == "module.py"
+    assert credit.mode == "dry_run"
+    assert credit.phase == "done"
+    assert credit.ok is True
+    assert credit.checks_passed is True
 
 
 class _FakeLedger:
@@ -267,3 +293,11 @@ class _FakeLedger:
 
     def record_code_change(self, task_id: str, **kwargs: Any) -> None:
         self.calls.append({"task_id": task_id, **kwargs})
+
+
+class _FakeAssetStore:
+    def __init__(self) -> None:
+        self.assets: list[Any] = []
+
+    async def put(self, asset: Any) -> None:
+        self.assets.append(asset)

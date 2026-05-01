@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from pathlib import Path
 from time import monotonic
 from typing import Any, Literal
 
@@ -163,6 +164,151 @@ class ResourceKindCreditSummary(BaseModel):
     credit_total: float
     contribution_score: float
     top_resource_keys: list[str] = Field(default_factory=list)
+
+
+class CodeChangeCreditInput(BaseModel):
+    """Small credit envelope for CodeCapability propose-change outcomes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    path: str
+    mode: str
+    phase: str
+    ok: bool
+    applied: bool = False
+    rolled_back: bool = False
+    checks_passed: bool = False
+    review_ok: bool | None = None
+    lint_failed_count: int = 0
+    test_failed_count: int = 0
+    bytes_changed: int = 0
+
+
+def build_code_change_credit_report(change: CodeChangeCreditInput) -> TaskCreditReport:
+    """Turn one CodeCapability workflow result into durable resource credit.
+
+    这不是为了给每个文件路径单独记账，而是给 MoE/守望留下一条可复用经验:
+    哪种代码改动模式、哪类后缀、哪种校验结果更可靠。
+    """
+
+    reward = _code_change_reward(change)
+    resources = _code_change_resources(change)
+    is_success = change.ok and not change.rolled_back
+    step = StepCredit(
+        step_id=1,
+        finished_at=datetime.now(UTC),
+        resources_used=resources,
+        immediate_reward=reward,
+        credit_share=CreditAssignment._equal_share(resources),
+        is_critical_path=is_success,
+        metadata={
+            "source": "code_capability.propose_change",
+            "path": change.path,
+            "mode": change.mode,
+            "phase": change.phase,
+            "ok": change.ok,
+            "applied": change.applied,
+            "rolled_back": change.rolled_back,
+            "checks_passed": change.checks_passed,
+            "review_ok": change.review_ok,
+            "lint_failed_count": change.lint_failed_count,
+            "test_failed_count": change.test_failed_count,
+            "bytes_changed": change.bytes_changed,
+        },
+    )
+    outcome = "pass" if is_success else "fail"
+    return TaskCreditReport(
+        task_id=change.task_id,
+        task_outcome=outcome,
+        total_immediate_reward=reward,
+        step_credits=[step],
+        critical_path_step_ids=[1] if is_success else [],
+        reflection_summary=(
+            "code change completed and checks/review contributed credit"
+            if is_success
+            else "code change failed or rolled back; credit kept for negative routing evidence"
+        ),
+    )
+
+
+async def persist_code_change_credit_report(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    credit: CodeChangeCreditInput,
+) -> dict[str, ResourceCreditDelta]:
+    """Persist CodeCapability credit and update the hot contribution cache."""
+
+    report = build_code_change_credit_report(credit)
+    deltas = await persist_resource_credit_report(session, tenant_id=tenant_id, report=report)
+    if deltas:
+        get_contribution_tracker().update_from_deltas(deltas, tenant_id=tenant_id)
+    return deltas
+
+
+def _code_change_reward(change: CodeChangeCreditInput) -> float:
+    """Small deterministic reward for code workflow outcomes.
+
+    重点是稳定、可解释，不假装它已经是完整 reward model。
+    """
+
+    if change.rolled_back:
+        return 0.15
+    if not change.ok:
+        if change.phase in {"input", "resolve"}:
+            return 0.10
+        if change.lint_failed_count or change.test_failed_count:
+            return 0.20
+        return 0.25
+
+    reward = 0.55
+    if change.checks_passed:
+        reward += 0.20
+    if change.review_ok is True:
+        reward += 0.10
+    elif change.review_ok is False:
+        reward -= 0.20
+    if change.applied:
+        reward += 0.05
+    if change.bytes_changed > 0:
+        reward += 0.05
+    return max(0.0, min(1.0, reward))
+
+
+def _code_change_resources(change: CodeChangeCreditInput) -> dict[ResourceKind, list[str]]:
+    ext = _safe_resource_token(Path(change.path).suffix.lstrip(".").lower() or "none")
+    mode = _safe_resource_token(change.mode or "unknown")
+    phase = _safe_resource_token(change.phase or "unknown")
+    resources = [
+        "workflow_propose_change",
+        f"mode_{mode}",
+        f"phase_{phase}",
+        f"ext_{ext}",
+        "checks_passed" if change.checks_passed else "checks_failed",
+        "applied" if change.applied else "dry_run",
+    ]
+    if change.review_ok is True:
+        resources.append("review_passed")
+    elif change.review_ok is False:
+        resources.append("review_failed")
+    else:
+        resources.append("review_not_run")
+    if change.rolled_back:
+        resources.append("rolled_back")
+    if change.lint_failed_count:
+        resources.append("lint_failed")
+    if change.test_failed_count:
+        resources.append("test_failed")
+    return {"code_capability": resources}
+
+
+def _safe_resource_token(raw: str, *, max_len: int = 80) -> str:
+    token = "".join(ch.lower() if ch.isalnum() else "_" for ch in raw.strip())
+    token = "_".join(part for part in token.split("_") if part)
+    if not token:
+        return "unknown"
+    return token[:max_len]
 
 
 class CreditAssignment:
@@ -807,6 +953,7 @@ def reset_contribution_tracker() -> None:
 
 
 __all__ = [
+    "CodeChangeCreditInput",
     "ContributionTracker",
     "CreditAssignment",
     "ResourceCreditDelta",
@@ -816,6 +963,7 @@ __all__ = [
     "StageReward",
     "StepCredit",
     "TaskCreditReport",
+    "build_code_change_credit_report",
     "contribution_score_from_counts",
     "get_contribution_tracker",
     "heuristic_reflector",
@@ -824,6 +972,7 @@ __all__ = [
     "load_resource_credit_scores",
     "load_top_resource_credit",
     "make_resource_key",
+    "persist_code_change_credit_report",
     "persist_resource_credit_report",
     "reset_contribution_tracker",
     "resource_credit_summaries_from_rows",
