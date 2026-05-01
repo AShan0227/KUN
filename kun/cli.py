@@ -753,6 +753,72 @@ def ops_backup_drill_restore_dry_run(
         raise typer.Exit(code=2)
 
 
+@ops_app.command("backup-drill-object-store-roundtrip")
+def ops_backup_drill_object_store_roundtrip(
+    manifest: Path = typer.Argument(..., help="*.manifest.json from backup-drill-create"),
+    restore_root: Path = typer.Option(
+        Path(".kun-restore-object-store-dry-run"),
+        "--restore-root",
+        help="下载后的 dry-run 目标目录；不会写入文件，只检查覆盖/缺失/校验。",
+    ),
+    object_prefix: str = typer.Option(
+        "backup-drills",
+        "--object-prefix",
+        help="S3/MinIO 里的对象前缀；不能包含 .. 段。",
+    ),
+    scratch_dir: Path | None = typer.Option(
+        None,
+        "--scratch-dir",
+        help="下载校验用临时目录；默认写到 manifest 同级 .object-store-roundtrip。",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+    fail_on_blocker: bool = typer.Option(
+        True,
+        "--fail-on-blocker/--no-fail-on-blocker",
+        help="校验失败时返回非零退出码",
+    ),
+) -> None:
+    """把备份包传到对象存储再拉回校验。
+
+    这不是完整云备份策略；它只证明当前 S3/MinIO 配置能完成备份包
+    upload -> download -> checksum -> no-write restore dry-run。
+    """
+
+    from kun.ops.backup_restore import object_store_roundtrip_drill
+
+    try:
+        report = asyncio.run(
+            object_store_roundtrip_drill(
+                manifest_path=manifest,
+                restore_root=restore_root,
+                object_prefix=object_prefix,
+                scratch_dir=scratch_dir,
+            )
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2) from exc
+    payload = report.model_dump(mode="json")
+    if json_output:
+        console.print_json(data=payload)
+    else:
+        color = {"pass": "green", "warn": "yellow", "block": "red"}[report.status]
+        console.print(
+            f"[{color}]object-store roundtrip {report.status}[/]: "
+            f"archive={report.archive_download_sha256_ok} "
+            f"manifest={report.manifest_download_sha256_ok} "
+            f"restore={report.restore_status}"
+        )
+        if report.archive_object_uri:
+            console.print(f"[dim]archive object[/]: {report.archive_object_uri}")
+        if report.manifest_object_uri:
+            console.print(f"[dim]manifest object[/]: {report.manifest_object_uri}")
+        if report.notes:
+            console.print("[dim]" + "；".join(report.notes) + "[/]")
+    if fail_on_blocker and report.status == "block":
+        raise typer.Exit(code=2)
+
+
 @ops_app.command("readiness")
 def ops_readiness(
     tenant: str = typer.Option("u-sylvan", "--tenant", help="租户 ID"),

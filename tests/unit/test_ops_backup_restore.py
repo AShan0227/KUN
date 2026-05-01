@@ -6,12 +6,36 @@ from pathlib import Path
 
 import pytest
 from kun.cli import app
+from kun.core.object_store import ObjectRef
 from kun.ops.backup_restore import (
     create_backup_package,
     load_manifest,
+    object_store_roundtrip_drill,
     restore_dry_run,
 )
 from typer.testing import CliRunner
+
+
+class InMemoryObjectStore:
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    async def put_bytes(
+        self,
+        key: str,
+        data: bytes,
+        *,
+        content_type: str = "application/octet-stream",
+    ) -> ObjectRef:
+        del content_type
+        self.objects[key] = data
+        return ObjectRef(
+            uri=f"s3://test-bucket/{key}", bucket="test-bucket", key=key, size_bytes=len(data)
+        )
+
+    async def get_bytes(self, ref: ObjectRef | str) -> bytes:
+        parsed = ObjectRef.from_uri(ref) if isinstance(ref, str) else ref
+        return self.objects[parsed.key]
 
 
 def test_backup_package_writes_manifest_and_archive(tmp_path: Path) -> None:
@@ -171,3 +195,63 @@ def test_ops_backup_drill_cli_create_and_restore_dry_run(tmp_path: Path) -> None
 
     assert restore.exit_code == 0
     assert json.loads(restore.output)["status"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_object_store_roundtrip_drill_uploads_downloads_and_restores(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = repo / "config"
+    config.mkdir()
+    (config / "app.yaml").write_text("setting: ok\n", encoding="utf-8")
+    create_backup_package(
+        source_paths=[config],
+        output_dir=tmp_path / "backups",
+        repo_root=repo,
+        allowed_roots=[config],
+        package_name="object-store",
+    )
+    store = InMemoryObjectStore()
+
+    report = await object_store_roundtrip_drill(
+        manifest_path=tmp_path / "backups" / "object-store.manifest.json",
+        restore_root=tmp_path / "restore",
+        object_prefix="tenant-a/drills",
+        scratch_dir=tmp_path / "scratch",
+        object_store=store,
+    )
+
+    assert report.status == "pass"
+    assert report.archive_download_sha256_ok is True
+    assert report.manifest_download_sha256_ok is True
+    assert report.restore_status == "pass"
+    assert report.archive_object_uri == "s3://test-bucket/tenant-a/drills/object-store.tar.gz"
+    assert (
+        report.manifest_object_uri == "s3://test-bucket/tenant-a/drills/object-store.manifest.json"
+    )
+
+
+@pytest.mark.asyncio
+async def test_object_store_roundtrip_rejects_unsafe_prefix(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = repo / "config"
+    config.mkdir()
+    (config / "app.yaml").write_text("setting: ok\n", encoding="utf-8")
+    create_backup_package(
+        source_paths=[config],
+        output_dir=tmp_path / "backups",
+        repo_root=repo,
+        allowed_roots=[config],
+        package_name="unsafe-prefix",
+    )
+
+    with pytest.raises(ValueError, match="object prefix"):
+        await object_store_roundtrip_drill(
+            manifest_path=tmp_path / "backups" / "unsafe-prefix.manifest.json",
+            restore_root=tmp_path / "restore",
+            object_prefix="../bad",
+            object_store=InMemoryObjectStore(),
+        )
