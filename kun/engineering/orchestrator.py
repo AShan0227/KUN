@@ -1043,6 +1043,7 @@ class Orchestrator:
                     memory_layers=memory_context_kwargs.get("memory_layers"),
                     avoid_memory_layers=memory_context_kwargs.get("avoid_memory_layers"),
                     preferred_tags=memory_context_kwargs.get("preferred_tags"),
+                    high_risk_task=bool(memory_context_kwargs.get("high_risk_task")),
                 ):
                     context_items.append(item)
                     if len(context_items) >= _context_limit:
@@ -1068,6 +1069,7 @@ class Orchestrator:
                     memory_layers=memory_context_kwargs.get("memory_layers"),
                     avoid_memory_layers=memory_context_kwargs.get("avoid_memory_layers"),
                     preferred_tags=memory_context_kwargs.get("preferred_tags"),
+                    high_risk_task=bool(memory_context_kwargs.get("high_risk_task")),
                 )
         else:
             context_pack = ContextPack()  # FAST 模式跳过, 空 pack
@@ -1383,6 +1385,9 @@ class Orchestrator:
                                         "avoid_memory_layers"
                                     ),
                                     preferred_tags=memory_context_kwargs.get("preferred_tags"),
+                                    high_risk_task=bool(
+                                        memory_context_kwargs.get("high_risk_task")
+                                    ),
                                 )
                             except Exception:
                                 log.exception("hermes.use_memory pack_query failed")

@@ -216,9 +216,15 @@ def _set_router_with_action_and_intent(
 class _RecordingContextPacker:
     def __init__(self) -> None:
         self.pack_query_calls: list[dict] = []
+        self.pack_anchor_calls: list[dict] = []
 
     async def pack(self, *args, **kwargs) -> ContextPack:
         return ContextPack()
+
+    async def pack_anchor_then_expand(self, *args, **kwargs):
+        self.pack_anchor_calls.append(kwargs)
+        if False:
+            yield None
 
     async def pack_query(self, query: str, **kwargs) -> ContextPack:
         self.pack_query_calls.append({"query": query, **kwargs})
@@ -419,9 +425,44 @@ async def test_hermes_use_memory_passes_policy_layers_when_mid_run_allowed() -> 
     call = packer.pack_query_calls[0]
     assert call["memory_layers"][:2] == ["meta_decision", "methodology"]
     assert call["avoid_memory_layers"] == []
+    assert call["high_risk_task"] is False
     assert call["limit"] <= 3
     injects = [data for kind, data in events if kind == "hermes_memory_injected"]
     assert injects and injects[0]["asset_ids"] == ["memory-1"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_hermes_use_memory_passes_high_risk_policy_to_context_packer() -> None:
+    """高风险任务的中途记忆检索也必须带上治理过滤信号。"""
+    _set_router_with_action_and_intent(
+        "use_memory",
+        payload={"query": "过去高风险合规任务怎么选策略"},
+        intent_payload={
+            "task_type": "business.compliance.risk",
+            "risk_level": "high",
+            "complexity_score": 0.75,
+            "estimated_cost_usd": 0.12,
+            "estimated_duration_sec": 90,
+            "success_criteria_short": "评估合规风险策略",
+        },
+    )
+
+    from kun.interface.llm.router import get_router
+
+    packer = _RecordingContextPacker()
+    orch = Orchestrator(
+        output_translator=_identity_translator,
+        structured_step_generator=StructuredStepGenerator(get_router()),
+        context_packer=packer,  # type: ignore[arg-type]
+        decision_plane=WatchtowerDecisionPlane(),
+    )
+    async for _ev in orch.stream("评估合规风险策略"):
+        pass
+
+    assert packer.pack_anchor_calls
+    call = packer.pack_anchor_calls[0]
+    assert call["high_risk_task"] is True
 
 
 @pytest.mark.unit
