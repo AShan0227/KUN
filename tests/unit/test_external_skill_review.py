@@ -256,8 +256,42 @@ def test_external_skill_scout_plan_is_review_only_and_demand_driven() -> None:
 
     assert plan.task_demand in {"coding", "review"}
     assert "mattpocock/skills" in plan.recommended_repo_refs
+    assert plan.known_source_profiles
+    assert plan.known_source_profiles[0].repo_ref == "mattpocock/skills"
+    assert plan.known_source_profiles[0].auto_install_allowed is False
+    assert "no_auto_install" in plan.known_source_profiles[0].safety_rules
     assert plan.scout_queries
     assert "fetch_metadata_only" in plan.required_review_steps
+    assert "verify_known_source_profile_against_current_repo_metadata" in plan.required_review_steps
+
+
+@pytest.mark.unit
+def test_known_external_skill_source_profile_never_becomes_allowlist() -> None:
+    plan = build_external_skill_candidate_source_plan(
+        {
+            "task_type": "coding.review",
+            "summary": "Find engineering behavior templates for code review.",
+        }
+    )
+
+    assert plan.recommended_repo_refs == ["mattpocock/skills"]
+    assert plan.known_source_profiles[0].repo_ref == "mattpocock/skills"
+    assert plan.known_source_profiles[0].auto_fetch_allowed is False
+    assert plan.known_source_profiles[0].auto_install_allowed is False
+    assert plan.known_source_profiles[0].promotion_allowed is False
+    assert plan.source_reviews
+    review = plan.source_reviews[0]
+    assert review.source["repo"] == "mattpocock/skills"
+    assert review.known_source_profile is not None
+    assert review.known_source_profile.review_only is True
+    assert "known_source_profile_matched" in review.reasons
+    assert "candidate_inventory" in review.missing_evidence
+    assert "pinned_source_revision_before_fetch" in review.missing_evidence
+    assert "no_auto_install" in review.suggested_validation_steps
+    assert "never_promote_whole_repo_to_production" in review.suggested_validation_steps
+    assert (
+        "do_not_fetch_install_register_or_execute_from_this_plan" in plan.recommended_next_actions
+    )
     assert plan.review_only is True
     assert plan.auto_fetch_allowed is False
     assert plan.auto_install_allowed is False
@@ -496,11 +530,15 @@ def test_ready_external_skill_review_becomes_human_review_signal() -> None:
     )
 
     assert package.status == "ready_for_human_review"
+    assert package.known_source_profile is not None
+    assert package.known_source_profile.repo_ref == "mattpocock/skills"
+    assert "known_source_profile_matched" in package.reasons
     assert signal.category == "context"
     assert signal.severity == "info"
     assert signal.summary == "External skill ready for human review: TypeScript review behavior"
     assert signal.evidence["worth_review"] is True
     assert signal.evidence["auto_install_allowed"] is False
+    assert signal.evidence["known_source_profile"]["auto_install_allowed"] is False
 
 
 @pytest.mark.unit

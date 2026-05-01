@@ -44,6 +44,64 @@ _LICENSE_NEEDS_LEGAL_REVIEW = {
 }
 
 
+class KnownExternalSkillSourceProfile(BaseModel):
+    """Curated source note, not an allowlist.
+
+    This tells Qi/NUO why a source is worth looking at.  It deliberately does
+    not approve fetching, installing, or registering anything.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_ref: str
+    source_kind: str = "github_repo"
+    credibility_score: float = 0.0
+    expected_use_cases: list[ExternalSkillDemandKind] = Field(default_factory=list)
+    why_review: list[str] = Field(default_factory=list)
+    required_evidence: list[str] = Field(default_factory=list)
+    safety_rules: list[str] = Field(default_factory=list)
+    known_limitations: list[str] = Field(default_factory=list)
+    review_only: Literal[True] = True
+    auto_fetch_allowed: Literal[False] = False
+    auto_install_allowed: Literal[False] = False
+    production_action: Literal[False] = False
+    promotion_allowed: Literal[False] = False
+
+
+_KNOWN_EXTERNAL_SKILL_SOURCE_PROFILES: dict[str, KnownExternalSkillSourceProfile] = {
+    "mattpocock/skills": KnownExternalSkillSourceProfile(
+        repo_ref="mattpocock/skills",
+        credibility_score=0.82,
+        expected_use_cases=["coding", "review"],
+        why_review=[
+            "known_engineering_behavior_template_source",
+            "useful_for_code_review_and_developer_workflows",
+            "good_candidate_for_skill_pattern_learning",
+        ],
+        required_evidence=[
+            "pinned_commit_sha",
+            "license_and_notice_review",
+            "skill_md_inventory",
+            "static_safety_review",
+            "sandbox_dry_run_if_any_support_scripts_exist",
+            "human_review_before_registration",
+        ],
+        safety_rules=[
+            "metadata_fetch_only_until_human_selects_candidate",
+            "no_auto_install",
+            "no_auto_trigger_without_policy_review",
+            "no_secret_or_network_access_in_sandbox_by_default",
+            "never_promote_whole_repo_to_production",
+        ],
+        known_limitations=[
+            "external_repo_can_change_after_recommendation",
+            "popular_source_is_not_a_security_guarantee",
+            "individual_skill_files_must_be_reviewed_one_by_one",
+        ],
+    )
+}
+
+
 class ExternalSkillReviewScorecard(BaseModel):
     """Normalized offline scores used for review prioritization only."""
 
@@ -75,6 +133,7 @@ class ExternalSkillReviewPackage(BaseModel):
     missing_evidence: list[str] = Field(default_factory=list)
     suggested_validation_steps: list[str] = Field(default_factory=list)
     source: dict[str, Any] = Field(default_factory=dict)
+    known_source_profile: KnownExternalSkillSourceProfile | None = None
     candidate_summary: dict[str, Any] = Field(default_factory=dict)
     review_only: Literal[True] = True
     auto_install_allowed: Literal[False] = False
@@ -104,6 +163,7 @@ class ExternalSkillSourceReview(BaseModel):
     missing_evidence: list[str] = Field(default_factory=list)
     suggested_validation_steps: list[str] = Field(default_factory=list)
     source: dict[str, Any] = Field(default_factory=dict)
+    known_source_profile: KnownExternalSkillSourceProfile | None = None
     review_only: Literal[True] = True
     auto_fetch_allowed: Literal[False] = False
     auto_install_allowed: Literal[False] = False
@@ -128,6 +188,7 @@ class ExternalSkillScoutPlan(BaseModel):
     need_summary: str = ""
     scout_queries: list[str] = Field(default_factory=list)
     recommended_repo_refs: list[str] = Field(default_factory=list)
+    known_source_profiles: list[KnownExternalSkillSourceProfile] = Field(default_factory=list)
     source_types: list[str] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
     required_review_steps: list[str] = Field(default_factory=list)
@@ -149,6 +210,7 @@ class ExternalSkillCandidateSourcePlan(BaseModel):
     need_summary: str = ""
     scout_queries: list[str] = Field(default_factory=list)
     recommended_repo_refs: list[str] = Field(default_factory=list)
+    known_source_profiles: list[KnownExternalSkillSourceProfile] = Field(default_factory=list)
     source_types: list[str] = Field(default_factory=list)
     source_reviews: list[ExternalSkillSourceReview] = Field(default_factory=list)
     candidate_reviews: list[ExternalSkillReviewPackage] = Field(default_factory=list)
@@ -186,6 +248,7 @@ def build_external_skill_scout_plan(
         or task_type
     ).strip()[:500]
     recommended = _recommended_repos_for_demand(task_demand)
+    known_profiles = _known_source_profiles_for_repos(recommended)
     queries = _scout_queries_for_demand(task_demand, task_type=task_type, summary=summary)
     source_types = ["github_repo", "skill_marketplace_metadata", "engineering_template"]
     if task_demand in {"research", "ops"}:
@@ -196,6 +259,8 @@ def build_external_skill_scout_plan(
     ]
     if recommended:
         reasons.append("known_review_only_repo_suggestions_available")
+    if known_profiles:
+        reasons.append("known_source_profiles_attached_for_review_context")
     return ExternalSkillScoutPlan(
         plan_id=_stable_scout_plan_id(
             task_demand=task_demand, task_type=task_type, summary=summary
@@ -205,12 +270,14 @@ def build_external_skill_scout_plan(
         need_summary=summary,
         scout_queries=queries,
         recommended_repo_refs=recommended,
+        known_source_profiles=known_profiles,
         source_types=source_types,
         reasons=reasons,
         required_review_steps=[
             "fetch_metadata_only",
             "static_safety_review",
             "license_check",
+            "verify_known_source_profile_against_current_repo_metadata",
             "sandbox_dry_run_if_scripts_exist",
             "human_review_before_install",
             "no_production_registration_without_canary",
@@ -309,6 +376,7 @@ def review_external_skill_candidate(
     status = _review_status(normalized, task_fit, missing)
     worth_review = status != "blocked" and task_fit >= 0.25
     scorecard = _candidate_scorecard(normalized, task_fit)
+    known_profile = _known_source_profile_for_repo(normalized.source.repo)
 
     return ExternalSkillReviewPackage(
         candidate_id=normalized.candidate_id,
@@ -330,6 +398,7 @@ def review_external_skill_candidate(
             "url": normalized.source.url,
             "commit_sha": normalized.source.commit_sha,
         },
+        known_source_profile=known_profile,
         candidate_summary={
             "summary": normalized.summary,
             "tags": list(normalized.tags),
@@ -417,6 +486,7 @@ def build_external_skill_candidate_source_plan(
         need_summary=scout_plan.need_summary,
         scout_queries=list(scout_plan.scout_queries),
         recommended_repo_refs=list(scout_plan.recommended_repo_refs),
+        known_source_profiles=list(scout_plan.known_source_profiles),
         source_types=list(scout_plan.source_types),
         source_reviews=source_reviews,
         candidate_reviews=candidate_reviews,
@@ -504,6 +574,9 @@ def external_skill_review_package_to_problem_signal(
         "missing_evidence": list(package.missing_evidence),
         "suggested_validation_steps": list(package.suggested_validation_steps),
         "source": dict(package.source),
+        "known_source_profile": package.known_source_profile.model_dump(mode="json")
+        if package.known_source_profile is not None
+        else None,
         "candidate_summary": dict(package.candidate_summary),
         "review_only": package.review_only,
         "auto_install_allowed": package.auto_install_allowed,
@@ -583,9 +656,27 @@ def _stable_scout_plan_id(
 def _recommended_repos_for_demand(task_demand: ExternalSkillDemandKind) -> list[str]:
     """Small curated hints, not an auto-fetch allowlist."""
 
-    if task_demand in {"coding", "review"}:
-        return ["mattpocock/skills"]
-    return []
+    repos: list[str] = []
+    for repo, profile in _KNOWN_EXTERNAL_SKILL_SOURCE_PROFILES.items():
+        if task_demand in profile.expected_use_cases:
+            repos.append(repo)
+    return sorted(repos)
+
+
+def _known_source_profiles_for_repos(
+    repos: list[str],
+) -> list[KnownExternalSkillSourceProfile]:
+    profiles: list[KnownExternalSkillSourceProfile] = []
+    for repo in repos:
+        profile = _known_source_profile_for_repo(repo)
+        if profile is not None:
+            profiles.append(profile)
+    return profiles
+
+
+def _known_source_profile_for_repo(repo: str) -> KnownExternalSkillSourceProfile | None:
+    normalized = str(repo or "").strip().removesuffix(".git").lower()
+    return _KNOWN_EXTERNAL_SKILL_SOURCE_PROFILES.get(normalized)
 
 
 def _scout_queries_for_demand(
@@ -682,8 +773,10 @@ def _coerce_source_registry(
 ) -> list[ExternalSkillSourceRegistration | dict[str, Any]]:
     if source_registry:
         return list(source_registry)
-    return [
-        {
+    raw_sources: list[ExternalSkillSourceRegistration | dict[str, Any]] = []
+    for repo in scout_plan.recommended_repo_refs:
+        profile = _known_source_profile_for_repo(repo)
+        raw: dict[str, Any] = {
             "source_kind": "github_repo",
             "repo": repo,
             "name": repo,
@@ -695,8 +788,21 @@ def _coerce_source_registry(
             "topics": [scout_plan.task_demand, "external_skill"],
             "source_origin": "scout_recommendation",
         }
-        for repo in scout_plan.recommended_repo_refs
-    ]
+        if profile is not None:
+            raw.update(
+                {
+                    "description": " ".join(profile.why_review),
+                    "topics": [
+                        *list(profile.expected_use_cases),
+                        "external_skill",
+                        "known_source_profile",
+                    ],
+                    "source_origin": "known_review_only_source_profile",
+                    "known_source_profile": profile.model_dump(mode="json"),
+                }
+            )
+        raw_sources.append(raw)
+    return raw_sources
 
 
 def _normalize_source_registry(
@@ -761,6 +867,7 @@ def _review_external_skill_source(
     missing = _source_missing_evidence(source, task_fit)
     status = _source_review_status(source, task_fit, missing)
     worth_review = status != "blocked" and task_fit >= 0.25 and scorecard.overall_score >= 0.35
+    known_profile = _known_source_profile_for_repo(source.source.repo)
     return ExternalSkillSourceReview(
         source_id=source.source_id,
         source_name=source.name,
@@ -789,6 +896,7 @@ def _review_external_skill_source(
                 "reasons": list(source.maintenance.reasons),
             },
         },
+        known_source_profile=known_profile,
     )
 
 
@@ -825,6 +933,8 @@ def _source_review_reasons(
     reasons.extend(source.demand_match.reasons)
     reasons.extend(source.safety.reasons)
     reasons.extend(source.maintenance.reasons)
+    if _known_source_profile_for_repo(source.source.repo) is not None:
+        reasons.append("known_source_profile_matched")
     return reasons
 
 
@@ -879,6 +989,19 @@ def _source_missing_evidence(
         missing.append("human_security_review")
     if source.summary.strip() == "":
         missing.append("source_summary_or_manifest")
+    profile = _known_source_profile_for_repo(source.source.repo)
+    if profile is not None:
+        for evidence in profile.required_evidence:
+            if evidence in {"pinned_commit_sha", "pinned_source_revision_before_fetch"}:
+                if not source.source.commit_sha:
+                    missing.append("pinned_source_revision_before_fetch")
+                continue
+            if evidence in {"license_and_notice_review", "license_check"}:
+                if _license_requires_legal_review(source.safety.license_id):
+                    missing.append("legal_license_review")
+                continue
+            if evidence == "skill_md_inventory" and source.candidate_count <= 0:
+                missing.append("candidate_inventory")
     return missing
 
 
@@ -901,6 +1024,10 @@ def _source_validation_steps(
         steps.append("manual_review_install_or_support_scripts")
     if source.safety.risk_level in {"high", "critical"}:
         steps.append("require_security_reviewer_approval")
+    profile = _known_source_profile_for_repo(source.source.repo)
+    if profile is not None:
+        steps.extend(profile.required_evidence)
+        steps.extend(profile.safety_rules)
     return steps
 
 
@@ -1010,6 +1137,8 @@ def _review_reasons(
     reasons.append(f"candidate_demand:{candidate.demand_match.primary}")
     reasons.extend(candidate.demand_match.reasons)
     reasons.extend(candidate.safety.reasons)
+    if _known_source_profile_for_repo(candidate.source.repo) is not None:
+        reasons.append("known_source_profile_matched")
     return reasons
 
 
@@ -1070,6 +1199,17 @@ def _missing_evidence(
         missing.append("human_security_review")
     if candidate.summary.strip() == "":
         missing.append("candidate_summary_or_skill_md")
+    profile = _known_source_profile_for_repo(candidate.source.repo)
+    if profile is not None:
+        for evidence in profile.required_evidence:
+            if evidence == "pinned_commit_sha" and not candidate.source.commit_sha:
+                missing.append("pinned_commit_sha")
+            elif evidence == "license_and_notice_review" and _license_requires_legal_review(
+                safety.license_id
+            ):
+                missing.append("legal_license_review")
+            elif evidence == "skill_md_inventory" and candidate.summary.strip() == "":
+                missing.append("candidate_summary_or_skill_md")
     return missing
 
 
@@ -1103,6 +1243,10 @@ def _validation_steps(candidate: ExternalSkillCandidate, task_fit: float) -> lis
         steps.append("require_security_reviewer_approval")
     if safety.risk_level in {"low", "medium"} and not safety.contains_execution_scripts:
         steps.append("dry_run_against_non_production_task")
+    profile = _known_source_profile_for_repo(candidate.source.repo)
+    if profile is not None:
+        steps.extend(profile.required_evidence)
+        steps.extend(profile.safety_rules)
     return steps
 
 
