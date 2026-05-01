@@ -537,6 +537,11 @@ class QiIdleReplayStep(IdleBatchStep):
             mark_problem_signals_consumed,
             persist_problem_signals,
         )
+        from kun.qi.replay_tree_search import (
+            configured_qi_replay_tree_search_budget_from_env,
+            qi_replay_tree_search_enabled_from_env,
+            run_qi_replay_tree_search_pool,
+        )
 
         raw_signals = await _source_list("qi_problem_signals", tenant_id)
         signals: list[QiProblemSignal] = []
@@ -605,6 +610,11 @@ class QiIdleReplayStep(IdleBatchStep):
             enabled=qi_lab_replay_enabled_from_env(),
             budget=configured_qi_lab_replay_budget_from_env(),
         )
+        tree_search_pool = await run_qi_replay_tree_search_pool(
+            drafts,
+            enabled=qi_replay_tree_search_enabled_from_env(),
+            budget=configured_qi_replay_tree_search_budget_from_env(),
+        )
         draft_asset_ids = await _persist_strategy_pack_drafts(
             tenant_id=tenant_id,
             drafts=drafts,
@@ -613,6 +623,7 @@ class QiIdleReplayStep(IdleBatchStep):
                 *strong_review_pool.get("records", []),
             ],
             lab_replay_records=lab_replay_pool.records,
+            tree_search_records=tree_search_pool.records,
         )
         source_signal_ids = {signal.signal_id for signal in signals}
         consumed_problem_signals = await mark_problem_signals_consumed(
@@ -646,6 +657,7 @@ class QiIdleReplayStep(IdleBatchStep):
             if strong_model_evaluator is not None
             else "disabled",
             "lab_replay_pool": lab_replay_pool.model_dump(mode="json"),
+            "tree_search_pool": tree_search_pool.model_dump(mode="json"),
             "persisted_review_signals": persisted,
             "consumed_problem_signals": consumed_problem_signals,
             "persisted_strategy_pack_draft_assets": len(draft_asset_ids),
@@ -828,6 +840,10 @@ class ExternalSkillCandidateReviewStep(IdleBatchStep):
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from kun.engineering.external_scan import scan_external_skill_candidates
+        from kun.qi.external_skill_review import (
+            enqueue_external_skill_review_packages,
+            review_external_skill_candidates,
+        )
         from kun.qi.problem_queue import persist_problem_signals
 
         rows = await _external_skill_rows(tenant_id)
@@ -840,6 +856,9 @@ class ExternalSkillCandidateReviewStep(IdleBatchStep):
                 "persisted_review_signals": 0,
                 "production_action": False,
                 "auto_install_allowed": False,
+                "task_needs": 0,
+                "task_fit_review_packages": 0,
+                "persisted_task_fit_review_signals": 0,
             }
 
         scan_result = scan_external_skill_candidates(rows)
@@ -848,6 +867,21 @@ class ExternalSkillCandidateReviewStep(IdleBatchStep):
             candidate.to_review_signal(tenant_id=tenant_id) for candidate in candidates
         ]
         persisted = await persist_problem_signals(review_signals)
+        task_needs = await _external_skill_task_needs(tenant_id)
+        packages: list[Any] = []
+        for task_need in task_needs[:5]:
+            packages.extend(
+                package
+                for package in review_external_skill_candidates(
+                    task_need=task_need,
+                    candidates=cast(list[Any], candidates),
+                )[:3]
+                if package.worth_review or package.status == "blocked"
+            )
+        persisted_packages = await enqueue_external_skill_review_packages(
+            tenant_id=tenant_id,
+            packages=packages,
+        )
         summary = scan_result.model_dump()
 
         return {
@@ -855,12 +889,27 @@ class ExternalSkillCandidateReviewStep(IdleBatchStep):
             "input_rows": len(rows),
             "candidates": summary["candidates"],
             "persisted_review_signals": persisted,
+            "task_needs": len(task_needs),
+            "task_fit_review_packages": len(packages),
+            "persisted_task_fit_review_signals": persisted_packages,
             "risk_counts": summary["risk_counts"],
             "sandbox_suitable": summary["sandbox_suitable"],
             "production_action": False,
             "auto_install_allowed": False,
             "promotion_allowed": False,
             "top_candidates": summary["top_candidates"],
+            "top_task_fit_packages": [
+                package.model_dump(mode="json")
+                for package in sorted(
+                    packages,
+                    key=lambda item: (
+                        item.status == "blocked",
+                        not item.worth_review,
+                        -item.confidence,
+                        item.candidate_name,
+                    ),
+                )[:5]
+            ],
         }
 
 
@@ -1377,6 +1426,87 @@ async def _external_skill_rows(tenant_id: str) -> list[dict[str, Any]]:
     ]
 
 
+async def _external_skill_task_needs(tenant_id: str) -> list[dict[str, Any]]:
+    """Build small task-demand cards for external skill review.
+
+    This is the missing bridge between "we found an external skill" and
+    "does KUN currently need it?".  It stays review-only and uses existing Qi
+    problem signals / completed task history, so no external discovery work
+    blocks user requests.
+    """
+
+    needs: list[dict[str, Any]] = []
+    for raw in await _source_list("qi_problem_signals", tenant_id):
+        if not isinstance(raw, dict):
+            continue
+        summary = str(raw.get("summary") or "").strip()
+        task_type = str(raw.get("task_type") or raw.get("category") or "").strip()
+        if summary or task_type:
+            needs.append(
+                {
+                    "source": "qi_problem_signal",
+                    "task_type": task_type,
+                    "summary": summary,
+                    "description": " ".join(
+                        part
+                        for part in [
+                            task_type,
+                            summary,
+                            json.dumps(raw.get("evidence") or {}, ensure_ascii=False, default=str),
+                        ]
+                        if part
+                    ),
+                }
+            )
+    for raw in await _source_list("completed_task_history", tenant_id):
+        if not isinstance(raw, dict):
+            continue
+        summary = str(raw.get("summary") or "").strip()
+        task_type = str(raw.get("task_type") or "").strip()
+        if summary or task_type:
+            needs.append(
+                {
+                    "source": "completed_task_history",
+                    "task_type": task_type,
+                    "summary": summary,
+                    "description": " ".join(
+                        part
+                        for part in [
+                            task_type,
+                            summary,
+                            str(raw.get("outcome") or ""),
+                            str(raw.get("risk") or ""),
+                        ]
+                        if part
+                    ),
+                }
+            )
+    return _dedupe_task_need_cards(needs)[:10]
+
+
+def _dedupe_task_need_cards(needs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for need in needs:
+        key = hashlib.sha256(
+            json.dumps(
+                {
+                    "task_type": need.get("task_type"),
+                    "summary": need.get("summary"),
+                    "description": need.get("description"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode()
+        ).hexdigest()[:16]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(need)
+    return out
+
+
 def _external_skill_rows_from_env(tenant_id: str) -> list[dict[str, Any]]:
     raw_files = os.getenv("KUN_EXTERNAL_SKILL_SOURCE_FILES", "")
     source_files = [item.strip() for item in raw_files.split(",") if item.strip()]
@@ -1491,6 +1621,7 @@ async def _persist_strategy_pack_drafts(
     drafts: list[Any],
     evaluation_records: list[Any] | None = None,
     lab_replay_records: list[Any] | None = None,
+    tree_search_records: list[Any] | None = None,
 ) -> list[str]:
     """Persist Qi strategy-pack drafts as review-only methodology assets.
 
@@ -1537,6 +1668,17 @@ async def _persist_strategy_pack_drafts(
         draft_id = str(payload.get("draft_id") or "")
         if draft_id:
             replays_by_draft.setdefault(draft_id, []).append(payload)
+    tree_records_by_target: dict[str, list[dict[str, Any]]] = {}
+    for record in tree_search_records or []:
+        if hasattr(record, "model_dump"):
+            payload = record.model_dump(mode="json")
+        elif isinstance(record, dict):
+            payload = record
+        else:
+            continue
+        target_id = str(payload.get("target_id") or "")
+        if target_id:
+            tree_records_by_target.setdefault(target_id, []).append(payload)
     for draft in drafts:
         draft_id = str(getattr(draft, "draft_id", ""))
         if not draft_id:
@@ -1548,6 +1690,7 @@ async def _persist_strategy_pack_drafts(
                     existing_asset,
                     evaluation_records=evaluations_by_target.get(draft_id, []),
                     lab_replay_records=replays_by_draft.get(draft_id, []),
+                    tree_search_records=tree_records_by_target.get(draft_id, []),
                 )
                 if changed:
                     await store.put(existing_asset)
@@ -1582,6 +1725,7 @@ async def _persist_strategy_pack_drafts(
                 "decision_ticket": qi_ticket.event_payload(),
                 "evaluation_records": evaluations_by_target.get(draft_id, []),
                 "lab_replay_records": replays_by_draft.get(draft_id, []),
+                "tree_search_records": tree_records_by_target.get(draft_id, []),
                 "strategy_pack_draft": draft.model_dump(mode="json")
                 if hasattr(draft, "model_dump")
                 else {},
@@ -1611,6 +1755,7 @@ def _merge_strategy_pack_review_records(
     *,
     evaluation_records: list[dict[str, Any]],
     lab_replay_records: list[dict[str, Any]],
+    tree_search_records: list[dict[str, Any]],
 ) -> bool:
     """Merge new review evidence into an existing draft asset.
 
@@ -1637,6 +1782,15 @@ def _merge_strategy_pack_review_records(
         )
         if merged != asset.l1_metadata.get("lab_replay_records"):
             asset.l1_metadata["lab_replay_records"] = merged
+            changed = True
+    if tree_search_records:
+        merged = _merge_records_by_key(
+            list(asset.l1_metadata.get("tree_search_records") or []),
+            tree_search_records,
+            key="evaluation_id",
+        )
+        if merged != asset.l1_metadata.get("tree_search_records"):
+            asset.l1_metadata["tree_search_records"] = merged
             changed = True
     return changed
 

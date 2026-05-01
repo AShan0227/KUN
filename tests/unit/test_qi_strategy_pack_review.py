@@ -21,6 +21,7 @@ def _strategy_asset(
     requires_strong_review: bool = False,
     evaluation_records: list[dict[str, Any]] | None = None,
     lab_replay_records: list[dict[str, Any]] | None = None,
+    tree_search_records: list[dict[str, Any]] | None = None,
 ) -> LayeredAsset:
     history = TaskHistorySummary(
         history_id="hist-1",
@@ -53,6 +54,7 @@ def _strategy_asset(
             "production_action": False,
             "evaluation_records": evaluation_records or [],
             "lab_replay_records": lab_replay_records or [],
+            "tree_search_records": tree_search_records or [],
             "strategy_pack_draft": payload,
         },
         summary="Qi review-only strategy draft",
@@ -89,6 +91,21 @@ def _lab_record(*, score: float = 0.7, status: str = "evaluated") -> dict[str, A
         "score": score,
         "promotion_allowed": False,
         "production_action": False,
+    }
+
+
+def _tree_record(*, score: float = 0.76, status: str = "evaluated") -> dict[str, Any]:
+    return {
+        "evaluation_id": "qits-1",
+        "target_id": "draft-1",
+        "target_kind": "strategy_pack_draft",
+        "evaluator_kind": "tree_search",
+        "status": status,
+        "score": score,
+        "best_score": score,
+        "promotion_allowed": False,
+        "production_action": False,
+        "notes": ["review_only_tree_search"],
     }
 
 
@@ -146,6 +163,18 @@ def test_strategy_pack_evidence_summary_compacts_review_only_records() -> None:
         }
     ]
     assert "review_only_not_production_evidence" in summary.risks
+
+
+def test_tree_search_evidence_can_satisfy_low_risk_base_review() -> None:
+    asset = _strategy_asset(tree_search_records=[_tree_record(score=0.77)])
+
+    decision = review_strategy_pack_draft_asset(asset)
+    summary = summarize_strategy_pack_evidence(asset, decision)
+
+    assert decision.status == "ready_for_human_review"
+    assert decision.score == 0.77
+    assert summary.evidence_sources[0]["source"] == "qi_tree_search_evidence"
+    assert "qi_tree_search_evidence_score:0.77" in summary.why_worth_human_review
 
 
 def test_strategy_pack_evidence_summary_names_gaps_and_high_impact_risks() -> None:

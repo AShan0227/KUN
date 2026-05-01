@@ -116,6 +116,7 @@ def review_strategy_pack_draft_asset(asset: LayeredAsset) -> StrategyPackReviewD
     requires_lab_replay = risk in HIGH_RISKS or _looks_external_or_irreversible(task_patterns)
     evaluation_records = _record_list(metadata.get("evaluation_records"))
     lab_replay_records = _record_list(metadata.get("lab_replay_records"))
+    tree_search_records = _record_list(metadata.get("tree_search_records"))
 
     reasons: list[str] = ["review_only_no_production_promotion"]
     missing: list[str] = []
@@ -127,6 +128,12 @@ def review_strategy_pack_draft_asset(asset: LayeredAsset) -> StrategyPackReviewD
         if str(record.get("evaluator_kind", "")) in {"heuristic", "local_model"}
         and str(record.get("status", "")) == "evaluated"
     ]
+    base_records.extend(
+        record
+        for record in tree_search_records
+        if str(record.get("evaluator_kind", "")) == "tree_search"
+        and str(record.get("status", "")) == "evaluated"
+    )
     if not base_records:
         missing.append("base_replay_evaluation")
     else:
@@ -204,9 +211,11 @@ def summarize_strategy_pack_evidence(
     task_patterns = _task_patterns(metadata, draft_payload)
     evaluation_records = _record_list(metadata.get("evaluation_records"))
     lab_replay_records = _record_list(metadata.get("lab_replay_records"))
+    tree_search_records = _record_list(metadata.get("tree_search_records"))
 
     evidence_sources = [
         *_summarize_evaluation_records(evaluation_records),
+        *_summarize_evaluation_records(tree_search_records),
         *_summarize_lab_replay_records(lab_replay_records),
     ]
     why = _why_worth_human_review(decision, evidence_sources)
@@ -390,6 +399,8 @@ def _evaluation_source_label(evaluator_kind: str) -> str:
         return "local_model_replay_evaluation"
     if evaluator_kind == "heuristic":
         return "idle_replay_evaluation"
+    if evaluator_kind == "tree_search":
+        return "qi_tree_search_evidence"
     return f"{evaluator_kind}_evaluation"
 
 

@@ -436,6 +436,8 @@ async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch)
     assert len(summary["strategy_pack_draft_asset_ids"]) == 2
     assert summary["evaluation_pool"]["evaluated"] == 2
     assert summary["evaluation_pool"]["promotion_allowed"] is False
+    assert summary["tree_search_pool"]["enabled"] is False
+    assert summary["tree_search_pool"]["production_action"] is False
     assert all(item["promotion_allowed"] is False for item in summary["evaluation_pool"]["records"])
     assert len(summary["strategy_pack_drafts"]) == 2
     assert all(item["production_action"] is False for item in summary["strategy_pack_drafts"])
@@ -468,6 +470,33 @@ async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch)
         asset.l1_metadata["decision_ticket"]["status"] == "needs_review" for asset in draft_assets
     )
     assert all("review_only" in asset.tags for asset in draft_assets)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qi_idle_replay_step_can_attach_tree_search_evidence(monkeypatch) -> None:
+    from kun.context.storage import get_store
+    from kun.qi.problem_queue import reset_qi_problem_queue
+
+    monkeypatch.setenv("KUN_QI_PROBLEM_QUEUE_DB_ENABLED", "0")
+    monkeypatch.setenv("KUN_QI_TREE_SEARCH_ENABLED", "1")
+    monkeypatch.setenv("KUN_QI_TREE_SEARCH_MAX_ITEMS", "2")
+    monkeypatch.setenv("KUN_QI_TREE_SEARCH_MAX_COST_USD", "0.04")
+    reset_qi_problem_queue()
+    set_idle_batch_data_source(_FakeIdleBatchDataSource())
+
+    summary = await QiIdleReplayStep().run("t-tree")
+
+    assert summary["tree_search_pool"]["enabled"] is True
+    assert summary["tree_search_pool"]["evaluated"] == 2
+    assert summary["tree_search_pool"]["production_action"] is False
+    draft_assets = await get_store().list(tenant_id="t-tree", asset_kind="methodology")
+    assert len(draft_assets) == 2
+    assert all(asset.l1_metadata["tree_search_records"] for asset in draft_assets)
+    assert all(
+        asset.l1_metadata["tree_search_records"][0]["evaluator_kind"] == "tree_search"
+        for asset in draft_assets
+    )
 
 
 @pytest.mark.unit
@@ -784,7 +813,24 @@ async def test_external_skill_candidate_review_step_enqueues_review_only_signals
 
     monkeypatch.setenv("KUN_QI_PROBLEM_QUEUE_DB_ENABLED", "0")
     reset_qi_problem_queue()
-    set_idle_batch_data_source(_FakeIdleBatchDataSource())
+
+    class _ExternalSkillNeedDataSource(_FakeIdleBatchDataSource):
+        def qi_problem_signals(self, tenant_id: str) -> list[dict[str, Any]]:
+            return [
+                *_FakeIdleBatchDataSource().qi_problem_signals(tenant_id),
+                {
+                    "signal_id": "qps_code_review",
+                    "tenant_id": tenant_id,
+                    "category": "runtime",
+                    "severity": "info",
+                    "summary": "Need stronger TypeScript code review guidance",
+                    "source": "nuo.system_health",
+                    "task_type": "coding.review",
+                    "evidence": {"language": "typescript", "need": "code review"},
+                },
+            ]
+
+    set_idle_batch_data_source(_ExternalSkillNeedDataSource())
 
     summary = await ExternalSkillCandidateReviewStep().run("t-1")
 
@@ -792,6 +838,9 @@ async def test_external_skill_candidate_review_step_enqueues_review_only_signals
     assert summary["input_rows"] == 1
     assert summary["candidates"] == 1
     assert summary["persisted_review_signals"] == 1
+    assert summary["task_needs"] == 3
+    assert summary["task_fit_review_packages"] >= 1
+    assert summary["persisted_task_fit_review_signals"] >= 1
     assert summary["production_action"] is False
     assert summary["auto_install_allowed"] is False
     assert summary["promotion_allowed"] is False
@@ -799,11 +848,18 @@ async def test_external_skill_candidate_review_step_enqueues_review_only_signals
     assert summary["top_candidates"][0]["auto_install_allowed"] is False
     assert summary["top_candidates"][0]["safety"]["license_unknown"] is False
     queued = get_qi_problem_queue().list("t-1", limit=10)
-    assert len(queued) == 1
-    assert queued[0].source == "external_skill.discovery.candidate"
-    assert queued[0].evidence["review_state"] == "review_only"
-    assert queued[0].evidence["production_action"] is False
-    assert queued[0].evidence["auto_install_allowed"] is False
+    assert any(signal.source == "external_skill.discovery.candidate" for signal in queued)
+    assert any(signal.source == "external_skill.review.package" for signal in queued)
+    discovery = next(
+        signal for signal in queued if signal.source == "external_skill.discovery.candidate"
+    )
+    package = next(signal for signal in queued if signal.source == "external_skill.review.package")
+    assert discovery.evidence["review_state"] == "review_only"
+    assert discovery.evidence["production_action"] is False
+    assert discovery.evidence["auto_install_allowed"] is False
+    assert package.evidence["queue_intent"] == "external_skill_review_only"
+    assert package.evidence["production_action"] is False
+    assert package.evidence["auto_install_allowed"] is False
 
 
 @pytest.mark.unit
@@ -914,10 +970,11 @@ async def test_external_skill_candidate_review_step_fetches_opt_in_github_repos(
     assert summary["production_action"] is False
     assert summary["auto_install_allowed"] is False
     assert summary["top_candidates"][0]["review_state"] == "review_only"
-    queued = get_qi_problem_queue().pick("t-github")
-    assert queued is not None
-    assert queued.source == "external_skill.discovery.candidate"
-    assert queued.evidence["source"]["repo"] == "mattpocock/skills"
+    queued = get_qi_problem_queue().list("t-github", limit=10)
+    discovery = next(
+        signal for signal in queued if signal.source == "external_skill.discovery.candidate"
+    )
+    assert discovery.evidence["source"]["repo"] == "mattpocock/skills"
 
 
 @pytest.mark.unit
