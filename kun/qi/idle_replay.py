@@ -29,13 +29,16 @@ ReplayEvaluationStatus = Literal[
     "unavailable",
     "error",
 ]
-ReplayEvaluatorKind = Literal["heuristic", "local_model"]
+ReplayEvaluatorKind = Literal["heuristic", "local_model", "strong_model"]
 
 HEURISTIC_IDLE_REPLAY_ENGINE = "heuristic_local"
 HEURISTIC_REPLAY_EVALUATOR = "heuristic_replay_pool_v1"
 LOCAL_MODEL_REPLAY_EVALUATOR = "local_model_replay_pool"
+STRONG_MODEL_REPLAY_EVALUATOR = "strong_model_replay_pool"
 LOCAL_MODEL_REPLAY_EVALUATOR_CMD_ENV = "KUN_QI_LOCAL_REPLAY_EVALUATOR_CMD"
 LOCAL_MODEL_REPLAY_TIMEOUT_ENV = "KUN_QI_LOCAL_REPLAY_TIMEOUT_SEC"
+STRONG_MODEL_REPLAY_ENABLED_ENV = "KUN_QI_STRONG_REVIEW_ENABLED"
+STRONG_MODEL_REPLAY_MAX_TOKENS_ENV = "KUN_QI_STRONG_REVIEW_MAX_TOKENS"
 
 
 class TaskHistorySummary(BaseModel):
@@ -356,6 +359,157 @@ class CommandLocalReplayModelEvaluator:
         )
 
 
+class StrongReplayModelEvaluator:
+    """Use KUN's LLM router as an opt-in strong judge for Qi drafts.
+
+    This is deliberately not a production promotion path.  It gives Qi a
+    stronger reviewer for high-value strategy drafts, but every returned record
+    remains review-only and still requires explicit human / rollout gates.
+    """
+
+    def __init__(
+        self,
+        router: Any,
+        *,
+        evaluator_name: str = STRONG_MODEL_REPLAY_EVALUATOR,
+        max_tokens: int = 700,
+    ) -> None:
+        self.router = router
+        self.evaluator_name = evaluator_name
+        self.max_tokens = max(200, max_tokens)
+
+    async def evaluate(
+        self,
+        item: StrategyCandidate | StrategyPackDraft,
+    ) -> ReplayEvaluationRecord:
+        from kun.interface.llm.base import LLMMessage, LLMRequest, TaskProfile
+
+        normalized = _normalize_evaluation_target(item)
+        request = LLMRequest(
+            messages=[
+                LLMMessage(
+                    role="system",
+                    content=(
+                        "You are Qi's strong review judge. Review the strategy "
+                        "proposal for KUN's lab only. Return strict JSON only. "
+                        "Never approve production promotion. Focus on whether "
+                        "the proposal is testable, safe, useful, and not overfit."
+                    ),
+                ),
+                LLMMessage(
+                    role="user",
+                    content=json.dumps(
+                        {
+                            "target": normalized,
+                            "item": item.model_dump(mode="json"),
+                            "contract": {
+                                "output": {
+                                    "score": "0..1 float",
+                                    "notes": "list[str], concise",
+                                    "risk": "low|medium|high|critical",
+                                    "requires_strong_review": "bool",
+                                    "recommendation": (
+                                        "approve_for_lab|needs_more_evidence|reject"
+                                    ),
+                                    "evidence": "object",
+                                },
+                                "promotion_allowed": False,
+                                "production_action": False,
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            ],
+            temperature=0.1,
+            max_tokens=self.max_tokens,
+            profile=TaskProfile(
+                task_type=f"qi.strong_review.{normalized['target_kind']}",
+                risk_level="critical"
+                if normalized["requires_strong_review"]
+                or normalized["risk"] in {"high", "critical"}
+                else normalized["risk"],
+                needs_reasoning=True,
+                prefer_speed=False,
+            ),
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "qi_strong_review",
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": True,
+                        "properties": {
+                            "score": {"type": "number"},
+                            "notes": {"type": "array", "items": {"type": "string"}},
+                            "risk": {
+                                "type": "string",
+                                "enum": ["low", "medium", "high", "critical"],
+                            },
+                            "requires_strong_review": {"type": "boolean"},
+                            "recommendation": {"type": "string"},
+                            "evidence": {"type": "object"},
+                        },
+                        "required": ["score", "notes", "risk", "recommendation"],
+                    },
+                },
+            },
+        )
+        response = await self.router.invoke(request, purpose="judge")
+        raw = _json_object_from_text(response.content)
+        model_risk = _normalize_risk(raw.get("risk") or normalized["risk"])
+        risk = _max_risk(_normalize_risk(normalized["risk"]), model_risk)
+        requires_strong_review = bool(
+            normalized["requires_strong_review"] or raw.get("requires_strong_review")
+        )
+        notes = _string_list(raw.get("notes"))
+        notes.extend(
+            [
+                "strong_model_review",
+                "review_required_before_any_adoption",
+                f"recommendation:{raw.get('recommendation') or 'needs_more_evidence'!s}",
+            ]
+        )
+        evidence = raw.get("evidence")
+        if not isinstance(evidence, dict):
+            evidence = {}
+        actual_cost = (
+            float(response.cost_usd_equivalent or 0.0)
+            or float(response.cost_usd_actual or 0.0)
+            or _evaluation_cost_estimate(item, evaluator_kind="strong_model")
+        )
+        return ReplayEvaluationRecord(
+            evaluation_id=_evaluation_id(
+                normalized["target_id"],
+                self.evaluator_name,
+                "evaluated",
+            ),
+            target_id=normalized["target_id"],
+            target_kind=normalized["target_kind"],
+            evaluator=self.evaluator_name,
+            evaluator_kind="strong_model",
+            status="evaluated",
+            score=_clamped_float(raw.get("score"), default=0.0),
+            cost_estimate_usd=round(actual_cost, 6),
+            risk=risk,
+            requires_strong_review=requires_strong_review,
+            notes=_dedupe(notes),
+            evidence={
+                "review_only": True,
+                "promotion_allowed": False,
+                "production_action": False,
+                "target_summary": normalized["summary"],
+                "target_task_type": normalized["task_type"],
+                "strong_model_provider": response.provider,
+                "strong_model": response.model,
+                "strong_model_tier": response.tier,
+                "route_debug": response.route_debug,
+                "raw_response_preview": response.content[:800],
+                **evidence,
+            },
+        )
+
+
 def configured_local_replay_model_evaluator_from_env() -> LocalReplayModelEvaluator | None:
     """Return Qi's optional local replay evaluator if configured.
 
@@ -370,6 +524,23 @@ def configured_local_replay_model_evaluator_from_env() -> LocalReplayModelEvalua
     return CommandLocalReplayModelEvaluator(
         shlex.split(command_text),
         timeout_sec=timeout,
+    )
+
+
+def configured_strong_replay_model_evaluator_from_env(
+    router: Any | None = None,
+) -> StrongReplayModelEvaluator | None:
+    """Return Qi's optional strong reviewer when explicitly enabled."""
+
+    if not _env_bool(STRONG_MODEL_REPLAY_ENABLED_ENV, default=False):
+        return None
+    if router is None:
+        from kun.interface.llm.router import get_router
+
+        router = get_router()
+    return StrongReplayModelEvaluator(
+        router,
+        max_tokens=_env_int(STRONG_MODEL_REPLAY_MAX_TOKENS_ENV, default=700),
     )
 
 
@@ -388,9 +559,11 @@ class IdleReplayEvaluationPool:
         *,
         budget: ReplayEvaluationBudget | None = None,
         local_model_evaluator: LocalReplayModelEvaluator | None = None,
+        strong_model_evaluator: StrongReplayModelEvaluator | None = None,
     ) -> None:
         self._budget = budget or ReplayEvaluationBudget()
         self._local_model_evaluator = local_model_evaluator
+        self._strong_model_evaluator = strong_model_evaluator
 
     async def evaluate(
         self,
@@ -444,6 +617,11 @@ class IdleReplayEvaluationPool:
                         if self._local_model_evaluator is None:
                             return _local_model_unavailable_record(item)
                         record = await self._local_model_evaluator.evaluate(item)
+                        return _review_only_record(record)
+                    if evaluator_kind == "strong_model":
+                        if self._strong_model_evaluator is None:
+                            return _strong_model_unavailable_record(item)
+                        record = await self._strong_model_evaluator.evaluate(item)
                         return _review_only_record(record)
                     return _heuristic_evaluation_record(item)
                 except Exception as exc:
@@ -554,12 +732,14 @@ async def evaluate_idle_replay_pool(
     budget: ReplayEvaluationBudget | None = None,
     evaluator_kind: ReplayEvaluatorKind = "heuristic",
     local_model_evaluator: LocalReplayModelEvaluator | None = None,
+    strong_model_evaluator: StrongReplayModelEvaluator | None = None,
 ) -> ReplayEvaluationPoolResult:
     """Score replay proposals without enabling promotion."""
 
     return await IdleReplayEvaluationPool(
         budget=budget,
         local_model_evaluator=local_model_evaluator,
+        strong_model_evaluator=strong_model_evaluator,
     ).evaluate(items, evaluator_kind=evaluator_kind)
 
 
@@ -791,6 +971,38 @@ def _local_model_unavailable_record(
     )
 
 
+def _strong_model_unavailable_record(
+    item: StrategyCandidate | StrategyPackDraft,
+) -> ReplayEvaluationRecord:
+    normalized = _normalize_evaluation_target(item)
+    return ReplayEvaluationRecord(
+        evaluation_id=_evaluation_id(
+            normalized["target_id"],
+            STRONG_MODEL_REPLAY_EVALUATOR,
+            "unavailable",
+        ),
+        target_id=normalized["target_id"],
+        target_kind=normalized["target_kind"],
+        evaluator=STRONG_MODEL_REPLAY_EVALUATOR,
+        evaluator_kind="strong_model",
+        status="unavailable",
+        score=0.0,
+        cost_estimate_usd=_evaluation_cost_estimate(item, evaluator_kind="strong_model"),
+        risk=normalized["risk"],
+        requires_strong_review=normalized["requires_strong_review"],
+        notes=[
+            "strong_model_evaluator_unavailable",
+            "no_strong_model_score_claimed",
+            "promotion_blocked",
+        ],
+        evidence={
+            "review_only": True,
+            "promotion_allowed": False,
+            "production_action": False,
+        },
+    )
+
+
 def _error_record(
     item: StrategyCandidate | StrategyPackDraft,
     *,
@@ -832,6 +1044,9 @@ def _evaluation_cost_estimate(
 ) -> float:
     if evaluator_kind == "local_model":
         return 0.01
+    if evaluator_kind == "strong_model":
+        text_size = len(str(item.model_dump(mode="json"))) if hasattr(item, "model_dump") else 0
+        return round(0.03 + min(text_size, 8000) / 800_000, 6)
     text_size = len(str(item.model_dump(mode="json"))) if hasattr(item, "model_dump") else 0
     return round(0.001 + min(text_size, 4000) / 4_000_000, 6)
 
@@ -839,6 +1054,8 @@ def _evaluation_cost_estimate(
 def _evaluator_name(evaluator_kind: ReplayEvaluatorKind) -> str:
     if evaluator_kind == "local_model":
         return LOCAL_MODEL_REPLAY_EVALUATOR
+    if evaluator_kind == "strong_model":
+        return STRONG_MODEL_REPLAY_EVALUATOR
     return HEURISTIC_REPLAY_EVALUATOR
 
 
@@ -1256,6 +1473,50 @@ def _env_float(name: str, *, default: float) -> float:
         return float(value)
     except ValueError:
         return default
+
+
+def _env_int(name: str, *, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _env_bool(name: str, *, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _json_object_from_text(text: str) -> dict[str, Any]:
+    stripped = (text or "").strip()
+    if not stripped:
+        raise RuntimeError("strong replay evaluator returned an empty response")
+    candidates = [stripped]
+    if "```" in stripped:
+        parts = stripped.split("```")
+        for part in parts:
+            cleaned = part.strip()
+            if cleaned.startswith("json"):
+                cleaned = cleaned.removeprefix("json").strip()
+            if cleaned:
+                candidates.append(cleaned)
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(stripped[start : end + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    raise RuntimeError("strong replay evaluator returned non-JSON content")
 
 
 def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:

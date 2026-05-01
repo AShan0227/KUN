@@ -416,6 +416,7 @@ class QiIdleReplayStep(IdleBatchStep):
         from kun.qi.idle_replay import (
             ReplayEvaluationBudget,
             configured_local_replay_model_evaluator_from_env,
+            configured_strong_replay_model_evaluator_from_env,
             evaluate_idle_replay_pool,
             generate_idle_replay_candidates,
         )
@@ -463,9 +464,33 @@ class QiIdleReplayStep(IdleBatchStep):
             evaluator_kind=evaluator_kind,
             local_model_evaluator=local_model_evaluator,
         )
+        strong_model_evaluator = configured_strong_replay_model_evaluator_from_env()
+        strong_review_items = [draft for draft in drafts if draft.requires_strong_review]
+        strong_review_pool: dict[str, Any] = {
+            "enabled": strong_model_evaluator is not None,
+            "evaluated": 0,
+            "production_action": False,
+        }
+        if strong_model_evaluator is not None and strong_review_items:
+            strong_reviews = await evaluate_idle_replay_pool(
+                strong_review_items,
+                budget=ReplayEvaluationBudget(
+                    max_items=_int_env("KUN_QI_STRONG_REVIEW_MAX_ITEMS", 2),
+                    max_cost_usd=_float(
+                        os.getenv("KUN_QI_STRONG_REVIEW_MAX_COST_USD"),
+                        default=0.12,
+                    ),
+                    max_concurrency=1,
+                ),
+                evaluator_kind="strong_model",
+                strong_model_evaluator=strong_model_evaluator,
+            )
+            strong_review_pool = strong_reviews.model_dump(mode="json")
+            strong_review_pool["enabled"] = True
         draft_asset_ids = await _persist_strategy_pack_drafts(
             tenant_id=tenant_id,
             drafts=drafts,
+            evaluation_records=[*evaluations.records, *strong_review_pool.get("records", [])],
         )
         return {
             "signals": len(signals),
@@ -485,6 +510,10 @@ class QiIdleReplayStep(IdleBatchStep):
             "requires_strong_review": sum(1 for item in candidates if item.requires_strong_review),
             "evaluation_pool": evaluations.model_dump(mode="json"),
             "evaluation_engine": evaluator_kind,
+            "strong_review_pool": strong_review_pool,
+            "strong_review_engine": "strong_model"
+            if strong_model_evaluator is not None
+            else "disabled",
             "persisted_review_signals": persisted,
             "persisted_strategy_pack_draft_assets": len(draft_asset_ids),
             "strategy_pack_draft_asset_ids": draft_asset_ids[:10],
@@ -1078,7 +1107,12 @@ async def _persist_methodology_rules(*, tenant_id: str, rules: list[str]) -> lis
     return created
 
 
-async def _persist_strategy_pack_drafts(*, tenant_id: str, drafts: list[Any]) -> list[str]:
+async def _persist_strategy_pack_drafts(
+    *,
+    tenant_id: str,
+    drafts: list[Any],
+    evaluation_records: list[Any] | None = None,
+) -> list[str]:
     """Persist Qi strategy-pack drafts as review-only methodology assets.
 
     These assets are deliberately *not* Watchtower packs.  They are context
@@ -1100,6 +1134,17 @@ async def _persist_strategy_pack_drafts(*, tenant_id: str, drafts: list[Any]) ->
         if asset.l1_metadata.get("source") == "qi.idle_replay.strategy_pack_draft"
     }
     created: list[str] = []
+    evaluations_by_target: dict[str, list[dict[str, Any]]] = {}
+    for record in evaluation_records or []:
+        if hasattr(record, "model_dump"):
+            payload = record.model_dump(mode="json")
+        elif isinstance(record, dict):
+            payload = record
+        else:
+            continue
+        target_id = str(payload.get("target_id") or "")
+        if target_id:
+            evaluations_by_target.setdefault(target_id, []).append(payload)
     for draft in drafts:
         draft_id = str(getattr(draft, "draft_id", ""))
         if not draft_id or draft_id in seen_draft_ids:
@@ -1131,6 +1176,7 @@ async def _persist_strategy_pack_drafts(*, tenant_id: str, drafts: list[Any]) ->
                 "production_action": False,
                 "promotion_blocked_until_review": True,
                 "decision_ticket": qi_ticket.event_payload(),
+                "evaluation_records": evaluations_by_target.get(draft_id, []),
                 "strategy_pack_draft": draft.model_dump(mode="json")
                 if hasattr(draft, "model_dump")
                 else {},

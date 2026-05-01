@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
 import sys
+from typing import Any
 
 import pytest
+from kun.interface.llm.base import LLMResponse
 from kun.qi.idle_replay import (
     HEURISTIC_IDLE_REPLAY_ENGINE,
     CommandLocalReplayModelEvaluator,
     IdleReplayGenerator,
     ReplayEvaluationBudget,
+    StrongReplayModelEvaluator,
     TaskHistorySummary,
     evaluate_idle_replay_pool,
     generate_idle_replay_candidates,
@@ -287,3 +291,84 @@ async def test_replay_evaluation_pool_runs_opt_in_command_local_model() -> None:
     assert "cheap_local_vote" in record.notes
     assert record.promotion_allowed is False
     assert record.production_action is False
+
+
+class _FakeStrongReviewRouter:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, str]] = []
+
+    async def invoke(self, request: Any, *, purpose: str = "execution") -> LLMResponse:
+        self.calls.append((request, purpose))
+        return LLMResponse(
+            content=json.dumps(
+                {
+                    "score": 0.74,
+                    "notes": ["reviewed_against_guardrails"],
+                    "risk": "high",
+                    "requires_strong_review": True,
+                    "recommendation": "needs_more_evidence",
+                    "evidence": {"judge": "fake-strong"},
+                }
+            ),
+            provider="fake",
+            model="fake-top-judge",
+            tier="top",
+            cost_usd_equivalent=0.05,
+            route_debug={"primary_tier": "top"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_strong_replay_evaluator_is_review_only() -> None:
+    draft = generate_idle_replay_candidates(
+        [
+            {
+                "history_id": "hist-strong",
+                "task_type": "world.email",
+                "summary": "Email handler needs idempotency before real sending",
+                "outcome": "completed_with_risk",
+                "risk": "high",
+            }
+        ]
+    )[0].to_strategy_pack_draft()
+    router = _FakeStrongReviewRouter()
+
+    result = await evaluate_idle_replay_pool(
+        [draft],
+        evaluator_kind="strong_model",
+        strong_model_evaluator=StrongReplayModelEvaluator(router),
+        budget=ReplayEvaluationBudget(max_items=1, max_cost_usd=1.0, max_concurrency=1),
+    )
+
+    assert result.evaluated == 1
+    assert router.calls[0][1] == "judge"
+    record = result.records[0]
+    assert record.evaluator_kind == "strong_model"
+    assert record.score == 0.74
+    assert record.cost_estimate_usd == 0.05
+    assert record.requires_strong_review is True
+    assert record.evidence["judge"] == "fake-strong"
+    assert record.promotion_allowed is False
+    assert record.production_action is False
+
+
+@pytest.mark.asyncio
+async def test_strong_replay_evaluator_unavailable_is_honest() -> None:
+    candidate = generate_idle_replay_candidates(
+        [
+            {
+                "history_id": "hist-no-strong",
+                "task_type": "general",
+                "summary": "Candidate asks for optional strong review",
+                "outcome": "completed",
+            }
+        ]
+    )[0]
+
+    result = await evaluate_idle_replay_pool([candidate], evaluator_kind="strong_model")
+
+    assert result.evaluated == 0
+    assert result.unavailable == 1
+    assert result.records[0].status == "unavailable"
+    assert "no_strong_model_score_claimed" in result.records[0].notes
+    assert result.records[0].promotion_allowed is False
