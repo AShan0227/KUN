@@ -116,3 +116,64 @@ def test_compiler_ingest_url_does_not_store_placeholder_by_default() -> None:
         assert payload["source_uri"] == "https://example.com/report.html"
     finally:
         reset_store()
+
+
+def test_compiler_ingest_manifest_stores_supported_items(tmp_path) -> None:
+    runner = CliRunner()
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "note.md").write_text("# KUN\n\nManifest", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "tenant_id": "tenant-cli",
+                "allowed_root": str(root),
+                "layer": "L2_project",
+                "items": [
+                    {"id": "inline", "type": "text", "value": "inline manifest item"},
+                    {"id": "path", "type": "path", "value": "note.md"},
+                    {"id": "url", "type": "url", "value": "https://example.com/report.html"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = InMemoryAssetStore()
+    set_store(store)
+    try:
+        result = runner.invoke(app, ["compiler", "ingest-manifest", str(manifest)])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["total"] == 3
+        assert payload["stored"] == 2
+        assert payload["skipped"] == 1
+        assert payload["results"][2]["reason"] == "material_status_placeholder"
+        stored = asyncio.run(store.list(tenant_id="tenant-cli"))
+        assert len(stored) == 2
+    finally:
+        reset_store()
+
+
+def test_compiler_ingest_manifest_fail_on_error_exits_nonzero(tmp_path) -> None:
+    runner = CliRunner()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "tenant_id": "tenant-cli",
+                "items": [{"id": "path", "type": "path", "value": "missing.md"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        ["compiler", "ingest-manifest", str(manifest), "--fail-on-error"],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["errors"] == 1

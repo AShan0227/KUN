@@ -41,9 +41,9 @@ UrlFetcher = Callable[[str, int], Awaitable[tuple[str, bytes]]]
 class LightweightMaterialCompiler:
     """Compile small local inputs into canonical materials.
 
-    This first V5 slice is intentionally local and deterministic. It does not
-    fetch URLs, run OCR, or invoke MarkItDown; those remain explicit optional
-    future backends surfaced in the compiler profile.
+    This first V5 slice is intentionally deterministic and conservative. URL
+    fetching is opt-in and allowlist-only; OCR and MarkItDown remain explicit
+    optional future backends surfaced in the compiler profile.
     """
 
     def __init__(
@@ -472,10 +472,10 @@ def _csv_set(value: str | None) -> set[str]:
 def _profile() -> CompilerProfile:
     return CompilerProfile(
         optional_backends=["markitdown"],
-        unsupported_backends=["url_fetch", "ocr", "office_extract"],
+        unsupported_backends=["ocr", "office_extract"],
         limitations=[
             "supports lightweight text, markdown, html, json, csv, and local PDF text summary inputs",
-            "urls are never fetched by this profile",
+            "urls are fetched only when explicitly enabled and host-allowlisted",
             "pdf support is deterministic text extraction only; scanned/OCR PDFs need a future backend",
             "l3_ref is a placeholder until object storage is wired",
         ],

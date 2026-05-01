@@ -1,5 +1,12 @@
 """KUN V5 compiler layer."""
 
+from kun.compiler.batch import (
+    CompilerBatchIngestor,
+    CompilerBatchItem,
+    CompilerBatchItemResult,
+    CompilerBatchManifest,
+    CompilerBatchReport,
+)
 from kun.compiler.ingestion import (
     CompilerIngestionResult,
     CompilerIngestor,
@@ -24,6 +31,11 @@ __all__ = [
     "CanonicalKind",
     "CanonicalMaterial",
     "CompileStatus",
+    "CompilerBatchIngestor",
+    "CompilerBatchItem",
+    "CompilerBatchItemResult",
+    "CompilerBatchManifest",
+    "CompilerBatchReport",
     "CompilerIngestionResult",
     "CompilerIngestor",
     "CompilerProfile",

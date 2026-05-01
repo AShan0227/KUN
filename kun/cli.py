@@ -475,6 +475,55 @@ def compiler_ingest_path(
     _run_json(_run())
 
 
+@compiler_app.command("ingest-manifest")
+def compiler_ingest_manifest(
+    manifest_path: Path = typer.Argument(..., help="JSON manifest of compiler batch items"),
+    tenant: str | None = typer.Option(None, "--tenant", help="Override manifest tenant_id"),
+    allowed_root: Path | None = typer.Option(
+        None, "--allowed-root", help="Override path item root"
+    ),
+    layer: str | None = typer.Option(None, "--layer", help="Override default asset layer"),
+    fail_on_error: bool = typer.Option(False, "--fail-on-error"),
+) -> None:
+    """Compile a batch manifest and store supported items in the AssetStore.
+
+    Manifest shape:
+    {"tenant_id":"...","items":[{"type":"text|path|url","value":"..."}]}
+    """
+    from pydantic import ValidationError
+
+    from kun.compiler import CompilerBatchIngestor, CompilerBatchManifest
+
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise typer.BadParameter(f"cannot read JSON manifest: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise typer.BadParameter("manifest root must be a JSON object")
+
+    if tenant is not None:
+        payload["tenant_id"] = tenant
+    if allowed_root is not None:
+        payload["allowed_root"] = str(allowed_root)
+    if layer is not None:
+        payload["layer"] = _asset_layer(layer).value
+
+    try:
+        manifest = CompilerBatchManifest.model_validate(payload)
+    except ValidationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    async def _run() -> dict[str, Any]:
+        report = await CompilerBatchIngestor().ingest_manifest(manifest)
+        return report.model_dump(mode="json")
+
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        output = asyncio.run(_run())
+    _json_print(output)
+    if fail_on_error and output.get("errors"):
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def run(
     message: str = typer.Argument(..., help="Natural language task"),
