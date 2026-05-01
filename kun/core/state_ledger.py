@@ -382,16 +382,54 @@ class StateLedger:
                 entry.execution_mode = str(
                     ticket.metadata.get("execution_mode") or entry.execution_mode
                 )
+            elif ticket.decision_point == "execution_mode_selected":
+                entry.execution_mode = str(
+                    ticket.metadata.get("execution_mode") or entry.execution_mode
+                )
+                entry.decision_reason = ticket.reason or entry.decision_reason
+                entry.current_action = f"选择执行模式 {entry.execution_mode}"
             elif ticket.decision_point == "context_selected":
                 asset_ids = ticket.metadata.get("asset_ids")
                 if isinstance(asset_ids, list):
                     entry.context_asset_ids = [str(asset_id) for asset_id in asset_ids]
                 entry.decision_reason = ticket.reason or entry.decision_reason
+            elif ticket.decision_point == "memory_policy_selected":
+                entry.decision_reason = ticket.reason or entry.decision_reason
+                layers = ticket.metadata.get("layers")
+                if isinstance(layers, list) and layers:
+                    entry.current_action = (
+                        f"选择记忆层 {', '.join(str(item) for item in layers[:3])}"
+                    )
             elif ticket.decision_point == "skill_selected":
                 skill_ids = ticket.metadata.get("skill_ids")
                 if isinstance(skill_ids, list):
                     entry.skill_hints = [str(skill_id) for skill_id in skill_ids]
                 entry.decision_reason = ticket.reason or entry.decision_reason
+            elif ticket.decision_point == "step_action_selected":
+                action_type = str(ticket.metadata.get("action_type") or ticket.selected_action)
+                entry.current_action = f"Hermes 选择步骤动作 {action_type}"
+                entry.decision_reason = ticket.reason or entry.decision_reason
+            elif ticket.decision_point == "preflight_guard":
+                entry.decision_reason = ticket.reason or entry.decision_reason
+                if ticket.status == "blocked":
+                    entry.status = "paused"
+                    entry.pending_reason = ticket.reason
+                    entry.current_action = "预检拦截，等待确认或重排"
+                    _append_unique(entry.alert_flags, "preflight_guard_blocked")
+            elif ticket.decision_point == "proactive_tool_dispatch":
+                if ticket.status in {"applied", "skipped"}:
+                    entry.current_action = f"主动工具调度 {ticket.selected_action}"
+                entry.decision_reason = ticket.reason or entry.decision_reason
+            elif ticket.decision_point == "anti_gaming_detected":
+                entry.current_risk = "high"
+                entry.decision_reason = ticket.reason or entry.decision_reason
+                entry.current_action = f"发现反作弊风险 {ticket.selected_action}"
+                _append_unique(entry.alert_flags, f"anti_gaming:{ticket.selected_action}")
+            elif ticket.decision_point == "emergent_switch":
+                entry.decision_reason = ticket.reason or entry.decision_reason
+                entry.current_action = f"动态路径评估 {ticket.selected_action}"
+                if ticket.status == "blocked":
+                    _append_unique(entry.alert_flags, "emergent_switch_blocked")
             elif ticket.decision_point == "budget_policy":
                 used = ticket.metadata.get("used_usd")
                 if isinstance(used, int | float):

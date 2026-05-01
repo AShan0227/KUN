@@ -7,13 +7,20 @@ from kun.core.state_ledger import StateLedger, StateLedgerEntry, replay_state_le
 from kun.datamodel.decision_ticket import (
     ticket_from_budget_policy,
     ticket_from_context_selection,
+    ticket_from_emergent_switch,
+    ticket_from_execution_mode_selection,
     ticket_from_llm_route,
+    ticket_from_memory_policy_selection,
+    ticket_from_preflight_guard,
     ticket_from_protocol_applied,
     ticket_from_skill_selection,
+    ticket_from_step_action_selection,
     ticket_from_validation_tier,
 )
 from kun.datamodel.runtime import RuntimeState, StepRecord
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
+from kun.engineering.concurrency import PendingActionSpec, PreConflictReport, ResourceIntent
+from kun.memory.policy import MemoryDepth, MemoryLayer, MemoryPolicyTicket
 from kun.qi.protocol import Protocol, ProtocolExecution, ProtocolTrigger
 from kun.watchtower.decision_plane import WatchtowerDecisionPlane
 
@@ -76,6 +83,109 @@ def test_state_ledger_tracks_decision_runtime_and_step() -> None:
         "task.started",
         "task.step.completed",
     ]
+
+
+def test_state_ledger_consumes_sparse_decision_tickets() -> None:
+    owner = Owner(tenant_id="tenant-1", user_id="user-1")
+    task_ref = TaskRef(
+        meta=TaskMeta(
+            fingerprint=TaskMeta.compute_fingerprint("复杂产品运营", owner),
+            task_type="mission.product_ops",
+            risk_level="medium",
+            complexity_score=0.7,
+            owner=owner,
+            estimated_cost_usd=0.8,
+            success_criteria_short="推进产品运营任务",
+        ),
+        spec=TaskSpec(goal_detail="持续推进一个产品运营任务"),
+    )
+    ledger = StateLedger()
+    ledger.record_task_created(task_ref, tenant_id=owner.tenant_id)
+
+    mode_ticket = ticket_from_execution_mode_selection(
+        tenant_id=owner.tenant_id,
+        task_id=task_ref.meta.task_id,
+        risk_level=task_ref.meta.risk_level,
+        execution_mode="MAX",
+        task_type=task_ref.meta.task_type,
+        complexity_score=task_ref.meta.complexity_score,
+        estimated_cost_usd=task_ref.meta.estimated_cost_usd,
+    )
+    memory_ticket = ticket_from_memory_policy_selection(
+        tenant_id=owner.tenant_id,
+        task_id=task_ref.meta.task_id,
+        risk_level=task_ref.meta.risk_level,
+        policy=MemoryPolicyTicket(
+            use_memory=True,
+            depth=MemoryDepth.DEEP,
+            layers=[MemoryLayer.TASK_RESULT, MemoryLayer.META_DECISION],
+            max_items=4,
+            reason="long mission needs process and meta-decision memory",
+        ),
+    )
+    hermes_ticket = ticket_from_step_action_selection(
+        tenant_id=owner.tenant_id,
+        task_id=task_ref.meta.task_id,
+        risk_level=task_ref.meta.risk_level,
+        step_id=1,
+        hermes_step=SimpleNamespace(
+            action_type="call_skill",
+            action_payload={"skill_id": "product_ops"},
+            confidence=0.8,
+            thought="需要调用产品运营 skill",
+        ),
+    )
+    preflight_ticket = ticket_from_preflight_guard(
+        tenant_id=owner.tenant_id,
+        task_id=task_ref.meta.task_id,
+        risk_level=task_ref.meta.risk_level,
+        report=PreConflictReport(
+            resources=[
+                ResourceIntent(
+                    resource="external:email",
+                    mode="write",
+                    reason="可能需要联系外部协作者",
+                )
+            ],
+            conflicts=[],
+            blocking=False,
+        ),
+        pending_actions=[
+            PendingActionSpec(
+                action_type="email.send",
+                target_ref="partner@example.com",
+                payload={"description": "发送外部邮件"},
+            )
+        ],
+    )
+    switch_ticket = ticket_from_emergent_switch(
+        tenant_id=owner.tenant_id,
+        task_id=task_ref.meta.task_id,
+        risk_level=task_ref.meta.risk_level,
+        step_id=1,
+        signals=["path_cost_spike"],
+        evaluation=SimpleNamespace(
+            should_switch=False,
+            blocked_by="not_enough_evidence",
+            switch_score=0.4,
+            reason="证据不足，暂不切路",
+        ),
+    )
+
+    for ticket in (mode_ticket, memory_ticket, hermes_ticket, preflight_ticket, switch_ticket):
+        ledger.record_decision_ticket(ticket)
+
+    snapshot = ledger.snapshot(task_ref.meta.task_id)
+
+    assert snapshot is not None
+    assert snapshot.execution_mode == "MAX"
+    assert snapshot.status == "paused"
+    assert snapshot.pending_reason == "1 pending approval action(s)"
+    assert "preflight_guard_blocked" in snapshot.alert_flags
+    assert "emergent_switch_blocked" in snapshot.alert_flags
+    assert snapshot.latest_decision_ticket is not None
+    assert snapshot.latest_decision_ticket["decision_point"] == "emergent_switch"
+    assert snapshot.recent_events[-1].kind == "decision.ticket"
 
 
 def test_state_ledger_active_snapshots_are_tenant_scoped() -> None:
