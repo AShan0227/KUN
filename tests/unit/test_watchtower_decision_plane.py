@@ -25,7 +25,7 @@ from kun.memory.similar_task_recall import (
     summarize_execution_process_experiences,
     summarize_strategy_votes,
 )
-from kun.watchtower.decision_plane import WatchtowerDecisionPlane
+from kun.watchtower.decision_plane import WatchtowerDecisionPlane, load_qi_shadow_strategy_packs
 
 
 class _FakeSession:
@@ -336,6 +336,56 @@ def test_decision_plane_turns_execution_process_memory_into_skill_hint() -> None
     assert "broad-refactor" not in decision.skill_hints
     assert decision.metadata["process_experience_skill_hints"] == ["coding-pytest"]
     assert "process_skill_hints=coding-pytest" in decision.reason
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qi_shadow_strategy_pack_is_observed_not_applied() -> None:
+    store = InMemoryAssetStore()
+    await store.put(
+        LayeredAsset.build(
+            "methodology",
+            "u-sylvan",
+            metadata={
+                "source": "qi.idle_replay.strategy_pack_draft",
+                "draft_id": "draft-growth",
+                "proposed_pack_id": "qi_growth_variant",
+                "qi_review_status": "ready_for_human_review",
+                "qi_rollout_plan_status": "shadow_plan",
+                "production_action": False,
+                "strategy_pack_draft": {
+                    "proposed_pack_id": "qi_growth_variant",
+                    "display_name": "增长影子策略",
+                    "task_type_patterns": ["marketing*", "growth*"],
+                    "keyword_triggers": ["转化", "获客"],
+                    "skill_hints": ["ad_writer"],
+                    "metric_dimensions": ["conversion_lift"],
+                    "risk_watch": ["overclaim"],
+                    "default_execution_mode": "MAX",
+                    "reward_weights": {"quality": 0.5, "cost": 0.1},
+                },
+            },
+            summary="启生成的增长策略影子候选",
+            layer=AssetLayer.L2_PROJECT,
+            tags=["strategy_pack_draft", "qi_rollout:shadow_plan"],
+        )
+    )
+    task_ref = _task_ref(
+        task_type="marketing.campaign",
+        text="写一个获客转化方案",
+    )
+
+    shadow_packs = await load_qi_shadow_strategy_packs(tenant_id="u-sylvan", store=store)
+    decision = WatchtowerDecisionPlane().decide(task_ref, shadow_packs=shadow_packs)
+
+    assert decision.strategy_pack_id == "commercialization"
+    assert "ad_writer" not in decision.skill_hints
+    candidates = decision.metadata["qi_shadow_strategy_candidates"]
+    assert candidates
+    assert candidates[0]["pack_id"] == "qi_shadow:qi_growth_variant"
+    assert candidates[0]["shadow_only"] is True
+    assert candidates[0]["production_action"] is False
+    assert candidates[0]["would_execution_mode"] == "MAX"
 
 
 @pytest.mark.unit

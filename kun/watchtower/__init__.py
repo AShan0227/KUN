@@ -8,6 +8,7 @@ from kun.watchtower.decision_plane import (
     StrategyPack,
     WatchtowerDecision,
     WatchtowerDecisionPlane,
+    load_qi_shadow_strategy_packs,
 )
 from kun.watchtower.engine import RuleEngine, load_rules
 from kun.watchtower.handlers import register_handler
@@ -24,6 +25,7 @@ __all__ = [
     "UnifiedScoringSystem",
     "WatchtowerDecision",
     "WatchtowerDecisionPlane",
+    "load_qi_shadow_strategy_packs",
     "load_rules",
     "register_handler",
 ]

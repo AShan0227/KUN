@@ -882,11 +882,25 @@ class Orchestrator:
                     store=_memory_store_from_writeback(self.memory_writeback),
                     limit=5,
                 )
+                shadow_packs: list[Any] = []
+                if _os.getenv("KUN_QI_SHADOW_PACKS_ENABLED", "1") == "1":
+                    try:
+                        from kun.watchtower.decision_plane import (
+                            load_qi_shadow_strategy_packs,
+                        )
+
+                        shadow_packs = await load_qi_shadow_strategy_packs(
+                            tenant_id=tenant.tenant_id,
+                            limit=50,
+                        )
+                    except Exception:
+                        log.debug("watchtower.qi_shadow_pack_load_failed", exc_info=True)
                 watchtower_decision = self.decision_plane.decide(
                     task_ref,
                     active_protocol=active_protocol,
                     mission_strategy=mission_strategy,
                     similar_experiences=similar_experiences,
+                    shadow_packs=shadow_packs,
                 )
                 watchtower_ticket = ticket_from_watchtower_decision(
                     tenant_id=tenant.tenant_id,

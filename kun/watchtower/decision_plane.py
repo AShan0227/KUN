@@ -18,6 +18,8 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kun.context.assets import LayeredAsset
+from kun.context.storage import AssetStore, get_store
 from kun.datamodel.task import ExecutionMode, TaskRef
 from kun.engineering.credit_assignment import get_contribution_tracker
 from kun.memory.policy import decide_memory_policy
@@ -42,6 +44,17 @@ def _default_context_limits() -> dict[ExecutionMode, int]:
     return {"FAST": 0, "SMART": 1, "MAX": 3, "ENSEMBLE": 3}
 
 
+def _default_reward_weights() -> dict[str, float]:
+    return {
+        "quality": 0.40,
+        "user_satisfaction": 0.20,
+        "cost": 0.15,
+        "latency": 0.10,
+        "reuse_potential": 0.10,
+        "risk": 0.05,
+    }
+
+
 class StrategyPack(BaseModel):
     """一类任务的稀疏激活包."""
 
@@ -58,16 +71,7 @@ class StrategyPack(BaseModel):
     risk_watch: list[str] = Field(default_factory=list)
     default_execution_mode: ExecutionMode = "SMART"
     context_limits: dict[ExecutionMode, int] = Field(default_factory=_default_context_limits)
-    reward_weights: dict[str, float] = Field(
-        default_factory=lambda: {
-            "quality": 0.40,
-            "user_satisfaction": 0.20,
-            "cost": 0.15,
-            "latency": 0.10,
-            "reuse_potential": 0.10,
-            "risk": 0.05,
-        }
-    )
+    reward_weights: dict[str, float] = Field(default_factory=_default_reward_weights)
 
     def match_score(self, task_ref: TaskRef) -> float:
         """Return a deterministic match score in [0, +inf)."""
@@ -123,6 +127,7 @@ class WatchtowerDecisionPlane:
         active_protocol: Any | None = None,
         mission_strategy: dict[str, Any] | None = None,
         similar_experiences: list[SimilarTaskExperience] | None = None,
+        shadow_packs: list[StrategyPack] | None = None,
     ) -> WatchtowerDecision:
         similar_experiences = similar_experiences or []
         strategy_votes = summarize_strategy_votes(similar_experiences)
@@ -188,6 +193,12 @@ class WatchtowerDecisionPlane:
             reason += f"; similar_experience={top_vote[0]}:{top_vote[1]:.2f}"
         if process_skill_hints:
             reason += f"; process_skill_hints={','.join(process_skill_hints[:3])}"
+        shadow_matches = _shadow_pack_matches(
+            task_ref,
+            shadow_packs or [],
+            live_pack_id=pack.pack_id,
+            live_pack_score=pack_score,
+        )
 
         return WatchtowerDecision(
             strategy_pack_id=pack.pack_id,
@@ -229,6 +240,8 @@ class WatchtowerDecisionPlane:
                 "similar_strategy_votes": strategy_votes,
                 "process_experience_skill_hints": process_skill_hints,
                 "memory_policy": memory_policy.model_dump(mode="json"),
+                "qi_shadow_strategy_candidates": shadow_matches,
+                "qi_shadow_candidate_count": len(shadow_matches),
             },
         )
 
@@ -424,6 +437,63 @@ def builtin_strategy_packs() -> list[StrategyPack]:
     ]
 
 
+async def load_qi_shadow_strategy_packs(
+    *,
+    tenant_id: str,
+    store: AssetStore | None = None,
+    limit: int = 1000,
+) -> list[StrategyPack]:
+    """Load reviewed Qi strategy drafts as shadow-only Watchtower candidates.
+
+    These packs are never inserted into ``self.packs`` and never affect the
+    returned decision directly.  They are sidecar candidates so Watchtower can
+    observe "what Qi would have chosen" before any human/canary promotion.
+    """
+
+    store = store or get_store()
+    assets = await store.list(tenant_id=tenant_id, asset_kind="methodology", limit=limit)
+    out: list[StrategyPack] = []
+    for asset in assets:
+        pack = _qi_shadow_pack_from_asset(asset)
+        if pack is not None:
+            out.append(pack)
+    return out
+
+
+def _qi_shadow_pack_from_asset(asset: LayeredAsset) -> StrategyPack | None:
+    metadata = asset.l1_metadata
+    if metadata.get("source") != "qi.idle_replay.strategy_pack_draft":
+        return None
+    if metadata.get("qi_review_status") != "ready_for_human_review":
+        return None
+    if metadata.get("qi_rollout_plan_status") != "shadow_plan":
+        return None
+    if metadata.get("production_action") is not False:
+        return None
+    draft = _as_dict(metadata.get("strategy_pack_draft"))
+    if not draft:
+        return None
+    proposed_pack_id = str(
+        metadata.get("proposed_pack_id") or draft.get("proposed_pack_id") or ""
+    ).strip()
+    if not proposed_pack_id:
+        return None
+    return StrategyPack(
+        pack_id=f"qi_shadow:{proposed_pack_id}",
+        display_name=f"启影子候选: {draft.get('display_name') or proposed_pack_id!s}",
+        task_type_patterns=_string_list(draft.get("task_type_patterns")),
+        keyword_triggers=_string_list(draft.get("keyword_triggers")),
+        methodology_refs=_string_list(draft.get("methodology_refs")),
+        context_tags=_string_list(draft.get("context_tags")),
+        skill_hints=_string_list(draft.get("skill_hints")),
+        metric_dimensions=_string_list(draft.get("metric_dimensions")),
+        risk_watch=_string_list(draft.get("risk_watch")),
+        default_execution_mode=_execution_mode_or_smart(draft.get("default_execution_mode")),
+        context_limits=_context_limits_from_draft(draft.get("context_limits")),
+        reward_weights=_reward_weights_from_draft(draft.get("reward_weights")),
+    )
+
+
 def _task_text(task_ref: TaskRef) -> str:
     parts = [
         task_ref.meta.task_type,
@@ -442,6 +512,83 @@ def _task_text(task_ref: TaskRef) -> str:
     if task_ref.layer3_context is not None:
         parts.append(task_ref.layer3_context.summary(max_chars=600))
     return " ".join(part for part in parts if part).lower()
+
+
+def _shadow_pack_matches(
+    task_ref: TaskRef,
+    packs: list[StrategyPack],
+    *,
+    live_pack_id: str,
+    live_pack_score: float,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    matches: list[tuple[StrategyPack, float]] = [
+        (pack, pack.match_score(task_ref)) for pack in packs
+    ]
+    matches = [(pack, score) for pack, score in matches if score > 0]
+    matches.sort(key=lambda item: (-item[1], item[0].pack_id))
+    out: list[dict[str, Any]] = []
+    for pack, score in matches[:limit]:
+        out.append(
+            {
+                "pack_id": pack.pack_id,
+                "strategy_pack_name": pack.display_name,
+                "match_score": round(score, 4),
+                "would_outscore_live": score > live_pack_score,
+                "live_pack_id": live_pack_id,
+                "live_pack_score": round(live_pack_score, 4),
+                "would_execution_mode": pack.default_execution_mode,
+                "skill_hints": pack.skill_hints[:5],
+                "metric_dimensions": pack.metric_dimensions[:8],
+                "risk_watch": pack.risk_watch[:8],
+                "shadow_only": True,
+                "production_action": False,
+            }
+        )
+    return out
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _execution_mode_or_smart(value: Any) -> ExecutionMode:
+    text = str(value or "SMART").strip().upper()
+    if text in {"FAST", "SMART", "MAX", "ENSEMBLE"}:
+        return cast(ExecutionMode, text)
+    return "SMART"
+
+
+def _context_limits_from_draft(value: Any) -> dict[ExecutionMode, int]:
+    defaults = _default_context_limits()
+    if not isinstance(value, dict):
+        return defaults
+    out = dict(defaults)
+    for key, raw in value.items():
+        mode = _execution_mode_or_smart(key)
+        try:
+            out[mode] = max(0, int(raw))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _reward_weights_from_draft(value: Any) -> dict[str, float]:
+    if not isinstance(value, dict):
+        return _default_reward_weights()
+    out: dict[str, float] = {}
+    for key, raw in value.items():
+        try:
+            out[str(key)] = float(raw)
+        except (TypeError, ValueError):
+            continue
+    return out or _default_reward_weights()
 
 
 def _protocol_execution_mode(active_protocol: Any | None) -> ExecutionMode | None:
@@ -669,4 +816,5 @@ __all__ = [
     "WatchtowerDecision",
     "WatchtowerDecisionPlane",
     "builtin_strategy_packs",
+    "load_qi_shadow_strategy_packs",
 ]
