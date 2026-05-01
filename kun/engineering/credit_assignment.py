@@ -207,6 +207,41 @@ class CreditAssignment:
         self._step_credits.setdefault(task_id, []).append(credit)
         return credit
 
+    def add_resources_to_step(
+        self,
+        task_id: str,
+        step_id: int,
+        resources: dict[ResourceKind, list[str]],
+    ) -> StepCredit | None:
+        """Attach late-arriving resources to an already recorded step.
+
+        Some decisions are only known after the LLM call (budget warnings,
+        anti-gaming findings, emergent switch evaluation).  Without this hook
+        those decisions exist in StateLedger but never receive credit.
+        """
+
+        step = next(
+            (
+                candidate
+                for candidate in self._step_credits.get(task_id, [])
+                if candidate.step_id == step_id
+            ),
+            None,
+        )
+        if step is None:
+            return None
+        merged: dict[ResourceKind, list[str]] = {
+            kind: list(values) for kind, values in step.resources_used.items()
+        }
+        for kind, values in resources.items():
+            existing = merged.setdefault(kind, [])
+            for value in values:
+                if value not in existing:
+                    existing.append(value)
+        step.resources_used = merged
+        step.credit_share = self._equal_share(merged)
+        return step
+
     @staticmethod
     def _equal_share(resources: dict[ResourceKind, list[str]]) -> dict[str, float]:
         """初始 credit_share: 该 step 用的所有资源平摊."""

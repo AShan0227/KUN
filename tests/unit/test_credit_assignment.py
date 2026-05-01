@@ -57,6 +57,28 @@ def test_record_step_empty_resources() -> None:
     assert credit.credit_share == {}
 
 
+def test_add_resources_to_step_updates_credit_share_for_late_decisions() -> None:
+    ca = CreditAssignment()
+    credit = ca.record_step(
+        task_id="tk-1",
+        step_id=1,
+        resources={"model": ["gpt-5.5"]},
+    )
+    assert credit.credit_share == {"model:gpt-5.5": 1.0}
+
+    updated = ca.add_resources_to_step(
+        "tk-1",
+        1,
+        {"decision_ticket": ["dt-1"], "anti_gaming_detected": ["fake_completion"]},
+    )
+
+    assert updated is not None
+    assert updated.resources_used["decision_ticket"] == ["dt-1"]
+    assert updated.resources_used["anti_gaming_detected"] == ["fake_completion"]
+    assert abs(updated.credit_share["model:gpt-5.5"] - (1 / 3)) < 1e-9
+    assert abs(updated.credit_share["decision_ticket:dt-1"] - (1 / 3)) < 1e-9
+
+
 # ---- finalize_task + reflector ----
 
 

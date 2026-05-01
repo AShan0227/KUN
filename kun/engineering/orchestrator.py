@@ -1897,6 +1897,11 @@ class Orchestrator:
                                 "record_decision_ticket",
                                 anti_gaming_ticket,
                             )
+                            self._attach_decision_ticket_to_step_credit(
+                                task_ref.meta.task_id,
+                                step_plan.step_id,
+                                anti_gaming_ticket,
+                            )
                             try:
                                 from kun.core.metrics import anti_gaming_detection_total
 
@@ -2017,6 +2022,11 @@ class Orchestrator:
                             )
                             decision_tickets.append(budget_ticket)
                             self._record_state_ledger("record_decision_ticket", budget_ticket)
+                            self._attach_decision_ticket_to_step_credit(
+                                task_ref.meta.task_id,
+                                step_record.step_id,
+                                budget_ticket,
+                            )
                             budget_event_type: Literal[
                                 "task.budget_exceeded", "task.budget_warn"
                             ] = "task.budget_exceeded" if budget_hard_break else "task.budget_warn"
@@ -2102,6 +2112,11 @@ class Orchestrator:
                                 decision_tickets.append(switch_ticket)
                                 self._record_state_ledger(
                                     "record_decision_ticket",
+                                    switch_ticket,
+                                )
+                                self._attach_decision_ticket_to_step_credit(
+                                    task_ref.meta.task_id,
+                                    step_record.step_id,
                                     switch_ticket,
                                 )
                                 async with session_scope(tenant_id=tenant.tenant_id) as s:
@@ -2890,6 +2905,28 @@ class Orchestrator:
             )
         except Exception:
             log.exception("credit_assignment.record_step_failed (non-fatal)")
+
+    def _attach_decision_ticket_to_step_credit(
+        self,
+        task_id: str,
+        step_id: int,
+        ticket: DecisionTicket,
+    ) -> None:
+        """Attach late post-step decisions to the step credit record."""
+
+        if self.credit_assignment is None:
+            return
+        try:
+            self.credit_assignment.add_resources_to_step(
+                task_id,
+                step_id,
+                {
+                    "decision_ticket": [ticket.ticket_id],
+                    str(ticket.decision_point): [ticket.selected_action],
+                },
+            )
+        except Exception:
+            log.exception("credit_assignment.attach_late_decision_failed (non-fatal)")
 
     async def _finalize_credit_assignment(
         self,
