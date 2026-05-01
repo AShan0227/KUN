@@ -17,6 +17,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     PrimaryKeyConstraint,
@@ -1033,6 +1034,60 @@ class TenantTokenIssueRow(Base):
         Index("ix_tenant_tokens_tenant_status", "tenant_id", "status"),
         Index("ix_tenant_tokens_tenant_user", "tenant_id", "user_id"),
         Index("ix_tenant_tokens_tenant_last_used", "tenant_id", "last_used_at"),
+    )
+
+
+class TenantPasswordCredentialRow(Base):
+    """Tenant-scoped password credential ledger.
+
+    Stores only salted password hashes.  This is a minimal password login slice,
+    not OAuth or full device/session risk management.
+    """
+
+    __tablename__ = "tenant_password_credentials"
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tenant_accounts.tenant_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    algorithm: Mapped[str] = mapped_column(String(32), nullable=False, default="pbkdf2_sha256")
+    iterations: Mapped[int] = mapped_column(Integer, nullable=False, default=260000)
+    salt_b64: Mapped[str] = mapped_column(String(128), nullable=False)
+    password_hash_b64: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "algorithm IN ('pbkdf2_sha256')",
+            name="tenant_password_algorithm_valid",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'disabled')",
+            name="tenant_password_status_valid",
+        ),
+        CheckConstraint("iterations >= 200000", name="tenant_password_iterations_min"),
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"],
+            ["tenant_members.tenant_id", "tenant_members.user_id"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_tenant_password_status", "tenant_id", "status"),
+        Index("ix_tenant_password_last_login", "tenant_id", "last_login_at"),
     )
 
 

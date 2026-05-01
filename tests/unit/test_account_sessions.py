@@ -7,7 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from kun.api import session as session_api
-from kun.core.orm import TenantTokenIssueRow
+from kun.core.orm import TenantMemberRow, TenantTokenIssueRow
 from kun.core.tenancy import TenantContext, tenant_scope
 from kun.ops.account_registry import hash_bearer_token
 from kun.ops.account_sessions import (
@@ -667,6 +667,126 @@ def test_websocket_ticket_api_uses_current_session(monkeypatch: pytest.MonkeyPat
     assert body["tenant_id"] == "tenant-a"
     assert body["ticket_id"] == "wst-test"
     assert verify_bearer_token(f"Bearer {body['ticket']}", secret).token_type == "ws"
+
+
+@pytest.mark.unit
+def test_password_set_is_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeSettings:
+        password_login_enabled = False
+
+        def auth_secret_candidates(self) -> list[str]:
+            return ["s" * 40]
+
+    monkeypatch.setattr(session_api, "settings", lambda: _FakeSettings())
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a", user_id="user-a")):
+        response = TestClient(_api_app()).post(
+            "/api/auth/password/set",
+            json={"password": "correct horse battery"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "password login is disabled"
+
+
+@pytest.mark.unit
+def test_password_set_calls_credential_writer(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict[str, Any] = {}
+
+    class _FakeSettings:
+        password_login_enabled = True
+
+        def auth_secret_candidates(self) -> list[str]:
+            return ["s" * 40]
+
+    async def fake_set_password(*_args: object, **kwargs: object) -> None:
+        called.update(kwargs)
+
+    monkeypatch.setattr(session_api, "settings", lambda: _FakeSettings())
+    monkeypatch.setattr(session_api, "session_scope", lambda **_kwargs: _FakeScope())
+    monkeypatch.setattr(session_api, "set_password_credential", fake_set_password)
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a", user_id="user-a")):
+        response = TestClient(_api_app()).post(
+            "/api/auth/password/set",
+            json={"password": "correct horse battery"},
+        )
+
+    assert response.status_code == 200
+    assert called["tenant_id"] == "tenant-a"
+    assert called["user_id"] == "user-a"
+    assert called["password"] == "correct horse battery"
+
+
+@pytest.mark.unit
+def test_password_login_issues_session_pair(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = "s" * 40
+    member = TenantMemberRow(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        role="owner",
+        scopes=["chat:write"],
+        status="active",
+    )
+
+    class _FakeSettings:
+        password_login_enabled = True
+
+        def auth_secret_candidates(self) -> list[str]:
+            return [secret]
+
+    async def fake_verify(*_args: object, **kwargs: object) -> bool:
+        assert kwargs["tenant_id"] == "tenant-a"
+        assert kwargs["user_id"] == "user-a"
+        assert kwargs["password"] == "correct horse battery"
+        return True
+
+    async def fake_issue(*_args: object, **kwargs: object) -> session_api.SessionTokenPair:
+        assert kwargs["tenant_id"] == "tenant-a"
+        assert kwargs["user_id"] == "user-a"
+        assert kwargs["scopes"] == ["chat:write"]
+        return session_api.SessionTokenPair(
+            tenant_id="tenant-a",
+            user_id="user-a",
+            audience="developer",
+            scopes=["chat:write"],
+            access_token_id="acc-password",
+            access_token=sign_auth_token(
+                {"tenant_id": "tenant-a", "jti": "acc-password", "token_type": "access"},
+                secret,
+            ),
+            access_expires_at=int((datetime.now(UTC) + timedelta(minutes=15)).timestamp()),
+            refresh_token_id="rfr-password",
+            refresh_token=sign_auth_token(
+                {"tenant_id": "tenant-a", "jti": "rfr-password", "token_type": "refresh"},
+                secret,
+            ),
+            refresh_expires_at=int((datetime.now(UTC) + timedelta(days=30)).timestamp()),
+        )
+
+    monkeypatch.setattr(session_api, "settings", lambda: _FakeSettings())
+    monkeypatch.setattr(
+        session_api,
+        "session_scope",
+        lambda **_kwargs: _FakeScope(_FakeSession([_ScalarResult(member)])),
+    )
+    monkeypatch.setattr(session_api, "verify_password_credential", fake_verify)
+    monkeypatch.setattr(session_api, "issue_session_token_pair", fake_issue)
+
+    response = TestClient(_api_app()).post(
+        "/api/auth/password/login",
+        json={
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "password": "correct horse battery",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tenant_id"] == "tenant-a"
+    assert body["access_token_id"] == "acc-password"
+    assert body["refresh_token_id"] == "rfr-password"
 
 
 @pytest.mark.unit

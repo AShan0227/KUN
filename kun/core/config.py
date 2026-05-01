@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     auth_secrets: str | None = None
     self_signup_enabled: bool = False
     self_signup_invite_code: str | None = None
+    password_login_enabled: bool = False
 
     @field_validator("default_tenant_id", mode="before")
     @classmethod
@@ -105,6 +106,8 @@ class Settings(BaseSettings):
             )
         if self.self_signup_enabled and not (self.self_signup_invite_code or "").strip():
             issues.append("KUN_SELF_SIGNUP_INVITE_CODE is required when self signup is enabled")
+        if self.password_login_enabled and not self.auth_secret_candidates():
+            issues.append("KUN_AUTH_SECRET or KUN_AUTH_SECRETS is required for password login")
         if "kun:kun@" in self.pg_dsn:
             issues.append("KUN_PG_DSN must use the non-admin app role in production")
         if self.s3_access_key == "minio" or self.s3_secret_key == "minio123":

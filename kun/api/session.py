@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from kun.core.config import settings
 from kun.core.db import session_scope
-from kun.core.orm import TenantTokenIssueRow
+from kun.core.orm import TenantMemberRow, TenantTokenIssueRow
 from kun.core.tenancy import current_tenant
 from kun.ops.account_registry import (
     Audience,
@@ -34,6 +34,11 @@ from kun.ops.account_sessions import (
     issue_session_token_pair,
     issue_websocket_ticket,
     refresh_session_access_token,
+)
+from kun.ops.password_auth import (
+    PasswordAuthError,
+    set_password_credential,
+    verify_password_credential,
 )
 from kun.security.auth import AuthTokenError, extract_bearer_token, verify_bearer_token_any
 
@@ -169,6 +174,45 @@ class WebSocketTicketResponse(BaseModel):
     honest_limits: list[str]
 
 
+class PasswordSetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: str = Field(min_length=12, max_length=1024)
+
+
+class PasswordSetResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    user_id: str
+    status: str
+    honest_limits: list[str]
+
+
+class PasswordLoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str = Field(min_length=1, max_length=80)
+    user_id: str = Field(min_length=1, max_length=120)
+    password: str = Field(min_length=1, max_length=1024)
+    audience: Audience = "developer"
+
+
+class PasswordLoginResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    user_id: str
+    access_token_id: str
+    access_token: str
+    access_expires_at: int
+    refresh_token_id: str
+    refresh_token: str
+    refresh_expires_at: int
+    scopes: list[str]
+    honest_limits: list[str]
+
+
 @router.post("/signup", response_model=SignupResponse)
 async def signup(payload: SignupRequest) -> SignupResponse:
     """Create a tenant account and a refreshable session, if invite signup is enabled."""
@@ -266,6 +310,92 @@ async def accept_invite(payload: AcceptInviteRequest) -> AcceptInviteResponse:
             metadata={"source": "api.auth.invite_accept", "role": accepted.role},
         )
     return _accept_invite_response(accepted, pair)
+
+
+@router.post("/password/set", response_model=PasswordSetResponse)
+async def set_password(payload: PasswordSetRequest) -> PasswordSetResponse:
+    """Set the current authenticated user's password credential."""
+
+    cfg = settings()
+    if not cfg.password_login_enabled:
+        raise HTTPException(status_code=403, detail="password login is disabled")
+    tenant = current_tenant()
+    if not tenant.user_id:
+        raise HTTPException(status_code=400, detail="authenticated user_id is required")
+    async with session_scope(tenant_id=tenant.tenant_id) as s:
+        try:
+            await set_password_credential(
+                s,
+                tenant_id=tenant.tenant_id,
+                user_id=tenant.user_id,
+                password=payload.password,
+                metadata={"source": "api.auth.password_set"},
+            )
+        except PasswordAuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return PasswordSetResponse(
+        tenant_id=tenant.tenant_id,
+        user_id=tenant.user_id,
+        status="active",
+        honest_limits=_password_honest_limits(),
+    )
+
+
+@router.post("/password/login", response_model=PasswordLoginResponse)
+async def password_login(payload: PasswordLoginRequest) -> PasswordLoginResponse:
+    """Exchange a tenant/user/password credential for an access+refresh session."""
+
+    cfg = settings()
+    if not cfg.password_login_enabled:
+        raise HTTPException(status_code=403, detail="password login is disabled")
+    secrets = cfg.auth_secret_candidates()
+    if not secrets:
+        raise HTTPException(
+            status_code=503,
+            detail="KUN_AUTH_SECRET or KUN_AUTH_SECRETS is required for password login",
+        )
+    tenant_id = payload.tenant_id.strip()
+    user_id = payload.user_id.strip()
+    async with session_scope(tenant_id=tenant_id) as s:
+        if not await verify_password_credential(
+            s,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            password=payload.password,
+        ):
+            raise HTTPException(status_code=401, detail="invalid tenant/user/password")
+        member = (
+            await s.execute(
+                select(TenantMemberRow).where(
+                    TenantMemberRow.tenant_id == tenant_id,
+                    TenantMemberRow.user_id == user_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if member is None or member.status != "active":
+            raise HTTPException(status_code=403, detail="tenant member is not active")
+        scopes = [str(scope) for scope in member.scopes if str(scope).strip()]
+        pair = await issue_session_token_pair(
+            s,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            scopes=scopes,
+            audience=payload.audience,
+            secret=secrets[0],
+            metadata={"source": "api.auth.password_login"},
+        )
+    return PasswordLoginResponse(
+        tenant_id=pair.tenant_id,
+        user_id=pair.user_id,
+        access_token_id=pair.access_token_id,
+        access_token=pair.access_token,
+        access_expires_at=pair.access_expires_at,
+        refresh_token_id=pair.refresh_token_id,
+        refresh_token=pair.refresh_token,
+        refresh_expires_at=pair.refresh_expires_at,
+        scopes=pair.scopes,
+        honest_limits=_password_honest_limits(),
+    )
 
 
 @router.get("/session/me", response_model=CurrentSessionResponse)
@@ -507,3 +637,11 @@ def _token_summary(row: TenantTokenIssueRow) -> SessionTokenSummary:
         if isinstance(row.scopes, list)
         else [],
     )
+
+
+def _password_honest_limits() -> list[str]:
+    return [
+        "这是最小密码登录：只支持 tenant_id + user_id + password 换 refresh session。",
+        "密码只保存 PBKDF2 salted hash，不保存明文。",
+        "这还不是 OAuth、WebAuthn、设备风控、异常登录检测或完整账号安全平台。",
+    ]

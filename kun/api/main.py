@@ -340,6 +340,7 @@ async def tenant_middleware(
         "/api/auth/session/refresh",
         "/api/auth/signup",
         "/api/auth/invite/accept",
+        "/api/auth/password/login",
     }
     if request.url.path in public_auth_paths and not auth_header:
         return await call_next(request)
