@@ -37,6 +37,7 @@ DecisionPoint = Literal[
     "proactive_tool_dispatch",
     "strategy_selected",
     "emergent_switch",
+    "execution_mode_selected",
     "role_model_selected",
     "llm_model_selected",
     "context_selected",
@@ -245,6 +246,101 @@ def ticket_from_route_choice(
         metadata={
             "role_template_id": role_template_id,
             "purpose": purpose,
+        },
+    )
+
+
+def ticket_from_execution_mode_selection(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    execution_mode: str,
+    task_type: str,
+    complexity_score: float,
+    estimated_cost_usd: float | None,
+    mode_override_reason: str = "",
+    active_protocol: Any | None = None,
+    watchtower_decision: Any | None = None,
+    mission_id: str | None = None,
+) -> DecisionTicket:
+    """Record the final sparse execution depth decision.
+
+    Watchtower/protocol tickets explain their own subsystem choices. This ticket
+    is the single "what mode did the task actually run with" receipt, so later
+    memory/Qi/NUO credit does not need to infer it from scattered fields.
+    """
+
+    protocol_id = str(getattr(active_protocol, "protocol_id", "") or "")
+    protocol_version = str(getattr(active_protocol, "version", "") or "")
+    watchtower_pack = str(getattr(watchtower_decision, "strategy_pack_id", "") or "")
+    watchtower_source = str(getattr(watchtower_decision, "source", "") or "")
+    watchtower_reason = str(getattr(watchtower_decision, "reason", "") or "")
+    confidence = _float_or_default(getattr(watchtower_decision, "confidence", None), 0.58)
+    if active_protocol is not None and confidence < 0.72:
+        confidence = 0.72
+
+    source = "default"
+    if protocol_id:
+        source = "protocol"
+    if watchtower_pack:
+        source = "watchtower" if watchtower_source != "protocol" else "protocol"
+    if mode_override_reason:
+        source = "override"
+
+    reason_parts = [f"final execution_mode={execution_mode}", f"source={source}"]
+    if protocol_id:
+        reason_parts.append(f"protocol={protocol_id}@{protocol_version or 'unknown'}")
+    if watchtower_pack:
+        reason_parts.append(f"strategy_pack={watchtower_pack}")
+    if mode_override_reason:
+        reason_parts.append(f"override={mode_override_reason}")
+    elif watchtower_reason:
+        reason_parts.append(watchtower_reason)
+
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="watchtower",
+        decision_point="execution_mode_selected",
+        source_module="watchtower.execution_mode_policy",
+        selected_action=f"{source}:{execution_mode}",
+        status="applied",
+        reason="; ".join(reason_parts),
+        confidence=max(0.0, min(1.0, confidence)),
+        risk_level=risk_level,
+        cost_estimate_usd=estimated_cost_usd,
+        alternatives=["FAST", "SMART", "MAX", "ENSEMBLE"],
+        inputs_summary={
+            "task_type": task_type,
+            "risk_level": risk_level,
+            "complexity_score": complexity_score,
+            "estimated_cost_usd": estimated_cost_usd,
+        },
+        evidence={
+            "execution_mode": execution_mode,
+            "source": source,
+            "active_protocol": {
+                "protocol_id": protocol_id,
+                "version": protocol_version,
+                "execution_mode": str(
+                    getattr(getattr(active_protocol, "execution", None), "mode", "") or ""
+                ),
+            }
+            if active_protocol is not None
+            else {},
+            "watchtower_decision": _model_dump_or_value(watchtower_decision)
+            if watchtower_decision is not None
+            else {},
+            "mode_override_reason": mode_override_reason,
+        },
+        metadata={
+            "execution_mode": execution_mode,
+            "source": source,
+            "protocol_id": protocol_id,
+            "strategy_pack_id": watchtower_pack,
+            "mode_override_reason": mode_override_reason,
         },
     )
 
@@ -1081,6 +1177,7 @@ __all__ = [
     "ticket_from_context_selection",
     "ticket_from_delivery_review",
     "ticket_from_emergent_switch",
+    "ticket_from_execution_mode_selection",
     "ticket_from_llm_route",
     "ticket_from_memory_policy_selection",
     "ticket_from_preflight_guard",

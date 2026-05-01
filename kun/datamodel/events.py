@@ -21,6 +21,7 @@ EventKind = Literal[
     "task.created",
     "task.started",
     "task.route.selected",
+    "task.execution_mode.selected",
     "task.step.completed",
     "task.pre_conflict_detected",
     "task.preflight_guard.evaluated",

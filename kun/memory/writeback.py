@@ -259,6 +259,8 @@ def _execution_path_from_tickets(tickets: list[DecisionTicket]) -> dict[str, Any
             # distinguish “protocol won” from “strategy pack won”.
             strategy_pack_id = strategy_pack_id or protocol_id
             execution_mode = str(ticket.metadata.get("execution_mode") or execution_mode)
+        elif ticket.decision_point == "execution_mode_selected":
+            execution_mode = str(ticket.metadata.get("execution_mode") or execution_mode)
         elif ticket.decision_point == "llm_model_selected":
             _append_unique(model_routes, ticket.selected_action)
         elif ticket.decision_point == "skill_selected":

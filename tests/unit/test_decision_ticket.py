@@ -11,6 +11,7 @@ from kun.datamodel.decision_ticket import (
     ticket_from_context_selection,
     ticket_from_delivery_review,
     ticket_from_emergent_switch,
+    ticket_from_execution_mode_selection,
     ticket_from_llm_route,
     ticket_from_memory_policy_selection,
     ticket_from_preflight_guard,
@@ -73,6 +74,27 @@ def test_watchtower_decision_ticket_wraps_strategy_choice() -> None:
     assert ticket.status == "applied"
     assert ticket.metadata["strategy_pack_id"] == "coding"
     assert ticket.ref().ticket_id == ticket.ticket_id
+
+
+def test_execution_mode_ticket_records_final_sparse_depth() -> None:
+    ticket = ticket_from_execution_mode_selection(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        risk_level="medium",
+        execution_mode="MAX",
+        task_type="coding.python",
+        complexity_score=0.82,
+        estimated_cost_usd=0.45,
+        watchtower_decision=_Decision(),
+    )
+
+    assert ticket.phase == "watchtower"
+    assert ticket.decision_point == "execution_mode_selected"
+    assert ticket.selected_action == "watchtower:MAX"
+    assert ticket.status == "applied"
+    assert ticket.metadata["execution_mode"] == "MAX"
+    assert ticket.evidence["watchtower_decision"]["strategy_pack_id"] == "coding"
+    assert "FAST" in ticket.alternatives
 
 
 def test_value_gate_ticket_maps_intervention_status() -> None:

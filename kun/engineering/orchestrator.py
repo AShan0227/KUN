@@ -49,6 +49,7 @@ from kun.datamodel.decision_ticket import (
     ticket_from_context_selection,
     ticket_from_delivery_review,
     ticket_from_emergent_switch,
+    ticket_from_execution_mode_selection,
     ticket_from_llm_route,
     ticket_from_memory_policy_selection,
     ticket_from_preflight_guard,
@@ -803,6 +804,41 @@ class Orchestrator:
                 )
             except Exception:
                 log.exception("watchtower.decision_plane.failed (non-fatal)")
+
+        execution_mode_ticket = ticket_from_execution_mode_selection(
+            tenant_id=tenant.tenant_id,
+            task_id=task_ref.meta.task_id,
+            risk_level=task_ref.meta.risk_level,
+            execution_mode=task_ref.meta.execution_mode,
+            task_type=task_ref.meta.task_type,
+            complexity_score=task_ref.meta.complexity_score,
+            estimated_cost_usd=task_ref.meta.estimated_cost_usd,
+            mode_override_reason=task_ref.meta.mode_override_reason,
+            active_protocol=active_protocol,
+            watchtower_decision=watchtower_decision,
+            mission_id=_mission_id_from_task(task_ref),
+        )
+        decision_tickets.append(execution_mode_ticket)
+        self._record_state_ledger("record_decision_ticket", execution_mode_ticket)
+        async with session_scope(tenant_id=tenant.tenant_id) as s:
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant.tenant_id,
+                    event_type="task.execution_mode.selected",
+                    payload=execution_mode_ticket.event_payload(),
+                    task_ref=task_ref.meta.task_id,
+                ),
+            )
+        yield OrchestratorEvent(
+            kind="action_plan",
+            data={
+                "stage": "execution_mode",
+                "task_id": task_ref.meta.task_id,
+                "execution_mode": task_ref.meta.execution_mode,
+                "decision_ticket": execution_mode_ticket.event_payload(),
+            },
+        )
 
         # 4. Planning
         plan = await self.planner.plan(task_ref, router=self.llm_router)

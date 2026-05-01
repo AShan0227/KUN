@@ -14,6 +14,7 @@ from kun.context.packer import ContextPacker
 from kun.context.storage import InMemoryAssetStore
 from kun.datamodel.decision_ticket import (
     ticket_from_context_selection,
+    ticket_from_execution_mode_selection,
     ticket_from_protocol_applied,
     ticket_from_skill_selection,
     ticket_from_watchtower_decision,
@@ -232,6 +233,15 @@ async def test_task_result_memory_records_execution_path_for_strategy_reuse() ->
             ]
         ),
     )
+    execution_mode_ticket = ticket_from_execution_mode_selection(
+        tenant_id="tenant-v3",
+        task_id=task_ref.meta.task_id,
+        risk_level=task_ref.meta.risk_level,
+        execution_mode="MAX",
+        task_type=task_ref.meta.task_type,
+        complexity_score=task_ref.meta.complexity_score,
+        estimated_cost_usd=task_ref.meta.estimated_cost_usd,
+    )
     skill_ticket = ticket_from_skill_selection(
         tenant_id="tenant-v3",
         task_id=task_ref.meta.task_id,
@@ -255,7 +265,7 @@ async def test_task_result_memory_records_execution_path_for_strategy_reuse() ->
         validation_score=0.9,
         surprise_score=0.2,
         score_overall=0.88,
-        decision_tickets=[watchtower_ticket, context_ticket, skill_ticket],
+        decision_tickets=[watchtower_ticket, execution_mode_ticket, context_ticket, skill_ticket],
     )
     assets = await store.list(tenant_id="tenant-v3", asset_kind="memory")
     result_asset = next(
@@ -263,12 +273,12 @@ async def test_task_result_memory_records_execution_path_for_strategy_reuse() ->
     )
 
     assert result_asset.l1_metadata["strategy_pack_id"] == "education"
-    assert result_asset.l1_metadata["execution_mode"] == "SMART"
+    assert result_asset.l1_metadata["execution_mode"] == "MAX"
     assert result_asset.l1_metadata["skill_ids"] == ["lesson_planner"]
     assert result_asset.l1_metadata["context_asset_ids"] == ["memory-1"]
     assert result_asset.l1_metadata["decision_path"][0]["decision_point"] == "strategy_selected"
     assert "education" in result_asset.tags
-    assert "SMART" in result_asset.tags
+    assert "MAX" in result_asset.tags
 
 
 @pytest.mark.unit
