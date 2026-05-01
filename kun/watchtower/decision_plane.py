@@ -24,6 +24,7 @@ from kun.engineering.credit_assignment import get_contribution_tracker
 from kun.engineering.memory_invocation_policy import decide_memory_invocation_for_task
 from kun.memory.similar_task_recall import (
     SimilarTaskExperience,
+    summarize_strategy_penalties,
     summarize_strategy_votes,
 )
 
@@ -130,10 +131,12 @@ class WatchtowerDecisionPlane:
     ) -> WatchtowerDecision:
         similar_experiences = similar_experiences or []
         strategy_votes = summarize_strategy_votes(similar_experiences)
+        strategy_penalties = summarize_strategy_penalties(similar_experiences)
         pack, pack_score = self._select_pack(
             task_ref,
             similar_experiences=similar_experiences,
             strategy_votes=strategy_votes,
+            strategy_penalties=strategy_penalties,
         )
         protocol_mode = _protocol_execution_mode(active_protocol)
         mission_adjustment = _mission_strategy_adjustment(mission_strategy)
@@ -191,6 +194,9 @@ class WatchtowerDecisionPlane:
         if strategy_votes:
             top_vote = next(iter(strategy_votes.items()))
             reason += f"; similar_experience={top_vote[0]}:{top_vote[1]:.2f}"
+        if strategy_penalties:
+            top_penalty = next(iter(strategy_penalties.items()))
+            reason += f"; similar_failed_path={top_penalty[0]}:{top_penalty[1]:.2f}"
         if process_skill_hints:
             reason += f"; process_skill_hints={','.join(process_skill_hints[:3])}"
         shadow_matches = _shadow_pack_matches(
@@ -233,11 +239,13 @@ class WatchtowerDecisionPlane:
                         "score_overall": item.score_overall,
                         "similarity_score": item.similarity_score,
                         "positive_weight": item.positive_weight,
+                        "negative_weight": item.negative_weight,
                         "reason": item.reason,
                     }
                     for item in similar_experiences[:5]
                 ],
                 "similar_strategy_votes": strategy_votes,
+                "similar_strategy_penalties": strategy_penalties,
                 "process_experience_skill_hints": process_skill_hints,
                 "memory_invocation_policy": memory_invocation.model_dump(mode="json"),
                 "memory_policy": memory_policy.model_dump(mode="json"),
@@ -265,6 +273,7 @@ class WatchtowerDecisionPlane:
         *,
         similar_experiences: list[SimilarTaskExperience] | None = None,
         strategy_votes: dict[str, float] | None = None,
+        strategy_penalties: dict[str, float] | None = None,
     ) -> tuple[StrategyPack, float]:
         scored = [
             (
@@ -275,6 +284,11 @@ class WatchtowerDecisionPlane:
                     pack.pack_id,
                     similar_experiences=similar_experiences or [],
                     strategy_votes=strategy_votes or {},
+                )
+                - _similar_experience_penalty(
+                    pack.pack_id,
+                    similar_experiences=similar_experiences or [],
+                    strategy_penalties=strategy_penalties or {},
                 ),
             )
             for pack in self.packs
@@ -761,6 +775,22 @@ def _similar_experience_bonus(
     if vote <= 0:
         return 0.0
     return min(0.45, vote * 0.35)
+
+
+def _similar_experience_penalty(
+    pack_id: str,
+    *,
+    similar_experiences: list[SimilarTaskExperience],
+    strategy_penalties: dict[str, float],
+) -> float:
+    """Cold-start negative MoE feedback from failed similar memories."""
+
+    if not similar_experiences:
+        return 0.0
+    penalty = float(strategy_penalties.get(pack_id, 0.0))
+    if penalty <= 0:
+        return 0.0
+    return min(0.40, penalty * 0.32)
 
 
 def _skill_hints_from_process_experiences(

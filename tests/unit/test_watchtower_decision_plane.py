@@ -23,6 +23,7 @@ from kun.memory.similar_task_recall import (
     SimilarTaskExperience,
     recall_similar_task_experiences,
     summarize_execution_process_experiences,
+    summarize_strategy_penalties,
     summarize_strategy_votes,
 )
 from kun.watchtower.decision_plane import WatchtowerDecisionPlane, load_qi_shadow_strategy_packs
@@ -329,6 +330,41 @@ async def test_similar_task_recall_extracts_strategy_votes_from_memory() -> None
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_similar_task_recall_summarizes_failed_strategy_penalties() -> None:
+    store = InMemoryAssetStore()
+    task_ref = _task_ref(task_type="business.growth", text="帮我做增长策略")
+    await store.put(
+        LayeredAsset.build(
+            "memory",
+            "u-sylvan",
+            metadata={
+                "memory_layer": "task_result",
+                "task_type": "business.growth",
+                "status": "failed",
+                "validation_outcome": "fail",
+                "score_overall": 0.1,
+                "strategy_pack_id": "commercialization",
+            },
+            summary="任务结果: 商业化增长方案失败, 成本高且没有转化。",
+            layer=AssetLayer.L2_PROJECT,
+            tags=["v3", "task_result", "business.growth", "commercialization"],
+        )
+    )
+
+    experiences = await recall_similar_task_experiences(
+        tenant_id="u-sylvan",
+        task_ref=task_ref,
+        store=store,
+    )
+
+    assert experiences
+    assert experiences[0].positive_weight == 0
+    assert experiences[0].negative_weight > 0
+    assert summarize_strategy_penalties(experiences)["commercialization"] > 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_similar_task_recall_returns_execution_process_experience() -> None:
     store = InMemoryAssetStore()
     task_ref = _task_ref(
@@ -392,6 +428,32 @@ def test_decision_plane_uses_similar_experience_as_moe_signal() -> None:
     assert decision.metadata["similar_experience_count"] == 1
     assert decision.metadata["similar_strategy_votes"]["commercialization"] > 0
     assert "similar_experience=commercialization" in decision.reason
+
+
+@pytest.mark.unit
+def test_decision_plane_avoids_failed_similar_strategy_path() -> None:
+    task_ref = _task_ref(task_type="general", text="帮我想一个新业务方案")
+    decision = WatchtowerDecisionPlane().decide(
+        task_ref,
+        similar_experiences=[
+            SimilarTaskExperience(
+                asset_id="bad-business-1",
+                memory_layer="task_result",
+                task_type="business.growth",
+                summary="上一轮类似任务走商业化策略失败。",
+                strategy_pack_id="commercialization",
+                validation_outcome="fail",
+                status="failed",
+                score_overall=0.05,
+                similarity_score=1.0,
+                reason="text_overlap",
+            )
+        ],
+    )
+
+    assert decision.strategy_pack_id != "commercialization"
+    assert decision.metadata["similar_strategy_penalties"]["commercialization"] > 0
+    assert "similar_failed_path=commercialization" in decision.reason
 
 
 @pytest.mark.unit

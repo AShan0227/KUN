@@ -57,6 +57,17 @@ class SimilarTaskExperience(BaseModel):
             base = (base + max(0.0, min(1.0, self.score_overall))) / 2.0
         return round(base * self.similarity_score, 4)
 
+    @property
+    def negative_weight(self) -> float:
+        """How strongly this experience should warn against its path."""
+
+        if self.validation_outcome != "fail" and self.status != "failed":
+            return 0.0
+        base = 1.0
+        if self.score_overall is not None:
+            base = (base + (1.0 - max(0.0, min(1.0, self.score_overall)))) / 2.0
+        return round(base * self.similarity_score, 4)
+
 
 async def recall_similar_task_experiences(
     *,
@@ -130,6 +141,25 @@ def summarize_strategy_votes(
     return {
         key: round(value, 4)
         for key, value in sorted(votes.items(), key=lambda item: (-item[1], item[0]))
+    }
+
+
+def summarize_strategy_penalties(
+    experiences: list[SimilarTaskExperience],
+) -> dict[str, float]:
+    """Aggregate failed similar-task evidence so MoE can avoid bad paths."""
+
+    penalties: defaultdict[str, float] = defaultdict(float)
+    for experience in experiences:
+        if not experience.strategy_pack_id:
+            continue
+        weight = experience.negative_weight
+        if weight <= 0:
+            continue
+        penalties[experience.strategy_pack_id] += weight
+    return {
+        key: round(value, 4)
+        for key, value in sorted(penalties.items(), key=lambda item: (-item[1], item[0]))
     }
 
 
@@ -328,5 +358,6 @@ __all__ = [
     "SimilarTaskExperience",
     "recall_similar_task_experiences",
     "summarize_execution_process_experiences",
+    "summarize_strategy_penalties",
     "summarize_strategy_votes",
 ]
