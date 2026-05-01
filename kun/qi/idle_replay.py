@@ -34,9 +34,12 @@ ReplayEvaluatorKind = Literal["heuristic", "local_model", "strong_model"]
 HEURISTIC_IDLE_REPLAY_ENGINE = "heuristic_local"
 HEURISTIC_REPLAY_EVALUATOR = "heuristic_replay_pool_v1"
 LOCAL_MODEL_REPLAY_EVALUATOR = "local_model_replay_pool"
+CHEAP_ROUTER_REPLAY_EVALUATOR = "cheap_router_replay_pool"
 STRONG_MODEL_REPLAY_EVALUATOR = "strong_model_replay_pool"
 LOCAL_MODEL_REPLAY_EVALUATOR_CMD_ENV = "KUN_QI_LOCAL_REPLAY_EVALUATOR_CMD"
 LOCAL_MODEL_REPLAY_TIMEOUT_ENV = "KUN_QI_LOCAL_REPLAY_TIMEOUT_SEC"
+CHEAP_ROUTER_REPLAY_ENABLED_ENV = "KUN_QI_CHEAP_REPLAY_ENABLED"
+CHEAP_ROUTER_REPLAY_MAX_TOKENS_ENV = "KUN_QI_CHEAP_REPLAY_MAX_TOKENS"
 STRONG_MODEL_REPLAY_ENABLED_ENV = "KUN_QI_STRONG_REVIEW_ENABLED"
 STRONG_MODEL_REPLAY_MAX_TOKENS_ENV = "KUN_QI_STRONG_REVIEW_MAX_TOKENS"
 
@@ -360,6 +363,143 @@ class CommandLocalReplayModelEvaluator:
         )
 
 
+class CheapRouterReplayModelEvaluator:
+    """Use KUN's cheap judge route as Qi's opt-in low-cost evaluator.
+
+    This is the middle lane between a truly local command evaluator and a
+    strong-model review.  It lets Qi cheaply inspect old failures or completed
+    tasks through the normal model router, while keeping the result review-only
+    so it cannot silently change production routing.
+    """
+
+    def __init__(
+        self,
+        router: Any,
+        *,
+        evaluator_name: str = CHEAP_ROUTER_REPLAY_EVALUATOR,
+        max_tokens: int = 500,
+    ) -> None:
+        self.router = router
+        self.evaluator_name = evaluator_name
+        self.max_tokens = max(160, max_tokens)
+
+    async def evaluate(
+        self,
+        item: StrategyCandidate | StrategyPackDraft,
+    ) -> ReplayEvaluationRecord:
+        from kun.interface.llm.base import LLMMessage, LLMRequest, TaskProfile
+
+        normalized = _normalize_evaluation_target(item)
+        request = LLMRequest(
+            messages=[
+                LLMMessage(
+                    role="system",
+                    content=(
+                        "You are Qi's cheap replay evaluator. Score this lab-only "
+                        "strategy proposal. Return strict JSON only. Do not approve "
+                        "production promotion. Prefer concise, practical evidence."
+                    ),
+                ),
+                LLMMessage(
+                    role="user",
+                    content=json.dumps(
+                        {
+                            "target": normalized,
+                            "item": item.model_dump(mode="json"),
+                            "contract": {
+                                "output": {
+                                    "score": "0..1 float",
+                                    "notes": "list[str], concise",
+                                    "risk": "low|medium|high|critical",
+                                    "requires_strong_review": "bool",
+                                    "evidence": "object",
+                                },
+                                "promotion_allowed": False,
+                                "production_action": False,
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            ],
+            temperature=0.1,
+            max_tokens=self.max_tokens,
+            profile=TaskProfile(
+                task_type=f"qi.cheap_replay.{normalized['target_kind']}",
+                risk_level=normalized["risk"],
+                needs_reasoning=False,
+                prefer_speed=True,
+            ),
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "qi_cheap_replay_evaluation",
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": True,
+                        "properties": {
+                            "score": {"type": "number"},
+                            "notes": {"type": "array", "items": {"type": "string"}},
+                            "risk": {
+                                "type": "string",
+                                "enum": ["low", "medium", "high", "critical"],
+                            },
+                            "requires_strong_review": {"type": "boolean"},
+                            "evidence": {"type": "object"},
+                        },
+                        "required": ["score", "notes", "risk"],
+                    },
+                },
+            },
+        )
+        response = await self.router.invoke(request, purpose="judge")
+        raw = _json_object_from_text(response.content)
+        model_risk = _normalize_risk(raw.get("risk") or normalized["risk"])
+        risk = _max_risk(_normalize_risk(normalized["risk"]), model_risk)
+        requires_strong_review = bool(
+            normalized["requires_strong_review"] or raw.get("requires_strong_review")
+        )
+        notes = _string_list(raw.get("notes"))
+        notes.extend(["cheap_router_model", "review_required_before_any_adoption"])
+        raw_evidence = raw.get("evidence")
+        evidence: dict[str, Any] = raw_evidence if isinstance(raw_evidence, dict) else {}
+        actual_cost = (
+            float(response.cost_usd_equivalent or 0.0)
+            or float(response.cost_usd_actual or 0.0)
+            or _evaluation_cost_estimate(item, evaluator_kind="local_model")
+        )
+        return ReplayEvaluationRecord(
+            evaluation_id=_evaluation_id(
+                normalized["target_id"],
+                self.evaluator_name,
+                "evaluated",
+            ),
+            target_id=normalized["target_id"],
+            target_kind=normalized["target_kind"],
+            evaluator=self.evaluator_name,
+            evaluator_kind="local_model",
+            status="evaluated",
+            score=_clamped_float(raw.get("score"), default=0.0),
+            cost_estimate_usd=round(actual_cost, 6),
+            risk=risk,
+            requires_strong_review=requires_strong_review,
+            notes=_dedupe(notes),
+            evidence={
+                "review_only": True,
+                "promotion_allowed": False,
+                "production_action": False,
+                "target_summary": normalized["summary"],
+                "target_task_type": normalized["task_type"],
+                "cheap_router_provider": response.provider,
+                "cheap_router_model": response.model,
+                "cheap_router_tier": response.tier,
+                "route_debug": response.route_debug,
+                "raw_response_preview": response.content[:800],
+                **evidence,
+            },
+        )
+
+
 class StrongReplayModelEvaluator:
     """Use KUN's LLM router as an opt-in strong judge for Qi drafts.
 
@@ -514,17 +654,26 @@ class StrongReplayModelEvaluator:
 def configured_local_replay_model_evaluator_from_env() -> LocalReplayModelEvaluator | None:
     """Return Qi's optional local replay evaluator if configured.
 
-    The evaluator command is intentionally not guessed.  Operators must provide
-    it explicitly so KUN does not pretend a local model exists.
+    The command evaluator has priority because it can point at a truly local
+    model.  When no command is configured, operators may opt into KUN's normal
+    cheap judge route with ``KUN_QI_CHEAP_REPLAY_ENABLED=1``.  Both paths remain
+    review-only and cannot promote anything into production by themselves.
     """
 
     command_text = (os.getenv(LOCAL_MODEL_REPLAY_EVALUATOR_CMD_ENV) or "").strip()
-    if not command_text:
+    if command_text:
+        timeout = _env_float(LOCAL_MODEL_REPLAY_TIMEOUT_ENV, default=30.0)
+        return CommandLocalReplayModelEvaluator(
+            shlex.split(command_text),
+            timeout_sec=timeout,
+        )
+    if not _env_bool(CHEAP_ROUTER_REPLAY_ENABLED_ENV, default=False):
         return None
-    timeout = _env_float(LOCAL_MODEL_REPLAY_TIMEOUT_ENV, default=30.0)
-    return CommandLocalReplayModelEvaluator(
-        shlex.split(command_text),
-        timeout_sec=timeout,
+    from kun.interface.llm.router import get_router
+
+    return CheapRouterReplayModelEvaluator(
+        get_router(),
+        max_tokens=_env_int(CHEAP_ROUTER_REPLAY_MAX_TOKENS_ENV, default=500),
     )
 
 
@@ -1528,10 +1677,13 @@ def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
 
 
 __all__ = [
+    "CHEAP_ROUTER_REPLAY_ENABLED_ENV",
+    "CHEAP_ROUTER_REPLAY_EVALUATOR",
     "HEURISTIC_IDLE_REPLAY_ENGINE",
     "HEURISTIC_REPLAY_EVALUATOR",
     "LOCAL_MODEL_REPLAY_EVALUATOR",
     "LOCAL_MODEL_REPLAY_EVALUATOR_CMD_ENV",
+    "CheapRouterReplayModelEvaluator",
     "CommandLocalReplayModelEvaluator",
     "IdleReplayEvaluationPool",
     "IdleReplayGenerator",

@@ -649,6 +649,13 @@ class QiIdleReplayStep(IdleBatchStep):
             evaluator_kind=evaluator_kind,
             local_model_evaluator=local_model_evaluator,
         )
+        qi_budget_usage: list[dict[str, Any]] = [
+            _charge_qi_budget_for_evaluations(
+                tenant_id,
+                evaluations.records,
+                reason="qi_idle_replay.base_evaluation",
+            )
+        ]
         strong_model_evaluator = configured_strong_replay_model_evaluator_from_env()
         strong_review_items = [draft for draft in drafts if draft.requires_strong_review]
         strong_review_pool: dict[str, Any] = {
@@ -657,14 +664,16 @@ class QiIdleReplayStep(IdleBatchStep):
             "production_action": False,
         }
         if strong_model_evaluator is not None and strong_review_items:
+            strong_review_max_cost = _float(
+                os.getenv("KUN_QI_STRONG_REVIEW_MAX_COST_USD"),
+                default=0.12,
+            )
+            qi_budget_remaining = _qi_budget_remaining(tenant_id)
             strong_reviews = await evaluate_idle_replay_pool(
                 strong_review_items,
                 budget=ReplayEvaluationBudget(
                     max_items=_int_env("KUN_QI_STRONG_REVIEW_MAX_ITEMS", 2),
-                    max_cost_usd=_float(
-                        os.getenv("KUN_QI_STRONG_REVIEW_MAX_COST_USD"),
-                        default=0.12,
-                    ),
+                    max_cost_usd=min(strong_review_max_cost, qi_budget_remaining),
                     max_concurrency=1,
                 ),
                 evaluator_kind="strong_model",
@@ -672,6 +681,17 @@ class QiIdleReplayStep(IdleBatchStep):
             )
             strong_review_pool = strong_reviews.model_dump(mode="json")
             strong_review_pool["enabled"] = True
+            strong_review_pool["qi_daily_budget_remaining_before_usd"] = round(
+                qi_budget_remaining,
+                6,
+            )
+            qi_budget_usage.append(
+                _charge_qi_budget_for_evaluations(
+                    tenant_id,
+                    strong_reviews.records,
+                    reason="qi_idle_replay.strong_review",
+                )
+            )
         lab_replay_pool = await run_qi_lab_replay_pool(
             drafts,
             histories,
@@ -734,6 +754,7 @@ class QiIdleReplayStep(IdleBatchStep):
             "strong_review_engine": "strong_model"
             if strong_model_evaluator is not None
             else "disabled",
+            "qi_budget_usage": qi_budget_usage,
             "lab_replay_pool": lab_replay_pool.model_dump(mode="json"),
             "tree_search_pool": tree_search_pool.model_dump(mode="json"),
             "strategy_review_package_summary": _strategy_review_package_summary(
@@ -2213,6 +2234,101 @@ def _int_env(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
     except ValueError:
         return default
+
+
+def _qi_budget_remaining(tenant_id: str) -> float:
+    try:
+        from kun.qi import get_qi_budget
+
+        return get_qi_budget().remaining_budget(tenant_id)
+    except Exception:
+        log.debug("qi_budget.remaining_failed", tenant_id=tenant_id, exc_info=True)
+        return 0.0
+
+
+def _charge_qi_budget_for_evaluations(
+    tenant_id: str,
+    records: list[Any],
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    chargeable = [
+        _float(_record_value(record, "cost_estimate_usd"))
+        for record in records
+        if _record_should_charge_qi_budget(record)
+    ]
+    cost_usd = round(sum(cost for cost in chargeable if cost > 0), 6)
+    if cost_usd <= 0:
+        return {
+            "reason": reason,
+            "charged_usd": 0.0,
+            "charged_records": 0,
+            "status": "no_charge",
+        }
+    try:
+        from kun.qi import QiBudgetExhaustedError, get_qi_budget
+
+        spent = get_qi_budget().add_cost(tenant_id, cost_usd)
+        return {
+            "reason": reason,
+            "charged_usd": cost_usd,
+            "charged_records": len(chargeable),
+            "today_spent_usd": round(spent, 6),
+            "status": "charged",
+        }
+    except QiBudgetExhaustedError as exc:
+        log.warning(
+            "qi_budget.charge_exhausted",
+            tenant_id=tenant_id,
+            reason=reason,
+            cost_usd=cost_usd,
+            error=str(exc),
+        )
+        return {
+            "reason": reason,
+            "charged_usd": 0.0,
+            "attempted_charge_usd": cost_usd,
+            "charged_records": len(chargeable),
+            "status": "budget_exhausted",
+            "error": str(exc),
+        }
+    except Exception as exc:
+        log.warning(
+            "qi_budget.charge_failed",
+            tenant_id=tenant_id,
+            reason=reason,
+            cost_usd=cost_usd,
+            error=str(exc),
+        )
+        return {
+            "reason": reason,
+            "charged_usd": 0.0,
+            "attempted_charge_usd": cost_usd,
+            "charged_records": len(chargeable),
+            "status": "charge_failed",
+            "error": str(exc),
+        }
+
+
+def _record_should_charge_qi_budget(record: Any) -> bool:
+    if str(_record_value(record, "status") or "") != "evaluated":
+        return False
+    kind = str(_record_value(record, "evaluator_kind") or "")
+    if kind == "strong_model":
+        return True
+    if kind != "local_model":
+        return False
+    evidence = _record_value(record, "evidence")
+    if isinstance(evidence, dict) and evidence.get("cheap_router_provider"):
+        return True
+    notes = _record_value(record, "notes")
+    return isinstance(notes, list) and "cheap_router_model" in {str(item) for item in notes}
+
+
+def _record_value(record: Any, key: str) -> Any:
+    if isinstance(record, dict):
+        return record.get(key)
+    return getattr(record, key, None)
 
 
 def _spread(values: Any) -> float:

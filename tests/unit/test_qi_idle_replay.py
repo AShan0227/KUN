@@ -8,6 +8,7 @@ import pytest
 from kun.interface.llm.base import LLMResponse
 from kun.qi.idle_replay import (
     HEURISTIC_IDLE_REPLAY_ENGINE,
+    CheapRouterReplayModelEvaluator,
     CommandLocalReplayModelEvaluator,
     IdleReplayGenerator,
     ReplayEvaluationBudget,
@@ -316,6 +317,67 @@ class _FakeStrongReviewRouter:
             cost_usd_equivalent=0.05,
             route_debug={"primary_tier": "top"},
         )
+
+
+class _FakeCheapReviewRouter:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, str]] = []
+
+    async def invoke(self, request: Any, *, purpose: str = "execution") -> LLMResponse:
+        self.calls.append((request, purpose))
+        return LLMResponse(
+            content=json.dumps(
+                {
+                    "score": 0.68,
+                    "notes": ["cheap_router_vote"],
+                    "risk": "medium",
+                    "requires_strong_review": False,
+                    "evidence": {"judge": "fake-cheap-router"},
+                }
+            ),
+            provider="fake",
+            model="fake-cheap-judge",
+            tier="cheap",
+            cost_usd_equivalent=0.006,
+            route_debug={"primary_tier": "cheap"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_cheap_router_replay_evaluator_is_review_only() -> None:
+    draft = generate_idle_replay_candidates(
+        [
+            {
+                "history_id": "hist-cheap-router",
+                "task_type": "growth.ad",
+                "summary": "Successful ad task used explicit hook variants and budget guardrail",
+                "outcome": "completed",
+                "risk": "medium",
+            }
+        ]
+    )[0].to_strategy_pack_draft()
+    router = _FakeCheapReviewRouter()
+
+    result = await evaluate_idle_replay_pool(
+        [draft],
+        evaluator_kind="local_model",
+        local_model_evaluator=CheapRouterReplayModelEvaluator(router),
+        budget=ReplayEvaluationBudget(max_items=1, max_cost_usd=1.0, max_concurrency=1),
+    )
+
+    assert result.evaluated == 1
+    assert router.calls[0][1] == "judge"
+    request = router.calls[0][0]
+    assert request.profile.prefer_speed is True
+    record = result.records[0]
+    assert record.evaluator_kind == "local_model"
+    assert record.evaluator == "cheap_router_replay_pool"
+    assert record.score == 0.68
+    assert record.cost_estimate_usd == 0.006
+    assert record.evidence["judge"] == "fake-cheap-router"
+    assert "cheap_router_model" in record.notes
+    assert record.promotion_allowed is False
+    assert record.production_action is False
 
 
 @pytest.mark.asyncio

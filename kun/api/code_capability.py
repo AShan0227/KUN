@@ -511,6 +511,13 @@ async def _store_code_skill_draft(
         return ""
     try:
         await get_store().put(asset)
+        await _enqueue_code_strategy_search_signal_if_needed(
+            tenant_id=tenant_id,
+            task_id=task_id,
+            result=result,
+            skill_draft_asset_id=asset.asset_id,
+            strategy_search_records=strategy_search_records,
+        )
         return asset.asset_id
     except Exception:
         log.warning(
@@ -519,6 +526,59 @@ async def _store_code_skill_draft(
             exc_info=True,
         )
         return ""
+
+
+async def _enqueue_code_strategy_search_signal_if_needed(
+    *,
+    tenant_id: str,
+    task_id: str,
+    result: ChangeWorkflowResult,
+    skill_draft_asset_id: str,
+    strategy_search_records: list[dict[str, object]],
+) -> None:
+    """Let Qi keep improving code workflows from successful strategy searches."""
+
+    if not strategy_search_records:
+        return
+    try:
+        await persist_problem_signals(
+            [
+                QiProblemSignal.build(
+                    tenant_id=tenant_id,
+                    category="delivery",
+                    severity="info",
+                    summary=(
+                        "CodeCapability found a review-only strategy search "
+                        f"candidate for {result.path}"
+                    ),
+                    source="code_capability.strategy_search",
+                    task_type="coding.strategy_search",
+                    evidence={
+                        "task_id": task_id,
+                        "path": result.path,
+                        "mode": result.mode,
+                        "phase": result.phase,
+                        "applied": result.applied,
+                        "rolled_back": result.rolled_back,
+                        "bytes_changed": result.bytes_changed,
+                        "skill_draft_asset_id": skill_draft_asset_id,
+                        "strategy_search_records": strategy_search_records,
+                        "queue_intent": "qi_code_strategy_search_review",
+                        "production_action": False,
+                    },
+                )
+            ]
+        )
+    except Exception:
+        log.warning(
+            "code_capability.strategy_search_signal_failed",
+            extra={
+                "task_id": task_id,
+                "path": result.path,
+                "skill_draft_asset_id": skill_draft_asset_id,
+            },
+            exc_info=True,
+        )
 
 
 def _change_checks_passed(result: ChangeWorkflowResult) -> bool:

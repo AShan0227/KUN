@@ -819,6 +819,55 @@ async def test_qi_idle_replay_step_uses_configured_local_model_command(monkeypat
 
 
 @pytest.mark.unit
+def test_qi_budget_charges_only_router_and_strong_model_evaluations() -> None:
+    from kun.qi import get_qi_budget, reset_qi_budget
+
+    reset_qi_budget()
+    budget = get_qi_budget()
+    budget.set_daily_limit(1.0)
+
+    summary = idle_batch._charge_qi_budget_for_evaluations(
+        "t-budget",
+        [
+            SimpleNamespace(
+                status="evaluated",
+                evaluator_kind="local_model",
+                cost_estimate_usd=0.02,
+                notes=["cheap_router_model"],
+                evidence={"cheap_router_provider": "fake"},
+            ),
+            SimpleNamespace(
+                status="evaluated",
+                evaluator_kind="strong_model",
+                cost_estimate_usd=0.04,
+                notes=["strong_model_review"],
+                evidence={},
+            ),
+            SimpleNamespace(
+                status="evaluated",
+                evaluator_kind="local_model",
+                cost_estimate_usd=0.50,
+                notes=["local_model_command"],
+                evidence={},
+            ),
+            SimpleNamespace(
+                status="skipped_budget_exhausted",
+                evaluator_kind="strong_model",
+                cost_estimate_usd=0.30,
+                notes=[],
+                evidence={},
+            ),
+        ],
+        reason="test",
+    )
+
+    assert summary["status"] == "charged"
+    assert summary["charged_records"] == 2
+    assert summary["charged_usd"] == 0.06
+    assert budget.get_today_spent("t-budget") == 0.06
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_compiler_sync_sources_step_is_opt_in(monkeypatch) -> None:
     monkeypatch.delenv("KUN_COMPILER_SYNC_SOURCE_FILES", raising=False)

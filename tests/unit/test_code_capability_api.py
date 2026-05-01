@@ -214,6 +214,7 @@ def test_propose_change_api_records_event_and_state_ledger(
     app.state.state_ledger = ledger
     emitted: list[Any] = []
     credit_inputs: list[Any] = []
+    persisted_signals: list[Any] = []
     draft_store = _FakeAssetStore()
 
     @asynccontextmanager
@@ -230,9 +231,14 @@ def test_propose_change_api_records_event_and_state_ledger(
         credit_inputs.append({"tenant_id": tenant_id, "credit": credit})
         return {}
 
+    async def fake_persist_problem_signals(signals: list[Any]) -> int:
+        persisted_signals.extend(signals)
+        return len(signals)
+
     monkeypatch.setattr(code_api, "session_scope", fake_session_scope)
     monkeypatch.setattr(code_api, "emit", fake_emit)
     monkeypatch.setattr(code_api, "persist_code_change_credit_report", fake_persist_credit)
+    monkeypatch.setattr(code_api, "persist_problem_signals", fake_persist_problem_signals)
     monkeypatch.setattr(code_api, "get_store", lambda: draft_store)
 
     client = TestClient(app)
@@ -290,6 +296,16 @@ def test_propose_change_api_records_event_and_state_ledger(
     assert credit.phase == "done"
     assert credit.ok is True
     assert credit.checks_passed is True
+    assert persisted_signals
+    signal = persisted_signals[0]
+    assert signal.source == "code_capability.strategy_search"
+    assert signal.category == "delivery"
+    assert signal.task_type == "coding.strategy_search"
+    assert signal.evidence["task_id"] == "task-code-1"
+    assert signal.evidence["queue_intent"] == "qi_code_strategy_search_review"
+    assert signal.evidence["skill_draft_asset_id"] == draft_store.assets[0].asset_id
+    assert signal.evidence["strategy_search_records"][0]["evaluator_kind"] == "code_tree_search"
+    assert signal.evidence["production_action"] is False
 
 
 @pytest.mark.unit
