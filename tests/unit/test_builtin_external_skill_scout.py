@@ -36,6 +36,60 @@ async def test_external_skill_scout_builtin_returns_review_only_plan() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_external_skill_scout_builtin_can_plan_offline_sources_and_candidates() -> None:
+    autoload_builtins()
+
+    result = await dispatch(
+        "external-skill-scout",
+        {
+            "task_need": {
+                "task_type": "coding.review",
+                "summary": "Need safer TypeScript pull request review behavior.",
+            },
+            "source_registry": [
+                {
+                    "source_kind": "github_repo",
+                    "repo": "example/review-skills",
+                    "name": "Review source",
+                    "description": "TypeScript code review skill templates.",
+                    "license": "MIT",
+                    "commit_sha": "abc123",
+                    "pushed_at": "2026-03-01T00:00:00Z",
+                    "skills": [
+                        {
+                            "name": "TypeScript reviewer",
+                            "description": "Review TypeScript pull requests.",
+                            "files": [{"path": "SKILL.md", "content": "Review diffs."}],
+                        }
+                    ],
+                }
+            ],
+            "candidates": [
+                {
+                    "repo": "example/local-review",
+                    "name": "Local review checklist",
+                    "description": "Review TypeScript code diffs.",
+                    "license": "Apache-2.0",
+                    "commit_sha": "def456",
+                    "files": [{"path": "SKILL.md", "content": "Review code."}],
+                }
+            ],
+        },
+    )
+
+    assert result.ok is True
+    assert result.metadata["offline_only"] is True
+    assert result.metadata["auto_fetch_allowed"] is False
+    assert result.metadata["auto_install_allowed"] is False
+    assert result.output["offline_only"] is True
+    assert result.output["source_reviews"][0]["source_name"] == "Review source"
+    assert result.output["source_reviews"][0]["scorecard"]["license_score"] == 1.0
+    assert result.output["candidate_reviews"]
+    assert result.output["recommended_next_actions"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_external_skill_scout_builtin_rejects_empty_need() -> None:
     autoload_builtins()
 

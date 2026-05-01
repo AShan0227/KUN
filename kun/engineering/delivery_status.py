@@ -392,6 +392,7 @@ def get_v3_delivery_status(
                 "守望决策层会生成 MemoryPolicyTicket，先决定是否用记忆、用哪几类记忆、最多拉几条",
                 "新增 MemoryInvocationPolicy 稀疏调用层：会按任务类型、风险、复杂度、失败重试、显式模式和历史资源信用决定是否用记忆、用哪几层、拉多深",
                 "Context 选择会把具体资产、资产类型、记忆层和策略标签都写入贡献信用；守望下次会消费这些信用，反向影响 MemoryInvocationPolicy",
+                "低信用且有足够历史样本的 memory_layer 会被守望转成 avoid hint；Orchestrator 会把 avoid_memory_layers 真实传给 ContextPacker，避免失败记忆层继续被一锅端塞进 prompt",
                 "Orchestrator 已消费 MemoryPolicyTicket：no_memory 会跳过 context，max_items 会限制 context 拉取数量",
                 "ContextPacker 已消费 MemoryPolicyTicket 的 memory_layers / avoid_memory_layers，能按任务稀疏激活结果记忆、过程记忆、元决策和方法论",
                 "MemoryPolicyTicket 已携带 asset_kinds / preferred_tags，守望策略包能稀疏激活最相关的知识、skill、methodology 和 context 标签",
@@ -426,6 +427,8 @@ def get_v3_delivery_status(
                 "内置 external-skill-scout skill 已接入 dispatcher；执行中发现能力缺口时可生成 review-only 外部能力搜索计划，不联网、不安装、不注册生产 skill",
                 "内置 external-skill-review skill 已接入 dispatcher；执行中可对离线外部 skill/工程模板候选做 review-only 安全鉴别，不联网、不安装、不注册生产 skill",
                 "external_skill_candidate_review 已能消费离线 GitHub repo / skill metadata，也能通过 KUN_EXTERNAL_SKILL_GITHUB_REPOS 显式 opt-in 抓取 GitHub repo 元数据，做来源、许可、执行脚本、外部网络、密钥、文件写入和 sandbox suitability 的保守鉴别，并把 review-only 候选写入 Qi 问题队列；idle-batch 还会用当前 Qi 问题信号和历史任务生成 task need，把外部候选和真实需求做 task-fit review package 匹配",
+                "内置 external-skill-scout 可消费离线 source_registry / candidates，生成外部能力源 + 候选的 review-only scorecard；评分包含安全、许可证、维护度和任务适配度",
+                "external_skill_source_plan 已能把任务缺口、推荐来源、离线 source registry 和候选 metadata 合成一张可审查计划，并写入 Qi/NUO review queue；仍然禁止自动 fetch / install / production registration",
             ],
             evidence_refs=[
                 "kun/memory/writeback.py",
@@ -472,7 +475,7 @@ def get_v3_delivery_status(
                 "MemoryPolicyTicket 已开始消费傩治理标签，傩也会写入显式 Fade/低价值/风险标签，并能把重复治理模式沉淀成 review-only 方法论草稿；只读治理审计已覆盖低价值/重复/高频抽象/长尾/缺信用，但还没做完整 MemPalace/FadeMem 语义抽象和强模型规则蒸馏",
                 "Qi idle replay 目前已有 heuristic_local、可配置本地模型评估口、显式 opt-in 强模型复审口、显式 opt-in KUN-Lab 历史任务回放口、显式 opt-in AI Scientist tree search 证据、草稿审核状态机、shadow/canary 护栏计划和守望影子观测；但仓库不内置具体模型权重，也还没接真实流量 canary 执行链路",
                 "StrategyPack 草稿目前只做 review-only，不会自动 promotion；已经能判断是否可交给人审核、生成推广计划，并进入守望 shadow 观测，但还没接人工批准 UI 或真实实验创建",
-                "external_emergent_scan 目前只消费显式线索；external-skill-scout / external-skill-review / external_skill_candidate_review 已有显式 opt-in GitHub repo 抓取、鉴别闭环、真实任务需求匹配和 Qi review queue 接入，但还没接 arXiv/竞品 changelog 抓取器、自动安装、生产 skill 注册或 canary 推广链路",
+                "external_emergent_scan 目前只消费显式线索；external-skill-scout / external-skill-review / external_skill_candidate_review 已有离线 source/candidate scorecard、显式 opt-in GitHub repo 抓取、鉴别闭环、真实任务需求匹配和 Qi review queue 接入，但还没接 arXiv/竞品 changelog 抓取器、自动安装、生产 skill 注册或 canary 推广链路",
                 "执行过程经验已能影响 Watchtower skill_hints；Hermes use_memory 已开始按单步 action/query 稀疏选择记忆层，但还没有做到全 action choice 的策略改写",
                 "贡献信用对模型路由已进热路径，但还需要真实 dogfood 样本校准阈值",
                 "ValueGate 已接轻量历史信用，但还没用真实 dogfood 样本训练成稳定的跨任务 gate estimator",
@@ -506,6 +509,7 @@ def get_v3_delivery_status(
                 "propose-change 现在还会把改动模式、文件后缀、review/check 结果写入 resource_credit_stats，并更新热贡献信用 cache；后续守望/MoE 能知道哪些编程路径更可靠",
                 "成功且通过检查的 propose-change 会生成 review-only 的 draft skill LayeredAsset；它不会自动注册、不会自动安装、不会进入生产路由，只供傩/启/人审核复用",
                 "可选开启 KUN_CODE_STRATEGY_TREE_SEARCH_ENABLED=1 后，CodeCapability 会对成功改动做 review-only 树搜索，把更优代码工作流建议写入 draft skill 的 strategy_search_records",
+                "代码/调试/重构/测试类任务即使意图层没有显式 required_skills，SkillSelector 也会把 code-review / code-propose-change 作为语义候选塞进 MoE 排序；这只是候选，不会默认写真实工作区",
             ],
             evidence_refs=[
                 "kun/skills/code_capability/__init__.py",
@@ -530,7 +534,7 @@ def get_v3_delivery_status(
             missing=[
                 "API 已暴露受控单文件 propose-change，但默认 dry-run；还不是让 KUN 自主大范围改仓库",
                 "sandbox 仍是软隔离；还不是 OS/container 级强隔离，也没有真实网络封锁保证",
-                "还没有把 Orchestrator coding task、自动生成补丁、skill draft 审批晋升串成完整自动 coding workflow",
+                "Orchestrator coding task 已能更容易选到 code-review / code-propose-change 候选，但还没把自动生成补丁、skill draft 审批晋升串成完整 autonomous coding workflow",
                 "还没接长周期 dogfood 样本来校准何时生成临时代码、何时沉淀为 skill",
             ],
             next_steps=[

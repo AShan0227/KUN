@@ -6,11 +6,13 @@ from typing import Any
 import pytest
 from kun.engineering.external_scan import (
     ExternalGithubFetchResponse,
+    assess_external_skill_maintenance,
     assess_external_skill_safety,
     fetch_github_repo_external_skill_metadata,
     match_external_skill_task_demand,
     normalize_external_skill_candidate,
     normalize_external_skill_candidates,
+    normalize_external_skill_source_registration,
     scan_external_skill_candidates,
 )
 
@@ -75,6 +77,60 @@ def test_normalize_external_skill_candidate_is_review_only() -> None:
     assert "review_only" in candidate.tags
     assert "demand:review" in candidate.tags
     assert "demand:coding" in candidate.tags
+
+
+@pytest.mark.unit
+def test_normalize_external_skill_source_registration_scores_offline_evidence() -> None:
+    source = normalize_external_skill_source_registration(
+        {
+            "source_kind": "github_repo",
+            "repo": "example/review-skills",
+            "url": "https://github.com/example/review-skills",
+            "name": "Review skill source",
+            "description": "Code review and TypeScript engineering behavior templates.",
+            "license": "MIT",
+            "pushed_at": "2026-02-01T00:00:00Z",
+            "stargazers_count": 120,
+            "maintainers": ["team-a"],
+            "skills": [
+                {
+                    "name": "TypeScript reviewer",
+                    "description": "Review TypeScript pull requests.",
+                    "files": [{"path": "skills/ts/SKILL.md", "content": "Review diffs."}],
+                }
+            ],
+        }
+    )
+
+    assert source is not None
+    assert source.source_id.startswith("esk_src_")
+    assert source.review_state == "review_only"
+    assert source.auto_fetch_allowed is False
+    assert source.auto_install_allowed is False
+    assert source.production_action is False
+    assert source.source.repo == "example/review-skills"
+    assert source.candidate_count == 1
+    assert source.safety.risk_level == "low"
+    assert source.maintenance.status == "maintained"
+    assert source.maintenance.score >= 0.65
+    assert source.demand_match.primary == "review"
+    assert "external_skill_source" in source.tags
+
+
+@pytest.mark.unit
+def test_assess_external_skill_maintenance_marks_deprecated_source() -> None:
+    maintenance = assess_external_skill_maintenance(
+        {
+            "repo": "example/old-skills",
+            "deprecated": True,
+            "pushed_at": "2021-01-01T00:00:00Z",
+            "stargazers_count": 5000,
+        }
+    )
+
+    assert maintenance.status == "deprecated"
+    assert maintenance.score <= 0.1
+    assert "source_archived_or_deprecated" in maintenance.reasons
 
 
 @pytest.mark.unit

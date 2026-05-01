@@ -133,6 +133,21 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
                 "goal": {"type": "string"},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "topics": {"type": "array", "items": {"type": "string"}},
+                "source_registry": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "可选离线外部能力源登记元数据；仅用于审查计划",
+                },
+                "candidate_sources": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "source_registry 的别名；不会联网抓取",
+                },
+                "candidates": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "可选离线外部 skill / 模板候选元数据",
+                },
             },
         },
         "auto_trigger_when": [

@@ -7,6 +7,7 @@ package for Qi / NUO / a human reviewer.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,11 +15,29 @@ from pydantic import BaseModel, ConfigDict, Field
 from kun.engineering.external_scan import (
     ExternalSkillCandidate,
     ExternalSkillDemandKind,
+    ExternalSkillSourceRegistration,
     normalize_external_skill_candidate,
+    normalize_external_skill_candidates,
+    normalize_external_skill_source_registration,
+    score_external_skill_license,
+    score_external_skill_safety,
+    score_external_skill_task_fit,
 )
 from kun.qi.problem_queue import QiProblemSignal, persist_problem_signals
 
 ExternalSkillReviewStatus = Literal["blocked", "needs_evidence", "ready_for_human_review"]
+
+
+class ExternalSkillReviewScorecard(BaseModel):
+    """Normalized offline scores used for review prioritization only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    safety_score: float = 0.0
+    license_score: float = 0.0
+    maintenance_score: float = 0.0
+    adaptability_score: float = 0.0
+    overall_score: float = 0.0
 
 
 class ExternalSkillReviewPackage(BaseModel):
@@ -34,6 +53,7 @@ class ExternalSkillReviewPackage(BaseModel):
     worth_review: bool
     confidence: float = 0.0
     risk_level: str = "unknown"
+    scorecard: ExternalSkillReviewScorecard = Field(default_factory=ExternalSkillReviewScorecard)
     reasons: list[str] = Field(default_factory=list)
     safety_risks: list[str] = Field(default_factory=list)
     missing_evidence: list[str] = Field(default_factory=list)
@@ -41,6 +61,35 @@ class ExternalSkillReviewPackage(BaseModel):
     source: dict[str, Any] = Field(default_factory=dict)
     candidate_summary: dict[str, Any] = Field(default_factory=dict)
     review_only: Literal[True] = True
+    auto_install_allowed: Literal[False] = False
+    production_action: Literal[False] = False
+    promotion_allowed: Literal[False] = False
+
+
+class ExternalSkillSourceReview(BaseModel):
+    """Review-only decision package for a registered candidate source."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str
+    source_name: str
+    task_demand: ExternalSkillDemandKind
+    source_demand: ExternalSkillDemandKind
+    status: ExternalSkillReviewStatus
+    worth_review: bool
+    confidence: float = 0.0
+    risk_level: str = "unknown"
+    license_id: str = "unknown"
+    maintenance_status: str = "unknown"
+    candidate_count: int = 0
+    scorecard: ExternalSkillReviewScorecard = Field(default_factory=ExternalSkillReviewScorecard)
+    reasons: list[str] = Field(default_factory=list)
+    safety_risks: list[str] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+    suggested_validation_steps: list[str] = Field(default_factory=list)
+    source: dict[str, Any] = Field(default_factory=dict)
+    review_only: Literal[True] = True
+    auto_fetch_allowed: Literal[False] = False
     auto_install_allowed: Literal[False] = False
     production_action: Literal[False] = False
     promotion_allowed: Literal[False] = False
@@ -67,6 +116,33 @@ class ExternalSkillScoutPlan(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     required_review_steps: list[str] = Field(default_factory=list)
     review_only: Literal[True] = True
+    auto_fetch_allowed: Literal[False] = False
+    auto_install_allowed: Literal[False] = False
+    production_action: Literal[False] = False
+    promotion_allowed: Literal[False] = False
+
+
+class ExternalSkillCandidateSourcePlan(BaseModel):
+    """Closed-loop, offline plan from task gap to source/candidate review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_id: str
+    task_demand: ExternalSkillDemandKind
+    task_type: str = "general"
+    need_summary: str = ""
+    scout_queries: list[str] = Field(default_factory=list)
+    recommended_repo_refs: list[str] = Field(default_factory=list)
+    source_types: list[str] = Field(default_factory=list)
+    source_reviews: list[ExternalSkillSourceReview] = Field(default_factory=list)
+    candidate_reviews: list[ExternalSkillReviewPackage] = Field(default_factory=list)
+    recommended_next_actions: list[str] = Field(default_factory=list)
+    required_review_steps: list[str] = Field(default_factory=list)
+    source_registry_size: int = 0
+    reviewed_candidate_count: int = 0
+    reasons: list[str] = Field(default_factory=list)
+    review_only: Literal[True] = True
+    offline_only: Literal[True] = True
     auto_fetch_allowed: Literal[False] = False
     auto_install_allowed: Literal[False] = False
     production_action: Literal[False] = False
@@ -195,6 +271,7 @@ def review_external_skill_candidate(
             worth_review=False,
             confidence=0.0,
             risk_level="critical",
+            scorecard=ExternalSkillReviewScorecard(),
             reasons=["candidate_metadata_could_not_be_normalized"],
             safety_risks=["invalid_candidate_metadata"],
             missing_evidence=["valid_candidate_metadata"],
@@ -215,6 +292,7 @@ def review_external_skill_candidate(
     validation_steps = _validation_steps(normalized, task_fit)
     status = _review_status(normalized, task_fit, missing)
     worth_review = status != "blocked" and task_fit >= 0.25
+    scorecard = _candidate_scorecard(normalized, task_fit)
 
     return ExternalSkillReviewPackage(
         candidate_id=normalized.candidate_id,
@@ -225,6 +303,7 @@ def review_external_skill_candidate(
         worth_review=worth_review,
         confidence=confidence,
         risk_level=safety.risk_level,
+        scorecard=scorecard,
         reasons=_dedupe(reasons),
         safety_risks=_dedupe(safety_risks),
         missing_evidence=_dedupe(missing),
@@ -238,6 +317,11 @@ def review_external_skill_candidate(
         candidate_summary={
             "summary": normalized.summary,
             "tags": list(normalized.tags),
+            "maintenance": {
+                "status": normalized.maintenance.status,
+                "score": normalized.maintenance.score,
+                "reasons": list(normalized.maintenance.reasons),
+            },
             "demand_match": {
                 "primary": normalized.demand_match.primary,
                 "categories": list(normalized.demand_match.categories),
@@ -267,10 +351,113 @@ def review_external_skill_candidates(
         key=lambda package: (
             package.status == "blocked",
             not package.worth_review,
+            -package.scorecard.overall_score,
             -package.confidence,
             package.risk_level,
             package.candidate_name,
         ),
+    )
+
+
+def build_external_skill_candidate_source_plan(
+    task_need: str | dict[str, Any],
+    *,
+    source_registry: list[ExternalSkillSourceRegistration | dict[str, Any]] | None = None,
+    candidates: list[ExternalSkillCandidate | dict[str, Any]] | None = None,
+) -> ExternalSkillCandidateSourcePlan:
+    """Build the closed-loop, offline external capability review plan.
+
+    This does not fetch network metadata, install packages, register skills, or
+    promote production capability. It only scores supplied source/candidate
+    evidence and packages it for Qi/NUO/human review.
+    """
+
+    scout_plan = build_external_skill_scout_plan(task_need)
+    raw_sources = _coerce_source_registry(source_registry, scout_plan=scout_plan)
+    source_reviews = [
+        _review_external_skill_source(
+            task_demand=scout_plan.task_demand,
+            source=source,
+        )
+        for source in _normalize_source_registry(raw_sources)
+    ]
+    candidate_reviews = review_external_skill_candidates(
+        task_need=task_need,
+        candidates=_candidate_review_inputs(
+            raw_sources=raw_sources,
+            candidates=candidates or [],
+        ),
+    )
+    source_reviews = _sort_source_reviews(source_reviews)
+    next_actions = _source_plan_next_actions(source_reviews, candidate_reviews)
+    return ExternalSkillCandidateSourcePlan(
+        plan_id=_stable_candidate_source_plan_id(
+            scout_plan=scout_plan,
+            source_reviews=source_reviews,
+            candidate_reviews=candidate_reviews,
+        ),
+        task_demand=scout_plan.task_demand,
+        task_type=scout_plan.task_type,
+        need_summary=scout_plan.need_summary,
+        scout_queries=list(scout_plan.scout_queries),
+        recommended_repo_refs=list(scout_plan.recommended_repo_refs),
+        source_types=list(scout_plan.source_types),
+        source_reviews=source_reviews,
+        candidate_reviews=candidate_reviews,
+        recommended_next_actions=next_actions,
+        required_review_steps=[
+            *list(scout_plan.required_review_steps),
+            "score_source_safety_license_maintenance_fit",
+            "compare_offline_candidates_against_task_gap",
+            "qi_nuo_or_human_review_before_fetch_or_install",
+        ],
+        source_registry_size=len(raw_sources),
+        reviewed_candidate_count=len(candidate_reviews),
+        reasons=[
+            *list(scout_plan.reasons),
+            "offline_source_registry_scored",
+            "offline_candidates_scored",
+        ],
+    )
+
+
+def external_skill_candidate_source_plan_to_problem_signal(
+    *,
+    tenant_id: str,
+    plan: ExternalSkillCandidateSourcePlan,
+) -> QiProblemSignal:
+    """Queue a candidate source plan for Qi/NUO/human review."""
+
+    severity = _source_plan_signal_severity(plan)
+    return QiProblemSignal.build(
+        tenant_id=tenant_id,
+        category="risk" if severity in {"error", "critical"} else "context",
+        severity=severity,
+        summary=f"Plan external capability sources: {plan.task_type} ({plan.task_demand})",
+        source="external_skill.source_plan",
+        task_type=f"external_skill_source_plan:{plan.task_demand}",
+        evidence={
+            **plan.model_dump(mode="json"),
+            "queue_intent": "external_skill_source_plan_review_only",
+        },
+    )
+
+
+async def enqueue_external_skill_candidate_source_plans(
+    *,
+    tenant_id: str,
+    plans: list[ExternalSkillCandidateSourcePlan],
+) -> int:
+    """Persist source/candidate plans as review-only Qi signals."""
+
+    return await persist_problem_signals(
+        [
+            external_skill_candidate_source_plan_to_problem_signal(
+                tenant_id=tenant_id,
+                plan=plan,
+            )
+            for plan in plans
+        ]
     )
 
 
@@ -295,6 +482,7 @@ def external_skill_review_package_to_problem_signal(
         "worth_review": package.worth_review,
         "confidence": package.confidence,
         "risk_level": package.risk_level,
+        "scorecard": package.scorecard.model_dump(mode="json"),
         "reasons": list(package.reasons),
         "safety_risks": list(package.safety_risks),
         "missing_evidence": list(package.missing_evidence),
@@ -372,8 +560,6 @@ def _stable_scout_plan_id(
     task_type: str,
     summary: str,
 ) -> str:
-    import hashlib
-
     digest = hashlib.sha256(f"{task_demand}|{task_type}|{summary[:200]}".encode()).hexdigest()[:16]
     return f"esk_plan_{digest}"
 
@@ -433,17 +619,335 @@ def _scout_queries_for_demand(
 def _task_fit_score(
     task_demand: ExternalSkillDemandKind, candidate: ExternalSkillCandidate
 ) -> float:
-    if task_demand == "unknown" or candidate.demand_match.primary == "unknown":
-        return 0.15
-    if candidate.demand_match.primary == task_demand:
-        return 0.85
-    if task_demand in candidate.demand_match.categories:
-        return 0.65
-    if task_demand == "coding" and "review" in candidate.demand_match.categories:
-        return 0.45
-    if task_demand == "review" and "coding" in candidate.demand_match.categories:
-        return 0.45
-    return 0.1
+    return score_external_skill_task_fit(task_demand, candidate.demand_match)
+
+
+def _candidate_scorecard(
+    candidate: ExternalSkillCandidate,
+    task_fit: float,
+) -> ExternalSkillReviewScorecard:
+    safety_score = score_external_skill_safety(candidate.safety)
+    license_score = score_external_skill_license(candidate.safety.license_id)
+    maintenance_score = candidate.maintenance.score
+    return ExternalSkillReviewScorecard(
+        safety_score=safety_score,
+        license_score=license_score,
+        maintenance_score=maintenance_score,
+        adaptability_score=round(task_fit, 2),
+        overall_score=_overall_review_score(
+            safety_score=safety_score,
+            license_score=license_score,
+            maintenance_score=maintenance_score,
+            adaptability_score=task_fit,
+        ),
+    )
+
+
+def _overall_review_score(
+    *,
+    safety_score: float,
+    license_score: float,
+    maintenance_score: float,
+    adaptability_score: float,
+) -> float:
+    score = (
+        safety_score * 0.3
+        + license_score * 0.2
+        + maintenance_score * 0.2
+        + adaptability_score * 0.3
+    )
+    return round(max(0.0, min(1.0, score)), 2)
+
+
+def _coerce_source_registry(
+    source_registry: list[ExternalSkillSourceRegistration | dict[str, Any]] | None,
+    *,
+    scout_plan: ExternalSkillScoutPlan,
+) -> list[ExternalSkillSourceRegistration | dict[str, Any]]:
+    if source_registry:
+        return list(source_registry)
+    return [
+        {
+            "source_kind": "github_repo",
+            "repo": repo,
+            "name": repo,
+            "description": (
+                "Review-only curated source hint from scout planning; metadata still "
+                "needs offline evidence before any fetch or installation."
+            ),
+            "license": "unknown",
+            "topics": [scout_plan.task_demand, "external_skill"],
+            "source_origin": "scout_recommendation",
+        }
+        for repo in scout_plan.recommended_repo_refs
+    ]
+
+
+def _normalize_source_registry(
+    raw_sources: list[ExternalSkillSourceRegistration | dict[str, Any]],
+) -> list[ExternalSkillSourceRegistration]:
+    sources: list[ExternalSkillSourceRegistration] = []
+    for raw in raw_sources:
+        if isinstance(raw, ExternalSkillSourceRegistration):
+            sources.append(raw)
+            continue
+        if not isinstance(raw, dict):
+            continue
+        normalized = normalize_external_skill_source_registration(raw)
+        if normalized is not None:
+            sources.append(normalized)
+    by_id = {source.source_id: source for source in sources}
+    return list(by_id.values())
+
+
+def _candidate_review_inputs(
+    *,
+    raw_sources: list[ExternalSkillSourceRegistration | dict[str, Any]],
+    candidates: list[ExternalSkillCandidate | dict[str, Any]],
+) -> list[ExternalSkillCandidate | dict[str, Any]]:
+    inputs: list[ExternalSkillCandidate | dict[str, Any]] = list(candidates)
+    source_dicts = [source for source in raw_sources if isinstance(source, dict)]
+    inputs.extend(normalize_external_skill_candidates(source_dicts))
+    by_key: dict[str, ExternalSkillCandidate | dict[str, Any]] = {}
+    for item in inputs:
+        if isinstance(item, ExternalSkillCandidate):
+            key = item.candidate_id
+        else:
+            key = "|".join(
+                str(item.get(part) or "")
+                for part in ("source_kind", "repo", "url", "commit_sha", "name", "description")
+            )
+        by_key[key] = item
+    return list(by_key.values())
+
+
+def _review_external_skill_source(
+    *,
+    task_demand: ExternalSkillDemandKind,
+    source: ExternalSkillSourceRegistration,
+) -> ExternalSkillSourceReview:
+    task_fit = score_external_skill_task_fit(task_demand, source.demand_match)
+    safety_score = score_external_skill_safety(source.safety)
+    license_score = score_external_skill_license(source.safety.license_id)
+    maintenance_score = source.maintenance.score
+    scorecard = ExternalSkillReviewScorecard(
+        safety_score=safety_score,
+        license_score=license_score,
+        maintenance_score=maintenance_score,
+        adaptability_score=round(task_fit, 2),
+        overall_score=_overall_review_score(
+            safety_score=safety_score,
+            license_score=license_score,
+            maintenance_score=maintenance_score,
+            adaptability_score=task_fit,
+        ),
+    )
+    missing = _source_missing_evidence(source, task_fit)
+    status = _source_review_status(source, task_fit, missing)
+    worth_review = status != "blocked" and task_fit >= 0.25 and scorecard.overall_score >= 0.35
+    return ExternalSkillSourceReview(
+        source_id=source.source_id,
+        source_name=source.name,
+        task_demand=task_demand,
+        source_demand=source.demand_match.primary,
+        status=status,
+        worth_review=worth_review,
+        confidence=round(min(0.95, max(source.demand_match.confidence, task_fit)), 2),
+        risk_level=source.safety.risk_level,
+        license_id=source.safety.license_id,
+        maintenance_status=source.maintenance.status,
+        candidate_count=source.candidate_count,
+        scorecard=scorecard,
+        reasons=_dedupe(_source_review_reasons(task_demand, source, task_fit)),
+        safety_risks=_dedupe(_source_safety_risks(source)),
+        missing_evidence=_dedupe(missing),
+        suggested_validation_steps=_dedupe(_source_validation_steps(source, task_fit)),
+        source={
+            "kind": source.source.kind,
+            "repo": source.source.repo,
+            "url": source.source.url,
+            "commit_sha": source.source.commit_sha,
+            "maintenance": {
+                "status": source.maintenance.status,
+                "score": source.maintenance.score,
+                "reasons": list(source.maintenance.reasons),
+            },
+        },
+    )
+
+
+def _source_review_status(
+    source: ExternalSkillSourceRegistration,
+    task_fit: float,
+    missing_evidence: list[str],
+) -> ExternalSkillReviewStatus:
+    if source.safety.risk_level == "critical" or source.maintenance.status == "deprecated":
+        return "blocked"
+    if task_fit < 0.2 and not source.source.repo and not source.source.url:
+        return "blocked"
+    if missing_evidence:
+        return "needs_evidence"
+    if source.safety.risk_level in {"high", "critical"}:
+        return "needs_evidence"
+    return "ready_for_human_review"
+
+
+def _source_review_reasons(
+    task_demand: ExternalSkillDemandKind,
+    source: ExternalSkillSourceRegistration,
+    task_fit: float,
+) -> list[str]:
+    reasons = ["review_only_source_plan_no_auto_fetch_or_install"]
+    if task_fit >= 0.65:
+        reasons.append("source_matches_task_demand")
+    elif task_fit >= 0.25:
+        reasons.append("source_partially_matches_task_demand")
+    else:
+        reasons.append("source_does_not_match_task_demand")
+    reasons.append(f"task_demand:{task_demand}")
+    reasons.append(f"source_demand:{source.demand_match.primary}")
+    reasons.extend(source.demand_match.reasons)
+    reasons.extend(source.safety.reasons)
+    reasons.extend(source.maintenance.reasons)
+    return reasons
+
+
+def _source_safety_risks(source: ExternalSkillSourceRegistration) -> list[str]:
+    safety = source.safety
+    risks = [f"risk_level:{safety.risk_level}"]
+    if safety.license_unknown:
+        risks.append("license_unknown")
+    if safety.contains_execution_scripts:
+        risks.append("contains_execution_scripts")
+    if safety.external_network_risk:
+        risks.append("external_network_risk")
+    if safety.secret_access_risk:
+        risks.append("secret_access_risk")
+    if safety.file_write_risk:
+        risks.append("file_write_risk")
+    if source.maintenance.status in {"stale", "deprecated", "unknown"}:
+        risks.append(f"maintenance_{source.maintenance.status}")
+    return risks
+
+
+def _source_missing_evidence(
+    source: ExternalSkillSourceRegistration,
+    task_fit: float,
+) -> list[str]:
+    missing: list[str] = []
+    if not source.source.repo and not source.source.url:
+        missing.append("source_repo_or_url")
+    if source.safety.license_unknown:
+        missing.append("known_license")
+    if not source.source.commit_sha:
+        missing.append("pinned_source_revision_before_fetch")
+    if task_fit < 0.65:
+        missing.append("source_task_fit_evidence")
+    if source.candidate_count <= 0:
+        missing.append("candidate_inventory")
+    if source.maintenance.status in {"stale", "unknown"}:
+        missing.append("maintenance_evidence")
+    if source.safety.contains_execution_scripts:
+        missing.append("manual_install_script_review")
+    if source.safety.external_network_risk:
+        missing.append("network_access_review")
+    if source.safety.secret_access_risk:
+        missing.append("secret_access_review")
+    if source.safety.file_write_risk:
+        missing.append("file_write_review")
+    if source.safety.risk_level in {"high", "critical"}:
+        missing.append("human_security_review")
+    if source.summary.strip() == "":
+        missing.append("source_summary_or_manifest")
+    return missing
+
+
+def _source_validation_steps(
+    source: ExternalSkillSourceRegistration,
+    task_fit: float,
+) -> list[str]:
+    steps = [
+        "do_not_auto_fetch",
+        "do_not_auto_install",
+        "review_source_manifest_and_license",
+        "inventory_candidate_skills_or_templates_offline",
+        "human_review_before_any_fetch_install_or_registration",
+    ]
+    if task_fit < 0.65:
+        steps.append("verify_source_fits_current_task_gap")
+    if source.maintenance.status in {"stale", "unknown"}:
+        steps.append("verify_maintainer_activity_before_testing")
+    if source.safety.contains_execution_scripts:
+        steps.append("manual_review_install_or_support_scripts")
+    if source.safety.risk_level in {"high", "critical"}:
+        steps.append("require_security_reviewer_approval")
+    return steps
+
+
+def _sort_source_reviews(
+    source_reviews: list[ExternalSkillSourceReview],
+) -> list[ExternalSkillSourceReview]:
+    return sorted(
+        source_reviews,
+        key=lambda review: (
+            review.status == "blocked",
+            not review.worth_review,
+            -review.scorecard.overall_score,
+            review.risk_level,
+            review.source_name,
+        ),
+    )
+
+
+def _source_plan_next_actions(
+    source_reviews: list[ExternalSkillSourceReview],
+    candidate_reviews: list[ExternalSkillReviewPackage],
+) -> list[str]:
+    actions = [
+        "present_source_and_candidate_scorecards_to_qi_nuo_or_human_reviewer",
+        "do_not_fetch_install_register_or_execute_from_this_plan",
+    ]
+    reviews: list[ExternalSkillSourceReview | ExternalSkillReviewPackage] = [
+        *source_reviews,
+        *candidate_reviews,
+    ]
+    if any(review.status == "blocked" for review in reviews):
+        actions.append("route_blocked_items_to_risk_review")
+    if any(review.status == "needs_evidence" for review in reviews):
+        actions.append("collect_missing_offline_evidence_before_sandbox_testing")
+    if any(review.status == "ready_for_human_review" for review in source_reviews):
+        actions.append("human_may_select_source_for_separate_metadata_fetch_request")
+    if any(review.status == "ready_for_human_review" for review in candidate_reviews):
+        actions.append("human_may_select_candidate_for_disposable_sandbox_validation")
+    return _dedupe(actions)
+
+
+def _stable_candidate_source_plan_id(
+    *,
+    scout_plan: ExternalSkillScoutPlan,
+    source_reviews: list[ExternalSkillSourceReview],
+    candidate_reviews: list[ExternalSkillReviewPackage],
+) -> str:
+    source_part = "|".join(review.source_id for review in source_reviews[:20])
+    candidate_part = "|".join(review.candidate_id for review in candidate_reviews[:20])
+    digest = hashlib.sha256(
+        f"{scout_plan.plan_id}|{source_part}|{candidate_part}".encode()
+    ).hexdigest()[:16]
+    return f"esk_src_plan_{digest}"
+
+
+def _source_plan_signal_severity(plan: ExternalSkillCandidateSourcePlan) -> str:
+    reviews: list[ExternalSkillSourceReview | ExternalSkillReviewPackage] = [
+        *plan.source_reviews,
+        *plan.candidate_reviews,
+    ]
+    if any(review.status == "blocked" and review.risk_level == "critical" for review in reviews):
+        return "critical"
+    if any(review.status == "blocked" for review in reviews):
+        return "error"
+    if any(review.status == "needs_evidence" for review in reviews):
+        return "warning"
+    return "info"
 
 
 def _review_status(
@@ -609,12 +1113,18 @@ def _dedupe(values: list[str]) -> list[str]:
 
 
 __all__ = [
+    "ExternalSkillCandidateSourcePlan",
     "ExternalSkillReviewPackage",
+    "ExternalSkillReviewScorecard",
     "ExternalSkillReviewStatus",
     "ExternalSkillScoutPlan",
+    "ExternalSkillSourceReview",
+    "build_external_skill_candidate_source_plan",
     "build_external_skill_scout_plan",
+    "enqueue_external_skill_candidate_source_plans",
     "enqueue_external_skill_review_packages",
     "enqueue_external_skill_scout_plans",
+    "external_skill_candidate_source_plan_to_problem_signal",
     "external_skill_review_package_to_problem_signal",
     "external_skill_review_packages_to_problem_signals",
     "external_skill_scout_plan_to_problem_signal",

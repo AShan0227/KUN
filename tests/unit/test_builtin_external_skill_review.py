@@ -37,6 +37,9 @@ async def test_external_skill_review_builtin_reviews_offline_candidate() -> None
     assert result.output["review_only"] is True
     assert result.output["production_action"] is False
     assert result.output["candidate_name"] == "TypeScript review skill"
+    assert result.output["scorecard"]["safety_score"] >= 0.7
+    assert result.output["scorecard"]["license_score"] == 1.0
+    assert result.metadata["overall_score"] == result.output["scorecard"]["overall_score"]
 
 
 @pytest.mark.unit

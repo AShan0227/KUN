@@ -261,6 +261,18 @@ def _base_skill_candidates(
                 # can still lift another candidate above a stale hint.
                 candidates[rec.skill_id] = (3.0 - idx * 0.1, rec)
 
+    for idx, sid in enumerate(_semantic_skill_hints(task_ref)):
+        rec = registry.get(sid)
+        if rec is None:
+            continue
+        # Semantic hints are strong enough to surface core abilities when
+        # naming differs ("coding" vs "code-review"), but they should not
+        # outrank a more specific lexical/domain match such as coding-pytest.
+        score = 1.75 - idx * 0.05
+        current = candidates.get(rec.skill_id)
+        if current is None or score > current[0]:
+            candidates[rec.skill_id] = (score, rec)
+
     task_type = task_ref.meta.task_type
     parts = set(task_type.split("."))
     for rec in registry:
@@ -273,6 +285,92 @@ def _base_skill_candidates(
             candidates[rec.skill_id] = (overlap, rec)
 
     return list(candidates.values())
+
+
+def _semantic_skill_hints(task_ref: TaskRef) -> list[str]:
+    """Map common task intent to builtin skill ids before LLM execution.
+
+    This is deliberately small and conservative.  It does not execute anything
+    and it does not bypass normal MoE/capability scoring; it only makes core
+    abilities visible when the task wording uses natural names ("修 bug") that
+    do not lexically overlap with builtin ids ("code-review").
+    """
+
+    text_parts = [
+        task_ref.meta.task_type,
+        task_ref.meta.success_criteria_short,
+    ]
+    if task_ref.spec is not None:
+        text_parts.extend(
+            [
+                task_ref.spec.goal_detail,
+                " ".join(task_ref.spec.success_metrics),
+                " ".join(task_ref.spec.subtasks_hint),
+                " ".join(task_ref.spec.required_tools),
+            ]
+        )
+    text = " ".join(part for part in text_parts if part).lower()
+    hints: list[str] = []
+
+    if _looks_like_code_task(text):
+        hints.extend(["code-review", "code-propose-change"])
+
+    if _looks_like_external_skill_gap(text):
+        hints.append("external-skill-scout")
+
+    # Stable order, no duplicates.
+    deduped: list[str] = []
+    for sid in hints:
+        if sid not in deduped:
+            deduped.append(sid)
+    return deduped
+
+
+def _looks_like_code_task(text: str) -> bool:
+    code_markers = (
+        "code",
+        "coding",
+        "programming",
+        "bug",
+        "debug",
+        "refactor",
+        "patch",
+        "diff",
+        "pytest",
+        "mypy",
+        "ruff",
+        "eslint",
+        "typescript",
+        "python",
+        "fastapi",
+        "react",
+        "修代码",
+        "修 bug",
+        "修bug",
+        "调试",
+        "重构",
+        "补丁",
+        "单测",
+        "类型检查",
+    )
+    return any(marker in text for marker in code_markers)
+
+
+def _looks_like_external_skill_gap(text: str) -> bool:
+    gap_markers = (
+        "external skill",
+        "find skill",
+        "skill marketplace",
+        "github skill",
+        "template",
+        "能力缺口",
+        "寻找外部",
+        "外部 skill",
+        "外部模板",
+        "技能市场",
+        "工程师行为模板",
+    )
+    return any(marker in text for marker in gap_markers)
 
 
 def _apply_single_skill_credit_boost(

@@ -26,6 +26,24 @@ def _make_registry() -> SkillRegistry:
             "c.md",
         )
     )
+    reg.register(
+        parse_skill(
+            "---\nname: code-review\ndescription: review code safely\n---\n\nbody\n",
+            "d.md",
+        )
+    )
+    reg.register(
+        parse_skill(
+            "---\nname: code-propose-change\ndescription: propose guarded code patch\n---\n\nbody\n",
+            "e.md",
+        )
+    )
+    reg.register(
+        parse_skill(
+            "---\nname: external-skill-scout\ndescription: plan external skill search\n---\n\nbody\n",
+            "f.md",
+        )
+    )
     return reg
 
 
@@ -80,3 +98,35 @@ def test_summary_renders():
     summary = sel.summary(picks)
     assert "coding-pytest" in summary
     assert "run pytest" in summary
+
+
+@pytest.mark.unit
+def test_code_task_gets_code_capability_hints_even_without_required_skills():
+    reg = _make_registry()
+    sel = SkillSelector(reg)
+    task = _make_task("engineering.backend.bugfix")
+    assert task.spec is None
+
+    picks = sel.select(task, top_k=4)
+    picked_ids = [p.skill_id for p in picks]
+
+    assert "code-review" in picked_ids
+    assert "code-propose-change" in picked_ids
+
+
+@pytest.mark.unit
+def test_external_skill_gap_gets_scout_hint_without_auto_installing():
+    reg = _make_registry()
+    sel = SkillSelector(reg)
+    task = _make_task("research.capability_gap")
+    task = task.model_copy(
+        update={
+            "spec": TaskSpec(
+                goal_detail="寻找外部 skill 或工程师行为模板，但只做安全审核计划",
+            )
+        }
+    )
+
+    picks = sel.select(task, top_k=3)
+
+    assert next(p.skill_id for p in picks) == "external-skill-scout"

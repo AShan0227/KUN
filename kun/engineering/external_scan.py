@@ -50,6 +50,7 @@ EXTERNAL_SCAN_STRONG_REVIEW_MAX_TOKENS_ENV = "KUN_EXTERNAL_SCAN_STRONG_REVIEW_MA
 ExternalSkillRiskLevel = Literal["low", "medium", "high", "critical"]
 ExternalSkillReviewState = Literal["review_only"]
 ExternalSkillDemandKind = Literal["coding", "writing", "review", "research", "ops", "unknown"]
+ExternalSkillMaintenanceStatus = Literal["maintained", "stale", "deprecated", "unknown"]
 
 _UNKNOWN_LICENSE_VALUES = {"", "unknown", "noassertion", "other", "none", "unlicensed"}
 _EXECUTABLE_FILE_PATTERNS = (
@@ -282,6 +283,89 @@ class ExternalSkillSafetyAssessment:
 
 
 @dataclass(frozen=True)
+class ExternalSkillMaintenanceAssessment:
+    """Offline maintenance signal for a source or candidate."""
+
+    score: float
+    status: ExternalSkillMaintenanceStatus
+    reasons: list[str] = field(default_factory=list)
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ExternalSkillSourceRegistration:
+    """Review-only registration record for a possible external capability source."""
+
+    source_id: str
+    name: str
+    summary: str
+    source: ExternalSkillSource
+    safety: ExternalSkillSafetyAssessment
+    maintenance: ExternalSkillMaintenanceAssessment
+    demand_match: ExternalSkillDemandMatch
+    candidate_count: int = 0
+    tags: list[str] = field(default_factory=list)
+    review_state: ExternalSkillReviewState = "review_only"
+    production_action: bool = False
+    promotion_allowed: bool = False
+    auto_fetch_allowed: bool = False
+    auto_install_allowed: bool = False
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "source_id": self.source_id,
+            "name": self.name,
+            "summary": self.summary,
+            "source": {
+                "kind": self.source.kind,
+                "repo": self.source.repo,
+                "url": self.source.url,
+                "commit_sha": self.source.commit_sha,
+                "fetched_at": self.source.fetched_at.isoformat()
+                if self.source.fetched_at is not None
+                else None,
+            },
+            "safety": {
+                "risk_level": self.safety.risk_level,
+                "license_id": self.safety.license_id,
+                "license_unknown": self.safety.license_unknown,
+                "contains_execution_scripts": self.safety.contains_execution_scripts,
+                "external_network_risk": self.safety.external_network_risk,
+                "secret_access_risk": self.safety.secret_access_risk,
+                "file_write_risk": self.safety.file_write_risk,
+                "sandbox_suitable": self.safety.sandbox_suitable,
+                "reasons": list(self.safety.reasons),
+                "evidence": dict(self.safety.evidence),
+            },
+            "maintenance": {
+                "score": self.maintenance.score,
+                "status": self.maintenance.status,
+                "reasons": list(self.maintenance.reasons),
+                "evidence": dict(self.maintenance.evidence),
+            },
+            "demand_match": {
+                "primary": self.demand_match.primary,
+                "categories": list(self.demand_match.categories),
+                "confidence": self.demand_match.confidence,
+                "scores": dict(self.demand_match.scores),
+                "matched_keywords": {
+                    key: list(value) for key, value in self.demand_match.matched_keywords.items()
+                },
+                "reasons": list(self.demand_match.reasons),
+            },
+            "candidate_count": self.candidate_count,
+            "tags": list(self.tags),
+            "review_state": self.review_state,
+            "production_action": self.production_action,
+            "promotion_allowed": self.promotion_allowed,
+            "auto_fetch_allowed": self.auto_fetch_allowed,
+            "auto_install_allowed": self.auto_install_allowed,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True)
 class ExternalSkillCandidate:
     """Review-only normalized external skill/behavior-template candidate."""
 
@@ -290,6 +374,7 @@ class ExternalSkillCandidate:
     summary: str
     source: ExternalSkillSource
     safety: ExternalSkillSafetyAssessment
+    maintenance: ExternalSkillMaintenanceAssessment
     demand_match: ExternalSkillDemandMatch
     tags: list[str] = field(default_factory=list)
     review_state: ExternalSkillReviewState = "review_only"
@@ -344,6 +429,12 @@ class ExternalSkillCandidate:
                 "sandbox_suitable": self.safety.sandbox_suitable,
                 "reasons": list(self.safety.reasons),
                 "evidence": dict(self.safety.evidence),
+            },
+            "maintenance": {
+                "score": self.maintenance.score,
+                "status": self.maintenance.status,
+                "reasons": list(self.maintenance.reasons),
+                "evidence": dict(self.maintenance.evidence),
             },
             "demand_match": {
                 "primary": self.demand_match.primary,
@@ -593,6 +684,71 @@ def scan_external_skill_candidates(
     )
 
 
+def normalize_external_skill_source_registrations(
+    raw_items: list[dict[str, Any]],
+) -> list[ExternalSkillSourceRegistration]:
+    """Normalize offline source registry rows into review-only registrations."""
+
+    registrations: list[ExternalSkillSourceRegistration] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        registration = normalize_external_skill_source_registration(raw)
+        if registration is not None:
+            registrations.append(registration)
+    return _dedupe_external_skill_source_registrations(registrations)
+
+
+def normalize_external_skill_source_registration(
+    raw: dict[str, Any],
+) -> ExternalSkillSourceRegistration | None:
+    """Normalize one offline external capability source registry row."""
+
+    source = _external_skill_source(raw)
+    name = _first_text(
+        raw.get("name"),
+        raw.get("source_name"),
+        raw.get("repo"),
+        raw.get("full_name"),
+        raw.get("html_url"),
+        raw.get("url"),
+    )
+    if not name and not source.repo and not source.url:
+        return None
+    summary = _first_text(
+        raw.get("summary"),
+        raw.get("description"),
+        raw.get("readme"),
+        raw.get("snippet"),
+    )[:700]
+    safety = assess_external_skill_safety(raw)
+    maintenance = assess_external_skill_maintenance(raw)
+    demand_match = match_external_skill_task_demand(raw)
+    candidate_count = _external_skill_candidate_count(raw)
+    key = "|".join(
+        [
+            source.kind,
+            source.repo,
+            source.url,
+            source.commit_sha,
+            name,
+            summary[:120],
+        ]
+    )
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    return ExternalSkillSourceRegistration(
+        source_id=f"esk_src_{digest}",
+        name=name or source.repo or source.url,
+        summary=summary,
+        source=source,
+        safety=safety,
+        maintenance=maintenance,
+        demand_match=demand_match,
+        candidate_count=candidate_count,
+        tags=_external_skill_source_tags(raw, safety, maintenance, demand_match),
+    )
+
+
 def normalize_external_skill_candidate(raw: dict[str, Any]) -> ExternalSkillCandidate | None:
     """Normalize one external skill metadata row without fetching the network."""
 
@@ -614,6 +770,7 @@ def normalize_external_skill_candidate(raw: dict[str, Any]) -> ExternalSkillCand
         raw.get("skill_md"),
     )[:700]
     safety = assess_external_skill_safety(raw)
+    maintenance = assess_external_skill_maintenance(raw)
     demand_match = match_external_skill_task_demand(raw)
     key = "|".join(
         [
@@ -632,6 +789,7 @@ def normalize_external_skill_candidate(raw: dict[str, Any]) -> ExternalSkillCand
         summary=summary,
         source=source,
         safety=safety,
+        maintenance=maintenance,
         demand_match=demand_match,
         tags=_external_skill_tags(raw, safety, demand_match),
     )
@@ -774,6 +932,160 @@ def assess_external_skill_safety(raw: dict[str, Any]) -> ExternalSkillSafetyAsse
             "truncated_paths": truncated_paths[:20],
         },
     )
+
+
+def assess_external_skill_maintenance(raw: dict[str, Any]) -> ExternalSkillMaintenanceAssessment:
+    """Score maintenance from offline metadata only.
+
+    The score is a planning hint, not approval. Unknown maintenance stays
+    reviewable but visible to Qi/NUO/humans as missing evidence.
+    """
+
+    archived = bool(raw.get("archived"))
+    deprecated = _truthy_flag(raw.get("deprecated")) or _metadata_mentions_deprecated(raw)
+    candidate_count = _external_skill_candidate_count(raw)
+    last_activity = _latest_datetime(
+        raw.get("pushed_at"),
+        raw.get("updated_at"),
+        raw.get("last_commit_at"),
+        raw.get("latest_release_at"),
+    )
+    last_activity_days = _age_days(last_activity)
+    stars = _safe_int(raw.get("stars") or raw.get("stargazers_count"))
+    forks = _safe_int(raw.get("forks") or raw.get("forks_count"))
+    open_issues = _safe_int(raw.get("open_issues") or raw.get("open_issues_count"))
+    maintainers = raw.get("maintainers") or raw.get("owners")
+    maintainer_count = len(maintainers) if isinstance(maintainers, list) else 0
+
+    reasons: list[str] = []
+    score = 0.45
+
+    if archived or deprecated:
+        score = 0.05
+        reasons.append("source_archived_or_deprecated")
+    else:
+        if last_activity_days is None:
+            reasons.append("maintenance_recency_unknown")
+            score -= 0.1
+        elif last_activity_days <= 180:
+            reasons.append("recent_activity")
+            score += 0.3
+        elif last_activity_days <= 730:
+            reasons.append("activity_within_two_years")
+            score += 0.15
+        elif last_activity_days <= 1095:
+            reasons.append("activity_stale_over_two_years")
+            score -= 0.05
+        else:
+            reasons.append("activity_stale_over_three_years")
+            score -= 0.25
+
+        if stars >= 1000:
+            reasons.append("strong_usage_signal")
+            score += 0.12
+        elif stars >= 50:
+            reasons.append("some_usage_signal")
+            score += 0.06
+
+        if forks >= 50:
+            reasons.append("fork_activity_signal")
+            score += 0.04
+        if maintainer_count > 0:
+            reasons.append("maintainers_declared")
+            score += min(0.12, 0.04 * maintainer_count)
+        if candidate_count > 0:
+            reasons.append("candidate_entries_declared")
+            score += 0.08
+        if open_issues > 0 and stars > 0 and open_issues > max(50, stars):
+            reasons.append("open_issue_load_high")
+            score -= 0.12
+
+    bounded_score = round(max(0.0, min(1.0, score)), 2)
+    if archived or deprecated:
+        status: ExternalSkillMaintenanceStatus = "deprecated"
+    elif last_activity_days is None and not any(
+        reason in reasons
+        for reason in (
+            "strong_usage_signal",
+            "some_usage_signal",
+            "maintainers_declared",
+            "candidate_entries_declared",
+        )
+    ):
+        status = "unknown"
+    elif bounded_score >= 0.65:
+        status = "maintained"
+    elif bounded_score < 0.35:
+        status = "stale"
+    else:
+        status = "unknown"
+
+    if not reasons:
+        reasons.append("maintenance_metadata_sparse")
+    return ExternalSkillMaintenanceAssessment(
+        score=bounded_score,
+        status=status,
+        reasons=sorted(set(reasons)),
+        evidence={
+            "archived": archived,
+            "deprecated": deprecated,
+            "last_activity_at": last_activity.isoformat() if last_activity is not None else None,
+            "last_activity_days": last_activity_days,
+            "stars": stars,
+            "forks": forks,
+            "open_issues": open_issues,
+            "maintainer_count": maintainer_count,
+            "candidate_count": candidate_count,
+        },
+    )
+
+
+def score_external_skill_safety(safety: ExternalSkillSafetyAssessment) -> float:
+    """Convert static risk triage into a normalized 0..1 planning score."""
+
+    score = {
+        "low": 1.0,
+        "medium": 0.7,
+        "high": 0.35,
+        "critical": 0.0,
+    }.get(safety.risk_level, 0.0)
+    if not safety.sandbox_suitable:
+        score = min(score, 0.3)
+    return round(score, 2)
+
+
+def score_external_skill_license(license_id: str) -> float:
+    """Conservative offline license score for human review planning."""
+
+    normalized = str(license_id or "unknown").strip().lower()
+    if normalized in _UNKNOWN_LICENSE_VALUES:
+        return 0.2
+    if normalized in {"mit", "apache-2.0", "bsd-2-clause", "bsd-3-clause", "isc", "mpl-2.0"}:
+        return 1.0
+    if normalized in {"gpl-2.0", "gpl-3.0", "lgpl-2.1", "lgpl-3.0", "agpl-3.0"}:
+        return 0.45
+    if normalized in {"proprietary", "all rights reserved", "unlicensed"}:
+        return 0.1
+    return 0.65
+
+
+def score_external_skill_task_fit(
+    task_demand: ExternalSkillDemandKind,
+    demand_match: ExternalSkillDemandMatch,
+) -> float:
+    """Score how well a source/candidate demand match fits the current task need."""
+
+    if task_demand == "unknown" or demand_match.primary == "unknown":
+        return 0.15
+    if demand_match.primary == task_demand:
+        return 0.85
+    if task_demand in demand_match.categories:
+        return 0.65
+    if task_demand == "coding" and "review" in demand_match.categories:
+        return 0.45
+    if task_demand == "review" and "coding" in demand_match.categories:
+        return 0.45
+    return 0.1
 
 
 class ExternalInfoScanner:
@@ -1572,6 +1884,15 @@ def _dedupe_external_skill_candidates(
     return list(by_id.values())
 
 
+def _dedupe_external_skill_source_registrations(
+    registrations: list[ExternalSkillSourceRegistration],
+) -> list[ExternalSkillSourceRegistration]:
+    by_id: dict[str, ExternalSkillSourceRegistration] = {}
+    for registration in registrations:
+        by_id[registration.source_id] = registration
+    return list(by_id.values())
+
+
 def _external_skill_source(raw: dict[str, Any]) -> ExternalSkillSource:
     repo = _first_text(raw.get("repo"), raw.get("full_name"), raw.get("repository"))
     url = _first_text(raw.get("url"), raw.get("html_url"), raw.get("source_url"))
@@ -1606,6 +1927,20 @@ def _external_skill_tags(
         tags.add("sandbox_candidate")
     else:
         tags.add("manual_security_review")
+    return sorted(tags)
+
+
+def _external_skill_source_tags(
+    raw: dict[str, Any],
+    safety: ExternalSkillSafetyAssessment,
+    maintenance: ExternalSkillMaintenanceAssessment,
+    demand_match: ExternalSkillDemandMatch,
+) -> list[str]:
+    tags = set(_external_skill_tags(raw, safety, demand_match))
+    tags.add("external_skill_source")
+    tags.add(f"maintenance:{maintenance.status}")
+    if maintenance.status in {"stale", "deprecated"}:
+        tags.add("maintenance_review")
     return sorted(tags)
 
 
@@ -1680,6 +2015,18 @@ def _external_skill_files(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _external_skill_candidate_count(raw: dict[str, Any]) -> int:
+    raw_count = raw.get("candidate_count") or raw.get("skill_count")
+    count = _safe_int(raw_count)
+    skills = raw.get("skills")
+    if isinstance(skills, list):
+        count = max(count, len([skill for skill in skills if isinstance(skill, dict)]))
+    metadata = raw.get("metadata")
+    if isinstance(metadata, dict):
+        count = max(count, _safe_int(metadata.get("candidate_skill_file_count")))
+    return max(0, count)
+
+
 def _license_id(raw: dict[str, Any]) -> str:
     license_value = raw.get("license") or raw.get("license_id") or raw.get("spdx_id")
     if isinstance(license_value, dict):
@@ -1739,6 +2086,48 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _latest_datetime(*values: Any) -> datetime | None:
+    dates = [_ensure_aware_datetime(item) for item in (_parse_datetime(value) for value in values)]
+    valid_dates = [date for date in dates if date is not None]
+    if not valid_dates:
+        return None
+    return max(valid_dates)
+
+
+def _ensure_aware_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _age_days(value: datetime | None) -> int | None:
+    aware = _ensure_aware_datetime(value)
+    if aware is None:
+        return None
+    return max(0, int((datetime.now(UTC) - aware).total_seconds() // 86400))
+
+
+def _truthy_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "deprecated"}
+    return bool(value)
+
+
+def _metadata_mentions_deprecated(raw: dict[str, Any]) -> bool:
+    values: list[str] = []
+    for key in ("topics", "tags"):
+        raw_value = raw.get(key)
+        if isinstance(raw_value, list):
+            values.extend(str(item) for item in raw_value)
+        elif isinstance(raw_value, str):
+            values.append(raw_value)
+    return any("deprecated" in value.lower() for value in values)
+
+
 def _json_object_from_text(text: str) -> dict[str, Any]:
     try:
         raw = json.loads(text)
@@ -1769,18 +2158,26 @@ __all__ = [
     "ExternalInfoScanner",
     "ExternalSkillCandidate",
     "ExternalSkillDemandMatch",
+    "ExternalSkillMaintenanceAssessment",
     "ExternalSkillSafetyAssessment",
     "ExternalSkillScanResult",
     "ExternalSkillSource",
+    "ExternalSkillSourceRegistration",
     "LLMReviewer",
     "ScanBudget",
     "ScanResult",
     "StrongExternalScanReviewer",
+    "assess_external_skill_maintenance",
     "assess_external_skill_safety",
     "configured_external_scan_reviewer_from_env",
     "fetch_github_repo_external_skill_metadata",
     "match_external_skill_task_demand",
     "normalize_external_skill_candidate",
     "normalize_external_skill_candidates",
+    "normalize_external_skill_source_registration",
+    "normalize_external_skill_source_registrations",
     "scan_external_skill_candidates",
+    "score_external_skill_license",
+    "score_external_skill_safety",
+    "score_external_skill_task_fit",
 ]

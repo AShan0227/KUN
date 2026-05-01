@@ -83,12 +83,14 @@ class _RoutingStub(StubProvider):
 class _RecordingContextPacker:
     def __init__(self) -> None:
         self.limits: list[int] = []
+        self.pack_calls: list[dict[str, object]] = []
         self._store = InMemoryAssetStore()
 
     async def pack(
         self, task_ref: TaskRef, *, tenant_id: str, limit: int, **_: object
     ) -> ContextPack:
         self.limits.append(limit)
+        self.pack_calls.append({"tenant_id": tenant_id, "limit": limit, **_})
         return ContextPack()
 
     async def pack_query(self, *args, **kwargs) -> ContextPack:
@@ -245,6 +247,43 @@ def test_decision_plane_uses_context_credit_to_choose_memory_policy() -> None:
         assert "skill" in invocation["asset_kinds"]
         assert "pricing" in invocation["strategy_tags"]
         assert "historical_credit_layers" in invocation["reasons"]
+    finally:
+        reset_contribution_tracker()
+
+
+@pytest.mark.unit
+def test_decision_plane_turns_poor_memory_layer_credit_into_avoid_policy() -> None:
+    reset_contribution_tracker()
+    try:
+        get_contribution_tracker().update_from_deltas(
+            {
+                "memory_layer:behavior": ResourceCreditDelta(
+                    resource_key="memory_layer:behavior",
+                    resource_kind="memory_layer",
+                    resource_id="behavior",
+                    used_count=6,
+                    pass_count=1,
+                    critical_count=0,
+                    credit_total=0.2,
+                )
+            },
+            tenant_id="u-sylvan",
+        )
+
+        decision = WatchtowerDecisionPlane().decide(
+            _task_ref(
+                task_type="education.lesson",
+                text="帮我设计一套数学学习计划和复习题",
+                complexity=0.4,
+            )
+        )
+
+        invocation = decision.metadata["memory_invocation_policy"]
+        policy = decision.metadata["memory_policy"]
+        assert "behavior" in invocation["avoid_memory_layers"]
+        assert "behavior" not in invocation["memory_layers"]
+        assert "historical_credit_avoid_layers" in invocation["reasons"]
+        assert policy["avoid_layers"] == invocation["avoid_memory_layers"]
     finally:
         reset_contribution_tracker()
 
@@ -503,6 +542,51 @@ async def test_orchestrator_consumes_watchtower_decision_plane(monkeypatch) -> N
     assert snapshot.current_step == snapshot.total_steps
     assert snapshot.current_step >= 1
     assert snapshot.current_model
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_passes_watchtower_memory_avoid_layers_to_packer(monkeypatch) -> None:
+    reset_contribution_tracker()
+    try:
+        get_contribution_tracker().update_from_deltas(
+            {
+                "memory_layer:behavior": ResourceCreditDelta(
+                    resource_key="memory_layer:behavior",
+                    resource_kind="memory_layer",
+                    resource_id="behavior",
+                    used_count=6,
+                    pass_count=1,
+                    critical_count=0,
+                    credit_total=0.2,
+                )
+            },
+            tenant_id="u-sylvan",
+        )
+        monkeypatch.setattr("kun.engineering.orchestrator.session_scope", _fake_session_scope)
+        providers = {
+            "top": _RoutingStub(tier="top"),
+            "cheap": _RoutingStub(tier="cheap"),
+            "coding": _RoutingStub(tier="coding"),
+            "fallback": _RoutingStub(tier="fallback"),
+        }
+        set_router(LLMRouter(providers))
+        packer = _RecordingContextPacker()
+
+        orch = Orchestrator(
+            context_packer=packer,
+            decision_plane=WatchtowerDecisionPlane(),
+            output_translator=_identity_translator,
+        )
+        async for _ev in orch.stream("帮我设计一节复习课"):
+            pass
+
+        assert packer.pack_calls
+        call = packer.pack_calls[0]
+        assert "behavior" in call["avoid_memory_layers"]
+        assert "behavior" not in call["memory_layers"]
+    finally:
+        reset_contribution_tracker()
 
 
 async def _identity_translator(**kwargs: object) -> str:

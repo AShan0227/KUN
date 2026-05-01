@@ -665,6 +665,10 @@ def _historical_memory_credit_hints(
     question first: which *layer*, *asset kind*, or *strategy tag* tends to help
     this tenant?  Context selection records those aggregate keys, so Watchtower
     can nudge the next memory policy before the packer loads concrete assets.
+
+    Low-scoring memory layers with enough history are passed as negative hints.
+    ``MemoryInvocationPolicy`` turns those into ``avoid_layers``, which the
+    orchestrator forwards to ContextPacker as a real selection constraint.
     """
 
     tenant_id = _tenant_id_from_task(task_ref)
@@ -693,7 +697,34 @@ def _historical_memory_credit_hints(
         )
         if score >= 0.55:
             out[policy_key] = score
+        elif (
+            kind == "memory_layer"
+            and score <= 0.25
+            and _hot_credit_used_count(tracker, policy_key, tenant_id=tenant_id) >= 3
+        ):
+            out[policy_key] = -0.5
     return out
+
+
+def _hot_credit_used_count(
+    tracker: Any,
+    resource_key: str,
+    *,
+    tenant_id: str | None,
+) -> int:
+    """Best-effort read of the hot contribution cache usage count."""
+
+    stats = getattr(tracker, "_stats", None)
+    tenant_scope = getattr(tracker, "_tenant_scope", None)
+    if not isinstance(stats, dict) or not callable(tenant_scope):
+        return 0
+    raw = stats.get((tenant_scope(tenant_id), resource_key))
+    if not isinstance(raw, tuple) or not raw:
+        return 0
+    try:
+        return max(0, int(raw[0]))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _tenant_id_from_task(task_ref: TaskRef) -> str | None:

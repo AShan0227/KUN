@@ -46,6 +46,7 @@ async def execute(params: dict[str, Any]) -> SkillResult:
             "promotion_allowed": False,
             "status": package.status,
             "risk_level": package.risk_level,
+            "overall_score": package.scorecard.overall_score,
         },
     )
 
