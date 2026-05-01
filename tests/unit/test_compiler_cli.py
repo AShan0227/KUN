@@ -57,6 +57,35 @@ def test_compiler_compile_url_is_placeholder_by_default() -> None:
     assert payload["risk"]["reason"] == "url_fetch_not_enabled"
 
 
+def test_compiler_compile_path_can_select_markitdown_backend(tmp_path) -> None:
+    runner = CliRunner()
+    root = tmp_path / "docs"
+    root.mkdir()
+    source = root / "deck.pptx"
+    source.write_bytes(b"fake office file")
+
+    result = runner.invoke(
+        app,
+        [
+            "compiler",
+            "compile-path",
+            "deck.pptx",
+            "--tenant",
+            "tenant-cli",
+            "--allowed-root",
+            str(root),
+            "--backend",
+            "markitdown",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "unsupported"
+    assert payload["risk"]["reason"] == "markitdown_backend_not_enabled"
+    assert payload["metadata"]["backend_status"]["name"] == "markitdown"
+
+
 def test_compiler_ingest_text_stores_in_asset_store() -> None:
     runner = CliRunner()
     store = InMemoryAssetStore()
@@ -115,6 +144,40 @@ def test_compiler_ingest_url_does_not_store_placeholder_by_default() -> None:
         assert payload["stored"] is False
         assert payload["status"] == "material_status_placeholder"
         assert payload["source_uri"] == "https://example.com/report.html"
+    finally:
+        reset_store()
+
+
+def test_compiler_ingest_path_markitdown_backend_does_not_store_when_disabled(tmp_path) -> None:
+    runner = CliRunner()
+    root = tmp_path / "docs"
+    root.mkdir()
+    source = root / "brief.docx"
+    source.write_bytes(b"fake office file")
+    store = InMemoryAssetStore()
+    set_store(store)
+    try:
+        result = runner.invoke(
+            app,
+            [
+                "compiler",
+                "ingest-path",
+                "brief.docx",
+                "--tenant",
+                "tenant-cli",
+                "--allowed-root",
+                str(root),
+                "--backend",
+                "markitdown",
+            ],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["stored"] is False
+        assert payload["status"] == "material_status_unsupported"
+        assert payload["material_status"] == "unsupported"
+        assert payload["compiler_profile"] == "kun-v5-lightweight"
     finally:
         reset_store()
 

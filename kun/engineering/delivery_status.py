@@ -119,6 +119,7 @@ def get_v3_delivery_status(
                 "kun context merge-duplicates 可 dry-run 或显式 --apply 执行傩的重复资产合并建议；重复项只软遗忘并记录到主资产，不硬删",
                 "MarkItDownMaterialCompiler 已作为可选后端存在：默认禁用，缺 markitdown 包时明确 unavailable，不伪装成已支持",
                 "MarkItDown 可选后端仍复用 allowed_root 路径约束，path traversal 会在加载 converter 前被拒绝",
+                "kun compiler compile-path / ingest-path 可通过 --backend markitdown 显式选择 MarkItDown 后端；未开启时明确返回 unsupported/unavailable，不会假装已解析 Office 文件",
                 "CompilerRegistry 可注册后续音视频 / OCR 后端，但当前不伪装成已接入",
             ],
             evidence_refs=[

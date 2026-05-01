@@ -84,6 +84,21 @@ def _asset_layer(value: str) -> Any:
         raise typer.BadParameter(f"expected one of: {allowed}") from exc
 
 
+def _path_compiler_backend(backend: str) -> Any:
+    """Return a local-path compiler backend without pretending heavy support is automatic."""
+
+    normalized = backend.strip().lower()
+    if normalized == "lightweight":
+        from kun.compiler import LightweightMaterialCompiler
+
+        return LightweightMaterialCompiler()
+    if normalized == "markitdown":
+        from kun.compiler import MarkItDownMaterialCompiler
+
+        return MarkItDownMaterialCompiler()
+    raise typer.BadParameter("expected one of: lightweight, markitdown")
+
+
 @app.command()
 def version() -> None:
     """Show KUN version."""
@@ -352,18 +367,23 @@ def compiler_compile_path(
     path: Path = typer.Argument(..., help="Path under --allowed-root to compile"),
     tenant: str = typer.Option("u-sylvan", "--tenant"),
     allowed_root: Path = typer.Option(Path("."), "--allowed-root"),
+    backend: str = typer.Option(
+        "lightweight",
+        "--backend",
+        help="Compiler backend for local files: lightweight or markitdown",
+    ),
 ) -> None:
     """Compile a local file into CanonicalMaterial JSON without storing it."""
-    from kun.compiler import LightweightMaterialCompiler
 
     async def _run() -> dict[str, Any]:
-        material = await LightweightMaterialCompiler().compile_path(
+        compiler = _path_compiler_backend(backend)
+        material = await compiler.compile_path(
             path,
             tenant_id=tenant,
             allowed_root=allowed_root,
             metadata=_compiler_metadata(str(path)),
         )
-        return material.model_dump(mode="json")
+        return cast(dict[str, Any], material.model_dump(mode="json"))
 
     _run_json(_run())
 
@@ -456,24 +476,43 @@ def compiler_ingest_path(
     tenant: str = typer.Option("u-sylvan", "--tenant"),
     allowed_root: Path = typer.Option(Path("."), "--allowed-root"),
     layer: str = typer.Option("L1_task", "--layer"),
+    backend: str = typer.Option(
+        "lightweight",
+        "--backend",
+        help="Compiler backend for local files: lightweight or markitdown",
+    ),
 ) -> None:
     """Compile a local file and write the resulting asset to the AssetStore."""
     from kun.compiler import CompilerIngestor
 
     async def _run() -> dict[str, Any]:
-        result = await CompilerIngestor().ingest_path(
-            path,
-            tenant_id=tenant,
-            allowed_root=allowed_root,
-            layer=_asset_layer(layer),
-            metadata=_compiler_metadata(str(path)),
-        )
+        if backend == "lightweight":
+            result = await CompilerIngestor().ingest_path(
+                path,
+                tenant_id=tenant,
+                allowed_root=allowed_root,
+                layer=_asset_layer(layer),
+                metadata=_compiler_metadata(str(path)),
+            )
+        else:
+            compiler = _path_compiler_backend(backend)
+            material = await compiler.compile_path(
+                path,
+                tenant_id=tenant,
+                allowed_root=allowed_root,
+                metadata=_compiler_metadata(str(path)),
+            )
+            result = await CompilerIngestor().ingest_material(
+                material,
+                layer=_asset_layer(layer),
+            )
         return {
             "asset_id": result.asset_id,
             "status": "stored" if result.stored else result.reason,
             "summary": result.material.l1,
             "stored": result.stored,
             "material_status": result.material.status,
+            "compiler_profile": result.material.compiler_profile.name,
         }
 
     _run_json(_run())
