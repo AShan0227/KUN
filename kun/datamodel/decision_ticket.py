@@ -1138,6 +1138,88 @@ def ticket_from_world_policy(
     )
 
 
+def ticket_from_qi_experiment(
+    *,
+    tenant_id: str,
+    target_id: str,
+    target_kind: str,
+    experiment: Any,
+    risk_level: str = "medium",
+    task_id: str | None = None,
+) -> DecisionTicket:
+    """Wrap a Qi exploration artifact as review-only evidence.
+
+    Qi is allowed to search for better strategies, but this ticket makes the
+    boundary explicit: experiments are visible to NUO/human/strong judge review
+    and are not production actions by themselves.
+    """
+
+    proposed_pack_id = str(getattr(experiment, "proposed_pack_id", "") or "")
+    status = str(getattr(experiment, "status", "") or "draft")
+    requires_human_review = bool(getattr(experiment, "requires_human_review", True))
+    requires_strong_review = bool(getattr(experiment, "requires_strong_review", False))
+    production_action = bool(getattr(experiment, "production_action", False))
+    default_mode = str(getattr(experiment, "default_execution_mode", "") or "")
+    risk_watch = _string_list(getattr(experiment, "risk_watch", []))
+    promotion_conditions = _string_list(getattr(experiment, "promotion_conditions", []))
+    task_patterns = _string_list(getattr(experiment, "task_type_patterns", []))
+    effective_risk = (
+        "critical"
+        if requires_strong_review or any("unauthorized" in item for item in risk_watch)
+        else risk_level
+    )
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id or f"qi:{target_id}",
+        phase="qi",
+        decision_point="qi_experiment",
+        source_module="qi.idle_replay",
+        selected_action=f"review_only:{proposed_pack_id or target_id}",
+        status="needs_review",
+        reason=(
+            f"Qi proposed review-only {target_kind} {target_id}; "
+            f"status={status}; production_action={str(production_action).lower()}"
+        ),
+        confidence=0.62 if requires_strong_review else 0.68,
+        risk_level=effective_risk,
+        cost_estimate_usd=0.0,
+        inputs_summary={
+            "target_id": target_id,
+            "target_kind": target_kind,
+            "task_type_patterns": task_patterns,
+        },
+        constraints=[
+            "production_action=false",
+            "requires_human_review=true"
+            if requires_human_review
+            else "requires_human_review=false",
+            "requires_strong_review=true"
+            if requires_strong_review
+            else "requires_strong_review=false",
+            *promotion_conditions,
+        ],
+        evidence={
+            "target_kind": target_kind,
+            "experiment": _model_dump_or_value(experiment),
+            "production_action": production_action,
+            "requires_human_review": requires_human_review,
+            "requires_strong_review": requires_strong_review,
+            "promotion_conditions": promotion_conditions,
+            "risk_watch": risk_watch,
+        },
+        metadata={
+            "target_id": target_id,
+            "target_kind": target_kind,
+            "proposed_pack_id": proposed_pack_id,
+            "status": status,
+            "default_execution_mode": default_mode,
+            "production_action": production_action,
+            "requires_human_review": requires_human_review,
+            "requires_strong_review": requires_strong_review,
+        },
+    )
+
+
 def _model_dump_or_value(value: Any) -> dict[str, Any]:
     if hasattr(value, "model_dump"):
         dumped = value.model_dump(mode="json")
@@ -1183,6 +1265,7 @@ __all__ = [
     "ticket_from_preflight_guard",
     "ticket_from_proactive_tool_dispatch",
     "ticket_from_protocol_applied",
+    "ticket_from_qi_experiment",
     "ticket_from_route_choice",
     "ticket_from_skill_selection",
     "ticket_from_step_action_selection",

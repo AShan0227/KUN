@@ -17,6 +17,7 @@ from kun.datamodel.decision_ticket import (
     ticket_from_preflight_guard,
     ticket_from_proactive_tool_dispatch,
     ticket_from_protocol_applied,
+    ticket_from_qi_experiment,
     ticket_from_route_choice,
     ticket_from_skill_selection,
     ticket_from_step_action_selection,
@@ -532,3 +533,33 @@ def test_validation_tier_ticket_records_risk_and_mode_context() -> None:
     assert ticket.metadata["validation_tier"] == "tier3"
     assert ticket.evidence["risk_high"] is True
     assert ticket.evidence["complexity_high"] is True
+
+
+def test_qi_experiment_ticket_keeps_draft_review_only() -> None:
+    draft = SimpleNamespace(
+        draft_id="spd-1",
+        proposed_pack_id="qi_coding_spd_1",
+        status="needs_strong_review",
+        default_execution_mode="MAX",
+        task_type_patterns=["coding.*"],
+        risk_watch=["unauthorized_side_effect"],
+        promotion_conditions=["human_review_approved", "strong_model_review_passed"],
+        requires_human_review=True,
+        requires_strong_review=True,
+        production_action=False,
+    )
+
+    ticket = ticket_from_qi_experiment(
+        tenant_id="tenant-1",
+        target_id="spd-1",
+        target_kind="strategy_pack_draft",
+        experiment=draft,
+    )
+
+    assert ticket.phase == "qi"
+    assert ticket.decision_point == "qi_experiment"
+    assert ticket.status == "needs_review"
+    assert ticket.selected_action == "review_only:qi_coding_spd_1"
+    assert ticket.risk_level == "critical"
+    assert ticket.evidence["production_action"] is False
+    assert "strong_model_review_passed" in ticket.constraints

@@ -360,6 +360,13 @@ async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch)
     )
     assert all(asset.l1_metadata["production_action"] is False for asset in draft_assets)
     assert all(asset.l1_metadata["requires_human_review"] is True for asset in draft_assets)
+    assert all(
+        asset.l1_metadata["decision_ticket"]["decision_point"] == "qi_experiment"
+        for asset in draft_assets
+    )
+    assert all(
+        asset.l1_metadata["decision_ticket"]["status"] == "needs_review" for asset in draft_assets
+    )
     assert all("review_only" in asset.tags for asset in draft_assets)
 
 

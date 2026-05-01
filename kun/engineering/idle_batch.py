@@ -849,6 +849,7 @@ async def _persist_strategy_pack_drafts(*, tenant_id: str, drafts: list[Any]) ->
         return []
     from kun.context.assets import AssetLayer, LayeredAsset
     from kun.context.storage import get_store
+    from kun.datamodel.decision_ticket import ticket_from_qi_experiment
 
     store = get_store()
     existing = await store.list(tenant_id=tenant_id, asset_kind="methodology", limit=1000)
@@ -866,6 +867,13 @@ async def _persist_strategy_pack_drafts(*, tenant_id: str, drafts: list[Any]) ->
         proposed_pack_id = str(getattr(draft, "proposed_pack_id", "unknown"))
         task_type_patterns = list(getattr(draft, "task_type_patterns", []) or [])
         requires_strong_review = bool(getattr(draft, "requires_strong_review", False))
+        qi_ticket = ticket_from_qi_experiment(
+            tenant_id=tenant_id,
+            target_id=draft_id,
+            target_kind="strategy_pack_draft",
+            experiment=draft,
+            risk_level="high" if requires_strong_review else "medium",
+        )
         asset = LayeredAsset.build(
             "methodology",
             tenant_id,
@@ -881,6 +889,7 @@ async def _persist_strategy_pack_drafts(*, tenant_id: str, drafts: list[Any]) ->
                 "requires_strong_review": requires_strong_review,
                 "production_action": False,
                 "promotion_blocked_until_review": True,
+                "decision_ticket": qi_ticket.event_payload(),
                 "strategy_pack_draft": draft.model_dump(mode="json")
                 if hasattr(draft, "model_dump")
                 else {},
