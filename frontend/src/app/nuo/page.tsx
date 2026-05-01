@@ -79,6 +79,19 @@ type AccountSummary = {
   honest_limits: string[];
 };
 
+type InviteMemberResult = {
+  tenant_id: string;
+  user_id: string;
+  role: string;
+  scopes: string[];
+  status: string;
+  acceptance_token_id?: string | null;
+  acceptance_token?: string | null;
+  invite_expires_at?: string | null;
+  message: string;
+  honest_limits: string[];
+};
+
 type PendingAction = {
   action_id: string;
   task_ref: string;
@@ -380,6 +393,14 @@ export default function NuoDashboard() {
   const [secretScope, setSecretScope] = useState<"tenant" | "global">("tenant");
   const [secretBusy, setSecretBusy] = useState(false);
   const [secretNotice, setSecretNotice] = useState("");
+  const [inviteDraft, setInviteDraft] = useState({
+    userId: "",
+    role: "member",
+    scopes: "chat:write",
+  });
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [inviteNotice, setInviteNotice] = useState("");
+  const [inviteResult, setInviteResult] = useState<InviteMemberResult | null>(null);
 
   const reload = useCallback(() => {
     Promise.all([
@@ -572,6 +593,37 @@ export default function NuoDashboard() {
     }
   }, [reload, secretName, secretScope, secretValue]);
 
+  const inviteMember = useCallback(async () => {
+    const userId = inviteDraft.userId.trim();
+    if (!userId) {
+      setInviteNotice("先填 user_id。");
+      return;
+    }
+    setInviteBusy(true);
+    setInviteNotice("");
+    try {
+      const result = await fetchJson<InviteMemberResult>("/nuo/accounts/members/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId,
+          role: inviteDraft.role,
+          scopes: inviteDraft.scopes
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean),
+        }),
+      });
+      setInviteResult(result);
+      setInviteNotice(result.message);
+      reload();
+    } catch (e) {
+      setInviteNotice(`邀请失败：${String(e)}`);
+    } finally {
+      setInviteBusy(false);
+    }
+  }, [inviteDraft, reload]);
+
   if (err) return <div className="p-6 text-kun-bad">{err}</div>;
   if (!health || !budget) return <div className="p-6 text-gray-500">加载中...</div>;
 
@@ -656,6 +708,65 @@ export default function NuoDashboard() {
               value={formatHonestyLimit(accountSummary.honest_limits)}
             />
           </div>
+        )}
+        {!accountUnavailable && accountSummary && (
+          <details className="mt-3 rounded border bg-gray-50 p-3 text-xs">
+            <summary className="cursor-pointer font-medium text-gray-700">邀请成员</summary>
+            <p className="mt-2 text-gray-500">
+              这里会写入成员邀请账本并生成一次性 token；不会自动发邮件。你需要复制交付文案，
+              或后续接真实 email.send。
+            </p>
+            <div className="mt-3 grid gap-2 md:grid-cols-[1fr_0.7fr_1.3fr_auto]">
+              <input
+                className="rounded border border-gray-200 px-2 py-1.5"
+                placeholder="user_id，例如 teammate-a"
+                value={inviteDraft.userId}
+                onChange={(event) =>
+                  setInviteDraft((value) => ({ ...value, userId: event.target.value }))
+                }
+              />
+              <select
+                className="rounded border border-gray-200 px-2 py-1.5"
+                value={inviteDraft.role}
+                onChange={(event) =>
+                  setInviteDraft((value) => ({ ...value, role: event.target.value }))
+                }
+              >
+                <option value="member">member</option>
+                <option value="viewer">viewer</option>
+                <option value="admin">admin</option>
+              </select>
+              <input
+                className="rounded border border-gray-200 px-2 py-1.5"
+                placeholder="scopes，用英文逗号分隔"
+                value={inviteDraft.scopes}
+                onChange={(event) =>
+                  setInviteDraft((value) => ({ ...value, scopes: event.target.value }))
+                }
+              />
+              <button
+                className="rounded bg-kun-accent px-3 py-1.5 text-white hover:opacity-90 disabled:opacity-50"
+                disabled={inviteBusy || !inviteDraft.userId.trim()}
+                onClick={() => void inviteMember()}
+              >
+                {inviteBusy ? "创建中" : "创建邀请"}
+              </button>
+            </div>
+            {inviteNotice && <p className="mt-2 text-gray-500">{inviteNotice}</p>}
+            {inviteResult?.acceptance_token && (
+              <div className="mt-3 rounded border bg-white p-2">
+                <div className="font-medium text-gray-700">复制给被邀请人的文案</div>
+                <textarea
+                  className="mt-2 h-32 w-full rounded border border-gray-200 p-2 font-mono text-[11px]"
+                  readOnly
+                  value={buildInviteHandoffText(inviteResult)}
+                />
+                <p className="mt-1 text-gray-400">
+                  token 只在这次响应里展示。请用可信渠道发送，不要贴到公开 issue、日志或群聊。
+                </p>
+              </div>
+            )}
+          </details>
         )}
         {accountLoading && !accountUnavailable && !accountSummary && (
           <div className="mt-3 text-xs text-gray-400">正在读取账号账本。</div>
@@ -1281,6 +1392,23 @@ function MiniMetric({ label, value }: { label: string; value: string | number })
 function formatHonestyLimit(value: AccountSummary["honest_limits"]) {
   if (!value.length) return "无";
   return String(value.length);
+}
+
+function buildInviteHandoffText(invite: InviteMemberResult) {
+  return [
+    `你被邀请加入 KUN 租户：${invite.tenant_id}`,
+    `用户 ID：${invite.user_id}`,
+    `角色：${invite.role}`,
+    `权限：${invite.scopes.join(", ") || "无"}`,
+    invite.invite_expires_at ? `过期时间：${invite.invite_expires_at}` : "",
+    "",
+    "请打开 KUN 前端的 /account 页面，在“接受成员邀请”里粘贴下面的一次性 invite token：",
+    invite.acceptance_token || "",
+    "",
+    "注意：这个 token 等同于一次性邀请凭证，请不要公开转发。",
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
 }
 
 function StatusPill({ status }: { status: DeliveryCapability["status"] }) {

@@ -315,6 +315,7 @@ def get_v3_delivery_status(
                 "生产请求会记录 token 最后使用时间、使用次数、UA 摘要和 IP 哈希，NUO 账号面板可查看最小会话使用账本",
                 "NUO 账号面板可查看当前租户账号、成员和 token 签发账本，且不会暴露 raw bearer token",
                 "NUO 账号面板可写入成员邀请账本；不会伪装成已发送邮件或已完成成员登录",
+                "NUO 账号面板已接成员邀请入口，可生成一次性 token 和可复制交付文案，但仍不会自动发邮件",
                 "NUO 账号面板可撤销当前租户已签发 token，生产请求中间件会消费撤销结果",
                 "前端主入口 / NUO / billing 已通过统一 apiClient 从 localStorage 或 NEXT_PUBLIC_KUN_TENANT_ID/NEXT_PUBLIC_KUN_USER_ID 注入租户与用户 header，避免页面散落 u-sylvan/sylvan",
                 "前端已补 /account 会话入口，可手动录入 bearer token 并显示服务端 session，不再只能改 env/localStorage",
