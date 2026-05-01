@@ -22,7 +22,11 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from kun.core.config import settings
-from kun.core.state_ledger import StateLedgerEntry, replay_state_ledger_story
+from kun.core.state_ledger import (
+    StateLedgerEntry,
+    replay_state_ledger_story,
+    summarize_state_ledger_credit_stories,
+)
 from kun.core.tenancy import current_tenant
 
 router = APIRouter(prefix="/api/blackboard", tags=["blackboard"])
@@ -93,9 +97,29 @@ class StateLedgerStory(BaseModel):
     model_routes: list[str] = Field(default_factory=list)
     skill_refs: list[str] = Field(default_factory=list)
     context_asset_ids: list[str] = Field(default_factory=list)
+    credit_assignment_count: int = 0
+    credit_assignment_summary: dict[str, Any] | None = None
+    resource_credit_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    top_credit_resource_kinds: list[str] = Field(default_factory=list)
+    top_credit_resources: list[str] = Field(default_factory=list)
+    critical_path_step_ids: list[int] = Field(default_factory=list)
     reconstruction_confidence: float = 0.0
     gaps: list[str] = Field(default_factory=list)
     timeline: list[StateLedgerHistoryItem] = Field(default_factory=list)
+
+
+class StateLedgerCreditSummary(BaseModel):
+    """Cross-task credit summary for NUO/Qi strategy reuse."""
+
+    task_count: int = 0
+    stories_with_credit: int = 0
+    credit_assignment_count: int = 0
+    resource_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    top_resource_kinds: list[str] = Field(default_factory=list)
+    top_resources: list[str] = Field(default_factory=list)
+    tenant_id: str = ""
+    user_id: str = ""
+    generated_at: str | None = None
 
 
 class StateLedgerAudit(BaseModel):
@@ -285,6 +309,38 @@ async def get_state_ledger_history(
     tenant_id, user_id = _request_identity(x_user_id=x_user_id, x_tenant_id=x_tenant_id)
     items = await _maybe_await(fn(tenant_id=tenant_id, user_id=user_id, limit=limit))
     return [StateLedgerHistoryItem.model_validate(item) for item in items]
+
+
+@router.get("/state-ledger/credit-summary", response_model=StateLedgerCreditSummary)
+async def get_state_ledger_credit_summary(
+    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-Id")] = None,
+    limit: int = Query(250, ge=1, le=1000),
+    top_k: int = Query(20, ge=1, le=100),
+) -> StateLedgerCreditSummary:
+    """跨任务信用归因汇总：哪些模型/skill/context 反复真的有用。"""
+    fn = _data_sources.get("state_ledger_credit_summary")
+    tenant_id, user_id = _request_identity(x_user_id=x_user_id, x_tenant_id=x_tenant_id)
+    if fn is not None:
+        item = await _maybe_await(
+            fn(tenant_id=tenant_id, user_id=user_id, limit=limit, top_k=top_k)
+        )
+        return StateLedgerCreditSummary.model_validate(item)
+
+    history_fn = _data_sources.get("state_ledger_history")
+    if history_fn is None:
+        return StateLedgerCreditSummary(tenant_id=tenant_id, user_id=user_id)
+    items = await _maybe_await(history_fn(tenant_id=tenant_id, user_id=user_id, limit=limit))
+    stories = _stories_from_history_items(
+        [StateLedgerHistoryItem.model_validate(item) for item in items]
+    )
+    summary = summarize_state_ledger_credit_stories(stories, top_k=top_k)
+    return StateLedgerCreditSummary(
+        **summary,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        generated_at=datetime.now(UTC).isoformat(),
+    )
 
 
 @router.get("/state-ledger/{task_id}/history", response_model=list[StateLedgerHistoryItem])
@@ -480,6 +536,15 @@ async def get_full_for_agent(
             if "state_ledger_audit" in _data_sources
             else {}
         ),
+        "state_ledger_credit_summary": (
+            await _maybe_await(
+                _data_sources["state_ledger_credit_summary"](
+                    tenant_id=tenant_id, user_id=user_id, limit=250, top_k=20
+                )
+            )
+            if "state_ledger_credit_summary" in _data_sources
+            else {}
+        ),
         "workspace": (await _maybe_await(ws_fn(task_id=task_id, user_id=user_id)) if ws_fn else {}),
         "assets": (
             await _maybe_await(assets_fn(task_id=task_id, user_id=user_id)) if assets_fn else {}
@@ -504,6 +569,19 @@ def _story_from_history(
             timeline_limit=20,
         )
     )
+
+
+def _stories_from_history_items(
+    history: list[StateLedgerHistoryItem],
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[StateLedgerHistoryItem]] = {}
+    for item in history:
+        if item.task_id:
+            grouped.setdefault(item.task_id, []).append(item)
+    return [
+        _story_from_history(task_id, items).model_dump(mode="json")
+        for task_id, items in grouped.items()
+    ]
 
 
 def _audit_from_snapshot_and_story(
@@ -587,6 +665,7 @@ __all__ = [
     "EventStreamItem",
     "GlobalStateView",
     "StateLedgerAudit",
+    "StateLedgerCreditSummary",
     "StateLedgerEntry",
     "StateLedgerHistoryItem",
     "StateLedgerStory",

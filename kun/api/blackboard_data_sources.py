@@ -19,6 +19,7 @@ from kun.core.state_ledger import (
     StateLedgerTrail,
     get_state_ledger,
     replay_state_ledger_story,
+    summarize_state_ledger_credit_stories,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ def install_blackboard_data_sources() -> None:
     register_data_source("state_ledger", _state_ledger_source)
     register_data_source("state_ledger_history", _state_ledger_history_source)
     register_data_source("state_ledger_story", _state_ledger_story_source)
+    register_data_source("state_ledger_credit_summary", _state_ledger_credit_summary_source)
     register_data_source("state_ledger_audit", _state_ledger_audit_source)
     register_data_source("workspace", _workspace_source)
     register_data_source("assets", _assets_source)
@@ -432,6 +434,47 @@ async def _state_ledger_story_source(
         timeline_limit=20,
         history_limit_reached=len(history) >= limit,
     )
+
+
+async def _state_ledger_credit_summary_source(
+    *,
+    tenant_id: str,
+    user_id: str,
+    limit: int = 250,
+    top_k: int = 20,
+    **_: Any,
+) -> dict[str, Any]:
+    """Aggregate durable credit assignment across recent task stories.
+
+    这是给 NUO/Qi 用的“哪些资源一直真有用”视图，不替代单任务账本。
+    """
+    history = await _state_ledger_history_source_async(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        limit=limit,
+    )
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in history:
+        task_id = str(item.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        grouped.setdefault(task_id, []).append(item)
+    stories = [
+        replay_state_ledger_story(
+            task_id,
+            items,
+            timeline_limit=0,
+            history_limit_reached=len(history) >= limit,
+        )
+        for task_id, items in grouped.items()
+    ]
+    summary = summarize_state_ledger_credit_stories(stories, top_k=top_k)
+    return {
+        **summary,
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
 
 
 async def _state_ledger_audit_source(

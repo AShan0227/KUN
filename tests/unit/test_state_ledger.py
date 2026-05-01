@@ -4,7 +4,12 @@ from types import SimpleNamespace
 
 from kun.context.packer import ContextPack, PackedContextItem
 from kun.core.ooda_loop import OODACycle, OODAState
-from kun.core.state_ledger import StateLedger, StateLedgerEntry, replay_state_ledger_story
+from kun.core.state_ledger import (
+    StateLedger,
+    StateLedgerEntry,
+    replay_state_ledger_story,
+    summarize_state_ledger_credit_stories,
+)
 from kun.datamodel.decision_ticket import (
     ticket_from_budget_policy,
     ticket_from_context_selection,
@@ -813,6 +818,83 @@ def test_state_ledger_replay_is_honest_about_missing_facts() -> None:
     assert "missing_task_created_event" in story["gaps"]
     assert "missing_terminal_status_event" in story["gaps"]
     assert "missing_decision_ticket_events" in story["gaps"]
+
+
+def test_state_ledger_summarizes_credit_across_task_stories() -> None:
+    summary = summarize_state_ledger_credit_stories(
+        [
+            {
+                "task_id": "task-1",
+                "credit_assignment_count": 1,
+                "resource_credit_summaries": [
+                    {
+                        "resource_kind": "context",
+                        "total_delta": 0.7,
+                        "positive_count": 2,
+                        "negative_count": 0,
+                        "resource_count": 2,
+                        "top_resource_keys": ["memory:lesson-1", "memory:lesson-2"],
+                    },
+                    {
+                        "resource_kind": "model",
+                        "total_delta": 0.1,
+                        "positive_count": 1,
+                        "negative_count": 0,
+                        "resource_count": 1,
+                        "top_resource_keys": ["model:gpt-5.5"],
+                    },
+                ],
+            },
+            {
+                "task_id": "task-2",
+                "credit_assignment_count": 1,
+                "resource_credit_summaries": [
+                    {
+                        "resource_kind": "context",
+                        "total_delta": 0.3,
+                        "positive_count": 1,
+                        "negative_count": 1,
+                        "resource_count": 1,
+                        "top_resource_keys": ["memory:lesson-1"],
+                    },
+                    {
+                        "resource_kind": "skill",
+                        "total_delta": -0.2,
+                        "positive_count": 0,
+                        "negative_count": 1,
+                        "resource_count": 1,
+                        "top_resource_keys": ["skill:weak"],
+                    },
+                ],
+            },
+            {
+                "task_id": "task-3",
+                "credit_assignment_count": 0,
+                "resource_credit_summaries": [],
+            },
+        ],
+        top_k=2,
+    )
+
+    assert summary["task_count"] == 3
+    assert summary["stories_with_credit"] == 2
+    assert summary["credit_assignment_count"] == 2
+    assert summary["top_resource_kinds"] == ["context", "model"]
+    assert summary["top_resources"] == [
+        "memory:lesson-1",
+        "memory:lesson-2",
+        "model:gpt-5.5",
+        "skill:weak",
+    ]
+    assert summary["resource_summaries"][0] == {
+        "resource_kind": "context",
+        "total_delta": 1.0,
+        "positive_count": 3,
+        "negative_count": 1,
+        "resource_count": 3,
+        "top_resource_keys": ["memory:lesson-1", "memory:lesson-2"],
+        "mean_delta": 0.333333,
+    }
 
 
 class _DictStateLedgerStore:

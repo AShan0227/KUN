@@ -1176,6 +1176,86 @@ def replay_state_ledger_story(
     }
 
 
+def summarize_state_ledger_credit_stories(
+    stories: Sequence[Mapping[str, Any]],
+    *,
+    top_k: int = 20,
+) -> dict[str, Any]:
+    """Aggregate credit assignment across replayed task stories.
+
+    Single-task credit tells us what helped once.  This summary tells NUO/Qi
+    what repeatedly helps across missions/tasks, without waking every memory or
+    metric dimension on every request.
+    """
+
+    by_kind: dict[str, dict[str, Any]] = {}
+    top_resources: list[str] = []
+    credit_assignment_count = 0
+    stories_with_credit = 0
+    for story in stories:
+        count = _safe_int(story.get("credit_assignment_count"))
+        credit_assignment_count += count
+        summaries = _resource_credit_summaries(story.get("resource_credit_summaries"))
+        if summaries:
+            stories_with_credit += 1
+        for summary in summaries:
+            kind = str(summary.get("resource_kind") or "").strip()
+            if not kind:
+                continue
+            bucket = by_kind.setdefault(
+                kind,
+                {
+                    "resource_kind": kind,
+                    "total_delta": 0.0,
+                    "positive_count": 0,
+                    "negative_count": 0,
+                    "resource_count": 0,
+                    "top_resource_keys": [],
+                },
+            )
+            bucket["total_delta"] = _safe_float(bucket.get("total_delta")) + _safe_float(
+                summary.get("total_delta")
+            )
+            bucket["positive_count"] = _safe_int(bucket.get("positive_count")) + _safe_int(
+                summary.get("positive_count")
+            )
+            bucket["negative_count"] = _safe_int(bucket.get("negative_count")) + _safe_int(
+                summary.get("negative_count")
+            )
+            bucket["resource_count"] = _safe_int(bucket.get("resource_count")) + _safe_int(
+                summary.get("resource_count")
+            )
+            keys = bucket["top_resource_keys"]
+            if isinstance(keys, list):
+                for key in _string_list(summary.get("top_resource_keys")):
+                    _append_unique(keys, key)
+                    _append_unique(top_resources, key)
+    resource_summaries = sorted(
+        by_kind.values(),
+        key=lambda item: _safe_float(item.get("total_delta")),
+        reverse=True,
+    )
+    for summary in resource_summaries:
+        denom = max(1, _safe_int(summary.get("resource_count")))
+        summary["mean_delta"] = round(_safe_float(summary.get("total_delta")) / denom, 6)
+        summary["total_delta"] = round(_safe_float(summary.get("total_delta")), 6)
+        if isinstance(summary.get("top_resource_keys"), list):
+            summary["top_resource_keys"] = summary["top_resource_keys"][:10]
+    top_resource_kinds = [
+        str(summary.get("resource_kind"))
+        for summary in resource_summaries
+        if _safe_float(summary.get("total_delta")) > 0
+    ][:top_k]
+    return {
+        "task_count": len(stories),
+        "stories_with_credit": stories_with_credit,
+        "credit_assignment_count": credit_assignment_count,
+        "resource_summaries": resource_summaries[:top_k],
+        "top_resource_kinds": top_resource_kinds,
+        "top_resources": top_resources[: top_k * 3],
+    }
+
+
 def _apply_runtime(entry: StateLedgerEntry, runtime: RuntimeState) -> None:
     entry.status = runtime.status
     entry.current_step = runtime.current_step
