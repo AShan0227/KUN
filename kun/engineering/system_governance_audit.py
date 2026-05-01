@@ -19,6 +19,7 @@ from kun.world.handler_health import WorldHandlerHealthCard
 
 GovernanceAuditSeverity = Literal["info", "warn", "error", "critical"]
 GovernanceAuditCategory = Literal[
+    "decision_coverage",
     "decision_conflict",
     "world_gateway",
     "scheduler",
@@ -27,6 +28,11 @@ GovernanceAuditCategory = Literal[
 
 _EXECUTION_MODES = {"FAST", "SMART", "MAX", "ENSEMBLE"}
 _BLOCKING_STATUSES = {"blocked", "stopped", "escalated", "failed"}
+_TICKET_REQUIRED_EVENT_TYPES = {
+    "llm.model_select.consulted",
+    "llm.model_select.blocked",
+    "llm.route_change.proposed",
+}
 
 
 class SystemGovernanceAuditIssue(BaseModel):
@@ -73,6 +79,7 @@ def run_system_governance_audit(
     """Build a read-only system governance audit report from existing signals."""
 
     issues: list[SystemGovernanceAuditIssue] = []
+    issues.extend(_decision_ticket_coverage_issues(decision_event_samples or []))
     issues.extend(_decision_conflict_issues(decision_event_samples or []))
     issues.extend(_world_handler_governance_issues(world_handlers or []))
     issues.extend(
@@ -94,6 +101,40 @@ def run_system_governance_audit(
         summary=_summary(issues),
         issues=issues,
     )
+
+
+def _decision_ticket_coverage_issues(
+    event_samples: Sequence[Mapping[str, Any]],
+) -> list[SystemGovernanceAuditIssue]:
+    issues: list[SystemGovernanceAuditIssue] = []
+    for sample in event_samples:
+        event_type = _text(sample.get("event_type"))
+        if event_type not in _TICKET_REQUIRED_EVENT_TYPES:
+            continue
+        payload = _mapping(sample.get("payload"))
+        if _decision_ticket_from_payload(payload):
+            continue
+        task_id = _text(sample.get("task_ref")) or _text(payload.get("task_id"))
+        severity: GovernanceAuditSeverity = "error" if event_type.endswith(".blocked") else "warn"
+        issues.append(
+            SystemGovernanceAuditIssue(
+                issue_id=f"decision_missing_ticket:{event_type}:{task_id or 'unknown'}",
+                severity=severity,
+                category="decision_coverage",
+                title="关键决策事件缺少统一 DecisionTicket",
+                detail=(
+                    f"{event_type} 没有携带 decision_ticket。傩能看到事件，"
+                    "但 StateLedger、启和 resource credit 无法稳定追踪这次判断。"
+                ),
+                suggested_action=(
+                    "让该判断点生成统一 DecisionTicket，或在 RuleEngine 事件 payload "
+                    "里带上 decision_ticket 字段。"
+                ),
+                task_id=task_id or None,
+                evidence={"event_type": event_type, "payload_keys": sorted(payload.keys())},
+            )
+        )
+    return issues
 
 
 def _decision_conflict_issues(

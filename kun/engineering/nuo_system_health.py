@@ -1308,9 +1308,10 @@ async def _collect_decision_event_samples(
             )
         for row in rows:
             payload = row.payload if isinstance(row.payload, dict) else {}
-            if "decision_ticket" not in payload and not (
+            has_ticket = "decision_ticket" in payload or bool(
                 payload.get("ticket_id") and payload.get("decision_point")
-            ):
+            )
+            if not has_ticket and not _is_decision_relevant_event_type(row.event_type):
                 continue
             samples.append(
                 {
@@ -1324,6 +1325,14 @@ async def _collect_decision_event_samples(
     except Exception:
         return []
     return samples
+
+
+def _is_decision_relevant_event_type(event_type: str) -> bool:
+    return event_type in {
+        "llm.model_select.consulted",
+        "llm.model_select.blocked",
+        "llm.route_change.proposed",
+    }
 
 
 def _collect_production_risk_summary(

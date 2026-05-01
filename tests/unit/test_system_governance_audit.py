@@ -5,6 +5,57 @@ from kun.engineering.system_governance_audit import run_system_governance_audit
 from kun.world.handler_health import WorldHandlerHealthCard
 
 
+def test_system_governance_audit_flags_missing_decision_ticket_for_route_governance() -> None:
+    report = run_system_governance_audit(
+        tenant_id="tenant-a",
+        decision_event_samples=[
+            {
+                "event_type": "llm.model_select.consulted",
+                "task_ref": "task-route-1",
+                "payload": {
+                    "task_type": "coding.review",
+                    "selected_model": "gpt-5.5",
+                    "selected_score": 0.91,
+                },
+            }
+        ],
+    )
+
+    issue = next(
+        item
+        for item in report.issues
+        if item.issue_id == "decision_missing_ticket:llm.model_select.consulted:task-route-1"
+    )
+    assert issue.severity == "warn"
+    assert issue.category == "decision_coverage"
+    assert issue.task_id == "task-route-1"
+    assert issue.evidence["event_type"] == "llm.model_select.consulted"
+
+
+def test_system_governance_audit_accepts_route_governance_with_decision_ticket() -> None:
+    report = run_system_governance_audit(
+        tenant_id="tenant-a",
+        decision_event_samples=[
+            {
+                "event_type": "llm.model_select.consulted",
+                "task_ref": "task-route-2",
+                "payload": {
+                    "decision_ticket": {
+                        "ticket_id": "dt-route-2",
+                        "task_id": "task-route-2",
+                        "decision_point": "llm_model_selected",
+                        "source_module": "watchtower.llm_route_governance",
+                        "selected_action": "gpt-5.5",
+                        "status": "selected",
+                    }
+                },
+            }
+        ],
+    )
+
+    assert not any(item.issue_id.startswith("decision_missing_ticket:") for item in report.issues)
+
+
 def test_system_governance_audit_flags_decision_mode_conflict() -> None:
     report = run_system_governance_audit(
         tenant_id="tenant-a",
