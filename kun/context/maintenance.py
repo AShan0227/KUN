@@ -13,6 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from kun.context.assets import AssetKind, LayeredAsset
+from kun.context.importance import ImportanceScorer
 from kun.context.storage import AssetStore, get_store
 from kun.core.db import session_scope
 from kun.core.events import emit
@@ -29,6 +30,9 @@ ActionKind = Literal[
     "duplicate",
     "compiler_review",
     "compiler_recompile",
+    "low_value",
+    "stale_or_risky",
+    "duplicate_merge",
 ]
 
 
@@ -52,8 +56,11 @@ class ContextMaintenanceReport(BaseModel):
     soft_forgotten: int = 0
     hard_deleted: int = 0
     duplicate_candidates: int = 0
+    duplicate_merged: int = 0
     compiler_review: int = 0
     compiler_recompile_recommended: int = 0
+    low_value_marked: int = 0
+    stale_or_risky_marked: int = 0
     kept: int = 0
     findings: list[ContextMaintenanceFinding] = Field(default_factory=list)
 
@@ -66,12 +73,14 @@ async def run_context_maintenance(
     compress_summary_over_chars: int = 1200,
     soft_forget_after_days: int = 30,
     hard_delete_after_days: int = 90,
+    merge_duplicates: bool = False,
     store: AssetStore | None = None,
 ) -> ContextMaintenanceReport:
     store = store or get_store()
     report = ContextMaintenanceReport(tenant_id=tenant_id, dry_run=dry_run)
     seen_summaries: dict[tuple[str, str], str] = {}
     now = datetime.now(UTC)
+    importance = ImportanceScorer()
     for kind in _ASSET_KINDS:
         assets = await store.list(tenant_id=tenant_id, asset_kind=kind, limit=max_assets)
         for asset in assets:
@@ -152,6 +161,42 @@ async def run_context_maintenance(
                     await _emit_maintenance_event(tenant_id, asset, "hard_delete")
                 continue
 
+            fade_score = importance.score(
+                asset=asset,
+                query=None,
+                now=now,
+                weights_override={
+                    "semantic": 0.0,
+                    "frequency": 0.45,
+                    "recency": 0.45,
+                    "dependency": 0.05,
+                    "pin": 0.05,
+                },
+            )
+            governance_marks = _governance_label_reasons(
+                asset,
+                age_days=age_days,
+                fade_score=fade_score.overall,
+            )
+            if governance_marks:
+                changed = False
+                for label, reason in governance_marks:
+                    if label == "low_value":
+                        report.low_value_marked += 1
+                    else:
+                        report.stale_or_risky_marked += 1
+                    report.findings.append(_finding(asset, label, reason, dry_run))
+                    if not dry_run and label not in set(asset.tags):
+                        asset.l1_metadata[label] = True
+                        asset.l1_metadata[f"{label}_reason"] = reason
+                        asset.l1_metadata["fade_score"] = round(fade_score.overall, 4)
+                        asset.l1_metadata["fade_score_rationale"] = fade_score.rationale
+                        asset.tags = sorted({*asset.tags, label})
+                        changed = True
+                if changed:
+                    await store.put(asset)
+                    await _emit_maintenance_event(tenant_id, asset, "stale_or_risky")
+
             if (
                 age_days >= soft_forget_after_days
                 and asset.access_count == 0
@@ -188,6 +233,27 @@ async def run_context_maintenance(
             report.kept += 1
             if len(report.findings) < 50:
                 report.findings.append(_finding(asset, "keep", "healthy", dry_run))
+    if merge_duplicates and not dry_run:
+        from kun.context.deduplicate import DuplicateAssetMerger
+
+        merge_report = await DuplicateAssetMerger(store=store).merge_duplicates(
+            tenant_id=tenant_id,
+            dry_run=False,
+            max_assets=max_assets,
+        )
+        report.duplicate_merged = merge_report.merged
+        for result in merge_report.results:
+            if result.status == "merged":
+                merged_asset = await store.get(result.asset_id, tenant_id=tenant_id)
+                if merged_asset is not None:
+                    report.findings.append(
+                        _finding(
+                            merged_asset,
+                            "duplicate_merge",
+                            f"merged into {result.canonical_asset_id}",
+                            dry_run,
+                        )
+                    )
     _emit_metrics(report)
     return report
 
@@ -349,6 +415,72 @@ def _looks_like_encoding_noise(text: str) -> bool:
     return noisy >= 3 or noisy / max(1, len(text)) > 0.02
 
 
+def _governance_label_reasons(
+    asset: LayeredAsset,
+    *,
+    age_days: float,
+    fade_score: float,
+) -> list[tuple[Literal["low_value", "stale_or_risky"], str]]:
+    """Create explicit NUO governance labels for future sparse recall.
+
+    ContextPacker already consumes ``low_value`` and ``stale_or_risky``.  This
+    function is the missing producer side: it makes decay/risk decisions
+    auditable instead of leaving them as invisible ranking math.
+    """
+
+    if asset.l1_metadata.get("tier") == "permanent":
+        return []
+
+    labels = {str(tag).lower() for tag in asset.tags}
+    reasons: list[tuple[Literal["low_value", "stale_or_risky"], str]] = []
+    if (
+        "low_value" not in labels
+        and asset.access_count == 0
+        and age_days >= 7
+        and fade_score < 0.25
+    ):
+        reasons.append(
+            (
+                "low_value",
+                (
+                    f"fade_score={fade_score:.2f}; unused for {age_days:.0f} days; "
+                    "downrank before stronger forget/delete actions"
+                ),
+            )
+        )
+
+    risk_level = _asset_risk_level(asset)
+    compiler_quality = asset.l1_metadata.get("compiler_quality_score")
+    poor_compiler_quality = isinstance(compiler_quality, int | float) and compiler_quality < 0.5
+    if (
+        "stale_or_risky" not in labels
+        and age_days >= 3
+        and (
+            risk_level in {"medium", "high", "critical"}
+            or poor_compiler_quality
+            or asset.l1_metadata.get("compiler_recompile_recommended") is True
+            or asset.l1_metadata.get("compiler_review_required") is True
+        )
+    ):
+        reasons.append(
+            (
+                "stale_or_risky",
+                (
+                    f"fade_score={fade_score:.2f}; risk={risk_level}; "
+                    f"compiler_quality={compiler_quality if compiler_quality is not None else 'unknown'}"
+                ),
+            )
+        )
+    return reasons
+
+
+def _asset_risk_level(asset: LayeredAsset) -> str:
+    risk = asset.l1_metadata.get("risk")
+    if isinstance(risk, dict):
+        return str(risk.get("level") or "low").lower()
+    return str(asset.l1_metadata.get("risk_level") or "low").lower()
+
+
 def _emit_metrics(report: ContextMaintenanceReport) -> None:
     dry_run = "true" if report.dry_run else "false"
     counts = {
@@ -356,8 +488,11 @@ def _emit_metrics(report: ContextMaintenanceReport) -> None:
         "soft_forget": report.soft_forgotten,
         "hard_delete": report.hard_deleted,
         "duplicate": report.duplicate_candidates,
+        "duplicate_merge": report.duplicate_merged,
         "compiler_review": report.compiler_review,
         "compiler_recompile": report.compiler_recompile_recommended,
+        "low_value": report.low_value_marked,
+        "stale_or_risky": report.stale_or_risky_marked,
         "keep": report.kept,
     }
     for action, count in counts.items():

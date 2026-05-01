@@ -316,3 +316,36 @@ def test_context_merge_duplicates_apply_marks_duplicate() -> None:
         assert after_canonical.l1_metadata["merged_duplicate_count"] == 1
     finally:
         reset_store()
+
+
+def test_context_maintenance_run_apply_can_merge_duplicates() -> None:
+    runner = CliRunner()
+    store = InMemoryAssetStore()
+    canonical = LayeredAsset.build("memory", "tenant-cli", summary="same")
+    duplicate = LayeredAsset.build("memory", "tenant-cli", summary="same")
+    asyncio.run(store.put(canonical))
+    asyncio.run(store.put(duplicate))
+    set_store(store)
+    try:
+        result = runner.invoke(
+            app,
+            [
+                "context",
+                "maintenance-run",
+                "--tenant",
+                "tenant-cli",
+                "--apply",
+                "--merge-duplicates",
+            ],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["dry_run"] is False
+        assert payload["duplicate_candidates"] == 1
+        assert payload["duplicate_merged"] == 1
+        after_duplicate = asyncio.run(store.get(duplicate.asset_id, tenant_id="tenant-cli"))
+        assert after_duplicate is not None
+        assert after_duplicate.l1_metadata["duplicate_merge_applied"] is True
+    finally:
+        reset_store()

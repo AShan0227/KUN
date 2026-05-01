@@ -1632,6 +1632,7 @@ class Orchestrator:
                     cost_usd=response.cost_usd_equivalent,
                     risk_level=task_ref.meta.risk_level,
                     mission_id=_mission_id_from_task(task_ref),
+                    route_debug=response.route_debug,
                 )
                 decision_tickets.append(llm_route_ticket)
                 self._record_state_ledger("record_decision_ticket", llm_route_ticket)

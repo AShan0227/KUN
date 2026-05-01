@@ -355,6 +355,8 @@ def get_v3_delivery_status(
                 "MemoryPolicyTicket 已携带 asset_kinds / preferred_tags，守望策略包能稀疏激活最相关的知识、skill、methodology 和 context 标签",
                 "ContextPacker 会软提升匹配策略标签的资产，不硬过滤，避免误分类时错杀真正相关资料",
                 "ContextPacker 已消费傩/维护治理标签：soft_forgotten、duplicate_merged、compiler_recompile_recommended、stale_or_risky、low_value 会影响排序或高风险过滤",
+                "傩 context maintenance 会写入 fade_score、low_value、stale_or_risky 等显式治理标签，后续 ContextPacker 会消费这些标签",
+                "kun context maintenance-run 可 dry-run 或 --apply 执行傩的压缩、软遗忘、硬删除、Fade 打标；--merge-duplicates 会串起重复发现和软合并执行",
                 "Context DecisionTicket 会记录 memory_policy，后续可追踪“为什么这次用了/没用记忆”",
                 "启 idle replay 已能从问题信号或历史任务生成 review-only 策略候选，用于后台探索更优路径",
                 "启 idle replay 已能把候选转成 review-only StrategyPack 草稿，并写入持久化 Qi 信号 evidence，供人/强模型/NUO 后续审查",
@@ -390,7 +392,7 @@ def get_v3_delivery_status(
             missing=[
                 "相似任务召回目前是确定性轻量检索，还不是向量库 / 跨租户匿名经验池",
                 "MemoryPolicyTicket 已进入 ContextPacker 过滤和策略标签加权，但还没接向量库、跨租户匿名经验池和更细的 step 级 action memory 过滤",
-                "MemoryPolicyTicket 已开始消费傩治理标签，但还没和 FadeMem 衰减、重复合并策略、NUO 自动执行治理完全打通",
+                "MemoryPolicyTicket 已开始消费傩治理标签，傩也会写入显式 Fade/低价值/风险标签；但还没做完整 MemPalace/FadeMem 语义抽象和跨任务自动规则蒸馏",
                 "Qi idle replay 目前已有 heuristic_local 和可配置本地模型评估口；但仓库不内置具体模型权重，也还没接任务重跑沙箱、shadow/canary 推广链路",
                 "StrategyPack 草稿目前只做 review-only，不会自动 promotion，也还没接强模型复审和人工批准 UI",
                 "执行过程经验已能影响 Watchtower skill_hints；但还没有做到 step 级 action choice 的精细策略改写",

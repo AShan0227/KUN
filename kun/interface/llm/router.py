@@ -248,6 +248,17 @@ class LLMRouter:
         tracer = trace.get_tracer("kun.interface.llm.router")
         with tracer.start_as_current_span("kun.router.invoke") as span:
             decision = self.decide(purpose, request.profile, request=request)
+            route_debug: dict[str, object] = {
+                "purpose": purpose,
+                "initial_tier": decision.primary_tier,
+                "initial_rationale": decision.rationale,
+                "fallback_tier": decision.fallback_tier,
+                "complexity_hint": _complexity_hint(request),
+                "strategy_override": False,
+                "credit_override": False,
+                "ab_branch": "primary",
+                "fallback_engaged": False,
+            }
 
             # V2.1 §17 wire (M3.3): opt-in StrategyMatcher 第 5 层覆盖
             # KUN_STRATEGY_MATCHER_ENABLED=1 启用; 默认 off, 不破坏现有行为.
@@ -259,6 +270,7 @@ class LLMRouter:
             )
 
             if _sm_enabled():
+                before_strategy = decision
                 decision = await maybe_override_with_strategy(
                     decision,
                     purpose,
@@ -266,8 +278,19 @@ class LLMRouter:
                     request.profile,
                 )
                 span.set_attribute("kun.strategy_matcher_engaged", True)
+                if decision.primary_tier != before_strategy.primary_tier:
+                    route_debug["strategy_override"] = True
+                    route_debug["strategy_from_tier"] = before_strategy.primary_tier
+                    route_debug["strategy_to_tier"] = decision.primary_tier
 
+            before_credit = decision
             decision = await self._maybe_override_with_credit(decision, request)
+            if decision.primary_tier != before_credit.primary_tier:
+                route_debug["credit_override"] = True
+                route_debug["credit_from_tier"] = before_credit.primary_tier
+                route_debug["credit_to_tier"] = decision.primary_tier
+            route_debug["final_planned_tier"] = decision.primary_tier
+            route_debug["final_rationale"] = decision.rationale
 
             span.set_attribute("kun.purpose", str(purpose))
             span.set_attribute("kun.primary_tier", str(decision.primary_tier))
@@ -289,6 +312,9 @@ class LLMRouter:
                 primary = challenger
                 ab_branch = "challenger"
             span.set_attribute("kun.ab_branch", ab_branch)
+            route_debug["ab_branch"] = ab_branch
+            route_debug["primary_provider"] = _provider_snapshot(primary)
+            route_debug["challenger_provider"] = _provider_snapshot(challenger)
 
             # Try primary tier
             if primary is not None:
@@ -298,8 +324,16 @@ class LLMRouter:
                     span.set_attribute("kun.fallback_engaged", False)
                     span.set_attribute("kun.final_provider", primary.name)
                     span.set_attribute("kun.cost_usd_equivalent", result.cost_usd_equivalent)
+                    result.route_debug = {
+                        **route_debug,
+                        "fallback_engaged": False,
+                        "final_provider": primary.name,
+                        "final_model": primary.model_id,
+                        "final_tier": decision.primary_tier,
+                    }
                     return result
                 except Exception as e:
+                    route_debug["primary_error"] = type(e).__name__
                     log.warning(
                         "router.primary_failed",
                         provider=primary.name,
@@ -337,6 +371,13 @@ class LLMRouter:
             span.set_attribute("kun.fallback_engaged", True)
             span.set_attribute("kun.final_provider", fallback.name)
             span.set_attribute("kun.cost_usd_equivalent", result.cost_usd_equivalent)
+            result.route_debug = {
+                **route_debug,
+                "fallback_engaged": True,
+                "final_provider": fallback.name,
+                "final_model": fallback.model_id,
+                "final_tier": decision.fallback_tier,
+            }
             return result
 
     async def _maybe_override_with_credit(
@@ -419,6 +460,16 @@ def _ab_roll() -> float:
     import random
 
     return random.random()
+
+
+def _provider_snapshot(provider: LLMProvider | None) -> dict[str, str] | None:
+    if provider is None:
+        return None
+    return {
+        "name": provider.name,
+        "model_id": provider.model_id,
+        "tier": provider.tier,
+    }
 
 
 async def _score_tier_credit_candidates(

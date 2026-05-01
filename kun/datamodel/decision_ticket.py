@@ -414,6 +414,7 @@ def ticket_from_llm_route(
     cost_usd: float,
     risk_level: str = "low",
     mission_id: str | None = None,
+    route_debug: dict[str, Any] | None = None,
 ) -> DecisionTicket:
     """Wrap the actual LLM provider/model selected for one execution step."""
 
@@ -436,8 +437,15 @@ def ticket_from_llm_route(
             "model": model,
             "tier": tier,
             "cost_usd_equivalent": cost_usd,
+            "route_debug": route_debug or {},
         },
-        metadata={"step_id": step_id, "purpose": purpose, "provider": provider, "model": model},
+        metadata={
+            "step_id": step_id,
+            "purpose": purpose,
+            "provider": provider,
+            "model": model,
+            "route_debug": route_debug or {},
+        },
     )
 
 

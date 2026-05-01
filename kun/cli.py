@@ -630,6 +630,42 @@ def context_merge_duplicates(
     _run_json(_run())
 
 
+@context_app.command("maintenance-run")
+def context_maintenance_run(
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+    apply: bool = typer.Option(False, "--apply", help="Mutate assets; default is dry-run"),
+    max_assets: int = typer.Option(500, "--max-assets", min=1),
+    compress_summary_over_chars: int = typer.Option(1200, "--compress-over-chars", min=100),
+    soft_forget_after_days: int = typer.Option(30, "--soft-forget-after-days", min=1),
+    hard_delete_after_days: int = typer.Option(90, "--hard-delete-after-days", min=1),
+    merge_duplicates: bool = typer.Option(
+        False,
+        "--merge-duplicates",
+        help="After marking duplicate candidates, also soft-merge them into canonical assets",
+    ),
+) -> None:
+    """Run NUO context maintenance from CLI.
+
+    Dry-run is the default.  Use --apply for real compression / soft-forget /
+    delete markers.  Duplicate merge is explicit because it changes two assets.
+    """
+    from kun.context.maintenance import run_context_maintenance
+
+    async def _run() -> dict[str, Any]:
+        report = await run_context_maintenance(
+            tenant_id=tenant,
+            dry_run=not apply,
+            max_assets=max_assets,
+            compress_summary_over_chars=compress_summary_over_chars,
+            soft_forget_after_days=soft_forget_after_days,
+            hard_delete_after_days=hard_delete_after_days,
+            merge_duplicates=merge_duplicates,
+        )
+        return report.model_dump(mode="json")
+
+    _run_json(_run())
+
+
 @app.command()
 def run(
     message: str = typer.Argument(..., help="Natural language task"),

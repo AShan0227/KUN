@@ -59,6 +59,10 @@ async def test_fallback_triggers_on_failure():
     )
     assert response.provider == "stub"
     assert response.tier == "fallback"
+    assert response.route_debug["initial_tier"] == "top"
+    assert response.route_debug["fallback_engaged"] is True
+    assert response.route_debug["primary_error"] == "RetryError"
+    assert response.route_debug["final_tier"] == "fallback"
 
 
 @pytest.mark.unit
@@ -177,6 +181,9 @@ async def test_router_credit_can_upgrade_real_hot_path(monkeypatch):
 
     assert response.model == "model-strong"
     assert response.tier == "strong"
+    assert response.route_debug["credit_override"] is True
+    assert response.route_debug["credit_to_tier"] == "strong"
+    assert response.route_debug["final_planned_tier"] == "strong"
 
 
 @pytest.mark.unit

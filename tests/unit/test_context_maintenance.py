@@ -118,6 +118,75 @@ async def test_context_maintenance_marks_duplicates_without_deleting() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_context_maintenance_can_merge_duplicates_after_marking() -> None:
+    store = InMemoryAssetStore()
+    first = LayeredAsset.build("knowledge", "tenant-a", metadata={"title": "A"}, summary="same")
+    duplicate = LayeredAsset.build(
+        "knowledge",
+        "tenant-a",
+        metadata={"title": "B"},
+        summary="same",
+    )
+    await store.put(first)
+    await store.put(duplicate)
+
+    report = await run_context_maintenance(
+        tenant_id="tenant-a",
+        dry_run=False,
+        merge_duplicates=True,
+        store=store,
+    )
+    after_duplicate = await store.get(duplicate.asset_id, tenant_id="tenant-a")
+    after_first = await store.get(first.asset_id, tenant_id="tenant-a")
+
+    assert report.duplicate_candidates == 1
+    assert report.duplicate_merged == 1
+    assert any(item.action == "duplicate_merge" for item in report.findings)
+    assert after_duplicate is not None
+    assert after_duplicate.l1_metadata["duplicate_merge_applied"] is True
+    assert after_duplicate.l1_metadata["soft_forgotten"] is True
+    assert after_first is not None
+    assert after_first.l1_metadata["merged_duplicate_count"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_maintenance_writes_fade_governance_labels() -> None:
+    store = InMemoryAssetStore()
+    low_value = LayeredAsset.build(
+        "memory",
+        "tenant-a",
+        metadata={"title": "unused"},
+        summary="This old memory has not been used.",
+    )
+    low_value.last_accessed = datetime.now(UTC) - timedelta(days=10)
+    risky = LayeredAsset.build(
+        "knowledge",
+        "tenant-a",
+        metadata={"title": "risky", "risk": {"level": "medium", "flags": ["stale_source"]}},
+        summary="Risky source should not be preferred for high risk work.",
+    )
+    risky.last_accessed = datetime.now(UTC) - timedelta(days=4)
+    await store.put(low_value)
+    await store.put(risky)
+
+    report = await run_context_maintenance(tenant_id="tenant-a", dry_run=False, store=store)
+    after_low = await store.get(low_value.asset_id, tenant_id="tenant-a")
+    after_risky = await store.get(risky.asset_id, tenant_id="tenant-a")
+
+    assert report.low_value_marked == 1
+    assert report.stale_or_risky_marked == 1
+    assert after_low is not None
+    assert after_low.l1_metadata["low_value"] is True
+    assert after_low.l1_metadata["fade_score"] < 0.25
+    assert "low_value" in after_low.tags
+    assert after_risky is not None
+    assert after_risky.l1_metadata["stale_or_risky"] is True
+    assert "stale_or_risky" in after_risky.tags
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_context_maintenance_marks_compiler_review_assets_when_not_dry_run() -> None:
     store = InMemoryAssetStore()
     asset = LayeredAsset.build(

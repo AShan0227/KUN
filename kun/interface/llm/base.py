@@ -141,6 +141,10 @@ class LLMResponse(BaseModel):
     cost_usd_equivalent: float = 0.0
     latency_ms: float = 0.0
     finish_reason: Literal["stop", "tool_use", "length", "error"] = "stop"
+    route_debug: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Router rationale snapshot for DecisionTicket / StateLedger.",
+    )
     # Original vendor response (optional, for debugging)
     raw: dict[str, Any] | None = None
 
