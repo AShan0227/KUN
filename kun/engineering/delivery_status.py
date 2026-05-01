@@ -146,6 +146,7 @@ def get_v3_delivery_status(
                 "任务详情会显示账本审计，能看出当前快照和长期事件回放是否漂移",
                 "任务详情可提交 1-5 分用户反馈和原因标签，反馈会进入任务事件流",
                 "任务详情可轻量调整风险、预算、约束和确认策略，并写入 TaskRow / EventRow / StateLedger",
+                "任务详情已有隐藏的轻量执行路径图，可从 StateLedger 展示目标、策略、模型、skill/context、外部动作和风险状态",
                 "WebSocket 未连接时，对话主入口会降级到 /api/chat/run HTTP 执行并提示用户",
                 "主工作区和 /account 已有最小会话入口：可保存/清除 tenant_id、user_id、bearer token，并读取服务端 session",
             ],
@@ -156,8 +157,8 @@ def get_v3_delivery_status(
                 "kun/api/blackboard_data_sources.py",
             ],
             missing=[
-                "更完整的节点图 / 高级调试视图",
-                "轻量编辑已有风险/预算/约束/确认策略；还缺更完整的节点图高级调试视图",
+                "已有轻量执行路径图；更完整的 React Flow 节点编辑器仍未做",
+                "已有风险/预算/约束/确认策略轻量编辑；还缺可拖拽的高级节点编辑视图",
             ],
             next_steps=[
                 "把任务详情里的下一步动作和节点图高级调试视图继续打磨",

@@ -1995,6 +1995,19 @@ function TaskDetailPanel({
         </div>
       )}
 
+      {(ledger || story) && (
+        <details className="mt-3 rounded bg-white p-2 text-gray-600">
+          <summary className="cursor-pointer font-medium text-gray-700">
+            高级调试：执行路径图
+          </summary>
+          <ExecutionPathGraph
+            ledger={ledger}
+            story={story}
+            pendingActions={pendingActions}
+          />
+        </details>
+      )}
+
       {pendingActions.length > 0 && (
         <div className="mt-3 rounded bg-amber-50 p-2 text-amber-900">
           <div className="font-medium">等你确认</div>
@@ -2050,6 +2063,131 @@ function TaskDetailPanel({
           </pre>
         </details>
       )}
+    </div>
+  );
+}
+
+function ExecutionPathGraph({
+  ledger,
+  story,
+  pendingActions,
+}: {
+  ledger: LedgerEntry | null;
+  story: StateLedgerStory | null;
+  pendingActions: PendingAction[];
+}) {
+  const modelHints = [
+    ledger?.current_model,
+    ...(story?.model_routes ?? []),
+  ].filter(Boolean) as string[];
+  const skillHints = [
+    ledger?.current_skill,
+    ...(story?.skill_refs ?? []),
+  ].filter(Boolean) as string[];
+  const contextCount = story?.context_asset_ids?.length ?? 0;
+  const riskFlags = [
+    ledger?.current_risk && ledger.current_risk !== "unknown" ? ledger.current_risk : "",
+    ...(story?.risk_flags ?? []),
+  ].filter(Boolean) as string[];
+  const worldCount = Math.max(
+    pendingActions.length,
+    story?.world_action_count ?? 0,
+    story?.external_action_count ?? 0,
+  );
+  const nodes = [
+    {
+      label: "目标",
+      value: ledger?.current_goal || ledger?.title || story?.latest_reason || "未记录目标",
+      tone: "blue" as const,
+    },
+    {
+      label: "执行策略",
+      value: [
+        ledger?.execution_mode || "mode 未记录",
+        story?.decision_count ? `${story.decision_count} 次决策` : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      tone: "gray" as const,
+    },
+    {
+      label: "模型",
+      value: modelHints.length ? uniqueShortList(modelHints, 2) : "未记录模型路线",
+      tone: "gray" as const,
+    },
+    {
+      label: "Skill / Context",
+      value: [
+        skillHints.length ? uniqueShortList(skillHints, 2) : "skill 未记录",
+        contextCount ? `context ${contextCount}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      tone: "gray" as const,
+    },
+    {
+      label: "外部动作",
+      value:
+        worldCount > 0
+          ? `${worldCount} 个动作${pendingActions.length ? ` · ${pendingActions.length} 个待确认` : ""}`
+          : "无外部动作",
+      tone: worldCount > 0 ? ("amber" as const) : ("gray" as const),
+    },
+    {
+      label: "状态 / 风险",
+      value: [
+        ledger?.status || story?.status || "unknown",
+        riskFlags.length ? uniqueShortList(riskFlags, 2) : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      tone:
+        (ledger?.pending_confirmations.length ?? 0) > 0 || pendingActions.length > 0
+          ? ("amber" as const)
+          : ("green" as const),
+    },
+  ];
+  return (
+    <div className="mt-2">
+      <div className="grid gap-2 md:grid-cols-3">
+        {nodes.map((node, idx) => (
+          <div key={`${node.label}-${idx}`} className="flex items-center gap-2">
+            <PathNode label={node.label} value={node.value} tone={node.tone} />
+            {idx < nodes.length - 1 && (
+              <span className="hidden text-gray-300 md:inline">→</span>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 rounded bg-gray-50 px-2 py-1 text-[11px] text-gray-500">
+        这是从当前状态账本和长期事件回放拼出的调试视图，不是主流程编辑器；如果账本缺事件，
+        这里会显示“未记录”，不会假装知道。
+      </div>
+    </div>
+  );
+}
+
+function PathNode({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "blue" | "green" | "amber" | "gray";
+}) {
+  const toneClass =
+    tone === "blue"
+      ? "border-blue-200 bg-blue-50"
+      : tone === "green"
+        ? "border-green-200 bg-green-50"
+        : tone === "amber"
+          ? "border-amber-200 bg-amber-50"
+          : "border-gray-200 bg-white";
+  return (
+    <div className={`min-h-16 flex-1 rounded border p-2 ${toneClass}`}>
+      <div className="text-[11px] text-gray-400">{label}</div>
+      <div className="mt-1 line-clamp-2 break-words text-gray-700">{value}</div>
     </div>
   );
 }
@@ -2129,6 +2267,13 @@ function buildStateLedgerAudit({
     drift_detected: issues.some((issue) => issue.endsWith("_drift")),
     issues,
   };
+}
+
+function uniqueShortList(items: string[], limit: number): string {
+  const unique = Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+  const visible = unique.slice(0, limit).join("，");
+  const more = unique.length > limit ? ` +${unique.length - limit}` : "";
+  return `${visible}${more}`;
 }
 
 function auditStatusDriftLabel(audit: StateLedgerAudit): string {
