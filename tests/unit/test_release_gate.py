@@ -17,10 +17,15 @@ def _write_release_files(root: Path) -> None:
     )
     scripts = root / "scripts"
     scripts.mkdir()
-    (scripts / "backup_postgres.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    (scripts / "restore_postgres_smoke.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    (scripts / "backup_restore_drill.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
-    (scripts / "check_legal_guard.py").write_text("print('ok')\n", encoding="utf-8")
+    for name, body in (
+        ("backup_postgres.sh", "#!/usr/bin/env bash\n"),
+        ("restore_postgres_smoke.sh", "#!/usr/bin/env bash\n"),
+        ("backup_restore_drill.py", "#!/usr/bin/env python3\n"),
+        ("check_legal_guard.py", "print('ok')\n"),
+    ):
+        path = scripts / name
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
 
 
 @pytest.mark.unit

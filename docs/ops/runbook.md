@@ -141,11 +141,18 @@ curl -X POST http://localhost:8000/api/chat/run \
 
 ```bash
 # DB
-DATABASE_URL=postgresql+asyncpg://kun:secret@postgres:5432/kun
 KUN_ENV=production
+KUN_PG_DSN=postgresql+asyncpg://kun_app:<app-password>@postgres:5432/kun
+KUN_PG_ADMIN_DSN=postgresql+asyncpg://kun_admin:<admin-password>@postgres:5432/kun
 
 # NATS
-NATS_URL=nats://nats:4222
+KUN_NATS_URL=nats://nats:4222
+
+# S3 / MinIO artifacts
+KUN_S3_ENDPOINT=https://objects.example.com
+KUN_S3_ACCESS_KEY=<object-store-access-key>
+KUN_S3_SECRET_KEY=<object-store-secret-key>
+KUN_S3_BUCKET=kun-artifacts
 
 # LLM provider (默认: Codex MCP / GPT-5.5; Claude 只作为显式 opt-in)
 KUN_LLM_PRIMARY=codex
@@ -171,7 +178,7 @@ KUN_TASK_MAX_DURATION_SEC=1800
 
 # 多租户 (production 必须显式, dev 可设 default)
 KUN_DEFAULT_TENANT_ID=                  # production 必须空
-KUN_AUTH_SECRET=please-use-32+-chars    # production 必须有；API 不再信任裸 X-Tenant-Id
+KUN_AUTH_SECRET=<32+ random chars, do not commit> # production 必须有；API 不再信任裸 X-Tenant-Id
 KUN_AUTH_SECRETS=new-secret,old-secret  # 可选；轮换期同时验多个 secret
 
 # 低峰期 context/memory 瘦身
@@ -182,7 +189,6 @@ KUN_CONTEXT_MAINTENANCE_MUTATE=0        # 默认 dry-run；确认后再改 1
 ### 启动顺序
 
 ```bash
-# 1. Postgres + NATS 起来
 docker compose -f docker-compose.prod.yml up -d postgres nats
 
 # 2. alembic 迁移到 head
@@ -198,7 +204,7 @@ docker compose -f docker-compose.prod.yml up -d api
 # 4. 启 outbox_worker (events bus → NATS publish)
 docker compose -f docker-compose.prod.yml up -d outbox_worker
 
-# 5. 启 idle_batch_worker (cron 跑 7 个 step)
+# 5. 启 idle_batch_worker (低峰期 lane scheduler + anchor-expand 维护链)
 docker compose -f docker-compose.prod.yml up -d idle_batch
 
 # 6. 监控 (Prometheus + Grafana)

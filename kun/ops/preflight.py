@@ -9,7 +9,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from collections.abc import Sequence
-from os import environ
+from os import X_OK, access, environ
 from pathlib import Path
 from typing import Literal
 
@@ -170,15 +170,8 @@ def _tooling_checks(
         ("backup_script", "Postgres 备份脚本", backup_script),
         ("restore_script", "Postgres 恢复 smoke 脚本", restore_script),
     ):
-        checks.append(
-            PreflightCheck(
-                check_id=check_id,
-                severity="ok" if path.exists() else "blocker",
-                title=f"{label}{'存在' if path.exists() else '缺失'}",
-                detail=str(path),
-                suggested_action="" if path.exists() else "补齐备份/恢复脚本后再上线。",
-            )
-        )
+        checks.append(_script_exists_and_executable_check(check_id, label, path))
+    checks.extend(_backup_tool_checks())
     checks.append(
         PreflightCheck(
             check_id="backup_restore_drill_script",
@@ -210,6 +203,61 @@ def _tooling_checks(
         return checks
     if run_alembic_heads:
         checks.append(_alembic_heads_check(root))
+    return checks
+
+
+def _script_exists_and_executable_check(
+    check_id: str,
+    label: str,
+    path: Path,
+) -> PreflightCheck:
+    if not path.exists():
+        return PreflightCheck(
+            check_id=check_id,
+            severity="blocker",
+            title=f"{label}缺失",
+            detail=str(path),
+            suggested_action="补齐备份/恢复脚本后再上线。",
+        )
+    if not access(path, X_OK):
+        return PreflightCheck(
+            check_id=check_id,
+            severity="blocker",
+            title=f"{label}不可执行",
+            detail=str(path),
+            suggested_action=f"运行 chmod +x {path}，并在目标环境重跑 preflight。",
+        )
+    return PreflightCheck(
+        check_id=check_id,
+        severity="ok",
+        title=f"{label}存在且可执行",
+        detail=str(path),
+    )
+
+
+def _backup_tool_checks() -> list[PreflightCheck]:
+    checks: list[PreflightCheck] = []
+    for tool in ("pg_dump", "pg_restore", "psql"):
+        tool_path = shutil.which(tool)
+        checks.append(
+            PreflightCheck(
+                check_id=f"backup_tool:{tool}",
+                severity="ok" if tool_path else "warn",
+                title=f"{tool} {'可用' if tool_path else '不在 PATH'}",
+                detail=tool_path or "missing",
+                suggested_action="" if tool_path else f"在备份/恢复运行环境安装 {tool}。",
+            )
+        )
+    checksum_tool = shutil.which("sha256sum") or shutil.which("shasum")
+    checks.append(
+        PreflightCheck(
+            check_id="backup_tool:checksum",
+            severity="ok" if checksum_tool else "warn",
+            title=f"checksum 工具{'可用' if checksum_tool else '不在 PATH'}",
+            detail=checksum_tool or "missing",
+            suggested_action="" if checksum_tool else "安装 sha256sum 或 shasum。",
+        )
+    )
     return checks
 
 

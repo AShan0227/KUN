@@ -41,9 +41,14 @@ def _safe_prod_settings() -> Settings:
 def _write_ops_scripts(root: Path) -> None:
     scripts = root / "scripts"
     scripts.mkdir()
-    (scripts / "backup_postgres.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    (scripts / "restore_postgres_smoke.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    (scripts / "backup_restore_drill.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    for name, shebang in (
+        ("backup_postgres.sh", "#!/usr/bin/env bash\n"),
+        ("restore_postgres_smoke.sh", "#!/usr/bin/env bash\n"),
+        ("backup_restore_drill.py", "#!/usr/bin/env python3\n"),
+    ):
+        path = scripts / name
+        path.write_text(shebang, encoding="utf-8")
+        path.chmod(0o755)
     create_backup_package(
         source_paths=[scripts / "backup_postgres.sh"],
         output_dir=root / "backups",
@@ -51,6 +56,15 @@ def _write_ops_scripts(root: Path) -> None:
         allowed_roots=[scripts],
         package_name="test-fresh",
     )
+
+
+def _patch_backup_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_which(tool: str) -> str | None:
+        if tool in {"pg_dump", "pg_restore", "psql", "sha256sum", "shasum", "uv"}:
+            return f"/usr/bin/{tool}"
+        return None
+
+    monkeypatch.setattr("kun.ops.preflight.shutil.which", fake_which)
 
 
 @pytest.mark.unit
@@ -75,7 +89,11 @@ def test_preflight_blocks_unsafe_production_config(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_preflight_can_require_recent_backup_drill(tmp_path: Path) -> None:
+def test_preflight_can_require_recent_backup_drill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_backup_tools(monkeypatch)
     _write_ops_scripts(tmp_path)
     for path in (tmp_path / "backups").glob("*"):
         path.unlink()
@@ -92,7 +110,11 @@ def test_preflight_can_require_recent_backup_drill(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_preflight_passes_core_checks_for_safe_config(tmp_path: Path) -> None:
+def test_preflight_passes_core_checks_for_safe_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_backup_tools(monkeypatch)
     _write_ops_scripts(tmp_path)
 
     report = run_preflight(
@@ -106,7 +128,11 @@ def test_preflight_passes_core_checks_for_safe_config(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_preflight_accepts_auth_secret_rotation_list(tmp_path: Path) -> None:
+def test_preflight_accepts_auth_secret_rotation_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_backup_tools(monkeypatch)
     _write_ops_scripts(tmp_path)
     cfg = _safe_prod_settings().model_copy(
         update={
@@ -128,6 +154,7 @@ def test_preflight_blocks_half_enabled_world_gateway_handler(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_backup_tools(monkeypatch)
     _write_ops_scripts(tmp_path)
     monkeypatch.setenv("KUN_WORLD_EMAIL_SEND_ENABLED", "true")
     monkeypatch.delenv("KUN_WORLD_SMTP_HOST", raising=False)
@@ -151,6 +178,7 @@ def test_preflight_accepts_enabled_world_gateway_handler_with_required_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_backup_tools(monkeypatch)
     _write_ops_scripts(tmp_path)
     monkeypatch.setenv("KUN_WORLD_EMAIL_SEND_ENABLED", "true")
     monkeypatch.setenv("KUN_WORLD_SMTP_HOST", "smtp.example.com")
@@ -175,6 +203,7 @@ def test_preflight_warns_when_world_gateway_secrets_exist_but_handler_disabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_backup_tools(monkeypatch)
     _write_ops_scripts(tmp_path)
     monkeypatch.delenv("KUN_WORLD_EMAIL_SEND_ENABLED", raising=False)
     monkeypatch.setenv("KUN_WORLD_SMTP_HOST", "smtp.example.com")
@@ -200,6 +229,7 @@ def test_preflight_warns_when_tenant_scoped_world_gateway_secrets_exist_but_disa
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_backup_tools(monkeypatch)
     _write_ops_scripts(tmp_path)
     monkeypatch.delenv("KUN_WORLD_EMAIL_SEND_ENABLED", raising=False)
     monkeypatch.setenv("KUN_TENANT_TENANT_A_WORLD_SMTP_HOST", "smtp.tenant-a.example.com")
@@ -226,6 +256,7 @@ def test_preflight_accepts_enabled_world_gateway_handler_with_tenant_scoped_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_backup_tools(monkeypatch)
     _write_ops_scripts(tmp_path)
     monkeypatch.setenv("KUN_WORLD_EMAIL_SEND_ENABLED", "true")
     monkeypatch.delenv("KUN_WORLD_SMTP_HOST", raising=False)
@@ -253,6 +284,7 @@ def test_preflight_reads_world_gateway_enable_flag_from_secret_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_backup_tools(monkeypatch)
     _write_ops_scripts(tmp_path)
     store = tmp_path / "secrets.json"
     store.write_text(
@@ -289,6 +321,7 @@ def test_preflight_blocks_half_enabled_world_gateway_handler_from_secret_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_backup_tools(monkeypatch)
     _write_ops_scripts(tmp_path)
     store = tmp_path / "secrets.json"
     store.write_text(
@@ -309,6 +342,52 @@ def test_preflight_blocks_half_enabled_world_gateway_handler_from_secret_store(
     assert any(
         check.check_id == "world_handler_config:enterprise_api.post" for check in report.blockers
     )
+
+
+@pytest.mark.unit
+def test_preflight_blocks_non_executable_backup_scripts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_backup_tools(monkeypatch)
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "backup_postgres.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (scripts / "restore_postgres_smoke.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (scripts / "backup_restore_drill.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+    report = run_preflight(
+        cfg=_safe_prod_settings(),
+        repo_root=tmp_path,
+        run_alembic_heads=False,
+    )
+
+    assert report.status == "block"
+    blockers = {check.check_id: check for check in report.blockers}
+    assert blockers["backup_script"].title.endswith("不可执行")
+    assert blockers["restore_script"].title.endswith("不可执行")
+
+
+@pytest.mark.unit
+def test_preflight_warns_when_database_backup_tools_are_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_ops_scripts(tmp_path)
+    monkeypatch.setattr("kun.ops.preflight.shutil.which", lambda _tool: None)
+
+    report = run_preflight(
+        cfg=_safe_prod_settings(),
+        repo_root=tmp_path,
+        run_alembic_heads=False,
+    )
+
+    assert report.status == "warn"
+    warning_ids = {check.check_id for check in report.warnings}
+    assert "backup_tool:pg_dump" in warning_ids
+    assert "backup_tool:pg_restore" in warning_ids
+    assert "backup_tool:psql" in warning_ids
+    assert "backup_tool:checksum" in warning_ids
 
 
 @pytest.mark.unit
