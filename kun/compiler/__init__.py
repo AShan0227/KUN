@@ -24,6 +24,12 @@ from kun.compiler.models import (
     MaterialRisk,
     MaterialSource,
 )
+from kun.compiler.recompile import (
+    CompilerRecompiler,
+    RecompileCandidateResult,
+    RecompileReport,
+    RecompileStatus,
+)
 from kun.compiler.registry import CompilerRegistry, MaterialCompiler, default_registry
 
 __all__ = [
@@ -39,6 +45,7 @@ __all__ = [
     "CompilerIngestionResult",
     "CompilerIngestor",
     "CompilerProfile",
+    "CompilerRecompiler",
     "CompilerRegistry",
     "LightweightMaterialCompiler",
     "MaterialCompiler",
@@ -46,6 +53,9 @@ __all__ = [
     "MaterialProvenance",
     "MaterialRisk",
     "MaterialSource",
+    "RecompileCandidateResult",
+    "RecompileReport",
+    "RecompileStatus",
     "default_registry",
     "material_to_layered_asset",
 ]

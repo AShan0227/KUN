@@ -4,6 +4,7 @@ import asyncio
 import json
 
 from kun.cli import app
+from kun.context.assets import LayeredAsset
 from kun.context.storage import InMemoryAssetStore, reset_store, set_store
 from typer.testing import CliRunner
 
@@ -177,3 +178,49 @@ def test_compiler_ingest_manifest_fail_on_error_exits_nonzero(tmp_path) -> None:
     assert result.exit_code == 1
     payload = json.loads(result.output)
     assert payload["errors"] == 1
+
+
+def test_compiler_recompile_candidates_apply_marks_original() -> None:
+    runner = CliRunner()
+    store = InMemoryAssetStore()
+    original = LayeredAsset.build(
+        "knowledge",
+        "tenant-cli",
+        metadata={
+            "source": {"type": "inline", "uri": "inline:old"},
+            "compiler_recompile_recommended": True,
+            "compiler_recompile_reason": "low quality",
+        },
+        summary="KUN stale compiler summary",
+        tags=["compiler_recompile_recommended"],
+    )
+    asyncio.run(store.put(original))
+    set_store(store)
+    try:
+        result = runner.invoke(
+            app,
+            [
+                "compiler",
+                "recompile-candidates",
+                "--tenant",
+                "tenant-cli",
+                "--allow-inline-summary",
+                "--apply",
+            ],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["dry_run"] is False
+        assert payload["stored"] == 1
+        new_asset_id = payload["results"][0]["new_asset_id"]
+        assert new_asset_id
+        old = asyncio.run(store.get(original.asset_id, tenant_id="tenant-cli"))
+        new = asyncio.run(store.get(new_asset_id, tenant_id="tenant-cli"))
+        assert old is not None
+        assert old.l1_metadata["compiler_recompile_applied"] is True
+        assert old.l1_metadata["soft_forgotten"] is True
+        assert new is not None
+        assert new.l1_metadata["recompiled_from_asset_id"] == original.asset_id
+    finally:
+        reset_store()

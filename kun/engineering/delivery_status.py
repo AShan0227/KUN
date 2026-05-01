@@ -94,6 +94,7 @@ def get_v3_delivery_status(
                 "rejected / placeholder / unsupported material 默认不会污染普通 Context 检索",
                 "傩 context maintenance 已能识别编译资产的风险、来源和 profile 缺口",
                 "傩 context maintenance 已能给编译资产写入 compiler_quality_score，并对低质量/受限资产标记重新编译建议",
+                "kun compiler recompile-candidates 可 dry-run 或显式 --apply 执行傩的重编译建议；本地 path 仍需 allowed_root，URL 仍需 HTTPS 白名单，原资产不会被删除或覆盖",
                 "CompilerRegistry 可注册后续 MarkItDown / 音视频 / OCR 后端，但当前不伪装成已接入",
             ],
             evidence_refs=[
@@ -101,6 +102,7 @@ def get_v3_delivery_status(
                 "kun/compiler/material.py",
                 "kun/compiler/ingestion.py",
                 "kun/compiler/registry.py",
+                "kun/compiler/recompile.py",
                 "kun/cli.py",
                 "tests/unit/test_compiler.py",
                 "tests/unit/test_compiler_cli.py",
@@ -113,7 +115,7 @@ def get_v3_delivery_status(
             missing=[
                 "已有 CLI/脚本级批量 manifest、聊天附件写入桥、Hermes 材料包和白名单 URL 抓取能力，但还没接企业资料入口或常驻 RAG ingestion 热路径",
                 "还没接 Microsoft MarkItDown、OCR、音频转写、DOCX/PPTX/XLSX 等真实后端",
-                "傩已能做轻量格式质量评分和重编译建议，但还没接真实重编译执行器或重复资产自动合并",
+                "傩已能做轻量格式质量评分、重编译建议和显式重编译执行；但还没接重复资产自动合并",
             ],
             next_steps=[
                 "把外部文件/网页/企业资料先过 compiler，再进入 Context / Memory / Skill / Hermes",

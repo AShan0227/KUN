@@ -524,6 +524,48 @@ def compiler_ingest_manifest(
         raise typer.Exit(code=1)
 
 
+@compiler_app.command("recompile-candidates")
+def compiler_recompile_candidates(
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+    allowed_root: list[Path] | None = typer.Option(
+        None,
+        "--allowed-root",
+        help="Allowed local root for path-sourced compiler assets; repeatable",
+    ),
+    apply: bool = typer.Option(False, "--apply", help="Write new assets and mark originals"),
+    max_assets: int = typer.Option(500, "--max-assets", min=1),
+    allow_inline_summary: bool = typer.Option(
+        False,
+        "--allow-inline-summary",
+        help="Fallback: recompile inline assets from their L2 summary when raw source is unavailable",
+    ),
+    mark_original_soft_forgotten: bool = typer.Option(
+        True,
+        "--soft-forget-original/--keep-original-active",
+        help="After apply, downrank the old low-quality asset instead of deleting it",
+    ),
+) -> None:
+    """Dry-run or execute NUO compiler recompile recommendations.
+
+    This never deletes the original asset.  With --apply it writes a fresh
+    compiled asset and marks the old one as recompiled/soft-forgotten.
+    """
+    from kun.compiler import CompilerRecompiler
+
+    async def _run() -> dict[str, Any]:
+        report = await CompilerRecompiler().recompile_candidates(
+            tenant_id=tenant,
+            allowed_roots=allowed_root or [],
+            dry_run=not apply,
+            max_assets=max_assets,
+            allow_inline_summary=allow_inline_summary,
+            mark_original_soft_forgotten=mark_original_soft_forgotten,
+        )
+        return report.model_dump(mode="json")
+
+    _run_json(_run())
+
+
 @app.command()
 def run(
     message: str = typer.Argument(..., help="Natural language task"),
