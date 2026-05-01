@@ -12,7 +12,13 @@ from contextlib import asynccontextmanager
 
 import pytest
 from kun.context.packer import ContextPack, PackedContextItem
+from kun.core.emergent_solution import (
+    EmergentSolution,
+    EmergentSolutionLibrary,
+    EmergentSource,
+)
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
+from kun.engineering.emergent_switch import EmergentSwitchManager
 from kun.engineering.orchestrator import Orchestrator, TaskResult, _context_resource_ids
 from kun.interface.llm import LLMRouter
 from kun.interface.llm.base import LLMResponse, UsageInfo
@@ -284,6 +290,54 @@ async def test_orchestrator_uses_llm_planner_for_complex_task():
     assert top.planning_calls == 1
     assert "answer" in events_seen
     assert "done" in events_seen
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_applies_emergent_switch_to_tail_plan():
+    top = _PlanningRoutingStub(tier="top")
+    providers = {
+        "top": top,
+        "cheap": _PlanningRoutingStub(tier="cheap"),
+        "coding": _PlanningRoutingStub(tier="coding"),
+        "fallback": _PlanningRoutingStub(tier="fallback"),
+    }
+    set_router(LLMRouter(providers))
+
+    library = EmergentSolutionLibrary()
+    library.add(
+        EmergentSolution(
+            task_type="coding",
+            discovered_by="capability_card_query",
+            source=EmergentSource(kind="internal_history", snippet="历史路径更好"),
+            description="先重排后续执行，再补一次验证",
+            estimated_outcome_delta=0.35,
+            estimated_cost_delta=-0.05,
+            status="stable",
+            applies_when=["复杂任务第一步后发现更优后续路径"],
+        )
+    )
+    emergent_switch = EmergentSwitchManager(library, switch_threshold=0.05)
+
+    events = []
+    async for ev in Orchestrator(emergent_switch_manager=emergent_switch).stream(
+        "Do a complex thing"
+    ):
+        events.append(ev)
+
+    committed = [ev for ev in events if ev.kind == "emergent_switch_committed"]
+    assert committed
+    assert committed[0].data["replan"]["replacement_step_ids"]
+    replan_events = [
+        ev
+        for ev in events
+        if ev.kind == "action_plan" and ev.data.get("stage") == "emergent_replan_applied"
+    ]
+    assert replan_events
+    assert replan_events[0].data["replacement_step_ids"]
+    actions = [ev.data.get("description") for ev in events if ev.kind == "action"]
+    assert "按涌现方案调整后续执行: 先重排后续执行，再补一次验证" in actions
+    assert "按调整后的方案重新验证结果并交付" in actions
 
 
 @pytest.mark.unit

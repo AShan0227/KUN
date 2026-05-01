@@ -1463,7 +1463,9 @@ class Orchestrator:
         step_outputs: list[tuple[int, str]] = []
 
         try:
-            for step_plan in plan.steps:
+            step_index = 0
+            while step_index < len(plan.steps):
+                step_plan = plan.steps[step_index]
                 self._raise_if_task_cancelled(task_ref.meta.task_id)
                 # Hard task-level deadline check (R-D1).
                 if time.monotonic() > deadline_monotonic:
@@ -1757,6 +1759,7 @@ class Orchestrator:
                                     "decision_ticket": value_ticket.event_payload(),
                                 },
                             )
+                            step_index += 1
                             continue
                     except Exception:
                         log.exception("value_gate.check_step failed (non-fatal)")
@@ -2246,7 +2249,9 @@ class Orchestrator:
                                     budget_state.limit_usd,
                                 )
 
-                # V2.1 §5.8 wire: step 完, 让 EmergentSwitchManager 检测信号 (M5 真切, 现在只 emit)
+                # V2.1 §5.8 wire: step 完, 让 EmergentSwitchManager 检测信号.
+                # 满足切换条件时会用 DynamicReplanner 改后续 tail plan；
+                # 已完成步骤不重跑，避免浪费 sunk cost。
                 if self.emergent_switch_manager is not None:
                     try:
                         self.emergent_switch_manager.step_completed(
@@ -2267,10 +2272,8 @@ class Orchestrator:
                                 },
                             )
 
-                            # V2.2 §5.8 Wire 13: 真切换. 检 evaluate_switch, 满足条件 emit
-                            # switch event + commit_switch (orchestrator 后续 step 走新方案).
-                            # 当前最小实装: 不真改 plan/model, 只 emit 让外部观察 + 记账.
-                            # M5 后续: 接 DynamicReplanner.replan_from_step 真重 plan.
+                            # V2.2 §5.8 Wire 13: 真切换. 检 evaluate_switch, 满足条件
+                            # 直接改后续 tail plan；不只 emit 观察事件。
                             try:
                                 eval_result = self.emergent_switch_manager.evaluate_switch(
                                     task_id=task_ref.meta.task_id,
@@ -2316,6 +2319,26 @@ class Orchestrator:
                                     self.emergent_switch_manager.commit_switch(
                                         task_ref.meta.task_id
                                     )
+                                    from kun.engineering.dynamic_replan import DynamicReplanner
+
+                                    replan_observation = _emergent_solution_observation(
+                                        eval_result.chosen_solution,
+                                        reason=eval_result.reason,
+                                        signals=list(signals),
+                                    )
+                                    replan_result = await DynamicReplanner().replan_with_result(
+                                        plan,
+                                        step_index,
+                                        [replan_observation],
+                                        reason=eval_result.reason,
+                                    )
+                                    plan = replan_result.plan
+                                    runtime.total_planned_steps = len(plan.steps)
+                                    self._record_state_ledger(
+                                        "record_plan",
+                                        task_ref.meta.task_id,
+                                        total_steps=len(plan.steps),
+                                    )
                                     yield OrchestratorEvent(
                                         kind="emergent_switch_committed",
                                         data={
@@ -2326,6 +2349,21 @@ class Orchestrator:
                                             "solution_status": eval_result.chosen_solution.status,
                                             "reason": eval_result.reason,
                                             "decision_ticket": switch_ticket.event_payload(),
+                                            "replan": replan_result.model_dump(mode="json"),
+                                        },
+                                    )
+                                    yield OrchestratorEvent(
+                                        kind="action_plan",
+                                        data={
+                                            "stage": "emergent_replan_applied",
+                                            "task_id": task_ref.meta.task_id,
+                                            "preserved_step_ids": replan_result.preserved_step_ids,
+                                            "replacement_step_ids": (
+                                                replan_result.replacement_step_ids
+                                            ),
+                                            "new_total_steps": len(plan.steps),
+                                            "reason": replan_result.reason,
+                                            "sunk_cost_usd": replan_result.sunk_cost_usd,
                                         },
                                     )
                                 elif eval_result.blocked_by:
@@ -2365,6 +2403,8 @@ class Orchestrator:
                         )
                     except Exception:
                         log.exception("value_gate.record_step_outcome failed (non-fatal)")
+
+                step_index += 1
 
             # V2.3+ PreDeliverGate (产品级交付前审核, 取代裸 verification 调用)
             # 跑 verification + AntiGaming + 自检 + 协议合规 → 综合 verdict
@@ -4277,6 +4317,45 @@ def _memory_policy_mid_run_limit(
     if policy is None or policy.max_items <= 0:
         return fallback
     return max(1, min(fallback, policy.max_items))
+
+
+def _emergent_solution_observation(
+    solution: Any,
+    *,
+    reason: str,
+    signals: list[str],
+) -> dict[str, Any]:
+    """Convert an emergent solution into DynamicReplanner observations."""
+
+    description = str(getattr(solution, "description", "") or "").strip()
+    solution_id = str(getattr(solution, "solution_id", "") or "")
+    status = str(getattr(solution, "status", "") or "")
+    applies_when = [
+        str(item).strip()
+        for item in list(getattr(solution, "applies_when", []) or [])
+        if str(item).strip()
+    ]
+    summary = description or reason or f"涌现方案 {solution_id or 'unknown'}"
+    replacement_steps = [
+        {
+            "description": f"按涌现方案调整后续执行: {summary}",
+            "skill_hint": "task.replan",
+        },
+        {
+            "description": "按调整后的方案重新验证结果并交付",
+            "skill_hint": "task.validation",
+        },
+    ]
+    return {
+        "needs_replan": True,
+        "reason": reason or summary,
+        "summary": summary,
+        "replacement_steps": replacement_steps,
+        "solution_id": solution_id,
+        "solution_status": status,
+        "signals": signals,
+        "applies_when": applies_when,
+    }
 
 
 async def _load_mission_strategy(*, tenant_id: str, mission_id: str) -> dict[str, Any]:
