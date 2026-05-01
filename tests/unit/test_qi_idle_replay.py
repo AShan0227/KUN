@@ -90,3 +90,54 @@ def test_idle_replay_dict_input_and_signal_draft_are_review_only() -> None:
     assert signal.source == "qi.idle_replay.candidate"
     assert signal.evidence["production_action"] is False
     assert signal.evidence["candidate_id"] == candidate.candidate_id
+
+
+def test_idle_replay_strategy_pack_draft_is_review_only() -> None:
+    signal = QiProblemSignal.build(
+        tenant_id="u-test",
+        category="world_gateway",
+        severity="critical",
+        task_type="world.email",
+        summary="Email handler needs safer idempotency and compensation coverage",
+        source="nuo.system_health",
+        evidence={"risk": "critical"},
+    )
+
+    candidate = IdleReplayGenerator().generate_from_signal(signal)
+    draft = candidate.to_strategy_pack_draft()
+
+    assert draft.draft_id.startswith("spd_")
+    assert draft.candidate_id == candidate.candidate_id
+    assert draft.proposed_pack_id.startswith("qi_world_")
+    assert draft.status == "needs_strong_review"
+    assert draft.requires_human_review is True
+    assert draft.requires_strong_review is True
+    assert draft.production_action is False
+    assert draft.default_execution_mode == "MAX"
+    assert "world*" in draft.task_type_patterns
+    assert "approval_drafter" in draft.skill_hints
+    assert "unauthorized_side_effect" in draft.risk_watch
+    assert "strong_model_review_passed" in draft.promotion_conditions
+    assert draft.evidence["production_action"] is False
+
+
+def test_idle_replay_low_risk_strategy_pack_draft_still_needs_human_review() -> None:
+    history = TaskHistorySummary(
+        history_id="hist-ok",
+        task_type="marketing.ad",
+        summary="Successful ad task reused a strong hook structure",
+        outcome="completed",
+        risk="low",
+        verification_status="passed",
+    )
+
+    candidate = IdleReplayGenerator().generate_from_history(history)
+    draft = candidate.to_strategy_pack_draft()
+
+    assert draft.status == "draft"
+    assert draft.requires_human_review is True
+    assert draft.requires_strong_review is False
+    assert draft.production_action is False
+    assert "marketing*" in draft.task_type_patterns
+    assert "conversion_reviewer" in draft.skill_hints
+    assert "human_review_approved" in draft.promotion_conditions

@@ -329,6 +329,13 @@ async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch)
     assert summary["candidates"] == 2
     assert summary["production_action"] is False
     assert summary["persisted_review_signals"] == 2
+    assert len(summary["strategy_pack_drafts"]) == 2
+    assert all(item["production_action"] is False for item in summary["strategy_pack_drafts"])
+    assert all(item["requires_human_review"] is True for item in summary["strategy_pack_drafts"])
+    assert {item["status"] for item in summary["strategy_pack_drafts"]} <= {
+        "draft",
+        "needs_strong_review",
+    }
     assert all(item["production_action"] is False for item in summary["top_candidates"])
     queued = get_qi_problem_queue().list("t-1", limit=10)
     assert len(queued) == 2

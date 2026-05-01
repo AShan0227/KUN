@@ -448,6 +448,17 @@ class QiIdleReplayStep(IdleBatchStep):
             "signals": len(signals),
             "completed_task_histories": len(histories),
             "candidates": len(candidates),
+            "strategy_pack_drafts": [
+                candidate.to_strategy_pack_draft().model_dump(mode="json")
+                for candidate in sorted(
+                    candidates,
+                    key=lambda item: (
+                        not item.requires_strong_review,
+                        item.risk,
+                        item.candidate_id,
+                    ),
+                )[:5]
+            ],
             "requires_strong_review": sum(1 for item in candidates if item.requires_strong_review),
             "persisted_review_signals": persisted,
             "engine": "heuristic_local",
