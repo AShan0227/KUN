@@ -16,7 +16,9 @@ from kun.engineering.emergent_switch import (
 )
 from kun.engineering.external_scan import (
     ExternalInfoScanner,
+    StrongExternalScanReviewer,
 )
+from kun.interface.llm.base import LLMResponse
 
 # ---- EmergentSwitchManager ----
 
@@ -324,3 +326,28 @@ def test_external_scan_budget_status_starts_zero() -> None:
     status = scanner.get_budget_status("u-1")
     assert status["used_today"] == 0
     assert status["remaining"] == 100  # 默认
+
+
+@pytest.mark.asyncio
+async def test_strong_external_scan_reviewer_parses_json_decision() -> None:
+    class FakeRouter:
+        async def invoke(self, request, *, purpose: str):
+            assert purpose == "judge"
+            assert request.response_format is not None
+            return LLMResponse(
+                content='{"relevant": true, "summary": "use bounded replay", "reason": "actionable"}',
+                provider="fake",
+                model="judge",
+                tier="cheap",
+            )
+
+    reviewer = StrongExternalScanReviewer(FakeRouter())
+
+    relevant, summary = await reviewer(
+        "coding",
+        {"snippet": "old text", "url": "https://example.com"},
+    )
+
+    assert relevant is True
+    assert "use bounded replay" in summary
+    assert "actionable" in summary

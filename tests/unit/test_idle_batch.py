@@ -586,6 +586,7 @@ async def test_external_emergent_scan_step_adds_reviewed_candidates() -> None:
 
     assert summary["skipped"] is False
     assert summary["input_rows"] == 1
+    assert summary["strong_review_enabled"] is False
     assert summary["sources_queried"] == 1
     assert summary["candidates_added"] == 1
     candidates = get_library().list_for_task_type("coding")

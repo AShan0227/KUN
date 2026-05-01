@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -33,6 +35,9 @@ logger = logging.getLogger(__name__)
 ExternalFetcher = Callable[[str], Awaitable[list[dict[str, Any]]]]
 # LLM 复审签名 (raw_info → 是否对该 task_type 有用 + summary)
 LLMReviewer = Callable[[str, dict[str, Any]], Awaitable[tuple[bool, str]]]
+
+EXTERNAL_SCAN_STRONG_REVIEW_ENABLED_ENV = "KUN_EXTERNAL_SCAN_STRONG_REVIEW_ENABLED"
+EXTERNAL_SCAN_STRONG_REVIEW_MAX_TOKENS_ENV = "KUN_EXTERNAL_SCAN_STRONG_REVIEW_MAX_TOKENS"
 
 
 @dataclass
@@ -328,10 +333,128 @@ class ExternalInfoScanner:
         }
 
 
+class StrongExternalScanReviewer:
+    """Opt-in LLM reviewer for external/emergent scan rows.
+
+    It only decides whether a clue should become a review-only candidate.
+    It never promotes or activates anything.
+    """
+
+    def __init__(self, router: Any, *, max_tokens: int = 500) -> None:
+        self.router = router
+        self.max_tokens = max(160, max_tokens)
+
+    async def __call__(self, task_type: str, raw: dict[str, Any]) -> tuple[bool, str]:
+        from kun.interface.llm.base import LLMMessage, LLMRequest, TaskProfile
+
+        request = LLMRequest(
+            messages=[
+                LLMMessage(
+                    role="system",
+                    content=(
+                        "You are KUN's external-scan reviewer. Return strict JSON only. "
+                        "Decide whether this external clue is relevant, safe, and concrete "
+                        "enough to become a review-only EmergentSolution candidate. Never "
+                        "approve production adoption."
+                    ),
+                ),
+                LLMMessage(
+                    role="user",
+                    content=json.dumps(
+                        {
+                            "task_type": task_type,
+                            "raw_item": raw,
+                            "contract": {
+                                "output": {
+                                    "relevant": "bool",
+                                    "summary": "short actionable summary",
+                                    "reason": "short reason",
+                                },
+                                "production_action": False,
+                                "promotion_allowed": False,
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            ],
+            temperature=0.1,
+            max_tokens=self.max_tokens,
+            profile=TaskProfile(
+                task_type=f"external_scan.review.{task_type}",
+                risk_level="medium",
+                needs_reasoning=True,
+                prefer_speed=False,
+            ),
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "external_scan_review",
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": True,
+                        "properties": {
+                            "relevant": {"type": "boolean"},
+                            "summary": {"type": "string"},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["relevant", "summary"],
+                    },
+                },
+            },
+        )
+        response = await self.router.invoke(request, purpose="judge")
+        payload = _json_object_from_text(response.content)
+        relevant = bool(payload.get("relevant"))
+        summary = str(payload.get("summary") or raw.get("snippet") or "")[:500]
+        reason = str(payload.get("reason") or "").strip()
+        if reason:
+            summary = f"{summary}\n[strong_review_reason] {reason}"[:700]
+        return relevant, summary
+
+
+def configured_external_scan_reviewer_from_env() -> LLMReviewer | None:
+    """Return the opt-in strong reviewer for external scan rows."""
+
+    if os.getenv(EXTERNAL_SCAN_STRONG_REVIEW_ENABLED_ENV, "0") != "1":
+        return None
+    from kun.interface.llm.router import get_router
+
+    return StrongExternalScanReviewer(
+        get_router(),
+        max_tokens=_int_env(EXTERNAL_SCAN_STRONG_REVIEW_MAX_TOKENS_ENV, 500),
+    )
+
+
+def _json_object_from_text(text: str) -> dict[str, Any]:
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end <= start:
+            return {}
+        try:
+            raw = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
 __all__ = [
+    "EXTERNAL_SCAN_STRONG_REVIEW_ENABLED_ENV",
     "ExternalFetcher",
     "ExternalInfoScanner",
     "LLMReviewer",
     "ScanBudget",
     "ScanResult",
+    "StrongExternalScanReviewer",
+    "configured_external_scan_reviewer_from_env",
 ]

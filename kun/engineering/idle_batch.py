@@ -667,7 +667,10 @@ class ExternalEmergentScanStep(IdleBatchStep):
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from kun.core.emergent_solution import get_library
-        from kun.engineering.external_scan import ExternalInfoScanner
+        from kun.engineering.external_scan import (
+            ExternalInfoScanner,
+            configured_external_scan_reviewer_from_env,
+        )
 
         rows = await _external_scan_rows(tenant_id)
         if not rows:
@@ -692,9 +695,11 @@ class ExternalEmergentScanStep(IdleBatchStep):
                 "candidates_rejected": 0,
             }
 
+        reviewer = configured_external_scan_reviewer_from_env()
         scanner = ExternalInfoScanner(
             get_library(),
             fetchers=fetchers,
+            llm_reviewer=reviewer,
             user_top_task_types_lookup=lambda _tenant_id: task_types,
             user_telemetry_enabled=lambda _tenant_id: True,
             default_daily_limit=_int_env("KUN_EXTERNAL_SCAN_DAILY_LIMIT", 25),
@@ -703,6 +708,7 @@ class ExternalEmergentScanStep(IdleBatchStep):
         return {
             "skipped": False,
             "input_rows": len(rows),
+            "strong_review_enabled": reviewer is not None,
             **result.__dict__,
         }
 
