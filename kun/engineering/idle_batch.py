@@ -444,23 +444,30 @@ class QiIdleReplayStep(IdleBatchStep):
             candidate.to_problem_signal(tenant_id=tenant_id) for candidate in candidates
         ]
         persisted = await persist_problem_signals(review_signals)
+        drafts = [candidate.to_strategy_pack_draft() for candidate in candidates]
+        draft_asset_ids = await _persist_strategy_pack_drafts(
+            tenant_id=tenant_id,
+            drafts=drafts,
+        )
         return {
             "signals": len(signals),
             "completed_task_histories": len(histories),
             "candidates": len(candidates),
             "strategy_pack_drafts": [
-                candidate.to_strategy_pack_draft().model_dump(mode="json")
-                for candidate in sorted(
-                    candidates,
+                draft.model_dump(mode="json")
+                for draft in sorted(
+                    drafts,
                     key=lambda item: (
                         not item.requires_strong_review,
-                        item.risk,
+                        item.status,
                         item.candidate_id,
                     ),
                 )[:5]
             ],
             "requires_strong_review": sum(1 for item in candidates if item.requires_strong_review),
             "persisted_review_signals": persisted,
+            "persisted_strategy_pack_draft_assets": len(draft_asset_ids),
+            "strategy_pack_draft_asset_ids": draft_asset_ids[:10],
             "engine": "heuristic_local",
             "production_action": False,
             "top_candidates": [
@@ -811,6 +818,88 @@ async def _persist_methodology_rules(*, tenant_id: str, rules: list[str]) -> lis
         created.append(asset.asset_id)
         seen_hashes.add(rule_hash)
     return created
+
+
+async def _persist_strategy_pack_drafts(*, tenant_id: str, drafts: list[Any]) -> list[str]:
+    """Persist Qi strategy-pack drafts as review-only methodology assets.
+
+    These assets are deliberately *not* Watchtower packs.  They are context
+    material for NUO / human / strong-model review, so Qi's idle exploration can
+    be inspected without silently changing production routing.
+    """
+
+    if not drafts:
+        return []
+    from kun.context.assets import AssetLayer, LayeredAsset
+    from kun.context.storage import get_store
+
+    store = get_store()
+    existing = await store.list(tenant_id=tenant_id, asset_kind="methodology", limit=1000)
+    seen_draft_ids = {
+        str(asset.l1_metadata.get("draft_id"))
+        for asset in existing
+        if asset.l1_metadata.get("source") == "qi.idle_replay.strategy_pack_draft"
+    }
+    created: list[str] = []
+    for draft in drafts:
+        draft_id = str(getattr(draft, "draft_id", ""))
+        if not draft_id or draft_id in seen_draft_ids:
+            continue
+        status = str(getattr(draft, "status", "draft"))
+        proposed_pack_id = str(getattr(draft, "proposed_pack_id", "unknown"))
+        task_type_patterns = list(getattr(draft, "task_type_patterns", []) or [])
+        requires_strong_review = bool(getattr(draft, "requires_strong_review", False))
+        asset = LayeredAsset.build(
+            "methodology",
+            tenant_id,
+            metadata={
+                "source": "qi.idle_replay.strategy_pack_draft",
+                "memory_layer": "methodology",
+                "draft_id": draft_id,
+                "candidate_id": str(getattr(draft, "candidate_id", "")),
+                "source_signal_id": str(getattr(draft, "source_signal_id", "")),
+                "proposed_pack_id": proposed_pack_id,
+                "status": status,
+                "requires_human_review": True,
+                "requires_strong_review": requires_strong_review,
+                "production_action": False,
+                "promotion_blocked_until_review": True,
+                "strategy_pack_draft": draft.model_dump(mode="json")
+                if hasattr(draft, "model_dump")
+                else {},
+            },
+            summary=_strategy_pack_draft_summary(draft),
+            layer=AssetLayer.L2_PROJECT,
+            tags=sorted(
+                {
+                    "qi",
+                    "strategy_pack_draft",
+                    "review_only",
+                    f"status:{status}",
+                    f"proposed_pack:{proposed_pack_id}",
+                    *[f"task_type:{pattern}" for pattern in task_type_patterns[:3]],
+                    *(["strong_review_required"] if requires_strong_review else []),
+                }
+            ),
+        )
+        await store.put(asset)
+        created.append(asset.asset_id)
+        seen_draft_ids.add(draft_id)
+    return created
+
+
+def _strategy_pack_draft_summary(draft: Any) -> str:
+    proposed_pack_id = str(getattr(draft, "proposed_pack_id", "unknown"))
+    display_name = str(getattr(draft, "display_name", proposed_pack_id))
+    status = str(getattr(draft, "status", "draft"))
+    mode = str(getattr(draft, "default_execution_mode", "SMART"))
+    metrics = ", ".join(list(getattr(draft, "metric_dimensions", []) or [])[:4])
+    risks = ", ".join(list(getattr(draft, "risk_watch", []) or [])[:4])
+    return (
+        f"Review-only Qi StrategyPack draft {proposed_pack_id} ({display_name}); "
+        f"status={status}; default_mode={mode}; metrics={metrics or 'n/a'}; "
+        f"risk_watch={risks or 'n/a'}; production_action=false."
+    )
 
 
 def _float(value: Any, *, default: float = 0.0) -> float:

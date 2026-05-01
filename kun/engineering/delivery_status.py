@@ -327,6 +327,7 @@ def get_v3_delivery_status(
                 "Context DecisionTicket 会记录 memory_policy，后续可追踪“为什么这次用了/没用记忆”",
                 "启 idle replay 已能从问题信号或历史任务生成 review-only 策略候选，用于后台探索更优路径",
                 "启 idle replay 已能把候选转成 review-only StrategyPack 草稿，并写入持久化 Qi 信号 evidence，供人/强模型/NUO 后续审查",
+                "启 idle replay 会把 StrategyPack 草稿同步沉淀成 review-only methodology 资产，Context/NUO 可审查但不会自动上线",
                 "高严重度或高风险 idle replay 候选会标记 requires_strong_review，不会直接推入生产",
                 "idle-batch 已注册 qi_idle_replay step，会把真实问题和已完成任务历史转成 review-only 候选信号",
             ],

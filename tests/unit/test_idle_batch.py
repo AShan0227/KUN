@@ -316,6 +316,7 @@ async def test_route_rule_mining_step_surfaces_best_model_pattern() -> None:
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch) -> None:
+    from kun.context.storage import get_store
     from kun.qi.problem_queue import get_qi_problem_queue, reset_qi_problem_queue
 
     monkeypatch.setenv("KUN_QI_PROBLEM_QUEUE_DB_ENABLED", "0")
@@ -329,6 +330,8 @@ async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch)
     assert summary["candidates"] == 2
     assert summary["production_action"] is False
     assert summary["persisted_review_signals"] == 2
+    assert summary["persisted_strategy_pack_draft_assets"] == 2
+    assert len(summary["strategy_pack_draft_asset_ids"]) == 2
     assert len(summary["strategy_pack_drafts"]) == 2
     assert all(item["production_action"] is False for item in summary["strategy_pack_drafts"])
     assert all(item["requires_human_review"] is True for item in summary["strategy_pack_drafts"])
@@ -344,6 +347,15 @@ async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch)
     assert all(
         signal.evidence["strategy_pack_draft"]["production_action"] is False for signal in queued
     )
+    draft_assets = await get_store().list(tenant_id="t-1", asset_kind="methodology")
+    assert len(draft_assets) == 2
+    assert all(
+        asset.l1_metadata["source"] == "qi.idle_replay.strategy_pack_draft"
+        for asset in draft_assets
+    )
+    assert all(asset.l1_metadata["production_action"] is False for asset in draft_assets)
+    assert all(asset.l1_metadata["requires_human_review"] is True for asset in draft_assets)
+    assert all("review_only" in asset.tags for asset in draft_assets)
 
 
 @pytest.mark.unit
