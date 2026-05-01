@@ -17,6 +17,24 @@ from kun.world.gateway import WorldGateway, WorldHandlerDescriptor, get_world_ga
 
 DeliveryStatus = Literal["ready", "partial", "audit_only", "not_ready"]
 
+REAL_WORLD_HANDLER_SETUP: dict[str, tuple[str, str, str]] = {
+    "email.send": (
+        "真实邮件发送",
+        "KUN_WORLD_EMAIL_SEND_ENABLED=true",
+        "SMTP host/from + 收件人域名白名单",
+    ),
+    "browser.execute": (
+        "真实浏览器操作",
+        "KUN_WORLD_BROWSER_EXECUTE_ENABLED=true",
+        "Playwright 运行环境 + HTTPS host 白名单",
+    ),
+    "enterprise_api.post": (
+        "企业 API handler",
+        "KUN_WORLD_API_POST_ENABLED=true",
+        "HTTPS host 白名单 + 必要认证配置",
+    ),
+}
+
 
 class DeliveryCapability(BaseModel):
     """One honest capability row shown in NUO."""
@@ -342,6 +360,7 @@ def get_v3_delivery_status(
                 "启 idle replay 已能把候选转成 review-only StrategyPack 草稿，并写入持久化 Qi 信号 evidence，供人/强模型/NUO 后续审查",
                 "启 idle replay 会把 StrategyPack 草稿同步沉淀成 review-only methodology 资产，Context/NUO 可审查但不会自动上线",
                 "启 idle replay 已有小预算、低并发的离线评估池，可对候选/草稿做 heuristic review-only 评分；无本地模型时会明确 unavailable",
+                "启 idle replay 可通过 KUN_QI_LOCAL_REPLAY_EVALUATOR_CMD 接入显式配置的本地/便宜模型评估命令；输出仍是 review-only，不会自动推入生产",
                 "高严重度或高风险 idle replay 候选会标记 requires_strong_review，不会直接推入生产",
                 "idle-batch 已注册 qi_idle_replay step，会把真实问题和已完成任务历史转成 review-only 候选信号",
             ],
@@ -372,7 +391,7 @@ def get_v3_delivery_status(
                 "相似任务召回目前是确定性轻量检索，还不是向量库 / 跨租户匿名经验池",
                 "MemoryPolicyTicket 已进入 ContextPacker 过滤和策略标签加权，但还没接向量库、跨租户匿名经验池和更细的 step 级 action memory 过滤",
                 "MemoryPolicyTicket 已开始消费傩治理标签，但还没和 FadeMem 衰减、重复合并策略、NUO 自动执行治理完全打通",
-                "Qi idle replay 目前是 heuristic_local 候选生成 + review-only 评估池，还没接真实本地模型执行、任务重跑沙箱、shadow/canary 推广链路",
+                "Qi idle replay 目前已有 heuristic_local 和可配置本地模型评估口；但仓库不内置具体模型权重，也还没接任务重跑沙箱、shadow/canary 推广链路",
                 "StrategyPack 草稿目前只做 review-only，不会自动 promotion，也还没接强模型复审和人工批准 UI",
                 "执行过程经验已能影响 Watchtower skill_hints；但还没有做到 step 级 action choice 的精细策略改写",
                 "贡献信用对模型路由已进热路径，但还需要真实 dogfood 样本校准阈值",
@@ -555,16 +574,17 @@ def _world_gateway_delivery_status(
         "真实外发和高风险动作必须带显式 idempotency_key，重复幂等键会被代码和 DB partial unique index 双层拦截",
         "真实 email.send 需要 KUN_WORLD_EMAIL_ALLOWED_DOMAINS 收件人域名白名单，避免 SMTP 配好后误发陌生域名",
         "可开启 KUN_WORLD_REQUIRE_APPROVAL_CONTEXT，让 WorldGateway 真实执行必须带 pending_actions 持久审批上下文，防止直接调用执行路径",
+        "email.send / browser.execute / enterprise_api.post 的真实 handler 代码已存在；默认不注册，必须显式开启 env、白名单和审批链",
     ]
     done.extend(_handler_done_line(item) for item in descriptors)
 
     missing = []
-    if "email.send" not in by_type:
-        missing.append("真实邮件发送（email.send 未注册；需显式开启 SMTP env）")
-    if "browser.execute" not in by_type:
-        missing.append("真实浏览器操作（browser.execute 未注册；需显式开启 Playwright env）")
-    if "enterprise_api.post" not in by_type:
-        missing.append("企业 API handler（enterprise_api.post 未注册；需 HTTPS host 白名单）")
+    for action_type, (label, enable_hint, config_hint) in REAL_WORLD_HANDLER_SETUP.items():
+        if action_type not in by_type:
+            missing.append(
+                f"{label}（{action_type} handler 已实现但当前未注册；"
+                f"需 {enable_hint} + {config_hint}）"
+            )
     missing.extend(
         [
             "集中 Secret Manager、密钥轮换和租户自助密钥配置",
@@ -574,10 +594,10 @@ def _world_gateway_delivery_status(
         ]
     )
 
-    real_handlers = {"email.send", "browser.execute", "enterprise_api.post"} & set(by_type)
+    real_handlers = set(REAL_WORLD_HANDLER_SETUP) & set(by_type)
     summary = (
         f"已从 WorldGateway 注册表自动识别 {len(descriptors)} 个 handler；"
-        f"真实外部 handler 已启用 {len(real_handlers)} 个。"
+        f"真实外部 handler 当前启用 {len(real_handlers)}/{len(REAL_WORLD_HANDLER_SETUP)} 个。"
     )
 
     return DeliveryCapability(

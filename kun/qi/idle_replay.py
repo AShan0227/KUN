@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import os
+import shlex
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
@@ -31,6 +34,8 @@ ReplayEvaluatorKind = Literal["heuristic", "local_model"]
 HEURISTIC_IDLE_REPLAY_ENGINE = "heuristic_local"
 HEURISTIC_REPLAY_EVALUATOR = "heuristic_replay_pool_v1"
 LOCAL_MODEL_REPLAY_EVALUATOR = "local_model_replay_pool"
+LOCAL_MODEL_REPLAY_EVALUATOR_CMD_ENV = "KUN_QI_LOCAL_REPLAY_EVALUATOR_CMD"
+LOCAL_MODEL_REPLAY_TIMEOUT_ENV = "KUN_QI_LOCAL_REPLAY_TIMEOUT_SEC"
 
 
 class TaskHistorySummary(BaseModel):
@@ -241,6 +246,131 @@ class LocalReplayModelEvaluator(Protocol):
         self,
         item: StrategyCandidate | StrategyPackDraft,
     ) -> ReplayEvaluationRecord: ...
+
+
+class CommandLocalReplayModelEvaluator:
+    """Run an operator-provided local evaluator command.
+
+    This is Qi's cheap exploration hook.  It is deliberately opt-in and
+    review-only: the command may score a strategy candidate, but the returned
+    record still cannot promote anything into production by itself.
+    """
+
+    def __init__(
+        self,
+        command: list[str],
+        *,
+        timeout_sec: float = 30.0,
+        evaluator_name: str | None = None,
+    ) -> None:
+        if not command:
+            raise ValueError("local replay evaluator command cannot be empty")
+        self.command = command
+        self.timeout_sec = max(1.0, timeout_sec)
+        self.evaluator_name = evaluator_name or f"{LOCAL_MODEL_REPLAY_EVALUATOR}:{command[0]}"
+
+    async def evaluate(
+        self,
+        item: StrategyCandidate | StrategyPackDraft,
+    ) -> ReplayEvaluationRecord:
+        normalized = _normalize_evaluation_target(item)
+        payload = {
+            "target": normalized,
+            "item": item.model_dump(mode="json"),
+            "contract": {
+                "stdout": "json",
+                "fields": {
+                    "score": "0..1 float",
+                    "notes": "optional list[str]",
+                    "risk": "optional low|medium|high|critical",
+                    "requires_strong_review": "optional bool",
+                    "evidence": "optional object",
+                },
+                "promotion_allowed": False,
+            },
+        }
+        proc = await asyncio.create_subprocess_exec(
+            *self.command,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(json.dumps(payload, ensure_ascii=False).encode("utf-8")),
+                timeout=self.timeout_sec,
+            )
+        except TimeoutError as exc:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError("local replay evaluator timed out") from exc
+
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "local replay evaluator failed" + (f": {stderr_text[:300]}" if stderr_text else "")
+            )
+
+        raw_text = stdout.decode("utf-8", errors="replace").strip()
+        try:
+            raw = json.loads(raw_text or "{}")
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("local replay evaluator returned non-JSON stdout") from exc
+        if not isinstance(raw, dict):
+            raise RuntimeError("local replay evaluator stdout must be a JSON object")
+
+        model_risk = _normalize_risk(raw.get("risk") or normalized["risk"])
+        risk = _max_risk(_normalize_risk(normalized["risk"]), model_risk)
+        requires_strong_review = bool(
+            normalized["requires_strong_review"] or raw.get("requires_strong_review")
+        )
+        notes = _string_list(raw.get("notes"))
+        notes.extend(["local_model_command", "review_required_before_any_adoption"])
+        raw_evidence = raw.get("evidence")
+        evidence: dict[str, Any] = raw_evidence if isinstance(raw_evidence, dict) else {}
+        return ReplayEvaluationRecord(
+            evaluation_id=_evaluation_id(
+                normalized["target_id"],
+                self.evaluator_name,
+                "evaluated",
+            ),
+            target_id=normalized["target_id"],
+            target_kind=normalized["target_kind"],
+            evaluator=self.evaluator_name,
+            evaluator_kind="local_model",
+            status="evaluated",
+            score=_clamped_float(raw.get("score"), default=0.0),
+            cost_estimate_usd=_evaluation_cost_estimate(item, evaluator_kind="local_model"),
+            risk=risk,
+            requires_strong_review=requires_strong_review,
+            notes=_dedupe(notes),
+            evidence={
+                "review_only": True,
+                "promotion_allowed": False,
+                "target_summary": normalized["summary"],
+                "target_task_type": normalized["task_type"],
+                "local_model_command": self.command[0],
+                "local_model_stderr_preview": stderr_text[:300],
+                **evidence,
+            },
+        )
+
+
+def configured_local_replay_model_evaluator_from_env() -> LocalReplayModelEvaluator | None:
+    """Return Qi's optional local replay evaluator if configured.
+
+    The evaluator command is intentionally not guessed.  Operators must provide
+    it explicitly so KUN does not pretend a local model exists.
+    """
+
+    command_text = (os.getenv(LOCAL_MODEL_REPLAY_EVALUATOR_CMD_ENV) or "").strip()
+    if not command_text:
+        return None
+    timeout = _env_float(LOCAL_MODEL_REPLAY_TIMEOUT_ENV, default=30.0)
+    return CommandLocalReplayModelEvaluator(
+        shlex.split(command_text),
+        timeout_sec=timeout,
+    )
 
 
 ReplaySuggestion = StrategyCandidate
@@ -1099,6 +1229,35 @@ def _dedupe(items: list[str]) -> list[str]:
     return out
 
 
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _clamped_float(value: Any, *, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return round(max(0.0, min(1.0, parsed)), 4)
+
+
+def _env_float(name: str, *, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
     total = sum(value for value in weights.values() if value > 0)
     if total <= 0:
@@ -1110,6 +1269,8 @@ __all__ = [
     "HEURISTIC_IDLE_REPLAY_ENGINE",
     "HEURISTIC_REPLAY_EVALUATOR",
     "LOCAL_MODEL_REPLAY_EVALUATOR",
+    "LOCAL_MODEL_REPLAY_EVALUATOR_CMD_ENV",
+    "CommandLocalReplayModelEvaluator",
     "IdleReplayEvaluationPool",
     "IdleReplayGenerator",
     "LocalReplayModelEvaluator",
@@ -1120,6 +1281,7 @@ __all__ = [
     "StrategyCandidate",
     "StrategyPackDraft",
     "TaskHistorySummary",
+    "configured_local_replay_model_evaluator_from_env",
     "evaluate_idle_replay_pool",
     "generate_idle_replay_candidates",
 ]

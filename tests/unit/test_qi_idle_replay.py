@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 from kun.qi.idle_replay import (
     HEURISTIC_IDLE_REPLAY_ENGINE,
+    CommandLocalReplayModelEvaluator,
     IdleReplayGenerator,
     ReplayEvaluationBudget,
     TaskHistorySummary,
@@ -238,3 +241,49 @@ async def test_replay_evaluation_pool_local_model_is_honestly_unavailable() -> N
     assert result.records[0].status == "unavailable"
     assert "no_model_score_claimed" in result.records[0].notes
     assert result.records[0].promotion_allowed is False
+
+
+@pytest.mark.asyncio
+async def test_replay_evaluation_pool_runs_opt_in_command_local_model() -> None:
+    candidate = generate_idle_replay_candidates(
+        [
+            {
+                "history_id": "hist-command-model",
+                "task_type": "coding",
+                "summary": "Completed task with reusable tests and rollback guardrail",
+                "outcome": "completed",
+            }
+        ]
+    )[0]
+    model_script = (
+        "import json, sys; "
+        "payload=json.load(sys.stdin); "
+        "assert payload['contract']['promotion_allowed'] is False; "
+        "print(json.dumps({"
+        "'score': 0.82, "
+        "'notes': ['cheap_local_vote'], "
+        "'risk': 'medium', "
+        "'evidence': {'model': 'tiny-local-test'}"
+        "}))"
+    )
+    evaluator = CommandLocalReplayModelEvaluator(
+        [sys.executable, "-c", model_script],
+        timeout_sec=5,
+    )
+
+    result = await evaluate_idle_replay_pool(
+        [candidate],
+        evaluator_kind="local_model",
+        local_model_evaluator=evaluator,
+        budget=ReplayEvaluationBudget(max_items=1, max_cost_usd=1.0, max_concurrency=1),
+    )
+
+    assert result.evaluated == 1
+    record = result.records[0]
+    assert record.status == "evaluated"
+    assert record.evaluator_kind == "local_model"
+    assert record.score == 0.82
+    assert record.evidence["model"] == "tiny-local-test"
+    assert "cheap_local_vote" in record.notes
+    assert record.promotion_allowed is False
+    assert record.production_action is False

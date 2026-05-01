@@ -1,5 +1,7 @@
 """idle-batch scheduler tests."""
 
+import shlex
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -359,6 +361,37 @@ async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch)
     assert all(asset.l1_metadata["production_action"] is False for asset in draft_assets)
     assert all(asset.l1_metadata["requires_human_review"] is True for asset in draft_assets)
     assert all("review_only" in asset.tags for asset in draft_assets)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qi_idle_replay_step_uses_configured_local_model_command(monkeypatch) -> None:
+    from kun.qi.problem_queue import reset_qi_problem_queue
+
+    monkeypatch.setenv("KUN_QI_PROBLEM_QUEUE_DB_ENABLED", "0")
+    reset_qi_problem_queue()
+    set_idle_batch_data_source(_FakeIdleBatchDataSource())
+    model_script = (
+        "import json, sys; "
+        "json.load(sys.stdin); "
+        "print(json.dumps({'score': 0.73, 'notes': ['idle_local_vote']}))"
+    )
+    monkeypatch.setenv(
+        "KUN_QI_LOCAL_REPLAY_EVALUATOR_CMD",
+        shlex.join([sys.executable, "-c", model_script]),
+    )
+
+    summary = await QiIdleReplayStep().run("t-1")
+
+    assert summary["evaluation_engine"] == "local_model"
+    assert summary["evaluation_pool"]["evaluated"] == 2
+    assert all(
+        record["evaluator_kind"] == "local_model"
+        for record in summary["evaluation_pool"]["records"]
+    )
+    assert all(
+        record["promotion_allowed"] is False for record in summary["evaluation_pool"]["records"]
+    )
 
 
 @pytest.mark.unit

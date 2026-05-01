@@ -22,7 +22,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from kun.core.anchor_expand import AnchorExpandIterator
 from kun.core.logging import get_logger
@@ -412,6 +412,7 @@ class QiIdleReplayStep(IdleBatchStep):
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from kun.qi.idle_replay import (
             ReplayEvaluationBudget,
+            configured_local_replay_model_evaluator_from_env,
             evaluate_idle_replay_pool,
             generate_idle_replay_candidates,
         )
@@ -449,9 +450,15 @@ class QiIdleReplayStep(IdleBatchStep):
         ]
         persisted = await persist_problem_signals(review_signals)
         drafts = [candidate.to_strategy_pack_draft() for candidate in candidates]
+        local_model_evaluator = configured_local_replay_model_evaluator_from_env()
+        evaluator_kind: Literal["heuristic", "local_model"] = (
+            "local_model" if local_model_evaluator is not None else "heuristic"
+        )
         evaluations = await evaluate_idle_replay_pool(
             drafts,
             budget=ReplayEvaluationBudget(max_items=5, max_cost_usd=0.02, max_concurrency=2),
+            evaluator_kind=evaluator_kind,
+            local_model_evaluator=local_model_evaluator,
         )
         draft_asset_ids = await _persist_strategy_pack_drafts(
             tenant_id=tenant_id,
@@ -474,6 +481,7 @@ class QiIdleReplayStep(IdleBatchStep):
             ],
             "requires_strong_review": sum(1 for item in candidates if item.requires_strong_review),
             "evaluation_pool": evaluations.model_dump(mode="json"),
+            "evaluation_engine": evaluator_kind,
             "persisted_review_signals": persisted,
             "persisted_strategy_pack_draft_assets": len(draft_asset_ids),
             "strategy_pack_draft_asset_ids": draft_asset_ids[:10],
