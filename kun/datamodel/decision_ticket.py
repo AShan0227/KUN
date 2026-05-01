@@ -221,6 +221,8 @@ def ticket_from_route_choice(
     role_template_id = str(getattr(choice, "role_template_id", "rt-default"))
     purpose = str(getattr(choice, "purpose", "execution"))
     profile = getattr(choice, "task_profile", None)
+    route_reason = str(getattr(choice, "route_reason", "") or "")
+    capability_scores = getattr(choice, "capability_scores", {}) or {}
     return DecisionTicket(
         tenant_id=tenant_id,
         task_id=task_id,
@@ -230,7 +232,10 @@ def ticket_from_route_choice(
         source_module="brain.task_router",
         selected_action=f"{role_template_id}:{purpose}",
         status="selected",
-        reason=f"TaskRouter selected role_template={role_template_id}, purpose={purpose}",
+        reason=(
+            f"TaskRouter selected role_template={role_template_id}, purpose={purpose}"
+            + (f" ({route_reason})" if route_reason else "")
+        ),
         confidence=0.65,
         risk_level=risk_level,
         cost_estimate_usd=estimated_cost_usd,
@@ -243,10 +248,13 @@ def ticket_from_route_choice(
             "role_template_id": role_template_id,
             "purpose": purpose,
             "task_profile": _model_dump_or_value(profile),
+            "route_reason": route_reason,
+            "capability_scores": _model_dump_or_value(capability_scores),
         },
         metadata={
             "role_template_id": role_template_id,
             "purpose": purpose,
+            "route_reason": route_reason,
         },
     )
 

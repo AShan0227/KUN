@@ -1014,8 +1014,13 @@ class Orchestrator:
             except Exception:
                 log.exception("emergent_switch.register_task failed (non-fatal)")
 
-        # 4. Route (pick role + model purpose)
-        choice = self.task_router.choose(task_ref.meta)
+        # 4. Route (pick role + model purpose).  Capability cards may nudge
+        # role_template choice, but only when historical evidence is clearly
+        # better than the rule baseline.
+        choice = await self.task_router.choose_with_capability(
+            task_ref.meta,
+            tenant_id=tenant.tenant_id,
+        )
         route_ticket = ticket_from_route_choice(
             tenant_id=tenant.tenant_id,
             task_id=task_ref.meta.task_id,
