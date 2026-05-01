@@ -11,8 +11,11 @@ from typer.testing import CliRunner
 def _write_release_files(root: Path) -> None:
     docs = root / "docs" / "ops"
     docs.mkdir(parents=True)
-    (docs / "release-checklist-v4.md").write_text(
-        "tag rollback hotfix backup restore object-store-roundtrip S3/MinIO",
+    (docs / "release-checklist-v5.md").write_text(
+        (
+            "tag rollback hotfix backup restore object-store-roundtrip S3/MinIO "
+            "delivery-status dogfood legal secret not_ready"
+        ),
         encoding="utf-8",
     )
     scripts = root / "scripts"
@@ -45,7 +48,7 @@ def test_release_gate_blocks_bad_tag(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_release_gate_checks_v4_checklist(tmp_path: Path) -> None:
+def test_release_gate_checks_v5_checklist(tmp_path: Path) -> None:
     _write_release_files(tmp_path)
 
     report = run_release_gate(
@@ -57,16 +60,16 @@ def test_release_gate_checks_v4_checklist(tmp_path: Path) -> None:
     )
 
     ids = {item.check_id for item in report.checks}
-    assert "release_checklist_v4" in ids
+    assert "release_checklist_v5" in ids
     assert "legal_guard" in ids
-    assert not any(item.check_id == "release_checklist_v4" for item in report.blockers)
+    assert not any(item.check_id == "release_checklist_v5" for item in report.blockers)
 
 
 @pytest.mark.unit
 def test_release_gate_blocks_checklist_without_object_store_roundtrip(tmp_path: Path) -> None:
     _write_release_files(tmp_path)
-    (tmp_path / "docs" / "ops" / "release-checklist-v4.md").write_text(
-        "tag rollback hotfix backup restore",
+    (tmp_path / "docs" / "ops" / "release-checklist-v5.md").write_text(
+        "tag rollback hotfix backup restore delivery-status dogfood legal secret not_ready",
         encoding="utf-8",
     )
 
@@ -78,7 +81,7 @@ def test_release_gate_blocks_checklist_without_object_store_roundtrip(tmp_path: 
         require_ready=False,
     )
 
-    checklist = next(item for item in report.blockers if item.check_id == "release_checklist_v4")
+    checklist = next(item for item in report.blockers if item.check_id == "release_checklist_v5")
     assert "object-store-roundtrip" in checklist.detail
 
 
@@ -99,5 +102,5 @@ def test_ops_release_check_cli_json_can_skip_git_and_alembic() -> None:
     )
 
     assert result.exit_code == 0
-    assert "release_checklist_v4" in result.output
+    assert "release_checklist_v5" in result.output
     assert "v4.0.0-test" in result.output

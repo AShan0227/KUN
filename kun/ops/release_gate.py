@@ -1,4 +1,4 @@
-"""V4 release/tag/rollback/hotfix gate.
+"""V5 release/tag/rollback/hotfix gate.
 
 This is a machine-checkable release companion to the human checklist.  It does
 not create a git tag by itself; it tells the operator whether tagging would be
@@ -56,7 +56,7 @@ def run_release_gate(
     run_alembic_heads: bool = True,
     require_ready: bool = False,
 ) -> ReleaseGateReport:
-    """Run V4 release readiness checks."""
+    """Run V5 release readiness checks."""
 
     root = repo_root or Path.cwd()
     checks: list[ReleaseCheck] = []
@@ -101,15 +101,15 @@ def _tag_shape_check(release_tag: str) -> ReleaseCheck:
 
 
 def _checklist_checks(root: Path) -> list[ReleaseCheck]:
-    path = root / "docs" / "ops" / "release-checklist-v4.md"
+    path = root / "docs" / "ops" / "release-checklist-v5.md"
     if not path.exists():
         return [
             ReleaseCheck(
-                check_id="release_checklist_v4",
+                check_id="release_checklist_v5",
                 severity="blocker",
-                title="缺少 V4 release checklist",
+                title="缺少 V5 release checklist",
                 detail=str(path),
-                suggested_action="补 docs/ops/release-checklist-v4.md。",
+                suggested_action="补 docs/ops/release-checklist-v5.md。",
             )
         ]
     text = path.read_text(encoding="utf-8")
@@ -121,27 +121,33 @@ def _checklist_checks(root: Path) -> list[ReleaseCheck]:
         "restore": "restore",
         "object-store-roundtrip": "object-store-roundtrip",
         "S3/MinIO": "s3",
+        "delivery-status": "delivery-status",
+        "dogfood": "dogfood",
+        "legal/IP": "legal",
+        "secret": "secret",
+        "not_ready": "not_ready",
     }
     lower_text = text.lower()
     missing = [label for label, needle in required.items() if needle not in lower_text]
     if missing:
         return [
             ReleaseCheck(
-                check_id="release_checklist_v4",
+                check_id="release_checklist_v5",
                 severity="blocker",
-                title="V4 release checklist 不完整",
+                title="V5 release checklist 不完整",
                 detail="缺少关键词: " + ", ".join(missing),
                 suggested_action=(
                     "补齐 tag / rollback / hotfix / backup / restore / "
-                    "object-store-roundtrip / S3-MinIO 流程。"
+                    "object-store-roundtrip / S3-MinIO / delivery-status / "
+                    "dogfood / legal / secret / not_ready 流程。"
                 ),
             )
         ]
     return [
         ReleaseCheck(
-            check_id="release_checklist_v4",
+            check_id="release_checklist_v5",
             severity="ok",
-            title="V4 release checklist 存在且覆盖关键流程",
+            title="V5 release checklist 存在且覆盖关键流程",
             detail=str(path),
         )
     ]
