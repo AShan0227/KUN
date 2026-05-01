@@ -555,6 +555,33 @@ def test_state_ledger_records_failed_world_action_as_current_risk() -> None:
     assert snapshot.recent_events[-1].kind == "world.action.failed"
 
 
+def test_state_ledger_records_code_change_from_placeholder() -> None:
+    ledger = StateLedger()
+
+    ledger.record_code_change(
+        "task-code-1",
+        tenant_id="tenant-code",
+        path="kun/foo.py",
+        mode="dry_run",
+        phase="done",
+        ok=True,
+        applied=False,
+        rolled_back=False,
+        checks_passed=True,
+        reason="验证候选代码路径",
+        bytes_changed=42,
+    )
+
+    snapshot = ledger.snapshot("task-code-1")
+
+    assert snapshot is not None
+    assert snapshot.tenant_id == "tenant-code"
+    assert snapshot.current_action == "CodeCapability dry_run kun/foo.py: 通过"
+    assert snapshot.decision_reason == "验证候选代码路径"
+    assert snapshot.recent_events[-1].kind == "code.change.proposed"
+    assert snapshot.recent_events[-1].data["bytes_changed"] == 42
+
+
 def test_state_ledger_replay_reconstructs_task_story_from_durable_events() -> None:
     story = replay_state_ledger_story(
         "task-1",

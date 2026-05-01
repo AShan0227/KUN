@@ -7,6 +7,8 @@ single-file change workflow that defaults to dry-run.
 
 from __future__ import annotations
 
+import hashlib
+import logging
 from pathlib import Path
 from typing import Any, Literal
 
@@ -15,13 +17,17 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from kun.api.runtime import get_code_capability
 from kun.core.config import settings
+from kun.core.db import session_scope
+from kun.core.events import emit
 from kun.core.tenancy import current_tenant, require_scope
+from kun.datamodel.events import Event
 from kun.skills.code_capability import CodeCapability
 from kun.skills.code_capability.executor import LintTool
 from kun.skills.code_capability.reviewer import ReviewFinding, ReviewResult
 from kun.skills.code_capability.workflow import ChangeCheckSpec, ChangeWorkflowResult
 
 router = APIRouter(prefix="/api/code-capability", tags=["code-capability"])
+log = logging.getLogger(__name__)
 
 
 class ReviewDiffRequest(BaseModel):
@@ -66,6 +72,8 @@ class ProposeChangeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str = Field(min_length=1, max_length=500)
+    task_id: str | None = Field(default=None, min_length=1, max_length=64)
+    reason: str = Field(default="", max_length=500)
     patch_text: str | None = Field(default=None, max_length=512_000)
     replacement_content: str | None = Field(default=None, max_length=512_000)
     allow_apply: bool = False
@@ -208,6 +216,7 @@ async def propose_change(payload: ProposeChangeRequest, request: Request) -> dic
         checks=checks,
     )
     body = _change_result_payload(result)
+    await _record_change_observability(payload, request, result)
     if result.phase in {"input", "resolve"}:
         raise HTTPException(status_code=400, detail=body)
     return body
@@ -257,6 +266,93 @@ def _change_result_payload(result: ChangeWorkflowResult) -> dict[str, Any]:
         "error": result.error,
         "rollback_hint": result.rollback_hint,
     }
+
+
+async def _record_change_observability(
+    payload: ProposeChangeRequest,
+    request: Request,
+    result: ChangeWorkflowResult,
+) -> None:
+    """Best-effort event + StateLedger write for CodeCapability outcomes."""
+
+    try:
+        tenant = current_tenant()
+    except Exception:
+        log.debug("code_capability.observability_missing_tenant", exc_info=True)
+        return
+
+    task_id = payload.task_id
+    reason = payload.reason.strip()
+    checks_passed = _change_checks_passed(result)
+    event_payload = {
+        "task_id": task_id,
+        "path": result.path,
+        "mode": result.mode,
+        "phase": result.phase,
+        "ok": result.ok,
+        "applied": result.applied,
+        "rolled_back": result.rolled_back,
+        "bytes_changed": result.bytes_changed,
+        "checks_passed": checks_passed,
+        "review_ok": result.review.ok if result.review is not None else None,
+        "review_findings_count": len(result.review.findings) if result.review is not None else 0,
+        "lint_count": len(result.lint_results),
+        "lint_failed_count": sum(1 for lint in result.lint_results if not lint.ok),
+        "test_count": len(result.test_results),
+        "test_failed_count": sum(1 for test in result.test_results if not test.ok),
+        "error": result.error[:500],
+        "rollback_hint": result.rollback_hint[:500],
+        "reason": reason,
+        "diff_sha256": hashlib.sha256(result.diff.encode("utf-8")).hexdigest()
+        if result.diff
+        else "",
+        "diff_bytes": len(result.diff.encode("utf-8")),
+    }
+    ledger = getattr(request.app.state, "state_ledger", None)
+    if task_id and ledger is not None and hasattr(ledger, "record_code_change"):
+        try:
+            ledger.record_code_change(
+                task_id,
+                tenant_id=tenant.tenant_id,
+                path=result.path,
+                mode=result.mode,
+                phase=result.phase,
+                ok=result.ok,
+                applied=result.applied,
+                rolled_back=result.rolled_back,
+                checks_passed=checks_passed,
+                reason=reason,
+                bytes_changed=result.bytes_changed,
+            )
+        except Exception:
+            log.warning(
+                "code_capability.state_ledger_record_failed",
+                extra={"task_id": task_id, "path": result.path},
+                exc_info=True,
+            )
+    try:
+        async with session_scope(tenant_id=tenant.tenant_id) as session:
+            await emit(
+                session,
+                Event.build(
+                    tenant_id=tenant.tenant_id,
+                    event_type="code.change.proposed",
+                    payload=event_payload,
+                    task_ref=task_id,
+                ),
+            )
+    except Exception:
+        log.warning(
+            "code_capability.event_emit_failed",
+            extra={"task_id": task_id, "path": result.path},
+            exc_info=True,
+        )
+
+
+def _change_checks_passed(result: ChangeWorkflowResult) -> bool:
+    return all(lint.ok for lint in result.lint_results) and all(
+        test.ok for test in result.test_results
+    )
 
 
 def _write_result_payload(result: Any) -> dict[str, Any]:

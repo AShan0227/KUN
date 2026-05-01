@@ -55,6 +55,26 @@ class StrategyPackReviewDecision(BaseModel):
     promotion_allowed: Literal[False] = False
 
 
+class StrategyPackEvidenceSummary(BaseModel):
+    """Compact evidence summary for downstream human/system review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str
+    status: StrategyPackReviewStatus
+    score: float = 0.0
+    confidence: float = 0.0
+    risk: str = "low"
+    why_worth_human_review: list[str] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    evidence_sources: list[dict[str, Any]] = Field(default_factory=list)
+    review_reasons: list[str] = Field(default_factory=list)
+    review_only: Literal[True] = True
+    production_action: Literal[False] = False
+    promotion_allowed: Literal[False] = False
+
+
 class StrategyPackReviewReport(BaseModel):
     """Batch review result for stored Qi StrategyPack draft assets."""
 
@@ -172,6 +192,40 @@ def review_strategy_pack_draft_asset(asset: LayeredAsset) -> StrategyPackReviewD
     )
 
 
+def summarize_strategy_pack_evidence(
+    asset: LayeredAsset,
+    decision: StrategyPackReviewDecision | None = None,
+) -> StrategyPackEvidenceSummary:
+    """Summarize review-only Qi evidence into a stable downstream payload."""
+
+    decision = decision or review_strategy_pack_draft_asset(asset)
+    metadata = asset.l1_metadata
+    draft_payload = _as_dict(metadata.get("strategy_pack_draft"))
+    task_patterns = _task_patterns(metadata, draft_payload)
+    evaluation_records = _record_list(metadata.get("evaluation_records"))
+    lab_replay_records = _record_list(metadata.get("lab_replay_records"))
+
+    evidence_sources = [
+        *_summarize_evaluation_records(evaluation_records),
+        *_summarize_lab_replay_records(lab_replay_records),
+    ]
+    why = _why_worth_human_review(decision, evidence_sources)
+    risks = _summary_risks(decision, task_patterns, evidence_sources)
+
+    return StrategyPackEvidenceSummary(
+        draft_id=decision.draft_id,
+        status=decision.status,
+        score=decision.score,
+        confidence=decision.confidence,
+        risk=decision.risk,
+        why_worth_human_review=why,
+        missing_evidence=decision.missing_evidence,
+        risks=risks,
+        evidence_sources=evidence_sources,
+        review_reasons=decision.reasons,
+    )
+
+
 async def review_strategy_pack_draft_assets(
     *,
     tenant_id: str,
@@ -212,12 +266,14 @@ async def review_strategy_pack_draft_assets(
 
 
 def _apply_review_decision(asset: LayeredAsset, decision: StrategyPackReviewDecision) -> None:
+    evidence_summary = summarize_strategy_pack_evidence(asset, decision)
     asset.l1_metadata["qi_review_status"] = decision.status
     asset.l1_metadata["qi_review_confidence"] = decision.confidence
     asset.l1_metadata["qi_review_score"] = decision.score
     asset.l1_metadata["qi_review_risk"] = decision.risk
     asset.l1_metadata["qi_review_reasons"] = decision.reasons
     asset.l1_metadata["qi_missing_evidence"] = decision.missing_evidence
+    asset.l1_metadata["qi_evidence_summary"] = evidence_summary.model_dump(mode="json")
     asset.l1_metadata["promotion_allowed"] = False
     asset.l1_metadata["production_action"] = False
     asset.tags = _review_tags(asset.tags, decision)
@@ -294,6 +350,91 @@ def _blocking_reason(
     return ""
 
 
+def _summarize_evaluation_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for record in records:
+        kind = str(record.get("evaluator_kind") or "unknown")
+        summaries.append(
+            {
+                "source": _evaluation_source_label(kind),
+                "status": str(record.get("status") or "unknown"),
+                "score": _float(record.get("score")),
+                "record_id": str(record.get("evaluation_id") or ""),
+                "review_only": bool(record.get("production_action") is False),
+                "notes": [str(note) for note in _as_list(record.get("notes")) if str(note)],
+            }
+        )
+    return summaries
+
+
+def _summarize_lab_replay_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for record in records:
+        summaries.append(
+            {
+                "source": "lab_replay_evidence",
+                "status": str(record.get("status") or "unknown"),
+                "score": _float(record.get("score")),
+                "record_id": str(record.get("history_id") or ""),
+                "review_only": bool(record.get("production_action") is False),
+                "notes": [str(note) for note in _as_list(record.get("notes")) if str(note)],
+            }
+        )
+    return summaries
+
+
+def _evaluation_source_label(evaluator_kind: str) -> str:
+    if evaluator_kind == "strong_model":
+        return "strong_model_review"
+    if evaluator_kind == "local_model":
+        return "local_model_replay_evaluation"
+    if evaluator_kind == "heuristic":
+        return "idle_replay_evaluation"
+    return f"{evaluator_kind}_evaluation"
+
+
+def _why_worth_human_review(
+    decision: StrategyPackReviewDecision,
+    evidence_sources: list[dict[str, Any]],
+) -> list[str]:
+    why: list[str] = []
+    evaluated = [
+        source
+        for source in evidence_sources
+        if source.get("status") == "evaluated" and _float(source.get("score")) > 0.0
+    ]
+    if evaluated:
+        best = max(evaluated, key=lambda source: _float(source.get("score")))
+        why.append(f"{best['source']}_score:{_float(best.get('score')):.2f}")
+    if decision.status == "ready_for_human_review":
+        why.append("review_gate_ready_for_human_review")
+    elif decision.status == "needs_evidence":
+        why.append("candidate_has_signal_but_evidence_gaps_remain")
+    if decision.score >= _required_score(
+        decision.risk,
+        requires_strong_review="strong_model_review" in decision.missing_evidence,
+    ):
+        why.append("aggregate_score_clears_current_risk_threshold")
+    return _dedupe(why)
+
+
+def _summary_risks(
+    decision: StrategyPackReviewDecision,
+    task_patterns: list[str],
+    evidence_sources: list[dict[str, Any]],
+) -> list[str]:
+    risks = ["review_only_not_production_evidence", f"risk_level:{decision.risk}"]
+    if decision.missing_evidence:
+        risks.append("missing_required_evidence")
+    if decision.risk in HIGH_RISKS or _looks_external_or_irreversible(task_patterns):
+        risks.append("high_or_external_impact_requires_extra_review")
+    if decision.status == "blocked":
+        risks.append("blocking_review_signal_present")
+    if any(_float(source.get("score")) < BLOCKING_SCORE for source in evidence_sources):
+        risks.append("very_low_score_in_evidence_chain")
+    return _dedupe(risks)
+
+
 def _required_score(risk: str, *, requires_strong_review: bool) -> float:
     if risk == "critical":
         return 0.68
@@ -355,8 +496,10 @@ def _dedupe(values: Iterable[str]) -> list[str]:
 
 
 __all__ = [
+    "StrategyPackEvidenceSummary",
     "StrategyPackReviewDecision",
     "StrategyPackReviewReport",
     "review_strategy_pack_draft_asset",
     "review_strategy_pack_draft_assets",
+    "summarize_strategy_pack_evidence",
 ]

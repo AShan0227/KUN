@@ -8,6 +8,7 @@ from kun.engineering.external_scan import (
     ExternalGithubFetchResponse,
     assess_external_skill_safety,
     fetch_github_repo_external_skill_metadata,
+    match_external_skill_task_demand,
     normalize_external_skill_candidate,
     normalize_external_skill_candidates,
     scan_external_skill_candidates,
@@ -68,7 +69,48 @@ def test_normalize_external_skill_candidate_is_review_only() -> None:
     assert candidate.safety.risk_level == "low"
     assert candidate.safety.license_unknown is False
     assert candidate.safety.sandbox_suitable is True
+    assert candidate.demand_match.primary == "review"
+    assert candidate.demand_match.categories[0] == "review"
+    assert candidate.demand_match.scores["coding"] > 0
     assert "review_only" in candidate.tags
+    assert "demand:review" in candidate.tags
+    assert "demand:coding" in candidate.tags
+
+
+@pytest.mark.unit
+def test_match_external_skill_task_demand_classifies_common_task_families() -> None:
+    writing = match_external_skill_task_demand(
+        {
+            "name": "Editorial docs helper",
+            "description": "Write documentation, edit grammar, and polish email drafts.",
+            "topics": ["docs"],
+        }
+    )
+    research = match_external_skill_task_demand(
+        {
+            "name": "Paper research synthesis",
+            "description": "Find sources, summarize literature, and track citations.",
+        }
+    )
+    ops = match_external_skill_task_demand(
+        {
+            "name": "Incident runbook",
+            "description": (
+                "Python debug implementation for deployment alerts across Docker and CI monitoring."
+            ),
+        }
+    )
+    unknown = match_external_skill_task_demand({"name": "General helper"})
+
+    assert writing.primary == "writing"
+    assert writing.confidence > 0
+    assert "docs" in writing.matched_keywords["writing"]
+    assert research.primary == "research"
+    assert set(research.categories) == {"research"}
+    assert ops.primary == "ops"
+    assert "coding" in ops.categories
+    assert unknown.primary == "unknown"
+    assert unknown.confidence == 0.0
 
 
 @pytest.mark.unit
@@ -344,6 +386,7 @@ def test_scan_external_skill_candidates_returns_review_only_report() -> None:
     assert dumped["risk_counts"]["low"] == 1
     assert dumped["risk_counts"]["high"] == 1
     assert dumped["top_candidates"][0]["name"] == "Risky installer"
+    assert dumped["top_candidates"][0]["demand_match"]["primary"] in {"coding", "ops"}
 
 
 @pytest.mark.unit
@@ -352,6 +395,7 @@ def test_external_skill_candidate_to_qi_signal_contains_no_install_permission() 
         {
             "repo": "example/skills",
             "name": "Shell helper",
+            "description": "Ops runbook for deployment checks.",
             "license": "unknown",
             "files": [{"path": "run.sh", "content": "echo ok"}],
         }
@@ -364,6 +408,8 @@ def test_external_skill_candidate_to_qi_signal_contains_no_install_permission() 
     assert signal.category == "risk"
     assert signal.task_type == "skill.external_review"
     assert signal.evidence["review_state"] == "review_only"
+    assert signal.evidence["demand_match"]["primary"] == "ops"
+    assert "ops" in signal.evidence["demand_match"]["categories"]
     assert signal.evidence["production_action"] is False
     assert signal.evidence["promotion_allowed"] is False
     assert signal.evidence["auto_install_allowed"] is False

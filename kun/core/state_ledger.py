@@ -746,6 +746,51 @@ class StateLedger:
             )
             self._store_entry(entry)
 
+    def record_code_change(
+        self,
+        task_id: str,
+        *,
+        path: str,
+        mode: str,
+        phase: str,
+        ok: bool,
+        applied: bool,
+        rolled_back: bool,
+        checks_passed: bool,
+        tenant_id: str | None = None,
+        reason: str = "",
+        bytes_changed: int = 0,
+    ) -> None:
+        """Expose CodeCapability workflow outcomes in the current task view."""
+        with self._lock:
+            entry = self._ensure(task_id)
+            if tenant_id and not entry.tenant_id:
+                entry.tenant_id = tenant_id
+            status_label = "通过" if ok else "未通过"
+            if rolled_back:
+                status_label = "已回滚"
+            entry.current_action = f"CodeCapability {mode} {path}: {status_label}"
+            if reason:
+                entry.decision_reason = reason
+            if not ok:
+                _append_unique(entry.alert_flags, f"code_change:{phase}")
+            entry.add_trail(
+                "code.change.proposed",
+                entry.current_action,
+                {
+                    "path": path,
+                    "mode": mode,
+                    "phase": phase,
+                    "ok": ok,
+                    "applied": applied,
+                    "rolled_back": rolled_back,
+                    "checks_passed": checks_passed,
+                    "bytes_changed": bytes_changed,
+                    "reason": reason,
+                },
+            )
+            self._store_entry(entry)
+
     def record_system_health_report(self, report: Any) -> StateLedgerEntry:
         """Expose NUO system findings in the current-state view.
 

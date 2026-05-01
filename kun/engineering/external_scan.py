@@ -49,6 +49,7 @@ EXTERNAL_SCAN_STRONG_REVIEW_MAX_TOKENS_ENV = "KUN_EXTERNAL_SCAN_STRONG_REVIEW_MA
 
 ExternalSkillRiskLevel = Literal["low", "medium", "high", "critical"]
 ExternalSkillReviewState = Literal["review_only"]
+ExternalSkillDemandKind = Literal["coding", "writing", "review", "research", "ops", "unknown"]
 
 _UNKNOWN_LICENSE_VALUES = {"", "unknown", "noassertion", "other", "none", "unlicensed"}
 _EXECUTABLE_FILE_PATTERNS = (
@@ -136,6 +137,112 @@ _GITHUB_MAX_TREE_ENTRIES = 2000
 _GITHUB_MAX_FILE_BYTES = 32 * 1024
 _GITHUB_MAX_CANDIDATE_FILES = 24
 _GITHUB_MAX_SUPPORT_FILES = 12
+_DEMAND_MATCH_KINDS: tuple[ExternalSkillDemandKind, ...] = (
+    "coding",
+    "writing",
+    "review",
+    "research",
+    "ops",
+)
+_DEMAND_MATCH_KEYWORDS: dict[ExternalSkillDemandKind, tuple[tuple[str, int], ...]] = {
+    "coding": (
+        ("implementation", 3),
+        ("implement", 3),
+        ("coding", 3),
+        ("engineering", 2),
+        ("engineer", 2),
+        ("refactor", 3),
+        ("debug", 3),
+        ("test", 2),
+        ("typescript", 3),
+        ("python", 3),
+        ("react", 3),
+        ("api", 2),
+        ("compiler", 2),
+        ("lint", 2),
+        ("code", 1),
+        ("代码", 3),
+        ("实现", 3),
+        ("测试", 2),
+    ),
+    "writing": (
+        ("documentation", 3),
+        ("docs", 3),
+        ("writing", 3),
+        ("write", 2),
+        ("editorial", 3),
+        ("copy", 2),
+        ("email", 2),
+        ("memo", 2),
+        ("proposal", 2),
+        ("grammar", 2),
+        ("style guide", 2),
+        ("文档", 3),
+        ("写作", 3),
+        ("邮件", 2),
+    ),
+    "review": (
+        ("code review", 5),
+        ("pull request", 4),
+        ("review", 4),
+        ("reviewing", 4),
+        ("diff", 3),
+        ("diffs", 3),
+        ("pr", 2),
+        ("audit", 3),
+        ("critique", 3),
+        ("redline", 3),
+        ("static analysis", 2),
+        ("复审", 4),
+        ("审查", 4),
+        ("评审", 4),
+    ),
+    "research": (
+        ("research", 4),
+        ("literature", 3),
+        ("paper", 3),
+        ("citation", 3),
+        ("sources", 2),
+        ("source finding", 3),
+        ("synthesis", 3),
+        ("summarize", 2),
+        ("survey", 3),
+        ("arxiv", 3),
+        ("资料", 3),
+        ("研究", 4),
+        ("调研", 4),
+    ),
+    "ops": (
+        ("incident", 4),
+        ("runbook", 4),
+        ("deploy", 3),
+        ("deployment", 3),
+        ("ci", 2),
+        ("cd", 2),
+        ("docker", 3),
+        ("kubernetes", 3),
+        ("infra", 3),
+        ("monitoring", 3),
+        ("alert", 2),
+        ("release", 2),
+        ("migration", 2),
+        ("运维", 4),
+        ("部署", 3),
+        ("监控", 3),
+    ),
+}
+
+
+@dataclass(frozen=True)
+class ExternalSkillDemandMatch:
+    """Review-only task-demand fit inferred from external skill metadata."""
+
+    primary: ExternalSkillDemandKind
+    categories: list[ExternalSkillDemandKind]
+    confidence: float
+    scores: dict[ExternalSkillDemandKind, int] = field(default_factory=dict)
+    matched_keywords: dict[ExternalSkillDemandKind, list[str]] = field(default_factory=dict)
+    reasons: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -183,6 +290,7 @@ class ExternalSkillCandidate:
     summary: str
     source: ExternalSkillSource
     safety: ExternalSkillSafetyAssessment
+    demand_match: ExternalSkillDemandMatch
     tags: list[str] = field(default_factory=list)
     review_state: ExternalSkillReviewState = "review_only"
     production_action: bool = False
@@ -236,6 +344,16 @@ class ExternalSkillCandidate:
                 "sandbox_suitable": self.safety.sandbox_suitable,
                 "reasons": list(self.safety.reasons),
                 "evidence": dict(self.safety.evidence),
+            },
+            "demand_match": {
+                "primary": self.demand_match.primary,
+                "categories": list(self.demand_match.categories),
+                "confidence": self.demand_match.confidence,
+                "scores": dict(self.demand_match.scores),
+                "matched_keywords": {
+                    key: list(value) for key, value in self.demand_match.matched_keywords.items()
+                },
+                "reasons": list(self.demand_match.reasons),
             },
             "tags": list(self.tags),
             "review_state": self.review_state,
@@ -496,6 +614,7 @@ def normalize_external_skill_candidate(raw: dict[str, Any]) -> ExternalSkillCand
         raw.get("skill_md"),
     )[:700]
     safety = assess_external_skill_safety(raw)
+    demand_match = match_external_skill_task_demand(raw)
     key = "|".join(
         [
             source.kind,
@@ -513,7 +632,62 @@ def normalize_external_skill_candidate(raw: dict[str, Any]) -> ExternalSkillCand
         summary=summary,
         source=source,
         safety=safety,
-        tags=_external_skill_tags(raw, safety),
+        demand_match=demand_match,
+        tags=_external_skill_tags(raw, safety, demand_match),
+    )
+
+
+def match_external_skill_task_demand(raw: dict[str, Any]) -> ExternalSkillDemandMatch:
+    """Infer which task demand an external skill/template likely serves.
+
+    This is deliberately offline and review-only. It gives Qi/NUO a small,
+    inspectable hint about whether a candidate is mostly for coding, writing,
+    review, research, or ops without promoting or installing the skill.
+    """
+
+    haystack = _external_skill_demand_text(raw)
+    scores: dict[ExternalSkillDemandKind, int] = {}
+    matched_keywords: dict[ExternalSkillDemandKind, list[str]] = {}
+    for kind in _DEMAND_MATCH_KINDS:
+        score = 0
+        hits: list[str] = []
+        for keyword, weight in _DEMAND_MATCH_KEYWORDS[kind]:
+            if _demand_keyword_matches(haystack, keyword):
+                score += weight
+                hits.append(keyword)
+        if score > 0:
+            scores[kind] = score
+            matched_keywords[kind] = hits[:12]
+
+    if not scores:
+        return ExternalSkillDemandMatch(
+            primary="unknown",
+            categories=["unknown"],
+            confidence=0.0,
+            reasons=["no_task_demand_keywords_matched"],
+        )
+
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    primary = ranked[0][0]
+    top_score = ranked[0][1]
+    categories = [
+        kind
+        for kind, score in ranked
+        if score == top_score or score >= max(2, int(top_score * 0.45))
+    ][:3]
+    total_score = sum(scores.values())
+    confidence = round(min(0.95, max(0.2, top_score / max(total_score, top_score))), 2)
+    reasons = [f"matched_{primary}_keywords"]
+    if len(categories) > 1:
+        reasons.append("multi_demand_candidate")
+
+    return ExternalSkillDemandMatch(
+        primary=primary,
+        categories=categories,
+        confidence=confidence,
+        scores=scores,
+        matched_keywords=matched_keywords,
+        reasons=reasons,
     )
 
 
@@ -1413,8 +1587,16 @@ def _external_skill_source(raw: dict[str, Any]) -> ExternalSkillSource:
 def _external_skill_tags(
     raw: dict[str, Any],
     safety: ExternalSkillSafetyAssessment,
+    demand_match: ExternalSkillDemandMatch,
 ) -> list[str]:
-    tags = {"external_skill", "review_only", f"risk:{safety.risk_level}"}
+    tags = {
+        "external_skill",
+        "review_only",
+        f"risk:{safety.risk_level}",
+        f"demand:{demand_match.primary}",
+    }
+    for category in demand_match.categories:
+        tags.add(f"demand:{category}")
     topics = raw.get("topics") or raw.get("tags") or []
     if isinstance(topics, list):
         tags.update(str(item).strip() for item in topics if str(item).strip())
@@ -1425,6 +1607,45 @@ def _external_skill_tags(
     else:
         tags.add("manual_security_review")
     return sorted(tags)
+
+
+def _external_skill_demand_text(raw: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in (
+        "name",
+        "skill_name",
+        "summary",
+        "description",
+        "readme",
+        "snippet",
+        "skill_md",
+        "task_type",
+    ):
+        value = raw.get(key)
+        if isinstance(value, str):
+            parts.append(value)
+    for key in ("task_types", "use_cases", "topics", "tags"):
+        value = raw.get(key)
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value)
+        elif isinstance(value, str):
+            parts.append(value)
+    for file in _external_skill_files(raw):
+        parts.append(file["path"])
+        parts.append(file["content"][:4000])
+    return "\n".join(parts).lower()
+
+
+def _demand_keyword_matches(haystack: str, keyword: str) -> bool:
+    needle = keyword.lower().strip()
+    if not needle:
+        return False
+    if any(ord(char) > 127 for char in needle):
+        return needle in haystack
+    if not re.fullmatch(r"[a-z0-9_ -]+", needle):
+        return needle in haystack
+    pattern = r"(?<![a-z0-9_])" + re.escape(needle) + r"(?![a-z0-9_])"
+    return re.search(pattern, haystack) is not None
 
 
 def _external_skill_files(raw: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1547,6 +1768,7 @@ __all__ = [
     "ExternalGithubMetadataFetcher",
     "ExternalInfoScanner",
     "ExternalSkillCandidate",
+    "ExternalSkillDemandMatch",
     "ExternalSkillSafetyAssessment",
     "ExternalSkillScanResult",
     "ExternalSkillSource",
@@ -1557,6 +1779,7 @@ __all__ = [
     "assess_external_skill_safety",
     "configured_external_scan_reviewer_from_env",
     "fetch_github_repo_external_skill_metadata",
+    "match_external_skill_task_demand",
     "normalize_external_skill_candidate",
     "normalize_external_skill_candidates",
     "scan_external_skill_candidates",

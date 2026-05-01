@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from kun.context.assets import AssetLayer, LayeredAsset
 from kun.context.storage import InMemoryAssetStore
@@ -7,6 +9,7 @@ from kun.qi.idle_replay import IdleReplayGenerator, TaskHistorySummary
 from kun.qi.strategy_pack_review import (
     review_strategy_pack_draft_asset,
     review_strategy_pack_draft_assets,
+    summarize_strategy_pack_evidence,
 )
 
 
@@ -16,15 +19,15 @@ def _strategy_asset(
     task_type: str = "marketing.ad",
     risk: str = "low",
     requires_strong_review: bool = False,
-    evaluation_records: list[dict] | None = None,
-    lab_replay_records: list[dict] | None = None,
+    evaluation_records: list[dict[str, Any]] | None = None,
+    lab_replay_records: list[dict[str, Any]] | None = None,
 ) -> LayeredAsset:
     history = TaskHistorySummary(
         history_id="hist-1",
         task_type=task_type,
         summary="Historical task found a reusable strategy",
         outcome="completed",
-        risk=risk,  # type: ignore[arg-type]
+        risk=risk,
     )
     candidate = IdleReplayGenerator().generate_from_history(history)
     draft = candidate.to_strategy_pack_draft().model_copy(
@@ -64,7 +67,7 @@ def _eval_record(
     score: float = 0.7,
     status: str = "evaluated",
     evaluation_id: str = "eval-1",
-) -> dict:
+) -> dict[str, Any]:
     return {
         "evaluation_id": evaluation_id,
         "target_id": "draft-1",
@@ -77,7 +80,7 @@ def _eval_record(
     }
 
 
-def _lab_record(*, score: float = 0.7, status: str = "evaluated") -> dict:
+def _lab_record(*, score: float = 0.7, status: str = "evaluated") -> dict[str, Any]:
     return {
         "draft_id": "draft-1",
         "history_id": "hist-1",
@@ -116,6 +119,52 @@ def test_high_risk_strategy_draft_needs_strong_and_lab_evidence() -> None:
     assert "lab_replay_evidence" in decision.missing_evidence
 
 
+def test_strategy_pack_evidence_summary_compacts_review_only_records() -> None:
+    asset = _strategy_asset(
+        evaluation_records=[
+            _eval_record(kind="local_model", score=0.72, evaluation_id="local"),
+        ],
+    )
+
+    summary = summarize_strategy_pack_evidence(asset)
+
+    assert summary.status == "ready_for_human_review"
+    assert summary.production_action is False
+    assert summary.promotion_allowed is False
+    assert summary.review_only is True
+    assert summary.missing_evidence == []
+    assert "review_gate_ready_for_human_review" in summary.why_worth_human_review
+    assert "local_model_replay_evaluation_score:0.72" in summary.why_worth_human_review
+    assert summary.evidence_sources == [
+        {
+            "source": "local_model_replay_evaluation",
+            "status": "evaluated",
+            "score": 0.72,
+            "record_id": "local",
+            "review_only": True,
+            "notes": [],
+        }
+    ]
+    assert "review_only_not_production_evidence" in summary.risks
+
+
+def test_strategy_pack_evidence_summary_names_gaps_and_high_impact_risks() -> None:
+    asset = _strategy_asset(
+        task_type="world.email",
+        risk="critical",
+        requires_strong_review=True,
+        evaluation_records=[_eval_record(score=0.8)],
+    )
+
+    summary = summarize_strategy_pack_evidence(asset)
+
+    assert summary.status == "needs_evidence"
+    assert summary.missing_evidence == ["strong_model_review", "lab_replay_evidence"]
+    assert "candidate_has_signal_but_evidence_gaps_remain" in summary.why_worth_human_review
+    assert "missing_required_evidence" in summary.risks
+    assert "high_or_external_impact_requires_extra_review" in summary.risks
+
+
 def test_rejected_or_very_low_evidence_blocks_strategy_draft() -> None:
     asset = _strategy_asset(
         task_type="world.email",
@@ -152,5 +201,7 @@ async def test_review_strategy_pack_draft_assets_can_apply_status_tags() -> None
     assert report.ready_for_human_review == 1
     assert updated is not None
     assert updated.l1_metadata["qi_review_status"] == "ready_for_human_review"
+    assert updated.l1_metadata["qi_evidence_summary"]["status"] == "ready_for_human_review"
+    assert updated.l1_metadata["qi_evidence_summary"]["production_action"] is False
     assert "qi_ready_for_human_review" in updated.tags
     assert updated.l1_metadata["production_action"] is False

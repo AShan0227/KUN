@@ -91,6 +91,8 @@ EventKind = Literal[
     "memory.policy.selected",
     "memory.writeback.recorded",
     "credit.assignment.completed",
+    # Code capability
+    "code.change.proposed",
     # Evaluation / Validation
     "validation.tier.selected",
     "validation.run.completed",

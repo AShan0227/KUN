@@ -646,7 +646,8 @@ review
 - 已有最小 HTTP 链路：`/api/code-capability/review-diff`、`/review-file`、`/run-python`、`/check`。
 - HTTP 链路目前只开放只读 review/diff 与显式 sandbox run/check；路径必须留在 workspace root 内，路径逃逸会被拒绝。
 - HTTP 链路已接租户 scope 守门：生产或显式传 scopes 时，review 需要 `code:read`，run/check 需要 `code:execute`。
-- 完整自动 coding workflow 仍是 partial：尚未把自动生成补丁、写文件、测试、review、回滚、State Ledger 记录和 skill draft 晋升串成闭环。
+- `propose-change` 已能把结果写入 `code.change.proposed` 事件；传入 `task_id` 时会进入 State Ledger，记录路径、模式、检查结果、回滚状态和 diff hash。
+- 完整自动 coding workflow 仍是 partial：尚未把 Orchestrator coding task、自动生成补丁、记忆写回和 skill draft 晋升串成闭环。
 
 ### 11.3 编程能力的安全边界
 
@@ -909,6 +910,7 @@ V5 必须防止“写了但没用”。
 
 - 已完成最小 runtime/API 接入：CodeCapability 不再只是单测模块，可由 API runtime 调用。
 - 已完成只读 review/diff 和显式 sandbox run/check。
+- 已完成 `propose-change` 的事件和 State Ledger 可观测闭环。
 - 完整自动 coding workflow 仍未完成，不能宣称 KUN 已能自动编码、验证并沉淀 skill。
 
 - 一个临时数据处理脚本能生成、测试、运行、记录。

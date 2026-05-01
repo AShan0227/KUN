@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
+import kun.api.code_capability as code_api
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -195,3 +199,71 @@ def test_propose_change_api_rejects_workspace_escape(
     assert detail["ok"] is False
     assert detail["phase"] == "resolve"
     assert "escapes code workspace" in detail["error"]
+
+
+@pytest.mark.unit
+def test_propose_change_api_records_event_and_state_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    app = _app(tmp_path, monkeypatch)
+    ledger = _FakeLedger()
+    app.state.state_ledger = ledger
+    emitted: list[Any] = []
+
+    @asynccontextmanager
+    async def fake_session_scope(*, tenant_id: str | None = None) -> AsyncIterator[object]:
+        emitted.append({"tenant_id": tenant_id, "session": True})
+        yield object()
+
+    async def fake_emit(_session: object, event: object) -> None:
+        emitted.append(event)
+
+    monkeypatch.setattr(code_api, "session_scope", fake_session_scope)
+    monkeypatch.setattr(code_api, "emit", fake_emit)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/code-capability/propose-change",
+        json={
+            "task_id": "task-code-1",
+            "reason": "修复单文件配置",
+            "path": "module.py",
+            "replacement_content": "VALUE = 2\n",
+        },
+        headers={"X-Scopes": "code:execute"},
+    )
+
+    assert response.status_code == 200
+    event = emitted[-1]
+    assert event.event_type == "code.change.proposed"
+    assert event.task_ref == "task-code-1"
+    assert event.payload["path"] == "module.py"
+    assert event.payload["mode"] == "dry_run"
+    assert event.payload["diff_sha256"]
+    assert "diff" not in event.payload
+    assert ledger.calls == [
+        {
+            "task_id": "task-code-1",
+            "tenant_id": "tenant-code-test",
+            "path": "module.py",
+            "mode": "dry_run",
+            "phase": "done",
+            "ok": True,
+            "applied": False,
+            "rolled_back": False,
+            "checks_passed": True,
+            "reason": "修复单文件配置",
+            "bytes_changed": response.json()["bytes_changed"],
+        }
+    ]
+
+
+class _FakeLedger:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def record_code_change(self, task_id: str, **kwargs: Any) -> None:
+        self.calls.append({"task_id": task_id, **kwargs})

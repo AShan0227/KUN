@@ -482,6 +482,7 @@ def get_v3_delivery_status(
                 "POST /api/code-capability/run-python 和 /check 可显式触发 bounded executor；路径逃逸会被拒绝",
                 "CodeCapability API 已接租户 scope 守门：review 需要 code:read，run/check 需要 code:execute；dev 无 scopes 时不增加本地调试摩擦",
                 "POST /api/code-capability/propose-change 已接默认 dry-run 的单文件改写闭环：先 review，再 dry-run/apply，再跑 lint/test；apply 后检查失败会自动恢复原文件",
+                "propose-change 现在会写 code.change.proposed 事件；传入 task_id 时也会进入 StateLedger，记录路径、模式、检查结果、回滚状态和 diff hash，方便傩/启/守望复盘",
             ],
             evidence_refs=[
                 "kun/skills/code_capability/__init__.py",
@@ -500,12 +501,12 @@ def get_v3_delivery_status(
             missing=[
                 "API 已暴露受控单文件 propose-change，但默认 dry-run；还不是让 KUN 自主大范围改仓库",
                 "sandbox 仍是软隔离；还不是 OS/container 级强隔离，也没有真实网络封锁保证",
-                "还没有把 Orchestrator coding task、生成补丁、StateLedger 记录、记忆写回和 skill draft 晋升串成完整自动 coding workflow",
+                "还没有把 Orchestrator coding task、自动生成补丁、记忆写回和 skill draft 晋升串成完整自动 coding workflow",
                 "还没接长周期 dogfood 样本来校准何时生成临时代码、何时沉淀为 skill",
             ],
             next_steps=[
                 "把 Orchestrator 的 coding task 显式接到 CodeCapability 服务，而不是只由 HTTP 人工触发",
-                "把 propose-change 写入 StateLedger / credit assignment，让编程路径也能被傩和启复盘",
+                "把 propose-change 的结果继续接到 credit assignment / memory writeback，让编程路径能真正影响后续策略",
                 "把成功的临时代码执行沉淀为 draft skill，并走多次验证与人工审核",
             ],
         ),
