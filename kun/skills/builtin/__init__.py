@@ -82,6 +82,40 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
         },
         "auto_trigger_when": ["code review", "diff review", "审查代码", "代码评审"],
     },
+    "code-propose-change": {
+        "description": (
+            "受控代码改动提案。默认只做 dry-run：先审查 patch/replacement，再在临时工作区"
+            "运行可选检查；不会写真实工作区，除非显式开启 KUN_CODE_PROPOSE_CHANGE_SKILL_ALLOW_APPLY=1。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "patch_text": {"type": "string"},
+                "replacement_content": {"type": "string"},
+                "allow_apply": {"type": "boolean"},
+                "checks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string"},
+                            "target": {"type": "string"},
+                            "tool": {"type": "string"},
+                            "timeout_sec": {"type": "integer"},
+                        },
+                    },
+                },
+            },
+            "required": ["path"],
+        },
+        "auto_trigger_when": [
+            "propose code change",
+            "generate patch",
+            "修代码",
+            "生成补丁",
+        ],
+    },
     "external-skill-scout": {
         "description": (
             "遇到能力缺口时生成外部 skill / 工程模板搜索计划。只输出 review-only scout plan，"
@@ -106,6 +140,26 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
             "find skill",
             "能力缺口",
             "寻找外部 skill",
+        ],
+    },
+    "external-skill-review": {
+        "description": (
+            "鉴别外部 skill / 工程模板候选。只消费离线 metadata，输出安全审查包；"
+            "不会联网、不会安装、不会注册生产 skill。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_need": {"description": "字符串或对象，描述当前缺什么能力"},
+                "candidate": {"type": "object"},
+            },
+            "required": ["candidate"],
+        },
+        "auto_trigger_when": [
+            "review external skill",
+            "external skill candidate",
+            "鉴别外部 skill",
+            "外部能力候选",
         ],
     },
 }
