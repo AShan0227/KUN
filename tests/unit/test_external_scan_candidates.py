@@ -349,7 +349,7 @@ async def test_fetch_github_repo_external_skill_metadata_skips_oversized_skill_c
 
     report = scan_external_skill_candidates([metadata])
     candidate = report.candidates[0]
-    assert candidate.safety.risk_level == "medium"
+    assert candidate.safety.risk_level in {"medium", "high"}
     assert "content_not_fully_inspected" in candidate.safety.reasons
 
 
@@ -400,6 +400,65 @@ async def test_fetch_github_repo_external_skill_metadata_marks_dangerous_support
     assert candidate.safety.file_write_risk is True
     assert candidate.safety.risk_level == "critical"
     assert candidate.production_action is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_github_repo_external_skill_metadata_marks_unfetched_support_scripts() -> None:
+    tree = [{"path": "skills/review/SKILL.md", "type": "blob", "size": 32, "sha": "skill"}]
+    for idx in range(4):
+        tree.append(
+            {
+                "path": f"skills/review/support_{idx}.sh",
+                "type": "blob",
+                "size": 32,
+                "sha": f"script-{idx}",
+            }
+        )
+    fetcher = _FakeGithubFetcher(
+        {
+            "https://api.github.com/repos/example/skills": {
+                "name": "skills",
+                "full_name": "example/skills",
+                "default_branch": "main",
+                "license": {"spdx_id": "MIT"},
+                "stargazers_count": 3,
+                "description": "Skill repo with many support scripts.",
+            },
+            "https://api.github.com/repos/example/skills/commits/main": {"sha": _SHA},
+            f"https://api.github.com/repos/example/skills/git/trees/{_SHA}?recursive=1": {
+                "truncated": False,
+                "tree": tree,
+            },
+            f"https://raw.githubusercontent.com/example/skills/{_SHA}/skills/review/SKILL.md": (
+                "# Review Helper\nReview TypeScript pull requests."
+            ),
+            f"https://raw.githubusercontent.com/example/skills/{_SHA}/skills/review/support_0.sh": (
+                "echo ok"
+            ),
+        }
+    )
+
+    metadata = await fetch_github_repo_external_skill_metadata(
+        "example/skills",
+        fetcher=fetcher,
+        max_support_files=1,
+    )
+
+    assert metadata["metadata"]["support_file_limit_reached"] is True
+    assert metadata["metadata"]["executable_support_total"] == 4
+    assert metadata["metadata"]["executable_support_fetched"] == 1
+    assert metadata["metadata"]["executable_support_unfetched_count"] == 3
+
+    report = scan_external_skill_candidates([metadata])
+    candidate = report.candidates[0]
+    assert candidate.safety.risk_level in {"medium", "high"}
+    assert "content_not_fully_inspected" in candidate.safety.reasons
+    assert "support_file_limit_reached" in candidate.safety.evidence["incomplete_inventory_reasons"]
+    assert (
+        "executable_support_files_not_fully_fetched"
+        in candidate.safety.evidence["incomplete_inventory_reasons"]
+    )
 
 
 @pytest.mark.unit

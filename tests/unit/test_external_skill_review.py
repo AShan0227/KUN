@@ -127,6 +127,37 @@ def test_install_script_candidate_requires_sandbox_and_human_review() -> None:
 
 
 @pytest.mark.unit
+def test_incomplete_external_skill_inventory_requires_evidence_before_ready() -> None:
+    package = review_external_skill_candidate(
+        task_need="Review TypeScript pull requests.",
+        candidate={
+            "source_kind": "github_repo",
+            "repo": "example/skills",
+            "url": "https://github.com/example/skills",
+            "commit_sha": "abc123",
+            "name": "Review helper",
+            "description": "Review TypeScript pull requests.",
+            "license": "MIT",
+            "files": [{"path": "skills/review/SKILL.md", "content": "Review diffs."}],
+            "metadata": {
+                "support_file_limit_reached": True,
+                "executable_support_total": 4,
+                "executable_support_fetched": 1,
+                "executable_support_unfetched_count": 3,
+            },
+        },
+    )
+
+    assert package.status == "needs_evidence"
+    assert package.worth_review is True
+    assert package.risk_level == "medium"
+    assert "complete_file_inventory" in package.missing_evidence
+    assert "complete_file_inventory_before_ready" in package.suggested_validation_steps
+    assert package.auto_install_allowed is False
+    assert package.production_action is False
+
+
+@pytest.mark.unit
 def test_low_evidence_candidate_cannot_enter_production() -> None:
     package = review_external_skill_candidate(
         task_need="Write product launch copy.",

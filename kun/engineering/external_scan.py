@@ -584,15 +584,37 @@ async def fetch_github_repo_external_skill_metadata(
     tree_entries = _github_tree_entries(raw_tree, max_entries=max_tree_entries)
     tree_entry_limit_reached = isinstance(raw_tree, list) and len(raw_tree) > len(tree_entries)
 
+    all_candidate_entries = _github_candidate_skill_entries(
+        tree_entries,
+        repo_name=repo,
+        limit=len(tree_entries),
+    )
     candidate_entries = _github_candidate_skill_entries(
         tree_entries,
         repo_name=repo,
         limit=max_candidate_files,
     )
+    all_support_entries = _github_support_file_entries(
+        tree_entries,
+        candidate_entries=all_candidate_entries,
+        limit=len(tree_entries),
+    )
     support_entries = _github_support_file_entries(
         tree_entries,
         candidate_entries=candidate_entries,
         limit=max_support_files,
+    )
+    candidate_file_limit_reached = len(all_candidate_entries) > len(candidate_entries)
+    support_file_limit_reached = len(all_support_entries) > len(support_entries)
+    executable_support_total = sum(
+        1
+        for entry in all_support_entries
+        if _looks_like_executable_file(str(entry.get("path") or ""), content_by_path=[])
+    )
+    executable_support_fetched = sum(
+        1
+        for entry in support_entries
+        if _looks_like_executable_file(str(entry.get("path") or ""), content_by_path=[])
     )
 
     candidate_files = [
@@ -661,7 +683,16 @@ async def fetch_github_repo_external_skill_metadata(
             "tree_entry_count": len(tree_entries),
             "tree_entry_limit_reached": tree_entry_limit_reached,
             "candidate_skill_file_count": len(candidate_files),
+            "candidate_skill_file_total": len(all_candidate_entries),
+            "candidate_file_limit_reached": candidate_file_limit_reached,
             "support_file_count": len(support_files),
+            "support_file_total": len(all_support_entries),
+            "support_file_limit_reached": support_file_limit_reached,
+            "executable_support_total": executable_support_total,
+            "executable_support_fetched": executable_support_fetched,
+            "executable_support_unfetched_count": max(
+                0, executable_support_total - executable_support_fetched
+            ),
         },
     }
 
@@ -896,6 +927,9 @@ def assess_external_skill_safety(raw: dict[str, Any]) -> ExternalSkillSafetyAsse
     auto_trigger_assessment = _assess_external_auto_triggers(raw, files)
     auto_trigger_entries = auto_trigger_assessment["entries"]
     auto_trigger_issue_count = sum(1 for entry in auto_trigger_entries if entry.get("issues"))
+    raw_metadata = raw.get("metadata")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+    incomplete_inventory_reasons = _external_skill_incomplete_inventory_reasons(metadata)
 
     reasons: list[str] = []
     if license_unknown:
@@ -910,6 +944,8 @@ def assess_external_skill_safety(raw: dict[str, Any]) -> ExternalSkillSafetyAsse
         reasons.append("file_write_risk")
     if truncated_paths:
         reasons.append("content_not_fully_inspected")
+    if incomplete_inventory_reasons:
+        reasons.append("content_not_fully_inspected")
     if auto_trigger_entries:
         reasons.append("auto_trigger_policy_review_required")
     if auto_trigger_issue_count:
@@ -919,6 +955,7 @@ def assess_external_skill_safety(raw: dict[str, Any]) -> ExternalSkillSafetyAsse
     risk_score += 1 if license_unknown else 0
     risk_score += 1 if executable_paths else 0
     risk_score += 1 if truncated_paths else 0
+    risk_score += 1 if incomplete_inventory_reasons else 0
     risk_score += 1 if network_hits else 0
     risk_score += 2 if secret_hits else 0
     risk_score += 2 if file_write_hits else 0
@@ -960,10 +997,36 @@ def assess_external_skill_safety(raw: dict[str, Any]) -> ExternalSkillSafetyAsse
             "file_write_hits": file_write_hits[:20],
             "inspected_file_count": len(files),
             "truncated_paths": truncated_paths[:20],
+            "content_not_fully_inspected": bool(truncated_paths or incomplete_inventory_reasons),
+            "incomplete_inventory_reasons": incomplete_inventory_reasons,
+            "tree_truncated": bool(metadata.get("tree_truncated")),
+            "tree_entry_limit_reached": bool(metadata.get("tree_entry_limit_reached")),
+            "candidate_file_limit_reached": bool(metadata.get("candidate_file_limit_reached")),
+            "support_file_limit_reached": bool(metadata.get("support_file_limit_reached")),
+            "executable_support_total": _safe_int(metadata.get("executable_support_total")),
+            "executable_support_fetched": _safe_int(metadata.get("executable_support_fetched")),
+            "executable_support_unfetched_count": _safe_int(
+                metadata.get("executable_support_unfetched_count")
+            ),
             "auto_trigger_entries": auto_trigger_entries[:20],
             "auto_trigger_issue_count": auto_trigger_issue_count,
         },
     )
+
+
+def _external_skill_incomplete_inventory_reasons(metadata: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if metadata.get("tree_truncated"):
+        reasons.append("github_tree_truncated")
+    if metadata.get("tree_entry_limit_reached"):
+        reasons.append("github_tree_entry_limit_reached")
+    if metadata.get("candidate_file_limit_reached"):
+        reasons.append("candidate_skill_file_limit_reached")
+    if metadata.get("support_file_limit_reached"):
+        reasons.append("support_file_limit_reached")
+    if _safe_int(metadata.get("executable_support_unfetched_count")) > 0:
+        reasons.append("executable_support_files_not_fully_fetched")
+    return sorted(set(reasons))
 
 
 def assess_external_skill_maintenance(raw: dict[str, Any]) -> ExternalSkillMaintenanceAssessment:

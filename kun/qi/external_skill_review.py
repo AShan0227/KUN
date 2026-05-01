@@ -985,6 +985,8 @@ def _source_missing_evidence(
         missing.append("secret_access_review")
     if source.safety.file_write_risk:
         missing.append("file_write_review")
+    if source.safety.evidence.get("content_not_fully_inspected"):
+        missing.append("complete_file_inventory")
     if source.safety.risk_level in {"high", "critical"}:
         missing.append("human_security_review")
     if source.summary.strip() == "":
@@ -1024,6 +1026,8 @@ def _source_validation_steps(
         steps.append("manual_review_install_or_support_scripts")
     if source.safety.risk_level in {"high", "critical"}:
         steps.append("require_security_reviewer_approval")
+    if source.safety.evidence.get("content_not_fully_inspected"):
+        steps.append("complete_file_inventory_before_ready")
     profile = _known_source_profile_for_repo(source.source.repo)
     if profile is not None:
         steps.extend(profile.required_evidence)
@@ -1193,6 +1197,8 @@ def _missing_evidence(
         missing.append("secret_access_review")
     if safety.file_write_risk:
         missing.append("file_write_review")
+    if safety.evidence.get("content_not_fully_inspected"):
+        missing.append("complete_file_inventory")
     if safety.evidence.get("auto_trigger_entries"):
         missing.append("auto_trigger_policy_review")
     if safety.risk_level in {"high", "critical"}:
@@ -1237,6 +1243,8 @@ def _validation_steps(candidate: ExternalSkillCandidate, task_fit: float) -> lis
         steps.append("use_fake_secrets_only")
     if safety.file_write_risk:
         steps.append("mount_temp_workspace_read_write_only")
+    if safety.evidence.get("content_not_fully_inspected"):
+        steps.append("complete_file_inventory_before_ready")
     if safety.evidence.get("auto_trigger_entries"):
         steps.append("manual_review_skill_auto_trigger_policy")
     if safety.risk_level in {"high", "critical"}:
