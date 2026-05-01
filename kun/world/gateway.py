@@ -452,6 +452,184 @@ class BrowserPlanHandler(WorldActionHandler):
         return plan
 
 
+class _PlanArtifactHandler(WorldActionHandler):
+    """Create an explicit plan artifact for a high-risk external action."""
+
+    mode = "plan"
+    external_dispatched = False
+    permissions_required: ClassVar[list[str]] = ["human_approval", "manual_operator_review"]
+    retry_policy = "不自动重试；计划生成失败后可重新生成，不会重放外部动作。"
+    compensation_strategy = "无外部影响；删除计划产物即可。"
+    next_step = "检查计划产物；需要真实执行时接入专门 handler 并重新审批。"
+    plan_root_name: ClassVar[str]
+    artifact_kind: ClassVar[str]
+    non_effect_flags: ClassVar[dict[str, bool]]
+
+    def __init__(self, output_root: str | Path) -> None:
+        self.plan_root = Path(output_root).expanduser().resolve() / self.plan_root_name
+        self.plan_root.mkdir(parents=True, exist_ok=True)
+
+    async def preview(self, action: WorldAction) -> WorldHandlerResult:
+        plan = self._plan(action, phase="preview")
+        rendered = json.dumps(plan, ensure_ascii=False, indent=2)
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="preview",
+            external_dispatched=False,
+            rendered_payload=rendered,
+            audit={
+                "phase": "preview",
+                "planned_only": True,
+                "external_dispatched": False,
+                "artifact_written": False,
+                **self.non_effect_flags,
+                "reason": f"{self.action_type} is preview-only; no artifact or side effect occurred",
+            },
+            message=f"{self.user_label} preview rendered. No artifact or external action was created.",
+        )
+
+    async def execute(self, action: WorldAction) -> WorldHandlerResult:
+        return self._write_plan_artifact(action, phase="approved")
+
+    def _write_plan_artifact(self, action: WorldAction, *, phase: str) -> WorldHandlerResult:
+        plan = self._plan(action, phase=phase)
+        rendered = json.dumps(plan, ensure_ascii=False, indent=2)
+        suffix = "preview" if phase == "preview" else "plan"
+        path = self.plan_root / f"{_safe_artifact_name(action.action_id)}.{suffix}.json"
+        path.write_text(rendered, encoding="utf-8")
+        return WorldHandlerResult(
+            handler_id=self.handler_id,
+            status="preview" if phase == "preview" else "drafted",
+            external_dispatched=False,
+            rendered_payload=rendered,
+            artifact_ref=str(path),
+            audit={
+                "path": str(path),
+                "phase": phase,
+                "planned_only": True,
+                "external_dispatched": False,
+                **self.non_effect_flags,
+                "reason": f"{self.action_type} is plan-only; no external side effect occurred",
+            },
+            message=f"{self.user_label} artifact created. No external action was performed.",
+        )
+
+    def _plan(self, action: WorldAction, *, phase: str) -> dict[str, Any]:
+        return {
+            "action_id": action.action_id,
+            "task_ref": action.task_ref,
+            "tenant_id": action.tenant_id,
+            "action_type": action.action_type,
+            "target_ref": action.target_ref,
+            "risk_level": action.risk_level,
+            "phase": phase,
+            "mode": "plan",
+            "external_dispatched": False,
+            "planned_only": True,
+            **self.non_effect_flags,
+            "payload": _redact_plan_payload(action.payload),
+            "cannot_do": self.cannot_do,
+            "permissions_required": self.permissions_required,
+            "retry_policy": self.retry_policy,
+            "compensation_strategy": self.compensation_strategy,
+            "next_step": self.next_step,
+        }
+
+
+class PaymentPlanHandler(_PlanArtifactHandler):
+    """Create a payment plan artifact; never moves money."""
+
+    action_type = "payment.plan"
+    handler_id = "payment.plan.v1"
+    plan_root_name = "payment_plans"
+    artifact_kind = "payment_plan"
+    safety_note = "只生成支付计划，不会真实扣款、转账或调用支付服务。"
+    user_label = "生成支付计划"
+    approval_effect = "批准后只生成支付计划产物，不会付款。"
+    cannot_do: ClassVar[list[str]] = [
+        "不能真实支付",
+        "不能扣款",
+        "不能转账",
+        "不能调用支付网关",
+    ]
+    permissions_required: ClassVar[list[str]] = [
+        "human_approval",
+        "payment_owner_review",
+        "manual_payment_execution",
+    ]
+    compensation_strategy = (
+        "无资金流动；删除支付计划即可。若未来接入真实支付，必须定义退款/冲正策略。"
+    )
+    next_step = "检查支付计划；真实付款必须由专门 payment handler 重新审批执行。"
+    non_effect_flags: ClassVar[dict[str, bool]] = {
+        "paid": False,
+        "funds_moved": False,
+        "payment_provider_called": False,
+    }
+
+
+class ContentPublishPlanHandler(_PlanArtifactHandler):
+    """Create a public publishing plan artifact; never publishes content."""
+
+    action_type = "content.publish_plan"
+    handler_id = "content.publish_plan.v1"
+    plan_root_name = "publish_plans"
+    artifact_kind = "content_publish_plan"
+    safety_note = "只生成公开发布计划，不会发布内容或调用 CMS/社交平台。"
+    user_label = "生成公开发布计划"
+    approval_effect = "批准后只生成发布计划产物，不会公开发布。"
+    cannot_do: ClassVar[list[str]] = [
+        "不能公开发布内容",
+        "不能调用 CMS",
+        "不能调用社交平台",
+        "不能修改线上页面",
+    ]
+    permissions_required: ClassVar[list[str]] = [
+        "human_approval",
+        "content_owner_review",
+        "manual_publish_execution",
+    ]
+    compensation_strategy = (
+        "无公开发布；删除发布计划即可。若未来接入真实发布，必须定义下架/更正策略。"
+    )
+    next_step = "检查发布计划；真实发布必须由专门 publish handler 重新审批执行。"
+    non_effect_flags: ClassVar[dict[str, bool]] = {
+        "published": False,
+        "cms_called": False,
+        "public_content_changed": False,
+    }
+
+
+class DeploymentPlanHandler(_PlanArtifactHandler):
+    """Create a deployment plan artifact; never deploys."""
+
+    action_type = "deployment.plan"
+    handler_id = "deployment.plan.v1"
+    plan_root_name = "deployment_plans"
+    artifact_kind = "deployment_plan"
+    safety_note = "只生成部署计划，不会触发 CI/CD、发布版本或改动生产环境。"
+    user_label = "生成部署计划"
+    approval_effect = "批准后只生成部署计划产物，不会部署。"
+    cannot_do: ClassVar[list[str]] = [
+        "不能真实部署",
+        "不能触发 CI/CD",
+        "不能发布版本",
+        "不能修改生产环境",
+    ]
+    permissions_required: ClassVar[list[str]] = [
+        "human_approval",
+        "release_owner_review",
+        "manual_deployment_execution",
+    ]
+    compensation_strategy = "无环境变更；删除部署计划即可。若未来接入真实部署，必须定义回滚策略。"
+    next_step = "检查部署计划；真实部署必须由专门 deployment handler 重新审批执行。"
+    non_effect_flags: ClassVar[dict[str, bool]] = {
+        "deployed": False,
+        "ci_cd_triggered": False,
+        "environment_changed": False,
+    }
+
+
 class EmailSendHandler(WorldActionHandler):
     """Send email through an explicitly configured SMTP account."""
 
@@ -1203,6 +1381,9 @@ class WorldGateway:
             EmailDraftHandler(self.artifact_root),
             WebhookPostDryRunHandler(),
             BrowserPlanHandler(self.artifact_root),
+            PaymentPlanHandler(self.artifact_root),
+            ContentPublishPlanHandler(self.artifact_root),
+            DeploymentPlanHandler(self.artifact_root),
         ]
         if _env_bool("KUN_WORLD_EMAIL_SEND_ENABLED"):
             handlers.append(EmailSendHandler.from_env(self.artifact_root))
@@ -1402,6 +1583,22 @@ def _redact_approval_context(context: dict[str, Any] | None) -> dict[str, Any]:
     return safe
 
 
+def _redact_plan_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    safe = dict(payload)
+    for key in list(safe):
+        if key.lower() in {
+            "token",
+            "secret",
+            "password",
+            "api_key",
+            "authorization",
+            "card_number",
+            "cvv",
+        }:
+            safe[key] = "[redacted]"
+    return safe
+
+
 def _assert_email_recipients_allowed(
     recipients: list[str],
     *,
@@ -1578,10 +1775,13 @@ def set_world_gateway(gateway: WorldGateway) -> None:
 __all__ = [
     "BrowserExecuteHandler",
     "BrowserPlanHandler",
+    "ContentPublishPlanHandler",
+    "DeploymentPlanHandler",
     "EmailDraftHandler",
     "EmailSendHandler",
     "EnterpriseApiPostHandler",
     "LocalFileWriteHandler",
+    "PaymentPlanHandler",
     "WebhookPostDryRunHandler",
     "WorldAction",
     "WorldActionHandler",

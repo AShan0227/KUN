@@ -723,6 +723,7 @@ def _world_gateway_delivery_status(
         "真实 email.send 需要 KUN_WORLD_EMAIL_ALLOWED_DOMAINS 收件人域名白名单，避免 SMTP 配好后误发陌生域名",
         "可开启 KUN_WORLD_REQUIRE_APPROVAL_CONTEXT，让 WorldGateway 真实执行必须带 pending_actions 持久审批上下文，防止直接调用执行路径",
         "email.send / browser.execute / enterprise_api.post 的真实 handler 代码已存在；默认不注册，必须显式开启 env、白名单和审批链",
+        "payment.plan / content.publish_plan / deployment.plan 已有默认方案类 handler，只生成计划产物，不支付、不公开发布、不部署",
     ]
     done.extend(_handler_done_line(item) for item in descriptors)
 
@@ -736,9 +737,9 @@ def _world_gateway_delivery_status(
     missing.extend(
         [
             "集中 Secret Manager、密钥轮换和租户自助密钥配置",
-            "支付动作 handler（payment.* 未实现；涉及钱的外部动作仍只能进人工方案/审计，不允许真实自动执行）",
-            "公开发布 handler（content.publish / social.post 未实现；涉及对外发布的动作仍只能生成草稿/审批包）",
-            "生产系统变更 handler（deployment.* 未实现；真实部署/回滚仍必须走人工或现有工程流程）",
+            "真实支付执行 handler 未实现；当前只有 payment.plan 方案产物，涉及钱仍不允许真实自动执行",
+            "真实公开发布 handler 未实现；当前只有 content.publish_plan 方案产物，涉及公开发布仍不允许真实自动执行",
+            "真实部署/回滚 handler 未实现；当前只有 deployment.plan 方案产物，生产变更仍必须走人工或现有工程流程",
         ]
     )
 
@@ -775,6 +776,8 @@ def _world_gateway_delivery_status(
 def _handler_done_line(handler: WorldHandlerDescriptor) -> str:
     if handler.external_dispatched:
         return f"{handler.action_type} 已注册真实执行 handler：{handler.user_label}"
+    if handler.mode == "plan":
+        return f"{handler.action_type} 已注册方案类 handler：{handler.user_label}（不真实外发）"
     return f"{handler.action_type} 已注册低风险 handler：{handler.user_label}"
 
 
