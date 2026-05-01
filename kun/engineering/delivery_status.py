@@ -127,6 +127,7 @@ def get_v3_delivery_status(
                 "MarkItDown 可选后端仍复用 allowed_root 路径约束，path traversal 会在加载 converter 前被拒绝",
                 "kun compiler compile-path / ingest-path 可通过 --backend markitdown 显式选择 MarkItDown 后端；未开启时明确返回 unsupported/unavailable，不会假装已解析 Office 文件",
                 "CompilerRegistry 可注册后续音视频 / OCR 后端，但当前不伪装成已接入",
+                "idle-batch 已注册 compiler_intake_review step；只有显式传入 compiler_intake_requests 才会生成 CompilerReviewPackage，并把风险/低质量/后端缺失资料以 review-only 写入 Qi 问题队列",
             ],
             evidence_refs=[
                 "kun/compiler/models.py",
@@ -138,6 +139,7 @@ def get_v3_delivery_status(
                 "kun/compiler/recompile.py",
                 "kun/compiler/sync.py",
                 "kun/compiler/internal_assets.py",
+                "kun/compiler/review_queue.py",
                 "kun/engineering/orchestrator.py",
                 "kun/datamodel/events.py",
                 "kun/context/deduplicate.py",
@@ -147,6 +149,7 @@ def get_v3_delivery_status(
                 "tests/unit/test_compiler_cli.py",
                 "tests/unit/test_compiler_ingestion.py",
                 "tests/unit/test_compiler_sync.py",
+                "tests/unit/test_compiler_review_queue.py",
                 "tests/unit/test_idle_batch.py",
                 "kun/api/input_payload.py",
                 "tests/unit/test_input_payload.py",

@@ -242,6 +242,8 @@ KUN Compiler 至少编译 7 类对象：
 
 这张票据是给傩、启和人工 review 用的。它不是“策略建议”，而是资料进入 KUN 内部资产池前的审计单。
 
+`compiler_intake_review` idle-batch step 会消费显式 `compiler_intake_requests`，生成 `CompilerReviewPackage`。有风险、低质量、后端缺失或需要重编译的资料会以 review-only 形式写入 Qi 问题队列；安全通过的资料只报告，不会在这个审计 step 里偷偷入库。
+
 ### 4.5 傩如何治理编译层
 
 傩要定期检查：
@@ -990,7 +992,7 @@ V5 必须防止“写了但没用”。
 
 | 能力 | 当前状态 | 需要补什么 |
 | --- | --- | --- |
-| InputTranslator / OutputTranslator | 附件已走原始 bytes 编译；skill/task/protocol 已能编译成 LayeredAsset；任务启动会真实写入 task 资产 | 还要接企业资料 connector 和更深 Office/OCR 后端 |
+| InputTranslator / OutputTranslator | 附件已走原始 bytes 编译；skill/task/protocol 已能编译成 LayeredAsset；任务启动会真实写入 task 资产；`compiler_intake_review` idle-batch step 可把外部资料入口审计票据写入 Qi review queue | 还要接企业资料 connector 和更深 Office/OCR 后端 |
 | Hermes | 已进入多处链路 | 和 Compiler / ProtocolPacket 更紧密 |
 | Watchtower DecisionPlane | 已有策略票据、MemoryInvocationPolicy、MemoryPolicy、MoE 影子候选和 LLMRouteGovernor 热路径治理；模型调用前会过成本/信任/隐私咨询 | 继续用真实 dogfood 校准规则阈值 |
 | ContextPacker | 已接 importance / credit / MemoryPolicyTicket；能按任务稀疏选择记忆层、资产类型和策略标签；MemoryInvocationPolicy 已能把任务类型、风险、复杂度、失败重试、显式模式和历史资源信用转成 ContextPacker 参数 | 还要接向量库、跨租户匿名经验池，以及把“哪条记忆真的帮到了任务”写回更细的信用归因 |

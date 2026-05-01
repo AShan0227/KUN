@@ -50,6 +50,11 @@ from kun.compiler.recompile import (
     RecompileStatus,
 )
 from kun.compiler.registry import CompilerRegistry, MaterialCompiler, default_registry
+from kun.compiler.review_queue import (
+    compiler_review_package_to_problem_signal,
+    compiler_review_packages_to_problem_signals,
+    enqueue_compiler_review_packages,
+)
 from kun.compiler.sync import (
     CompilerSyncReport,
     CompilerSyncRunner,
@@ -98,6 +103,9 @@ __all__ = [
     "compile_protocol_asset",
     "compile_skill_markdown_asset",
     "compile_task_ref_asset",
+    "compiler_review_package_to_problem_signal",
+    "compiler_review_packages_to_problem_signals",
     "default_registry",
+    "enqueue_compiler_review_packages",
     "material_to_layered_asset",
 ]

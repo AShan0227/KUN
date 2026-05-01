@@ -236,6 +236,7 @@ def _selected_step_names(enabled: set[str] | None) -> list[str]:
     priority = {
         "health_report": 0,
         "world_handler_auto_quarantine": 1,
+        "compiler_intake_review": 2,
         "qi_idle_replay": 2,
         "external_skill_candidate_review": 2,
         "knowledge_precipitation": 2,
@@ -768,6 +769,86 @@ class CompilerSyncSourcesStep(IdleBatchStep):
         }
 
 
+class CompilerIntakeReviewStep(IdleBatchStep):
+    """Review explicit compiler intake requests and queue unsafe ones.
+
+    This is the consumer for CompilerReviewPackage.  It deliberately does not
+    store compiled assets; it only audits explicit rows and sends risky/held
+    materials into Qi/NUO review so compiler issues do not remain invisible.
+    """
+
+    step_id = "compiler_intake_review"
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        from kun.compiler import (
+            CompilerIntakeRequest,
+            build_compiler_review_package,
+            enqueue_compiler_review_packages,
+        )
+
+        rows = await _source_list("compiler_intake_requests", tenant_id)
+        if not rows:
+            return {
+                "skipped": True,
+                "reason": "no compiler intake requests configured",
+                "requests": 0,
+                "review_packages": 0,
+                "queued_review_signals": 0,
+                "compiled_to_asset": 0,
+                "production_action": False,
+            }
+
+        packages = []
+        invalid = 0
+        for raw in rows[:20]:
+            if not isinstance(raw, dict):
+                invalid += 1
+                continue
+            payload = dict(raw)
+            payload["tenant_id"] = tenant_id
+            try:
+                request = CompilerIntakeRequest.model_validate(payload)
+                packages.append(await build_compiler_review_package(request))
+            except Exception:
+                invalid += 1
+                log.debug("compiler_intake_review.invalid_request", exc_info=True)
+
+        queued_packages = [
+            package
+            for package in packages
+            if package.needs_human_review
+            or package.needs_recompile
+            or package.decision != "compiled_to_asset"
+        ]
+        queued = await enqueue_compiler_review_packages(
+            tenant_id=tenant_id,
+            packages=queued_packages,
+        )
+        return {
+            "skipped": False,
+            "requests": len(rows),
+            "invalid_requests": invalid,
+            "review_packages": len(packages),
+            "queued_review_signals": queued,
+            "compiled_to_asset": sum(
+                1 for package in packages if package.decision == "compiled_to_asset"
+            ),
+            "held_or_blocked": len(queued_packages),
+            "top_packages": [
+                package.as_review_ticket()
+                for package in sorted(
+                    packages,
+                    key=lambda item: (
+                        item.decision == "compiled_to_asset",
+                        item.risk_level,
+                        item.source.uri,
+                    ),
+                )[:5]
+            ],
+            "production_action": False,
+        }
+
+
 class ExternalEmergentScanStep(IdleBatchStep):
     """Feed explicit external strategy signals into the EmergentSolution library.
 
@@ -1127,6 +1208,7 @@ def register_default_steps() -> None:
         QiIdleReplayStep(),
         QiStrategyPackReviewStep(),
         QiStrategyPackRolloutPlanStep(),
+        CompilerIntakeReviewStep(),
         CompilerSyncSourcesStep(),
         ExternalEmergentScanStep(),
         ExternalSkillCandidateReviewStep(),

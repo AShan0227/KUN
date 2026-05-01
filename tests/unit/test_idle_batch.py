@@ -12,6 +12,7 @@ import pytest
 from kun.engineering import idle_batch
 from kun.engineering.idle_batch import (
     ABDecisionRollupStep,
+    CompilerIntakeReviewStep,
     CompilerSyncSourcesStep,
     ConsistencyTestStep,
     ContextGovernanceRuleDistillStep,
@@ -169,6 +170,7 @@ def test_default_steps_registered():
     assert "qi_strategy_pack_rollout_plan" in steps
     assert "context_governance_rule_distill" in steps
     assert "compiler_sync_sources" in steps
+    assert "compiler_intake_review" in steps
     assert "external_emergent_scan" in steps
     assert "external_skill_candidate_review" in steps
 
@@ -677,6 +679,57 @@ async def test_compiler_sync_sources_step_is_opt_in(monkeypatch) -> None:
 
     assert summary["skipped"] is True
     assert summary["synced"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compiler_intake_review_step_is_opt_in() -> None:
+    summary = await CompilerIntakeReviewStep().run("t-1")
+
+    assert summary["skipped"] is True
+    assert summary["review_packages"] == 0
+    assert summary["production_action"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compiler_intake_review_step_queues_low_quality_packages(monkeypatch) -> None:
+    from kun.qi.problem_queue import get_qi_problem_queue, reset_qi_problem_queue
+
+    class _CompilerIntakeDataSource(_FakeIdleBatchDataSource):
+        def compiler_intake_requests(self, tenant_id: str) -> list[dict[str, Any]]:
+            return [
+                {
+                    "tenant_id": tenant_id,
+                    "source_type": "raw_text",
+                    "value": "ok",
+                },
+                {
+                    "tenant_id": tenant_id,
+                    "source_type": "raw_text",
+                    "value": (
+                        "This safe markdown-like intake is long enough to become a "
+                        "compiled asset candidate without needing human review."
+                    ),
+                },
+            ]
+
+    monkeypatch.setenv("KUN_QI_PROBLEM_QUEUE_DB_ENABLED", "0")
+    reset_qi_problem_queue()
+    set_idle_batch_data_source(_CompilerIntakeDataSource())
+
+    summary = await CompilerIntakeReviewStep().run("t-compiler")
+
+    assert summary["skipped"] is False
+    assert summary["requests"] == 2
+    assert summary["review_packages"] == 2
+    assert summary["queued_review_signals"] == 1
+    assert summary["compiled_to_asset"] == 1
+    queued = get_qi_problem_queue().pick("t-compiler")
+    assert queued is not None
+    assert queued.source == "compiler.intake_review.package"
+    assert queued.evidence["queue_intent"] == "compiler_intake_review_only"
+    assert queued.evidence["production_action"] is False
 
 
 @pytest.mark.unit
