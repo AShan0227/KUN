@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from kun.engineering import idle_batch
 from kun.engineering.idle_batch import (
     ABDecisionRollupStep,
     CompilerSyncSourcesStep,
@@ -858,6 +859,65 @@ async def test_external_skill_candidate_review_step_reads_opt_in_source_file(
     queued = get_qi_problem_queue().pick("t-file")
     assert queued is not None
     assert queued.severity == "critical"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_external_skill_candidate_review_step_fetches_opt_in_github_repos(
+    monkeypatch,
+) -> None:
+    from kun.qi.problem_queue import get_qi_problem_queue, reset_qi_problem_queue
+
+    async def fake_fetch_github_repo_external_skill_metadata(repo_ref: str) -> dict[str, Any]:
+        assert repo_ref == "mattpocock/skills"
+        return {
+            "source_kind": "github_repo",
+            "repo": "mattpocock/skills",
+            "url": "https://github.com/mattpocock/skills",
+            "name": "mattpocock skills",
+            "description": "Reusable engineering skills.",
+            "license": {"spdx_id": "MIT"},
+            "stars": 46_000,
+            "skills": [
+                {
+                    "name": "TypeScript Review",
+                    "description": "Review TypeScript changes.",
+                    "url": "https://github.com/mattpocock/skills/blob/main/typescript/SKILL.md",
+                    "files": [
+                        {
+                            "path": "typescript/SKILL.md",
+                            "content": "# TypeScript Review\nReview TypeScript changes.",
+                        }
+                    ],
+                }
+            ],
+            "production_action": False,
+            "auto_install_allowed": False,
+            "review_state": "review_only",
+        }
+
+    monkeypatch.setenv("KUN_QI_PROBLEM_QUEUE_DB_ENABLED", "0")
+    monkeypatch.setenv("KUN_EXTERNAL_SKILL_GITHUB_REPOS", "mattpocock/skills")
+    monkeypatch.setattr(
+        idle_batch,
+        "fetch_github_repo_external_skill_metadata",
+        fake_fetch_github_repo_external_skill_metadata,
+    )
+    reset_qi_problem_queue()
+
+    summary = await ExternalSkillCandidateReviewStep().run("t-github")
+
+    assert summary["skipped"] is False
+    assert summary["input_rows"] == 1
+    assert summary["candidates"] == 1
+    assert summary["persisted_review_signals"] == 1
+    assert summary["production_action"] is False
+    assert summary["auto_install_allowed"] is False
+    assert summary["top_candidates"][0]["review_state"] == "review_only"
+    queued = get_qi_problem_queue().pick("t-github")
+    assert queued is not None
+    assert queued.source == "external_skill.discovery.candidate"
+    assert queued.evidence["source"]["repo"] == "mattpocock/skills"
 
 
 @pytest.mark.unit

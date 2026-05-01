@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from kun.engineering.nuo_system_health import _findings, _governance_recommendations
+import pytest
+from kun.context.maintenance import ContextMaintenanceReport
+from kun.engineering import nuo_system_health
+from kun.engineering.nuo_system_health import (
+    SystemGovernanceRecommendation,
+    SystemHealthReport,
+    _findings,
+    _governance_recommendations,
+    apply_governance_recommendation,
+)
 from kun.world.handler_health import WorldHandlerHealthCard
 
 
@@ -315,3 +324,213 @@ def test_governance_recommendations_keep_high_risk_advice_manual() -> None:
     assert by_finding["context_slimming_candidates"].default_dry_run is True
     assert by_finding["production_safety_issues"].can_apply is False
     assert by_finding["production_safety_issues"].requires_human_approval is True
+
+
+@pytest.mark.asyncio
+async def test_governance_apply_low_risk_context_maintenance_dry_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_collect_system_health_report(*, tenant_id: str) -> SystemHealthReport:
+        return _report_with_recommendations(tenant_id, [_low_risk_context_recommendation()])
+
+    async def fake_run_context_maintenance(**kwargs) -> ContextMaintenanceReport:
+        calls.append(kwargs)
+        return ContextMaintenanceReport(
+            tenant_id=str(kwargs["tenant_id"]),
+            dry_run=bool(kwargs["dry_run"]),
+            compressed=2,
+            soft_forgotten=1,
+        )
+
+    monkeypatch.setattr(
+        nuo_system_health,
+        "collect_system_health_report",
+        fake_collect_system_health_report,
+    )
+    monkeypatch.setattr(
+        nuo_system_health,
+        "run_context_maintenance",
+        fake_run_context_maintenance,
+    )
+
+    result = await apply_governance_recommendation(
+        tenant_id="tenant-a",
+        recommendation_id="govern:context_slimming_candidates",
+        dry_run=True,
+        max_assets=25,
+    )
+
+    assert result.status == "dry_run"
+    assert result.recommendation_id == "govern:context_slimming_candidates"
+    assert result.risk_level == "low"
+    assert result.dry_run is True
+    assert result.applied is False
+    assert result.blocked is False
+    assert "Dry-run completed" in result.message
+    assert calls == [
+        {
+            "tenant_id": "tenant-a",
+            "dry_run": True,
+            "max_assets": 25,
+            "hard_delete_after_days": 1_000_000_000,
+            "merge_duplicates": False,
+        }
+    ]
+    assert result.details["context_maintenance"]["compressed"] == 2
+
+
+@pytest.mark.asyncio
+async def test_governance_apply_low_risk_context_maintenance_apply_calls_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_collect_system_health_report(*, tenant_id: str) -> SystemHealthReport:
+        return _report_with_recommendations(tenant_id, [_low_risk_context_recommendation()])
+
+    async def fake_run_context_maintenance(**kwargs) -> ContextMaintenanceReport:
+        calls.append(kwargs)
+        return ContextMaintenanceReport(
+            tenant_id=str(kwargs["tenant_id"]),
+            dry_run=bool(kwargs["dry_run"]),
+            compressed=1,
+        )
+
+    monkeypatch.setattr(
+        nuo_system_health,
+        "collect_system_health_report",
+        fake_collect_system_health_report,
+    )
+    monkeypatch.setattr(
+        nuo_system_health,
+        "run_context_maintenance",
+        fake_run_context_maintenance,
+    )
+
+    result = await apply_governance_recommendation(
+        tenant_id="tenant-a",
+        recommendation_id="govern:context_slimming_candidates",
+        dry_run=False,
+        max_assets=10,
+    )
+
+    assert result.status == "applied"
+    assert result.recommendation_id == "govern:context_slimming_candidates"
+    assert result.risk_level == "low"
+    assert result.applied is True
+    assert result.dry_run is False
+    assert result.blocked is False
+    assert calls[0]["dry_run"] is False
+    assert calls[0]["tenant_id"] == "tenant-a"
+
+
+@pytest.mark.asyncio
+async def test_governance_apply_blocks_high_risk_recommendation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    high_risk = SystemGovernanceRecommendation(
+        recommendation_id="govern:world:email.send",
+        finding_id="world:email.send",
+        subsystem="world_gateway",
+        title="外部动作 email.send 有风险",
+        risk_level="high",
+        suggested_action="保留人工确认；不要自动外发。",
+        can_apply=False,
+        requires_human_approval=True,
+        apply_hint="POST /api/nuo/actions/handlers/auto-quarantine?dry_run=true",
+    )
+
+    async def fake_collect_system_health_report(*, tenant_id: str) -> SystemHealthReport:
+        return _report_with_recommendations(tenant_id, [high_risk])
+
+    async def fake_run_context_maintenance(**kwargs) -> ContextMaintenanceReport:
+        calls.append(kwargs)
+        return ContextMaintenanceReport(tenant_id=str(kwargs["tenant_id"]))
+
+    monkeypatch.setattr(
+        nuo_system_health,
+        "collect_system_health_report",
+        fake_collect_system_health_report,
+    )
+    monkeypatch.setattr(
+        nuo_system_health,
+        "run_context_maintenance",
+        fake_run_context_maintenance,
+    )
+
+    result = await apply_governance_recommendation(
+        tenant_id="tenant-a",
+        recommendation_id="govern:world:email.send",
+        dry_run=False,
+    )
+
+    assert result.status == "blocked"
+    assert result.blocked is True
+    assert result.applied is False
+    assert result.dry_run is False
+    assert result.recommendation_id == "govern:world:email.send"
+    assert result.risk_level == "high"
+    assert result.action_ticket is not None
+    assert {reason.code for reason in result.blocked_reasons} >= {
+        "risk_level_not_low",
+        "requires_human_approval",
+        "can_apply_false",
+    }
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_governance_apply_blocks_missing_recommendation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_collect_system_health_report(*, tenant_id: str) -> SystemHealthReport:
+        return _report_with_recommendations(tenant_id, [])
+
+    monkeypatch.setattr(
+        nuo_system_health,
+        "collect_system_health_report",
+        fake_collect_system_health_report,
+    )
+
+    result = await apply_governance_recommendation(
+        tenant_id="tenant-a",
+        recommendation_id="govern:missing",
+        dry_run=False,
+    )
+
+    assert result.status == "blocked"
+    assert result.blocked is True
+    assert result.recommendation_id == "govern:missing"
+    assert result.risk_level == "unknown"
+    assert result.blocked_reason == "recommendation_not_found"
+    assert "not in the current queue" in result.message
+
+
+def _low_risk_context_recommendation() -> SystemGovernanceRecommendation:
+    return SystemGovernanceRecommendation(
+        recommendation_id="govern:context_slimming_candidates",
+        finding_id="context_slimming_candidates",
+        subsystem="context",
+        title="Context / memory 有可瘦身项",
+        risk_level="low",
+        suggested_action="先用 dry-run 看明细，再决定是否让傩执行压缩、软遗忘或人工合并重复资产。",
+        can_apply=True,
+        requires_human_approval=False,
+        apply_hint=(
+            "POST /api/nuo/health/governance/apply?"
+            "recommendation_id=govern:context_slimming_candidates&dry_run=true"
+        ),
+    )
+
+
+def _report_with_recommendations(
+    tenant_id: str,
+    recommendations: list[SystemGovernanceRecommendation],
+) -> SystemHealthReport:
+    return SystemHealthReport(
+        tenant_id=tenant_id,
+        governance_recommendations=recommendations,
+    )

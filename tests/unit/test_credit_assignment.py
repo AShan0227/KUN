@@ -18,6 +18,7 @@ from kun.engineering.credit_assignment import (
     reset_contribution_tracker,
     resource_credit_summaries_from_rows,
     split_resource_key,
+    summarize_resource_credit_deltas,
 )
 from sqlalchemy.dialects import postgresql
 
@@ -234,6 +235,50 @@ def test_resource_credit_summaries_are_human_readable() -> None:
     assert summaries[0].resource_key == "skill:writer"
     assert summaries[0].contribution_score == 0.625
     assert summaries[0].credit_total == 2.3457
+
+
+def test_summarize_resource_credit_deltas_groups_by_kind() -> None:
+    summaries = summarize_resource_credit_deltas(
+        {
+            "memory:m1": ResourceCreditDelta(
+                resource_key="memory:m1",
+                resource_kind="memory",
+                resource_id="m1",
+                used_count=2,
+                pass_count=2,
+                critical_count=1,
+                credit_total=0.8,
+            ),
+            "memory:m2": ResourceCreditDelta(
+                resource_key="memory:m2",
+                resource_kind="memory",
+                resource_id="m2",
+                used_count=1,
+                pass_count=0,
+                critical_count=0,
+                credit_total=0.1,
+            ),
+            "skill:writer": ResourceCreditDelta(
+                resource_key="skill:writer",
+                resource_kind="skill",
+                resource_id="writer",
+                used_count=1,
+                pass_count=1,
+                critical_count=1,
+                credit_total=1.2,
+            ),
+        },
+        top_n_per_kind=1,
+    )
+
+    by_kind = {summary.resource_kind: summary for summary in summaries}
+    assert by_kind["memory"].resource_count == 2
+    assert by_kind["memory"].used_count == 3
+    assert by_kind["memory"].pass_count == 2
+    assert by_kind["memory"].critical_count == 1
+    assert by_kind["memory"].top_resource_keys == ["memory:m1"]
+    assert by_kind["skill"].contribution_score == 1.0
+    assert by_kind["skill"].top_resource_keys == ["skill:writer"]
 
 
 def test_resource_key_helpers_and_score_clamp() -> None:

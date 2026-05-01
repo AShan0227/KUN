@@ -32,6 +32,7 @@ from sqlalchemy import select
 from kun.core.anchor_expand import AnchorExpandIterator
 from kun.core.logging import get_logger
 from kun.core.tenancy import TenantContext, tenant_scope
+from kun.engineering.external_scan import fetch_github_repo_external_skill_metadata
 
 log = get_logger("kun.engineering.idle_batch")
 
@@ -817,10 +818,10 @@ class ExternalEmergentScanStep(IdleBatchStep):
 class ExternalSkillCandidateReviewStep(IdleBatchStep):
     """Normalize external skill metadata and enqueue review-only Qi signals.
 
-    This step is intentionally offline-input first. It does not crawl GitHub,
-    install skills, or modify production skill registries. Explicit data source
-    rows or KUN_EXTERNAL_SKILL_SOURCE_FILES are treated as candidate evidence
-    for Qi / human security review.
+    This step is intentionally explicit-input first. It does not install skills
+    or modify production skill registries. Explicit data source rows,
+    KUN_EXTERNAL_SKILL_SOURCE_FILES, or opt-in KUN_EXTERNAL_SKILL_GITHUB_REPOS
+    are treated as candidate evidence for Qi / human security review.
     """
 
     step_id = "external_skill_candidate_review"
@@ -1368,6 +1369,7 @@ def _external_scan_fetchers(
 async def _external_skill_rows(tenant_id: str) -> list[dict[str, Any]]:
     rows = await _source_list("external_skill_candidates", tenant_id)
     rows.extend(_external_skill_rows_from_env(tenant_id))
+    rows.extend(await _external_skill_github_repo_rows_from_env(tenant_id))
     return [
         {**row, "tenant_id": str(row.get("tenant_id") or tenant_id)}
         for row in rows
@@ -1401,6 +1403,42 @@ def _external_skill_rows_from_env(tenant_id: str) -> list[dict[str, Any]]:
             if row_tenant != tenant_id:
                 continue
             rows.append({**item, "tenant_id": row_tenant})
+    return rows
+
+
+async def _external_skill_github_repo_rows_from_env(tenant_id: str) -> list[dict[str, Any]]:
+    """Fetch opt-in GitHub skill repos for review-only Qi intake.
+
+    This is intentionally explicit. KUN will not crawl marketplaces by default;
+    operators must set KUN_EXTERNAL_SKILL_GITHUB_REPOS to comma-separated
+    owner/name or https://github.com/owner/name refs.
+    """
+
+    raw_refs = os.getenv("KUN_EXTERNAL_SKILL_GITHUB_REPOS", "")
+    repo_refs = [item.strip() for item in raw_refs.split(",") if item.strip()]
+    if not repo_refs:
+        return []
+
+    max_repos = max(1, min(_int_env("KUN_EXTERNAL_SKILL_GITHUB_MAX_REPOS", 5), 20))
+    rows: list[dict[str, Any]] = []
+    for repo_ref in repo_refs[:max_repos]:
+        try:
+            metadata = await fetch_github_repo_external_skill_metadata(repo_ref)
+        except Exception as exc:
+            log.warning(
+                "external_skill.github_repo_fetch_failed",
+                tenant_id=tenant_id,
+                repo_ref=repo_ref,
+                error=str(exc),
+            )
+            continue
+        rows.append(
+            {
+                **metadata,
+                "tenant_id": tenant_id,
+                "source_config": "KUN_EXTERNAL_SKILL_GITHUB_REPOS",
+            }
+        )
     return rows
 
 

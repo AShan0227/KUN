@@ -8,12 +8,14 @@ from pathlib import Path
 import pytest
 from kun.skills.code_capability import (
     CodeCapability,
+    CodeChangeWorkflow,
     CodeDebugger,
     CodeExecutor,
     CodeReader,
     CodeReviewer,
     CodeWriter,
 )
+from kun.skills.code_capability.workflow import ChangeCheckSpec
 from kun.skills.code_capability.writer import TextReplacement
 
 FIXTURE_ROOT = Path("tests/fixtures/code_samples")
@@ -168,6 +170,7 @@ def test_code_capability_singleton_and_placeholders() -> None:
     assert isinstance(first.writer, CodeWriter)
     assert isinstance(first.debugger, CodeDebugger)
     assert isinstance(first.reviewer, CodeReviewer)
+    assert isinstance(first.workflow, CodeChangeWorkflow)
 
 
 @pytest.mark.unit
@@ -282,3 +285,97 @@ def test_code_reviewer_review_file_and_reject_escape(tmp_path: Path) -> None:
     assert result.findings[0].rule == "broad-except"
     with pytest.raises(ValueError, match="escapes code workspace"):
         reviewer.review_file(tmp_path.parent / "escape.py")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_code_change_workflow_dry_run_does_not_modify_file(tmp_path: Path) -> None:
+    target = tmp_path / "module.py"
+    original = "VALUE = 1\n"
+    target.write_text(original, encoding="utf-8")
+    workflow = CodeChangeWorkflow(workspace_root=tmp_path)
+    patch = """--- a/module.py
++++ b/module.py
+@@ -1 +1 @@
+-VALUE = 1
++VALUE = 2
+"""
+
+    result = await workflow.propose_change(
+        "module.py",
+        patch_text=patch,
+        checks=(),
+    )
+
+    assert result.ok is True
+    assert result.mode == "dry_run"
+    assert result.applied is False
+    assert "VALUE = 2" in result.diff
+    assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_code_change_workflow_apply_success_writes_file(tmp_path: Path) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("def value() -> int:\n    return 1\n", encoding="utf-8")
+    workflow = CodeChangeWorkflow(workspace_root=tmp_path)
+
+    result = await workflow.propose_change(
+        "module.py",
+        replacement_content="def value() -> int:\n    return 2\n",
+        allow_apply=True,
+        checks=(ChangeCheckSpec(kind="lint", target="module.py"),),
+    )
+
+    assert result.ok is True
+    assert result.mode == "apply"
+    assert result.applied is True
+    assert result.rolled_back is False
+    assert len(result.lint_results) == 1
+    assert target.read_text(encoding="utf-8") == "def value() -> int:\n    return 2\n"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_code_change_workflow_apply_check_failure_rolls_back(tmp_path: Path) -> None:
+    target = tmp_path / "module.py"
+    original = "def add_one(value: int) -> int:\n    return value + 1\n"
+    target.write_text(original, encoding="utf-8")
+    (tmp_path / "test_module.py").write_text(
+        "from module import add_one\n\n\ndef test_add_one() -> None:\n    assert add_one(1) == 2\n",
+        encoding="utf-8",
+    )
+    workflow = CodeChangeWorkflow(workspace_root=tmp_path)
+
+    result = await workflow.propose_change(
+        "module.py",
+        replacement_content="def add_one(value: int) -> int:\n    return value + 2\n",
+        allow_apply=True,
+        checks=(ChangeCheckSpec(kind="test", target="test_module.py"),),
+    )
+
+    assert result.ok is False
+    assert result.phase == "check"
+    assert result.applied is True
+    assert result.rolled_back is True
+    assert result.test_results[0].ok is False
+    assert "restored automatically" in result.rollback_hint
+    assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_code_change_workflow_rejects_path_escape(tmp_path: Path) -> None:
+    workflow = CodeChangeWorkflow(workspace_root=tmp_path)
+
+    result = await workflow.propose_change(
+        tmp_path.parent / "escape.py",
+        replacement_content="VALUE = 1\n",
+        allow_apply=True,
+    )
+
+    assert result.ok is False
+    assert result.phase == "resolve"
+    assert "escapes code workspace" in result.error
+    assert "No workspace changes" in result.rollback_hint

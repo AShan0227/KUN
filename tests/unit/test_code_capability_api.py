@@ -136,3 +136,62 @@ def test_execute_api_requires_execute_scope_when_scopes_are_present(
     assert "code:execute" in blocked.json()["detail"]
     assert allowed.status_code == 200
     assert "allowed" in allowed.json()["stdout"]
+
+
+@pytest.mark.unit
+def test_propose_change_api_defaults_to_dry_run_and_requires_execute_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("def value() -> int:\n    return 1\n", encoding="utf-8")
+    client = TestClient(_app(tmp_path, monkeypatch))
+    payload = {
+        "path": "module.py",
+        "replacement_content": "def value() -> int:\n    return 2\n",
+    }
+
+    blocked = client.post(
+        "/api/code-capability/propose-change",
+        json=payload,
+        headers={"X-Scopes": "code:read"},
+    )
+    allowed = client.post(
+        "/api/code-capability/propose-change",
+        json=payload,
+        headers={"X-Scopes": "code:execute"},
+    )
+
+    assert blocked.status_code == 403
+    assert "code:execute" in blocked.json()["detail"]
+    assert allowed.status_code == 200
+    body = allowed.json()
+    assert body["ok"] is True
+    assert body["mode"] == "dry_run"
+    assert body["applied"] is False
+    assert body["lint_results"][0]["ok"] is True
+    assert target.read_text(encoding="utf-8") == "def value() -> int:\n    return 1\n"
+
+
+@pytest.mark.unit
+def test_propose_change_api_rejects_workspace_escape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = TestClient(_app(tmp_path, monkeypatch))
+
+    response = client.post(
+        "/api/code-capability/propose-change",
+        json={
+            "path": str(tmp_path.parent / "escape.py"),
+            "replacement_content": "VALUE = 1\n",
+            "allow_apply": True,
+        },
+        headers={"X-Scopes": "code:execute"},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["ok"] is False
+    assert detail["phase"] == "resolve"
+    assert "escapes code workspace" in detail["error"]

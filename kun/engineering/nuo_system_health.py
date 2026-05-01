@@ -17,7 +17,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 
-from kun.context.maintenance import run_context_maintenance
+from kun.context.maintenance import ContextMaintenanceReport, run_context_maintenance
 from kun.core.config import settings
 from kun.core.db import session_scope
 from kun.core.multi_task_scheduler import DEFAULT_LANE_LIMITS, TaskLane
@@ -51,6 +51,10 @@ from kun.world.handler_health import (
 
 HealthSeverity = Literal["info", "warn", "error", "critical"]
 GovernanceRisk = Literal["low", "medium", "high"]
+GovernanceApplyStatus = Literal["applied", "dry_run", "blocked"]
+GovernanceApplyRisk = Literal["low", "medium", "high", "unknown"]
+_SAFE_CONTEXT_MAINTENANCE_RECOMMENDATION_IDS = {"govern:context_slimming_candidates"}
+_SAFE_CONTEXT_MAINTENANCE_HARD_DELETE_AFTER_DAYS = 1_000_000_000
 
 
 class SystemHealthFinding(BaseModel):
@@ -86,6 +90,48 @@ class SystemGovernanceRecommendation(BaseModel):
     can_apply: bool = False
     requires_human_approval: bool = True
     apply_hint: str | None = None
+
+
+class GovernanceApplyBlockedReason(BaseModel):
+    """Structured reason explaining why NUO refused to apply a recommendation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    detail: str
+
+
+class GovernanceActionTicket(BaseModel):
+    """Human-facing ticket for recommendations NUO must not execute automatically."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    recommendation_id: str
+    finding_id: str
+    subsystem: str
+    title: str
+    risk_level: GovernanceRisk
+    suggested_action: str
+    requires_human_approval: bool
+    apply_hint: str | None = None
+
+
+class GovernanceRecommendationApplyResult(BaseModel):
+    """Result of an explicit NUO governance recommendation dry-run/apply request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: GovernanceApplyStatus
+    applied: bool
+    dry_run: bool
+    blocked: bool
+    recommendation_id: str
+    risk_level: GovernanceApplyRisk
+    message: str
+    blocked_reason: str | None = None
+    blocked_reasons: list[GovernanceApplyBlockedReason] = Field(default_factory=list)
+    action_ticket: GovernanceActionTicket | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class SystemHealthReport(BaseModel):
@@ -304,6 +350,98 @@ async def collect_system_health_report(
         coordination_issues=coordination_issues,
         findings=findings,
         governance_recommendations=governance_recommendations,
+    )
+
+
+async def apply_governance_recommendation(
+    *,
+    tenant_id: str,
+    recommendation_id: str,
+    dry_run: bool = True,
+    max_assets: int = 500,
+) -> GovernanceRecommendationApplyResult:
+    """Explicitly dry-run/apply one current governance recommendation.
+
+    First-version execution is intentionally tiny: only low-risk context
+    maintenance recommendations can run.  Everything else returns a structured
+    blocked result plus a ticket for human follow-up.
+    """
+
+    report = await collect_system_health_report(tenant_id=tenant_id)
+    return await _apply_governance_recommendation_from_queue(
+        tenant_id=tenant_id,
+        recommendations=report.governance_recommendations,
+        recommendation_id=recommendation_id,
+        dry_run=dry_run,
+        max_assets=max_assets,
+    )
+
+
+async def _apply_governance_recommendation_from_queue(
+    *,
+    tenant_id: str,
+    recommendations: list[SystemGovernanceRecommendation],
+    recommendation_id: str,
+    dry_run: bool,
+    max_assets: int,
+) -> GovernanceRecommendationApplyResult:
+    recommendation = next(
+        (item for item in recommendations if item.recommendation_id == recommendation_id),
+        None,
+    )
+    if recommendation is None:
+        return _blocked_apply_result(
+            recommendation_id=recommendation_id,
+            risk_level="unknown",
+            message=f"Governance recommendation {recommendation_id!r} is not in the current queue.",
+            reasons=[
+                GovernanceApplyBlockedReason(
+                    code="recommendation_not_found",
+                    detail="Collect a fresh NUO health report and apply an existing recommendation_id.",
+                )
+            ],
+        )
+
+    blocked_reasons = _governance_apply_blocked_reasons(recommendation)
+    if blocked_reasons:
+        return _blocked_apply_result(
+            recommendation_id=recommendation.recommendation_id,
+            risk_level=recommendation.risk_level,
+            message=(
+                "NUO refused to auto-apply this governance recommendation; "
+                "use the returned action_ticket for explicit human follow-up."
+            ),
+            reasons=blocked_reasons,
+            action_ticket=_action_ticket_for(recommendation),
+        )
+
+    context_report = await run_context_maintenance(
+        tenant_id=tenant_id,
+        dry_run=dry_run,
+        max_assets=max_assets,
+        hard_delete_after_days=_SAFE_CONTEXT_MAINTENANCE_HARD_DELETE_AFTER_DAYS,
+        merge_duplicates=False,
+    )
+    status: GovernanceApplyStatus = "dry_run" if dry_run else "applied"
+    return GovernanceRecommendationApplyResult(
+        status=status,
+        applied=not dry_run,
+        dry_run=dry_run,
+        blocked=False,
+        recommendation_id=recommendation.recommendation_id,
+        risk_level=recommendation.risk_level,
+        message=(
+            "Dry-run completed for context maintenance; no state was changed."
+            if dry_run
+            else "Applied low-risk context maintenance recommendation."
+        ),
+        details={
+            "action": "context_maintenance",
+            "max_assets": max_assets,
+            "hard_delete_after_days": _SAFE_CONTEXT_MAINTENANCE_HARD_DELETE_AFTER_DAYS,
+            "merge_duplicates": False,
+            "context_maintenance": _context_maintenance_details(context_report),
+        },
     )
 
 
@@ -721,7 +859,10 @@ def _governance_recommendations(
             risk_level = "low"
             can_apply = True
             requires_human = False
-            apply_hint = "POST /api/nuo/health/context-maintenance/run?dry_run=true"
+            apply_hint = (
+                "POST /api/nuo/health/governance/apply?"
+                "recommendation_id=govern:context_slimming_candidates&dry_run=true"
+            )
         elif finding.finding_id == "compiler_recompile_candidates":
             risk_level = "medium"
             apply_hint = "kun compiler recompile-candidates --dry-run"
@@ -1210,11 +1351,105 @@ def _dedupe_recommendations(
     return out
 
 
+def _governance_apply_blocked_reasons(
+    recommendation: SystemGovernanceRecommendation,
+) -> list[GovernanceApplyBlockedReason]:
+    reasons: list[GovernanceApplyBlockedReason] = []
+    if recommendation.risk_level != "low":
+        reasons.append(
+            GovernanceApplyBlockedReason(
+                code="risk_level_not_low",
+                detail=f"risk_level={recommendation.risk_level} is not eligible for automatic apply.",
+            )
+        )
+    if recommendation.requires_human_approval:
+        reasons.append(
+            GovernanceApplyBlockedReason(
+                code="requires_human_approval",
+                detail="The recommendation requires explicit human approval outside this apply queue.",
+            )
+        )
+    if not recommendation.can_apply:
+        reasons.append(
+            GovernanceApplyBlockedReason(
+                code="can_apply_false",
+                detail="The recommendation is advisory only and cannot be applied by NUO.",
+            )
+        )
+    if recommendation.recommendation_id not in _SAFE_CONTEXT_MAINTENANCE_RECOMMENDATION_IDS:
+        reasons.append(
+            GovernanceApplyBlockedReason(
+                code="unsupported_apply_action",
+                detail="This first apply queue only executes safe context maintenance actions.",
+            )
+        )
+    return reasons
+
+
+def _blocked_apply_result(
+    *,
+    recommendation_id: str,
+    risk_level: GovernanceApplyRisk,
+    message: str,
+    reasons: list[GovernanceApplyBlockedReason],
+    action_ticket: GovernanceActionTicket | None = None,
+) -> GovernanceRecommendationApplyResult:
+    return GovernanceRecommendationApplyResult(
+        status="blocked",
+        applied=False,
+        dry_run=False,
+        blocked=True,
+        recommendation_id=recommendation_id,
+        risk_level=risk_level,
+        message=message,
+        blocked_reason=reasons[0].code if reasons else None,
+        blocked_reasons=reasons,
+        action_ticket=action_ticket,
+    )
+
+
+def _action_ticket_for(recommendation: SystemGovernanceRecommendation) -> GovernanceActionTicket:
+    return GovernanceActionTicket(
+        recommendation_id=recommendation.recommendation_id,
+        finding_id=recommendation.finding_id,
+        subsystem=recommendation.subsystem,
+        title=recommendation.title,
+        risk_level=recommendation.risk_level,
+        suggested_action=recommendation.suggested_action,
+        requires_human_approval=recommendation.requires_human_approval,
+        apply_hint=recommendation.apply_hint,
+    )
+
+
+def _context_maintenance_details(report: ContextMaintenanceReport) -> dict[str, Any]:
+    return {
+        "tenant_id": report.tenant_id,
+        "dry_run": report.dry_run,
+        "total_seen": report.total_seen,
+        "compressed": report.compressed,
+        "soft_forgotten": report.soft_forgotten,
+        "hard_deleted": report.hard_deleted,
+        "duplicate_candidates": report.duplicate_candidates,
+        "duplicate_merged": report.duplicate_merged,
+        "compiler_review": report.compiler_review,
+        "compiler_recompile_recommended": report.compiler_recompile_recommended,
+        "low_value_marked": report.low_value_marked,
+        "stale_or_risky_marked": report.stale_or_risky_marked,
+        "kept": report.kept,
+    }
+
+
 __all__ = [
+    "GovernanceActionTicket",
+    "GovernanceApplyBlockedReason",
+    "GovernanceApplyRisk",
+    "GovernanceApplyStatus",
+    "GovernanceRecommendationApplyResult",
     "GovernanceRisk",
     "HealthSeverity",
     "SystemGovernanceRecommendation",
     "SystemHealthFinding",
     "SystemHealthReport",
+    "apply_governance_recommendation",
     "collect_system_health_report",
 ]

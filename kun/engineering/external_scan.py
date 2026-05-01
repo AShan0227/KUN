@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -21,6 +22,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
+from urllib.parse import quote, unquote, urlparse
 
 from kun.core.anchor_expand import AnchorExpandIterator
 from kun.core.emergent_solution import (
@@ -35,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 # 外部源 fetcher 签名
 ExternalFetcher = Callable[[str], Awaitable[list[dict[str, Any]]]]
+# GitHub repo metadata fetcher 签名 (url, max_bytes, timeout_sec → response)
+ExternalGithubMetadataFetcher = Callable[
+    [str, int, float], Awaitable["ExternalGithubFetchResponse"]
+]
 # LLM 复审签名 (raw_info → 是否对该 task_type 有用 + summary)
 LLMReviewer = Callable[[str, dict[str, Any]], Awaitable[tuple[bool, str]]]
 
@@ -106,6 +112,39 @@ _FILE_WRITE_PATTERNS = (
     r"\bmv\s+",
     r"\bcp\s+",
 )
+_GITHUB_INPUT_HOST = "github.com"
+_GITHUB_FETCH_HOSTS = {"api.github.com", "raw.githubusercontent.com"}
+_GITHUB_REPO_REF_RE = re.compile(
+    r"^(?P<owner>[A-Za-z0-9][A-Za-z0-9-]{0,38})/" r"(?P<repo>[A-Za-z0-9._-]{1,100})(?:\.git)?$"
+)
+_GITHUB_OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
+_GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+_GITHUB_TEXT_FILE_SUFFIXES = (".md", ".mdx", ".txt", ".json", ".yaml", ".yml", ".toml")
+_GITHUB_NON_SKILL_DOC_NAMES = {
+    "changelog.md",
+    "code_of_conduct.md",
+    "contributing.md",
+    "license",
+    "license.md",
+    "readme.md",
+    "security.md",
+}
+_GITHUB_DEFAULT_TIMEOUT_SEC = 5.0
+_GITHUB_MAX_REPO_METADATA_BYTES = 128 * 1024
+_GITHUB_MAX_TREE_BYTES = 2 * 1024 * 1024
+_GITHUB_MAX_TREE_ENTRIES = 2000
+_GITHUB_MAX_FILE_BYTES = 32 * 1024
+_GITHUB_MAX_CANDIDATE_FILES = 24
+_GITHUB_MAX_SUPPORT_FILES = 12
+
+
+@dataclass(frozen=True)
+class ExternalGithubFetchResponse:
+    """Small response envelope for safe, injectable GitHub metadata reads."""
+
+    status_code: int
+    headers: dict[str, str] = field(default_factory=dict)
+    body: bytes = b""
 
 
 @dataclass(frozen=True)
@@ -264,6 +303,139 @@ class ScanResult:
     duration_sec: float = 0.0
 
 
+async def fetch_github_repo_external_skill_metadata(
+    repo_ref: str,
+    *,
+    fetcher: ExternalGithubMetadataFetcher | None = None,
+    timeout_sec: float = _GITHUB_DEFAULT_TIMEOUT_SEC,
+    max_repo_metadata_bytes: int = _GITHUB_MAX_REPO_METADATA_BYTES,
+    max_tree_bytes: int = _GITHUB_MAX_TREE_BYTES,
+    max_tree_entries: int = _GITHUB_MAX_TREE_ENTRIES,
+    max_file_bytes: int = _GITHUB_MAX_FILE_BYTES,
+    max_candidate_files: int = _GITHUB_MAX_CANDIDATE_FILES,
+    max_support_files: int = _GITHUB_MAX_SUPPORT_FILES,
+) -> dict[str, Any]:
+    """Fetch GitHub repo metadata and normalize it into review-only skill rows.
+
+    This is a read-only discovery helper. It accepts either ``owner/name`` or a
+    ``https://github.com/owner/name`` URL, then only calls GitHub API/raw
+    metadata endpoints. It does not import, install, execute, or register any
+    discovered code.
+    """
+
+    owner, repo = _parse_github_repo_ref(repo_ref)
+    safe_timeout = _bounded_github_timeout(timeout_sec)
+    safe_fetcher = fetcher or _default_github_metadata_fetcher
+    repo_api_url = _github_api_url(f"/repos/{owner}/{repo}")
+    repo_payload = await _github_fetch_json(
+        repo_api_url,
+        fetcher=safe_fetcher,
+        max_bytes=max_repo_metadata_bytes,
+        timeout_sec=safe_timeout,
+    )
+
+    full_name = _first_text(repo_payload.get("full_name"), f"{owner}/{repo}")
+    default_branch = _safe_github_ref(
+        _first_text(repo_payload.get("default_branch"), "main") or "main"
+    )
+    html_url = f"https://github.com/{owner}/{repo}"
+    description = _first_text(repo_payload.get("description"))
+    stars = _safe_int(repo_payload.get("stargazers_count"))
+    license_value = repo_payload.get("license")
+
+    tree_api_url = _github_api_url(
+        f"/repos/{owner}/{repo}/git/trees/{quote(default_branch, safe='')}?recursive=1"
+    )
+    tree_payload = await _github_fetch_json(
+        tree_api_url,
+        fetcher=safe_fetcher,
+        max_bytes=max_tree_bytes,
+        timeout_sec=safe_timeout,
+    )
+    raw_tree = tree_payload.get("tree")
+    tree_entries = _github_tree_entries(raw_tree, max_entries=max_tree_entries)
+    tree_entry_limit_reached = isinstance(raw_tree, list) and len(raw_tree) > len(tree_entries)
+
+    candidate_entries = _github_candidate_skill_entries(
+        tree_entries,
+        repo_name=repo,
+        limit=max_candidate_files,
+    )
+    support_entries = _github_support_file_entries(
+        tree_entries,
+        candidate_entries=candidate_entries,
+        limit=max_support_files,
+    )
+
+    candidate_files = [
+        await _github_fetch_tree_file_fragment(
+            owner=owner,
+            repo=repo,
+            ref=default_branch,
+            entry=entry,
+            fetcher=safe_fetcher,
+            timeout_sec=safe_timeout,
+            max_file_bytes=max_file_bytes,
+        )
+        for entry in candidate_entries
+    ]
+    support_files = [
+        await _github_fetch_tree_file_fragment(
+            owner=owner,
+            repo=repo,
+            ref=default_branch,
+            entry=entry,
+            fetcher=safe_fetcher,
+            timeout_sec=safe_timeout,
+            max_file_bytes=max_file_bytes,
+        )
+        for entry in support_entries
+    ]
+    skills = [
+        _github_skill_payload_from_file(
+            owner=owner,
+            repo=repo,
+            ref=default_branch,
+            repo_description=description,
+            file=file,
+        )
+        for file in candidate_files
+    ]
+
+    return {
+        "source_kind": "github_repo",
+        "repo": full_name,
+        "full_name": full_name,
+        "name": _first_text(repo_payload.get("name"), repo),
+        "url": html_url,
+        "html_url": html_url,
+        "default_branch": default_branch,
+        "license": license_value,
+        "stars": stars,
+        "stargazers_count": stars,
+        "description": description,
+        "topics": repo_payload.get("topics")
+        if isinstance(repo_payload.get("topics"), list)
+        else [],
+        "files": support_files,
+        "skills": skills,
+        "fetched_at": datetime.now(UTC).isoformat(),
+        "review_state": "review_only",
+        "production_action": False,
+        "promotion_allowed": False,
+        "auto_install_allowed": False,
+        "metadata": {
+            "github_repo_id": repo_payload.get("id"),
+            "tree_sha": tree_payload.get("sha"),
+            "tree_truncated": bool(tree_payload.get("truncated")),
+            "tree_entry_count": len(tree_entries),
+            "tree_entry_limit_reached": tree_entry_limit_reached,
+            "candidate_skill_file_count": len(candidate_files),
+            "support_file_count": len(support_files),
+        },
+    }
+
+
 def normalize_external_skill_candidates(
     raw_items: list[dict[str, Any]],
 ) -> list[ExternalSkillCandidate]:
@@ -358,6 +530,13 @@ def assess_external_skill_safety(raw: dict[str, Any]) -> ExternalSkillSafetyAsse
     executable_paths = [
         path for path in paths if _looks_like_executable_file(path, content_by_path=files)
     ]
+    truncated_paths = [
+        file["path"]
+        for file in files
+        if file.get("content_truncated")
+        or file.get("content_fetch_skipped")
+        or file.get("too_large")
+    ]
     network_hits = _pattern_hits(content, _NETWORK_PATTERNS)
     secret_hits = _pattern_hits(content, _SECRET_PATTERNS)
     file_write_hits = _pattern_hits(content, _FILE_WRITE_PATTERNS)
@@ -373,10 +552,13 @@ def assess_external_skill_safety(raw: dict[str, Any]) -> ExternalSkillSafetyAsse
         reasons.append("secret_access_risk")
     if file_write_hits:
         reasons.append("file_write_risk")
+    if truncated_paths:
+        reasons.append("content_not_fully_inspected")
 
     risk_score = 0
     risk_score += 1 if license_unknown else 0
     risk_score += 1 if executable_paths else 0
+    risk_score += 1 if truncated_paths else 0
     risk_score += 1 if network_hits else 0
     risk_score += 2 if secret_hits else 0
     risk_score += 2 if file_write_hits else 0
@@ -415,6 +597,7 @@ def assess_external_skill_safety(raw: dict[str, Any]) -> ExternalSkillSafetyAsse
             "secret_hits": secret_hits[:20],
             "file_write_hits": file_write_hits[:20],
             "inspected_file_count": len(files),
+            "truncated_paths": truncated_paths[:20],
         },
     )
 
@@ -783,6 +966,404 @@ def configured_external_scan_reviewer_from_env() -> LLMReviewer | None:
     )
 
 
+def _parse_github_repo_ref(repo_ref: str) -> tuple[str, str]:
+    text = str(repo_ref or "").strip()
+    if not text:
+        raise ValueError("GitHub repository reference is required")
+
+    direct = _GITHUB_REPO_REF_RE.fullmatch(text)
+    if direct is not None:
+        return _validate_github_repo_parts(
+            direct.group("owner"),
+            direct.group("repo").removesuffix(".git"),
+        )
+
+    parsed = urlparse(text)
+    if not parsed.scheme:
+        raise ValueError("GitHub repository reference must be owner/name or a GitHub URL")
+    if parsed.scheme != "https":
+        raise ValueError("Only https GitHub repository URLs are allowed")
+    if parsed.username or parsed.password:
+        raise ValueError("GitHub repository URL userinfo is not allowed")
+    if parsed.port not in {None, 443}:
+        raise ValueError("GitHub repository URL port is not allowed")
+    host = (parsed.hostname or "").lower()
+    if host != _GITHUB_INPUT_HOST:
+        raise ValueError("Only github.com repository URLs are allowed")
+
+    decoded_path = unquote(parsed.path or "")
+    if "\\" in decoded_path or "\x00" in decoded_path:
+        raise ValueError("GitHub repository path is not allowed")
+    parts = [part for part in decoded_path.split("/") if part]
+    if any(part in {".", ".."} for part in parts):
+        raise ValueError("GitHub repository path traversal is not allowed")
+    if len(parts) < 2:
+        raise ValueError("GitHub repository URL must include owner and repo")
+    repo = parts[1].removesuffix(".git")
+    return _validate_github_repo_parts(parts[0], repo)
+
+
+def _validate_github_repo_parts(owner: str, repo: str) -> tuple[str, str]:
+    if not _GITHUB_OWNER_RE.fullmatch(owner):
+        raise ValueError("GitHub owner is not allowed")
+    if not _GITHUB_REPO_RE.fullmatch(repo) or repo in {".", ".."}:
+        raise ValueError("GitHub repository name is not allowed")
+    if "/" in repo or "\\" in repo or "\x00" in repo:
+        raise ValueError("GitHub repository name is not allowed")
+    return owner, repo
+
+
+def _github_api_url(path_and_query: str) -> str:
+    if not path_and_query.startswith("/"):
+        raise ValueError("GitHub API path must be absolute")
+    url = f"https://api.github.com{path_and_query}"
+    _assert_allowed_github_fetch_url(url)
+    return url
+
+
+def _github_raw_url(owner: str, repo: str, ref: str, path: str) -> str:
+    safe_path = _safe_github_tree_path(path)
+    quoted_path = "/".join(quote(part, safe="") for part in safe_path.split("/"))
+    url = f"https://raw.githubusercontent.com/{owner}/{repo}/{quote(ref, safe='')}/{quoted_path}"
+    _assert_allowed_github_fetch_url(url)
+    return url
+
+
+def _assert_allowed_github_fetch_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError("Only https GitHub metadata URLs are allowed")
+    if parsed.username or parsed.password:
+        raise ValueError("GitHub metadata URL userinfo is not allowed")
+    if parsed.port not in {None, 443}:
+        raise ValueError("GitHub metadata URL port is not allowed")
+    host = (parsed.hostname or "").lower()
+    if host not in _GITHUB_FETCH_HOSTS:
+        raise ValueError("GitHub metadata URL host is not allowed")
+    decoded_path = unquote(parsed.path or "")
+    if "\\" in decoded_path or "\x00" in decoded_path:
+        raise ValueError("GitHub metadata URL path is not allowed")
+    if any(part in {".", ".."} for part in decoded_path.split("/") if part):
+        raise ValueError("GitHub metadata URL path traversal is not allowed")
+
+
+async def _github_fetch_json(
+    url: str,
+    *,
+    fetcher: ExternalGithubMetadataFetcher,
+    max_bytes: int,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    response = await _github_fetch_bytes(
+        url,
+        fetcher=fetcher,
+        max_bytes=max_bytes,
+        timeout_sec=timeout_sec,
+    )
+    if len(response.body) > max_bytes:
+        raise ValueError("GitHub metadata response exceeded size limit")
+    try:
+        payload = json.loads(response.body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("GitHub metadata response is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("GitHub metadata response must be a JSON object")
+    return payload
+
+
+async def _github_fetch_bytes(
+    url: str,
+    *,
+    fetcher: ExternalGithubMetadataFetcher,
+    max_bytes: int,
+    timeout_sec: float,
+) -> ExternalGithubFetchResponse:
+    _assert_allowed_github_fetch_url(url)
+    if max_bytes <= 0:
+        raise ValueError("GitHub metadata max_bytes must be positive")
+    response = await asyncio.wait_for(
+        fetcher(url, max_bytes, timeout_sec),
+        timeout=timeout_sec + 0.5,
+    )
+    if not isinstance(response, ExternalGithubFetchResponse):
+        raise TypeError("GitHub metadata fetcher must return ExternalGithubFetchResponse")
+    if response.status_code in {301, 302, 303, 307, 308}:
+        raise ValueError("GitHub metadata redirects are not followed")
+    if response.status_code < 200 or response.status_code >= 300:
+        raise ValueError(f"GitHub metadata fetch failed with status {response.status_code}")
+    return response
+
+
+async def _default_github_metadata_fetcher(
+    url: str,
+    max_bytes: int,
+    timeout_sec: float,
+) -> ExternalGithubFetchResponse:
+    import httpx
+
+    _assert_allowed_github_fetch_url(url)
+    headers = {
+        "Accept": "application/vnd.github+json, text/plain;q=0.9, */*;q=0.1",
+        "User-Agent": "KUN-external-skill-discovery/1.0",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    chunks: list[bytes] = []
+    total = 0
+    async with (
+        httpx.AsyncClient(follow_redirects=False, timeout=timeout_sec) as client,
+        client.stream("GET", url, headers=headers) as response,
+    ):
+        async for chunk in response.aiter_bytes():
+            if not chunk:
+                continue
+            remaining = max_bytes + 1 - total
+            if remaining <= 0:
+                break
+            chunks.append(chunk[:remaining])
+            total += min(len(chunk), remaining)
+            if total > max_bytes:
+                break
+        return ExternalGithubFetchResponse(
+            status_code=response.status_code,
+            headers={str(key): str(value) for key, value in response.headers.items()},
+            body=b"".join(chunks),
+        )
+
+
+def _bounded_github_timeout(timeout_sec: float) -> float:
+    try:
+        value = float(timeout_sec)
+    except (TypeError, ValueError):
+        value = _GITHUB_DEFAULT_TIMEOUT_SEC
+    return max(0.5, min(30.0, value))
+
+
+def _safe_github_ref(ref: str) -> str:
+    value = str(ref or "").strip()
+    if not value or len(value) > 255 or value.startswith(("/", ".")):
+        raise ValueError("GitHub default branch is not allowed")
+    if "\\" in value or "\x00" in value:
+        raise ValueError("GitHub default branch is not allowed")
+    if any(part in {"", ".", ".."} for part in value.split("/")):
+        raise ValueError("GitHub default branch traversal is not allowed")
+    return value
+
+
+def _safe_github_tree_path(path: Any) -> str:
+    value = str(path or "").strip()
+    if not value or len(value) > 4096:
+        raise ValueError("GitHub tree path is not allowed")
+    decoded = unquote(value)
+    if decoded.startswith("/") or "\\" in decoded or "\x00" in decoded:
+        raise ValueError("GitHub tree path is not allowed")
+    parts = decoded.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("GitHub tree path traversal is not allowed")
+    return "/".join(parts)
+
+
+def _github_tree_entries(raw_tree: Any, *, max_entries: int) -> list[dict[str, Any]]:
+    if not isinstance(raw_tree, list):
+        return []
+    entries: list[dict[str, Any]] = []
+    for raw in raw_tree:
+        if len(entries) >= max(0, max_entries):
+            break
+        if not isinstance(raw, dict):
+            continue
+        try:
+            path = _safe_github_tree_path(raw.get("path"))
+        except ValueError:
+            continue
+        entries.append(
+            {
+                "path": path,
+                "type": _first_text(raw.get("type")),
+                "size": _safe_int(raw.get("size")),
+                "sha": _first_text(raw.get("sha")),
+            }
+        )
+    return entries
+
+
+def _github_candidate_skill_entries(
+    entries: list[dict[str, Any]],
+    *,
+    repo_name: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    scored: list[tuple[int, str, dict[str, Any]]] = []
+    for entry in entries:
+        if entry.get("type") != "blob":
+            continue
+        path = str(entry.get("path") or "")
+        score = _github_candidate_skill_path_score(path, repo_name=repo_name)
+        if score is not None:
+            scored.append((score, path, entry))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [entry for _, _, entry in scored[: max(0, limit)]]
+
+
+def _github_candidate_skill_path_score(path: str, *, repo_name: str) -> int | None:
+    lowered = path.lower()
+    name = lowered.rsplit("/", 1)[-1]
+    if name == "skill.md":
+        return 0
+    if name in {"skills.md", "skill.mdx"}:
+        return 1
+    if (
+        "/skills/" in f"/{lowered}"
+        and _has_github_text_suffix(lowered)
+        and name not in _GITHUB_NON_SKILL_DOC_NAMES
+    ):
+        return 2
+    if "skill" in name and _has_github_text_suffix(lowered):
+        return 3
+    if (
+        repo_name.lower() in {"skills", "codex-skills", "agent-skills"}
+        and _has_github_text_suffix(lowered)
+        and name not in _GITHUB_NON_SKILL_DOC_NAMES
+    ):
+        return 4
+    return None
+
+
+def _github_support_file_entries(
+    entries: list[dict[str, Any]],
+    *,
+    candidate_entries: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    candidate_paths = {str(entry.get("path") or "") for entry in candidate_entries}
+    scored: list[tuple[int, str, dict[str, Any]]] = []
+    for entry in entries:
+        if entry.get("type") != "blob":
+            continue
+        path = str(entry.get("path") or "")
+        if path in candidate_paths:
+            continue
+        lowered = path.lower()
+        name = lowered.rsplit("/", 1)[-1]
+        score: int | None = None
+        if _looks_like_executable_file(path, content_by_path=[]):
+            score = 0
+        elif name in {"package.json", "pyproject.toml", "requirements.txt"}:
+            score = 1
+        if score is not None:
+            scored.append((score, path, entry))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [entry for _, _, entry in scored[: max(0, limit)]]
+
+
+async def _github_fetch_tree_file_fragment(
+    *,
+    owner: str,
+    repo: str,
+    ref: str,
+    entry: dict[str, Any],
+    fetcher: ExternalGithubMetadataFetcher,
+    timeout_sec: float,
+    max_file_bytes: int,
+) -> dict[str, Any]:
+    path = _safe_github_tree_path(entry.get("path"))
+    size = _safe_int(entry.get("size"))
+    payload: dict[str, Any] = {
+        "path": path,
+        "content": "",
+        "size": size,
+        "sha": _first_text(entry.get("sha")),
+    }
+    if size > max_file_bytes:
+        payload.update(
+            {
+                "content_fetch_skipped": "file_too_large",
+                "content_truncated": True,
+                "too_large": True,
+            }
+        )
+        return payload
+
+    raw_url = _github_raw_url(owner, repo, ref, path)
+    response = await _github_fetch_bytes(
+        raw_url,
+        fetcher=fetcher,
+        max_bytes=max_file_bytes,
+        timeout_sec=timeout_sec,
+    )
+    body = response.body[:max_file_bytes]
+    payload["content"] = body.decode("utf-8", errors="replace")
+    if len(response.body) > max_file_bytes:
+        payload["content_truncated"] = True
+    return payload
+
+
+def _github_skill_payload_from_file(
+    *,
+    owner: str,
+    repo: str,
+    ref: str,
+    repo_description: str,
+    file: dict[str, Any],
+) -> dict[str, Any]:
+    path = _safe_github_tree_path(file.get("path"))
+    content = _first_text(file.get("content"))
+    skill_url = (
+        f"https://github.com/{owner}/{repo}/blob/{quote(ref, safe='')}/"
+        f"{'/'.join(quote(part, safe='') for part in path.split('/'))}"
+    )
+    return {
+        "name": _github_skill_name_from_file(path, content),
+        "description": _github_skill_summary_from_file(content) or repo_description,
+        "url": skill_url,
+        "files": [file],
+    }
+
+
+def _github_skill_name_from_file(path: str, content: str) -> str:
+    for line in content.splitlines()[:40]:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            heading = stripped.lstrip("#").strip()
+            if heading:
+                return heading[:120]
+    parts = path.split("/")
+    filename = parts[-1]
+    stem = filename.rsplit(".", 1)[0]
+    if filename.lower() in {"skill.md", "skill.mdx"} and len(parts) >= 2:
+        stem = parts[-2]
+    return _humanize_slug(stem)
+
+
+def _github_skill_summary_from_file(content: str) -> str:
+    lines: list[str] = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("```"):
+            continue
+        lines.append(stripped)
+        if len(" ".join(lines)) >= 300:
+            break
+    return " ".join(lines)[:500]
+
+
+def _humanize_slug(value: str) -> str:
+    words = [part for part in re.split(r"[-_\s.]+", value.strip()) if part]
+    if not words:
+        return value or "External skill"
+    return " ".join(word[:1].upper() + word[1:] for word in words)[:120]
+
+
+def _has_github_text_suffix(path: str) -> bool:
+    return any(path.endswith(suffix) for suffix in _GITHUB_TEXT_FILE_SUFFIXES)
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _expand_external_skill_item(raw: dict[str, Any]) -> list[dict[str, Any]]:
     skills = raw.get("skills")
     if not isinstance(skills, list):
@@ -846,9 +1427,9 @@ def _external_skill_tags(
     return sorted(tags)
 
 
-def _external_skill_files(raw: dict[str, Any]) -> list[dict[str, str]]:
+def _external_skill_files(raw: dict[str, Any]) -> list[dict[str, Any]]:
     files = raw.get("files") or raw.get("tree") or []
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     if isinstance(files, list):
         for item in files:
             if isinstance(item, str):
@@ -857,7 +1438,17 @@ def _external_skill_files(raw: dict[str, Any]) -> list[dict[str, str]]:
                 path = _first_text(item.get("path"), item.get("name"), item.get("filename"))
                 content = _first_text(item.get("content"), item.get("text"), item.get("body"))
                 if path or content:
-                    out.append({"path": path, "content": content})
+                    file_payload: dict[str, Any] = {"path": path, "content": content}
+                    for key in (
+                        "size",
+                        "sha",
+                        "content_truncated",
+                        "content_fetch_skipped",
+                        "too_large",
+                    ):
+                        if key in item:
+                            file_payload[key] = item[key]
+                    out.append(file_payload)
     for key, path in {
         "readme": "README.md",
         "skill_md": "SKILL.md",
@@ -880,7 +1471,7 @@ def _license_id(raw: dict[str, Any]) -> str:
 def _looks_like_executable_file(
     path: str,
     *,
-    content_by_path: list[dict[str, str]],
+    content_by_path: list[dict[str, Any]],
 ) -> bool:
     lowered = path.strip().lower()
     name = lowered.rsplit("/", 1)[-1]
@@ -952,6 +1543,8 @@ def _int_env(name: str, default: int) -> int:
 __all__ = [
     "EXTERNAL_SCAN_STRONG_REVIEW_ENABLED_ENV",
     "ExternalFetcher",
+    "ExternalGithubFetchResponse",
+    "ExternalGithubMetadataFetcher",
     "ExternalInfoScanner",
     "ExternalSkillCandidate",
     "ExternalSkillSafetyAssessment",
@@ -963,6 +1556,7 @@ __all__ = [
     "StrongExternalScanReviewer",
     "assess_external_skill_safety",
     "configured_external_scan_reviewer_from_env",
+    "fetch_github_repo_external_skill_metadata",
     "normalize_external_skill_candidate",
     "normalize_external_skill_candidates",
     "scan_external_skill_candidates",

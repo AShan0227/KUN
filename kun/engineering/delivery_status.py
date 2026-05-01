@@ -302,6 +302,7 @@ def get_v3_delivery_status(
                 "production/deployment 风险会把 production_safety_issues、secret audit 和 delivery_status partial/not_ready 汇总到 NUO report",
                 "主工作区可开启当前浏览器页级别提醒；有待确认动作或高风险 finding 时会发浏览器 Notification",
                 "主工作区会注册本地 service worker，在页面后台也能显示当前浏览器的本机提醒；这不是远程 Push",
+                "NUO governance_recommendations 已有显式 apply 入口：目前只允许低风险 context maintenance dry-run/apply，高风险或需要人审的建议会返回结构化 blocked 和 action ticket",
             ],
             evidence_refs=[
                 "kun/api/nuo/health_panel.py",
@@ -324,12 +325,12 @@ def get_v3_delivery_status(
                 "已有当前浏览器本地 service worker 提醒；还没做远程 Push、移动端或多设备主动推送",
                 "handler 自动 quarantine 已接入定时体检 dry-run，但真实自动执行仍需用户/运维确认",
                 "协同体检目前会给 dry-run 处置票据，但还没有自动暂停/恢复所有冲突任务",
-                "NUO 现在能生成统一治理建议，但还没有完整人工批准 UI 把低风险 apply 串成产品化工作流",
+                "NUO 现在能生成统一治理建议，也有低风险显式 apply API；但还没有完整人工批准 UI 和多类治理动作执行器",
             ],
             next_steps=[
                 "把 auto-quarantine 高风险建议推送到主看板，并保持真实外发默认人工确认",
                 "让守望消费协同体检结果，对低风险卡住任务做安全恢复，对高风险任务升级人工",
-                "把 NUO governance_recommendations 做成可筛选、可 dry-run、可显式 apply 的运维队列",
+                "把 NUO governance_recommendations 做成前端可筛选队列，并逐步扩展更多低风险治理 action",
             ],
         ),
         DeliveryCapability(
@@ -409,7 +410,7 @@ def get_v3_delivery_status(
                 "idle-batch 已注册 qi_strategy_pack_rollout_plan step，会定期为可审核草稿生成安全推广计划",
                 "idle-batch 已注册 external_emergent_scan step，可消费显式数据源或 KUN_EXTERNAL_SCAN_SOURCE_FILES 配置文件，把外部/内部策略线索写入 EmergentSolution 候选库；默认不联网、不爬网、不伪装全网扫描",
                 "external_emergent_scan 可通过 KUN_EXTERNAL_SCAN_STRONG_REVIEW_ENABLED=1 显式接入强模型 judge，先复审外部线索再写入候选库",
-                "external_skill_candidate_review 已能消费离线 GitHub repo / skill metadata，做来源、许可、执行脚本、外部网络、密钥、文件写入和 sandbox suitability 的保守鉴别，并把 review-only 候选写入 Qi 问题队列",
+                "external_skill_candidate_review 已能消费离线 GitHub repo / skill metadata，也能通过 KUN_EXTERNAL_SKILL_GITHUB_REPOS 显式 opt-in 抓取 GitHub repo 元数据，做来源、许可、执行脚本、外部网络、密钥、文件写入和 sandbox suitability 的保守鉴别，并把 review-only 候选写入 Qi 问题队列",
             ],
             evidence_refs=[
                 "kun/memory/writeback.py",
@@ -453,7 +454,7 @@ def get_v3_delivery_status(
                 "MemoryPolicyTicket 已开始消费傩治理标签，傩也会写入显式 Fade/低价值/风险标签，并能把重复治理模式沉淀成 review-only 方法论草稿；但还没做完整 MemPalace/FadeMem 语义抽象和强模型规则蒸馏",
                 "Qi idle replay 目前已有 heuristic_local、可配置本地模型评估口、显式 opt-in 强模型复审口、显式 opt-in KUN-Lab 历史任务回放口、草稿审核状态机、shadow/canary 护栏计划和守望影子观测；但仓库不内置具体模型权重，也还没接真实流量 canary 执行链路",
                 "StrategyPack 草稿目前只做 review-only，不会自动 promotion；已经能判断是否可交给人审核、生成推广计划，并进入守望 shadow 观测，但还没接人工批准 UI 或真实实验创建",
-                "external_emergent_scan 目前只消费显式线索；external_skill_candidate_review 已有发现/鉴别闭环和 Qi review queue 接入，但还没接真实 GitHub/arXiv/竞品 changelog 抓取器、自动安装、生产 skill 注册或 canary 推广链路",
+                "external_emergent_scan 目前只消费显式线索；external_skill_candidate_review 已有显式 opt-in GitHub repo 抓取、鉴别闭环和 Qi review queue 接入，但还没接 arXiv/竞品 changelog 抓取器、自动安装、生产 skill 注册或 canary 推广链路",
                 "执行过程经验已能影响 Watchtower skill_hints；Hermes use_memory 已开始按单步 action/query 稀疏选择记忆层，但还没有做到全 action choice 的策略改写",
                 "贡献信用对模型路由已进热路径，但还需要真实 dogfood 样本校准阈值",
                 "ValueGate 已接轻量历史信用，但还没用真实 dogfood 样本训练成稳定的跨任务 gate estimator",
@@ -468,7 +469,7 @@ def get_v3_delivery_status(
             capability_id="code_capability",
             label="CodeCapability 编程能力",
             status="partial",
-            summary="reader / writer / executor / debugger / reviewer 已有基础模块；CodeCapability 现在会安装到 API runtime，并提供最小 HTTP 链路做只读 review/diff 与显式 sandbox run/check。完整自动 coding workflow 仍是 partial，不能声称已能自动生成、改写、验证并晋升 skill。",
+            summary="reader / writer / executor / debugger / reviewer 已有基础模块；CodeCapability 现在会安装到 API runtime，并提供只读 review/diff、显式 sandbox run/check，以及默认 dry-run 的单文件改写工作流。它还不是完整 autonomous coder，不能声称已接管 Orchestrator coding task 或自动晋升 skill。",
             done=[
                 "CodeCapability facade 聚合 reader、writer、executor、debugger、reviewer",
                 "reader 可按 anchor-expand 查找文件、依赖、调用点和基础解释",
@@ -480,6 +481,7 @@ def get_v3_delivery_status(
                 "POST /api/code-capability/review-diff 和 /review-file 已接入只读 review 链路",
                 "POST /api/code-capability/run-python 和 /check 可显式触发 bounded executor；路径逃逸会被拒绝",
                 "CodeCapability API 已接租户 scope 守门：review 需要 code:read，run/check 需要 code:execute；dev 无 scopes 时不增加本地调试摩擦",
+                "POST /api/code-capability/propose-change 已接默认 dry-run 的单文件改写闭环：先 review，再 dry-run/apply，再跑 lint/test；apply 后检查失败会自动恢复原文件",
             ],
             evidence_refs=[
                 "kun/skills/code_capability/__init__.py",
@@ -488,6 +490,7 @@ def get_v3_delivery_status(
                 "kun/skills/code_capability/executor.py",
                 "kun/skills/code_capability/debugger.py",
                 "kun/skills/code_capability/reviewer.py",
+                "kun/skills/code_capability/workflow.py",
                 "kun/api/runtime.py",
                 "kun/api/code_capability.py",
                 "tests/unit/test_code_capability.py",
@@ -495,14 +498,14 @@ def get_v3_delivery_status(
                 "tests/unit/test_api_runtime.py",
             ],
             missing=[
-                "API 暂不暴露 writer，避免把最小执行/check 链路误说成自动改代码能力",
+                "API 已暴露受控单文件 propose-change，但默认 dry-run；还不是让 KUN 自主大范围改仓库",
                 "sandbox 仍是软隔离；还不是 OS/container 级强隔离，也没有真实网络封锁保证",
-                "还没有把生成补丁、review、测试、回滚、StateLedger 记录和 skill draft 晋升串成完整自动 coding workflow",
+                "还没有把 Orchestrator coding task、生成补丁、StateLedger 记录、记忆写回和 skill draft 晋升串成完整自动 coding workflow",
                 "还没接长周期 dogfood 样本来校准何时生成临时代码、何时沉淀为 skill",
             ],
             next_steps=[
                 "把 Orchestrator 的 coding task 显式接到 CodeCapability 服务，而不是只由 HTTP 人工触发",
-                "补 writer 的审批/回滚/StateLedger 记录后，再考虑开放受控写入 API",
+                "把 propose-change 写入 StateLedger / credit assignment，让编程路径也能被傩和启复盘",
                 "把成功的临时代码执行沉淀为 draft skill，并走多次验证与人工审核",
             ],
         ),

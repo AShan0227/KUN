@@ -143,6 +143,28 @@ class ResourceCreditSummary(BaseModel):
     last_seen_at: datetime | None = None
 
 
+class ResourceKindCreditSummary(BaseModel):
+    """MoE-facing summary grouped by resource kind.
+
+    Raw resource rows answer "which exact resource got credit"; the decision
+    plane often needs the cheaper question first: "which *kind* of resource is
+    working for this task family?"  This compact aggregate lets Watchtower, Qi,
+    and NUO compare memory vs skill vs model vs strategy without scanning every
+    individual row.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    resource_kind: str
+    resource_count: int
+    used_count: int
+    pass_count: int
+    critical_count: int
+    credit_total: float
+    contribution_score: float
+    top_resource_keys: list[str] = Field(default_factory=list)
+
+
 class CreditAssignment:
     """信用分配引擎.
 
@@ -665,6 +687,60 @@ def resource_credit_summaries_from_rows(rows: Iterable[Any]) -> list[ResourceCre
     return summaries
 
 
+def summarize_resource_credit_deltas(
+    deltas: dict[str, ResourceCreditDelta],
+    *,
+    top_n_per_kind: int = 3,
+) -> list[ResourceKindCreditSummary]:
+    """Group one task's credit deltas by resource kind.
+
+    This is deliberately derived from the same deltas we persist, so the
+    observable event and the durable DB update cannot drift apart.
+    """
+
+    if not deltas:
+        return []
+    safe_top_n = max(1, int(top_n_per_kind))
+    grouped: dict[str, list[ResourceCreditDelta]] = {}
+    for delta in deltas.values():
+        grouped.setdefault(delta.resource_kind, []).append(delta)
+
+    summaries: list[ResourceKindCreditSummary] = []
+    for kind, items in sorted(grouped.items()):
+        used_count = sum(item.used_count for item in items)
+        pass_count = sum(item.pass_count for item in items)
+        critical_count = sum(item.critical_count for item in items)
+        credit_total = sum(item.credit_total for item in items)
+        top_keys = [
+            item.resource_key
+            for item in sorted(
+                items,
+                key=lambda item: (item.credit_total, item.critical_count, item.used_count),
+                reverse=True,
+            )[:safe_top_n]
+        ]
+        summaries.append(
+            ResourceKindCreditSummary(
+                resource_kind=kind,
+                resource_count=len(items),
+                used_count=used_count,
+                pass_count=pass_count,
+                critical_count=critical_count,
+                credit_total=round(credit_total, 4),
+                contribution_score=round(
+                    contribution_score_from_counts(
+                        used_count=used_count,
+                        pass_count=pass_count,
+                        critical_count=critical_count,
+                    ),
+                    4,
+                ),
+                top_resource_keys=top_keys,
+            )
+        )
+    return summaries
+
+
 async def hydrate_contribution_tracker_from_db(
     session: AsyncSession,
     *,
@@ -735,6 +811,7 @@ __all__ = [
     "CreditAssignment",
     "ResourceCreditDelta",
     "ResourceCreditSummary",
+    "ResourceKindCreditSummary",
     "StageKind",
     "StageReward",
     "StepCredit",
@@ -751,4 +828,5 @@ __all__ = [
     "reset_contribution_tracker",
     "resource_credit_summaries_from_rows",
     "split_resource_key",
+    "summarize_resource_credit_deltas",
 ]

@@ -24,7 +24,11 @@ from kun.engineering.delivery_status import (
     get_v3_delivery_status,
     validate_delivery_status,
 )
-from kun.engineering.nuo_system_health import collect_system_health_report
+from kun.engineering.nuo_system_health import (
+    GovernanceRecommendationApplyResult,
+    apply_governance_recommendation,
+    collect_system_health_report,
+)
 from kun.ops.readiness import ReadinessReport, run_readiness_report
 from kun.ops.secret_audit import SecretAuditReport, audit_runtime_secrets
 from kun.ops.secret_store import (
@@ -158,6 +162,25 @@ async def system_health_report() -> dict[str, Any]:
     tenant = current_tenant()
     report = await collect_system_health_report(tenant_id=tenant.tenant_id)
     return report.model_dump(mode="json")
+
+
+@router.post("/governance/apply", response_model=GovernanceRecommendationApplyResult)
+async def apply_governance_recommendation_once(
+    recommendation_id: str = Query(min_length=1, max_length=256),
+    dry_run: bool = Query(default=True),
+    max_assets: int = Query(default=500, ge=1, le=5000),
+) -> GovernanceRecommendationApplyResult:
+    """Explicitly dry-run/apply one current NUO governance recommendation."""
+    tenant = current_tenant()
+    result = await apply_governance_recommendation(
+        tenant_id=tenant.tenant_id,
+        recommendation_id=recommendation_id,
+        dry_run=dry_run,
+        max_assets=max_assets,
+    )
+    if result.blocked_reason == "recommendation_not_found":
+        raise HTTPException(status_code=404, detail=result.model_dump(mode="json"))
+    return result
 
 
 @router.get("/secret-audit", response_model=SecretAuditReport)
