@@ -10,6 +10,7 @@ from kun.datamodel.decision_ticket import (
     ticket_from_delivery_review,
     ticket_from_llm_route,
     ticket_from_memory_policy_selection,
+    ticket_from_preflight_guard,
     ticket_from_protocol_applied,
     ticket_from_route_choice,
     ticket_from_skill_selection,
@@ -18,6 +19,12 @@ from kun.datamodel.decision_ticket import (
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
     ticket_from_world_policy,
+)
+from kun.engineering.concurrency import (
+    ConflictFinding,
+    PendingActionSpec,
+    PreConflictReport,
+    ResourceIntent,
 )
 from kun.memory.policy import MemoryDepth, MemoryLayer, MemoryPolicyTicket
 from kun.watchtower.value_gate import ValueGateDecision
@@ -266,6 +273,38 @@ def test_step_action_ticket_records_hermes_action_choice() -> None:
     assert ticket.selected_action == "use_memory"
     assert ticket.metadata["step_id"] == 3
     assert ticket.evidence["action_payload"]["query"] == "过去留存策略"
+
+
+def test_preflight_guard_ticket_records_conflicts_and_pending_actions() -> None:
+    report = PreConflictReport(
+        resources=[ResourceIntent(resource="project:demo", mode="write", reason="same project")],
+        conflicts=[
+            ConflictFinding(
+                task_id="tk-running",
+                status="running",
+                resource="project:demo",
+                existing_mode="write",
+                incoming_mode="write",
+                reason="same project write",
+            )
+        ],
+    )
+    action = PendingActionSpec(action_type="email.draft", target_ref="project:demo")
+
+    ticket = ticket_from_preflight_guard(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        risk_level="medium",
+        report=report,
+        pending_actions=[action],
+    )
+
+    assert ticket.phase == "watchtower"
+    assert ticket.decision_point == "preflight_guard"
+    assert ticket.status == "blocked"
+    assert ticket.selected_action == "pause_for_preflight"
+    assert ticket.metadata["conflict_count"] == 1
+    assert ticket.metadata["pending_action_types"] == ["email.draft"]
 
 
 def test_protocol_applied_ticket_wraps_protocol_registry_choice() -> None:

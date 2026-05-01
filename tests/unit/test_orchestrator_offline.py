@@ -534,6 +534,13 @@ async def test_world_request_skill_pauses_and_enqueues_pending_action(monkeypatc
     assert result.status == "paused"
     assert "外部动作审批" in result.answer
     assert [action.action_type for action in captured_actions] == ["email.draft"]
+    preflight = next(
+        ev
+        for ev in events
+        if ev.kind == "action_plan" and ev.data.get("stage") == "preflight_guard"
+    )
+    assert preflight.data["decision_ticket"]["decision_point"] == "preflight_guard"
+    assert preflight.data["decision_ticket"]["status"] == "blocked"
     guard = next(
         ev
         for ev in events

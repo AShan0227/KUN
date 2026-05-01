@@ -49,6 +49,7 @@ from kun.datamodel.decision_ticket import (
     ticket_from_delivery_review,
     ticket_from_llm_route,
     ticket_from_memory_policy_selection,
+    ticket_from_preflight_guard,
     ticket_from_protocol_applied,
     ticket_from_route_choice,
     ticket_from_skill_selection,
@@ -66,6 +67,7 @@ from kun.engineering.budget_tracker import HARD_BREAK_RATIO_TASK, BudgetTracker
 from kun.engineering.capability_writeback import Outcome, TaskOutcome, record_outcome
 from kun.engineering.concurrency import (
     PendingActionSpec,
+    PreConflictReport,
     enqueue_pending_actions,
     pending_actions_for,
     scan_pre_conflicts,
@@ -850,6 +852,7 @@ class Orchestrator:
 
         # 5. Pre-start safety: conflict scan + pending side-effect actions.
         pending_actions = pending_actions_for(task_ref)
+        preflight_ticket: DecisionTicket | None = None
         async with session_scope() as s:
             pre_conflict_report = await scan_pre_conflicts(
                 s,
@@ -897,6 +900,35 @@ class Orchestrator:
                         task_ref=task_ref.meta.task_id,
                     ),
                 )
+            if pre_conflict_report.resources or pre_conflict_report.conflicts or pending_actions:
+                preflight_ticket = ticket_from_preflight_guard(
+                    tenant_id=tenant.tenant_id,
+                    task_id=task_ref.meta.task_id,
+                    risk_level=task_ref.meta.risk_level,
+                    report=pre_conflict_report,
+                    pending_actions=pending_actions,
+                    mission_id=_mission_id_from_task(task_ref),
+                )
+                decision_tickets.append(preflight_ticket)
+                self._record_state_ledger("record_decision_ticket", preflight_ticket)
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant.tenant_id,
+                        event_type="task.preflight_guard.evaluated",
+                        payload=preflight_ticket.event_payload(),
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+
+        if preflight_ticket is not None:
+            yield OrchestratorEvent(
+                kind="action_plan",
+                data={
+                    "stage": "preflight_guard",
+                    "decision_ticket": preflight_ticket.event_payload(),
+                },
+            )
 
         if pre_conflict_report.blocking or pending_actions:
             reason_parts: list[str] = []
@@ -2291,6 +2323,16 @@ class Orchestrator:
                 "任务已暂停，执行过程中发现需要外部动作审批："
                 f"{', '.join(action_types)}。请在 NUO 的待审批动作里确认。"
             )
+            preflight_ticket = ticket_from_preflight_guard(
+                tenant_id=tenant.tenant_id,
+                task_id=task_ref.meta.task_id,
+                risk_level=task_ref.meta.risk_level,
+                report=PreConflictReport(),
+                pending_actions=exc.actions,
+                mission_id=_mission_id_from_task(task_ref),
+            )
+            decision_tickets.append(preflight_ticket)
+            self._record_state_ledger("record_decision_ticket", preflight_ticket)
             self._record_state_ledger(
                 "record_paused",
                 task_ref.meta.task_id,
@@ -2317,10 +2359,26 @@ class Orchestrator:
                         task_ref=task_ref.meta.task_id,
                     ),
                 )
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant.tenant_id,
+                        event_type="task.preflight_guard.evaluated",
+                        payload=preflight_ticket.event_payload(),
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
             log.info(
                 "orchestrator.paused_for_world_action",
                 task_id=exc.task_id,
                 action_types=action_types,
+            )
+            yield OrchestratorEvent(
+                kind="action_plan",
+                data={
+                    "stage": "preflight_guard",
+                    "decision_ticket": preflight_ticket.event_payload(),
+                },
             )
             yield OrchestratorEvent(
                 kind="guard_intervention",

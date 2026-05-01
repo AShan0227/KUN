@@ -33,6 +33,7 @@ DecisionPhase = Literal[
 
 DecisionPoint = Literal[
     "protocol_applied",
+    "preflight_guard",
     "strategy_selected",
     "role_model_selected",
     "llm_model_selected",
@@ -494,6 +495,65 @@ def ticket_from_step_action_selection(
     )
 
 
+def ticket_from_preflight_guard(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    report: Any,
+    pending_actions: list[Any],
+    mission_id: str | None = None,
+) -> DecisionTicket:
+    """Wrap pre-start conflict scan + pending approval gate."""
+
+    resources = list(getattr(report, "resources", []) or [])
+    conflicts = list(getattr(report, "conflicts", []) or [])
+    blocking = bool(getattr(report, "blocking", False))
+    action_types = [
+        str(getattr(action, "action_type", "")) for action in pending_actions if action is not None
+    ]
+    resource_names = [
+        str(getattr(resource, "resource", "")) for resource in resources if resource is not None
+    ]
+    status: DecisionStatus = "blocked" if blocking or pending_actions else "allowed"
+    selected_action = "pause_for_preflight" if status == "blocked" else "allow_preflight"
+    reason_parts: list[str] = []
+    if conflicts:
+        reason_parts.append(f"{len(conflicts)} resource conflict(s)")
+    if pending_actions:
+        reason_parts.append(f"{len(pending_actions)} pending approval action(s)")
+    if not reason_parts:
+        reason_parts.append("no blocking preflight issue")
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="watchtower",
+        decision_point="preflight_guard",
+        source_module="engineering.concurrency",
+        selected_action=selected_action,
+        status=status,
+        reason="; ".join(reason_parts),
+        confidence=0.86 if status == "blocked" else 0.78,
+        risk_level=risk_level,
+        inputs_summary={
+            "resource_count": len(resources),
+            "pending_action_count": len(pending_actions),
+        },
+        evidence={
+            "resources": [_model_dump_or_value(resource) for resource in resources],
+            "conflicts": [_model_dump_or_value(conflict) for conflict in conflicts],
+            "pending_actions": [_model_dump_or_value(action) for action in pending_actions],
+        },
+        metadata={
+            "resource_names": resource_names,
+            "conflict_count": len(conflicts),
+            "pending_action_types": action_types,
+            "pending_action_count": len(pending_actions),
+        },
+    )
+
+
 def ticket_from_budget_policy(
     *,
     tenant_id: str,
@@ -854,6 +914,7 @@ __all__ = [
     "ticket_from_delivery_review",
     "ticket_from_llm_route",
     "ticket_from_memory_policy_selection",
+    "ticket_from_preflight_guard",
     "ticket_from_protocol_applied",
     "ticket_from_route_choice",
     "ticket_from_skill_selection",
