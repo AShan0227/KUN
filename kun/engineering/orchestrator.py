@@ -106,7 +106,12 @@ from kun.interface.llm import (
     get_router,
 )
 from kun.interface.llm.router import TaskPurpose
-from kun.memory.policy import MemoryPolicyTicket, decide_memory_policy, decide_step_memory_policy
+from kun.memory.policy import (
+    MemoryLayer,
+    MemoryPolicyTicket,
+    decide_memory_policy,
+    decide_step_memory_policy,
+)
 from kun.memory.similar_task_recall import recall_similar_task_experiences
 from kun.skills.selector import get_selector as get_skill_selector
 from kun.watchtower.engine import RuleEngine
@@ -2102,6 +2107,9 @@ class Orchestrator:
                     watchtower_decision=watchtower_decision,
                     active_protocol=active_protocol,
                     decision_ticket_ids=[ticket.ticket_id for ticket in decision_tickets],
+                    decision_ticket_credit_resources=_decision_ticket_credit_resources(
+                        decision_tickets
+                    ),
                 )
                 await self._record_process_memory(
                     tenant_id=tenant.tenant_id,
@@ -3292,6 +3300,7 @@ class Orchestrator:
         watchtower_decision: Any,
         active_protocol: Any,
         decision_ticket_ids: list[str],
+        decision_ticket_credit_resources: list[str] | None = None,
     ) -> None:
         if self.credit_assignment is None:
             return
@@ -3318,6 +3327,11 @@ class Orchestrator:
             resources["value_gate_action"] = skill_ids
         if decision_ticket_ids:
             resources["decision_ticket"] = list(decision_ticket_ids)
+        if decision_ticket_credit_resources:
+            for kind, values in _decision_ticket_credit_resources_by_kind(
+                decision_ticket_credit_resources
+            ).items():
+                resources[kind] = _dedupe_strings([*resources.get(kind, []), *values])
         if watchtower_decision is not None:
             strategy_pack_id = getattr(watchtower_decision, "strategy_pack_id", "")
             if strategy_pack_id:
@@ -3344,6 +3358,9 @@ class Orchestrator:
                     "risk_level": task_ref.meta.risk_level,
                     "execution_mode": task_ref.meta.execution_mode,
                     "decision_ticket_ids": list(decision_ticket_ids),
+                    "decision_ticket_credit_resources": list(
+                        decision_ticket_credit_resources or []
+                    ),
                 },
             )
         except Exception:
@@ -3366,6 +3383,13 @@ class Orchestrator:
                 {
                     "decision_ticket": [ticket.ticket_id],
                     str(ticket.decision_point): [ticket.selected_action],
+                    "decision_point": [str(ticket.decision_point)],
+                    "decision_action": [
+                        _decision_ticket_action_resource_id(
+                            str(ticket.decision_point),
+                            str(ticket.selected_action),
+                        )
+                    ],
                 },
             )
         except Exception:
@@ -4559,7 +4583,90 @@ def _context_resource_ids(context_pack: ContextPack) -> list[str]:
             safe_tag = str(tag).strip()
             if safe_tag:
                 out.append(f"tag:{safe_tag}")
+    for experience in context_pack.process_experiences:
+        if experience.asset_id:
+            out.append(f"memory:{experience.asset_id}")
+            out.append("asset_kind:memory")
+            out.append(f"memory_layer:{MemoryLayer.EXECUTION_PROCESS.value}")
     return _dedupe_strings(out)
+
+
+def _decision_ticket_credit_resources(tickets: list[DecisionTicket]) -> list[str]:
+    """Return stable cross-task credit resources for decision choices.
+
+    Ticket ids are great for audit, but they are one-off.  For MoE learning we
+    also need reusable keys like ``memory_policy_selected:targeted:meta`` so
+    KUN can learn whether a strategy choice itself helped.
+    """
+
+    out: list[str] = []
+    for ticket in tickets:
+        point = str(ticket.decision_point)
+        action = str(ticket.selected_action)
+        if not point or not action:
+            continue
+        out.append(f"decision_point:{point}")
+        out.append(f"decision_action:{_decision_ticket_action_resource_id(point, action)}")
+        if point == "memory_policy_selected":
+            out.extend(_memory_policy_decision_credit_resources(action))
+        elif point == "context_selected":
+            out.extend(_context_decision_credit_resources(action))
+    return _dedupe_strings(out)
+
+
+def _decision_ticket_credit_resources_by_kind(resources: list[str]) -> dict[str, list[str]]:
+    by_kind: dict[str, list[str]] = {}
+    for resource in resources:
+        if ":" not in resource:
+            continue
+        kind, value = resource.split(":", 1)
+        if not kind or not value:
+            continue
+        by_kind.setdefault(kind, []).append(value)
+    return {kind: _dedupe_strings(values) for kind, values in by_kind.items()}
+
+
+def _decision_ticket_action_resource_id(decision_point: str, selected_action: str) -> str:
+    return f"{_credit_token(decision_point)}__{_credit_token(selected_action, max_len=140)}"
+
+
+def _memory_policy_decision_credit_resources(selected_action: str) -> list[str]:
+    """Expose memory-use strategy as durable resource keys."""
+
+    raw = str(selected_action or "")
+    if not raw:
+        return []
+    if raw.endswith(":skip") or "skip" in raw:
+        return ["memory_policy:skip", "memory_policy_use:no_memory"]
+    depth, _, layer_blob = raw.partition(":")
+    resources = [
+        f"memory_policy:{_credit_token(raw, max_len=140)}",
+        f"memory_policy_depth:{_credit_token(depth or 'unknown')}",
+        "memory_policy_use:use_memory",
+    ]
+    for layer in layer_blob.split(","):
+        token = _credit_token(layer)
+        if token and token != "no_layers":
+            resources.append(f"memory_policy_layer:{token}")
+    return resources
+
+
+def _context_decision_credit_resources(selected_action: str) -> list[str]:
+    raw = str(selected_action or "")
+    if not raw:
+        return []
+    resources = [f"context_policy:{_credit_token(raw, max_len=140)}"]
+    if "none" in raw or "skip" in raw:
+        resources.append("context_policy_use:no_context")
+    else:
+        resources.append("context_policy_use:use_context")
+    return resources
+
+
+def _credit_token(raw: str, *, max_len: int = 80) -> str:
+    token = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(raw).strip())
+    token = "_".join(part for part in token.split("_") if part)
+    return (token or "unknown")[:max_len]
 
 
 def _pending_actions_from_loop_pause(

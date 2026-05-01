@@ -104,6 +104,33 @@ def test_add_resources_to_step_updates_credit_share_for_late_decisions() -> None
     assert abs(updated.credit_share["decision_ticket:dt-1"] - (1 / 3)) < 1e-9
 
 
+def test_record_step_can_credit_reusable_decision_strategy_keys() -> None:
+    ca = CreditAssignment()
+    credit = ca.record_step(
+        task_id="tk-policy",
+        step_id=1,
+        resources={
+            "decision_ticket": ["dt-memory-1"],
+            "decision_point": ["memory_policy_selected"],
+            "decision_action": ["memory_policy_selected__targeted_meta_decision_methodology"],
+            "memory_policy": ["targeted_meta_decision_methodology"],
+            "memory_policy_depth": ["targeted"],
+            "memory_policy_layer": ["meta_decision", "methodology"],
+        },
+        immediate_reward=0.6,
+    )
+
+    assert "decision_ticket:dt-memory-1" in credit.credit_share
+    assert "decision_point:memory_policy_selected" in credit.credit_share
+    assert (
+        "decision_action:memory_policy_selected__targeted_meta_decision_methodology"
+        in credit.credit_share
+    )
+    assert "memory_policy:targeted_meta_decision_methodology" in credit.credit_share
+    assert "memory_policy_depth:targeted" in credit.credit_share
+    assert "memory_policy_layer:meta_decision" in credit.credit_share
+
+
 # ---- finalize_task + reflector ----
 
 

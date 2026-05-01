@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import pytest
-from kun.context.packer import ContextPack, PackedContextItem
+from kun.context.packer import ContextPack, PackedContextItem, PackedProcessExperience
 from kun.core.emergent_solution import (
     EmergentSolution,
     EmergentSolutionLibrary,
@@ -139,6 +139,24 @@ def test_context_resource_ids_preserve_asset_kind() -> None:
         "tag:methodology",
         "knowledge:knowledge-1",
         "asset_kind:knowledge",
+    ]
+
+
+def test_context_resource_ids_credit_process_experiences() -> None:
+    pack = ContextPack(
+        process_experiences=[
+            PackedProcessExperience(
+                asset_id="process-1",
+                summary="执行过程: pytest failure fixed by narrower parser change",
+                similarity_score=0.82,
+            )
+        ]
+    )
+
+    assert _context_resource_ids(pack) == [
+        "memory:process-1",
+        "asset_kind:memory",
+        "memory_layer:execution_process",
     ]
 
 
