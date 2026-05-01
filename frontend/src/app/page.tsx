@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SessionAccountEntry } from "@/components/SessionAccountEntry";
 import { apiFetch, getKunIdentitySource, kunWebSocketUrl } from "@/kunApiClient";
 
@@ -409,7 +409,9 @@ export default function Home() {
   >({});
   const [taskControlNoticeById, setTaskControlNoticeById] = useState<Record<string, string>>({});
   const [taskControlBusyId, setTaskControlBusyId] = useState("");
+  const [browserNotifyEnabled, setBrowserNotifyEnabled] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const lastBrowserNotificationKeyRef = useRef("");
 
   const refreshDashboard = useCallback(async (cancelledRef?: { current: boolean }) => {
     try {
@@ -458,6 +460,22 @@ export default function Home() {
       clearInterval(id);
     };
   }, [refreshDashboard]);
+
+  useEffect(() => {
+    try {
+      setBrowserNotifyEnabled(window.localStorage.getItem("kun.browser_notify") === "on");
+    } catch {
+      setBrowserNotifyEnabled(false);
+    }
+  }, []);
+
+  const enableBrowserNotifications = useCallback(async () => {
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") return;
+    window.localStorage.setItem("kun.browser_notify", "on");
+    setBrowserNotifyEnabled(true);
+  }, []);
 
   useEffect(() => {
     const wsUrl = kunWebSocketUrl();
@@ -843,7 +861,34 @@ export default function Home() {
     (deliverySummary?.not_ready ?? 0);
   const visibleDeliveryGaps =
     deliveryStatus?.items.filter((item) => item.user_visible && item.status !== "ready") ?? [];
-  const systemFindings = globalState?.system_findings ?? [];
+  const systemFindings = useMemo(
+    () => globalState?.system_findings ?? [],
+    [globalState?.system_findings],
+  );
+
+  useEffect(() => {
+    if (!browserNotifyEnabled) return;
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+    const finding = systemFindings.find((item) =>
+      ["blocker", "critical", "error", "warn"].includes(item.severity),
+    );
+    if (!finding && pendingDecisionCount <= 0) return;
+    const key = `${pendingDecisionCount}:${finding?.finding_id ?? "no-finding"}:${
+      finding?.severity ?? "none"
+    }`;
+    if (lastBrowserNotificationKeyRef.current === key) return;
+    lastBrowserNotificationKeyRef.current = key;
+    const title = pendingDecisionCount > 0 ? "KUN 有待确认事项" : "傩发现系统风险";
+    const body =
+      pendingDecisionCount > 0
+        ? `${pendingDecisionCount} 个动作需要你确认。`
+        : `${finding?.title || finding?.finding_id}: ${finding?.suggested_action || finding?.detail}`;
+    new Notification(title, {
+      body: body.slice(0, 180),
+      tag: key,
+    });
+  }, [browserNotifyEnabled, pendingDecisionCount, systemFindings]);
 
   return (
     <div className="grid grid-cols-[1fr_360px] gap-4 p-4 h-full">
@@ -900,13 +945,21 @@ export default function Home() {
           </div>
           <div className="mt-3 space-y-2">
             {systemFindings.length > 0 && (
-              <div className="rounded border border-amber-200 bg-amber-50 p-2 text-xs">
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <span className="font-medium text-amber-900">傩发现的系统风险</span>
-                  <a href="/nuo" className="text-amber-700 hover:underline">
-                    去傩处理
-                  </a>
-                </div>
+                <div className="rounded border border-amber-200 bg-amber-50 p-2 text-xs">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="font-medium text-amber-900">傩发现的系统风险</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        className="rounded border border-amber-200 bg-white px-2 py-0.5 text-amber-700 hover:bg-amber-100"
+                        onClick={() => void enableBrowserNotifications()}
+                      >
+                        {browserNotifyEnabled ? "浏览器提醒已开" : "开启浏览器提醒"}
+                      </button>
+                      <a href="/nuo" className="text-amber-700 hover:underline">
+                        去傩处理
+                      </a>
+                    </div>
+                  </div>
                 <div className="space-y-1">
                   {systemFindings.slice(0, 3).map((finding) => (
                     <div key={finding.finding_id} className="rounded bg-white px-2 py-1">

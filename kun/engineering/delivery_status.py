@@ -188,6 +188,7 @@ def get_v3_delivery_status(
                 "idle-batch 会定期跑 WorldGateway handler 自动 quarantine 建议，默认只报告不静默改控制",
                 "傩系统体检会扫描审批、暂停任务和 handler 控制之间的协同冲突",
                 "傩系统体检的 warn/error/critical findings 会进入 blackboard 全局状态，并显示在主工作区",
+                "主工作区可开启当前浏览器页级别提醒；有待确认动作或高风险 finding 时会发浏览器 Notification",
             ],
             evidence_refs=[
                 "kun/api/nuo/health_panel.py",
@@ -204,7 +205,7 @@ def get_v3_delivery_status(
                 "tests/unit/test_system_coordination.py",
             ],
             missing=[
-                "定期 NUO 体检已进入主工作区和当前状态视图，但还没做浏览器/移动端主动推送",
+                "已有当前浏览器页级别提醒；还没做后台 service worker、移动端或多设备主动推送",
                 "handler 自动 quarantine 已接入定时体检 dry-run，但真实自动执行仍需用户/运维确认",
                 "协同体检目前先发现冲突和给建议，还没有自动暂停/恢复所有冲突任务",
             ],
