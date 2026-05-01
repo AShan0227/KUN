@@ -337,9 +337,15 @@ class HealthReportStep(IdleBatchStep):
         from kun.core.state_ledger import get_state_ledger
         from kun.datamodel.events import Event
         from kun.engineering.nuo_system_health import collect_system_health_report
+        from kun.qi.problem_queue import (
+            persist_problem_signals,
+            signals_from_system_health_findings,
+        )
 
         report = await collect_system_health_report(tenant_id=tenant_id)
         get_state_ledger().record_system_health_report(report)
+        qi_problem_signals = signals_from_system_health_findings(tenant_id, report.findings)
+        persisted_qi_problem_signals = await persist_problem_signals(qi_problem_signals)
         summary = {
             "total_tasks": report.total_tasks,
             "runtime_by_status": report.runtime_by_status,
@@ -351,6 +357,8 @@ class HealthReportStep(IdleBatchStep):
             "secret_audit_summary": report.secret_audit_summary,
             "world_handler_summary": report.world_handler_summary,
             "findings": len(report.findings),
+            "qi_problem_signals": len(qi_problem_signals),
+            "persisted_qi_problem_signals": persisted_qi_problem_signals,
             "top_findings": [
                 {
                     "finding_id": finding.finding_id,

@@ -12,6 +12,7 @@ from kun.qi.problem_queue import (
     get_qi_problem_queue,
     prompt_for_problem,
     reset_qi_problem_queue,
+    signals_from_system_health_findings,
 )
 from sqlalchemy.dialects import postgresql
 
@@ -79,6 +80,29 @@ def test_prompt_for_problem_is_actionable() -> None:
     assert "真实系统问题" in prompt
     assert "可验证" in prompt
     assert "交付状态声明" in prompt
+
+
+def test_signals_from_system_health_findings_maps_context_subsystem() -> None:
+    from kun.engineering.nuo_system_health import SystemHealthFinding
+
+    signals = signals_from_system_health_findings(
+        "u-test",
+        [
+            SystemHealthFinding(
+                finding_id="context_slimming_candidates",
+                severity="info",
+                subsystem="context",
+                title="Context / memory 有可瘦身项",
+                detail="可压缩 2",
+                suggested_action="dry-run 后再执行",
+            )
+        ],
+    )
+
+    assert len(signals) == 1
+    assert signals[0].category == "context"
+    assert signals[0].source == "nuo.system_health"
+    assert signals[0].summary == "Context / memory 有可瘦身项"
 
 
 def test_sql_problem_queue_upsert_dedupes_by_tenant_signal() -> None:

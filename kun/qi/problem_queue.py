@@ -225,20 +225,37 @@ async def collect_problem_signals(tenant_id: str) -> list[QiProblemSignal]:
         from kun.engineering.nuo_system_health import collect_system_health_report
 
         report = await collect_system_health_report(tenant_id=tenant_id)
-        for finding in report.findings:
-            signals.append(
-                QiProblemSignal.build(
-                    tenant_id=tenant_id,
-                    category=_category_from_finding(finding.subsystem),
-                    severity=finding.severity,
-                    summary=finding.title,
-                    source="nuo.system_health",
-                    evidence=finding.model_dump(mode="json"),
-                )
-            )
+        signals.extend(signals_from_system_health_findings(tenant_id, report.findings))
     except Exception:
         return signals
     await persist_problem_signals(signals)
+    return signals
+
+
+def signals_from_system_health_findings(
+    tenant_id: str,
+    findings: list[Any],
+) -> list[QiProblemSignal]:
+    """Convert NUO findings into Qi problem signals without recollecting health."""
+
+    signals: list[QiProblemSignal] = []
+    for finding in findings:
+        subsystem = str(getattr(finding, "subsystem", "") or "")
+        title = str(getattr(finding, "title", "") or "")
+        if not title:
+            continue
+        model_dump = getattr(finding, "model_dump", None)
+        evidence = model_dump(mode="json") if callable(model_dump) else {"title": title}
+        signals.append(
+            QiProblemSignal.build(
+                tenant_id=tenant_id,
+                category=_category_from_finding(subsystem),
+                severity=str(getattr(finding, "severity", "info") or "info"),
+                summary=title,
+                source="nuo.system_health",
+                evidence=evidence,
+            )
+        )
     return signals
 
 
@@ -357,4 +374,5 @@ __all__ = [
     "persist_problem_signals",
     "prompt_for_problem",
     "reset_qi_problem_queue",
+    "signals_from_system_health_findings",
 ]

@@ -209,18 +209,30 @@ async def test_health_report_step_collects_nuo_report_and_emits_event(monkeypatc
     async def fake_emit(_session: object, event: object) -> None:
         events.append(event)
 
+    persisted_signals = []
+
+    async def fake_persist_problem_signals(signals: list[object]) -> int:
+        persisted_signals.extend(signals)
+        return len(signals)
+
     monkeypatch.setattr(
         "kun.engineering.nuo_system_health.collect_system_health_report",
         fake_collect_system_health_report,
     )
     monkeypatch.setattr("kun.core.db.session_scope", fake_session_scope)
     monkeypatch.setattr("kun.core.events.emit", fake_emit)
+    monkeypatch.setattr(
+        "kun.qi.problem_queue.persist_problem_signals", fake_persist_problem_signals
+    )
 
     summary = await HealthReportStep().run("t-1")
 
     assert summary["total_tasks"] == 3
     assert summary["events_outbox_lag"] == 2
     assert summary["worst_severity"] == "warn"
+    assert summary["qi_problem_signals"] == 1
+    assert summary["persisted_qi_problem_signals"] == 1
+    assert len(persisted_signals) == 1
     assert len(events) == 1
     assert getattr(events[0], "event_type") == "nuo.health_report.generated"
     assert getattr(events[0], "payload")["top_findings"][0]["finding_id"] == "f-1"
