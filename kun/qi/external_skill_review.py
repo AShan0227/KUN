@@ -8,7 +8,11 @@ package for Qi / NUO / a human reviewer.
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Literal
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -24,6 +28,8 @@ from kun.engineering.external_scan import (
     score_external_skill_task_fit,
 )
 from kun.qi.problem_queue import QiProblemSignal, persist_problem_signals
+
+log = logging.getLogger(__name__)
 
 ExternalSkillReviewStatus = Literal["blocked", "needs_evidence", "ready_for_human_review"]
 _LICENSE_NEEDS_LEGAL_REVIEW = {
@@ -657,7 +663,7 @@ def _recommended_repos_for_demand(task_demand: ExternalSkillDemandKind) -> list[
     """Small curated hints, not an auto-fetch allowlist."""
 
     repos: list[str] = []
-    for repo, profile in _KNOWN_EXTERNAL_SKILL_SOURCE_PROFILES.items():
+    for repo, profile in _known_external_skill_source_profiles().items():
         if task_demand in profile.expected_use_cases:
             repos.append(repo)
     return sorted(repos)
@@ -676,7 +682,94 @@ def _known_source_profiles_for_repos(
 
 def _known_source_profile_for_repo(repo: str) -> KnownExternalSkillSourceProfile | None:
     normalized = str(repo or "").strip().removesuffix(".git").lower()
-    return _KNOWN_EXTERNAL_SKILL_SOURCE_PROFILES.get(normalized)
+    return _known_external_skill_source_profiles().get(normalized)
+
+
+def _known_external_skill_source_profiles() -> dict[str, KnownExternalSkillSourceProfile]:
+    profiles = dict(_KNOWN_EXTERNAL_SKILL_SOURCE_PROFILES)
+    for profile in configured_external_skill_source_profiles_from_env():
+        key = _source_profile_key(profile.repo_ref)
+        if not key or key in profiles:
+            continue
+        profiles[key] = profile
+    return profiles
+
+
+def configured_external_skill_source_profiles_from_env() -> list[KnownExternalSkillSourceProfile]:
+    """Load explicit review-only source profiles from local config files.
+
+    This is not marketplace crawling and not an allowlist. It only lets operators
+    tell Qi/NUO, "this repo/source is worth reviewing when the task need matches".
+    """
+
+    raw_files = os.getenv("KUN_EXTERNAL_SKILL_SOURCE_PROFILE_FILES", "")
+    profile_files = [item.strip() for item in raw_files.split(",") if item.strip()]
+    if not profile_files:
+        return []
+
+    config_root_raw = os.getenv("KUN_EXTERNAL_SKILL_CONFIG_ROOT") or None
+    config_root = Path(config_root_raw).expanduser().resolve() if config_root_raw else None
+    profiles: list[KnownExternalSkillSourceProfile] = []
+    for profile_file in profile_files:
+        payload = _read_source_profile_payload(profile_file, config_root=config_root)
+        for item in _source_profile_items(payload):
+            try:
+                profile = KnownExternalSkillSourceProfile.model_validate(item)
+            except Exception as exc:
+                log.warning(
+                    "external_skill.source_profile_invalid",
+                    extra={"profile_file": profile_file, "error": str(exc)},
+                )
+                continue
+            profiles.append(profile)
+    return profiles
+
+
+def _read_source_profile_payload(
+    source_file: str,
+    *,
+    config_root: Path | None,
+) -> dict[str, Any] | list[Any]:
+    raw_path = Path(source_file).expanduser()
+    path = raw_path if raw_path.is_absolute() else (config_root or Path.cwd()) / raw_path
+    resolved = path.resolve(strict=False)
+    if config_root is not None:
+        try:
+            resolved.relative_to(config_root)
+        except ValueError:
+            log.warning(
+                "external_skill.source_profile_outside_config_root",
+                extra={"source_file": source_file},
+            )
+            return {}
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+        if isinstance(payload, dict | list):
+            return cast(dict[str, Any] | list[Any], payload)
+        return {}
+    except Exception as exc:
+        log.warning(
+            "external_skill.source_profile_read_failed",
+            extra={"source_file": source_file, "error": str(exc)},
+        )
+        return {}
+
+
+def _source_profile_items(payload: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
+    raw_items: Any
+    if isinstance(payload, list):
+        raw_items = payload
+    elif isinstance(payload, dict):
+        raw_items = payload.get("profiles", payload.get("items", []))
+    else:
+        raw_items = []
+    if not isinstance(raw_items, list):
+        return []
+    return [item for item in raw_items if isinstance(item, dict)]
+
+
+def _source_profile_key(repo_ref: str) -> str:
+    return str(repo_ref or "").strip().removesuffix(".git").lower()
 
 
 def _scout_queries_for_demand(
@@ -1312,6 +1405,7 @@ __all__ = [
     "ExternalSkillSourceReview",
     "build_external_skill_candidate_source_plan",
     "build_external_skill_scout_plan",
+    "configured_external_skill_source_profiles_from_env",
     "enqueue_external_skill_candidate_source_plans",
     "enqueue_external_skill_review_packages",
     "enqueue_external_skill_scout_plans",

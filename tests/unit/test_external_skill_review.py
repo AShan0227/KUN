@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from kun.qi.external_skill_review import (
     build_external_skill_candidate_source_plan,
     build_external_skill_scout_plan,
+    configured_external_skill_source_profiles_from_env,
     enqueue_external_skill_candidate_source_plans,
     enqueue_external_skill_review_packages,
     enqueue_external_skill_scout_plans,
@@ -295,6 +298,17 @@ def test_external_skill_scout_plan_is_review_only_and_demand_driven() -> None:
     assert "fetch_metadata_only" in plan.required_review_steps
     assert "verify_known_source_profile_against_current_repo_metadata" in plan.required_review_steps
 
+    signal = external_skill_scout_plan_to_problem_signal(
+        tenant_id="tenant-a",
+        plan=plan,
+    )
+
+    assert signal.source == "external_skill.scout_plan"
+    assert signal.category == "context"
+    assert signal.evidence["queue_intent"] == "external_skill_scout_review_only"
+    assert signal.evidence["auto_fetch_allowed"] is False
+    assert signal.evidence["auto_install_allowed"] is False
+
 
 @pytest.mark.unit
 def test_known_external_skill_source_profile_never_becomes_allowlist() -> None:
@@ -328,16 +342,83 @@ def test_known_external_skill_source_profile_never_becomes_allowlist() -> None:
     assert plan.auto_install_allowed is False
     assert plan.production_action is False
 
-    signal = external_skill_scout_plan_to_problem_signal(
-        tenant_id="tenant-a",
-        plan=plan,
+
+@pytest.mark.unit
+def test_configured_external_skill_source_profiles_stay_review_only(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source_file = tmp_path / "profiles.json"
+    source_file.write_text(
+        json.dumps(
+            {
+                "profiles": [
+                    {
+                        "repo_ref": "example/writing-skills",
+                        "credibility_score": 0.61,
+                        "expected_use_cases": ["writing"],
+                        "why_review": ["operator_curated_source"],
+                        "required_evidence": ["pinned_commit_sha", "license_review"],
+                        "safety_rules": ["no_auto_install", "human_review_before_registration"],
+                    },
+                    {
+                        "repo_ref": "example/unsafe-auto-install",
+                        "expected_use_cases": ["writing"],
+                        "auto_install_allowed": True,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KUN_EXTERNAL_SKILL_CONFIG_ROOT", str(tmp_path))
+    monkeypatch.setenv("KUN_EXTERNAL_SKILL_SOURCE_PROFILE_FILES", "profiles.json")
+
+    profiles = configured_external_skill_source_profiles_from_env()
+    plan = build_external_skill_scout_plan(
+        {
+            "task_type": "writing.copy",
+            "summary": "Need stronger launch copywriting workflow templates.",
+        }
     )
 
-    assert signal.source == "external_skill.scout_plan"
-    assert signal.category == "context"
-    assert signal.evidence["queue_intent"] == "external_skill_scout_review_only"
-    assert signal.evidence["auto_fetch_allowed"] is False
-    assert signal.evidence["auto_install_allowed"] is False
+    assert [profile.repo_ref for profile in profiles] == ["example/writing-skills"]
+    assert "example/writing-skills" in plan.recommended_repo_refs
+    configured = next(
+        profile
+        for profile in plan.known_source_profiles
+        if profile.repo_ref == "example/writing-skills"
+    )
+    assert configured.review_only is True
+    assert configured.auto_fetch_allowed is False
+    assert configured.auto_install_allowed is False
+    assert configured.production_action is False
+    assert "no_auto_install" in configured.safety_rules
+
+
+@pytest.mark.unit
+def test_configured_external_skill_source_profile_blocks_path_escape(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    outside = tmp_path.parent / "outside-profiles.json"
+    outside.write_text(
+        json.dumps(
+            {
+                "profiles": [
+                    {
+                        "repo_ref": "example/outside",
+                        "expected_use_cases": ["coding"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KUN_EXTERNAL_SKILL_CONFIG_ROOT", str(tmp_path))
+    monkeypatch.setenv("KUN_EXTERNAL_SKILL_SOURCE_PROFILE_FILES", str(outside))
+
+    assert configured_external_skill_source_profiles_from_env() == []
 
 
 @pytest.mark.unit

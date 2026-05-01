@@ -448,6 +448,7 @@ def get_v3_delivery_status(
                 "external_skill_candidate_review 已能消费离线 GitHub repo / skill metadata，也能通过 KUN_EXTERNAL_SKILL_GITHUB_REPOS 显式 opt-in 抓取 GitHub repo 元数据，做来源、许可、执行脚本、外部网络、密钥、文件写入和 sandbox suitability 的保守鉴别，并把 review-only 候选写入 Qi 问题队列；idle-batch 还会用当前 Qi 问题信号和历史任务生成 task need，把外部候选和真实需求做 task-fit review package 匹配",
                 "内置 external-skill-scout 可消费离线 source_registry / candidates，生成外部能力源 + 候选的 review-only scorecard；评分包含安全、许可证、维护度和任务适配度",
                 "external_skill_source_plan 已能把任务缺口、推荐来源、离线 source registry 和候选 metadata 合成一张可审查计划，并写入 Qi/NUO review queue；仍然禁止自动 fetch / install / production registration",
+                "可通过 KUN_EXTERNAL_SKILL_SOURCE_PROFILE_FILES 显式追加 review-only 外部来源画像；路径受 KUN_EXTERNAL_SKILL_CONFIG_ROOT 限制，且 Literal 校验会拒绝 auto_install_allowed=true 这类越权画像",
             ],
             evidence_refs=[
                 "kun/memory/writeback.py",
@@ -483,6 +484,7 @@ def get_v3_delivery_status(
                 "tests/unit/test_context_governance_audit.py",
                 "tests/unit/test_emergent_switch_external.py",
                 "tests/unit/test_external_scan_candidates.py",
+                "tests/unit/test_external_skill_review.py",
                 "tests/unit/test_idle_batch.py",
                 "tests/unit/test_qi_problem_queue.py",
                 "tests/unit/test_skill_pheromone_boost.py",
