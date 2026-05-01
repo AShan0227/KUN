@@ -519,6 +519,20 @@ V5 记忆分 6 层：
 - 被 State Ledger 引用的记忆必须保留可追溯指针。
 - 所有治理动作写入 State Ledger 和 NUO 报告。
 
+### 8.4 只读瘦身审计
+
+当前小切片先补“看清楚”的能力，而不是直接动资产。
+
+`kun.context.governance_audit` 会扫描 Context AssetStore，输出 review-only 报告：
+
+- 低价值：长期未访问、未见复用，或已带低价值标签。
+- 重复：同类资产拥有相同 L2 summary。
+- 高频可抽象：同一任务类型 / memory layer / strategy 或 skill 模式被多次访问，可沉淀为 methodology 草案。
+- 过期 / 长尾：长期低访问但仍在检索面里的资产。
+- 缺信用归因：已晋升或被访问的记忆 / context 资产缺少 resource credit 或贡献来源。
+
+这个报告明确 `review_only=true`、`production_action=false`。它不删除、不压缩、不软遗忘、不合并，也不改写生产资产；后续真实治理仍必须走 dry-run、人工确认或明确 apply 入口。
+
 ## 9. Skill-as-Context
 
 ### 9.1 skill 的本质
@@ -771,6 +785,9 @@ State Ledger 记录
 - 哪个 handler 半配置？
 - 哪个 handler 真实外发风险高？
 - 哪个租户密钥缺失或过期？
+- 最近 EventRow 里有没有对应 handler 的失败、异常或 blocked 事件？
+
+当前小切片已实现只读诊断：`WorldHandlerHealthCard.diagnostics` 明确标记缺补偿描述、真实外发/高风险、缺租户密钥配置、是否有失败/异常事件；`event_stats` 基于最近 `EventRow` 聚合失败、异常、blocked 和 event_type 计数。它通过现有 NUO handler health / 深度健康报告暴露，不会触发真实外部动作。
 
 ## 14. 用户体验
 
@@ -966,8 +983,10 @@ V5 必须防止“写了但没用”。
 验收：
 
 - 能发现重复/过长/过期记忆。
+- 能看到只读记忆治理审计，覆盖低价值、重复、高频可抽象、过期/长尾、缺信用归因，且不直接修改资产。
 - 能发现未使用 skill。
 - 能发现半配置 WorldGateway handler。
+- 能看到 WorldGateway handler 的只读 diagnostics：缺补偿、真实外发/高风险、缺租户密钥配置，以及 EventRow 失败/异常/blocked 统计。
 - 能发现有事件无消费者的伪闭环。
 - 能看到统一 NUO governance report，覆盖 compiler、context/memory、skill、WorldGateway handler、Qi StrategyPack 草案、多车道调度器和 production/deployment risk。
 - 能看到每条治理建议的 risk_level、default_dry_run、can_apply、requires_human_approval。
@@ -996,16 +1015,16 @@ V5 必须防止“写了但没用”。
 | InputTranslator / OutputTranslator | 附件已走原始 bytes 编译；skill/task/protocol 已能编译成 LayeredAsset；任务启动会真实写入 task 资产；`compiler_intake_review` idle-batch step 可把外部资料入口审计票据写入 Qi review queue | 还要接企业资料 connector 和更深 Office/OCR 后端 |
 | Hermes | 已进入多处链路 | 和 Compiler / ProtocolPacket 更紧密 |
 | Watchtower DecisionPlane | 已有策略票据、MemoryInvocationPolicy、MemoryPolicy、MoE 影子候选和 LLMRouteGovernor 热路径治理；模型调用前会过成本/信任/隐私咨询 | 继续用真实 dogfood 校准规则阈值 |
-| ContextPacker | 已接 importance / credit / MemoryPolicyTicket；能按任务稀疏选择记忆层、资产类型和策略标签；MemoryInvocationPolicy 已能把任务类型、风险、复杂度、失败重试、显式模式和历史资源信用转成 ContextPacker 参数 | 还要接向量库、跨租户匿名经验池，以及把“哪条记忆真的帮到了任务”写回更细的信用归因 |
+| ContextPacker | 已接 importance / credit / MemoryPolicyTicket；能按任务稀疏选择记忆层、资产类型和策略标签；MemoryInvocationPolicy 已能把任务类型、风险、复杂度、失败重试、显式模式和历史资源信用转成 ContextPacker 参数；StateLedger 已能消费 credit.assignment.completed，把资源类型贡献写进当前快照和长期回放故事 | 还要接向量库、跨租户匿名经验池，以及把“哪一条具体记忆真的帮到了任务”写回更细的信用归因 |
 | Similar task recall | 已有 | 还要影响更多执行动作 |
-| Context maintenance | 已有 dry-run / mutation；NUO report 会把瘦身、低价值、风险、compiler review/recompile 候选合并成治理信号 | 还要接更强语义合并和规则蒸馏 |
+| Context maintenance / governance audit | 已有 dry-run / mutation；NUO report 会把瘦身、低价值、风险、compiler review/recompile 候选合并成治理信号；新增只读 governance audit，可发现低价值、重复、高频可抽象、过期/长尾、缺信用归因资产，并通过 CLI / NUO API 输出 review-only 建议 | 还要接更强语义合并、跨资产引用保护和强模型规则蒸馏 |
 | Qi problem queue | 已接 idle replay，能读真实问题信号和任务结果历史；NUO health findings 会写入 Qi problem queue，Qi StrategyPack 草案状态也会回到 NUO governance report | 还要接人工批准 UI 和真实 canary 实验 |
 | External skill discovery | 已有 `external_skill_scout_plan` + `external_skill_candidate_review`：前者根据真实 Qi 问题信号/历史任务生成 review-only scout 计划，说明该找什么、去哪类来源找、需要哪些安全验证；后者可从离线 GitHub repo / skill metadata 归一化候选，也可通过 `KUN_EXTERNAL_SKILL_GITHUB_REPOS` 显式抓取 GitHub repo 元数据；候选会做来源、许可、执行脚本、外部网络、密钥、文件写入、sandbox suitability 的保守鉴别，并以 review-only 送入 Qi 队列；idle-batch 会把当前 Qi problem signals / 历史任务当作 task need，和外部 skill 候选做需求匹配，产出 task-fit review package；`kun.qi.external_skill_review` 已能把“任务需求 + 外部 skill/工程行为模板候选”编成 review-only 安全包，并可转成 Qi problem signal / review queue 输入，blocked / needs_evidence / ready_for_human_review 会带不同 severity 和 evidence；所有信号都保留 no-auto-install / no-production 语义 | 自动安装、生产 skill 注册、arXiv/竞品 changelog 抓取器、人工批准 UI 仍未做；外部候选仍禁止 auto-install，低证据候选不能进生产 |
 | AI Scientist tree search | 已接入启的 idle replay StrategyPack 草稿评估，也可选接入 CodeCapability 成功改动后的策略复盘；树搜索结果会写入 `tree_search_records` / `strategy_search_records`，被 review gate 当成 review-only 证据消费 | 还要接真实 canary 和更强 evaluator |
-| WorldGateway | 有 handler / 权限 / 审计；傩已能输出 handler 风险分、风险标签、租户密钥状态、失败率和补偿缺口，并把这些信号反馈给执行拦截/自动隔离；高风险治理默认只给 dry-run 建议 | 还要更多生产级 handler、真实补偿演练和线上密钥轮换 |
-| StateLedger | 已有快照和回放 | 还要更完整长期账本和信用归因 |
+| WorldGateway | 有 handler / 权限 / 审计；傩已能输出 handler 风险分、风险标签、显式 diagnostics、租户密钥状态、失败率、EventRow 失败/异常统计和补偿缺口，并把这些信号反馈给执行拦截/自动隔离；高风险治理默认只给 dry-run 建议 | 还要更多生产级 handler、真实补偿演练和线上密钥轮换 |
+| StateLedger | 已有快照和回放；当前快照和 EventRow 回放都会暴露 credit assignment 摘要、top 资源类型、关键路径步骤和资源贡献概览 | 还要更完整长期事件溯源、跨 Mission 聚合信用和具体资产级信用归因 |
 | CodeCapability | 已可被 API/runtime 调用：支持只读 review/diff、显式 sandbox run/check、默认 dry-run 的单文件 propose-change；内置 `code-review` skill 已接入 agent-loop，可让任务执行中真实调用只读代码审查；apply 后检查失败会自动恢复原文件；propose-change 会写 resource_credit_stats 和热贡献缓存；成功且通过检查的改动会生成 review-only 的 draft skill LayeredAsset；可选 code strategy tree search 会把更优代码工作流建议写入 draft skill 证据 | 还要接 Orchestrator 自动补丁生成、skill draft 审批晋升和更强 sandbox |
-| NUO governance report | 已统一覆盖 compiler、context/memory、skill、WorldGateway handler、Qi 草案、多车道调度和 production/deployment risk；已有低风险 governance apply API，只允许 context maintenance 显式 dry-run/apply，高风险会 blocked + action ticket | 还要把 governance_recommendations 做成完整人工批准 UI，并扩展更多低风险治理 action |
+| NUO governance report | 已统一覆盖 compiler、context/memory、skill、WorldGateway handler、Qi 草案、多车道调度和 production/deployment risk；已有低风险 governance apply API，只允许 context maintenance 显式 dry-run/apply，高风险会 blocked + action ticket；context governance audit 只读接入 health report，不进入自动 apply 路径 | 还要把 governance_recommendations 做成完整人工批准 UI，并扩展更多低风险治理 action |
 | 并发执行 | 已有 fast / mission / qi / nuo / world / high_risk 多车道调度器，并安装到 API runtime；`/api/tasks/scheduler/*` 可查看车道状态和提交异步任务；NUO report 会检查必需 lane 和活跃任务压力 | 还要把更多后台 worker 和前端任务看板接入这个统一车道 |
 
 ## 18. V5 的核心护城河

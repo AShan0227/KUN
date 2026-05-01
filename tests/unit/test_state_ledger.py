@@ -582,6 +582,64 @@ def test_state_ledger_records_code_change_from_placeholder() -> None:
     assert snapshot.recent_events[-1].data["bytes_changed"] == 42
 
 
+def test_state_ledger_records_credit_assignment_summary() -> None:
+    ledger = StateLedger()
+
+    ledger.record_credit_assignment(
+        "task-credit-1",
+        task_outcome="success",
+        step_count=3,
+        critical_path_step_ids=[1, 3],
+        total_immediate_reward=1.75,
+        resource_count=4,
+        resource_kind_summaries=[
+            {
+                "resource_kind": "skill",
+                "total_delta": 0.8,
+                "mean_delta": 0.4,
+                "positive_count": 2,
+                "negative_count": 0,
+                "resource_count": 2,
+            },
+            {
+                "resource_kind": "context",
+                "total_delta": 0.3,
+                "mean_delta": 0.3,
+                "positive_count": 1,
+                "negative_count": 0,
+                "resource_count": 1,
+            },
+            {
+                "resource_kind": "model",
+                "total_delta": -0.1,
+                "mean_delta": -0.1,
+                "positive_count": 0,
+                "negative_count": 1,
+                "resource_count": 1,
+            },
+        ],
+    )
+
+    snapshot = ledger.snapshot("task-credit-1")
+
+    assert snapshot is not None
+    assert snapshot.credit_assignment_count == 1
+    assert snapshot.credit_assignment_summary == {
+        "task_outcome": "success",
+        "step_count": 3,
+        "critical_path_step_ids": [1, 3],
+        "total_immediate_reward": 1.75,
+        "resource_count": 4,
+        "resource_kind_count": 3,
+        "top_resource_kinds": ["skill", "context"],
+    }
+    assert snapshot.resource_credit_summaries[0]["resource_kind"] == "skill"
+    assert snapshot.top_credit_resource_kinds == ["skill", "context"]
+    assert snapshot.critical_path_step_ids == [1, 3]
+    assert snapshot.current_action == "完成信用归因：skill、context 贡献最高"
+    assert snapshot.recent_events[-1].kind == "credit.assignment.completed"
+
+
 def test_state_ledger_replay_reconstructs_task_story_from_durable_events() -> None:
     story = replay_state_ledger_story(
         "task-1",
@@ -654,6 +712,39 @@ def test_state_ledger_replay_reconstructs_task_story_from_durable_events() -> No
             },
             {
                 "event_id": "evt-6",
+                "event_type": "credit.assignment.completed",
+                "occurred_at": "2026-04-30T08:03:30Z",
+                "task_id": "task-1",
+                "summary": "credit",
+                "payload": {
+                    "task_id": "task-1",
+                    "task_outcome": "success",
+                    "step_count": 2,
+                    "critical_path_step_ids": [1, 2],
+                    "total_immediate_reward": 1.2,
+                    "resource_count": 3,
+                    "resource_kind_summaries": [
+                        {
+                            "resource_kind": "context",
+                            "total_delta": 0.7,
+                            "mean_delta": 0.35,
+                            "positive_count": 2,
+                            "negative_count": 0,
+                            "resource_count": 2,
+                        },
+                        {
+                            "resource_kind": "model",
+                            "total_delta": 0.2,
+                            "mean_delta": 0.2,
+                            "positive_count": 1,
+                            "negative_count": 0,
+                            "resource_count": 1,
+                        },
+                    ],
+                },
+            },
+            {
+                "event_id": "evt-7",
                 "event_type": "task.done",
                 "occurred_at": "2026-04-30T08:04:00Z",
                 "task_id": "task-1",
@@ -677,6 +768,11 @@ def test_state_ledger_replay_reconstructs_task_story_from_durable_events() -> No
     assert story["pending_confirmations"] == []
     assert story["model_routes"] == ["codex-mcp:gpt-5.5:top"]
     assert story["total_cost_usd"] == 0.05
+    assert story["credit_assignment_count"] == 1
+    assert story["top_credit_resource_kinds"] == ["context", "model"]
+    assert story["critical_path_step_ids"] == [1, 2]
+    assert story["credit_assignment_summary"]["resource_kind_count"] == 2
+    assert story["resource_credit_summaries"][0]["resource_kind"] == "context"
     assert story["reconstruction_confidence"] > 0.7
     assert "missing_terminal_status_event" not in story["gaps"]
 

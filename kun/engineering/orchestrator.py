@@ -3373,6 +3373,16 @@ class Orchestrator:
                     summary.model_dump(mode="json")
                     for summary in summarize_resource_credit_deltas(deltas)
                 ]
+                self._record_state_ledger(
+                    "record_credit_assignment",
+                    task_ref.meta.task_id,
+                    task_outcome=report.task_outcome,
+                    step_count=len(report.step_credits),
+                    critical_path_step_ids=list(report.critical_path_step_ids),
+                    total_immediate_reward=report.total_immediate_reward,
+                    resource_count=len(deltas),
+                    resource_kind_summaries=kind_summaries,
+                )
                 await emit(
                     s,
                     Event.build(

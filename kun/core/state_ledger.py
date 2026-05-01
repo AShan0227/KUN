@@ -72,6 +72,11 @@ class StateLedgerEntry(BaseModel):
     context_limit: int | None = None
     context_asset_ids: list[str] = Field(default_factory=list)
     skill_hints: list[str] = Field(default_factory=list)
+    credit_assignment_count: int = 0
+    credit_assignment_summary: dict[str, Any] | None = None
+    resource_credit_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    top_credit_resource_kinds: list[str] = Field(default_factory=list)
+    critical_path_step_ids: list[int] = Field(default_factory=list)
     risk_watch: list[str] = Field(default_factory=list)
     alert_flags: list[str] = Field(default_factory=list)
     decision_ticket_ids: list[str] = Field(default_factory=list)
@@ -791,6 +796,51 @@ class StateLedger:
             )
             self._store_entry(entry)
 
+    def record_credit_assignment(
+        self,
+        task_id: str,
+        *,
+        task_outcome: str,
+        step_count: int,
+        critical_path_step_ids: list[int] | None = None,
+        total_immediate_reward: float = 0.0,
+        resource_count: int = 0,
+        resource_kind_summaries: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Expose resource credit assignment in the current task view.
+
+        Memory and MoE routing need more than "task succeeded".  They need to
+        know which resource classes helped: model, skill, context, protocol,
+        decision ticket, and so on.  Durable EventRow remains the historical
+        source; this method keeps the hot ledger honest and readable.
+        """
+        summaries = _resource_credit_summaries(resource_kind_summaries)
+        with self._lock:
+            entry = self._ensure(task_id)
+            entry.credit_assignment_count += 1
+            entry.resource_credit_summaries = summaries
+            entry.top_credit_resource_kinds = _top_credit_resource_kinds(summaries)
+            entry.critical_path_step_ids = _int_list(critical_path_step_ids or [])
+            entry.credit_assignment_summary = {
+                "task_outcome": task_outcome,
+                "step_count": max(0, int(step_count)),
+                "critical_path_step_ids": list(entry.critical_path_step_ids),
+                "total_immediate_reward": float(total_immediate_reward),
+                "resource_count": max(0, int(resource_count)),
+                "resource_kind_count": len(summaries),
+                "top_resource_kinds": list(entry.top_credit_resource_kinds),
+            }
+            if entry.top_credit_resource_kinds:
+                entry.current_action = (
+                    "完成信用归因：" + "、".join(entry.top_credit_resource_kinds[:3]) + " 贡献最高"
+                )
+            entry.add_trail(
+                "credit.assignment.completed",
+                "资源信用归因已完成",
+                entry.credit_assignment_summary,
+            )
+            self._store_entry(entry)
+
     def record_system_health_report(self, report: Any) -> StateLedgerEntry:
         """Expose NUO system findings in the current-state view.
 
@@ -957,6 +1007,11 @@ def replay_state_ledger_story(
     model_routes: list[str] = []
     skill_refs: list[str] = []
     context_asset_ids: list[str] = []
+    resource_credit_summaries: list[dict[str, Any]] = []
+    top_credit_resource_kinds: list[str] = []
+    critical_path_step_ids: list[int] = []
+    credit_assignment_count = 0
+    latest_credit_assignment_summary: dict[str, Any] | None = None
     pending_confirmations: list[str] = []
     risk_flags: list[str] = []
     open_questions: list[str] = []
@@ -1039,6 +1094,26 @@ def replay_state_ledger_story(
         elif event_type == "task.resumed":
             pending_confirmations.clear()
             open_questions = [item for item in open_questions if item not in {"等待外部动作审批"}]
+        elif event_type == "credit.assignment.completed":
+            credit_assignment_count += 1
+            resource_credit_summaries = _resource_credit_summaries(
+                _list_of_dicts(payload.get("resource_kind_summaries"))
+            )
+            top_credit_resource_kinds = _top_credit_resource_kinds(resource_credit_summaries)
+            critical_path_step_ids = _int_list(payload.get("critical_path_step_ids"))
+            latest_credit_assignment_summary = {
+                "task_outcome": _first_non_empty(payload.get("task_outcome")),
+                "step_count": _safe_int(payload.get("step_count")),
+                "critical_path_step_ids": list(critical_path_step_ids),
+                "total_immediate_reward": _safe_float(payload.get("total_immediate_reward")),
+                "resource_count": _safe_int(payload.get("resource_count")),
+                "resource_kind_count": len(resource_credit_summaries),
+                "top_resource_kinds": list(top_credit_resource_kinds),
+            }
+            if top_credit_resource_kinds:
+                current_action = (
+                    "完成信用归因：" + "、".join(top_credit_resource_kinds[:3]) + " 贡献最高"
+                )
 
         if _event_is_risky(event_type, payload, ticket):
             _append_unique(risk_flags, event_type)
@@ -1083,6 +1158,11 @@ def replay_state_ledger_story(
         "model_routes": model_routes[-20:],
         "skill_refs": skill_refs[-30:],
         "context_asset_ids": context_asset_ids[-50:],
+        "credit_assignment_count": credit_assignment_count,
+        "credit_assignment_summary": latest_credit_assignment_summary,
+        "resource_credit_summaries": resource_credit_summaries[-30:],
+        "top_credit_resource_kinds": top_credit_resource_kinds[-20:],
+        "critical_path_step_ids": critical_path_step_ids[-50:],
         "reconstruction_confidence": confidence,
         "gaps": gaps,
         "timeline": timeline[-timeline_limit:],
@@ -1134,6 +1214,85 @@ def _float_dict(value: object) -> dict[str, float]:
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _safe_int(value: object) -> int:
+    try:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float | str):
+            return int(value)
+    except (TypeError, ValueError):
+        return 0
+    return 0
+
+
+def _safe_float(value: object) -> float:
+    try:
+        if isinstance(value, int | float | str):
+            return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0
+
+
+def _int_list(value: object) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    out: list[int] = []
+    for item in value:
+        try:
+            if isinstance(item, bool):
+                continue
+            if isinstance(item, int):
+                out.append(item)
+            elif isinstance(item, float | str):
+                out.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _list_of_dicts(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _resource_credit_summaries(value: object) -> list[dict[str, Any]]:
+    summaries = _list_of_dicts(value)
+    out: list[dict[str, Any]] = []
+    for item in summaries:
+        resource_kind = _first_non_empty(
+            item.get("resource_kind"),
+            item.get("kind"),
+            item.get("resource_type"),
+        )
+        if not resource_kind:
+            continue
+        out.append(
+            {
+                "resource_kind": resource_kind,
+                "total_delta": _safe_float(item.get("total_delta")),
+                "mean_delta": _safe_float(item.get("mean_delta")),
+                "positive_count": _safe_int(item.get("positive_count")),
+                "negative_count": _safe_int(item.get("negative_count")),
+                "resource_count": _safe_int(item.get("resource_count")),
+            }
+        )
+    out.sort(key=lambda item: float(item.get("total_delta") or 0.0), reverse=True)
+    return out[:30]
+
+
+def _top_credit_resource_kinds(summaries: Sequence[Mapping[str, Any]]) -> list[str]:
+    out: list[str] = []
+    for item in summaries:
+        if _safe_float(item.get("total_delta")) <= 0:
+            continue
+        _append_unique(out, item.get("resource_kind"))
+    return out[:10]
 
 
 def _dict_or_empty(value: object) -> dict[str, Any]:

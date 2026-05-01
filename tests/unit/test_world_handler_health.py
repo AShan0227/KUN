@@ -4,13 +4,14 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kun.core.orm import PendingActionRow, WorldActionExecutionRow
+from kun.core.orm import EventRow, PendingActionRow, WorldActionExecutionRow
 from kun.ops.secret_store import SECRET_STORE_FILE_ENV
 from kun.world.gateway import (
     EmailDraftHandler,
     EmailSendHandler,
     LocalFileWriteHandler,
     WorldGateway,
+    WorldHandlerDescriptor,
 )
 from kun.world.handler_control import WorldHandlerControl
 from kun.world.handler_health import build_world_handler_health, summarize_handler_health
@@ -69,6 +70,27 @@ def _execution(
         requires_handler=requires_handler,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
+    )
+
+
+def _event(
+    event_id: str,
+    event_type: str,
+    *,
+    action_type: str = "email.draft",
+    payload: dict[str, object] | None = None,
+) -> EventRow:
+    full_payload: dict[str, object] = {"action_type": action_type}
+    if payload:
+        full_payload.update(payload)
+    return EventRow(
+        event_id=event_id,
+        tenant_id="tenant-1",
+        event_type=event_type,
+        subject=f"kun.tenant-1.world.{action_type}",
+        payload=full_payload,
+        occurred_at=datetime.now(UTC),
+        task_ref="tk-1",
     )
 
 
@@ -156,6 +178,7 @@ def test_handler_health_flags_real_external_handler_as_limited(tmp_path: Path) -
     assert card.external_dispatched is True
     assert card.success_rate == 1.0
     assert card.status == "limited"
+    assert card.diagnostics.real_external_or_high_risk is True
     assert "人工确认" in card.recommendation
 
 
@@ -450,3 +473,78 @@ def test_handler_health_summary_counts_external_risk_dimensions(tmp_path: Path) 
     assert summary["critical_handler_risk"] >= 1
     assert summary["risk_flag:external_dispatch"] >= 1
     assert summary["risk_flag:missing_config"] >= 1
+
+
+def test_handler_health_exposes_explicit_diagnostic_flags() -> None:
+    descriptor = WorldHandlerDescriptor(
+        action_type="payment.send",
+        handler_id="payment.send.test",
+        user_label="Payment test handler",
+        mode="execute",
+        external_dispatched=True,
+        safety_note="Test-only descriptor.",
+        approval_effect="Would send payment.",
+        permissions_required=["human_approval"],
+        requires_external_dispatch_confirmation=True,
+        compensation_strategy="TBD",
+    )
+
+    cards = {
+        card.action_type: card
+        for card in build_world_handler_health(descriptors=[descriptor], rows=[])
+    }
+
+    payment = cards["payment.send"]
+    assert payment.diagnostics.missing_compensation_description is True
+    assert payment.diagnostics.real_external_or_high_risk is True
+    assert payment.has_compensation is False
+    assert "missing_compensation" in payment.risk_flags
+
+
+def test_handler_health_counts_eventrow_failure_and_exception_events(tmp_path: Path) -> None:
+    descriptors = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[EmailDraftHandler(tmp_path / "drafts")],
+    ).handler_descriptors()
+    events = [
+        _event(
+            "evt-failed",
+            "task.pending_action.execution_failed",
+            payload={"error": "SMTP timeout"},
+        ),
+        _event(
+            "evt-blocked",
+            "task.pending_action.blocked",
+            payload={"executor_mode": "policy_blocked"},
+        ),
+        _event(
+            "evt-exception",
+            "world.handler.exception",
+            payload={"exception_type": "ValueError"},
+        ),
+    ]
+
+    cards = {
+        card.action_type: card
+        for card in build_world_handler_health(
+            descriptors=descriptors,
+            rows=[],
+            events=events,
+        )
+    }
+    email = cards["email.draft"]
+    summary = summarize_handler_health(list(cards.values()))
+
+    assert email.event_stats.total_events == 3
+    assert email.event_stats.failure_events == 1
+    assert email.event_stats.exception_events == 1
+    assert email.event_stats.blocked_events == 1
+    assert email.diagnostics.has_failure_or_exception_events is True
+    assert email.diagnostics.failure_event_count == 1
+    assert "failure_or_exception_events" in email.risk_flags
+    assert "exception_events" in email.risk_flags
+    assert any("EventRow" in issue for issue in email.issues)
+    assert summary["failure_or_exception_events"] >= 1
+    assert summary["failure_events"] >= 1
+    assert summary["exception_events"] >= 1
+    assert summary["blocked_events"] >= 1

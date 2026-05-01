@@ -10,6 +10,10 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
+from kun.context.governance_audit import (
+    ContextGovernanceAuditReport,
+    run_context_governance_audit,
+)
 from kun.context.maintenance import ContextMaintenanceReport, run_context_maintenance
 from kun.core.config import settings
 from kun.core.db import session_scope
@@ -266,6 +270,22 @@ async def run_context_maintenance_once(
     return await run_context_maintenance(
         tenant_id=tenant.tenant_id,
         dry_run=dry_run,
+        max_assets=max_assets,
+    )
+
+
+@router.get("/context-governance/audit", response_model=ContextGovernanceAuditReport)
+async def context_governance_audit(
+    max_assets: int = Query(default=500, ge=1, le=5000),
+) -> ContextGovernanceAuditReport:
+    """Read-only memory/context governance audit.
+
+    This endpoint only returns review recommendations. It does not compress,
+    forget, merge, delete, or mark assets.
+    """
+    tenant = current_tenant()
+    return await run_context_governance_audit(
+        tenant_id=tenant.tenant_id,
         max_assets=max_assets,
     )
 

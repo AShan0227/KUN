@@ -223,6 +223,35 @@ def test_system_health_surfaces_context_maintenance_error() -> None:
     assert "redis unavailable" in finding.detail
 
 
+def test_system_health_surfaces_context_governance_audit_candidates() -> None:
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        resumable_mission_task_count=0,
+        mission_resume_worker_enabled=True,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[],
+        world_handlers=[],
+        context_governance_audit_summary={
+            "findings": 5,
+            "low_value": 1,
+            "duplicate": 1,
+            "high_frequency_abstractable": 1,
+            "stale_long_tail": 1,
+            "missing_credit_attribution": 1,
+        },
+    )
+
+    finding = next(
+        item for item in findings if item.finding_id == "context_governance_audit_candidates"
+    )
+    assert finding.severity == "warn"
+    assert "review-only" in finding.detail
+    assert "缺信用归因 1" in finding.detail
+
+
 def test_system_health_surfaces_skill_governance_findings() -> None:
     findings = _findings(
         outbox_lag=0,
@@ -324,6 +353,29 @@ def test_governance_recommendations_keep_high_risk_advice_manual() -> None:
     assert by_finding["context_slimming_candidates"].default_dry_run is True
     assert by_finding["production_safety_issues"].can_apply is False
     assert by_finding["production_safety_issues"].requires_human_approval is True
+
+
+def test_governance_recommendations_keep_context_audit_review_only() -> None:
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        resumable_mission_task_count=0,
+        mission_resume_worker_enabled=True,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[],
+        world_handlers=[],
+        context_governance_audit_summary={"findings": 2, "missing_credit_attribution": 1},
+    )
+
+    recommendations = _governance_recommendations(findings=findings)
+    recommendation = next(
+        item for item in recommendations if item.finding_id == "context_governance_audit_candidates"
+    )
+    assert recommendation.can_apply is False
+    assert recommendation.requires_human_approval is True
+    assert recommendation.apply_hint == "GET /api/nuo/health/context-governance/audit"
 
 
 @pytest.mark.asyncio

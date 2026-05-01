@@ -11,10 +11,10 @@ from collections import defaultdict
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from kun.core.db import session_scope
-from kun.core.orm import PendingActionRow, WorldActionExecutionRow
+from kun.core.orm import EventRow, PendingActionRow, WorldActionExecutionRow
 from kun.world.gateway import WorldGateway, WorldHandlerDescriptor, get_world_gateway
 from kun.world.handler_control import WorldHandlerControl, load_world_handler_controls
 from kun.world.tenant_env import env_for_tenant, missing_required_world_env
@@ -42,6 +42,34 @@ EXPECTED_REAL_WORLD_HANDLERS: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 
 
+class WorldHandlerEventStats(BaseModel):
+    """Recent EventRow-derived signal for one WorldGateway action type."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_events: int = 0
+    failure_events: int = 0
+    exception_events: int = 0
+    blocked_events: int = 0
+    latest_failure_event_type: str = ""
+    latest_failure_at: Any | None = None
+    event_types: dict[str, int] = Field(default_factory=dict)
+
+
+class WorldHandlerDiagnostics(BaseModel):
+    """Explicit NUO diagnostic flags for a WorldGateway handler."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    missing_compensation_description: bool = False
+    real_external_or_high_risk: bool = False
+    missing_tenant_key_config: bool = False
+    has_failure_or_exception_events: bool = False
+    failure_event_count: int = 0
+    exception_event_count: int = 0
+    blocked_event_count: int = 0
+
+
 class WorldHandlerHealthCard(BaseModel):
     """NUO-facing health card for one WorldGateway action type."""
 
@@ -61,6 +89,8 @@ class WorldHandlerHealthCard(BaseModel):
     risk_score: float = 0.0
     risk_flags: list[str] = Field(default_factory=list)
     secret_config_status: SecretConfigStatus = "not_required"
+    diagnostics: WorldHandlerDiagnostics = Field(default_factory=WorldHandlerDiagnostics)
+    event_stats: WorldHandlerEventStats = Field(default_factory=WorldHandlerEventStats)
     total_seen: int = 0
     approved_count: int = 0
     rejected_count: int = 0
@@ -104,11 +134,26 @@ async def collect_world_handler_health(
             .limit(history_limit)
         )
         executions = list(execution_result.scalars().all())
+        event_result = await s.execute(
+            select(EventRow)
+            .where(
+                EventRow.tenant_id == tenant_id,
+                or_(
+                    EventRow.event_type.like("task.pending_action.%"),
+                    EventRow.event_type.like("world.%"),
+                    EventRow.event_type.like("world_gateway.%"),
+                ),
+            )
+            .order_by(EventRow.occurred_at.desc())
+            .limit(history_limit)
+        )
+        events = list(event_result.scalars().all())
         controls = await load_world_handler_controls(s, tenant_id=tenant_id)
     return build_world_handler_health(
         descriptors=(gateway or get_world_gateway()).handler_descriptors(),
         rows=rows,
         executions=executions,
+        events=events,
         tenant_id=tenant_id,
         controls=controls,
     )
@@ -119,15 +164,18 @@ def build_world_handler_health(
     descriptors: list[WorldHandlerDescriptor],
     rows: list[PendingActionRow],
     executions: list[WorldActionExecutionRow] | None = None,
+    events: list[EventRow] | None = None,
     tenant_id: str = "",
     controls: dict[str, WorldHandlerControl] | None = None,
 ) -> list[WorldHandlerHealthCard]:
     descriptor_by_type = {item.action_type: item for item in descriptors}
     execution_rows = executions or []
+    event_rows = events or []
     action_types = (
         set(descriptor_by_type)
         | {row.action_type for row in rows}
         | {row.action_type for row in execution_rows}
+        | {_event_action_type(row) for row in event_rows if _event_action_type(row)}
         | set(EXPECTED_REAL_WORLD_HANDLERS)
         | set(controls or {})
     )
@@ -137,6 +185,7 @@ def build_world_handler_health(
             descriptor_by_type.get(action_type),
             rows,
             execution_rows,
+            event_rows,
             tenant_id=tenant_id,
             control=(controls or {}).get(action_type),
         )
@@ -151,12 +200,14 @@ def _build_card(
     descriptor: WorldHandlerDescriptor | None,
     rows: list[PendingActionRow],
     executions: list[WorldActionExecutionRow],
+    events: list[EventRow],
     *,
     tenant_id: str = "",
     control: WorldHandlerControl | None = None,
 ) -> WorldHandlerHealthCard:
     relevant = [row for row in rows if row.action_type == action_type]
     relevant_executions = [row for row in executions if row.action_type == action_type]
+    event_stats = _event_stats(action_type, events)
     effective_tenant_id = tenant_id or (
         relevant[0].tenant_id
         if relevant
@@ -216,6 +267,11 @@ def _build_card(
         issues.append(f"最近 {policy_blocked} 次被策略拦截")
     if failed:
         issues.append(f"最近 {failed} 次执行失败")
+    if event_stats.failure_events or event_stats.exception_events:
+        issues.append(
+            "EventRow 记录到失败/异常事件: "
+            f"failure={event_stats.failure_events}, exception={event_stats.exception_events}"
+        )
     if total >= 3 and failure_rate >= 0.25:
         issues.append(f"失败率高 ({failure_rate:.0%})，不要继续自动执行")
     elif total >= 3 and failure_rate >= 0.1:
@@ -237,6 +293,7 @@ def _build_card(
         failure_rate=failure_rate,
         missing_handler_count=missing,
         policy_blocked_count=policy_blocked,
+        event_stats=event_stats,
         control=control,
         secret_config_status=secret_config_status,
     )
@@ -253,6 +310,16 @@ def _build_card(
         control=control,
     )
     missing_env_vars = _expected_missing_env_vars(action_type, tenant_id=effective_tenant_id)
+    has_compensation = (
+        False if descriptor is None else _has_clear_compensation(descriptor.compensation_strategy)
+    )
+    diagnostics = _diagnostics(
+        descriptor=descriptor,
+        static_risk=static_risk,
+        secret_config_status=secret_config_status,
+        has_compensation=has_compensation,
+        event_stats=event_stats,
+    )
     setup_steps = _setup_steps(
         action_type=action_type,
         descriptor=descriptor,
@@ -273,14 +340,14 @@ def _build_card(
         requires_human_approval=True
         if descriptor is None
         else bool(descriptor.permissions_required or descriptor.external_dispatched),
-        has_compensation=False
-        if descriptor is None
-        else _has_clear_compensation(descriptor.compensation_strategy),
+        has_compensation=has_compensation,
         static_risk=static_risk,
         dynamic_risk=dynamic_risk,
         risk_score=risk_score,
         risk_flags=risk_flags,
         secret_config_status=secret_config_status,
+        diagnostics=diagnostics,
+        event_stats=event_stats,
         total_seen=total,
         approved_count=approved,
         rejected_count=rejected,
@@ -318,6 +385,12 @@ def summarize_handler_health(cards: list[WorldHandlerHealthCard]) -> dict[str, i
             counts["high_dynamic_risk"] += 1
         if card.failed_count > 0:
             counts["recent_failures"] += 1
+        if card.event_stats.failure_events > 0 or card.event_stats.exception_events > 0:
+            counts["failure_or_exception_events"] += 1
+            counts["failure_events"] += card.event_stats.failure_events
+            counts["exception_events"] += card.event_stats.exception_events
+        if card.event_stats.blocked_events > 0:
+            counts["blocked_events"] += card.event_stats.blocked_events
         if card.missing_handler_count > 0:
             counts["missing_handler"] += 1
         if card.policy_blocked_count > 0:
@@ -441,6 +514,7 @@ def _risk_flags(
     failure_rate: float,
     missing_handler_count: int,
     policy_blocked_count: int,
+    event_stats: WorldHandlerEventStats,
     control: WorldHandlerControl | None,
     secret_config_status: SecretConfigStatus,
 ) -> list[str]:
@@ -475,6 +549,10 @@ def _risk_flags(
         flags.append("missing_handler")
     if policy_blocked_count > 0:
         flags.append("policy_blocked")
+    if event_stats.failure_events > 0 or event_stats.exception_events > 0:
+        flags.append("failure_or_exception_events")
+    if event_stats.exception_events > 0:
+        flags.append("exception_events")
     if control is not None and control.status in {"quarantined", "disabled"}:
         flags.append(f"control_{control.status}")
     return list(dict.fromkeys(flags))
@@ -500,6 +578,8 @@ def _risk_score(
         "elevated_failure_rate": 0.08,
         "missing_handler": 0.12,
         "policy_blocked": 0.1,
+        "failure_or_exception_events": 0.08,
+        "exception_events": 0.08,
         "control_quarantined": 0.25,
         "control_disabled": 0.3,
     }
@@ -595,6 +675,127 @@ def _expected_missing_env_vars(action_type: str, *, tenant_id: str = "") -> list
     return missing
 
 
+def _diagnostics(
+    *,
+    descriptor: WorldHandlerDescriptor | None,
+    static_risk: str,
+    secret_config_status: SecretConfigStatus,
+    has_compensation: bool,
+    event_stats: WorldHandlerEventStats,
+) -> WorldHandlerDiagnostics:
+    return WorldHandlerDiagnostics(
+        missing_compensation_description=descriptor is not None and not has_compensation,
+        real_external_or_high_risk=bool(descriptor and descriptor.external_dispatched)
+        or static_risk == "high",
+        missing_tenant_key_config=secret_config_status in {"missing", "half_enabled"},
+        has_failure_or_exception_events=bool(
+            event_stats.failure_events or event_stats.exception_events
+        ),
+        failure_event_count=event_stats.failure_events,
+        exception_event_count=event_stats.exception_events,
+        blocked_event_count=event_stats.blocked_events,
+    )
+
+
+def _event_stats(action_type: str, events: list[EventRow]) -> WorldHandlerEventStats:
+    relevant = [row for row in events if _event_matches_action(row, action_type)]
+    event_types: dict[str, int] = defaultdict(int)
+    failure_events = 0
+    exception_events = 0
+    blocked_events = 0
+    latest_failure: EventRow | None = None
+    for row in relevant:
+        event_types[row.event_type] += 1
+        failed = _event_is_failure(row)
+        exceptional = _event_is_exception(row)
+        if failed:
+            failure_events += 1
+        if exceptional:
+            exception_events += 1
+        if _event_is_blocked(row):
+            blocked_events += 1
+        if (failed or exceptional) and (
+            latest_failure is None or row.occurred_at > latest_failure.occurred_at
+        ):
+            latest_failure = row
+    return WorldHandlerEventStats(
+        total_events=len(relevant),
+        failure_events=failure_events,
+        exception_events=exception_events,
+        blocked_events=blocked_events,
+        latest_failure_event_type=latest_failure.event_type if latest_failure else "",
+        latest_failure_at=latest_failure.occurred_at if latest_failure else None,
+        event_types=dict(sorted(event_types.items())),
+    )
+
+
+def _event_matches_action(row: EventRow, action_type: str) -> bool:
+    event_action_type = _event_action_type(row)
+    if event_action_type:
+        return event_action_type == action_type
+    return action_type in row.subject
+
+
+def _event_action_type(row: EventRow) -> str:
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    candidates = [
+        payload.get("action_type"),
+        payload.get("world_action_type"),
+        _nested_payload_value(payload, "world_action", "action_type"),
+        _nested_payload_value(payload, "gateway", "action_type"),
+        _nested_payload_value(payload, "decision_ticket", "action_type"),
+    ]
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _nested_payload_value(payload: dict[str, Any], key: str, nested_key: str) -> Any:
+    nested = payload.get(key)
+    if not isinstance(nested, dict):
+        return None
+    return nested.get(nested_key)
+
+
+def _event_is_failure(row: EventRow) -> bool:
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    event_type = row.event_type.lower()
+    status = str(payload.get("status") or payload.get("action_status") or "").lower()
+    capability = str(payload.get("capability_status") or "").lower()
+    return (
+        "failed" in event_type
+        or "failure" in event_type
+        or "error" in event_type
+        or status in {"failed", "cancelled"}
+        or capability == "preview_failed"
+        or bool(payload.get("error"))
+    )
+
+
+def _event_is_exception(row: EventRow) -> bool:
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    if "exception" in row.event_type.lower():
+        return True
+    for key, value in payload.items():
+        key_text = str(key).lower()
+        value_text = str(value).lower()
+        if "exception" in key_text or "traceback" in key_text:
+            return True
+        if "exception" in value_text or "traceback" in value_text:
+            return True
+    return False
+
+
+def _event_is_blocked(row: EventRow) -> bool:
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    return (
+        "blocked" in row.event_type.lower()
+        or str(payload.get("status") or "").lower() == "blocked"
+        or str(payload.get("executor_mode") or "").lower() == "policy_blocked"
+    )
+
+
 def _setup_steps(
     *,
     action_type: str,
@@ -649,6 +850,8 @@ def _env_truthy(value: str | None) -> bool:
 __all__ = [
     "EXPECTED_REAL_WORLD_HANDLERS",
     "HandlerHealthStatus",
+    "WorldHandlerDiagnostics",
+    "WorldHandlerEventStats",
     "WorldHandlerHealthCard",
     "build_world_handler_health",
     "collect_world_handler_health",

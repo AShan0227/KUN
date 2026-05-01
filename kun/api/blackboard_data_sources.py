@@ -701,6 +701,23 @@ def _entry_from_replayed_story(
         decision_ticket_ids=[str(item) for item in story.get("decision_ticket_ids", []) if item],
         context_asset_ids=[str(item) for item in story.get("context_asset_ids", []) if item],
         skill_hints=[str(item) for item in story.get("skill_refs", []) if item],
+        credit_assignment_count=int(story.get("credit_assignment_count") or 0),
+        credit_assignment_summary=(
+            dict(story["credit_assignment_summary"])
+            if isinstance(story.get("credit_assignment_summary"), dict)
+            else None
+        ),
+        resource_credit_summaries=[
+            dict(item)
+            for item in story.get("resource_credit_summaries", [])
+            if isinstance(item, dict)
+        ],
+        top_credit_resource_kinds=[
+            str(item) for item in story.get("top_credit_resource_kinds", []) if item
+        ],
+        critical_path_step_ids=[
+            int(item) for item in story.get("critical_path_step_ids", []) if isinstance(item, int)
+        ],
         started_at=first_seen,
         updated_at=last_seen,
     )

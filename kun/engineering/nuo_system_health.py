@@ -17,6 +17,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 
+from kun.context.governance_audit import run_context_governance_audit
 from kun.context.maintenance import ContextMaintenanceReport, run_context_maintenance
 from kun.core.config import settings
 from kun.core.db import session_scope
@@ -157,6 +158,8 @@ class SystemHealthReport(BaseModel):
     compiler_governance_summary: dict[str, int] = Field(default_factory=dict)
     context_maintenance_summary: dict[str, int] = Field(default_factory=dict)
     context_maintenance_error: str | None = None
+    context_governance_audit_summary: dict[str, int] = Field(default_factory=dict)
+    context_governance_audit_error: str | None = None
     state_ledger_audit_summary: dict[str, int] = Field(default_factory=dict)
     skill_health_summary: dict[str, int] = Field(default_factory=dict)
     skill_health_error: str | None = None
@@ -277,6 +280,10 @@ async def collect_system_health_report(
         context_maintenance_summary,
         context_maintenance_error,
     ) = await _collect_context_maintenance_summary(tenant_id=tenant_id)
+    (
+        context_governance_audit_summary,
+        context_governance_audit_error,
+    ) = await _collect_context_governance_audit_summary(tenant_id=tenant_id)
     compiler_governance_summary = _compiler_governance_summary(context_maintenance_summary)
     state_ledger_audit_summary = await _collect_state_ledger_audit_summary(tenant_id=tenant_id)
     skill_health_summary, skill_health_error = await _collect_skill_health_summary(
@@ -303,6 +310,8 @@ async def collect_system_health_report(
         world_handlers=world_handlers,
         context_maintenance_summary=context_maintenance_summary,
         context_maintenance_error=context_maintenance_error,
+        context_governance_audit_summary=context_governance_audit_summary,
+        context_governance_audit_error=context_governance_audit_error,
         state_ledger_audit_summary=state_ledger_audit_summary,
         skill_health_summary=skill_health_summary,
         skill_health_error=skill_health_error,
@@ -336,6 +345,8 @@ async def collect_system_health_report(
         compiler_governance_summary=compiler_governance_summary,
         context_maintenance_summary=context_maintenance_summary,
         context_maintenance_error=context_maintenance_error,
+        context_governance_audit_summary=context_governance_audit_summary,
+        context_governance_audit_error=context_governance_audit_error,
         state_ledger_audit_summary=state_ledger_audit_summary,
         skill_health_summary=skill_health_summary,
         skill_health_error=skill_health_error,
@@ -456,6 +467,8 @@ def _findings(
     world_handlers: list[WorldHandlerHealthCard],
     context_maintenance_summary: dict[str, int] | None = None,
     context_maintenance_error: str | None = None,
+    context_governance_audit_summary: dict[str, int] | None = None,
+    context_governance_audit_error: str | None = None,
     state_ledger_audit_summary: dict[str, int] | None = None,
     skill_health_summary: dict[str, int] | None = None,
     skill_health_error: str | None = None,
@@ -588,6 +601,17 @@ def _findings(
                 suggested_action="检查 AssetStore 后端和 context maintenance 配置；不要在无法体检时盲目积累记忆。",
             )
         )
+    if context_governance_audit_error:
+        findings.append(
+            SystemHealthFinding(
+                finding_id="context_governance_audit_error",
+                severity="warn",
+                subsystem="context",
+                title="Context / memory 治理审计失败",
+                detail=context_governance_audit_error,
+                suggested_action="检查 AssetStore 和 resource_credit_stats 读路径；审计失败时不要执行瘦身动作。",
+            )
+        )
     context_summary = context_maintenance_summary or {}
     context_hard_delete = int(context_summary.get("hard_deleted", 0) or 0)
     context_soft_forget = int(context_summary.get("soft_forgotten", 0) or 0)
@@ -642,6 +666,34 @@ def _findings(
                 suggested_action=(
                     "先运行 kun compiler recompile-candidates dry-run 查看来源；"
                     "确认 allowed_root / URL 白名单后再显式 apply。"
+                ),
+            )
+        )
+    audit_counts = context_governance_audit_summary or {}
+    governance_candidates = int(audit_counts.get("findings", 0) or 0)
+    if governance_candidates > 0:
+        findings.append(
+            SystemHealthFinding(
+                finding_id="context_governance_audit_candidates",
+                severity=(
+                    "warn"
+                    if int(audit_counts.get("missing_credit_attribution", 0) or 0)
+                    or int(audit_counts.get("stale_long_tail", 0) or 0)
+                    else "info"
+                ),
+                subsystem="context",
+                title="Context / memory 有只读治理审计建议",
+                detail=(
+                    f"review-only 审计发现 {governance_candidates} 条建议："
+                    f"低价值 {int(audit_counts.get('low_value', 0) or 0)}，"
+                    f"重复 {int(audit_counts.get('duplicate', 0) or 0)}，"
+                    f"高频可抽象 {int(audit_counts.get('high_frequency_abstractable', 0) or 0)}，"
+                    f"过期/长尾 {int(audit_counts.get('stale_long_tail', 0) or 0)}，"
+                    f"缺信用归因 {int(audit_counts.get('missing_credit_attribution', 0) or 0)}。"
+                ),
+                suggested_action=(
+                    "查看 /nuo/health/context-governance/audit 或 "
+                    "kun context governance-audit；它只给建议，不删除、不压缩、不改生产资产。"
                 ),
             )
         )
@@ -869,6 +921,11 @@ def _governance_recommendations(
         elif finding.finding_id == "compiler_asset_review_candidates":
             risk_level = "medium"
             apply_hint = "POST /api/nuo/health/context-maintenance/run?dry_run=true"
+        elif finding.finding_id == "context_governance_audit_candidates":
+            risk_level = "medium"
+            can_apply = False
+            requires_human = True
+            apply_hint = "GET /api/nuo/health/context-governance/audit"
         elif finding.finding_id.startswith("world:"):
             risk_level = "high" if finding.severity in {"error", "critical"} else "medium"
             apply_hint = "POST /api/nuo/actions/handlers/auto-quarantine?dry_run=true"
@@ -959,6 +1016,47 @@ def _compiler_governance_summary(context_summary: dict[str, int]) -> dict[str, i
         "compiler_governance_findings": int(context_summary.get("compiler_review", 0) or 0)
         + int(context_summary.get("compiler_recompile_recommended", 0) or 0),
     }
+
+
+async def _collect_context_governance_audit_summary(
+    *,
+    tenant_id: str,
+    max_assets: int = 200,
+) -> tuple[dict[str, int], str | None]:
+    """Collect read-only context governance audit counts for NUO health."""
+
+    try:
+        credited_keys: set[str] = set()
+        async with session_scope(tenant_id=tenant_id) as s:
+            rows = (
+                (
+                    await s.execute(
+                        select(ResourceCreditRow).where(
+                            ResourceCreditRow.tenant_id == tenant_id,
+                            ResourceCreditRow.resource_kind.in_(
+                                ("memory", "knowledge", "methodology", "skill")
+                            ),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        for row in rows:
+            credited_keys.add(str(row.resource_key))
+            credited_keys.add(str(row.resource_id))
+            credited_keys.add(f"{row.resource_kind}:{row.resource_id}")
+        report = await run_context_governance_audit(
+            tenant_id=tenant_id,
+            max_assets=max_assets,
+            credited_resource_keys=credited_keys,
+        )
+    except Exception as exc:
+        return {}, str(exc)
+    counts = {str(key): int(value) for key, value in report.category_counts.items()}
+    counts["total_seen"] = report.total_seen
+    counts["findings"] = len(report.findings)
+    return counts, None
 
 
 async def _collect_skill_health_summary(

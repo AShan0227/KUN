@@ -705,6 +705,28 @@ def context_maintenance_run(
     _run_json(_run())
 
 
+@context_app.command("governance-audit")
+def context_governance_audit(
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+    max_assets: int = typer.Option(500, "--max-assets", min=1),
+) -> None:
+    """Run a review-only memory/context governance audit.
+
+    This command only reports slimming recommendations. It never writes,
+    compresses, forgets, merges, or deletes assets.
+    """
+    from kun.context.governance_audit import run_context_governance_audit
+
+    async def _run() -> dict[str, Any]:
+        report = await run_context_governance_audit(
+            tenant_id=tenant,
+            max_assets=max_assets,
+        )
+        return report.model_dump(mode="json")
+
+    _run_json(_run())
+
+
 @app.command()
 def run(
     message: str = typer.Argument(..., help="Natural language task"),

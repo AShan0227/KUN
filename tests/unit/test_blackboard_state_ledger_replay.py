@@ -171,6 +171,35 @@ async def test_state_ledger_main_source_replays_events_when_hot_and_runtime_are_
                 "cost_delta_usd": 0.04,
             },
         ),
+        _event_row(
+            event_id="evt-credit",
+            event_type="credit.assignment.completed",
+            payload={
+                "task_outcome": "success",
+                "step_count": 1,
+                "critical_path_step_ids": [1],
+                "total_immediate_reward": 0.9,
+                "resource_count": 2,
+                "resource_kind_summaries": [
+                    {
+                        "resource_kind": "skill",
+                        "total_delta": 0.5,
+                        "mean_delta": 0.5,
+                        "positive_count": 1,
+                        "negative_count": 0,
+                        "resource_count": 1,
+                    },
+                    {
+                        "resource_kind": "context",
+                        "total_delta": 0.2,
+                        "mean_delta": 0.2,
+                        "positive_count": 1,
+                        "negative_count": 0,
+                        "resource_count": 1,
+                    },
+                ],
+            },
+        ),
     ]
     fake_session = _FakeSession(replay_rows=[(event, task) for event in events])
 
@@ -187,6 +216,9 @@ async def test_state_ledger_main_source_replays_events_when_hot_and_runtime_are_
     assert result[0]["status"] == "running"
     assert result[0]["decision_ticket_ids"] == ["decision-3"]
     assert result[0]["cost_so_far_usd"] == 0.04
+    assert result[0]["credit_assignment_count"] == 1
+    assert result[0]["top_credit_resource_kinds"] == ["skill", "context"]
+    assert result[0]["critical_path_step_ids"] == [1]
     assert fake_session.saw_user_filter
 
 
