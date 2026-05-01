@@ -1052,6 +1052,58 @@ def test_ops_readiness_cli_outputs_aggregate_report(monkeypatch: pytest.MonkeyPa
     assert '"preflight"' in result.output
     assert '"secret_audit"' in result.output
     assert '"delivery_summary"' in result.output
+    assert '"backup_drill"' in result.output
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_readiness_report_exposes_backup_drill_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kun.ops import readiness as readiness_module
+    from kun.ops.preflight import PreflightCheck, PreflightReport
+    from kun.ops.secret_audit import SecretAuditReport
+
+    def fake_run_preflight(**kwargs: object) -> PreflightReport:
+        assert kwargs["require_recent_backup_drill"] is True
+        assert kwargs["backup_drill_max_age_hours"] == 24.0
+        return PreflightReport(
+            env="production",
+            status="block",
+            delivery_summary={},
+            checks=[
+                PreflightCheck(
+                    check_id="backup_drill_freshness",
+                    severity="blocker",
+                    title="最近备份演练缺失或过期",
+                    detail="backup_dir=/tmp/kun/backups",
+                    suggested_action="运行 backup-drill-create。",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(readiness_module, "run_preflight", fake_run_preflight)
+    monkeypatch.setattr(
+        readiness_module,
+        "audit_runtime_secrets",
+        lambda: SecretAuditReport(env="production", status="pass", items=[], summary={}),
+    )
+    monkeypatch.setattr(readiness_module, "get_v3_delivery_status", lambda: [])
+    monkeypatch.setattr(readiness_module, "validate_delivery_status", lambda items: [])
+    monkeypatch.setattr(readiness_module, "delivery_status_summary", lambda: {})
+
+    report = await readiness_module.run_readiness_report(
+        tenant_id="tenant-a",
+        require_recent_backup_drill=True,
+        backup_drill_max_age_hours=24.0,
+    )
+
+    assert report.status == "block"
+    assert report.backup_drill.status == "block"
+    assert report.backup_drill.required is True
+    assert report.backup_drill.max_age_hours == 24.0
+    assert report.backup_drill.detail == "backup_dir=/tmp/kun/backups"
+    assert "备份恢复演练" in " ".join(report.next_steps)
 
 
 @pytest.mark.unit

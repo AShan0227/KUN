@@ -93,6 +93,7 @@ from kun.engineering.credit_assignment import (
     persist_resource_credit_report,
     summarize_resource_credit_deltas,
 )
+from kun.engineering.memory_invocation_policy import decide_memory_invocation_for_task
 from kun.engineering.validation import ValidationPipeline, pick_tier
 from kun.interface.adapters import translate_for
 from kun.interface.hermes import DefaultHermesAdapter, HermesAdapter
@@ -1295,11 +1296,28 @@ class Orchestrator:
         memory_policy = _memory_policy_from_watchtower(watchtower_decision)
         memory_policy_source = "watchtower.decision_plane"
         if memory_policy is None:
-            memory_policy = decide_memory_policy(
-                task_ref,
-                watchtower_decision=watchtower_decision,
-            )
-            memory_policy_source = "memory.policy.fallback"
+            historical_memory_credit: dict[str, float] = {}
+            try:
+                async with session_scope(tenant_id=tenant.tenant_id) as s:
+                    historical_memory_credit = await load_resource_credit_scores(
+                        s,
+                        tenant_id=tenant.tenant_id,
+                        resource_keys=_memory_policy_credit_keys(task_ref),
+                    )
+            except Exception:
+                log.debug("memory_policy.credit_hydration_skipped", exc_info=True)
+            if historical_memory_credit:
+                memory_policy = decide_memory_invocation_for_task(
+                    task_ref,
+                    historical_resource_credit=historical_memory_credit,
+                ).to_memory_policy_ticket()
+                memory_policy_source = "memory.invocation_policy.fallback"
+            else:
+                memory_policy = decide_memory_policy(
+                    task_ref,
+                    watchtower_decision=watchtower_decision,
+                )
+                memory_policy_source = "memory.policy.fallback"
         memory_policy_ticket = ticket_from_memory_policy_selection(
             tenant_id=tenant.tenant_id,
             task_id=task_ref.meta.task_id,
@@ -1699,6 +1717,7 @@ class Orchestrator:
                 # direct_llm → 走现有路径
                 step_context_summary = context_summary  # per-step 副本, hermes use_memory 可加塞
                 step_context_resources = list(context_resource_ids)
+                step_decision_credit_resources: list[str] = []
                 if _hermes_step is not None and _exec_mode in ("SMART", "MAX"):
                     _hermes_override = _hermes_skill_from_action(_hermes_step)
                     if _hermes_override and _hermes_override != step_plan.skill_hint:
@@ -1749,6 +1768,9 @@ class Orchestrator:
                             query=memory_query,
                             payload=getattr(_hermes_step, "action_payload", None) or {},
                             execution_mode=str(_exec_mode),
+                        )
+                        step_decision_credit_resources.extend(
+                            _step_memory_policy_credit_resources(step_memory_policy)
                         )
                         if memory_query and step_memory_policy.use_memory:
                             step_memory_kwargs = step_memory_policy.as_context_packer_kwargs()
@@ -2107,8 +2129,11 @@ class Orchestrator:
                     watchtower_decision=watchtower_decision,
                     active_protocol=active_protocol,
                     decision_ticket_ids=[ticket.ticket_id for ticket in decision_tickets],
-                    decision_ticket_credit_resources=_decision_ticket_credit_resources(
-                        decision_tickets
+                    decision_ticket_credit_resources=_dedupe_strings(
+                        [
+                            *_decision_ticket_credit_resources(decision_tickets),
+                            *step_decision_credit_resources,
+                        ]
                     ),
                 )
                 await self._record_process_memory(
@@ -4661,6 +4686,88 @@ def _context_decision_credit_resources(selected_action: str) -> list[str]:
     else:
         resources.append("context_policy_use:use_context")
     return resources
+
+
+def _step_memory_policy_credit_resources(policy: Any) -> list[str]:
+    """Credit mid-run memory decisions, including skipped memory pulls.
+
+    Without these stable keys KUN only learns from memories that were actually
+    injected.  The negative/skip side matters just as much: for simple tasks,
+    the best strategy is often "do not wake memory at all".
+    """
+
+    use_memory = bool(getattr(policy, "use_memory", False))
+    reason = _credit_token(str(getattr(policy, "reason", "") or "unknown"), max_len=100)
+    resources = [
+        "memory_policy_scope:mid_run",
+        f"memory_policy_mid_run:{'use_memory' if use_memory else 'skip'}",
+        f"memory_policy_mid_run_reason:{reason}",
+        f"memory_policy_use:{'use_memory' if use_memory else 'no_memory'}",
+    ]
+    for layer in getattr(policy, "layers", []) or []:
+        raw_layer = getattr(layer, "value", layer)
+        token = _credit_token(str(raw_layer))
+        if token:
+            resources.append(f"memory_policy_layer:{token}")
+    for layer in getattr(policy, "avoid_layers", []) or []:
+        raw_layer = getattr(layer, "value", layer)
+        token = _credit_token(str(raw_layer))
+        if token:
+            resources.append(f"memory_policy_avoid_layer:{token}")
+    return _dedupe_strings(resources)
+
+
+def _memory_policy_credit_keys(task_ref: TaskRef) -> list[str]:
+    """Durable credit keys that can steer fallback memory invocation.
+
+    Watchtower normally hydrates aggregate memory credit before deciding.  When
+    Watchtower is off or returns no memory ticket, the fallback path still needs
+    to see the same long-term signals instead of reverting to static rules.
+    """
+
+    keys: list[str] = []
+    keys.extend(f"memory_layer:{layer.value}" for layer in MemoryLayer)
+    keys.extend(
+        f"asset_kind:{kind}"
+        for kind in (
+            "memory",
+            "methodology",
+            "knowledge",
+            "skill",
+            "handoff",
+            "role_template",
+        )
+    )
+    for tag in _memory_policy_credit_tags(task_ref):
+        keys.append(f"tag:{tag}")
+    return _dedupe_strings(keys)
+
+
+def _memory_policy_credit_tags(task_ref: TaskRef) -> list[str]:
+    tags: list[str] = []
+    tags.append(_credit_token(task_ref.meta.task_type, max_len=80))
+    if task_ref.spec is not None:
+        tags.extend(_credit_token(item, max_len=80) for item in task_ref.spec.required_skills)
+        tags.extend(_credit_token(item, max_len=80) for item in task_ref.spec.required_tools)
+    text = " ".join(
+        item
+        for item in (
+            task_ref.meta.task_type,
+            task_ref.meta.success_criteria_short,
+            task_ref.spec.goal_detail if task_ref.spec is not None else "",
+        )
+        if item
+    ).lower()
+    keyword_tags = {
+        "coding": ("code", "bug", "pytest", "mypy", "ruff", "代码", "测试", "修复"),
+        "strategy": ("strategy", "growth", "pricing", "商业", "策略", "增长", "定价"),
+        "world_gateway": ("email", "browser", "external", "客户", "邮件", "外部"),
+        "risk": ("delete", "send", "pay", "production", "删除", "发送", "支付", "生产"),
+    }
+    for tag, needles in keyword_tags.items():
+        if any(needle in text for needle in needles):
+            tags.append(tag)
+    return _dedupe_strings([tag for tag in tags if tag])
 
 
 def _credit_token(raw: str, *, max_len: int = 80) -> str:

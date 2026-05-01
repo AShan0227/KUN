@@ -6,6 +6,8 @@ layer: preflight, delivery status, secret audit, and optional dogfood.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from kun.engineering.delivery_status import (
@@ -19,6 +21,20 @@ from kun.ops.preflight import PreflightReport, run_preflight
 from kun.ops.secret_audit import SecretAuditReport, audit_runtime_secrets
 
 
+class BackupReadinessSummary(BaseModel):
+    """Human-facing summary for the backup/restore drill gate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["pass", "warn", "block", "unknown"] = "unknown"
+    check_id: str = "backup_drill_freshness"
+    title: str = "备份恢复演练状态未知"
+    detail: str = ""
+    suggested_action: str = ""
+    required: bool = False
+    max_age_hours: float = 168.0
+
+
 class ReadinessReport(BaseModel):
     """Aggregated readiness report for human + CI use."""
 
@@ -30,6 +46,7 @@ class ReadinessReport(BaseModel):
     secret_audit: SecretAuditReport
     delivery_summary: dict[str, int] = Field(default_factory=dict)
     delivery_issues: list[str] = Field(default_factory=list)
+    backup_drill: BackupReadinessSummary = Field(default_factory=BackupReadinessSummary)
     dogfood: DogfoodReport | None = None
     blockers: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -67,6 +84,11 @@ async def run_readiness_report(
             include_db_state_ledger_repair=include_db_state_ledger_repair,
             include_db_long_horizon_drill=include_db_long_horizon_drill,
         )
+    backup_drill = _backup_readiness_summary(
+        preflight,
+        required=require_recent_backup_drill,
+        max_age_hours=backup_drill_max_age_hours,
+    )
 
     blockers = _blockers(
         preflight=preflight,
@@ -88,10 +110,50 @@ async def run_readiness_report(
         secret_audit=secret_audit,
         delivery_summary=_delivery_summary(delivery_items),
         delivery_issues=delivery_issues,
+        backup_drill=backup_drill,
         dogfood=dogfood,
         blockers=blockers,
         warnings=warnings,
-        next_steps=_next_steps(blockers=blockers, warnings=warnings, dogfood=dogfood),
+        next_steps=_next_steps(
+            blockers=blockers,
+            warnings=warnings,
+            dogfood=dogfood,
+            backup_drill=backup_drill,
+        ),
+    )
+
+
+def _backup_readiness_summary(
+    preflight: PreflightReport,
+    *,
+    required: bool,
+    max_age_hours: float,
+) -> BackupReadinessSummary:
+    check = next(
+        (item for item in preflight.checks if item.check_id == "backup_drill_freshness"),
+        None,
+    )
+    if check is None:
+        return BackupReadinessSummary(
+            status="unknown",
+            detail="preflight 没有返回 backup_drill_freshness 检查。",
+            suggested_action="确认 preflight 工具链没有被裁剪。",
+            required=required,
+            max_age_hours=max_age_hours,
+        )
+    status_by_severity: dict[str, Literal["pass", "warn", "block", "unknown"]] = {
+        "ok": "pass",
+        "warn": "warn",
+        "blocker": "block",
+    }
+    return BackupReadinessSummary(
+        status=status_by_severity.get(check.severity, "unknown"),
+        check_id=check.check_id,
+        title=check.title,
+        detail=check.detail,
+        suggested_action=check.suggested_action,
+        required=required,
+        max_age_hours=max_age_hours,
     )
 
 
@@ -142,13 +204,19 @@ def _next_steps(
     blockers: list[str],
     warnings: list[str],
     dogfood: DogfoodReport | None,
+    backup_drill: BackupReadinessSummary,
 ) -> list[str]:
     if blockers:
-        return [
+        steps = [
             "先修 blocker，不要进入正式测试。",
             "优先看 preflight / secret_audit / dogfood 的 blocker 明细。",
         ]
+        if backup_drill.status == "block":
+            steps.append("先完成最近一次备份恢复演练；恢复能力没验证前，不要做生产发布。")
+        return steps
     steps = ["可以进入人工 dogfood，但必须带着 warnings 清单测试。"]
+    if backup_drill.status in {"warn", "unknown"}:
+        steps.append("建议先跑一次备份恢复演练，再进入更长周期 dogfood。")
     if dogfood is None:
         steps.append(
             "如需更真实验收，加 --include-dogfood；本地有数据库再加 --include-db-mission / --include-db-account。"
@@ -158,4 +226,4 @@ def _next_steps(
     return steps
 
 
-__all__ = ["ReadinessReport", "run_readiness_report"]
+__all__ = ["BackupReadinessSummary", "ReadinessReport", "run_readiness_report"]

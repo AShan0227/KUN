@@ -19,11 +19,18 @@ from kun.core.emergent_solution import (
 )
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
 from kun.engineering.emergent_switch import EmergentSwitchManager
-from kun.engineering.orchestrator import Orchestrator, TaskResult, _context_resource_ids
+from kun.engineering.orchestrator import (
+    Orchestrator,
+    TaskResult,
+    _context_resource_ids,
+    _memory_policy_credit_keys,
+    _step_memory_policy_credit_resources,
+)
 from kun.interface.llm import LLMRouter
 from kun.interface.llm.base import LLMResponse, UsageInfo
 from kun.interface.llm.router import set_router
 from kun.interface.llm.stub_provider import StubProvider
+from kun.memory.policy import MemoryLayer, StepMemoryPolicy
 from kun.skills.dispatcher import autoload_builtins
 from kun.watchtower.engine import RuleEngine
 from kun.watchtower.rules import GuardRule, RuleAction, RuleTrigger
@@ -158,6 +165,52 @@ def test_context_resource_ids_credit_process_experiences() -> None:
         "asset_kind:memory",
         "memory_layer:execution_process",
     ]
+
+
+def test_step_memory_policy_credit_resources_include_skips() -> None:
+    resources = _step_memory_policy_credit_resources(
+        StepMemoryPolicy(
+            action_type="use_memory",
+            use_memory=False,
+            avoid_layers=[MemoryLayer.EXECUTION_PROCESS],
+            reason="task_policy_disallows_mid_run_retrieval",
+        )
+    )
+
+    assert "memory_policy_scope:mid_run" in resources
+    assert "memory_policy_mid_run:skip" in resources
+    assert "memory_policy_use:no_memory" in resources
+    assert "memory_policy_avoid_layer:execution_process" in resources
+
+
+def test_memory_policy_credit_keys_include_task_tags() -> None:
+    task = TaskRef(
+        meta=TaskMeta(
+            task_id="task-memory-credit",
+            fingerprint="sha256:" + "a" * 64,
+            task_type="coding.debug",
+            risk_level="low",
+            complexity_score=0.55,
+            owner=Owner(tenant_id="tenant-a", user_id="user-a"),
+            estimated_cost_usd=0.01,
+            estimated_duration_sec=30,
+            success_criteria_short="修复 pytest bug",
+        ),
+        spec=TaskSpec(
+            goal_detail="修复 pytest 失败并运行测试",
+            required_skills=["code-review"],
+            required_tools=["pytest"],
+        ),
+    )
+
+    keys = _memory_policy_credit_keys(task)
+
+    assert "memory_layer:execution_process" in keys
+    assert "asset_kind:methodology" in keys
+    assert "tag:coding_debug" in keys
+    assert "tag:code_review" in keys
+    assert "tag:pytest" in keys
+    assert "tag:coding" in keys
 
 
 def _judge_builder(request):
