@@ -16,6 +16,7 @@ Pipeline (§5.1-5.3):
 from __future__ import annotations
 
 import asyncio
+import json
 import os as _os
 import time
 from collections.abc import AsyncIterator, Awaitable
@@ -684,6 +685,91 @@ class Orchestrator:
                 "decision_ticket": ooda_ticket.event_payload(),
             },
         )
+
+        boundary_result = await _evaluate_task_boundary(
+            tenant_id=tenant.tenant_id,
+            task_ref=task_ref,
+            output_kind=output_kind,
+            mission_id=mission_id,
+        )
+        if boundary_result is not None:
+            boundary_ticket, boundary_decision, boundary_scope = boundary_result
+            decision_tickets.append(boundary_ticket)
+            self._record_state_ledger("record_decision_ticket", boundary_ticket)
+            async with session_scope(tenant_id=tenant.tenant_id) as s:
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant.tenant_id,
+                        event_type="task.preflight_guard.evaluated",
+                        payload=boundary_ticket.event_payload(),
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+            yield OrchestratorEvent(
+                kind="action_plan",
+                data={
+                    "stage": "task_boundary_guard",
+                    "decision_ticket": boundary_ticket.event_payload(),
+                    "in_scope": boundary_decision.in_scope,
+                },
+            )
+            if not boundary_decision.in_scope and boundary_scope.boundary_strict_mode:
+                answer = _boundary_pause_answer(boundary_decision, boundary_scope)
+                paused_result = TaskResult(
+                    task_id=task_ref.meta.task_id,
+                    status="paused",
+                    answer=answer,
+                    duration_sec=time.perf_counter() - t0,
+                )
+                paused_runtime = RuntimeState(
+                    task_ref=task_ref.meta.task_id,
+                    total_planned_steps=1,
+                    status="paused",
+                    finished_at=datetime.now(UTC),
+                )
+                self._record_state_ledger(
+                    "record_paused",
+                    task_ref.meta.task_id,
+                    reason="task_boundary_guard",
+                    pending_confirmations=["task_boundary_redirect"],
+                )
+                async with session_scope(tenant_id=tenant.tenant_id) as s:
+                    await _persist_runtime_snapshot(s, paused_runtime, tenant.tenant_id)
+                    await _persist_task_result(s, tenant_id=tenant.tenant_id, result=paused_result)
+                    await emit(
+                        s,
+                        Event.build(
+                            tenant_id=tenant.tenant_id,
+                            event_type="task.paused",
+                            payload={
+                                "task_id": task_ref.meta.task_id,
+                                "task_type": task_ref.meta.task_type,
+                                "scope": boundary_scope.model_dump(mode="json"),
+                                "boundary_decision": boundary_decision.model_dump(mode="json"),
+                            },
+                            task_ref=task_ref.meta.task_id,
+                        ),
+                    )
+                yield OrchestratorEvent(
+                    kind="guard_intervention",
+                    data={
+                        "stage": "task_boundary_guard",
+                        "level": "blocked",
+                        "message": answer,
+                        "decision_ticket": boundary_ticket.event_payload(),
+                    },
+                )
+                yield OrchestratorEvent(
+                    kind="answer",
+                    data={"content": answer, "task_id": task_ref.meta.task_id},
+                )
+                yield OrchestratorEvent(
+                    kind="done",
+                    data={"result": paused_result.model_dump(mode="json")},
+                )
+                return
+
         if (
             self.protocol_registry is not None
             and _os.getenv("KUN_PROTOCOL_CONSUME_ENABLED", "1") == "1"
@@ -4038,6 +4124,157 @@ async def _today_cost_vs_budget(tenant_id: str) -> tuple[float, float]:
         )
         used = float(result.scalar_one() or 0.0)
     return (used, cap)
+
+
+async def _evaluate_task_boundary(
+    *,
+    tenant_id: str,
+    task_ref: TaskRef,
+    output_kind: str,
+    mission_id: str | None,
+) -> tuple[DecisionTicket, Any, Any] | None:
+    """Run TaskBoundaryGuard when a role/task scope is explicitly configured."""
+
+    if _os.getenv("KUN_TASK_BOUNDARY_ENABLED", "1") != "1":
+        return None
+    scope = _task_boundary_scope_for(task_ref=task_ref, output_kind=output_kind)
+    if scope is None:
+        return None
+
+    from kun.security.task_boundary_guard import TaskBoundaryGuard
+
+    task_meta = {
+        "task_id": task_ref.meta.task_id,
+        "task_type": task_ref.meta.task_type,
+        "risk_level": task_ref.meta.risk_level,
+        "complexity_score": task_ref.meta.complexity_score,
+        "success_criteria_short": task_ref.meta.success_criteria_short,
+    }
+    decision = await TaskBoundaryGuard().check(task_meta=task_meta, scope=scope)
+    strict_block = not decision.in_scope and scope.boundary_strict_mode
+    ticket = DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_ref.meta.task_id,
+        mission_id=mission_id,
+        phase="intake",
+        decision_point="preflight_guard",
+        source_module="security.task_boundary_guard",
+        selected_action=(
+            "pause_out_of_scope"
+            if strict_block
+            else "warn_out_of_scope"
+            if not decision.in_scope
+            else "allow_in_scope"
+        ),
+        status="blocked" if strict_block else "allowed",
+        reason=decision.reason,
+        confidence=decision.boundary_score,
+        risk_level=task_ref.meta.risk_level,
+        cost_estimate_usd=task_ref.meta.estimated_cost_usd,
+        inputs_summary=task_meta,
+        constraints=[
+            f"role_id={scope.role_id or 'unknown'}",
+            f"strict={scope.boundary_strict_mode}",
+        ],
+        evidence={
+            "boundary_decision": decision.model_dump(mode="json"),
+            "scope": scope.model_dump(mode="json"),
+        },
+        metadata={
+            "task_type": task_ref.meta.task_type,
+            "role_id": scope.role_id,
+            "redirect": decision.suggested_redirect or scope.out_of_scope_redirect,
+        },
+    )
+    return ticket, decision, scope
+
+
+def _task_boundary_scope_for(*, task_ref: TaskRef, output_kind: str) -> Any | None:
+    """Load a ScopeConfig from explicit env config.
+
+    Supported shapes:
+      - raw ScopeConfig JSON
+      - {"default": ScopeConfig, "by_output_kind": {"user": ScopeConfig}}
+      - {"by_task_type": {"coding.*": ScopeConfig}}
+
+    No env config means no boundary scope, so simple tasks are not slowed down.
+    """
+
+    payload = _task_boundary_scope_payload()
+    if not isinstance(payload, dict):
+        return None
+
+    raw_scope: Any = payload
+    if "allowed_task_types" not in payload and "forbidden_task_types" not in payload:
+        raw_scope = None
+        by_output_kind = payload.get("by_output_kind")
+        if isinstance(by_output_kind, dict):
+            candidate = by_output_kind.get(output_kind)
+            if isinstance(candidate, dict):
+                raw_scope = candidate
+        if raw_scope is None:
+            by_task_type = payload.get("by_task_type")
+            if isinstance(by_task_type, dict):
+                for pattern, candidate in by_task_type.items():
+                    if not isinstance(candidate, dict):
+                        continue
+                    if _task_type_matches_pattern(str(pattern), task_ref.meta.task_type):
+                        raw_scope = candidate
+                        break
+        if raw_scope is None and isinstance(payload.get("default"), dict):
+            raw_scope = payload["default"]
+    if not isinstance(raw_scope, dict):
+        return None
+
+    from kun.security.task_boundary_guard import ScopeConfig
+
+    try:
+        return ScopeConfig.model_validate(raw_scope)
+    except Exception:
+        log.exception("task_boundary.scope_invalid")
+        return None
+
+
+def _task_boundary_scope_payload() -> dict[str, Any] | None:
+    raw = _os.getenv("KUN_TASK_BOUNDARY_SCOPE_JSON")
+    if raw:
+        try:
+            payload = json.loads(raw)
+            return payload if isinstance(payload, dict) else None
+        except json.JSONDecodeError:
+            log.warning("task_boundary.scope_json_invalid")
+            return None
+
+    path = _os.getenv("KUN_TASK_BOUNDARY_SCOPE_FILE")
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        return payload if isinstance(payload, dict) else None
+    except Exception as exc:
+        log.warning("task_boundary.scope_file_unreadable", path=path, error=str(exc))
+        return None
+
+
+def _task_type_matches_pattern(pattern: str, task_type: str) -> bool:
+    if pattern == "*":
+        return True
+    if pattern.endswith(".*"):
+        prefix = pattern[:-2]
+        return task_type == prefix or task_type.startswith(prefix + ".")
+    return pattern == task_type
+
+
+def _boundary_pause_answer(boundary_decision: Any, scope: Any) -> str:
+    redirect = boundary_decision.suggested_redirect or getattr(scope, "out_of_scope_redirect", "")
+    target = f"建议转给 {redirect}。" if redirect else "你可以换一个更合适的角色或确认是否继续。"
+    return (
+        "任务已暂停：当前角色边界不覆盖这个任务类型。"
+        f"原因：{boundary_decision.reason}；"
+        f"命中：{boundary_decision.matched_pattern or '未命中当前 scope'}。"
+        f"{target}"
+    )
 
 
 async def _load_task_progress(

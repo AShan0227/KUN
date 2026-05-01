@@ -171,6 +171,8 @@ class TaskBoundaryGuard:
     @staticmethod
     def _matches(pattern: str, task_type: str) -> bool:
         """简单模式匹配: pattern.endswith('.*') → 前缀匹配; 否则 exact."""
+        if pattern == "*":
+            return True
         if pattern.endswith(".*"):
             prefix = pattern[:-2]
             return task_type == prefix or task_type.startswith(prefix + ".")

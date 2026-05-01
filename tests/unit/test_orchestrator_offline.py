@@ -294,6 +294,52 @@ async def test_orchestrator_uses_llm_planner_for_complex_task():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_orchestrator_pauses_out_of_scope_task_before_planning(monkeypatch) -> None:
+    shared = _PlanningRoutingStub(tier="top")
+    providers = {
+        "top": shared,
+        "cheap": shared,
+        "coding": shared,
+        "fallback": shared,
+    }
+    set_router(LLMRouter(providers))
+    monkeypatch.setenv(
+        "KUN_TASK_BOUNDARY_SCOPE_JSON",
+        json.dumps(
+            {
+                "default": {
+                    "role_id": "marketing-agent",
+                    "role_name": "marketing copywriter",
+                    "allowed_task_types": ["marketing.*"],
+                    "forbidden_task_types": ["coding.*"],
+                    "boundary_strict_mode": True,
+                    "out_of_scope_redirect": "coding-agent",
+                }
+            }
+        ),
+    )
+
+    events = []
+    async for ev in Orchestrator(output_translator=_identity_translator).stream("Fix this bug"):
+        events.append(ev)
+
+    assert shared.planning_calls == 0
+    guard_events = [
+        ev
+        for ev in events
+        if ev.kind == "guard_intervention" and ev.data["stage"] == "task_boundary_guard"
+    ]
+    assert guard_events
+    assert guard_events[0].data["level"] == "blocked"
+    done = next(ev for ev in events if ev.kind == "done")
+    result = TaskResult.model_validate(done.data["result"])
+    assert result.status == "paused"
+    assert "当前角色边界不覆盖" in result.answer
+    assert "coding-agent" in result.answer
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_orchestrator_applies_emergent_switch_to_tail_plan():
     top = _PlanningRoutingStub(tier="top")
     providers = {
