@@ -43,6 +43,27 @@ def test_record_step_creates_initial_credit() -> None:
     assert abs(credit.credit_share["model:claude"] - 0.5) < 1e-9
 
 
+def test_record_step_preserves_prefixed_context_resource_keys() -> None:
+    """Context assets may already carry kind:id; do not double-prefix them."""
+
+    ca = CreditAssignment()
+    credit = ca.record_step(
+        task_id="tk-context",
+        step_id=1,
+        resources={
+            "memory": ["memory:m1", "knowledge:k1", "skill:s1"],
+            "model": ["gpt-5.5"],
+        },
+        immediate_reward=0.4,
+    )
+
+    assert "memory:m1" in credit.credit_share
+    assert "knowledge:k1" in credit.credit_share
+    assert "skill:s1" in credit.credit_share
+    assert "memory:knowledge:k1" not in credit.credit_share
+    assert "memory:skill:s1" not in credit.credit_share
+
+
 def test_record_step_immediate_reward_floor() -> None:
     """负 reward 被 floor 到 0 (避免负反馈反推)."""
     ca = CreditAssignment(immediate_reward_floor=0.0)

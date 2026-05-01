@@ -416,7 +416,7 @@ class CreditAssignment:
         flat: list[str] = []
         for kind, ids in resources.items():
             for rid in ids:
-                flat.append(f"{kind}:{rid}")
+                flat.append(make_resource_key(kind, rid))
         if not flat:
             return {}
         share = 1.0 / len(flat)
