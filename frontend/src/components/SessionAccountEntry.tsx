@@ -91,6 +91,12 @@ export function SessionAccountEntry({ compact = false }: SessionAccountEntryProp
     tenantId: identitySource.identity.tenantId,
     userId: identitySource.identity.userId,
   });
+  const [passwordDraft, setPasswordDraft] = useState({
+    loginTenantId: identitySource.identity.tenantId,
+    loginUserId: identitySource.identity.userId,
+    loginPassword: "",
+    setPassword: "",
+  });
   const [refreshToken, setRefreshToken] = useState(() => getKunRefreshToken());
   const [currentSession, setCurrentSession] = useState<CurrentSession | null>(null);
   const [currentUserSessions, setCurrentUserSessions] = useState<CurrentUserSessions | null>(
@@ -267,6 +273,41 @@ export function SessionAccountEntry({ compact = false }: SessionAccountEntryProp
     }
   };
 
+  const passwordLogin = async () => {
+    try {
+      const payload = await postAuthAction("/api/auth/password/login", {
+        tenant_id: passwordDraft.loginTenantId,
+        user_id: passwordDraft.loginUserId,
+        password: passwordDraft.loginPassword,
+      });
+      persistTokenPair(payload);
+    } catch (error) {
+      setAuthActionError(error instanceof Error ? error.message : "密码登录失败");
+    }
+  };
+
+  const setOwnPassword = async () => {
+    setAuthActionError("");
+    setAuthActionNotice("");
+    try {
+      const response = await apiFetch("/api/auth/password/set", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: passwordDraft.setPassword }),
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | { detail?: string; status?: string }
+        | null;
+      if (!response.ok) {
+        throw new Error(payload?.detail || `${response.status} ${response.statusText}`);
+      }
+      setPasswordDraft((value) => ({ ...value, setPassword: "" }));
+      setAuthActionNotice("密码已设置。它只保存哈希，不会保存明文。");
+    } catch (error) {
+      setAuthActionError(error instanceof Error ? error.message : "设置密码失败");
+    }
+  };
+
   const revokeToken = async (tokenId: string) => {
     setTokenListError("");
     try {
@@ -440,7 +481,7 @@ export function SessionAccountEntry({ compact = false }: SessionAccountEntryProp
       </div>
 
       {!compact && (
-        <div className="mt-4 grid gap-3 lg:grid-cols-3">
+        <div className="mt-4 grid gap-3 lg:grid-cols-4">
           <div className="rounded border border-gray-200 bg-gray-50 p-3 text-xs">
             <div className="font-medium text-gray-700">邀请码注册</div>
             <p className="mt-1 text-gray-500">
@@ -562,6 +603,74 @@ export function SessionAccountEntry({ compact = false }: SessionAccountEntryProp
             >
               清除 refresh
             </button>
+          </div>
+
+          <div className="rounded border border-gray-200 bg-gray-50 p-3 text-xs">
+            <div className="font-medium text-gray-700">密码登录</div>
+            <p className="mt-1 text-gray-500">
+              默认关闭；后端开启 KUN_PASSWORD_LOGIN_ENABLED 后可用。不是 OAuth 或设备风控。
+            </p>
+            <input
+              className="mt-2 w-full rounded border border-gray-200 px-2 py-1.5"
+              placeholder="tenant_id"
+              value={passwordDraft.loginTenantId}
+              onChange={(event) =>
+                setPasswordDraft((value) => ({
+                  ...value,
+                  loginTenantId: event.target.value,
+                }))
+              }
+            />
+            <input
+              className="mt-2 w-full rounded border border-gray-200 px-2 py-1.5"
+              placeholder="user_id"
+              value={passwordDraft.loginUserId}
+              onChange={(event) =>
+                setPasswordDraft((value) => ({
+                  ...value,
+                  loginUserId: event.target.value,
+                }))
+              }
+            />
+            <input
+              className="mt-2 w-full rounded border border-gray-200 px-2 py-1.5"
+              placeholder="password"
+              type="password"
+              value={passwordDraft.loginPassword}
+              onChange={(event) =>
+                setPasswordDraft((value) => ({
+                  ...value,
+                  loginPassword: event.target.value,
+                }))
+              }
+            />
+            <button
+              className="mt-2 rounded bg-kun-accent px-3 py-1.5 text-white hover:opacity-90"
+              onClick={() => void passwordLogin()}
+            >
+              密码登录并保存
+            </button>
+            <div className="mt-3 border-t border-gray-200 pt-2">
+              <div className="font-medium text-gray-700">给当前用户设置密码</div>
+              <input
+                className="mt-2 w-full rounded border border-gray-200 px-2 py-1.5"
+                placeholder="新密码，至少 12 位"
+                type="password"
+                value={passwordDraft.setPassword}
+                onChange={(event) =>
+                  setPasswordDraft((value) => ({
+                    ...value,
+                    setPassword: event.target.value,
+                  }))
+                }
+              />
+              <button
+                className="mt-2 rounded border border-gray-300 bg-white px-3 py-1.5 hover:bg-gray-100"
+                onClick={() => void setOwnPassword()}
+              >
+                设置当前用户密码
+              </button>
+            </div>
           </div>
         </div>
       )}

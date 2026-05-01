@@ -335,6 +335,7 @@ def get_v3_delivery_status(
                 "前端主入口 / NUO / billing 已通过统一 apiClient 从 localStorage 或 NEXT_PUBLIC_KUN_TENANT_ID/NEXT_PUBLIC_KUN_USER_ID 注入租户与用户 header，避免页面散落 u-sylvan/sylvan",
                 "前端已补 /account 会话入口，可手动录入 bearer token 并显示服务端 session，不再只能改 env/localStorage",
                 "前端 /account 可调用邀请码注册、接受邀请和 refresh-token 续期接口；仍诚实标注这不是密码登录/OAuth",
+                "前端 /account 可设置当前用户密码，也可用 tenant_id/user_id/password 登录并保存 access+refresh session；仍诚实标注这不是 OAuth/设备风控",
                 "前端 /account 可查看自己的 token 账本并撤销 token，且不展示原始 token/hash",
                 "前端 /account 已补本地租户/用户档案切换器；切换时会清除旧 token，避免跨租户误用",
                 "WebSocket 支持短期 ws_ticket；生产浏览器连接必须先用 /api/auth/ws-ticket 换短票据，不再把长期 access token 直接挂在 URL 上",
@@ -383,7 +384,7 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "完整 OAuth 账号体系",
-                "前端已有手动会话/邀请码注册/接受邀请/refresh 和本地租户档案切换入口，后端已有最小密码登录，WebSocket 已用短期 ws_ticket；但还没有 OAuth、服务端租户切换器、CSRF/设备态风控",
+                "前端已有手动会话/邀请码注册/接受邀请/refresh/最小密码登录和本地租户档案切换入口，WebSocket 已用短期 ws_ticket；但还没有 OAuth、服务端租户切换器、CSRF/设备态风控",
                 "已有最小 token 使用风险提示，但还不是完整设备登录态、异常登录风控或多设备管理",
                 "前端已有本地 JSON secret-store 写入入口，但还不是云 KMS / 托管 Secret Manager / 自动轮换 / 完整租户自助密钥平台",
                 "对象存储备份包往返演练已有命令；真实生产数据库和生产 S3/MinIO 账号的定期恢复演练还没跑过",
