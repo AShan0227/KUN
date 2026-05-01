@@ -18,6 +18,7 @@ from kun.engineering.idle_batch import (
     KnowledgeConflictStep,
     MethodologyDistillStep,
     QiIdleReplayStep,
+    QiStrategyPackReviewStep,
     RouteRuleMiningStep,
     TaskReplayStep,
     list_steps,
@@ -136,6 +137,7 @@ def test_default_steps_registered():
     assert "task_replay" in steps
     assert "route_rule_mining" in steps
     assert "qi_idle_replay" in steps
+    assert "qi_strategy_pack_review" in steps
     assert "compiler_sync_sources" in steps
     assert "external_emergent_scan" in steps
 
@@ -388,6 +390,28 @@ async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch)
         asset.l1_metadata["decision_ticket"]["status"] == "needs_review" for asset in draft_assets
     )
     assert all("review_only" in asset.tags for asset in draft_assets)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qi_strategy_pack_review_step_classifies_existing_drafts(monkeypatch) -> None:
+    from kun.context.storage import get_store
+    from kun.qi.problem_queue import reset_qi_problem_queue
+
+    monkeypatch.setenv("KUN_QI_PROBLEM_QUEUE_DB_ENABLED", "0")
+    reset_qi_problem_queue()
+    set_idle_batch_data_source(_FakeIdleBatchDataSource())
+
+    await QiIdleReplayStep().run("t-1")
+    summary = await QiStrategyPackReviewStep().run("t-1")
+
+    assert summary["scanned"] == 2
+    assert summary["updated"] == 2
+    assert summary["production_action"] is False
+    assert summary["ready_for_human_review"] + summary["needs_evidence"] + summary["blocked"] == 2
+    draft_assets = await get_store().list(tenant_id="t-1", asset_kind="methodology")
+    assert all("qi_review_status" in asset.l1_metadata for asset in draft_assets)
+    assert all(any(tag.startswith("qi_review:") for tag in asset.tags) for asset in draft_assets)
 
 
 @pytest.mark.unit

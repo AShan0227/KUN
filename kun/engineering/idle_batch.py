@@ -549,6 +549,26 @@ class QiIdleReplayStep(IdleBatchStep):
         }
 
 
+class QiStrategyPackReviewStep(IdleBatchStep):
+    """Classify Qi StrategyPack drafts by evidence, without promotion.
+
+    Qi is allowed to search and generate candidates, but production routing
+    should only see a clear review state: missing evidence, blocked, or ready
+    for a human/strong-review approval path.
+    """
+
+    step_id = "qi_strategy_pack_review"
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        from kun.qi.strategy_pack_review import review_strategy_pack_draft_assets
+
+        report = await review_strategy_pack_draft_assets(
+            tenant_id=tenant_id,
+            dry_run=False,
+        )
+        return report.model_dump(mode="json")
+
+
 class CompilerSyncSourcesStep(IdleBatchStep):
     """Run explicitly configured compiler sync sources during idle time.
 
@@ -868,6 +888,7 @@ def register_default_steps() -> None:
         HealthReportStep(),
         WorldHandlerAutoQuarantineStep(),
         QiIdleReplayStep(),
+        QiStrategyPackReviewStep(),
         CompilerSyncSourcesStep(),
         ExternalEmergentScanStep(),
         RouteRuleMiningStep(),
@@ -1145,11 +1166,13 @@ async def _persist_strategy_pack_drafts(
 
     store = get_store()
     existing = await store.list(tenant_id=tenant_id, asset_kind="methodology", limit=1000)
-    seen_draft_ids = {
-        str(asset.l1_metadata.get("draft_id"))
+    existing_by_draft_id = {
+        str(asset.l1_metadata.get("draft_id")): asset
         for asset in existing
         if asset.l1_metadata.get("source") == "qi.idle_replay.strategy_pack_draft"
+        and asset.l1_metadata.get("draft_id")
     }
+    seen_draft_ids = set(existing_by_draft_id)
     created: list[str] = []
     evaluations_by_target: dict[str, list[dict[str, Any]]] = {}
     for record in evaluation_records or []:
@@ -1175,7 +1198,19 @@ async def _persist_strategy_pack_drafts(
             replays_by_draft.setdefault(draft_id, []).append(payload)
     for draft in drafts:
         draft_id = str(getattr(draft, "draft_id", ""))
-        if not draft_id or draft_id in seen_draft_ids:
+        if not draft_id:
+            continue
+        if draft_id in seen_draft_ids:
+            existing_asset = existing_by_draft_id.get(draft_id)
+            if existing_asset is not None:
+                changed = _merge_strategy_pack_review_records(
+                    existing_asset,
+                    evaluation_records=evaluations_by_target.get(draft_id, []),
+                    lab_replay_records=replays_by_draft.get(draft_id, []),
+                )
+                if changed:
+                    await store.put(existing_asset)
+                    created.append(existing_asset.asset_id)
             continue
         status = str(getattr(draft, "status", "draft"))
         proposed_pack_id = str(getattr(draft, "proposed_pack_id", "unknown"))
@@ -1228,6 +1263,60 @@ async def _persist_strategy_pack_drafts(
         created.append(asset.asset_id)
         seen_draft_ids.add(draft_id)
     return created
+
+
+def _merge_strategy_pack_review_records(
+    asset: Any,
+    *,
+    evaluation_records: list[dict[str, Any]],
+    lab_replay_records: list[dict[str, Any]],
+) -> bool:
+    """Merge new review evidence into an existing draft asset.
+
+    Qi can generate the same draft first, then later gather strong-model or lab
+    replay evidence.  Dropping that later evidence would turn the asset pool
+    into a stale candidate graveyard.
+    """
+
+    changed = False
+    if evaluation_records:
+        merged = _merge_records_by_key(
+            list(asset.l1_metadata.get("evaluation_records") or []),
+            evaluation_records,
+            key="evaluation_id",
+        )
+        if merged != asset.l1_metadata.get("evaluation_records"):
+            asset.l1_metadata["evaluation_records"] = merged
+            changed = True
+    if lab_replay_records:
+        merged = _merge_records_by_key(
+            list(asset.l1_metadata.get("lab_replay_records") or []),
+            lab_replay_records,
+            key="experiment_id",
+        )
+        if merged != asset.l1_metadata.get("lab_replay_records"):
+            asset.l1_metadata["lab_replay_records"] = merged
+            changed = True
+    return changed
+
+
+def _merge_records_by_key(
+    current: list[Any],
+    incoming: list[dict[str, Any]],
+    *,
+    key: str,
+) -> list[dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for record in [*current, *incoming]:
+        if not isinstance(record, dict):
+            continue
+        record_key = str(record.get(key) or "")
+        if not record_key:
+            record_key = hashlib.sha256(
+                json.dumps(record, sort_keys=True, default=str).encode()
+            ).hexdigest()[:16]
+        out[record_key] = record
+    return list(out.values())
 
 
 def _strategy_pack_draft_summary(draft: Any) -> str:
