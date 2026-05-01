@@ -36,6 +36,9 @@ lab_benchmark_app = typer.Typer(
 compiler_app = typer.Typer(
     add_completion=False, no_args_is_help=True, help="V5 compiler ingestion tools"
 )
+context_app = typer.Typer(
+    add_completion=False, no_args_is_help=True, help="Context / memory maintenance tools"
+)
 console = Console()
 app.add_typer(security_app, name="security")
 app.add_typer(promises_app, name="promises")
@@ -45,6 +48,7 @@ app.add_typer(protocol_app, name="protocol")
 app.add_typer(qi_app, name="qi")
 app.add_typer(lab_app, name="lab")
 app.add_typer(compiler_app, name="compiler")
+app.add_typer(context_app, name="context")
 lab_app.add_typer(lab_benchmark_app, name="benchmark")
 
 
@@ -560,6 +564,32 @@ def compiler_recompile_candidates(
             max_assets=max_assets,
             allow_inline_summary=allow_inline_summary,
             mark_original_soft_forgotten=mark_original_soft_forgotten,
+        )
+        return report.model_dump(mode="json")
+
+    _run_json(_run())
+
+
+@context_app.command("merge-duplicates")
+def context_merge_duplicates(
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+    apply: bool = typer.Option(False, "--apply", help="Write merge markers"),
+    max_assets: int = typer.Option(500, "--max-assets", min=1),
+    mark_duplicate_soft_forgotten: bool = typer.Option(
+        True,
+        "--soft-forget-duplicate/--keep-duplicate-active",
+        help="After apply, downrank the duplicate instead of deleting it",
+    ),
+) -> None:
+    """Dry-run or execute NUO duplicate asset merge findings."""
+    from kun.context.deduplicate import DuplicateAssetMerger
+
+    async def _run() -> dict[str, Any]:
+        report = await DuplicateAssetMerger().merge_duplicates(
+            tenant_id=tenant,
+            dry_run=not apply,
+            max_assets=max_assets,
+            mark_duplicate_soft_forgotten=mark_duplicate_soft_forgotten,
         )
         return report.model_dump(mode="json")
 

@@ -224,3 +224,47 @@ def test_compiler_recompile_candidates_apply_marks_original() -> None:
         assert new.l1_metadata["recompiled_from_asset_id"] == original.asset_id
     finally:
         reset_store()
+
+
+def test_context_merge_duplicates_apply_marks_duplicate() -> None:
+    runner = CliRunner()
+    store = InMemoryAssetStore()
+    canonical = LayeredAsset.build("memory", "tenant-cli", summary="same")
+    duplicate = LayeredAsset.build(
+        "memory",
+        "tenant-cli",
+        metadata={
+            "duplicate_candidate": True,
+            "duplicate_of": canonical.asset_id,
+        },
+        summary="same",
+        tags=["duplicate_candidate"],
+    )
+    asyncio.run(store.put(canonical))
+    asyncio.run(store.put(duplicate))
+    set_store(store)
+    try:
+        result = runner.invoke(
+            app,
+            [
+                "context",
+                "merge-duplicates",
+                "--tenant",
+                "tenant-cli",
+                "--apply",
+            ],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["dry_run"] is False
+        assert payload["merged"] == 1
+        after_duplicate = asyncio.run(store.get(duplicate.asset_id, tenant_id="tenant-cli"))
+        after_canonical = asyncio.run(store.get(canonical.asset_id, tenant_id="tenant-cli"))
+        assert after_duplicate is not None
+        assert after_duplicate.l1_metadata["duplicate_merge_applied"] is True
+        assert after_duplicate.l1_metadata["soft_forgotten"] is True
+        assert after_canonical is not None
+        assert after_canonical.l1_metadata["merged_duplicate_count"] == 1
+    finally:
+        reset_store()
