@@ -284,6 +284,7 @@ def _selected_step_names(enabled: set[str] | None) -> list[str]:
         "health_report": 0,
         "world_handler_auto_quarantine": 1,
         "coordination_remediation": 1,
+        "compiler_recompile": 2,
         "compiler_intake_review": 2,
         "external_skill_scout_plan": 2,
         "qi_idle_replay": 2,
@@ -898,6 +899,36 @@ class CompilerSyncSourcesStep(IdleBatchStep):
         }
 
 
+class CompilerRecompileStep(IdleBatchStep):
+    """Re-run compiler for assets NUO marked as low quality.
+
+    Default is dry-run.  Real mutation requires
+    ``KUN_COMPILER_RECOMPILE_APPLY=1``.  Even then, the recompiler stores a new
+    asset and marks the original, instead of overwriting history.
+    """
+
+    step_id = "compiler_recompile"
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        from kun.compiler import CompilerRecompiler
+
+        raw_roots = os.getenv("KUN_COMPILER_RECOMPILE_ALLOWED_ROOTS", "")
+        allowed_roots = [item.strip() for item in raw_roots.split(",") if item.strip()]
+        report = await CompilerRecompiler().recompile_candidates(
+            tenant_id=tenant_id,
+            allowed_roots=allowed_roots,
+            dry_run=os.getenv("KUN_COMPILER_RECOMPILE_APPLY", "0") != "1",
+            max_assets=int(os.getenv("KUN_COMPILER_RECOMPILE_MAX_ASSETS", "500")),
+            allow_inline_summary=(
+                os.getenv("KUN_COMPILER_RECOMPILE_ALLOW_INLINE_SUMMARY", "0") == "1"
+            ),
+        )
+        payload = report.model_dump(mode="json")
+        payload["mutation_enabled"] = not report.dry_run
+        payload["production_action"] = False
+        return payload
+
+
 class CompilerIntakeReviewStep(IdleBatchStep):
     """Review explicit compiler intake requests and queue unsafe ones.
 
@@ -1420,6 +1451,7 @@ def register_default_steps() -> None:
         QiStrategyPackReviewStep(),
         QiStrategyPackRolloutPlanStep(),
         CompilerIntakeReviewStep(),
+        CompilerRecompileStep(),
         CompilerSyncSourcesStep(),
         ExternalEmergentScanStep(),
         ExternalSkillScoutPlanStep(),

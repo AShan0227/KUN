@@ -13,6 +13,7 @@ from kun.engineering import idle_batch
 from kun.engineering.idle_batch import (
     ABDecisionRollupStep,
     CompilerIntakeReviewStep,
+    CompilerRecompileStep,
     CompilerSyncSourcesStep,
     ConsistencyTestStep,
     ContextGovernanceRuleDistillStep,
@@ -175,6 +176,7 @@ def test_default_steps_registered():
     assert "coordination_remediation" in steps
     assert "compiler_sync_sources" in steps
     assert "compiler_intake_review" in steps
+    assert "compiler_recompile" in steps
     assert "external_skill_scout_plan" in steps
     assert "external_emergent_scan" in steps
     assert "external_skill_candidate_review" in steps
@@ -972,6 +974,48 @@ async def test_compiler_sync_sources_step_runs_configured_sources(
     assets = await get_store().list(tenant_id="t-1", asset_kind="knowledge")
     assert len(assets) == 1
     assert assets[0].l1_metadata["material_metadata"]["compiler_sync_source_id"] == "idle-docs"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compiler_recompile_step_dry_runs_nuo_candidates(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from kun.context.assets import LayeredAsset
+    from kun.context.storage import InMemoryAssetStore, reset_store, set_store
+
+    store = InMemoryAssetStore()
+    set_store(store)
+    source = tmp_path / "source.md"
+    source.write_text("# KUN\n\nFresh compiler source.", encoding="utf-8")
+    await store.put(
+        LayeredAsset.build(
+            "knowledge",
+            "t-compiler",
+            metadata={
+                "source": {"type": "path", "uri": str(source)},
+                "compiler_recompile_recommended": True,
+                "compiler_recompile_reason": "low compiler quality",
+            },
+            summary="stale compiler summary",
+            tags=["compiler_recompile_recommended"],
+        )
+    )
+    monkeypatch.setenv("KUN_COMPILER_RECOMPILE_ALLOWED_ROOTS", str(tmp_path))
+    monkeypatch.delenv("KUN_COMPILER_RECOMPILE_APPLY", raising=False)
+
+    try:
+        summary = await CompilerRecompileStep().run("t-compiler")
+    finally:
+        reset_store()
+
+    assert summary["dry_run"] is True
+    assert summary["candidates"] == 1
+    assert summary["planned"] == 1
+    assert summary["stored"] == 0
+    assert summary["mutation_enabled"] is False
+    assert summary["production_action"] is False
 
 
 @pytest.mark.unit

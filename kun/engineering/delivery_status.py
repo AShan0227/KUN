@@ -413,6 +413,7 @@ def get_v3_delivery_status(
                 "context_governance_rule_distill 只写 methodology 草稿和证据资产列表，不会自动删除资产或改变生产路由",
                 "傩 context governance audit 已能只读发现低价值、重复、高频可抽象、过期/长尾、缺信用归因的记忆或 context 资产，并明确 production_action=false",
                 "kun context governance-audit 和 NUO /context-governance/audit 都只输出 review-only 建议，不压缩、不删除、不改生产资产",
+                "idle-batch 已注册 compiler_recompile step：傩标记的低质量编译资产会定期生成重编译计划；默认 dry-run，显式 KUN_COMPILER_RECOMPILE_APPLY=1 才存新资产并标记原资产",
                 "Context DecisionTicket 会记录 memory_policy，后续可追踪“为什么这次用了/没用记忆”",
                 "启 idle replay 已能从问题信号或历史任务生成 review-only 策略候选，用于后台探索更优路径",
                 "启 idle replay 已能把候选转成 review-only StrategyPack 草稿，并写入持久化 Qi 信号 evidence，供人/强模型/NUO 后续审查",
