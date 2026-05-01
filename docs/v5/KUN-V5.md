@@ -961,7 +961,7 @@ V5 必须防止“写了但没用”。
 | Context maintenance | 已有 dry-run / mutation | 还要接编译器和更强治理规则 |
 | Qi problem queue | 已接 idle replay，能读真实问题信号和任务结果历史，评审后可进入守望影子观测 | 还要接人工批准 UI 和真实 canary 实验 |
 | AI Scientist tree search | 有基础 | 还要用于真实策略候选 |
-| WorldGateway | 有 handler / 权限 / 审计 | 还要生产级 handler 和傩体检闭环 |
+| WorldGateway | 有 handler / 权限 / 审计；傩已能输出 handler 风险分、风险标签、租户密钥状态、失败率和补偿缺口，并把这些信号反馈给执行拦截/自动隔离 | 还要更多生产级 handler、真实补偿演练和线上密钥轮换 |
 | StateLedger | 已有快照和回放 | 还要更完整长期账本和信用归因 |
 | CodeCapability | 有基础方向 | 要成为核心能力闭环 |
 | 并发执行 | 有局部机制 | 还缺统一 lane scheduler |

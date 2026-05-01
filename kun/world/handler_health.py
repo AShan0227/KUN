@@ -20,6 +20,7 @@ from kun.world.handler_control import WorldHandlerControl, load_world_handler_co
 from kun.world.tenant_env import env_for_tenant, missing_required_world_env
 
 HandlerHealthStatus = Literal["ready", "limited", "blocked", "unregistered"]
+SecretConfigStatus = Literal["not_required", "configured", "missing", "half_enabled"]
 
 EXPECTED_REAL_WORLD_HANDLERS: dict[str, tuple[str, tuple[str, ...]]] = {
     "email.send": (
@@ -57,6 +58,9 @@ class WorldHandlerHealthCard(BaseModel):
     has_compensation: bool = False
     static_risk: Literal["low", "medium", "high"] = "medium"
     dynamic_risk: Literal["low", "medium", "high"] = "low"
+    risk_score: float = 0.0
+    risk_flags: list[str] = Field(default_factory=list)
+    secret_config_status: SecretConfigStatus = "not_required"
     total_seen: int = 0
     approved_count: int = 0
     rejected_count: int = 0
@@ -221,6 +225,26 @@ def _build_card(
 
     static_risk = _static_risk(descriptor)
     dynamic_risk = _dynamic_risk(failure_rate=failure_rate, reject_rate=reject_rate)
+    secret_config_status = _secret_config_status(action_type, tenant_id=effective_tenant_id)
+    risk_flags = _risk_flags(
+        descriptor=descriptor,
+        configured=not config_issues,
+        has_compensation=False
+        if descriptor is None
+        else _has_clear_compensation(descriptor.compensation_strategy),
+        static_risk=static_risk,
+        dynamic_risk=dynamic_risk,
+        failure_rate=failure_rate,
+        missing_handler_count=missing,
+        policy_blocked_count=policy_blocked,
+        control=control,
+        secret_config_status=secret_config_status,
+    )
+    risk_score = _risk_score(
+        static_risk=static_risk,
+        dynamic_risk=dynamic_risk,
+        risk_flags=risk_flags,
+    )
     status = _status(
         descriptor=descriptor,
         static_risk=static_risk,
@@ -254,6 +278,9 @@ def _build_card(
         else _has_clear_compensation(descriptor.compensation_strategy),
         static_risk=static_risk,
         dynamic_risk=dynamic_risk,
+        risk_score=risk_score,
+        risk_flags=risk_flags,
+        secret_config_status=secret_config_status,
         total_seen=total,
         approved_count=approved,
         rejected_count=rejected,
@@ -295,6 +322,10 @@ def summarize_handler_health(cards: list[WorldHandlerHealthCard]) -> dict[str, i
             counts["missing_handler"] += 1
         if card.policy_blocked_count > 0:
             counts["policy_blocked"] += 1
+        if card.risk_score >= 0.8:
+            counts["critical_handler_risk"] += 1
+        for flag in card.risk_flags:
+            counts[f"risk_flag:{flag}"] += 1
     return dict(counts)
 
 
@@ -381,6 +412,99 @@ def _dynamic_risk(*, failure_rate: float, reject_rate: float) -> Literal["low", 
     if failure_rate >= 0.1 or reject_rate >= 0.3:
         return "medium"
     return "low"
+
+
+def _secret_config_status(action_type: str, *, tenant_id: str = "") -> SecretConfigStatus:
+    expected = EXPECTED_REAL_WORLD_HANDLERS.get(action_type)
+    if expected is None:
+        return "not_required"
+    enable_env, required_envs = expected
+    enabled = _env_truthy(env_for_tenant(tenant_id, enable_env))
+    missing_required = missing_required_world_env(required_envs, tenant_id=tenant_id)
+    present_required = [
+        name for name in required_envs if _env_present_for_tenant(name, tenant_id=tenant_id)
+    ]
+    if enabled and not missing_required:
+        return "configured"
+    if (not enabled and present_required) or (enabled and missing_required):
+        return "half_enabled"
+    return "missing"
+
+
+def _risk_flags(
+    *,
+    descriptor: WorldHandlerDescriptor | None,
+    configured: bool,
+    has_compensation: bool,
+    static_risk: str,
+    dynamic_risk: str,
+    failure_rate: float,
+    missing_handler_count: int,
+    policy_blocked_count: int,
+    control: WorldHandlerControl | None,
+    secret_config_status: SecretConfigStatus,
+) -> list[str]:
+    flags: list[str] = []
+    if descriptor is None:
+        flags.append("unregistered")
+    elif descriptor.external_dispatched:
+        flags.append("external_dispatch")
+        if not descriptor.requires_external_dispatch_confirmation:
+            flags.append("missing_external_confirmation")
+        if not descriptor.permissions_required:
+            flags.append("missing_permissions")
+    if not configured:
+        flags.append("missing_config")
+    if secret_config_status == "missing":
+        flags.append("missing_secret_config")
+    elif secret_config_status == "half_enabled":
+        flags.append("half_enabled_secret_config")
+    if descriptor is not None and descriptor.external_dispatched and not has_compensation:
+        flags.append("missing_compensation")
+    if static_risk == "high":
+        flags.append("high_static_risk")
+    if dynamic_risk == "high":
+        flags.append("high_dynamic_risk")
+    elif dynamic_risk == "medium":
+        flags.append("medium_dynamic_risk")
+    if failure_rate >= 0.25:
+        flags.append("high_failure_rate")
+    elif failure_rate >= 0.1:
+        flags.append("elevated_failure_rate")
+    if missing_handler_count > 0:
+        flags.append("missing_handler")
+    if policy_blocked_count > 0:
+        flags.append("policy_blocked")
+    if control is not None and control.status in {"quarantined", "disabled"}:
+        flags.append(f"control_{control.status}")
+    return list(dict.fromkeys(flags))
+
+
+def _risk_score(
+    *,
+    static_risk: str,
+    dynamic_risk: str,
+    risk_flags: list[str],
+) -> float:
+    score = {"low": 0.1, "medium": 0.35, "high": 0.6}.get(static_risk, 0.35)
+    score += {"low": 0.0, "medium": 0.15, "high": 0.3}.get(dynamic_risk, 0.0)
+    weights = {
+        "external_dispatch": 0.08,
+        "missing_external_confirmation": 0.08,
+        "missing_permissions": 0.08,
+        "missing_config": 0.12,
+        "missing_secret_config": 0.12,
+        "half_enabled_secret_config": 0.16,
+        "missing_compensation": 0.16,
+        "high_failure_rate": 0.16,
+        "elevated_failure_rate": 0.08,
+        "missing_handler": 0.12,
+        "policy_blocked": 0.1,
+        "control_quarantined": 0.25,
+        "control_disabled": 0.3,
+    }
+    score += sum(weights.get(flag, 0.0) for flag in risk_flags)
+    return round(min(1.0, score), 4)
 
 
 def _status(

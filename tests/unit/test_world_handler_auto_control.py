@@ -138,6 +138,7 @@ async def test_auto_quarantine_apply_only_low_risk_handlers(monkeypatch) -> None
                 external_dispatched=True,
                 has_compensation=False,
                 static_risk="high",
+                risk_flags=["external_dispatch", "missing_compensation"],
                 total_seen=0,
                 recommendation="manual only",
             ),
@@ -152,4 +153,6 @@ async def test_auto_quarantine_apply_only_low_risk_handlers(monkeypatch) -> None
     assert by_action["email.send"].applied is False
     assert by_action["email.send"].recommended_status == "review_required"
     assert by_action["email.send"].risk_summary["missing_secrets"] is True
+    assert by_action["email.send"].risk_summary["secret_config_status"] == "not_required"
+    assert "missing_compensation" in by_action["email.send"].risk_summary["risk_flags"]
     assert by_action["email.send"].data_quality == "partial"

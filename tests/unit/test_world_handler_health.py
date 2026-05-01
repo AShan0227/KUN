@@ -291,6 +291,9 @@ def test_handler_health_flags_half_enabled_real_external_env(
     assert email.configured is False
     assert any("真实外发半启用" in issue for issue in email.issues)
     assert any("KUN_WORLD_EMAIL_SEND_ENABLED" in issue for issue in email.issues)
+    assert email.secret_config_status == "half_enabled"
+    assert "half_enabled_secret_config" in email.risk_flags
+    assert email.risk_score >= 0.4
     assert email.missing_env_vars == [
         "KUN_WORLD_EMAIL_SEND_ENABLED",
         "KUN_WORLD_EMAIL_ALLOWED_DOMAINS",
@@ -444,3 +447,6 @@ def test_handler_health_summary_counts_external_risk_dimensions(tmp_path: Path) 
     assert summary["missing_external_config"] >= 1
     assert summary["high_static_risk"] >= 1
     assert summary["recent_failures"] >= 1
+    assert summary["critical_handler_risk"] >= 1
+    assert summary["risk_flag:external_dispatch"] >= 1
+    assert summary["risk_flag:missing_config"] >= 1
