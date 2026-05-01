@@ -140,7 +140,7 @@ class VerificationRunner:
             return VerificationResult(kind=spec.kind, passed=False, error_msg=str(exc))
 
     def _verify_exact_output(self, spec: VerificationSpec, artifact_ref: str) -> VerificationResult:
-        text = _read_text(self._resolve_path(artifact_ref))
+        text = _read_text_payload(self._resolve_path(artifact_ref), artifact_ref, spec)
         expected = spec.spec.get("expected")
         contains = spec.spec.get("contains")
         if isinstance(expected, str):
@@ -247,7 +247,10 @@ class VerificationRunner:
                 error_msg="hash_match requires spec.expected_sha256",
             )
 
-        actual = _sha256_file(self._resolve_path(artifact_ref))
+        if _artifact_kind(spec) == "text":
+            actual = hashlib.sha256(artifact_ref.encode("utf-8")).hexdigest()
+        else:
+            actual = _sha256_file(self._resolve_path(artifact_ref))
         normalized_expected = expected.removeprefix("sha256:")
         passed = actual == normalized_expected
         return VerificationResult(
@@ -337,6 +340,22 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _read_text_payload(path: Path, artifact_ref: str, spec: VerificationSpec) -> str:
+    """Read verification text from either a file path or the final answer.
+
+    Orchestrator/PreDeliverGate passes the final answer string as artifact_ref.
+    File-based tests and developer workflows still pass relative paths.  The
+    explicit ``artifact_kind=text`` switch is preferred, but existing path
+    specs keep working because an existing path wins.
+    """
+
+    if _artifact_kind(spec) == "text":
+        return artifact_ref
+    if path.exists():
+        return _read_text(path)
+    return artifact_ref
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -349,6 +368,11 @@ def _read_json_payload(path: Path, artifact_ref: str) -> Any:
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
     return json.loads(artifact_ref)
+
+
+def _artifact_kind(spec: VerificationSpec) -> str:
+    raw = spec.spec.get("artifact_kind") or spec.spec.get("artifact_ref_kind")
+    return str(raw or "").strip().lower()
 
 
 def _as_int_set(value: Any, *, default: set[int]) -> set[int]:

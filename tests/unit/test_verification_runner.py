@@ -79,6 +79,21 @@ async def test_exact_output_fails_when_text_differs(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_exact_output_can_verify_inline_answer_text(tmp_path: Path) -> None:
+    runner = VerificationRunner(cwd=tmp_path)
+
+    result = await runner.verify(
+        VerificationSpec(
+            kind="exact_output",
+            spec={"contains": "真实交付", "artifact_kind": "text"},
+        ),
+        "这是一段真实交付结果",
+    )
+
+    assert result.passed is True
+
+
+@pytest.mark.asyncio
 async def test_test_pass_runs_pytest_command(tmp_path: Path) -> None:
     seen: list[list[str]] = []
 
@@ -264,6 +279,23 @@ async def test_hash_match_passes_for_expected_sha256(tmp_path: Path) -> None:
     result = await runner.verify(
         VerificationSpec(kind="hash_match", spec={"expected_sha256": f"sha256:{digest}"}),
         "artifact.txt",
+    )
+
+    assert result.passed is True
+
+
+@pytest.mark.asyncio
+async def test_hash_match_can_hash_inline_answer_text(tmp_path: Path) -> None:
+    text = "stable final answer"
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    runner = VerificationRunner(cwd=tmp_path)
+
+    result = await runner.verify(
+        VerificationSpec(
+            kind="hash_match",
+            spec={"expected_sha256": digest, "artifact_kind": "text"},
+        ),
+        text,
     )
 
     assert result.passed is True
