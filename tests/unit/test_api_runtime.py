@@ -13,6 +13,7 @@ from kun.api.runtime import (
     get_pending_task_resume_worker,
     get_scheduler_background_job,
     install_runtime,
+    run_background_job_via_lane,
     schedule_cron_job_via_lane,
 )
 from kun.engineering.mission_worker import MissionOrchestratorRunner, MissionResumeWorker
@@ -94,3 +95,28 @@ async def test_cron_background_job_runs_through_multi_lane_scheduler() -> None:
     assert dashboard.total == 1
     assert dashboard.done == 1
     assert "nuo" in dashboard.lane_limits
+
+
+@pytest.mark.asyncio
+async def test_one_shot_background_job_runs_through_world_lane_and_cleans_registry() -> None:
+    app = SimpleNamespace(state=State())
+    install_runtime(app, rule_engine=RuleEngine([]))
+
+    async def callback() -> dict[str, str]:
+        return {"executed": "yes"}
+
+    output = await run_background_job_via_lane(
+        app,
+        name="unit_world_action",
+        lane="world",
+        callback=callback,
+        tenant_id="tenant",
+        user_id="user",
+    )
+
+    assert output == {"executed": "yes"}
+    assert get_scheduler_background_job(app, "unit_world_action") is None
+    dashboard = app.state.multi_task_scheduler.dashboard()
+    assert dashboard.total == 1
+    assert dashboard.done == 1
+    assert "world" in dashboard.lane_limits

@@ -550,6 +550,53 @@ def get_scheduler_background_job(
     return cast(SchedulerBackgroundCallback | None, callback)
 
 
+def unregister_scheduler_background_job(app: _AppWithState, name: str) -> None:
+    """Remove a temporary background callback registration."""
+
+    registry = getattr(app.state, "scheduler_background_jobs", None)
+    if isinstance(registry, dict):
+        registry.pop(name, None)
+
+
+async def run_background_job_via_lane(
+    app: _AppWithState,
+    *,
+    name: str,
+    lane: TaskLane,
+    callback: SchedulerBackgroundCallback,
+    tenant_id: str,
+    user_id: str | None = None,
+    timeout_sec: int | None = None,
+) -> Any:
+    """Run one background callback through MultiTaskScheduler and return its output.
+
+    This is the non-cron sibling of ``schedule_cron_job_via_lane``.  It is used
+    for things like approved WorldGateway actions: the action should execute now,
+    but it still belongs on the dedicated ``world`` lane instead of bypassing
+    KUN's concurrency plane.
+    """
+
+    if os.getenv("KUN_BACKGROUND_JOBS_USE_MULTI_LANE", "1") != "1":
+        return await callback()
+    register_scheduler_background_job(app, name, callback)
+    try:
+        scheduler = get_multi_task_scheduler(app)
+        task_ref = _scheduler_job_task_ref(
+            name=name,
+            lane=lane,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+        task_id = await scheduler.submit(task_ref, lane=lane)
+        wait_timeout = timeout_sec or int(os.getenv("KUN_BACKGROUND_JOB_TIMEOUT_SEC", "3600"))
+        result = await scheduler.wait_done(task_id, timeout_sec=wait_timeout)
+        if result.status != "done":
+            raise RuntimeError(f"background job {name} {result.status}: {result.error}")
+        return result.output
+    finally:
+        unregister_scheduler_background_job(app, name)
+
+
 def schedule_cron_job_via_lane(
     app: _AppWithState,
     *,
@@ -572,15 +619,15 @@ def schedule_cron_job_via_lane(
         if os.getenv("KUN_CRON_JOBS_USE_MULTI_LANE", "1") != "1":
             await callback()
             return
-        scheduler = get_multi_task_scheduler(app)
-        task_ref = _scheduler_job_task_ref(
-            name=name, lane=lane, tenant_id=tenant_id, user_id=user_id
+        await run_background_job_via_lane(
+            app,
+            name=name,
+            lane=lane,
+            callback=callback,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            timeout_sec=timeout_sec or int(os.getenv("KUN_CRON_JOB_TIMEOUT_SEC", "3600")),
         )
-        task_id = await scheduler.submit(task_ref, lane=lane)
-        wait_timeout = timeout_sec or int(os.getenv("KUN_CRON_JOB_TIMEOUT_SEC", "3600"))
-        result = await scheduler.wait_done(task_id, timeout_sec=wait_timeout)
-        if result.status != "done":
-            raise RuntimeError(f"scheduled background job {name} {result.status}: {result.error}")
 
     return _wrapped
 

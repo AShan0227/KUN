@@ -230,12 +230,12 @@ def get_v3_delivery_status(
                 "Mission 复盘和 continuation 摘要只做轻量权重/档位 nudging，还没训练长期策略模型",
                 "还没有跑真实跨周产品运营 dogfood；目前只有时间压缩多轮 drill",
                 "普通任务 continuation 采用子任务续跑并回写原任务视图，还不是原 TaskRow 原地续跑",
-                "多数 cron 后台任务已进入 MultiTaskScheduler，但 WorldGateway 真实动作执行器、独立常驻进程和未来分布式 worker 还不是统一队列；当前仍是进程内调度器，不是假装成生产级分布式队列",
+                "多数 cron 后台任务和 NUO 审批后的 WorldGateway 动作已进入 MultiTaskScheduler；独立常驻进程和未来分布式 worker 还不是统一队列；当前仍是进程内调度器，不是假装成生产级分布式队列",
             ],
             next_steps=[
                 "让 Mission review 结果进一步反向影响 Watchtower Decision Plane 权重",
                 "补跨周运营策略模板和真实 dogfood 运营任务",
-                "把 WorldGateway 执行动作、高风险审批和未来分布式 worker 继续接入 lane scheduler",
+                "把高风险审批和未来分布式 worker 继续接入 lane scheduler",
             ],
         ),
         DeliveryCapability(

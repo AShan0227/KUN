@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import literal, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 
-from kun.api.runtime import get_orchestrator
+from kun.api.runtime import get_orchestrator, run_background_job_via_lane
 from kun.core.config import settings
 from kun.core.db import session_scope
 from kun.core.orm import PendingActionRow
@@ -332,9 +332,19 @@ async def decide_pending_action(
 
     execution: ActionExecutionResult | None = None
     if new_status == "approved":
-        execution = await execute_approved_action_once(
-            tenant_id=tenant.tenant_id,
-            action_id=action_id,
+        execution = cast(
+            ActionExecutionResult | None,
+            await run_background_job_via_lane(
+                request.app,
+                name=f"world_action_execute:{tenant.tenant_id}:{action_id}",
+                lane="world",
+                callback=lambda: execute_approved_action_once(
+                    tenant_id=tenant.tenant_id,
+                    action_id=action_id,
+                ),
+                tenant_id=tenant.tenant_id,
+                user_id=tenant.user_id,
+            ),
         )
         if execution is not None and execution.task_status == "queued":
             background_tasks.add_task(
