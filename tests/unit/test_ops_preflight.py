@@ -146,6 +146,57 @@ def test_preflight_accepts_enabled_world_gateway_handler_with_required_env(
 
 
 @pytest.mark.unit
+def test_preflight_warns_when_world_gateway_secrets_exist_but_handler_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_ops_scripts(tmp_path)
+    monkeypatch.delenv("KUN_WORLD_EMAIL_SEND_ENABLED", raising=False)
+    monkeypatch.setenv("KUN_WORLD_SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("KUN_WORLD_SMTP_FROM", "kun@example.com")
+    monkeypatch.setenv("KUN_WORLD_EMAIL_ALLOWED_DOMAINS", "example.com")
+
+    report = run_preflight(
+        cfg=_safe_prod_settings(),
+        repo_root=tmp_path,
+        run_alembic_heads=False,
+    )
+
+    assert report.status == "warn"
+    warning = next(
+        check for check in report.warnings if check.check_id == "world_handler_config:email.send"
+    )
+    assert "密钥已配置但未启用" in warning.title
+    assert "KUN_WORLD_EMAIL_SEND_ENABLED" in warning.detail
+
+
+@pytest.mark.unit
+def test_preflight_warns_when_tenant_scoped_world_gateway_secrets_exist_but_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_ops_scripts(tmp_path)
+    monkeypatch.delenv("KUN_WORLD_EMAIL_SEND_ENABLED", raising=False)
+    monkeypatch.setenv("KUN_TENANT_TENANT_A_WORLD_SMTP_HOST", "smtp.tenant-a.example.com")
+    monkeypatch.setenv("KUN_TENANT_TENANT_A_WORLD_SMTP_FROM", "tenant-a@example.com")
+    monkeypatch.setenv("KUN_TENANT_TENANT_A_WORLD_EMAIL_ALLOWED_DOMAINS", "example.com")
+
+    report = run_preflight(
+        cfg=_safe_prod_settings(),
+        repo_root=tmp_path,
+        run_alembic_heads=False,
+    )
+
+    assert report.status == "warn"
+    assert any(
+        check.check_id == "world_handler_config:email.send"
+        and check.severity == "warn"
+        and "KUN_WORLD_EMAIL_SEND_ENABLED" in check.detail
+        for check in report.checks
+    )
+
+
+@pytest.mark.unit
 def test_preflight_accepts_enabled_world_gateway_handler_with_tenant_scoped_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

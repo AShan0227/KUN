@@ -29,6 +29,7 @@ class AttachmentTranslation(BaseModel):
     compiler_asset_id: str | None = None
     compiler_status: str | None = None
     compiler_kind: str | None = None
+    compiler_hermes_packet: str | None = None
 
 
 class TranslatedInput(BaseModel):
@@ -120,8 +121,14 @@ async def translate_attachment(
     compiler_asset_id: str | None = None
     compiler_status: str | None = None
     compiler_kind: str | None = None
+    compiler_hermes_packet: str | None = None
     if store_compiled_asset and tenant_id and extracted_text.strip():
-        compiler_asset_id, compiler_status, compiler_kind = await _compile_attachment_to_asset(
+        (
+            compiler_asset_id,
+            compiler_status,
+            compiler_kind,
+            compiler_hermes_packet,
+        ) = await _compile_attachment_to_asset(
             descriptor=descriptor,
             filename=attachment.filename,
             tenant_id=tenant_id,
@@ -141,6 +148,7 @@ async def translate_attachment(
         compiler_asset_id=compiler_asset_id,
         compiler_status=compiler_status,
         compiler_kind=compiler_kind,
+        compiler_hermes_packet=compiler_hermes_packet,
     )
 
 
@@ -177,6 +185,9 @@ def _attachment_prompt_block(attachment: AttachmentTranslation) -> str:
             f"compiler_status: {attachment.compiler_status or 'unknown'}\n"
             f"compiler_kind: {attachment.compiler_kind or 'unknown'}\n"
         )
+    compiler_packet = ""
+    if attachment.compiler_hermes_packet:
+        compiler_packet = f"\ncompiler_material_packet:\n{attachment.compiler_hermes_packet}\n"
     return (
         f"[Attachment: {attachment.filename}]\n"
         f"kind: {descriptor.kind}\n"
@@ -184,6 +195,7 @@ def _attachment_prompt_block(attachment: AttachmentTranslation) -> str:
         f"handler: {descriptor.suggested_handler}\n"
         f"confidence: {descriptor.confidence:.2f}\n"
         f"{compiler_lines}"
+        f"{compiler_packet}"
         f"content:\n{attachment.extracted_text}"
     )
 
@@ -203,7 +215,7 @@ async def _compile_attachment_to_asset(
     filename: str,
     tenant_id: str,
     extracted_text: str,
-) -> tuple[str | None, str, str | None]:
+) -> tuple[str | None, str, str | None, str | None]:
     """Bridge translated attachments into the compiler/context system.
 
     This only stores material that the conservative lightweight compiler can
@@ -212,6 +224,7 @@ async def _compile_attachment_to_asset(
     """
 
     from kun.compiler import CompilerIngestor
+    from kun.interface.hermes import DefaultHermesAdapter
 
     declared_kind = _compiler_declared_kind(descriptor, filename)
     result = await CompilerIngestor().ingest_text(
@@ -229,7 +242,13 @@ async def _compile_attachment_to_asset(
         },
     )
     status = "stored" if result.stored else result.reason
-    return result.asset_id, status, result.material.kind
+    envelope = await DefaultHermesAdapter().translate_material(
+        material=result.material,
+        target="llm",
+        context={"source": "chat_attachment", "filename": filename},
+        max_l2_chars=1400,
+    )
+    return result.asset_id, status, result.material.kind, envelope.rendered
 
 
 def _compiler_declared_kind(descriptor: InputDescriptor, filename: str) -> str | None:

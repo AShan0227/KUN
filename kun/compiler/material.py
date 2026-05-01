@@ -24,13 +24,14 @@ from kun.compiler.models import (
 )
 from kun.interface.input_translator import InputDescriptor, RealWorldTranslator
 
-SUPPORTED_KINDS: set[str] = {"plain_text", "markdown", "html", "json", "csv"}
+SUPPORTED_KINDS: set[str] = {"plain_text", "markdown", "html", "json", "csv", "pdf"}
 _KIND_MAP: dict[str, CanonicalKind] = {
     "plain_text": "text",
     "markdown": "markdown",
     "html": "html",
     "json": "json",
     "csv": "csv",
+    "pdf": "pdf",
 }
 
 
@@ -105,7 +106,7 @@ class LightweightMaterialCompiler:
             if suffix_kind is not None
             else await self._translator.detect_file_kind(raw)
         )
-        text = _decode_bytes(raw)
+        text = _extract_material_text(descriptor, raw)
         return self._compile_detected(
             text,
             tenant_id=tenant_id,
@@ -241,7 +242,7 @@ class LightweightMaterialCompiler:
             provenance=MaterialProvenance(
                 input_sha256=input_digest,
                 detector=descriptor.metadata.get("detector"),
-                notes=["no external reformat backend invoked"],
+                notes=_provenance_notes(kind),
             ),
             compiler_profile=_profile(),
             metadata=merged_metadata,
@@ -347,16 +348,23 @@ def _normalize(kind: CanonicalKind, text: str) -> tuple[str, dict[str, Any], lis
     if kind == "html":
         plain = _HTMLTextExtractor.to_text(text)
         return plain, {"html_stripped": True}, risk_flags
+    if kind == "pdf":
+        metadata: dict[str, Any] = {"pdf_text_extract_limited": True}
+        if text.startswith("PDF document; text extraction unavailable"):
+            risk_flags.append("pdf_text_unavailable")
+            metadata["pdf_text_unavailable"] = True
+        return text.strip(), metadata, risk_flags
     return text.strip(), {}, risk_flags
 
 
 def _profile() -> CompilerProfile:
     return CompilerProfile(
         optional_backends=["markitdown"],
-        unsupported_backends=["url_fetch", "ocr", "pdf_extract", "office_extract"],
+        unsupported_backends=["url_fetch", "ocr", "office_extract"],
         limitations=[
-            "supports only lightweight text, markdown, html, json, and csv inputs",
+            "supports lightweight text, markdown, html, json, csv, and local PDF text summary inputs",
             "urls are never fetched by this profile",
+            "pdf support is deterministic text extraction only; scanned/OCR PDFs need a future backend",
             "l3_ref is a placeholder until object storage is wired",
         ],
     )
@@ -373,7 +381,40 @@ def _kind_from_suffix(source_uri: str) -> str | None:
         ".htm": "html",
         ".json": "json",
         ".csv": "csv",
+        ".pdf": "pdf",
     }.get(suffix)
+
+
+def _extract_material_text(descriptor: InputDescriptor, raw: bytes) -> str:
+    if descriptor.kind == "pdf":
+        return _extract_pdf_text(raw)
+    return _decode_bytes(raw)
+
+
+def _extract_pdf_text(raw: bytes) -> str:
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(raw))
+        page_texts: list[str] = []
+        for page in reader.pages[:5]:
+            text = (page.extract_text() or "").strip()
+            if text:
+                page_texts.append(text)
+        if page_texts:
+            return "\n\n".join(page_texts)[:8000]
+        return f"PDF document; pages: {len(reader.pages)}"
+    except Exception:
+        return "PDF document; text extraction unavailable"
+
+
+def _provenance_notes(kind: CanonicalKind) -> list[str]:
+    if kind == "pdf":
+        return [
+            "local pypdf text extraction invoked",
+            "no OCR or external reformat backend invoked",
+        ]
+    return ["no external reformat backend invoked"]
 
 
 def _looks_csv(text: str) -> bool:

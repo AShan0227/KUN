@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-CanonicalKind = Literal["text", "markdown", "html", "json", "csv", "unsupported"]
+CanonicalKind = Literal["text", "markdown", "html", "json", "csv", "pdf", "unsupported"]
 CompileStatus = Literal["compiled", "placeholder", "rejected", "unsupported"]
 
 

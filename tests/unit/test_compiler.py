@@ -172,6 +172,29 @@ async def test_compile_unsupported_binary_path(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compile_pdf_path_uses_local_text_extraction_profile(tmp_path: Path) -> None:
+    root = tmp_path / "safe"
+    root.mkdir()
+    pdf = root / "brief.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n")
+
+    asset = await LightweightMaterialCompiler().compile_path(
+        pdf,
+        tenant_id="tenant_a",
+        allowed_root=root,
+    )
+
+    assert asset.status == "compiled"
+    assert asset.kind == "pdf"
+    assert asset.risk.level == "medium"
+    assert "pdf_text_unavailable" in asset.risk.flags
+    assert asset.metadata["pdf_text_extract_limited"] is True
+    assert "pypdf" in " ".join(asset.provenance.notes)
+    assert "OCR" in " ".join(asset.compiler_profile.limitations)
+
+
+@pytest.mark.unit
 def test_default_registry_exposes_lightweight_compiler() -> None:
     compiler = default_registry.get()
 

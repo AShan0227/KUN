@@ -1365,12 +1365,19 @@ class Orchestrator:
                     elif _hermes_step.action_type == "use_memory":
                         # Wire 33: hermes 主动拉相关 memory → 加塞进 step context_summary
                         memory_query = _hermes_memory_query_from_step(_hermes_step, step_plan)
-                        if memory_query:
+                        if memory_query and _memory_policy_allows_mid_run_recall(memory_policy):
                             try:
                                 extra_pack = await self.context_packer.pack_query(
                                     memory_query,
                                     tenant_id=tenant.tenant_id,
-                                    limit=3 if _exec_mode == "MAX" else 2,
+                                    limit=_memory_policy_mid_run_limit(
+                                        memory_policy,
+                                        execution_mode=str(_exec_mode),
+                                    ),
+                                    memory_layers=memory_context_kwargs.get("memory_layers"),
+                                    avoid_memory_layers=memory_context_kwargs.get(
+                                        "avoid_memory_layers"
+                                    ),
                                 )
                             except Exception:
                                 log.exception("hermes.use_memory pack_query failed")
@@ -1391,6 +1398,20 @@ class Orchestrator:
                                         "count": len(extra_pack.items),
                                     },
                                 )
+                        elif memory_query:
+                            yield OrchestratorEvent(
+                                kind="hermes_memory_skipped",
+                                data={
+                                    "step_id": step_plan.step_id,
+                                    "query": memory_query,
+                                    "reason": "memory_policy_disallows_mid_run_retrieval",
+                                    "memory_policy": (
+                                        memory_policy.model_dump(mode="json")
+                                        if memory_policy is not None
+                                        else None
+                                    ),
+                                },
+                            )
 
                 if self.value_gate is not None and _exec_mode != "FAST":
                     try:
@@ -3730,6 +3751,23 @@ def _memory_policy_allows_process_recall(policy: MemoryPolicyTicket | None) -> b
     if "execution_process" in avoided_values:
         return False
     return not layer_values or "execution_process" in layer_values
+
+
+def _memory_policy_allows_mid_run_recall(policy: MemoryPolicyTicket | None) -> bool:
+    if policy is None:
+        return True
+    return policy.use_memory and policy.allow_mid_run_retrieval
+
+
+def _memory_policy_mid_run_limit(
+    policy: MemoryPolicyTicket | None,
+    *,
+    execution_mode: str,
+) -> int:
+    fallback = 3 if execution_mode == "MAX" else 2
+    if policy is None or policy.max_items <= 0:
+        return fallback
+    return max(1, min(fallback, policy.max_items))
 
 
 async def _load_mission_strategy(*, tenant_id: str, mission_id: str) -> dict[str, Any]:

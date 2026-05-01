@@ -18,7 +18,7 @@ from kun.core.config import Settings, settings
 from kun.engineering.delivery_status import delivery_status_summary, validate_delivery_status
 from kun.ops.secret_audit import audit_runtime_secrets
 from kun.world.handler_health import EXPECTED_REAL_WORLD_HANDLERS
-from kun.world.tenant_env import env_for_tenant, missing_required_world_env
+from kun.world.tenant_env import env_for_tenant, has_any_scoped_env, missing_required_world_env
 
 PreflightSeverity = Literal["ok", "warn", "blocker"]
 
@@ -224,7 +224,33 @@ def _world_gateway_config_checks() -> list[PreflightCheck]:
                     ),
                 )
             )
+        else:
+            configured_envs = _configured_world_envs(required_envs)
+            if configured_envs:
+                checks.append(
+                    PreflightCheck(
+                        check_id=f"world_handler_config:{action_type}",
+                        severity="warn",
+                        title=f"WorldGateway {action_type} 密钥已配置但未启用",
+                        detail=(
+                            f"检测到 {', '.join(configured_envs)}，"
+                            f"但 {enable_env} 未开启；这个真实外部通道不会注册。"
+                        ),
+                        suggested_action=(
+                            f"如果要真实启用，设置 {enable_env}=true 并跑 dogfood；"
+                            "如果暂时不用，移除这些密钥以减少误解和泄漏面。"
+                        ),
+                    )
+                )
     return checks
+
+
+def _configured_world_envs(required_envs: tuple[str, ...]) -> list[str]:
+    configured: list[str] = []
+    for name in required_envs:
+        if env_for_tenant("", name) is not None or has_any_scoped_env(name):
+            configured.append(name)
+    return configured
 
 
 def _alembic_heads_check(root: Path) -> PreflightCheck:

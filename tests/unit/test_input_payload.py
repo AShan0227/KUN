@@ -86,6 +86,8 @@ async def test_translate_chat_input_can_compile_attachment_into_asset_store() ->
         assert descriptor["compiler_status"] == "stored"
         assert descriptor["compiler_kind"] == "markdown"
         assert f"compiler_asset_id: {asset_id}" in translated.message
+        assert "[Hermes v5.compiler]" in translated.message
+        assert "canonical_material" in translated.message
 
         stored = await store.get(asset_id, tenant_id="tenant-compiler-hot-path")
         assert stored is not None

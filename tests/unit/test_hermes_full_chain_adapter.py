@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from kun.compiler import LightweightMaterialCompiler
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
 from kun.engineering.agent_loop import run_agent_loop
 from kun.engineering.orchestrator import Orchestrator
@@ -78,6 +79,48 @@ async def test_hermes_external_translation_uses_adapter_registry() -> None:
     assert '"path": "/v1/tasks"' in api_packet.rendered
     assert agent_packet.format == "agent"
     assert '"jsonrpc": "2.0"' in agent_packet.rendered
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_hermes_translates_compiled_material_for_llm_and_skill() -> None:
+    material = await LightweightMaterialCompiler().compile_text(
+        "# KUN\n\nCompiler material should travel through Hermes.",
+        tenant_id="tenant-hermes-material",
+        source_uri="inline:brief.md",
+    )
+    adapter = DefaultHermesAdapter()
+
+    llm_packet = await adapter.translate_material(material=material, target="llm")
+    skill_packet = await adapter.translate_material(material=material, target="skill")
+
+    assert llm_packet.kind == "canonical_material"
+    assert llm_packet.format == "structured_text"
+    assert "[Hermes v5.compiler]" in llm_packet.rendered
+    assert "material_contract" in llm_packet.rendered
+    assert material.asset_id in llm_packet.rendered
+    assert llm_packet.payload["compiler_profile"]["name"] == "kun-v5-lightweight"
+    assert skill_packet.format == "json"
+    assert skill_packet.payload["contract"] == "canonical_material_json"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_hermes_material_packet_truncates_l2_for_receiver_budget() -> None:
+    material = await LightweightMaterialCompiler().compile_text(
+        "x" * 500,
+        tenant_id="tenant-hermes-material",
+    )
+
+    packet = await DefaultHermesAdapter().translate_material(
+        material=material,
+        target="llm",
+        max_l2_chars=80,
+    )
+
+    assert packet.payload["l2_truncated"] is True
+    assert len(packet.payload["l2"]) <= 100
+    assert "<truncated>" in packet.rendered
 
 
 @pytest.mark.unit

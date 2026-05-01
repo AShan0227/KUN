@@ -73,18 +73,21 @@ def get_v3_delivery_status(
             capability_id="compiler_layer",
             label="KUN 编译层",
             status="partial",
-            summary="已有轻量输入编译器和 CLI/AssetStore 写入入口，可把文本/Markdown/HTML/JSON/CSV/本地文件转成标准 CanonicalMaterial；还没全链路接入聊天上传和 RAG 热路径。",
+            summary="已有轻量输入编译器、CLI/AssetStore 写入入口、聊天附件热路径和 Hermes 标准材料包；可处理文本/Markdown/HTML/JSON/CSV/本地 PDF 摘要，但还没接外部网页和 Office/OCR/音视频重后端。",
             done=[
                 "新增 kun.compiler，定义 CanonicalMaterial / CanonicalAsset / CompilerProfile / Provenance",
-                "轻量编译器已支持 text、markdown、html、json、csv 和安全本地 path 输入",
+                "轻量编译器已支持 text、markdown、html、json、csv、本地 PDF 文本摘要和安全本地 path 输入",
                 "本地文件编译必须传 allowed_root，路径逃逸会被拒绝",
                 "URL 输入现在只生成 blocked/placeholder，不会偷偷联网抓取",
                 "编译结果带 l1/l2/l3_ref、风险、权限、来源、token 估算和编译 profile",
+                "PDF 支持只走本地 pypdf 文本抽取；扫描件/OCR/PDF 深理解仍明确标成限制",
                 "CompilerIngestor 已能把 compiled material 转成 knowledge LayeredAsset 并写入 AssetStore",
                 "kun compiler compile-text / compile-path 可输出 CanonicalMaterial JSON，不写库",
                 "kun compiler ingest-text / ingest-path 可把编译结果写入 AssetStore，适合运维脚本和离线资料导入",
                 "REST / WebSocket 聊天附件会先走 InputTranslator，再把可支持文本类材料编译成 knowledge asset 写入当前租户 AssetStore",
                 "聊天附件 prompt 和 descriptor 会带 compiler_asset_id / compiler_status / compiler_kind，后续可追溯资料来源",
+                "Hermes 已能把 CanonicalMaterial 编译成 LLM / skill / API / external_agent / human 不同目标的标准材料包",
+                "聊天附件 prompt 会包含 Hermes v5.compiler 材料包，LLM 看到的是 CanonicalMaterial 契约而不是随意文本",
                 "rejected / placeholder / unsupported material 默认不会污染普通 Context 检索",
                 "傩 context maintenance 已能识别编译资产的风险、来源和 profile 缺口",
                 "CompilerRegistry 可注册后续 MarkItDown / 音视频 / OCR 后端，但当前不伪装成已接入",
@@ -100,15 +103,16 @@ def get_v3_delivery_status(
                 "tests/unit/test_compiler_ingestion.py",
                 "kun/api/input_payload.py",
                 "tests/unit/test_input_payload.py",
+                "kun/interface/hermes.py",
+                "tests/unit/test_hermes_full_chain_adapter.py",
             ],
             missing=[
-                "已有 CLI/脚本级入口和聊天附件写入桥，但还没接入外部网页/企业资料入口或 RAG ingestion 批处理热路径",
-                "还没接 Microsoft MarkItDown、OCR、音频转写、PDF/DOCX/PPTX/XLSX 等真实后端",
+                "已有 CLI/脚本级入口、聊天附件写入桥和 Hermes 材料包，但还没接入外部网页/企业资料入口或 RAG ingestion 批处理热路径",
+                "还没接 Microsoft MarkItDown、OCR、音频转写、DOCX/PPTX/XLSX 等真实后端",
                 "傩已能扫 compiler 风险/来源缺口，但还没做格式质量评分、重新编译建议和重复资产自动合并",
-                "Hermes 还没统一消费 CanonicalMaterial 作为所有对象通讯的标准资产格式",
             ],
             next_steps=[
-                "把外部文件/网页/用户上传先过 compiler，再进入 Context / Memory / Skill / Hermes",
+                "把外部文件/网页/企业资料先过 compiler，再进入 Context / Memory / Skill / Hermes",
                 "接 MarkItDown 作为可选后端，但保持 KUN 自己的 CanonicalMaterial 标准",
             ],
         ),
@@ -539,7 +543,9 @@ def _world_gateway_delivery_status(
     missing.extend(
         [
             "集中 Secret Manager、密钥轮换和租户自助密钥配置",
-            "支付 / 发布等更高风险动作",
+            "支付动作 handler（payment.* 未实现；涉及钱的外部动作仍只能进人工方案/审计，不允许真实自动执行）",
+            "公开发布 handler（content.publish / social.post 未实现；涉及对外发布的动作仍只能生成草稿/审批包）",
+            "生产系统变更 handler（deployment.* 未实现；真实部署/回滚仍必须走人工或现有工程流程）",
         ]
     )
 

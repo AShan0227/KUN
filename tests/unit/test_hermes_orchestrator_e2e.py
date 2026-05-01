@@ -16,12 +16,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import pytest
+from kun.context.packer import ContextPack, PackedContextItem
 from kun.engineering.execution_protocol import StructuredStepGenerator
 from kun.engineering.orchestrator import Orchestrator
 from kun.interface.llm import LLMRouter
 from kun.interface.llm.base import LLMResponse, UsageInfo
 from kun.interface.llm.router import set_router
 from kun.interface.llm.stub_provider import StubProvider
+from kun.watchtower.decision_plane import WatchtowerDecisionPlane
 
 
 class _FakeSession:
@@ -138,10 +140,16 @@ class _HermesActionRouter(StubProvider):
 
     hermes_action_type: str = "direct_llm"
     hermes_payload: dict | None = None
+    intent_payload: dict | None = None
 
     async def invoke(self, request):
         sys_text = " ".join(m.content for m in request.messages if m.role == "system")
         if "意图理解层" in sys_text:
+            if self.intent_payload is not None:
+                return LLMResponse(
+                    content=json.dumps(self.intent_payload),
+                    usage=UsageInfo(input_tokens=5, output_tokens=20),
+                )
             return _intent_smart_response()
         if "Hermes" in sys_text and "structured execution planner" in sys_text:
             return _make_hermes_step_response(self.hermes_action_type, self.hermes_payload)
@@ -183,6 +191,48 @@ def _set_router_with_action(action_type: str, payload: dict | None = None) -> No
         "fallback": stub,
     }
     set_router(LLMRouter(providers))
+
+
+def _set_router_with_action_and_intent(
+    action_type: str,
+    *,
+    payload: dict | None = None,
+    intent_payload: dict,
+) -> None:
+    stub = _HermesActionRouter(tier="top")
+    stub.hermes_action_type = action_type
+    stub.hermes_payload = payload or {}
+    stub.intent_payload = intent_payload
+    providers = {
+        "top": stub,
+        "strong": stub,
+        "cheap": stub,
+        "coding": stub,
+        "fallback": stub,
+    }
+    set_router(LLMRouter(providers))
+
+
+class _RecordingContextPacker:
+    def __init__(self) -> None:
+        self.pack_query_calls: list[dict] = []
+
+    async def pack(self, *args, **kwargs) -> ContextPack:
+        return ContextPack()
+
+    async def pack_query(self, query: str, **kwargs) -> ContextPack:
+        self.pack_query_calls.append({"query": query, **kwargs})
+        return ContextPack(
+            items=[
+                PackedContextItem(
+                    asset_id="memory-1",
+                    asset_kind="memory",
+                    relevance_score=0.9,
+                    title="过程经验",
+                    summary="过去一次运营任务使用 meta decision 记忆成功。",
+                )
+            ]
+        )
 
 
 def _set_router_for_ensemble() -> None:
@@ -308,6 +358,70 @@ async def test_hermes_use_memory_emits_inject_event() -> None:
     # 如果 inject event 没 emit (store 空), 至少 hermes_step 拿到 use_memory
     if injects:
         assert injects[0]["query"] == "之前讨论的架构"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_hermes_use_memory_respects_memory_policy_mid_run_gate() -> None:
+    """普通 SMART 任务不允许中途随便加拉记忆，避免所有任务都走重流程。"""
+    _set_router_with_action("use_memory", {"query": "之前讨论的架构"})
+
+    from kun.interface.llm.router import get_router
+
+    packer = _RecordingContextPacker()
+    orch = Orchestrator(
+        output_translator=_identity_translator,
+        structured_step_generator=StructuredStepGenerator(get_router()),
+        context_packer=packer,  # type: ignore[arg-type]
+        decision_plane=WatchtowerDecisionPlane(),
+    )
+    events: list[tuple[str, dict]] = []
+    async for ev in orch.stream("回顾架构"):
+        events.append((ev.kind, ev.data))
+
+    assert packer.pack_query_calls == []
+    skipped = [data for kind, data in events if kind == "hermes_memory_skipped"]
+    assert skipped
+    assert skipped[0]["reason"] == "memory_policy_disallows_mid_run_retrieval"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_hermes_use_memory_passes_policy_layers_when_mid_run_allowed() -> None:
+    """复杂策略任务允许中途检索，但仍必须遵守 MemoryPolicy 的稀疏层选择。"""
+    _set_router_with_action_and_intent(
+        "use_memory",
+        payload={"query": "过去运营策略怎么选模型和路径"},
+        intent_payload={
+            "task_type": "product.ops.retention",
+            "risk_level": "low",
+            "complexity_score": 0.6,
+            "estimated_cost_usd": 0.08,
+            "estimated_duration_sec": 45,
+            "success_criteria_short": "优化留存运营策略",
+        },
+    )
+
+    from kun.interface.llm.router import get_router
+
+    packer = _RecordingContextPacker()
+    orch = Orchestrator(
+        output_translator=_identity_translator,
+        structured_step_generator=StructuredStepGenerator(get_router()),
+        context_packer=packer,  # type: ignore[arg-type]
+        decision_plane=WatchtowerDecisionPlane(),
+    )
+    events: list[tuple[str, dict]] = []
+    async for ev in orch.stream("优化留存运营策略"):
+        events.append((ev.kind, ev.data))
+
+    assert packer.pack_query_calls
+    call = packer.pack_query_calls[0]
+    assert call["memory_layers"][:2] == ["meta_decision", "methodology"]
+    assert call["avoid_memory_layers"] == []
+    assert call["limit"] <= 3
+    injects = [data for kind, data in events if kind == "hermes_memory_injected"]
+    assert injects and injects[0]["asset_ids"] == ["memory-1"]
 
 
 @pytest.mark.unit
