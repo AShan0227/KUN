@@ -62,6 +62,17 @@ type Budget = {
 
 type AccountSummary = {
   tenant_id: string;
+  current_user_id?: string | null;
+  current_member?: {
+    user_id: string;
+    role: string;
+    scopes: string[];
+    status: string;
+    created_at: string;
+    updated_at: string;
+  } | null;
+  membership_validated?: boolean;
+  membership_warning?: string;
   account: {
     display_name?: string | null;
     status: string;
@@ -710,9 +721,20 @@ export default function NuoDashboard() {
             </p>
           </div>
           {!accountUnavailable && accountSummary && (
-            <span className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-500">
-              {accountSummary.account.status || "unknown"}
-            </span>
+            <div className="flex flex-wrap gap-2">
+              <span className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-500">
+                {accountSummary.account.status || "unknown"}
+              </span>
+              <span
+                className={`rounded px-2 py-1 text-xs ${
+                  accountSummary.membership_validated
+                    ? "bg-emerald-50 text-emerald-700"
+                    : "bg-amber-50 text-amber-700"
+                }`}
+              >
+                {accountSummary.membership_validated ? "成员已验证" : "成员未验证"}
+              </span>
+            </div>
           )}
         </div>
         {!accountUnavailable && accountSummary && (
@@ -728,6 +750,28 @@ export default function NuoDashboard() {
               label="诚实限制"
               value={formatHonestyLimit(accountSummary.honest_limits)}
             />
+          </div>
+        )}
+        {!accountUnavailable && accountSummary && (
+          <div
+            className={`mt-3 rounded border p-3 text-xs ${
+              accountSummary.membership_validated
+                ? "border-emerald-100 bg-emerald-50 text-emerald-700"
+                : "border-amber-100 bg-amber-50 text-amber-700"
+            }`}
+          >
+            <div className="font-medium">
+              当前请求用户：{accountSummary.current_user_id || "未提供 user_id"}
+              {accountSummary.current_member
+                ? ` · ${accountSummary.current_member.role} · ${accountSummary.current_member.status}`
+                : ""}
+            </div>
+            <div className="mt-1">
+              {accountSummary.membership_validated
+                ? "后端确认：这个 user_id 是当前租户的 active 成员。"
+                : accountSummary.membership_warning ||
+                  "后端还不能确认这个 user_id 是当前租户的 active 成员。"}
+            </div>
           </div>
         )}
         {!accountUnavailable && accountSummary && (

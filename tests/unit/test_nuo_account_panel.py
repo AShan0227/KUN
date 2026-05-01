@@ -121,6 +121,10 @@ def test_account_summary_hides_token_secrets(monkeypatch: pytest.MonkeyPatch) ->
     assert body["tenant_id"] == "tenant-a"
     assert body["account"]["display_name"] == "KUN Test"
     assert body["members"][0]["role"] == "owner"
+    assert body["current_user_id"] == "owner-a"
+    assert body["current_member"]["role"] == "owner"
+    assert body["membership_validated"] is True
+    assert body["membership_warning"] == ""
     assert body["tokens"][0]["token_id"] == "tok-a"
     assert body["tokens"][0]["status"] == "issued"
     assert body["tokens"][0]["last_ip_hash"] == "ip-hash"
@@ -131,6 +135,114 @@ def test_account_summary_hides_token_secrets(monkeypatch: pytest.MonkeyPatch) ->
     assert "token_hash" not in body["tokens"][0]
     assert "secret-hash-that-must-not-leak" not in response.text
     assert body["counts"]["issued_tokens"] == 1
+
+
+@pytest.mark.unit
+def test_account_summary_flags_unvalidated_current_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    fake_session = _FakeSession(
+        [
+            _ScalarResult(
+                TenantAccountRow(
+                    tenant_id="tenant-a",
+                    organization_id="org-a",
+                    display_name="KUN Test",
+                    owner_user_id="owner-a",
+                    status="active",
+                    plan="dev",
+                    billing_status="manual",
+                    created_at=now,
+                    updated_at=now,
+                )
+            ),
+            _ScalarsResult(
+                [
+                    TenantMemberRow(
+                        tenant_id="tenant-a",
+                        user_id="owner-a",
+                        role="owner",
+                        scopes=["account:read", "account:admin"],
+                        status="active",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                ]
+            ),
+            _ScalarsResult([]),
+        ]
+    )
+
+    @asynccontextmanager
+    async def fake_scope(*_: Any, **__: Any):
+        yield fake_session
+
+    monkeypatch.setattr(account_panel, "session_scope", fake_scope)
+
+    with tenant_scope(
+        TenantContext(
+            tenant_id="tenant-a",
+            user_id="ghost-user",
+            scopes=("account:read",),
+        )
+    ):
+        response = TestClient(_app()).get("/summary")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["current_user_id"] == "ghost-user"
+    assert body["current_member"] is None
+    assert body["membership_validated"] is False
+    assert "不在当前租户成员账本" in body["membership_warning"]
+    assert "跨租户服务端切换器" in body["honest_limits"][-1]
+
+
+@pytest.mark.unit
+def test_account_summary_flags_inactive_current_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    fake_session = _FakeSession(
+        [
+            _ScalarResult(None),
+            _ScalarsResult(
+                [
+                    TenantMemberRow(
+                        tenant_id="tenant-a",
+                        user_id="viewer-a",
+                        role="viewer",
+                        scopes=["account:read"],
+                        status="invited",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                ]
+            ),
+            _ScalarsResult([]),
+        ]
+    )
+
+    @asynccontextmanager
+    async def fake_scope(*_: Any, **__: Any):
+        yield fake_session
+
+    monkeypatch.setattr(account_panel, "session_scope", fake_scope)
+
+    with tenant_scope(
+        TenantContext(
+            tenant_id="tenant-a",
+            user_id="viewer-a",
+            scopes=("account:read",),
+        )
+    ):
+        response = TestClient(_app()).get("/summary")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["current_member"]["status"] == "invited"
+    assert body["membership_validated"] is False
+    assert "不是 active" in body["membership_warning"]
 
 
 @pytest.mark.unit

@@ -78,6 +78,10 @@ class TenantAccountLedgerSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     tenant_id: str
+    current_user_id: str | None = None
+    current_member: TenantMemberSummary | None = None
+    membership_validated: bool = False
+    membership_warning: str = ""
     account: TenantAccountSummary
     members: list[TenantMemberSummary]
     tokens: list[TenantTokenSummary]
@@ -162,9 +166,21 @@ async def account_summary() -> TenantAccountLedgerSummary:
 
         member_items = [_member_summary(row) for row in members]
         token_items = [_token_summary(row) for row in tokens]
+        current_member = _current_member_summary(
+            current_user_id=tenant.user_id,
+            members=member_items,
+        )
+        membership_validated = current_member is not None and current_member.status == "active"
 
     return TenantAccountLedgerSummary(
         tenant_id=tenant.tenant_id,
+        current_user_id=tenant.user_id,
+        current_member=current_member,
+        membership_validated=membership_validated,
+        membership_warning=_membership_warning(
+            current_user_id=tenant.user_id,
+            current_member=current_member,
+        ),
         account=_account_summary(tenant.tenant_id, account),
         members=member_items,
         tokens=token_items,
@@ -182,6 +198,7 @@ async def account_summary() -> TenantAccountLedgerSummary:
             "refresh token 续期已有最小闭环，但这还不是完整自助注册 / OAuth / 设备登录态。",
             "会话风险只是最小账本提示，不等于完整设备登录态或异常登录风控。",
             "账单字段仍是运营状态记录，不代表已经接入真实支付闭环。",
+            "这里仅验证当前请求在当前租户内的成员身份，还不是跨租户服务端切换器。",
         ],
     )
 
@@ -281,6 +298,35 @@ def _member_summary(row: TenantMemberRow) -> TenantMemberSummary:
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def _current_member_summary(
+    *,
+    current_user_id: str | None,
+    members: list[TenantMemberSummary],
+) -> TenantMemberSummary | None:
+    if not current_user_id:
+        return None
+    for member in members:
+        if member.user_id == current_user_id:
+            return member
+    return None
+
+
+def _membership_warning(
+    *,
+    current_user_id: str | None,
+    current_member: TenantMemberSummary | None,
+) -> str:
+    if not current_user_id:
+        return "当前请求没有 user_id，不能验证成员身份。"
+    if current_member is None:
+        return (
+            "当前 user_id 不在当前租户成员账本里；这可能是本地 fallback、未完成邀请或错误 token。"
+        )
+    if current_member.status != "active":
+        return f"当前成员状态是 {current_member.status}，不是 active。"
+    return ""
 
 
 def _invite_email_draft(invited: Any) -> InviteEmailDraft:
