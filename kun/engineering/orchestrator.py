@@ -50,6 +50,7 @@ from kun.datamodel.decision_ticket import (
     ticket_from_llm_route,
     ticket_from_memory_policy_selection,
     ticket_from_preflight_guard,
+    ticket_from_proactive_tool_dispatch,
     ticket_from_protocol_applied,
     ticket_from_route_choice,
     ticket_from_skill_selection,
@@ -1271,6 +1272,28 @@ class Orchestrator:
             required_tools_hint=required_tools_hint,
         )
         pre_dispatched_block = proactive_scan.to_prefix_message()
+        proactive_ticket: DecisionTicket | None = None
+        if proactive_scan.dispatched or proactive_scan.missed_opportunities:
+            proactive_ticket = ticket_from_proactive_tool_dispatch(
+                tenant_id=tenant.tenant_id,
+                task_id=task_ref.meta.task_id,
+                risk_level=task_ref.meta.risk_level,
+                scan_result=proactive_scan,
+                prompt_excerpt=user_message[:200],
+                mission_id=_mission_id_from_task(task_ref),
+            )
+            decision_tickets.append(proactive_ticket)
+            self._record_state_ledger("record_decision_ticket", proactive_ticket)
+            async with session_scope(tenant_id=tenant.tenant_id) as s:
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant.tenant_id,
+                        event_type="proactive.tool_dispatch.evaluated",
+                        payload=proactive_ticket.event_payload(),
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
         if proactive_scan.dispatched:
             yield OrchestratorEvent(
                 kind="action_plan",
@@ -1278,6 +1301,9 @@ class Orchestrator:
                     "stage": "proactive_tools",
                     "skills": [d.skill_id for d in proactive_scan.dispatched],
                     "reasons": [d.trigger_reason for d in proactive_scan.dispatched],
+                    "decision_ticket": (
+                        proactive_ticket.event_payload() if proactive_ticket else None
+                    ),
                 },
             )
 
@@ -1308,6 +1334,9 @@ class Orchestrator:
                     "stage": "tool_skipped",
                     "missed": [m["skill_id"] for m in proactive_scan.missed_opportunities],
                     "reasons": [m["reason"] for m in proactive_scan.missed_opportunities],
+                    "decision_ticket": (
+                        proactive_ticket.event_payload() if proactive_ticket else None
+                    ),
                 },
             )
 

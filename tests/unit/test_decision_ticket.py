@@ -11,6 +11,7 @@ from kun.datamodel.decision_ticket import (
     ticket_from_llm_route,
     ticket_from_memory_policy_selection,
     ticket_from_preflight_guard,
+    ticket_from_proactive_tool_dispatch,
     ticket_from_protocol_applied,
     ticket_from_route_choice,
     ticket_from_skill_selection,
@@ -26,7 +27,9 @@ from kun.engineering.concurrency import (
     PreConflictReport,
     ResourceIntent,
 )
+from kun.engineering.proactive_tools import ProactiveDispatch, ProactiveScanResult
 from kun.memory.policy import MemoryDepth, MemoryLayer, MemoryPolicyTicket
+from kun.skills.dispatcher import SkillResult
 from kun.watchtower.value_gate import ValueGateDecision
 
 
@@ -305,6 +308,41 @@ def test_preflight_guard_ticket_records_conflicts_and_pending_actions() -> None:
     assert ticket.selected_action == "pause_for_preflight"
     assert ticket.metadata["conflict_count"] == 1
     assert ticket.metadata["pending_action_types"] == ["email.draft"]
+
+
+def test_proactive_tool_ticket_records_dispatch_and_missed_triggers() -> None:
+    scan = ProactiveScanResult(
+        dispatched=[
+            ProactiveDispatch(
+                skill_id="python-exec",
+                params={"code": "print(1)"},
+                result=SkillResult(skill_id="python-exec", ok=True, output={"stdout": "1"}),
+                trigger_reason="keyword:python",
+            )
+        ],
+        missed_opportunities=[
+            {
+                "skill_id": "ghost-skill",
+                "reason": "executor_unregistered",
+                "trigger_source": "keyword",
+            }
+        ],
+    )
+
+    ticket = ticket_from_proactive_tool_dispatch(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        risk_level="low",
+        scan_result=scan,
+        prompt_excerpt="跑一段 python",
+    )
+
+    assert ticket.phase == "step"
+    assert ticket.decision_point == "proactive_tool_dispatch"
+    assert ticket.status == "applied"
+    assert ticket.metadata["dispatched_skills"] == ["python-exec"]
+    assert ticket.metadata["missed_skills"] == ["ghost-skill"]
+    assert ticket.evidence["dispatched"][0]["ok"] is True
 
 
 def test_protocol_applied_ticket_wraps_protocol_registry_choice() -> None:

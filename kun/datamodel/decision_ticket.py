@@ -34,6 +34,7 @@ DecisionPhase = Literal[
 DecisionPoint = Literal[
     "protocol_applied",
     "preflight_guard",
+    "proactive_tool_dispatch",
     "strategy_selected",
     "role_model_selected",
     "llm_model_selected",
@@ -554,6 +555,80 @@ def ticket_from_preflight_guard(
     )
 
 
+def ticket_from_proactive_tool_dispatch(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    scan_result: Any,
+    prompt_excerpt: str = "",
+    mission_id: str | None = None,
+) -> DecisionTicket:
+    """Wrap proactive tool pre-dispatch and missed trigger decisions."""
+
+    dispatched = list(getattr(scan_result, "dispatched", []) or [])
+    missed = list(getattr(scan_result, "missed_opportunities", []) or [])
+    dispatched_skills = [
+        str(getattr(item, "skill_id", "")) for item in dispatched if getattr(item, "skill_id", "")
+    ]
+    missed_skills = [
+        str(item.get("skill_id", ""))
+        for item in missed
+        if isinstance(item, dict) and item.get("skill_id")
+    ]
+    status: DecisionStatus = (
+        "applied" if dispatched_skills else "skipped" if missed_skills else "allowed"
+    )
+    selected_action = (
+        ",".join(dispatched_skills)
+        if dispatched_skills
+        else f"missed:{','.join(missed_skills)}"
+        if missed_skills
+        else "none"
+    )
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="step",
+        decision_point="proactive_tool_dispatch",
+        source_module="engineering.proactive_tools",
+        selected_action=selected_action,
+        status=status,
+        reason=(
+            f"dispatched={len(dispatched_skills)} missed={len(missed_skills)}"
+            if dispatched_skills or missed_skills
+            else "no proactive trigger fired"
+        ),
+        confidence=0.76 if dispatched_skills else 0.58,
+        risk_level=risk_level,
+        inputs_summary={
+            "prompt_excerpt": prompt_excerpt[:200],
+            "dispatched_count": len(dispatched_skills),
+            "missed_count": len(missed_skills),
+        },
+        evidence={
+            "dispatched": [
+                {
+                    "skill_id": str(getattr(item, "skill_id", "")),
+                    "params": _dict_or_empty(getattr(item, "params", {})),
+                    "trigger_reason": str(getattr(item, "trigger_reason", "") or ""),
+                    "ok": bool(getattr(getattr(item, "result", None), "ok", False)),
+                    "error": str(getattr(getattr(item, "result", None), "error", "") or ""),
+                }
+                for item in dispatched
+            ],
+            "missed": [dict(item) for item in missed if isinstance(item, dict)],
+        },
+        metadata={
+            "dispatched_skills": dispatched_skills,
+            "missed_skills": missed_skills,
+            "dispatched_count": len(dispatched_skills),
+            "missed_count": len(missed_skills),
+        },
+    )
+
+
 def ticket_from_budget_policy(
     *,
     tenant_id: str,
@@ -915,6 +990,7 @@ __all__ = [
     "ticket_from_llm_route",
     "ticket_from_memory_policy_selection",
     "ticket_from_preflight_guard",
+    "ticket_from_proactive_tool_dispatch",
     "ticket_from_protocol_applied",
     "ticket_from_route_choice",
     "ticket_from_skill_selection",

@@ -101,6 +101,7 @@ EventKind = Literal[
     # Notification
     "notification.emitted",
     "proactive.trigger_promoted",
+    "proactive.tool_dispatch.evaluated",
     # Security
     "security.cross_tenant_attempt",
     "security.redteam.finding",
