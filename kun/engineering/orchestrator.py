@@ -48,9 +48,11 @@ from kun.datamodel.decision_ticket import (
     ticket_from_context_selection,
     ticket_from_delivery_review,
     ticket_from_llm_route,
+    ticket_from_memory_policy_selection,
     ticket_from_protocol_applied,
     ticket_from_route_choice,
     ticket_from_skill_selection,
+    ticket_from_step_action_selection,
     ticket_from_validation_tier,
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
@@ -89,7 +91,7 @@ from kun.interface.llm import (
     get_router,
 )
 from kun.interface.llm.router import TaskPurpose
-from kun.memory.policy import MemoryPolicyTicket
+from kun.memory.policy import MemoryPolicyTicket, decide_memory_policy
 from kun.memory.similar_task_recall import recall_similar_task_experiences
 from kun.skills.selector import get_selector as get_skill_selector
 from kun.watchtower.engine import RuleEngine
@@ -1022,6 +1024,40 @@ class Orchestrator:
             else {"FAST": 0, "SMART": 1, "MAX": 3, "ENSEMBLE": 3}.get(_task_mode, 1)
         )
         memory_policy = _memory_policy_from_watchtower(watchtower_decision)
+        memory_policy_source = "watchtower.decision_plane"
+        if memory_policy is None:
+            memory_policy = decide_memory_policy(
+                task_ref,
+                watchtower_decision=watchtower_decision,
+            )
+            memory_policy_source = "memory.policy.fallback"
+        memory_policy_ticket = ticket_from_memory_policy_selection(
+            tenant_id=tenant.tenant_id,
+            task_id=task_ref.meta.task_id,
+            risk_level=task_ref.meta.risk_level,
+            policy=memory_policy,
+            mission_id=_mission_id_from_task(task_ref),
+            source_module=memory_policy_source,
+        )
+        decision_tickets.append(memory_policy_ticket)
+        self._record_state_ledger("record_decision_ticket", memory_policy_ticket)
+        async with session_scope(tenant_id=tenant.tenant_id) as s:
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant.tenant_id,
+                    event_type="memory.policy.selected",
+                    payload=memory_policy_ticket.event_payload(),
+                    task_ref=task_ref.meta.task_id,
+                ),
+            )
+        yield OrchestratorEvent(
+            kind="action_plan",
+            data={
+                "stage": "memory_policy_selected",
+                "decision_ticket": memory_policy_ticket.event_payload(),
+            },
+        )
         if memory_policy is not None:
             if not memory_policy.use_memory:
                 _context_limit = 0
@@ -1315,6 +1351,33 @@ class Orchestrator:
                                 "expected_outcome": _hermes_step.expected_outcome,
                                 "confidence": _hermes_step.confidence,
                                 "cost_estimate_usd": _hermes_step.cost_estimate_usd,
+                            },
+                        )
+                        hermes_ticket = ticket_from_step_action_selection(
+                            tenant_id=tenant.tenant_id,
+                            task_id=task_ref.meta.task_id,
+                            risk_level=task_ref.meta.risk_level,
+                            step_id=step_plan.step_id,
+                            hermes_step=_hermes_step,
+                            mission_id=_mission_id_from_task(task_ref),
+                        )
+                        decision_tickets.append(hermes_ticket)
+                        self._record_state_ledger("record_decision_ticket", hermes_ticket)
+                        async with session_scope(tenant_id=tenant.tenant_id) as s:
+                            await emit(
+                                s,
+                                Event.build(
+                                    tenant_id=tenant.tenant_id,
+                                    event_type="hermes.step_action.selected",
+                                    payload=hermes_ticket.event_payload(),
+                                    task_ref=task_ref.meta.task_id,
+                                ),
+                            )
+                        yield OrchestratorEvent(
+                            kind="action_plan",
+                            data={
+                                "stage": "hermes_step_action_selected",
+                                "decision_ticket": hermes_ticket.event_payload(),
                             },
                         )
                     except Exception:

@@ -23,10 +23,13 @@ class PackedContextItem(BaseModel):
     asset_id: str
     asset_kind: AssetKind
     relevance_score: float = Field(ge=0.0)
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
     title: str = ""
     tags: list[str] = Field(default_factory=list)
     summary: str = ""
     score_rationale: str = ""
+    governance_labels: list[str] = Field(default_factory=list)
+    memory_layer: str = ""
 
 
 class PackedProcessExperience(BaseModel):
@@ -541,10 +544,20 @@ def _to_packed(score: ImportanceScore, asset: LayeredAsset) -> PackedContextItem
         asset_id=asset.asset_id,
         asset_kind=asset.asset_kind,
         relevance_score=score.overall,
+        score_breakdown={
+            "semantic": score.semantic,
+            "frequency": score.frequency,
+            "recency": score.recency,
+            "dependency": score.dependency,
+            "pin": score.pin,
+            "contribution": score.contribution,
+        },
         title=str(asset.l1_metadata.get("title") or asset.l1_metadata.get("name") or ""),
         tags=asset.tags,
         summary=asset.l2_summary or _metadata_summary(asset),
         score_rationale=score.rationale,
+        governance_labels=sorted(_governance_labels(asset)),
+        memory_layer=_logical_memory_layer(asset),
     )
 
 

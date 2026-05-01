@@ -9,14 +9,17 @@ from kun.datamodel.decision_ticket import (
     ticket_from_context_selection,
     ticket_from_delivery_review,
     ticket_from_llm_route,
+    ticket_from_memory_policy_selection,
     ticket_from_protocol_applied,
     ticket_from_route_choice,
     ticket_from_skill_selection,
+    ticket_from_step_action_selection,
     ticket_from_validation_tier,
     ticket_from_value_gate_decision,
     ticket_from_watchtower_decision,
     ticket_from_world_policy,
 )
+from kun.memory.policy import MemoryDepth, MemoryLayer, MemoryPolicyTicket
 from kun.watchtower.value_gate import ValueGateDecision
 
 
@@ -151,6 +154,41 @@ def test_context_selection_ticket_records_selected_assets() -> None:
     assert ticket.status == "selected"
     assert ticket.metadata["asset_ids"] == ["asset-1"]
     assert ticket.evidence["asset_kinds"] == ["memory"]
+    assert ticket.evidence["selected_assets"][0]["asset_id"] == "asset-1"
+    assert ticket.evidence["selected_assets"][0]["relevance_score"] == 0.91
+
+
+def test_memory_policy_ticket_records_sparse_memory_decision() -> None:
+    policy = MemoryPolicyTicket(
+        use_memory=True,
+        depth=MemoryDepth.TARGETED,
+        layers=[MemoryLayer.META_DECISION, MemoryLayer.METHODOLOGY],
+        asset_kinds=["memory", "methodology"],
+        preferred_tags=["ops", "retention"],
+        max_items=2,
+        allow_mid_run_retrieval=True,
+        avoid_layers=[MemoryLayer.BEHAVIOR],
+        risk=False,
+        risk_flags=[],
+        reason="strategy_ops_prefers_meta_methodology",
+    )
+
+    ticket = ticket_from_memory_policy_selection(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        risk_level="medium",
+        policy=policy,
+        source_module="watchtower.decision_plane",
+    )
+
+    assert ticket.phase == "memory"
+    assert ticket.decision_point == "memory_policy_selected"
+    assert ticket.status == "selected"
+    assert ticket.selected_action == "targeted:meta_decision,methodology"
+    assert ticket.source_module == "watchtower.decision_plane"
+    assert ticket.metadata["layers"] == ["meta_decision", "methodology"]
+    assert ticket.metadata["max_items"] == 2
+    assert ticket.metadata["allow_mid_run_retrieval"] is True
 
 
 def test_budget_policy_ticket_records_runtime_budget_level() -> None:
@@ -177,8 +215,13 @@ def test_skill_selection_ticket_records_candidate_skills() -> None:
         skill_id="lesson_planner",
         manifest=SimpleNamespace(
             description="Plan lessons",
+            version="1.2.3",
             maturity="stable",
+            auto_trigger_when=[{"pattern": "lesson"}],
+            allowed_commands=["python"],
+            denied_patterns=["rm -rf"],
         ),
+        source_path="skills/lesson/SKILL.md",
     )
 
     ticket = ticket_from_skill_selection(
@@ -194,6 +237,35 @@ def test_skill_selection_ticket_records_candidate_skills() -> None:
     assert ticket.status == "selected"
     assert ticket.metadata["skill_ids"] == ["lesson_planner"]
     assert ticket.evidence["skills"][0]["description"] == "Plan lessons"
+    assert ticket.evidence["skills"][0]["rank"] == 1
+    assert ticket.evidence["skills"][0]["version"] == "1.2.3"
+    assert ticket.evidence["skills"][0]["source_path"] == "skills/lesson/SKILL.md"
+    assert ticket.evidence["skills"][0]["auto_trigger_count"] == 1
+
+
+def test_step_action_ticket_records_hermes_action_choice() -> None:
+    hermes_step = SimpleNamespace(
+        action_type="use_memory",
+        action_payload={"query": "过去留存策略"},
+        thought="先查元决策记忆",
+        expected_outcome="拿到可复用策略",
+        confidence=0.82,
+        cost_estimate_usd=0.01,
+    )
+
+    ticket = ticket_from_step_action_selection(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        risk_level="medium",
+        step_id=3,
+        hermes_step=hermes_step,
+    )
+
+    assert ticket.phase == "step"
+    assert ticket.decision_point == "step_action_selected"
+    assert ticket.selected_action == "use_memory"
+    assert ticket.metadata["step_id"] == 3
+    assert ticket.evidence["action_payload"]["query"] == "过去留存策略"
 
 
 def test_protocol_applied_ticket_wraps_protocol_registry_choice() -> None:

@@ -34,6 +34,7 @@ EventKind = Literal[
     "task.budget_warn",
     "task.budget_exceeded",
     "task.tool_skipped",
+    "hermes.step_action.selected",
     "task.metadata_updated",
     "task.done",
     "task.failed",
@@ -83,6 +84,7 @@ EventKind = Literal[
     "context.updated",
     "context.forgotten",
     "skill.selected",
+    "memory.policy.selected",
     "memory.writeback.recorded",
     "credit.assignment.completed",
     # Evaluation / Validation

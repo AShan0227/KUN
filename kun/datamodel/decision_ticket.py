@@ -37,7 +37,9 @@ DecisionPoint = Literal[
     "role_model_selected",
     "llm_model_selected",
     "context_selected",
+    "memory_policy_selected",
     "skill_selected",
+    "step_action_selected",
     "value_gate",
     "budget_policy",
     "world_policy",
@@ -262,6 +264,20 @@ def ticket_from_context_selection(
     ]
     kinds = [str(getattr(item, "asset_kind", "")) for item in items]
     scores = [float(getattr(item, "relevance_score", 0.0) or 0.0) for item in items]
+    selected_assets = [
+        {
+            "asset_id": str(getattr(item, "asset_id", "")),
+            "asset_kind": str(getattr(item, "asset_kind", "")),
+            "relevance_score": float(getattr(item, "relevance_score", 0.0) or 0.0),
+            "score_breakdown": _dict_or_empty(getattr(item, "score_breakdown", {})),
+            "score_rationale": str(getattr(item, "score_rationale", "") or ""),
+            "tags": _string_list(getattr(item, "tags", [])),
+            "governance_labels": _string_list(getattr(item, "governance_labels", [])),
+            "memory_layer": str(getattr(item, "memory_layer", "") or ""),
+        }
+        for item in items
+        if getattr(item, "asset_id", "")
+    ]
     status: DecisionStatus = "selected" if asset_ids else "skipped"
     reason = (
         f"ContextPacker selected {len(asset_ids)} assets for mode={execution_mode}"
@@ -289,14 +305,83 @@ def ticket_from_context_selection(
             "asset_ids": asset_ids,
             "asset_kinds": kinds,
             "relevance_scores": scores,
+            "selected_assets": selected_assets,
             "memory_policy": memory_policy or {},
         },
         metadata={
             "asset_ids": asset_ids,
             "asset_count": len(asset_ids),
+            "selected_assets": selected_assets,
             "context_limit": context_limit,
             "execution_mode": execution_mode,
             "memory_policy": memory_policy or {},
+        },
+    )
+
+
+def ticket_from_memory_policy_selection(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    policy: Any,
+    mission_id: str | None = None,
+    source_module: str = "memory.policy",
+) -> DecisionTicket:
+    """Wrap sparse memory retrieval policy as an auditable decision ticket."""
+
+    layers = _string_list(getattr(policy, "layers", []))
+    asset_kinds = _string_list(getattr(policy, "asset_kinds", []))
+    preferred_tags = _string_list(getattr(policy, "preferred_tags", []))
+    avoid_layers = _string_list(getattr(policy, "avoid_layers", []))
+    risk_flags = _string_list(getattr(policy, "risk_flags", []))
+    depth = str(getattr(policy, "depth", "unknown"))
+    use_memory = bool(getattr(policy, "use_memory", False))
+    max_items = int(getattr(policy, "max_items", 0) or 0)
+    allow_mid_run_retrieval = bool(getattr(policy, "allow_mid_run_retrieval", False))
+    status: DecisionStatus = "selected" if use_memory else "skipped"
+    policy_dump = _model_dump_or_value(policy)
+    selected_action = (
+        f"{depth}:{','.join(layers) if layers else 'no_layers'}" if use_memory else f"{depth}:skip"
+    )
+
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="memory",
+        decision_point="memory_policy_selected",
+        source_module=source_module,
+        selected_action=selected_action,
+        status=status,
+        reason=str(getattr(policy, "reason", "")),
+        confidence=0.74 if use_memory else 0.66,
+        risk_level=risk_level,
+        cost_estimate_usd=0.0,
+        alternatives=avoid_layers,
+        inputs_summary={
+            "risk_level": risk_level,
+            "use_memory": use_memory,
+            "depth": depth,
+            "max_items": max_items,
+        },
+        evidence={
+            "policy": policy_dump,
+            "layers": layers,
+            "asset_kinds": asset_kinds,
+            "preferred_tags": preferred_tags,
+            "avoid_layers": avoid_layers,
+            "risk_flags": risk_flags,
+        },
+        metadata={
+            "use_memory": use_memory,
+            "depth": depth,
+            "layers": layers,
+            "asset_kinds": asset_kinds,
+            "preferred_tags": preferred_tags,
+            "max_items": max_items,
+            "allow_mid_run_retrieval": allow_mid_run_retrieval,
+            "risk_flags": risk_flags,
         },
     )
 
@@ -336,16 +421,76 @@ def ticket_from_skill_selection(
         evidence={
             "skills": [
                 {
+                    "rank": idx + 1,
                     "skill_id": str(getattr(skill, "skill_id", "")),
                     "description": str(
                         getattr(getattr(skill, "manifest", None), "description", "")
                     ),
+                    "version": str(getattr(getattr(skill, "manifest", None), "version", "")),
                     "maturity": str(getattr(getattr(skill, "manifest", None), "maturity", "")),
+                    "source_path": str(getattr(skill, "source_path", "")),
+                    "auto_trigger_count": len(
+                        getattr(getattr(skill, "manifest", None), "auto_trigger_when", []) or []
+                    ),
+                    "allowed_command_count": len(
+                        getattr(getattr(skill, "manifest", None), "allowed_commands", []) or []
+                    ),
+                    "denied_pattern_count": len(
+                        getattr(getattr(skill, "manifest", None), "denied_patterns", []) or []
+                    ),
                 }
-                for skill in skills
+                for idx, skill in enumerate(skills)
             ],
         },
         metadata={"skill_ids": skill_ids, "skill_count": len(skill_ids), "top_k": top_k},
+    )
+
+
+def ticket_from_step_action_selection(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    step_id: int,
+    hermes_step: Any,
+    mission_id: str | None = None,
+) -> DecisionTicket:
+    """Wrap Hermes per-step action choice as a decision ticket."""
+
+    action_type = str(getattr(hermes_step, "action_type", "") or "direct_llm")
+    payload = _dict_or_empty(getattr(hermes_step, "action_payload", {}))
+    confidence = _float_or_default(getattr(hermes_step, "confidence", None), 0.5)
+    cost_estimate = _float_or_default(getattr(hermes_step, "cost_estimate_usd", None), 0.0)
+    expected_outcome = str(getattr(hermes_step, "expected_outcome", "") or "")
+    thought = str(getattr(hermes_step, "thought", "") or "")
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="step",
+        decision_point="step_action_selected",
+        source_module="interface.hermes",
+        selected_action=action_type,
+        status="selected",
+        reason=thought or f"Hermes selected {action_type}",
+        confidence=confidence,
+        risk_level=risk_level,
+        cost_estimate_usd=cost_estimate,
+        inputs_summary={
+            "step_id": step_id,
+            "risk_level": risk_level,
+        },
+        evidence={
+            "action_type": action_type,
+            "action_payload": payload,
+            "expected_outcome": expected_outcome,
+            "thought": thought,
+        },
+        metadata={
+            "step_id": step_id,
+            "action_type": action_type,
+            "expected_outcome": expected_outcome,
+        },
     )
 
 
@@ -692,6 +837,12 @@ def _float_or_default(value: Any, default: float) -> float:
         return default
 
 
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
 __all__ = [
     "DecisionPhase",
     "DecisionPoint",
@@ -702,9 +853,11 @@ __all__ = [
     "ticket_from_context_selection",
     "ticket_from_delivery_review",
     "ticket_from_llm_route",
+    "ticket_from_memory_policy_selection",
     "ticket_from_protocol_applied",
     "ticket_from_route_choice",
     "ticket_from_skill_selection",
+    "ticket_from_step_action_selection",
     "ticket_from_validation_tier",
     "ticket_from_value_gate_decision",
     "ticket_from_watchtower_decision",

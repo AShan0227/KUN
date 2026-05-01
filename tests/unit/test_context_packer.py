@@ -302,6 +302,9 @@ async def test_context_packer_downranks_soft_forgotten_and_duplicate_merged_asse
     by_id = {item.asset_id: item for item in pack.items}
     assert "governance_delta" in by_id[soft_forgotten.asset_id].score_rationale
     assert "soft_forgotten" in by_id[soft_forgotten.asset_id].score_rationale
+    assert "soft_forgotten" in by_id[soft_forgotten.asset_id].governance_labels
+    assert "semantic" in by_id[soft_forgotten.asset_id].score_breakdown
+    assert by_id[soft_forgotten.asset_id].memory_layer == "task_result"
     assert "duplicate_merged" in by_id[duplicate_merged.asset_id].score_rationale
 
 

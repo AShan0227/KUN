@@ -421,6 +421,17 @@ async def test_hermes_use_memory_passes_policy_layers_when_mid_run_allowed() -> 
     async for ev in orch.stream("优化留存运营策略"):
         events.append((ev.kind, ev.data))
 
+    policy_events = [
+        data
+        for kind, data in events
+        if kind == "action_plan" and data.get("stage") == "memory_policy_selected"
+    ]
+    assert policy_events
+    policy_ticket = policy_events[0]["decision_ticket"]
+    assert policy_ticket["decision_point"] == "memory_policy_selected"
+    assert policy_ticket["phase"] == "memory"
+    assert policy_ticket["metadata"]["layers"][:2] == ["meta_decision", "methodology"]
+
     assert packer.pack_query_calls
     call = packer.pack_query_calls[0]
     assert call["memory_layers"][:2] == ["meta_decision", "methodology"]
@@ -492,6 +503,14 @@ async def test_hermes_direct_llm_no_override_event() -> None:
     hermes_steps = [data for kind, data in events if kind == "hermes_step"]
     assert len(hermes_steps) >= 1
     assert hermes_steps[0]["action_type"] == "direct_llm"
+    step_action_tickets = [
+        data
+        for kind, data in events
+        if kind == "action_plan" and data.get("stage") == "hermes_step_action_selected"
+    ]
+    assert step_action_tickets
+    assert step_action_tickets[0]["decision_ticket"]["decision_point"] == "step_action_selected"
+    assert step_action_tickets[0]["decision_ticket"]["selected_action"] == "direct_llm"
 
 
 @pytest.mark.unit
