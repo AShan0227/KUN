@@ -59,6 +59,35 @@ async def test_ingest_rejected_path_is_not_stored(tmp_path) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_ingest_url_stores_allowlisted_fetched_material() -> None:
+    async def fetcher(_url: str, _max_bytes: int) -> tuple[str, bytes]:
+        return "text/html", b"<h1>KUN URL</h1><p>compiled from web</p>"
+
+    store = InMemoryAssetStore()
+    compiler = LightweightMaterialCompiler(
+        url_fetch_enabled=True,
+        allowed_url_hosts={"docs.example.com"},
+        url_fetcher=fetcher,
+    )
+    ingestor = CompilerIngestor(compiler=compiler, store=store)
+
+    result = await ingestor.ingest_url(
+        "https://docs.example.com/report.html",
+        tenant_id="tenant-compiler",
+        layer=AssetLayer.L2_PROJECT,
+    )
+
+    assert result.stored is True
+    stored = await store.get(result.asset_id or "", tenant_id="tenant-compiler")
+    assert stored is not None
+    assert stored.l1_metadata["source"]["type"] == "url"
+    assert stored.l1_metadata["material_metadata"]["url_fetch_enabled"] is True
+    assert stored.layer == AssetLayer.L2_PROJECT
+    assert "compiled from web" in (stored.l2_summary or "")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_material_to_layered_asset_skips_unsupported_url() -> None:
     material = await LightweightMaterialCompiler().compile_url(
         "https://example.com/data",

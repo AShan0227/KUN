@@ -76,6 +76,21 @@ class CompilerIngestor:
         )
         return await self.ingest_material(material, layer=layer)
 
+    async def ingest_url(
+        self,
+        url: str,
+        *,
+        tenant_id: str,
+        layer: AssetLayer = AssetLayer.L1_TASK,
+        metadata: dict[str, Any] | None = None,
+    ) -> CompilerIngestionResult:
+        material = await self.compiler.compile_url(
+            url,
+            tenant_id=tenant_id,
+            metadata=metadata,
+        )
+        return await self.ingest_material(material, layer=layer)
+
     async def ingest_material(
         self,
         material: CanonicalMaterial,

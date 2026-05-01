@@ -364,6 +364,29 @@ def compiler_compile_path(
     _run_json(_run())
 
 
+@compiler_app.command("compile-url")
+def compiler_compile_url(
+    url: str = typer.Argument(..., help="HTTPS URL to compile"),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+) -> None:
+    """Compile an allowlisted HTTPS URL into CanonicalMaterial JSON.
+
+    URL fetching is disabled by default. Enable with
+    KUN_COMPILER_URL_FETCH_ENABLED=1 and KUN_COMPILER_URL_ALLOWED_HOSTS.
+    """
+    from kun.compiler import LightweightMaterialCompiler
+
+    async def _run() -> dict[str, Any]:
+        material = await LightweightMaterialCompiler().compile_url(
+            url,
+            tenant_id=tenant,
+            metadata=_compiler_metadata(url),
+        )
+        return material.model_dump(mode="json")
+
+    _run_json(_run())
+
+
 @compiler_app.command("ingest-text")
 def compiler_ingest_text(
     text: str = typer.Argument(..., help="Text to compile and store"),
@@ -390,6 +413,34 @@ def compiler_ingest_text(
             "summary": result.material.l1,
             "stored": result.stored,
             "material_status": result.material.status,
+        }
+
+    _run_json(_run())
+
+
+@compiler_app.command("ingest-url")
+def compiler_ingest_url(
+    url: str = typer.Argument(..., help="HTTPS URL to compile and store"),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+    layer: str = typer.Option("L1_task", "--layer"),
+) -> None:
+    """Compile an allowlisted HTTPS URL and write it to the AssetStore."""
+    from kun.compiler import CompilerIngestor
+
+    async def _run() -> dict[str, Any]:
+        result = await CompilerIngestor().ingest_url(
+            url,
+            tenant_id=tenant,
+            layer=_asset_layer(layer),
+            metadata=_compiler_metadata(url),
+        )
+        return {
+            "asset_id": result.asset_id,
+            "status": "stored" if result.stored else result.reason,
+            "summary": result.material.l1,
+            "stored": result.stored,
+            "material_status": result.material.status,
+            "source_uri": result.material.source.uri,
         }
 
     _run_json(_run())
