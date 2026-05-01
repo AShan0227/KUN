@@ -661,6 +661,7 @@ def test_idle_batch_db_history_row_compacts_completed_task() -> None:
     )
     task = SimpleNamespace(
         task_id="task-1",
+        tenant_id="tenant-1",
         task_type="marketing.ad",
         risk_level="medium",
         success_criteria_short="写一条转化广告",
@@ -677,9 +678,49 @@ def test_idle_batch_db_history_row_compacts_completed_task() -> None:
     assert history["task_type"] == "marketing.ad"
     assert history["summary"] == "写一条转化广告"
     assert history["outcome"] == "completed"
+    assert history["tenant_id"] == "tenant-1"
     assert history["risk"] == "medium"
     assert history["cost_usd"] == 0.42
+    assert history["evidence"]["tenant_id"] == "tenant-1"
     assert history["evidence"]["strategy_pack"] == "marketing_ad_v1"
+
+
+@pytest.mark.unit
+def test_idle_batch_db_history_row_compacts_runtime_only_failure() -> None:
+    failed_at = datetime(2026, 5, 1, tzinfo=UTC)
+    task = SimpleNamespace(
+        task_id="task-runtime-failed",
+        tenant_id="tenant-1",
+        task_type="coding.fix",
+        risk_level="high",
+        success_criteria_short="修复失败的后台任务",
+    )
+    runtime = SimpleNamespace(
+        task_ref="task-runtime-failed",
+        tenant_id="tenant-1",
+        status="failed",
+        current_step=4,
+        accumulated_cost_usd_equivalent=0.33,
+        accumulated_tokens=900,
+        last_updated=failed_at,
+        blob={
+            "execution_mode": "SMART",
+            "strategy_pack": "coding_fix_v1",
+            "last_error": "tool timeout",
+        },
+    )
+
+    history = _task_history_from_db_rows(None, task, runtime)
+
+    assert history["history_id"] == "task-runtime-failed"
+    assert history["tenant_id"] == "tenant-1"
+    assert history["outcome"] == "failed_task"
+    assert history["risk"] == "high"
+    assert history["cost_usd"] == 0.33
+    assert history["evidence"]["result_status"] == ""
+    assert history["evidence"]["runtime_status"] == "failed"
+    assert history["evidence"]["runtime_tokens"] == 900
+    assert history["evidence"]["failure_evidence"] == {"last_error": "tool timeout"}
 
 
 @pytest.mark.unit

@@ -369,8 +369,13 @@ def _draft_guidance(draft: StrategyPackDraft) -> str:
 
 
 def _history_tenant_id(history: TaskHistorySummary) -> str:
-    tenant_id = history.evidence.get("tenant_id") if isinstance(history.evidence, dict) else None
-    return str(tenant_id or "u-sylvan")
+    evidence_tenant = (
+        history.evidence.get("tenant_id") if isinstance(history.evidence, dict) else None
+    )
+    tenant_id = str(history.tenant_id or evidence_tenant or "").strip()
+    if not tenant_id:
+        raise ValueError("history tenant_id is required for real Qi lab replay")
+    return tenant_id
 
 
 def _env_bool(name: str, *, default: bool = False) -> bool:

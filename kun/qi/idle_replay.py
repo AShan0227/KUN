@@ -47,6 +47,7 @@ class TaskHistorySummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     history_id: str = ""
+    tenant_id: str = ""
     task_type: str = "general"
     summary: str
     outcome: str = "completed"

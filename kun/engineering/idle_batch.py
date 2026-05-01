@@ -121,7 +121,7 @@ class IdleBatchDbDataSource:
 
         try:
             async with session_scope(tenant_id=tenant_id) as session:
-                rows = (
+                result_rows = (
                     await session.execute(
                         select(TaskResultRow, TaskRow, RuntimeStateRow)
                         .join(
@@ -142,13 +142,41 @@ class IdleBatchDbDataSource:
                         .limit(self.history_limit)
                     )
                 ).all()
+                histories = [
+                    _task_history_from_db_rows(result, task, runtime)
+                    for result, task, runtime in result_rows
+                ]
+                remaining = self.history_limit - len(histories)
+                if remaining > 0:
+                    runtime_rows = (
+                        await session.execute(
+                            select(RuntimeStateRow, TaskRow)
+                            .join(
+                                TaskRow,
+                                (TaskRow.task_id == RuntimeStateRow.task_ref)
+                                & (TaskRow.tenant_id == RuntimeStateRow.tenant_id),
+                            )
+                            .outerjoin(
+                                TaskResultRow,
+                                (TaskResultRow.task_id == RuntimeStateRow.task_ref)
+                                & (TaskResultRow.tenant_id == RuntimeStateRow.tenant_id),
+                            )
+                            .where(
+                                RuntimeStateRow.tenant_id == tenant_id,
+                                RuntimeStateRow.status.in_(("failed", "cancelled")),
+                                TaskResultRow.task_id.is_(None),
+                            )
+                            .order_by(RuntimeStateRow.last_updated.desc())
+                            .limit(remaining)
+                        )
+                    ).all()
+                    histories.extend(
+                        _task_history_from_db_rows(None, task, runtime)
+                        for runtime, task in runtime_rows
+                    )
         except Exception:
             log.debug("idle_batch.db_completed_task_history_failed", exc_info=True)
             return []
-
-        histories: list[dict[str, Any]] = []
-        for result, task, runtime in rows:
-            histories.append(_task_history_from_db_rows(result, task, runtime))
         return histories
 
 
@@ -1481,14 +1509,21 @@ async def _call_data_source(method_name: str, tenant_id: str) -> Any:
     return result
 
 
-def _task_history_from_db_rows(result: Any, task: Any, runtime: Any | None) -> dict[str, Any]:
+def _task_history_from_db_rows(
+    result: Any | None, task: Any, runtime: Any | None
+) -> dict[str, Any]:
     result_json = dict(getattr(result, "result_json", None) or {})
     runtime_blob = dict(getattr(runtime, "blob", None) or {}) if runtime is not None else {}
-    status = str(getattr(result, "status", "") or "done")
+    result_status = str(getattr(result, "status", "") or "")
+    runtime_status = str(getattr(runtime, "status", "") or "")
+    status = result_status or runtime_status or "done"
     verification_status = str(
         result_json.get("validation_outcome")
         or result_json.get("verification_status")
         or result_json.get("status")
+        or runtime_blob.get("verification_status")
+        or runtime_blob.get("last_error")
+        or runtime_blob.get("blocked_reason")
         or status
     )
     task_type = str(getattr(task, "task_type", "") or result_json.get("task_type") or "general")
@@ -1497,32 +1532,74 @@ def _task_history_from_db_rows(result: Any, task: Any, runtime: Any | None) -> d
     summary = success_criteria or answer or f"{task_type} task {status}"
     if len(summary) > 240:
         summary = f"{summary[:237]}..."
-    updated_at = getattr(result, "updated_at", None) or getattr(result, "created_at", None)
+    updated_at = (
+        getattr(result, "updated_at", None)
+        or getattr(result, "created_at", None)
+        or getattr(runtime, "last_updated", None)
+        or getattr(runtime, "finished_at", None)
+    )
+    cost_usd = _float(getattr(result, "cost_usd_equivalent", None), default=0.0)
+    if result is None:
+        cost_usd = _float(getattr(runtime, "accumulated_cost_usd_equivalent", None), default=0.0)
+    tokens_in = int(getattr(result, "tokens_in", 0) or 0)
+    tokens_out = int(getattr(result, "tokens_out", 0) or 0)
+    runtime_tokens = int(getattr(runtime, "accumulated_tokens", 0) or 0) if runtime else 0
+    failure_evidence = _runtime_failure_evidence(runtime_blob)
     return {
-        "history_id": str(getattr(result, "task_id", "") or getattr(task, "task_id", "")),
+        "history_id": str(
+            getattr(result, "task_id", "")
+            or getattr(runtime, "task_ref", "")
+            or getattr(task, "task_id", "")
+        ),
+        "tenant_id": str(getattr(task, "tenant_id", "") or getattr(runtime, "tenant_id", "")),
         "task_type": task_type,
         "summary": summary,
         "outcome": _history_outcome_from_status(status, verification_status),
         "risk": _normalize_idle_history_risk(getattr(task, "risk_level", None)),
         "verification_status": verification_status,
-        "cost_usd": _float(getattr(result, "cost_usd_equivalent", None), default=0.0),
+        "cost_usd": cost_usd,
         "completed_at": updated_at.isoformat() if isinstance(updated_at, datetime) else None,
         "evidence": {
             "source": "idle_batch.db.completed_task_history",
-            "task_id": str(getattr(task, "task_id", "") or getattr(result, "task_id", "")),
-            "result_status": status,
-            "runtime_status": str(getattr(runtime, "status", "") or ""),
+            "tenant_id": str(getattr(task, "tenant_id", "") or getattr(runtime, "tenant_id", "")),
+            "task_id": str(
+                getattr(task, "task_id", "")
+                or getattr(result, "task_id", "")
+                or getattr(runtime, "task_ref", "")
+            ),
+            "result_status": result_status,
+            "runtime_status": runtime_status,
             "runtime_step": int(getattr(runtime, "current_step", 0) or 0)
             if runtime is not None
             else 0,
             "execution_mode": result_json.get("execution_mode")
             or runtime_blob.get("execution_mode"),
             "strategy_pack": result_json.get("strategy_pack") or runtime_blob.get("strategy_pack"),
+            "failure_evidence": failure_evidence,
             "answer_preview": answer[:400],
             "surprise_score": _float(getattr(result, "surprise_score", None), default=0.0),
-            "tokens_in": int(getattr(result, "tokens_in", 0) or 0),
-            "tokens_out": int(getattr(result, "tokens_out", 0) or 0),
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "runtime_tokens": runtime_tokens,
         },
+    }
+
+
+def _runtime_failure_evidence(runtime_blob: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "error",
+        "last_error",
+        "failure_reason",
+        "blocked_reason",
+        "exception",
+        "rollback_hint",
+        "validation_outcome",
+        "verification_status",
+    )
+    return {
+        key: str(runtime_blob.get(key))[:500]
+        for key in keys
+        if runtime_blob.get(key) not in {None, ""}
     }
 
 
