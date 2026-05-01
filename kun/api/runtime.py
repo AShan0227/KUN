@@ -390,13 +390,19 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
 
     async def _scheduled_orchestrator_runner(task_ref: Any) -> Any:
         message = ""
+        output_kind = "user"
         spec = getattr(task_ref, "spec", None)
         if spec is not None:
             message = str(getattr(spec, "goal_detail", "") or "")
+            external_resources = getattr(spec, "external_resources", []) or []
+            for ref in external_resources:
+                text = str(ref)
+                if text.startswith("output_kind:"):
+                    output_kind = text.split(":", 1)[1] or output_kind
         if not message:
             meta = getattr(task_ref, "meta", None)
             message = str(getattr(meta, "success_criteria_short", "") or task_ref.l1_summary())
-        return await orchestrator.run(message)
+        return await orchestrator.run(message, output_kind=output_kind)
 
     app.state.multi_task_scheduler = MultiTaskScheduler(
         runner=_scheduled_orchestrator_runner,

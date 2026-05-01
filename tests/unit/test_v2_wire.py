@@ -291,6 +291,34 @@ def test_chat_fast_path_chitchat(runtime_app) -> None:
         assert body["decided_in_ms"] < 100
 
 
+def test_chat_non_fast_path_uses_multi_lane_scheduler(runtime_app, monkeypatch) -> None:
+    monkeypatch.setenv("KUN_CHAT_SCHEDULER_ENABLED", "1")
+
+    async def fake_runner(task_ref):
+        from kun.engineering.orchestrator import TaskResult
+
+        return TaskResult(
+            task_id=f"orch-{task_ref.meta.task_id}",
+            status="done",
+            answer="scheduled",
+        )
+
+    runtime_app.state.multi_task_scheduler = MultiTaskScheduler(runner=fake_runner)
+    client = TestClient(runtime_app)
+
+    resp = client.post(
+        "/api/chat/run",
+        json={"message": "请基于现有目标设计一份可执行的产品运营计划，包含风险和下一步动作。"},
+        headers={"X-User-Id": "u-scheduler"},
+    )
+
+    assert resp.status_code == 200
+    dashboard = get_multi_task_scheduler(runtime_app).dashboard()
+    assert dashboard.total >= 1
+    assert dashboard.done >= 1
+    assert "fast" in dashboard.lane_limits
+
+
 def test_chat_usage_dashboard_endpoint(runtime_app) -> None:
     client = TestClient(runtime_app)
     resp = client.get(

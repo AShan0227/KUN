@@ -120,8 +120,9 @@ async def submit_scheduler_task(
 ) -> SchedulerSubmitResponse:
     """把一个任务提交到 V5 多车道调度器。
 
-    这是轻量异步入口，不替代 /api/chat/run 的同步体验。普通前端可以继续同步跑；
-    长周期、后台实验、外部动作等可以走这里，避免互相抢资源。
+    这是轻量异步入口。/api/chat/run 的非 FastPath 同步体验也会经过同一个
+    scheduler 后再等待结果；长周期、后台实验、外部动作等可以走这里异步排队，
+    避免互相抢资源。
     """
 
     _require_scope_when_enforced("task:write")

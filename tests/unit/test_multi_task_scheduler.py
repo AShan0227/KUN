@@ -46,6 +46,23 @@ async def test_submit_runs_default_runner() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_runner_receives_task_tenant_context() -> None:
+    from kun.core.tenancy import current_tenant
+
+    async def runner(_task_ref: TaskRef) -> dict[str, str | None]:
+        ctx = current_tenant()
+        return {"tenant_id": ctx.tenant_id, "user_id": ctx.user_id}
+
+    scheduler = MultiTaskScheduler(runner=runner)
+
+    task_id = await scheduler.submit(_task("tk-context", user_id="u-context"))
+    result = await scheduler.wait_done(task_id, timeout_sec=2)
+
+    assert result.output == {"tenant_id": "tenant", "user_id": "u-context"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_global_concurrency_limit_queues_extra_tasks() -> None:
     started: list[str] = []
     gate = asyncio.Event()

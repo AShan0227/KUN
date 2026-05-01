@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kun.core.tenancy import TenantContext, tenant_scope
 from kun.datamodel.task import TaskRef
 
 SchedulerStatus = Literal["queued", "running", "done", "failed", "cancelled"]
@@ -234,7 +235,14 @@ class MultiTaskScheduler:
 
     async def _run_record(self, record: _TaskRecord) -> None:
         try:
-            output = await self._runner(record.task)
+            with tenant_scope(
+                TenantContext(
+                    tenant_id=record.task.meta.owner.tenant_id,
+                    user_id=record.task.meta.owner.user_id,
+                    project_id=record.task.meta.owner.project_id,
+                )
+            ):
+                output = await self._runner(record.task)
         except asyncio.CancelledError:
             self._finish_cancelled(record)
             raise
