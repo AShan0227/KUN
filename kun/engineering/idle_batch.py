@@ -501,6 +501,61 @@ class QiIdleReplayStep(IdleBatchStep):
         }
 
 
+class CompilerSyncSourcesStep(IdleBatchStep):
+    """Run explicitly configured compiler sync sources during idle time.
+
+    This is the scheduler bridge for the V5 compiler. It is opt-in only:
+    without KUN_COMPILER_SYNC_SOURCE_FILES, the step reports skipped and does
+    not read local files or fetch URLs.
+    """
+
+    step_id = "compiler_sync_sources"
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        import os
+
+        raw_sources = os.getenv("KUN_COMPILER_SYNC_SOURCE_FILES", "")
+        source_files = [item.strip() for item in raw_sources.split(",") if item.strip()]
+        if not source_files:
+            return {
+                "skipped": True,
+                "reason": "KUN_COMPILER_SYNC_SOURCE_FILES not configured",
+                "sources": 0,
+                "synced": 0,
+                "errors": 0,
+            }
+
+        from kun.compiler import CompilerSyncRunner
+
+        config_root = os.getenv("KUN_COMPILER_SYNC_CONFIG_ROOT") or None
+        runner = CompilerSyncRunner()
+        reports: list[dict[str, Any]] = []
+        synced = 0
+        disabled = 0
+        errors = 0
+        for source_file in source_files:
+            report = await runner.sync_source_file(
+                source_file,
+                config_root=config_root,
+                tenant_override=tenant_id,
+            )
+            reports.append(report.model_dump(mode="json"))
+            if report.status == "synced":
+                synced += 1
+            elif report.status == "skipped_disabled":
+                disabled += 1
+            else:
+                errors += 1
+        return {
+            "skipped": False,
+            "sources": len(source_files),
+            "synced": synced,
+            "disabled": disabled,
+            "errors": errors,
+            "reports": reports,
+        }
+
+
 class RouteRuleMiningStep(IdleBatchStep):
     """Cluster + association-rule mining over routing logs to surface new route patterns."""
 
@@ -712,6 +767,7 @@ def register_default_steps() -> None:
         HealthReportStep(),
         WorldHandlerAutoQuarantineStep(),
         QiIdleReplayStep(),
+        CompilerSyncSourcesStep(),
         RouteRuleMiningStep(),
         TaskBoundaryEvalStep(),
         PheromoneDecayStep(),

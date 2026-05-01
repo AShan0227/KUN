@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from kun.engineering.idle_batch import (
     ABDecisionRollupStep,
+    CompilerSyncSourcesStep,
     ConsistencyTestStep,
     HealthReportStep,
     IdleBatchStep,
@@ -118,6 +119,7 @@ def test_default_steps_registered():
     assert "task_replay" in steps
     assert "route_rule_mining" in steps
     assert "qi_idle_replay" in steps
+    assert "compiler_sync_sources" in steps
 
 
 @pytest.mark.unit
@@ -399,6 +401,62 @@ async def test_qi_idle_replay_step_uses_configured_local_model_command(monkeypat
     assert all(
         record["promotion_allowed"] is False for record in summary["evaluation_pool"]["records"]
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compiler_sync_sources_step_is_opt_in(monkeypatch) -> None:
+    monkeypatch.delenv("KUN_COMPILER_SYNC_SOURCE_FILES", raising=False)
+
+    summary = await CompilerSyncSourcesStep().run("t-1")
+
+    assert summary["skipped"] is True
+    assert summary["synced"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compiler_sync_sources_step_runs_configured_sources(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from kun.context.storage import get_store
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        """
+        {
+          "tenant_id": "ignored",
+          "items": [
+            {"id": "inline-note", "type": "text", "value": "KUN compiler idle sync"}
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+    source = tmp_path / "source.json"
+    source.write_text(
+        f"""
+        {{
+          "source_id": "idle-docs",
+          "tenant_id": "ignored",
+          "manifest_path": "{manifest.name}",
+          "enabled": true
+        }}
+        """,
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KUN_COMPILER_SYNC_SOURCE_FILES", str(source))
+    monkeypatch.setenv("KUN_COMPILER_SYNC_CONFIG_ROOT", str(tmp_path))
+
+    summary = await CompilerSyncSourcesStep().run("t-1")
+
+    assert summary["skipped"] is False
+    assert summary["synced"] == 1
+    assert summary["errors"] == 0
+    assets = await get_store().list(tenant_id="t-1", asset_kind="knowledge")
+    assert len(assets) == 1
+    assert assets[0].l1_metadata["material_metadata"]["compiler_sync_source_id"] == "idle-docs"
 
 
 @pytest.mark.unit
