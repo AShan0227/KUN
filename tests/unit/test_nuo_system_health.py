@@ -10,6 +10,7 @@ from kun.engineering.nuo_system_health import (
     _governance_recommendations,
     apply_governance_recommendation,
 )
+from kun.engineering.system_governance_audit import SystemGovernanceAuditIssue
 from kun.world.handler_health import WorldHandlerHealthCard
 
 
@@ -329,6 +330,39 @@ def test_system_health_surfaces_scheduler_and_production_findings() -> None:
     assert by_id["scheduler_missing_required_lanes"].severity == "error"
     assert by_id["scheduler_lane_pressure"].subsystem == "scheduler"
     assert by_id["production_safety_issues"].severity == "critical"
+
+
+def test_system_health_surfaces_system_governance_audit_issues() -> None:
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        resumable_mission_task_count=0,
+        mission_resume_worker_enabled=True,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[],
+        world_handlers=[],
+        system_governance_audit_issues=[
+            SystemGovernanceAuditIssue(
+                issue_id="decision_mode_conflict:task-1",
+                severity="warn",
+                category="decision_conflict",
+                title="同一个任务出现多个执行档位信号",
+                detail="task-1 同时出现 FAST 和 MAX。",
+                suggested_action="检查 DecisionTicket。",
+                task_id="task-1",
+            )
+        ],
+    )
+
+    finding = next(
+        item
+        for item in findings
+        if item.finding_id == "system_governance:decision_mode_conflict:task-1"
+    )
+    assert finding.subsystem == "system_governance.decision_conflict"
+    assert finding.severity == "warn"
 
 
 def test_governance_recommendations_keep_high_risk_advice_manual() -> None:

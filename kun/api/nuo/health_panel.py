@@ -33,6 +33,7 @@ from kun.engineering.nuo_system_health import (
     apply_governance_recommendation,
     collect_system_health_report,
 )
+from kun.engineering.system_governance_audit import SystemGovernanceAuditReport
 from kun.ops.readiness import ReadinessReport, run_readiness_report
 from kun.ops.secret_audit import SecretAuditReport, audit_runtime_secrets
 from kun.ops.secret_store import (
@@ -288,6 +289,16 @@ async def context_governance_audit(
         tenant_id=tenant.tenant_id,
         max_assets=max_assets,
     )
+
+
+@router.get("/system-governance/audit", response_model=SystemGovernanceAuditReport)
+async def system_governance_audit() -> SystemGovernanceAuditReport:
+    """Read-only NUO audit for cross-subsystem governance conflicts."""
+    tenant = current_tenant()
+    report = await collect_system_health_report(tenant_id=tenant.tenant_id)
+    if report.system_governance_audit is None:
+        return SystemGovernanceAuditReport(tenant_id=tenant.tenant_id)
+    return report.system_governance_audit
 
 
 def _require_secret_write_scope() -> None:

@@ -110,11 +110,15 @@ def test_context_resource_ids_preserve_asset_kind() -> None:
                 asset_id="m-1",
                 asset_kind="memory",
                 relevance_score=0.9,
+                tags=["growth"],
+                memory_layer="meta_decision",
             ),
             PackedContextItem(
                 asset_id="method-1",
                 asset_kind="methodology",
                 relevance_score=0.8,
+                tags=["methodology"],
+                memory_layer="methodology",
             ),
             PackedContextItem(
                 asset_id="knowledge-1",
@@ -126,8 +130,15 @@ def test_context_resource_ids_preserve_asset_kind() -> None:
 
     assert _context_resource_ids(pack) == [
         "memory:m-1",
+        "asset_kind:memory",
+        "memory_layer:meta_decision",
+        "tag:growth",
         "methodology:method-1",
+        "asset_kind:methodology",
+        "memory_layer:methodology",
+        "tag:methodology",
         "knowledge:knowledge-1",
+        "asset_kind:knowledge",
     ]
 
 

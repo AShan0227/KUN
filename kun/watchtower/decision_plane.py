@@ -173,6 +173,10 @@ class WatchtowerDecisionPlane:
         memory_invocation = decide_memory_invocation_for_task(
             task_ref,
             strategy_pack=pack,
+            historical_resource_credit=_historical_memory_credit_hints(
+                task_ref,
+                pack,
+            ),
         )
         memory_policy = memory_invocation.to_memory_policy_ticket()
         reason = (
@@ -648,6 +652,48 @@ def _strategy_credit_bonus(pack_id: str, *, tenant_id: str | None = None) -> flo
     except Exception:
         return 0.0
     return min(0.35, max(0.0, score) * 0.35)
+
+
+def _historical_memory_credit_hints(
+    task_ref: TaskRef,
+    pack: StrategyPack,
+) -> dict[str, float]:
+    """Return sparse memory-policy hints learned from prior credit.
+
+    Credit assignment already learns concrete resources such as
+    ``memory:asset-id``.  The memory invocation policy needs the cheaper
+    question first: which *layer*, *asset kind*, or *strategy tag* tends to help
+    this tenant?  Context selection records those aggregate keys, so Watchtower
+    can nudge the next memory policy before the packer loads concrete assets.
+    """
+
+    tenant_id = _tenant_id_from_task(task_ref)
+    tracker = get_contribution_tracker()
+    candidates: list[tuple[str, str, str]] = [
+        ("memory_layer", "execution_process", "memory_layer:execution_process"),
+        ("memory_layer", "meta_decision", "memory_layer:meta_decision"),
+        ("memory_layer", "methodology", "memory_layer:methodology"),
+        ("memory_layer", "behavior", "memory_layer:behavior"),
+        ("memory_layer", "task_result", "memory_layer:task_result"),
+        ("asset_kind", "memory", "asset_kind:memory"),
+        ("asset_kind", "methodology", "asset_kind:methodology"),
+        ("asset_kind", "knowledge", "asset_kind:knowledge"),
+        ("asset_kind", "skill", "asset_kind:skill"),
+        ("asset_kind", "role_template", "asset_kind:role_template"),
+    ]
+    for tag in _dedupe([*pack.context_tags, *pack.methodology_refs, *pack.skill_hints]):
+        candidates.append(("tag", tag, f"tag:{tag}"))
+
+    out: dict[str, float] = {}
+    for kind, resource_id, policy_key in candidates:
+        score = tracker.contribution_score(
+            resource_id,
+            kind,
+            tenant_id=tenant_id,
+        )
+        if score >= 0.55:
+            out[policy_key] = score
+    return out
 
 
 def _tenant_id_from_task(task_ref: TaskRef) -> str | None:

@@ -197,6 +197,59 @@ def test_decision_plane_uses_strategy_credit_as_moe_tie_breaker() -> None:
 
 
 @pytest.mark.unit
+def test_decision_plane_uses_context_credit_to_choose_memory_policy() -> None:
+    reset_contribution_tracker()
+    try:
+        get_contribution_tracker().update_from_deltas(
+            {
+                "memory_layer:meta_decision": ResourceCreditDelta(
+                    resource_key="memory_layer:meta_decision",
+                    resource_kind="memory_layer",
+                    resource_id="meta_decision",
+                    used_count=4,
+                    pass_count=4,
+                    critical_count=4,
+                    credit_total=4.0,
+                ),
+                "asset_kind:skill": ResourceCreditDelta(
+                    resource_key="asset_kind:skill",
+                    resource_kind="asset_kind",
+                    resource_id="skill",
+                    used_count=3,
+                    pass_count=3,
+                    critical_count=3,
+                    credit_total=3.0,
+                ),
+                "tag:pricing": ResourceCreditDelta(
+                    resource_key="tag:pricing",
+                    resource_kind="tag",
+                    resource_id="pricing",
+                    used_count=2,
+                    pass_count=2,
+                    critical_count=2,
+                    credit_total=2.0,
+                ),
+            },
+            tenant_id="u-sylvan",
+        )
+        task_ref = _task_ref(
+            task_type="business.growth",
+            text="继续优化这个产品的增长和定价策略",
+            complexity=0.45,
+        )
+
+        decision = WatchtowerDecisionPlane().decide(task_ref)
+
+        invocation = decision.metadata["memory_invocation_policy"]
+        assert invocation["memory_layers"][0] == "meta_decision"
+        assert "skill" in invocation["asset_kinds"]
+        assert "pricing" in invocation["strategy_tags"]
+        assert "historical_credit_layers" in invocation["reasons"]
+    finally:
+        reset_contribution_tracker()
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_similar_task_recall_extracts_strategy_votes_from_memory() -> None:
     store = InMemoryAssetStore()

@@ -1015,7 +1015,7 @@ V5 必须防止“写了但没用”。
 | InputTranslator / OutputTranslator | 附件已走原始 bytes 编译；skill/task/protocol 已能编译成 LayeredAsset；任务启动会真实写入 task 资产；`compiler_intake_review` idle-batch step 可把外部资料入口审计票据写入 Qi review queue | 还要接企业资料 connector 和更深 Office/OCR 后端 |
 | Hermes | 已进入多处链路 | 和 Compiler / ProtocolPacket 更紧密 |
 | Watchtower DecisionPlane | 已有策略票据、MemoryInvocationPolicy、MemoryPolicy、MoE 影子候选和 LLMRouteGovernor 热路径治理；模型调用前会过成本/信任/隐私咨询 | 继续用真实 dogfood 校准规则阈值 |
-| ContextPacker | 已接 importance / credit / MemoryPolicyTicket；能按任务稀疏选择记忆层、资产类型和策略标签；MemoryInvocationPolicy 已能把任务类型、风险、复杂度、失败重试、显式模式和历史资源信用转成 ContextPacker 参数；StateLedger 已能消费 credit.assignment.completed，把资源类型贡献写进当前快照和长期回放故事 | 还要接向量库、跨租户匿名经验池，以及把“哪一条具体记忆真的帮到了任务”写回更细的信用归因 |
+| ContextPacker | 已接 importance / credit / MemoryPolicyTicket；能按任务稀疏选择记忆层、资产类型和策略标签；Context 选择会把具体资产、资产类型、记忆层和策略标签都写入贡献信用，MemoryInvocationPolicy 下次会消费这些信用来决定“用不用记忆、用哪层记忆”；StateLedger 已能消费 credit.assignment.completed，把资源类型和具体资源贡献写进当前快照和长期回放故事 | 还要接向量库、跨租户匿名经验池，以及把跨 Mission 的具体资产级信用归因继续做深 |
 | Similar task recall | 已有 | 还要影响更多执行动作 |
 | Context maintenance / governance audit | 已有 dry-run / mutation；NUO report 会把瘦身、低价值、风险、compiler review/recompile 候选合并成治理信号；新增只读 governance audit，可发现低价值、重复、高频可抽象、过期/长尾、缺信用归因资产，并通过 CLI / NUO API 输出 review-only 建议 | 还要接更强语义合并、跨资产引用保护和强模型规则蒸馏 |
 | Qi problem queue | 已接 idle replay，能读真实问题信号和任务结果历史；NUO health findings 会写入 Qi problem queue，Qi StrategyPack 草案状态也会回到 NUO governance report | 还要接人工批准 UI 和真实 canary 实验 |

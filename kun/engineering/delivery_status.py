@@ -391,6 +391,7 @@ def get_v3_delivery_status(
                 "主前端任务详情已接用户反馈入口，用户满意度不再只停在后端 API",
                 "守望决策层会生成 MemoryPolicyTicket，先决定是否用记忆、用哪几类记忆、最多拉几条",
                 "新增 MemoryInvocationPolicy 稀疏调用层：会按任务类型、风险、复杂度、失败重试、显式模式和历史资源信用决定是否用记忆、用哪几层、拉多深",
+                "Context 选择会把具体资产、资产类型、记忆层和策略标签都写入贡献信用；守望下次会消费这些信用，反向影响 MemoryInvocationPolicy",
                 "Orchestrator 已消费 MemoryPolicyTicket：no_memory 会跳过 context，max_items 会限制 context 拉取数量",
                 "ContextPacker 已消费 MemoryPolicyTicket 的 memory_layers / avoid_memory_layers，能按任务稀疏激活结果记忆、过程记忆、元决策和方法论",
                 "MemoryPolicyTicket 已携带 asset_kinds / preferred_tags，守望策略包能稀疏激活最相关的知识、skill、methodology 和 context 标签",
@@ -466,7 +467,7 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "相似任务召回目前是确定性轻量检索，还不是向量库 / 跨租户匿名经验池",
-                "MemoryPolicyTicket 已进入 ContextPacker 过滤和策略标签加权；Hermes use_memory 已接 step 级 action/query 过滤；但还没接向量库和跨租户匿名经验池",
+                "MemoryPolicyTicket 已进入 ContextPacker 过滤和策略标签加权；Hermes use_memory 已接 step 级 action/query 过滤；历史 context 贡献信用已能影响下次记忆策略，但还没接向量库和跨租户匿名经验池",
                 "MemoryPolicyTicket 已开始消费傩治理标签，傩也会写入显式 Fade/低价值/风险标签，并能把重复治理模式沉淀成 review-only 方法论草稿；只读治理审计已覆盖低价值/重复/高频抽象/长尾/缺信用，但还没做完整 MemPalace/FadeMem 语义抽象和强模型规则蒸馏",
                 "Qi idle replay 目前已有 heuristic_local、可配置本地模型评估口、显式 opt-in 强模型复审口、显式 opt-in KUN-Lab 历史任务回放口、显式 opt-in AI Scientist tree search 证据、草稿审核状态机、shadow/canary 护栏计划和守望影子观测；但仓库不内置具体模型权重，也还没接真实流量 canary 执行链路",
                 "StrategyPack 草稿目前只做 review-only，不会自动 promotion；已经能判断是否可交给人审核、生成推广计划，并进入守望 shadow 观测，但还没接人工批准 UI 或真实实验创建",

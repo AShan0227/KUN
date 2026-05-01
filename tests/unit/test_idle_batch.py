@@ -442,6 +442,13 @@ async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch)
     assert summary["evaluation_pool"]["promotion_allowed"] is False
     assert summary["tree_search_pool"]["enabled"] is False
     assert summary["tree_search_pool"]["production_action"] is False
+    assert summary["strategy_review_package_summary"]["packages"] == 2
+    assert summary["strategy_review_package_summary"]["production_action"] is False
+    assert len(summary["strategy_review_packages"]) == 2
+    assert all(package["review_only"] is True for package in summary["strategy_review_packages"])
+    assert all(
+        package["promotion_allowed"] is False for package in summary["strategy_review_packages"]
+    )
     assert all(item["promotion_allowed"] is False for item in summary["evaluation_pool"]["records"])
     assert len(summary["strategy_pack_drafts"]) == 2
     assert all(item["production_action"] is False for item in summary["strategy_pack_drafts"])
@@ -466,6 +473,11 @@ async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch)
     )
     assert all(asset.l1_metadata["production_action"] is False for asset in draft_assets)
     assert all(asset.l1_metadata["requires_human_review"] is True for asset in draft_assets)
+    assert all(asset.l1_metadata["strategy_review_package"] for asset in draft_assets)
+    assert all(
+        asset.l1_metadata["strategy_review_package"]["production_action"] is False
+        for asset in draft_assets
+    )
     assert all(
         asset.l1_metadata["decision_ticket"]["decision_point"] == "qi_experiment"
         for asset in draft_assets

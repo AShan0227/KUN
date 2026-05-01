@@ -82,6 +82,12 @@ from kun.qi.replay_tree_search import (
     qi_replay_tree_search_enabled_from_env,
     run_qi_replay_tree_search_pool,
 )
+from kun.qi.strategy_review_package import (
+    QiExplorationEvidence,
+    QiStrategyReviewPackage,
+    QiStrongReviewGate,
+    build_qi_strategy_review_packages,
+)
 from kun.qi.window import (
     QiWindowConfig,
     QiWindowError,
@@ -122,9 +128,12 @@ __all__ = [
     "ProtocolVerificationSpec",
     "QiBudgetExhaustedError",
     "QiDailyBudget",
+    "QiExplorationEvidence",
     "QiReplayTreeSearchBudget",
     "QiReplayTreeSearchPoolResult",
     "QiReplayTreeSearchRecord",
+    "QiStrategyReviewPackage",
+    "QiStrongReviewGate",
     "QiWindowConfig",
     "QiWindowError",
     "RoundRunner",
@@ -132,6 +141,7 @@ __all__ = [
     "ScientistTreeSearchResult",
     "SqlProtocolStorage",
     "TreeRunner",
+    "build_qi_strategy_review_packages",
     "configured_qi_replay_tree_search_budget_from_env",
     "get_pheromone_storage",
     "get_prediction_log",

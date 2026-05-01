@@ -43,6 +43,11 @@ from kun.engineering.system_coordination import (
     summarize_coordination_issues,
     summarize_remediation_plans,
 )
+from kun.engineering.system_governance_audit import (
+    SystemGovernanceAuditIssue,
+    SystemGovernanceAuditReport,
+    run_system_governance_audit,
+)
 from kun.ops.secret_audit import SecretAuditItem, audit_runtime_secrets
 from kun.world.handler_health import (
     WorldHandlerHealthCard,
@@ -169,6 +174,7 @@ class SystemHealthReport(BaseModel):
     multi_lane_scheduler_limits: dict[str, int] = Field(default_factory=dict)
     production_risk_summary: dict[str, int] = Field(default_factory=dict)
     production_risk_issues: list[str] = Field(default_factory=list)
+    system_governance_audit: SystemGovernanceAuditReport | None = None
     coordination_summary: dict[str, int] = Field(default_factory=dict)
     coordination_remediation_summary: dict[str, int] = Field(default_factory=dict)
     coordination_issues: list[CoordinationIssue] = Field(default_factory=list)
@@ -273,7 +279,8 @@ async def collect_system_health_report(
         )
 
     mission_resume_worker_enabled = os.getenv("KUN_MISSION_RESUME_WORKER_ENABLED", "1") == "1"
-    delivery_issues = validate_delivery_status(get_v3_delivery_status())
+    delivery_items = get_v3_delivery_status()
+    delivery_issues = validate_delivery_status(delivery_items)
     secret_audit = audit_runtime_secrets()
     world_handlers = await collect_world_handler_health(tenant_id=tenant_id)
     (
@@ -298,6 +305,16 @@ async def collect_system_health_report(
         secret_audit_summary=secret_audit.summary,
     )
     coordination_issues = await collect_coordination_issues(tenant_id=tenant_id)
+    decision_event_samples = await _collect_decision_event_samples(tenant_id=tenant_id)
+    system_governance_audit = run_system_governance_audit(
+        tenant_id=tenant_id,
+        decision_event_samples=decision_event_samples,
+        world_handlers=world_handlers,
+        scheduler_summary=multi_lane_scheduler_summary,
+        scheduler_limits={str(k): int(v) for k, v in DEFAULT_LANE_LIMITS.items()},
+        delivery_items=delivery_items,
+        delivery_validation_issues=delivery_issues,
+    )
     findings = _findings(
         outbox_lag=outbox_lag,
         pending_approvals=pending_approvals,
@@ -320,6 +337,7 @@ async def collect_system_health_report(
         multi_lane_scheduler_summary=multi_lane_scheduler_summary,
         production_risk_summary=production_risk_summary,
         production_risk_issues=production_risk_issues,
+        system_governance_audit_issues=system_governance_audit.issues,
         coordination_issues=coordination_issues,
     )
     governance_recommendations = _governance_recommendations(
@@ -356,6 +374,7 @@ async def collect_system_health_report(
         multi_lane_scheduler_limits={str(k): int(v) for k, v in DEFAULT_LANE_LIMITS.items()},
         production_risk_summary=production_risk_summary,
         production_risk_issues=production_risk_issues,
+        system_governance_audit=system_governance_audit,
         coordination_summary=summarize_coordination_issues(coordination_issues),
         coordination_remediation_summary=summarize_remediation_plans(coordination_issues),
         coordination_issues=coordination_issues,
@@ -477,6 +496,7 @@ def _findings(
     multi_lane_scheduler_summary: dict[str, int] | None = None,
     production_risk_summary: dict[str, int] | None = None,
     production_risk_issues: list[str] | None = None,
+    system_governance_audit_issues: list[SystemGovernanceAuditIssue] | None = None,
     coordination_issues: list[CoordinationIssue] | None = None,
     resumable_mission_task_count: int = 0,
     mission_resume_worker_enabled: bool = False,
@@ -878,6 +898,19 @@ def _findings(
                 suggested_action="保持交付状态诚实；上线说明里不要把半闭环能力写成已完成。",
             )
         )
+    for audit_issue in system_governance_audit_issues or []:
+        if audit_issue.severity == "info":
+            continue
+        findings.append(
+            SystemHealthFinding(
+                finding_id=f"system_governance:{audit_issue.issue_id}",
+                severity=audit_issue.severity,
+                subsystem=f"system_governance.{audit_issue.category}",
+                title=audit_issue.title,
+                detail=audit_issue.detail,
+                suggested_action=audit_issue.suggested_action,
+            )
+        )
     for coordination_issue in coordination_issues or []:
         findings.append(
             SystemHealthFinding(
@@ -1249,6 +1282,48 @@ async def _collect_multi_lane_scheduler_summary(
     except Exception:
         summary["collect_error"] = 1
     return summary
+
+
+async def _collect_decision_event_samples(
+    *,
+    tenant_id: str,
+    limit: int = 300,
+) -> list[dict[str, Any]]:
+    """Collect recent decision-ticket events for read-only governance audit."""
+
+    samples: list[dict[str, Any]] = []
+    try:
+        async with session_scope(tenant_id=tenant_id) as s:
+            rows = (
+                (
+                    await s.execute(
+                        select(EventRow)
+                        .where(EventRow.tenant_id == tenant_id)
+                        .order_by(EventRow.occurred_at.desc())
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        for row in rows:
+            payload = row.payload if isinstance(row.payload, dict) else {}
+            if "decision_ticket" not in payload and not (
+                payload.get("ticket_id") and payload.get("decision_point")
+            ):
+                continue
+            samples.append(
+                {
+                    "event_id": row.event_id,
+                    "event_type": row.event_type,
+                    "task_ref": row.task_ref,
+                    "occurred_at": row.occurred_at.isoformat() if row.occurred_at else "",
+                    "payload": payload,
+                }
+            )
+    except Exception:
+        return []
+    return samples
 
 
 def _collect_production_risk_summary(

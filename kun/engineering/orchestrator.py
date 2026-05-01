@@ -4508,19 +4508,32 @@ def _value_gate_resource_keys(
 
 
 def _context_resource_ids(context_pack: ContextPack) -> list[str]:
-    """Preserve asset kind for MoE credit keys.
+    """Preserve concrete and aggregate context credit keys.
 
     Older credit code treated every context asset as ``memory:<asset_id>``.
     That made knowledge/methodology/skill assets write to one key and read from
     another.  Returning ``kind:id`` keeps credit assignment aligned with
     ContextPacker's contribution lookup.
+
+    V5 adds aggregate keys too.  Exact asset credit answers "which memory helped";
+    aggregate credit answers "which memory layer / asset kind / strategy tag
+    tends to help this task family".  Watchtower consumes those aggregate keys
+    before the next task starts, so memory becomes a real strategy signal rather
+    than prompt decoration.
     """
 
-    return [
-        f"{item.asset_kind}:{item.asset_id}"
-        for item in context_pack.items
-        if item.asset_id and item.asset_kind
-    ]
+    out: list[str] = []
+    for item in context_pack.items:
+        if item.asset_id and item.asset_kind:
+            out.append(f"{item.asset_kind}:{item.asset_id}")
+            out.append(f"asset_kind:{item.asset_kind}")
+        if item.memory_layer:
+            out.append(f"memory_layer:{item.memory_layer}")
+        for tag in item.tags[:8]:
+            safe_tag = str(tag).strip()
+            if safe_tag:
+                out.append(f"tag:{safe_tag}")
+    return _dedupe_strings(out)
 
 
 def _pending_actions_from_loop_pause(

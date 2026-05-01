@@ -544,6 +544,7 @@ class QiIdleReplayStep(IdleBatchStep):
             qi_replay_tree_search_enabled_from_env,
             run_qi_replay_tree_search_pool,
         )
+        from kun.qi.strategy_review_package import build_qi_strategy_review_packages
 
         raw_signals = await _source_list("qi_problem_signals", tenant_id)
         signals: list[QiProblemSignal] = []
@@ -617,15 +618,25 @@ class QiIdleReplayStep(IdleBatchStep):
             enabled=qi_replay_tree_search_enabled_from_env(),
             budget=configured_qi_replay_tree_search_budget_from_env(),
         )
+        strong_review_records = list(strong_review_pool.get("records", []))
+        strategy_review_packages = build_qi_strategy_review_packages(
+            candidates=candidates,
+            drafts=drafts,
+            evaluation_records=evaluations.records,
+            strong_review_records=strong_review_records,
+            lab_replay_records=lab_replay_pool.records,
+            tree_search_records=tree_search_pool.records,
+        )
         draft_asset_ids = await _persist_strategy_pack_drafts(
             tenant_id=tenant_id,
             drafts=drafts,
             evaluation_records=[
                 *evaluations.records,
-                *strong_review_pool.get("records", []),
+                *strong_review_records,
             ],
             lab_replay_records=lab_replay_pool.records,
             tree_search_records=tree_search_pool.records,
+            strategy_review_packages=strategy_review_packages,
         )
         source_signal_ids = {signal.signal_id for signal in signals}
         consumed_problem_signals = await mark_problem_signals_consumed(
@@ -660,6 +671,21 @@ class QiIdleReplayStep(IdleBatchStep):
             else "disabled",
             "lab_replay_pool": lab_replay_pool.model_dump(mode="json"),
             "tree_search_pool": tree_search_pool.model_dump(mode="json"),
+            "strategy_review_package_summary": _strategy_review_package_summary(
+                strategy_review_packages
+            ),
+            "strategy_review_packages": [
+                package.model_dump(mode="json")
+                for package in sorted(
+                    strategy_review_packages,
+                    key=lambda item: (
+                        item.status != "needs_strong_review",
+                        item.status,
+                        -item.best_local_score,
+                        item.draft_id,
+                    ),
+                )[:5]
+            ],
             "persisted_review_signals": persisted,
             "consumed_problem_signals": consumed_problem_signals,
             "persisted_strategy_pack_draft_assets": len(draft_asset_ids),
@@ -1757,6 +1783,7 @@ async def _persist_strategy_pack_drafts(
     evaluation_records: list[Any] | None = None,
     lab_replay_records: list[Any] | None = None,
     tree_search_records: list[Any] | None = None,
+    strategy_review_packages: list[Any] | None = None,
 ) -> list[str]:
     """Persist Qi strategy-pack drafts as review-only methodology assets.
 
@@ -1814,6 +1841,17 @@ async def _persist_strategy_pack_drafts(
         target_id = str(payload.get("target_id") or "")
         if target_id:
             tree_records_by_target.setdefault(target_id, []).append(payload)
+    review_package_by_draft: dict[str, dict[str, Any]] = {}
+    for package in strategy_review_packages or []:
+        if hasattr(package, "model_dump"):
+            payload = package.model_dump(mode="json")
+        elif isinstance(package, dict):
+            payload = package
+        else:
+            continue
+        draft_id = str(payload.get("draft_id") or "")
+        if draft_id:
+            review_package_by_draft[draft_id] = payload
     for draft in drafts:
         draft_id = str(getattr(draft, "draft_id", ""))
         if not draft_id:
@@ -1826,6 +1864,7 @@ async def _persist_strategy_pack_drafts(
                     evaluation_records=evaluations_by_target.get(draft_id, []),
                     lab_replay_records=replays_by_draft.get(draft_id, []),
                     tree_search_records=tree_records_by_target.get(draft_id, []),
+                    strategy_review_package=review_package_by_draft.get(draft_id),
                 )
                 if changed:
                     await store.put(existing_asset)
@@ -1861,6 +1900,7 @@ async def _persist_strategy_pack_drafts(
                 "evaluation_records": evaluations_by_target.get(draft_id, []),
                 "lab_replay_records": replays_by_draft.get(draft_id, []),
                 "tree_search_records": tree_records_by_target.get(draft_id, []),
+                "strategy_review_package": review_package_by_draft.get(draft_id),
                 "strategy_pack_draft": draft.model_dump(mode="json")
                 if hasattr(draft, "model_dump")
                 else {},
@@ -1891,6 +1931,7 @@ def _merge_strategy_pack_review_records(
     evaluation_records: list[dict[str, Any]],
     lab_replay_records: list[dict[str, Any]],
     tree_search_records: list[dict[str, Any]],
+    strategy_review_package: dict[str, Any] | None = None,
 ) -> bool:
     """Merge new review evidence into an existing draft asset.
 
@@ -1927,7 +1968,30 @@ def _merge_strategy_pack_review_records(
         if merged != asset.l1_metadata.get("tree_search_records"):
             asset.l1_metadata["tree_search_records"] = merged
             changed = True
+    if strategy_review_package:
+        current_package = asset.l1_metadata.get("strategy_review_package")
+        if current_package != strategy_review_package:
+            asset.l1_metadata["strategy_review_package"] = strategy_review_package
+            changed = True
     return changed
+
+
+def _strategy_review_package_summary(packages: list[Any]) -> dict[str, Any]:
+    by_status: dict[str, int] = {}
+    strong_missing = 0
+    for package in packages:
+        status = str(getattr(package, "status", "unknown"))
+        by_status[status] = by_status.get(status, 0) + 1
+        gate = getattr(package, "strong_review_gate", None)
+        if getattr(gate, "status", "") == "missing":
+            strong_missing += 1
+    return {
+        "packages": len(packages),
+        "by_status": by_status,
+        "strong_review_missing": strong_missing,
+        "production_action": False,
+        "promotion_allowed": False,
+    }
 
 
 def _merge_records_by_key(
