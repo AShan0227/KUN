@@ -535,6 +535,8 @@ def _quality_adjusted_score(asset: LayeredAsset, score: ImportanceScore) -> Impo
         quality_delta -= 0.18
     if meta.get("compiler_review_required") is True:
         quality_delta -= 0.08
+    if meta.get("duplicate_candidate") is True:
+        quality_delta -= 0.15
 
     if quality_delta == 0:
         return score

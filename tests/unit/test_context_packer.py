@@ -217,6 +217,37 @@ async def test_context_packer_penalizes_compiler_assets_marked_for_recompile() -
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_context_packer_downranks_duplicate_candidates() -> None:
+    store = InMemoryAssetStore()
+    original = LayeredAsset.build(
+        "knowledge",
+        "u-sylvan",
+        metadata={"title": "pytest original"},
+        summary="pytest 修复 复现 回归 重复资料",
+        tags=["pytest"],
+    )
+    duplicate = LayeredAsset.build(
+        "knowledge",
+        "u-sylvan",
+        metadata={
+            "title": "pytest duplicate",
+            "duplicate_candidate": True,
+            "duplicate_of": original.asset_id,
+        },
+        summary="pytest 修复 复现 回归 重复资料",
+        tags=["pytest", "duplicate_candidate"],
+    )
+    await store.put(duplicate)
+    await store.put(original)
+
+    pack = await ContextPacker(store).pack(_task(), tenant_id="u-sylvan", limit=2)
+
+    assert [item.asset_id for item in pack.items][:2] == [original.asset_id, duplicate.asset_id]
+    assert "quality_delta" in pack.items[1].score_rationale
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_context_packer_adds_recalled_execution_process_hint() -> None:
     store = InMemoryAssetStore()
     process = LayeredAsset.build(
