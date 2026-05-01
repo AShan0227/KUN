@@ -19,6 +19,34 @@ from kun.core.db import session_scope
 from kun.core.orm import PendingActionRow, RuntimeStateRow, WorldHandlerControlRow
 
 CoordinationSeverity = Literal["info", "warn", "error", "critical"]
+RemediationKind = Literal[
+    "trigger_executor",
+    "reject_or_restore_handler",
+    "resume_or_fail_task",
+    "manual_review",
+]
+RemediationRisk = Literal["low", "medium", "high"]
+
+
+class CoordinationRemediationPlan(BaseModel):
+    """Dry-run remediation ticket for one coordination issue.
+
+    This is deliberately a plan, not an executor.  NUO can surface it to users
+    and future workers can consume it, but this module never mutates task state.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_id: str
+    issue_id: str
+    kind: RemediationKind
+    risk_level: RemediationRisk
+    can_auto_execute: bool = False
+    reason: str
+    target_task_id: str | None = None
+    target_action_id: str | None = None
+    target_action_type: str | None = None
+    suggested_command: str | None = None
 
 
 class CoordinationIssue(BaseModel):
@@ -35,6 +63,7 @@ class CoordinationIssue(BaseModel):
     task_id: str | None = None
     action_id: str | None = None
     action_type: str | None = None
+    remediation_plan: CoordinationRemediationPlan | None = None
     evidence: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -183,7 +212,7 @@ def coordination_issues_from_rows(
                 evidence={"runtime_status": "paused", "blob_keys": sorted(blob.keys())[:20]},
             )
         )
-    return _dedupe_issues(issues)
+    return _attach_remediation_plans(_dedupe_issues(issues))
 
 
 def summarize_coordination_issues(items: list[CoordinationIssue]) -> dict[str, int]:
@@ -194,6 +223,87 @@ def summarize_coordination_issues(items: list[CoordinationIssue]) -> dict[str, i
         "warn": int(counts.get("warn", 0)),
         "error": int(counts.get("error", 0)),
         "critical": int(counts.get("critical", 0)),
+    }
+
+
+def remediation_plan_for_issue(issue: CoordinationIssue) -> CoordinationRemediationPlan:
+    """Build a conservative dry-run remediation plan for one issue."""
+
+    if issue.issue_id.startswith("approved_action_stale:"):
+        low_risk = issue.action_type in {"email.draft", "local_file.write", "webhook.dry_run"}
+        return CoordinationRemediationPlan(
+            plan_id=f"remediate:{issue.issue_id}",
+            issue_id=issue.issue_id,
+            kind="trigger_executor",
+            risk_level="low" if low_risk else "high",
+            can_auto_execute=low_risk,
+            reason=(
+                "动作已经批准但执行器没有消费；低风险动作可由后台 executor 重试，"
+                "真实外发/删除/支付类动作必须先人工确认执行器和 handler 状态。"
+            ),
+            target_task_id=issue.task_id,
+            target_action_id=issue.action_id,
+            target_action_type=issue.action_type,
+            suggested_command="uv run python -m kun.cli world pending-actions execute-once",
+        )
+    if issue.issue_id.startswith("handler_control_pending:"):
+        return CoordinationRemediationPlan(
+            plan_id=f"remediate:{issue.issue_id}",
+            issue_id=issue.issue_id,
+            kind="reject_or_restore_handler",
+            risk_level="high",
+            can_auto_execute=False,
+            reason=(
+                "handler 已被禁用或隔离时仍有待处理动作；自动执行会绕过傩的安全控制，"
+                "必须先拒绝动作，或人工确认恢复 handler 后重新审批。"
+            ),
+            target_task_id=issue.task_id,
+            target_action_id=issue.action_id,
+            target_action_type=issue.action_type,
+        )
+    if issue.issue_id.startswith("paused_without_gate:"):
+        return CoordinationRemediationPlan(
+            plan_id=f"remediate:{issue.issue_id}",
+            issue_id=issue.issue_id,
+            kind="resume_or_fail_task",
+            risk_level="medium",
+            can_auto_execute=False,
+            reason=(
+                "任务暂停但没有可见审批门，可能是脏运行态；需要 reaper 或人工查看暂停原因，"
+                "再决定恢复、失败化，或补一个用户确认动作。"
+            ),
+            target_task_id=issue.task_id,
+        )
+    return CoordinationRemediationPlan(
+        plan_id=f"remediate:{issue.issue_id}",
+        issue_id=issue.issue_id,
+        kind="manual_review",
+        risk_level="medium",
+        can_auto_execute=False,
+        reason="未知协同问题类型，先进入人工复核，不自动执行。",
+        target_task_id=issue.task_id,
+        target_action_id=issue.action_id,
+        target_action_type=issue.action_type,
+    )
+
+
+def summarize_remediation_plans(items: list[CoordinationIssue]) -> dict[str, int]:
+    """Summarize remediation plan risk and automation posture."""
+
+    plans = [item.remediation_plan for item in items if item.remediation_plan is not None]
+    risk_counts: Counter[str] = Counter(str(plan.risk_level) for plan in plans)
+    kind_counts: Counter[str] = Counter(str(plan.kind) for plan in plans)
+    return {
+        "total": len(plans),
+        "auto_executable": sum(1 for plan in plans if plan.can_auto_execute),
+        "manual_required": sum(1 for plan in plans if not plan.can_auto_execute),
+        "low_risk": int(risk_counts.get("low", 0)),
+        "medium_risk": int(risk_counts.get("medium", 0)),
+        "high_risk": int(risk_counts.get("high", 0)),
+        "trigger_executor": int(kind_counts.get("trigger_executor", 0)),
+        "reject_or_restore_handler": int(kind_counts.get("reject_or_restore_handler", 0)),
+        "resume_or_fail_task": int(kind_counts.get("resume_or_fail_task", 0)),
+        "manual_review": int(kind_counts.get("manual_review", 0)),
     }
 
 
@@ -225,9 +335,18 @@ def _dedupe_issues(items: list[CoordinationIssue]) -> list[CoordinationIssue]:
     return out
 
 
+def _attach_remediation_plans(items: list[CoordinationIssue]) -> list[CoordinationIssue]:
+    for item in items:
+        item.remediation_plan = remediation_plan_for_issue(item)
+    return items
+
+
 __all__ = [
     "CoordinationIssue",
+    "CoordinationRemediationPlan",
     "collect_coordination_issues",
     "coordination_issues_from_rows",
+    "remediation_plan_for_issue",
     "summarize_coordination_issues",
+    "summarize_remediation_plans",
 ]

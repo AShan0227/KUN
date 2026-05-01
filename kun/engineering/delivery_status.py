@@ -189,6 +189,7 @@ def get_v3_delivery_status(
                 "NUO 可根据 handler 失败率、补偿缺口、配置缺口生成自动 quarantine 决策；默认 dry-run，确认后才写入",
                 "idle-batch 会定期跑 WorldGateway handler 自动 quarantine 建议，默认只报告不静默改控制",
                 "傩系统体检会扫描审批、暂停任务和 handler 控制之间的协同冲突",
+                "协同冲突会生成 dry-run 处置票据，标明能否自动执行、风险级别和建议命令；真实外发默认仍需人工确认",
                 "傩系统体检的 warn/error/critical findings 会进入 blackboard 全局状态，并显示在主工作区",
                 "主工作区可开启当前浏览器页级别提醒；有待确认动作或高风险 finding 时会发浏览器 Notification",
             ],
@@ -209,7 +210,7 @@ def get_v3_delivery_status(
             missing=[
                 "已有当前浏览器页级别提醒；还没做后台 service worker、移动端或多设备主动推送",
                 "handler 自动 quarantine 已接入定时体检 dry-run，但真实自动执行仍需用户/运维确认",
-                "协同体检目前先发现冲突和给建议，还没有自动暂停/恢复所有冲突任务",
+                "协同体检目前会给 dry-run 处置票据，但还没有自动暂停/恢复所有冲突任务",
             ],
             next_steps=[
                 "把 auto-quarantine 高风险建议推送到主看板，并保持真实外发默认人工确认",

@@ -34,6 +34,7 @@ from kun.engineering.system_coordination import (
     CoordinationIssue,
     collect_coordination_issues,
     summarize_coordination_issues,
+    summarize_remediation_plans,
 )
 from kun.ops.secret_audit import SecretAuditItem, audit_runtime_secrets
 from kun.world.handler_health import (
@@ -82,6 +83,7 @@ class SystemHealthReport(BaseModel):
     context_maintenance_error: str | None = None
     state_ledger_audit_summary: dict[str, int] = Field(default_factory=dict)
     coordination_summary: dict[str, int] = Field(default_factory=dict)
+    coordination_remediation_summary: dict[str, int] = Field(default_factory=dict)
     coordination_issues: list[CoordinationIssue] = Field(default_factory=list)
     findings: list[SystemHealthFinding] = Field(default_factory=list)
 
@@ -227,6 +229,7 @@ async def collect_system_health_report(
         context_maintenance_error=context_maintenance_error,
         state_ledger_audit_summary=state_ledger_audit_summary,
         coordination_summary=summarize_coordination_issues(coordination_issues),
+        coordination_remediation_summary=summarize_remediation_plans(coordination_issues),
         coordination_issues=coordination_issues,
         findings=findings,
     )
