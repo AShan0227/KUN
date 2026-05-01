@@ -455,6 +455,40 @@ class StateLedger:
             entry.add_trail("context.preheated", "上下文已预热", {"asset_ids": asset_ids})
             self._store_entry(entry)
 
+    def record_task_metadata_updated(
+        self,
+        task_id: str,
+        *,
+        tenant_id: str | None = None,
+        risk_level: str | None = None,
+        estimated_cost_usd: float | None = None,
+        success_criteria_short: str | None = None,
+        constraint_note: str | None = None,
+        confirmation_policy: str | None = None,
+    ) -> None:
+        """Reflect a human/operator task-control edit in the current ledger."""
+        with self._lock:
+            entry = self._ensure(task_id)
+            if tenant_id:
+                entry.tenant_id = tenant_id
+            changed: dict[str, Any] = {}
+            if risk_level:
+                entry.current_risk = risk_level
+                changed["risk_level"] = risk_level
+            if estimated_cost_usd is not None:
+                entry.budget_estimated_usd = max(0.0, float(estimated_cost_usd))
+                changed["estimated_cost_usd"] = entry.budget_estimated_usd
+            if success_criteria_short:
+                entry.title = success_criteria_short
+                entry.current_goal = success_criteria_short
+                changed["success_criteria_short"] = success_criteria_short
+            if constraint_note:
+                changed["constraint_note"] = constraint_note
+            if confirmation_policy:
+                changed["confirmation_policy"] = confirmation_policy
+            entry.add_trail("task.metadata_updated", "用户/运维更新了任务控制参数", changed)
+            self._store_entry(entry)
+
     def record_current_action(
         self,
         task_id: str,

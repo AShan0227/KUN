@@ -1603,6 +1603,12 @@ function TaskDetailPanel({
   const [feedbackTag, setFeedbackTag] = useState("done_well");
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const [feedbackNotice, setFeedbackNotice] = useState("");
+  const [metaRisk, setMetaRisk] = useState("");
+  const [metaBudget, setMetaBudget] = useState("");
+  const [metaConstraint, setMetaConstraint] = useState("");
+  const [metaConfirmPolicy, setMetaConfirmPolicy] = useState("normal");
+  const [metaBusy, setMetaBusy] = useState(false);
+  const [metaNotice, setMetaNotice] = useState("");
   const audit =
     detail?.state_ledger_audit ??
     buildStateLedgerAudit({
@@ -1633,6 +1639,36 @@ function TaskDetailPanel({
       setFeedbackNotice(err instanceof Error ? err.message : "反馈提交失败");
     } finally {
       setFeedbackBusy(false);
+    }
+  };
+  const submitTaskMetadata = async () => {
+    const id = selectedTaskId.trim();
+    if (!id) return;
+    const body: Record<string, unknown> = {};
+    if (metaRisk) body.risk_level = metaRisk;
+    if (metaBudget.trim()) body.estimated_cost_usd = Number(metaBudget);
+    if (metaConstraint.trim()) body.constraint_note = metaConstraint.trim();
+    if (metaConfirmPolicy !== "normal") body.confirmation_policy = metaConfirmPolicy;
+    if (Object.keys(body).length === 0) {
+      setMetaNotice("没有要保存的调整。");
+      return;
+    }
+    setMetaBusy(true);
+    setMetaNotice("");
+    try {
+      const res = await apiFetch(`/api/tasks/${encodeURIComponent(id)}/metadata`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const raw = await res.text();
+      if (!res.ok) throw new Error(raw || `${res.status} ${res.statusText}`);
+      setMetaNotice("已写入任务账本。后续续跑、守望和复盘会看到这次调整。");
+      setMetaConstraint("");
+    } catch (err) {
+      setMetaNotice(err instanceof Error ? err.message : "任务控制参数保存失败");
+    } finally {
+      setMetaBusy(false);
     }
   };
 
@@ -1807,6 +1843,62 @@ function TaskDetailPanel({
             {taskControlNotice.slice(0, 240)}
           </div>
         )}
+        <div className="mt-3 rounded border border-gray-100 bg-gray-50 p-2">
+          <div className="font-medium text-gray-700">轻量调整</div>
+          <div className="mt-0.5 text-gray-400">
+            这里是真写任务账本，不是前端假改；但不会强行打断正在进行中的单次模型调用。
+          </div>
+          <div className="mt-2 grid gap-2 md:grid-cols-[0.8fr_0.8fr_1.5fr_1fr_auto]">
+            <select
+              className="rounded border border-gray-200 px-2 py-1 text-xs"
+              value={metaRisk}
+              onChange={(event) => setMetaRisk(event.target.value)}
+            >
+              <option value="">风险不变</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="critical">critical</option>
+            </select>
+            <input
+              className="rounded border border-gray-200 px-2 py-1 text-xs"
+              placeholder="预算上限 $"
+              type="number"
+              min="0"
+              step="0.01"
+              value={metaBudget}
+              onChange={(event) => setMetaBudget(event.target.value)}
+            />
+            <input
+              className="rounded border border-gray-200 px-2 py-1 text-xs"
+              placeholder="新增约束，例如先问我再外发"
+              value={metaConstraint}
+              onChange={(event) => setMetaConstraint(event.target.value)}
+            />
+            <select
+              className="rounded border border-gray-200 px-2 py-1 text-xs"
+              value={metaConfirmPolicy}
+              onChange={(event) => setMetaConfirmPolicy(event.target.value)}
+            >
+              <option value="normal">确认策略不变</option>
+              <option value="ask_before_external">外部动作前问我</option>
+              <option value="always_ask">每个关键动作问我</option>
+            </select>
+            <button
+              type="button"
+              className="rounded bg-gray-900 px-2 py-1 text-xs text-white disabled:opacity-50"
+              disabled={!selectedTaskId || metaBusy}
+              onClick={() => void submitTaskMetadata()}
+            >
+              {metaBusy ? "保存中" : "保存"}
+            </button>
+          </div>
+          {metaNotice && (
+            <div className="mt-2 rounded bg-white px-2 py-1 text-gray-500">
+              {metaNotice.slice(0, 240)}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="mt-3 rounded bg-white p-2 text-gray-600">

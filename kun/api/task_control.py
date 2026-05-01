@@ -12,16 +12,19 @@ GET  /api/tasks/active                   列出所有未完成 task (基础版)
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from kun.api.runtime import get_kill_switch, get_task_timeout
 from kun.core.db import session_scope
 from kun.core.events import emit
 from kun.core.logging import get_logger
-from kun.core.tenancy import current_tenant
+from kun.core.orm import TaskRow
+from kun.core.state_ledger import get_state_ledger
+from kun.core.tenancy import current_tenant, require_scope
 from kun.datamodel.events import Event
 
 log = get_logger("kun.api.task_control")
@@ -55,6 +58,28 @@ class RegisterRequest(BaseModel):
     max_duration_sec: int | None = None
     max_steps: int | None = None
     timeout_action: str = "pause_ask_user"
+
+
+class TaskMetadataUpdateRequest(BaseModel):
+    risk_level: Literal["low", "medium", "high", "critical"] | None = None
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
+    success_criteria_short: str | None = Field(default=None, min_length=1, max_length=200)
+    constraint_note: str | None = Field(default=None, max_length=500)
+    confirmation_policy: (
+        Literal[
+            "normal",
+            "ask_before_external",
+            "always_ask",
+        ]
+        | None
+    ) = None
+
+
+class TaskMetadataUpdateResponse(BaseModel):
+    task_id: str
+    updated: bool
+    changed_fields: list[str]
+    message: str
 
 
 @router.post("/{task_id}/kill", response_model=KillResponse)
@@ -153,6 +178,126 @@ def register_task(
         "max_duration_sec": rt.max_duration_sec,
         "max_steps": rt.max_steps,
         "started_at": rt.started_at.isoformat(),
+    }
+
+
+@router.patch("/{task_id}/metadata", response_model=TaskMetadataUpdateResponse)
+async def update_task_metadata(
+    task_id: str,
+    body: TaskMetadataUpdateRequest,
+) -> TaskMetadataUpdateResponse:
+    """Lightweight human edit for an existing TASK.md record.
+
+    This edits the durable task metadata and records an event/StateLedger trail.
+    It does not mutate an already-running in-memory LLM call; future resume,
+    dashboards, guards, and reviews can consume the updated metadata.
+    """
+
+    _require_scope_when_enforced("task:write")
+    tenant = current_tenant()
+    cleaned_task_id = task_id.strip()
+    if not cleaned_task_id:
+        raise HTTPException(status_code=400, detail="task_id is required")
+
+    patch = body.model_dump(exclude_none=True)
+    if not patch:
+        raise HTTPException(status_code=400, detail="no metadata fields supplied")
+
+    async with session_scope(tenant_id=tenant.tenant_id) as s:
+        result = await s.execute(
+            select(TaskRow).where(
+                TaskRow.tenant_id == tenant.tenant_id,
+                TaskRow.task_id == cleaned_task_id,
+            )
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            raise HTTPException(status_code=404, detail="task not found")
+
+        changed: dict[str, Any] = {}
+        if body.risk_level is not None and task.risk_level != body.risk_level:
+            task.risk_level = body.risk_level
+            changed["risk_level"] = body.risk_level
+        if body.estimated_cost_usd is not None and float(task.estimated_cost_usd) != float(
+            body.estimated_cost_usd
+        ):
+            task.estimated_cost_usd = float(body.estimated_cost_usd)
+            changed["estimated_cost_usd"] = float(body.estimated_cost_usd)
+        if (
+            body.success_criteria_short is not None
+            and task.success_criteria_short != body.success_criteria_short
+        ):
+            task.success_criteria_short = body.success_criteria_short
+            changed["success_criteria_short"] = body.success_criteria_short
+
+        spec_json = dict(task.spec_json or {})
+        if body.constraint_note:
+            constraints = list(spec_json.get("constraints") or [])
+            constraints.append({"kind": "custom", "detail": body.constraint_note})
+            spec_json["constraints"] = constraints[-20:]
+            changed["constraint_note"] = body.constraint_note
+        if body.confirmation_policy:
+            controls = dict(spec_json.get("user_controls") or {})
+            controls["confirmation_policy"] = body.confirmation_policy
+            spec_json["user_controls"] = controls
+            changed["confirmation_policy"] = body.confirmation_policy
+        if "constraint_note" in changed or "confirmation_policy" in changed:
+            task.spec_json = spec_json
+
+        if not changed:
+            return TaskMetadataUpdateResponse(
+                task_id=cleaned_task_id,
+                updated=False,
+                changed_fields=[],
+                message="没有变化；任务控制参数保持原样。",
+            )
+
+        await emit(
+            s,
+            Event.build(
+                tenant_id=tenant.tenant_id,
+                event_type="task.metadata_updated",
+                payload={
+                    "task_id": cleaned_task_id,
+                    "changed": _redact_metadata_patch(changed),
+                    "updated_by": tenant.user_id or tenant.tenant_id,
+                },
+                task_ref=cleaned_task_id,
+            ),
+        )
+
+    get_state_ledger().record_task_metadata_updated(
+        cleaned_task_id,
+        tenant_id=tenant.tenant_id,
+        risk_level=body.risk_level,
+        estimated_cost_usd=body.estimated_cost_usd,
+        success_criteria_short=body.success_criteria_short,
+        constraint_note=body.constraint_note,
+        confirmation_policy=body.confirmation_policy,
+    )
+    return TaskMetadataUpdateResponse(
+        task_id=cleaned_task_id,
+        updated=True,
+        changed_fields=sorted(changed),
+        message="任务控制参数已写入账本；正在运行的单次 LLM 调用不会被强行热改，后续续跑和复盘会看到。",
+    )
+
+
+def _require_scope_when_enforced(scope: str) -> None:
+    tenant = current_tenant()
+    from kun.core.config import settings
+
+    if settings().env != "production" and not tenant.scopes:
+        return
+    try:
+        require_scope(scope, ctx=tenant)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _redact_metadata_patch(patch: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: ("[redacted]" if "token" in key.lower() else value) for key, value in patch.items()
     }
 
 
