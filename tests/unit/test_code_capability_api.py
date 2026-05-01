@@ -206,6 +206,7 @@ def test_propose_change_api_records_event_and_state_ledger(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("KUN_CODE_STRATEGY_TREE_SEARCH_ENABLED", "1")
     target = tmp_path / "module.py"
     target.write_text("VALUE = 1\n", encoding="utf-8")
     app = _app(tmp_path, monkeypatch)
@@ -258,6 +259,10 @@ def test_propose_change_api_records_event_and_state_ledger(
     assert event.payload["skill_draft_asset_id"] == draft_store.assets[0].asset_id
     assert "diff" not in event.payload
     assert draft_store.assets[0].asset_kind == "skill"
+    assert (
+        draft_store.assets[0].l1_metadata["strategy_search_records"][0]["evaluator_kind"]
+        == "code_tree_search"
+    )
     assert draft_store.assets[0].l1_metadata["review_state"] == "draft_review_only"
     assert draft_store.assets[0].l1_metadata["promotion_allowed"] is False
     assert "draft_skill" in draft_store.assets[0].tags

@@ -486,6 +486,7 @@ def get_v3_delivery_status(
                 "propose-change 现在会写 code.change.proposed 事件；传入 task_id 时也会进入 StateLedger，记录路径、模式、检查结果、回滚状态和 diff hash，方便傩/启/守望复盘",
                 "propose-change 现在还会把改动模式、文件后缀、review/check 结果写入 resource_credit_stats，并更新热贡献信用 cache；后续守望/MoE 能知道哪些编程路径更可靠",
                 "成功且通过检查的 propose-change 会生成 review-only 的 draft skill LayeredAsset；它不会自动注册、不会自动安装、不会进入生产路由，只供傩/启/人审核复用",
+                "可选开启 KUN_CODE_STRATEGY_TREE_SEARCH_ENABLED=1 后，CodeCapability 会对成功改动做 review-only 树搜索，把更优代码工作流建议写入 draft skill 的 strategy_search_records",
             ],
             evidence_refs=[
                 "kun/skills/code_capability/__init__.py",
@@ -511,7 +512,7 @@ def get_v3_delivery_status(
             ],
             next_steps=[
                 "把 Orchestrator 的 coding task 显式接到 CodeCapability 服务，而不是只由 HTTP 人工触发",
-                "把 code_capability 资源信用接到更多守望策略和启的代码实验选择里",
+                "把 code_capability 资源信用和 strategy_search_records 接到更多守望策略和启的代码实验选择里",
                 "把 review-only draft skill 接到多次验证、人工审核和受控晋升流程",
             ],
         ),

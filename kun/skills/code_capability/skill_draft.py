@@ -20,6 +20,7 @@ def build_code_change_skill_draft_asset(
     bytes_changed: int,
     diff_sha256: str,
     reason: str = "",
+    strategy_search_records: list[dict[str, object]] | None = None,
 ) -> LayeredAsset | None:
     """Build a review-only SKILL.md asset from a successful code change.
 
@@ -64,6 +65,7 @@ def build_code_change_skill_draft_asset(
             "bytes_changed": bytes_changed,
             "diff_sha256": diff_sha256,
             "reason": reason,
+            "strategy_search_records": strategy_search_records or [],
         }
     )
     asset.tags = _dedupe(

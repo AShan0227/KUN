@@ -15,6 +15,15 @@ def test_code_change_skill_draft_is_review_only_context_asset() -> None:
         bytes_changed=128,
         diff_sha256="abc123",
         reason="提炼可复用代码修改路径",
+        strategy_search_records=[
+            {
+                "evaluation_id": "ccs_1",
+                "evaluator_kind": "code_tree_search",
+                "status": "evaluated",
+                "score": 0.82,
+                "production_action": False,
+            }
+        ],
     )
 
     assert asset is not None
@@ -25,6 +34,7 @@ def test_code_change_skill_draft_is_review_only_context_asset() -> None:
     assert asset.l1_metadata["auto_install_allowed"] is False
     assert asset.l1_metadata["task_id"] == "task-1"
     assert asset.l1_metadata["path_ext"] == "py"
+    assert asset.l1_metadata["strategy_search_records"][0]["evaluator_kind"] == "code_tree_search"
     assert "draft_skill" in asset.tags
     assert "review_only" in asset.tags
     assert "no_auto_install" in asset.tags

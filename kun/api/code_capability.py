@@ -30,6 +30,12 @@ from kun.skills.code_capability import CodeCapability
 from kun.skills.code_capability.executor import LintTool
 from kun.skills.code_capability.reviewer import ReviewFinding, ReviewResult
 from kun.skills.code_capability.skill_draft import build_code_change_skill_draft_asset
+from kun.skills.code_capability.strategy_search import (
+    CodeStrategySearchInput,
+    code_strategy_tree_search_enabled_from_env,
+    configured_code_strategy_search_budget_from_env,
+    run_code_change_strategy_tree_search,
+)
 from kun.skills.code_capability.workflow import ChangeCheckSpec, ChangeWorkflowResult
 
 router = APIRouter(prefix="/api/code-capability", tags=["code-capability"])
@@ -401,6 +407,28 @@ async def _store_code_skill_draft(
 ) -> str:
     if not task_id or not result.ok or result.rolled_back:
         return ""
+    strategy_search_records: list[dict[str, object]] = []
+    if code_strategy_tree_search_enabled_from_env():
+        record = await run_code_change_strategy_tree_search(
+            CodeStrategySearchInput(
+                task_id=task_id,
+                path=result.path,
+                mode=result.mode,
+                phase=result.phase,
+                checks_passed=checks_passed,
+                review_ok=result.review.ok if result.review is not None else None,
+                applied=result.applied,
+                rolled_back=result.rolled_back,
+                bytes_changed=result.bytes_changed,
+                lint_failed_count=sum(1 for lint in result.lint_results if not lint.ok),
+                test_failed_count=sum(1 for test in result.test_results if not test.ok),
+                reason=reason,
+                diff_sha256=diff_sha256,
+            ),
+            enabled=True,
+            budget=configured_code_strategy_search_budget_from_env(),
+        )
+        strategy_search_records = [record.model_dump(mode="json")]
     asset = build_code_change_skill_draft_asset(
         tenant_id=tenant_id,
         task_id=task_id,
@@ -412,6 +440,7 @@ async def _store_code_skill_draft(
         bytes_changed=result.bytes_changed,
         diff_sha256=diff_sha256,
         reason=reason,
+        strategy_search_records=strategy_search_records,
     )
     if asset is None:
         return ""
