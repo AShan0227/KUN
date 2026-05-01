@@ -431,7 +431,7 @@ def get_v3_delivery_status(
                 "Qi idle replay 目前已有 heuristic_local、可配置本地模型评估口、显式 opt-in 强模型复审口、显式 opt-in KUN-Lab 历史任务回放口、草稿审核状态机和 shadow/canary 护栏计划；但仓库不内置具体模型权重，也还没接真实流量 shadow/canary 执行链路",
                 "StrategyPack 草稿目前只做 review-only，不会自动 promotion；已经能判断是否可交给人审核并生成推广计划，但还没接人工批准 UI 或真实实验创建",
                 "external_emergent_scan 目前只消费显式线索；已有 opt-in 强模型复审口，但还没接真实 GitHub/arXiv/竞品 changelog 抓取器，也还没接 canary 推广链路",
-                "执行过程经验已能影响 Watchtower skill_hints；但还没有做到 step 级 action choice 的精细策略改写",
+                "执行过程经验已能影响 Watchtower skill_hints；Hermes use_memory 已开始按单步 action/query 稀疏选择记忆层，但还没有做到全 action choice 的策略改写",
                 "贡献信用对模型路由已进热路径，但还需要真实 dogfood 样本校准阈值",
                 "ValueGate 已接轻量历史信用，但还没用真实 dogfood 样本训练成稳定的跨任务 gate estimator",
             ],

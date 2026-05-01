@@ -388,7 +388,8 @@ async def test_hermes_use_memory_respects_memory_policy_mid_run_gate() -> None:
     assert packer.pack_query_calls == []
     skipped = [data for kind, data in events if kind == "hermes_memory_skipped"]
     assert skipped
-    assert skipped[0]["reason"] == "memory_policy_disallows_mid_run_retrieval"
+    assert skipped[0]["reason"] == "task_policy_disallows_mid_run_retrieval"
+    assert skipped[0]["step_memory_policy"]["use_memory"] is False
 
 
 @pytest.mark.unit
@@ -440,6 +441,7 @@ async def test_hermes_use_memory_passes_policy_layers_when_mid_run_allowed() -> 
     assert call["limit"] <= 3
     injects = [data for kind, data in events if kind == "hermes_memory_injected"]
     assert injects and injects[0]["asset_ids"] == ["memory-1"]
+    assert injects[0]["step_memory_policy"]["reason"].startswith("action=use_memory")
 
 
 @pytest.mark.unit
@@ -474,6 +476,10 @@ async def test_hermes_use_memory_passes_high_risk_policy_to_context_packer() -> 
     assert packer.pack_anchor_calls
     call = packer.pack_anchor_calls[0]
     assert call["high_risk_task"] is True
+    assert packer.pack_query_calls
+    memory_call = packer.pack_query_calls[0]
+    assert memory_call["high_risk_task"] is True
+    assert "behavior" in memory_call["avoid_memory_layers"]
 
 
 @pytest.mark.unit

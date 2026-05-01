@@ -4,7 +4,9 @@ from kun.memory.policy import (
     MemoryDepth,
     MemoryLayer,
     MemoryPolicyTicket,
+    StepMemoryPolicy,
     decide_memory_policy,
+    decide_step_memory_policy,
 )
 from kun.memory.writeback import MemoryWriteback, MemoryWritebackResult
 
@@ -14,5 +16,7 @@ __all__ = [
     "MemoryPolicyTicket",
     "MemoryWriteback",
     "MemoryWritebackResult",
+    "StepMemoryPolicy",
     "decide_memory_policy",
+    "decide_step_memory_policy",
 ]

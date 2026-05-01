@@ -6,7 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 from kun.datamodel.task import Owner, Risk, RiskLevel, TaskMeta, TaskRef, TaskSpec
-from kun.memory.policy import MemoryDepth, MemoryLayer, decide_memory_policy
+from kun.memory.policy import (
+    MemoryDepth,
+    MemoryLayer,
+    decide_memory_policy,
+    decide_step_memory_policy,
+)
 
 
 def _task(
@@ -169,3 +174,77 @@ def test_high_risk_memory_policy_ticket_marks_context_packer_kwargs() -> None:
 
     assert ticket.risk is True
     assert kwargs["high_risk_task"] is True
+
+
+@pytest.mark.unit
+def test_step_memory_policy_skips_when_task_policy_blocks_mid_run_recall() -> None:
+    ticket = decide_memory_policy(
+        _task(
+            goal="修复 pytest 报错并补回归测试",
+            task_type="coding.python.pytest",
+            complexity_score=0.5,
+        ),
+    )
+
+    step_policy = decide_step_memory_policy(
+        ticket,
+        action_type="use_memory",
+        query="过去怎么修 pytest 报错",
+    )
+
+    assert ticket.allow_mid_run_retrieval is False
+    assert step_policy.use_memory is False
+    assert step_policy.reason == "task_policy_disallows_mid_run_retrieval"
+
+
+@pytest.mark.unit
+def test_step_memory_policy_uses_code_specific_layers_when_allowed() -> None:
+    ticket = decide_memory_policy(
+        _task(
+            goal="修复复杂 CI 回归并复盘代码路径",
+            task_type="coding.python.pytest",
+            complexity_score=0.8,
+        ),
+    )
+
+    step_policy = decide_step_memory_policy(
+        ticket,
+        action_type="use_memory",
+        query="过去 debug pytest CI 失败时用了哪些 skill 和执行过程",
+        execution_mode="MAX",
+    )
+    kwargs = step_policy.as_context_packer_kwargs()
+
+    assert step_policy.use_memory is True
+    assert step_policy.layers[:2] == [MemoryLayer.EXECUTION_PROCESS, MemoryLayer.BEHAVIOR]
+    assert "skill" in step_policy.asset_kinds
+    assert "debug" in step_policy.preferred_tags
+    assert kwargs["memory_layers"][:2] == ["execution_process", "behavior"]
+    assert kwargs["limit"] <= 3
+
+
+@pytest.mark.unit
+def test_step_memory_policy_external_action_prefers_safe_sparse_recall() -> None:
+    ticket = decide_memory_policy(
+        _task(
+            goal="准备给客户发送邮件前的风险检查",
+            task_type="business.customer.outreach",
+            risk_level="high",
+            complexity_score=0.7,
+        ),
+    )
+
+    step_policy = decide_step_memory_policy(
+        ticket,
+        action_type="use_memory",
+        query="发送客户邮件前，过去 WorldGateway 审批和回滚怎么处理",
+        payload={"channel": "email"},
+    )
+
+    assert step_policy.use_memory is True
+    assert step_policy.high_risk_task is True
+    assert step_policy.limit <= 2
+    assert MemoryLayer.BEHAVIOR in step_policy.avoid_layers
+    assert MemoryLayer.EXECUTION_PROCESS in step_policy.avoid_layers
+    assert "world_gateway" in step_policy.preferred_tags
+    assert "external_or_irreversible" in step_policy.reason

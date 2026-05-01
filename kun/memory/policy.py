@@ -69,6 +69,39 @@ class MemoryPolicyTicket(BaseModel):
         }
 
 
+class StepMemoryPolicy(BaseModel):
+    """A narrower retrieval policy for one runtime action.
+
+    Task-level memory policy answers "should this task use memory at all".
+    This object answers the next question: "this concrete step asked for
+    memory, which small slice is safe and useful right now".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    action_type: str
+    use_memory: bool
+    limit: int = Field(default=0, ge=0)
+    asset_kinds: list[AssetKind] = Field(default_factory=list)
+    layers: list[MemoryLayer] = Field(default_factory=list)
+    avoid_layers: list[MemoryLayer] = Field(default_factory=list)
+    preferred_tags: list[str] = Field(default_factory=list)
+    high_risk_task: bool = False
+    reason: str
+
+    def as_context_packer_kwargs(self) -> dict[str, Any]:
+        """Return kwargs for ContextPacker.pack_query."""
+
+        return {
+            "limit": self.limit,
+            "kinds": list(self.asset_kinds),
+            "preferred_tags": list(self.preferred_tags),
+            "memory_layers": [layer.value for layer in self.layers],
+            "avoid_memory_layers": [layer.value for layer in self.avoid_layers],
+            "high_risk_task": self.high_risk_task,
+        }
+
+
 def decide_memory_policy(
     task_ref: TaskRef,
     *,
@@ -182,6 +215,137 @@ def decide_memory_policy(
         avoid_layers=avoid_layers,
         risk=risky,
         risk_flags=risk_flags,
+        reason="; ".join(reason_parts),
+    )
+
+
+def decide_step_memory_policy(
+    policy: MemoryPolicyTicket | None,
+    *,
+    action_type: str,
+    query: str = "",
+    payload: dict[str, Any] | None = None,
+    execution_mode: str = "",
+) -> StepMemoryPolicy:
+    """Refine task-level memory policy for one Hermes/runtime action.
+
+    This keeps the MoE idea sparse: a coding/debug step recalls different
+    memories than an external-action safety step, and simple/direct steps do
+    not wake the memory layer at all.
+    """
+
+    normalized_action = (action_type or "").strip() or "unknown"
+    if normalized_action != "use_memory":
+        return StepMemoryPolicy(
+            action_type=normalized_action,
+            use_memory=False,
+            reason=f"{normalized_action}=no_step_memory",
+        )
+
+    if policy is not None:
+        if not policy.use_memory:
+            return StepMemoryPolicy(
+                action_type=normalized_action,
+                use_memory=False,
+                avoid_layers=list(policy.avoid_layers),
+                high_risk_task=policy.risk,
+                reason="task_policy_disables_memory",
+            )
+        if not policy.allow_mid_run_retrieval:
+            return StepMemoryPolicy(
+                action_type=normalized_action,
+                use_memory=False,
+                asset_kinds=list(policy.asset_kinds),
+                layers=list(policy.layers),
+                avoid_layers=list(policy.avoid_layers),
+                preferred_tags=list(policy.preferred_tags),
+                high_risk_task=policy.risk,
+                reason="task_policy_disallows_mid_run_retrieval",
+            )
+
+    text = _step_text(query=query, payload=payload)
+    base_layers = list(policy.layers) if policy is not None else []
+    base_kinds = list(policy.asset_kinds) if policy is not None else []
+    avoid_layers = list(policy.avoid_layers) if policy is not None else []
+    preferred_tags = list(policy.preferred_tags) if policy is not None else []
+    high_risk_task = bool(policy.risk) if policy is not None else False
+    limit = _step_base_limit(policy, execution_mode=execution_mode)
+    reason_parts = ["action=use_memory"]
+
+    if _looks_external_or_irreversible(text):
+        action_layers = [
+            MemoryLayer.TASK_RESULT,
+            MemoryLayer.META_DECISION,
+            MemoryLayer.METHODOLOGY,
+        ]
+        action_kinds: list[AssetKind] = ["memory", "methodology", "knowledge"]
+        avoid_layers = _dedupe_layers(
+            [*avoid_layers, MemoryLayer.BEHAVIOR, MemoryLayer.EXECUTION_PROCESS]
+        )
+        preferred_tags.extend(["world_gateway", "approval", "rollback", "risk"])
+        high_risk_task = True
+        limit = min(limit, 2)
+        reason_parts.append("external_or_irreversible=precise_safe_recall")
+    elif _is_bug_or_code_task("", text):
+        action_layers = [
+            MemoryLayer.EXECUTION_PROCESS,
+            MemoryLayer.BEHAVIOR,
+            MemoryLayer.TASK_RESULT,
+            MemoryLayer.META_DECISION,
+        ]
+        action_kinds = ["memory", "methodology", "skill", "knowledge"]
+        preferred_tags.extend(["repo", "tests", "debug", "architecture"])
+        reason_parts.append("code_or_debug=process_behavior_recall")
+    elif _is_strategy_or_ops_task("", text, None):
+        action_layers = [
+            MemoryLayer.META_DECISION,
+            MemoryLayer.METHODOLOGY,
+            MemoryLayer.TASK_RESULT,
+        ]
+        action_kinds = ["memory", "methodology", "knowledge", "skill"]
+        preferred_tags.extend(["strategy", "product", "growth", "metrics"])
+        reason_parts.append("strategy_ops=meta_methodology_recall")
+    elif _looks_context_governance(text):
+        action_layers = [
+            MemoryLayer.META_DECISION,
+            MemoryLayer.METHODOLOGY,
+            MemoryLayer.TASK_RESULT,
+        ]
+        action_kinds = ["memory", "methodology", "knowledge"]
+        preferred_tags.extend(["nuo", "context", "governance", "memory_hygiene"])
+        limit = min(limit, 2)
+        reason_parts.append("context_governance=slim_precise_recall")
+    else:
+        action_layers = base_layers or [
+            MemoryLayer.TASK_RESULT,
+            MemoryLayer.METHODOLOGY,
+            MemoryLayer.META_DECISION,
+        ]
+        action_kinds = base_kinds or ["memory", "knowledge", "methodology"]
+        reason_parts.append("default=task_policy_recall")
+
+    layers = _bounded_action_layers(
+        action_layers, base_layers=base_layers, avoid_layers=avoid_layers
+    )
+    asset_kinds = _dedupe_asset_kinds([*(base_kinds or []), *action_kinds])
+    if not layers:
+        layers = _bounded_action_layers(
+            base_layers or [MemoryLayer.TASK_RESULT],
+            base_layers=base_layers,
+            avoid_layers=avoid_layers,
+        )
+    if not asset_kinds:
+        asset_kinds = ["memory", "knowledge", "methodology"]
+
+    return StepMemoryPolicy(
+        action_type=normalized_action,
+        use_memory=True,
+        limit=limit,
+        asset_kinds=asset_kinds,
+        layers=layers[: max(limit, 1)],
+        avoid_layers=_dedupe_layers(avoid_layers),
+        preferred_tags=_dedupe_text([tag.lower() for tag in preferred_tags if tag])[:10],
+        high_risk_task=high_risk_task,
         reason="; ".join(reason_parts),
     )
 
@@ -385,6 +549,87 @@ def _optional_text(value: object) -> str | None:
     return None
 
 
+def _step_text(*, query: str, payload: dict[str, Any] | None) -> str:
+    parts = [query]
+    for value in (payload or {}).values():
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, list):
+            parts.append(" ".join(str(item) for item in value if item))
+        elif isinstance(value, dict):
+            parts.extend(str(item) for item in value.values() if item)
+    return " ".join(part for part in parts if part).lower()
+
+
+def _step_base_limit(policy: MemoryPolicyTicket | None, *, execution_mode: str) -> int:
+    fallback = 3 if execution_mode == "MAX" else 2
+    if policy is None or policy.max_items <= 0:
+        return fallback
+    return max(1, min(fallback, policy.max_items))
+
+
+def _looks_external_or_irreversible(text: str) -> bool:
+    words = (
+        "发送",
+        "外发",
+        "邮件",
+        "浏览器",
+        "支付",
+        "转账",
+        "删除",
+        "部署",
+        "发布",
+        "客户",
+        "approval",
+        "approve",
+        "email",
+        "browser",
+        "payment",
+        "deploy",
+        "publish",
+        "delete",
+        "worldgateway",
+        "world_gateway",
+    )
+    return any(word in text for word in words)
+
+
+def _looks_context_governance(text: str) -> bool:
+    words = (
+        "记忆治理",
+        "压缩",
+        "遗忘",
+        "合并",
+        "瘦身",
+        "重复记忆",
+        "context governance",
+        "memory hygiene",
+        "forget",
+        "dedupe",
+        "compress",
+        "distill",
+    )
+    return any(word in text for word in words)
+
+
+def _bounded_action_layers(
+    layers: list[MemoryLayer],
+    *,
+    base_layers: list[MemoryLayer],
+    avoid_layers: list[MemoryLayer],
+) -> list[MemoryLayer]:
+    avoided = set(avoid_layers)
+    ordered = [layer for layer in _dedupe_layers(layers) if layer not in avoided]
+    if not base_layers:
+        return ordered
+    # Task-level policy is a soft boundary for normal tasks.  High-risk avoid
+    # layers remain hard boundaries above.
+    base_set = set(base_layers)
+    preferred = [layer for layer in ordered if layer in base_set]
+    extras = [layer for layer in ordered if layer not in base_set]
+    return [*preferred, *extras]
+
+
 def _dedupe_layers(layers: list[MemoryLayer]) -> list[MemoryLayer]:
     seen: set[MemoryLayer] = set()
     out: list[MemoryLayer] = []
@@ -393,6 +638,17 @@ def _dedupe_layers(layers: list[MemoryLayer]) -> list[MemoryLayer]:
             continue
         seen.add(layer)
         out.append(layer)
+    return out
+
+
+def _dedupe_asset_kinds(items: list[AssetKind]) -> list[AssetKind]:
+    seen: set[AssetKind] = set()
+    out: list[AssetKind] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
     return out
 
 
@@ -411,5 +667,7 @@ __all__ = [
     "MemoryDepth",
     "MemoryLayer",
     "MemoryPolicyTicket",
+    "StepMemoryPolicy",
     "decide_memory_policy",
+    "decide_step_memory_policy",
 ]

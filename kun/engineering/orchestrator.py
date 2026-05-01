@@ -100,7 +100,7 @@ from kun.interface.llm import (
     get_router,
 )
 from kun.interface.llm.router import TaskPurpose
-from kun.memory.policy import MemoryPolicyTicket, decide_memory_policy
+from kun.memory.policy import MemoryPolicyTicket, decide_memory_policy, decide_step_memory_policy
 from kun.memory.similar_task_recall import recall_similar_task_experiences
 from kun.skills.selector import get_selector as get_skill_selector
 from kun.watchtower.engine import RuleEngine
@@ -1698,23 +1698,25 @@ class Orchestrator:
                     elif _hermes_step.action_type == "use_memory":
                         # Wire 33: hermes 主动拉相关 memory → 加塞进 step context_summary
                         memory_query = _hermes_memory_query_from_step(_hermes_step, step_plan)
-                        if memory_query and _memory_policy_allows_mid_run_recall(memory_policy):
+                        step_memory_policy = decide_step_memory_policy(
+                            memory_policy,
+                            action_type=str(_hermes_step.action_type),
+                            query=memory_query,
+                            payload=getattr(_hermes_step, "action_payload", None) or {},
+                            execution_mode=str(_exec_mode),
+                        )
+                        if memory_query and step_memory_policy.use_memory:
+                            step_memory_kwargs = step_memory_policy.as_context_packer_kwargs()
                             try:
                                 extra_pack = await self.context_packer.pack_query(
                                     memory_query,
                                     tenant_id=tenant.tenant_id,
-                                    limit=_memory_policy_mid_run_limit(
-                                        memory_policy,
-                                        execution_mode=str(_exec_mode),
-                                    ),
-                                    memory_layers=memory_context_kwargs.get("memory_layers"),
-                                    avoid_memory_layers=memory_context_kwargs.get(
-                                        "avoid_memory_layers"
-                                    ),
-                                    preferred_tags=memory_context_kwargs.get("preferred_tags"),
-                                    high_risk_task=bool(
-                                        memory_context_kwargs.get("high_risk_task")
-                                    ),
+                                    limit=step_memory_kwargs["limit"],
+                                    kinds=step_memory_kwargs["kinds"],
+                                    memory_layers=step_memory_kwargs["memory_layers"],
+                                    avoid_memory_layers=step_memory_kwargs["avoid_memory_layers"],
+                                    preferred_tags=step_memory_kwargs["preferred_tags"],
+                                    high_risk_task=bool(step_memory_kwargs["high_risk_task"]),
                                 )
                             except Exception:
                                 log.exception("hermes.use_memory pack_query failed")
@@ -1733,6 +1735,9 @@ class Orchestrator:
                                         "query": memory_query,
                                         "asset_ids": [it.asset_id for it in extra_pack.items],
                                         "count": len(extra_pack.items),
+                                        "step_memory_policy": step_memory_policy.model_dump(
+                                            mode="json"
+                                        ),
                                     },
                                 )
                         elif memory_query:
@@ -1741,7 +1746,10 @@ class Orchestrator:
                                 data={
                                     "step_id": step_plan.step_id,
                                     "query": memory_query,
-                                    "reason": "memory_policy_disallows_mid_run_retrieval",
+                                    "reason": step_memory_policy.reason,
+                                    "step_memory_policy": step_memory_policy.model_dump(
+                                        mode="json"
+                                    ),
                                     "memory_policy": (
                                         memory_policy.model_dump(mode="json")
                                         if memory_policy is not None
