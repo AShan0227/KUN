@@ -24,7 +24,11 @@ HandlerHealthStatus = Literal["ready", "limited", "blocked", "unregistered"]
 EXPECTED_REAL_WORLD_HANDLERS: dict[str, tuple[str, tuple[str, ...]]] = {
     "email.send": (
         "KUN_WORLD_EMAIL_SEND_ENABLED",
-        ("KUN_WORLD_SMTP_HOST", "KUN_WORLD_SMTP_FROM"),
+        (
+            "KUN_WORLD_SMTP_HOST",
+            "KUN_WORLD_SMTP_FROM",
+            "KUN_WORLD_EMAIL_ALLOWED_DOMAINS",
+        ),
     ),
     "enterprise_api.post": (
         "KUN_WORLD_API_POST_ENABLED",

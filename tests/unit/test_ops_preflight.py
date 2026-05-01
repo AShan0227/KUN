@@ -130,6 +130,7 @@ def test_preflight_accepts_enabled_world_gateway_handler_with_required_env(
     monkeypatch.setenv("KUN_WORLD_EMAIL_SEND_ENABLED", "true")
     monkeypatch.setenv("KUN_WORLD_SMTP_HOST", "smtp.example.com")
     monkeypatch.setenv("KUN_WORLD_SMTP_FROM", "kun@example.com")
+    monkeypatch.setenv("KUN_WORLD_EMAIL_ALLOWED_DOMAINS", "example.com")
 
     report = run_preflight(
         cfg=_safe_prod_settings(),
@@ -155,6 +156,7 @@ def test_preflight_accepts_enabled_world_gateway_handler_with_tenant_scoped_env(
     monkeypatch.delenv("KUN_WORLD_SMTP_FROM", raising=False)
     monkeypatch.setenv("KUN_TENANT_TENANT_A_WORLD_SMTP_HOST", "smtp.tenant-a.example.com")
     monkeypatch.setenv("KUN_TENANT_TENANT_A_WORLD_SMTP_FROM", "tenant-a@example.com")
+    monkeypatch.setenv("KUN_TENANT_TENANT_A_WORLD_EMAIL_ALLOWED_DOMAINS", "example.com")
 
     report = run_preflight(
         cfg=_safe_prod_settings(),
@@ -282,6 +284,7 @@ def test_secret_audit_accepts_tenant_scoped_world_gateway_required_env() -> None
             "KUN_WORLD_EMAIL_SEND_ENABLED": "true",
             "KUN_TENANT_TENANT_A_WORLD_SMTP_HOST": "smtp.tenant-a.example.com",
             "KUN_TENANT_TENANT_A_WORLD_SMTP_FROM": "tenant-a@example.com",
+            "KUN_TENANT_TENANT_A_WORLD_EMAIL_ALLOWED_DOMAINS": "example.com",
         },
     )
 

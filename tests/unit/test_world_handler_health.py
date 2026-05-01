@@ -131,6 +131,7 @@ def test_handler_health_flags_real_external_handler_as_limited(tmp_path: Path) -
         smtp_username=None,
         smtp_password=None,
         smtp_from="kun@example.com",
+        allowed_recipient_domains={"example.com"},
         sender=lambda _message: {"provider_message_id": "ok"},
     )
     rows = [
@@ -220,6 +221,7 @@ def test_handler_health_accepts_tenant_scoped_expected_handler_config(
     monkeypatch.delenv("KUN_WORLD_SMTP_FROM", raising=False)
     monkeypatch.setenv("KUN_TENANT_TENANT_1_WORLD_SMTP_HOST", "smtp.tenant.example.com")
     monkeypatch.setenv("KUN_TENANT_TENANT_1_WORLD_SMTP_FROM", "tenant@example.com")
+    monkeypatch.setenv("KUN_TENANT_TENANT_1_WORLD_EMAIL_ALLOWED_DOMAINS", "example.com")
 
     cards = {
         card.action_type: card
@@ -249,6 +251,7 @@ def test_handler_health_reads_expected_handler_config_from_secret_store(
                     "tenant-1": {
                         "KUN_WORLD_SMTP_HOST": "smtp.secret.example.com",
                         "KUN_WORLD_SMTP_FROM": "kun@secret.example.com",
+                        "KUN_WORLD_EMAIL_ALLOWED_DOMAINS": "example.com",
                     }
                 },
             }
@@ -288,7 +291,10 @@ def test_handler_health_flags_half_enabled_real_external_env(
     assert email.configured is False
     assert any("真实外发半启用" in issue for issue in email.issues)
     assert any("KUN_WORLD_EMAIL_SEND_ENABLED" in issue for issue in email.issues)
-    assert email.missing_env_vars == ["KUN_WORLD_EMAIL_SEND_ENABLED"]
+    assert email.missing_env_vars == [
+        "KUN_WORLD_EMAIL_SEND_ENABLED",
+        "KUN_WORLD_EMAIL_ALLOWED_DOMAINS",
+    ]
 
 
 def test_handler_health_flags_high_failure_rate(tmp_path: Path) -> None:

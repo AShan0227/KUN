@@ -76,6 +76,7 @@ def test_delivery_status_derives_world_gateway_capabilities_from_registry(tmp_pa
                 smtp_username=None,
                 smtp_password=None,
                 smtp_from="kun@example.com",
+                allowed_recipient_domains={"example.com"},
                 sender=sender,
             )
         ],

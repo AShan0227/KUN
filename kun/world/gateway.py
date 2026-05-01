@@ -460,7 +460,10 @@ class EmailSendHandler(WorldActionHandler):
     mode = "execute"
     external_dispatched = True
     artifact_kind = "email_send_audit"
-    safety_note = "真实发送邮件。默认不启用；必须配置 KUN_WORLD_EMAIL_SEND_ENABLED=true 和 SMTP。"
+    safety_note = (
+        "真实发送邮件。默认不启用；必须配置 KUN_WORLD_EMAIL_SEND_ENABLED=true、SMTP "
+        "和 KUN_WORLD_EMAIL_ALLOWED_DOMAINS。"
+    )
     user_label = "真实发送邮件"
     approval_effect = "批准后会通过已配置 SMTP 账号真实发出邮件。"
     cannot_do: ClassVar[list[str]] = ["不能自动撤回已成功送达的邮件"]
@@ -468,6 +471,7 @@ class EmailSendHandler(WorldActionHandler):
         "human_approval",
         "smtp_credentials",
         "email_recipient_review",
+        "email_recipient_domain_allowlist",
     ]
     requires_external_dispatch_confirmation = True
     retry_policy = "不自动重试；SMTP 失败后人工确认是否重发，避免重复邮件。"
@@ -484,6 +488,7 @@ class EmailSendHandler(WorldActionHandler):
         smtp_password: str | None,
         smtp_from: str,
         use_tls: bool = True,
+        allowed_recipient_domains: set[str] | None = None,
         sender: Callable[[EmailMessage], Awaitable[dict[str, Any]] | dict[str, Any]] | None = None,
     ) -> None:
         self.audit_root = Path(output_root).expanduser().resolve() / "email_sent"
@@ -494,6 +499,9 @@ class EmailSendHandler(WorldActionHandler):
         self.smtp_password = smtp_password
         self.smtp_from = smtp_from
         self.use_tls = use_tls
+        self.allowed_recipient_domains = {
+            item.lower().lstrip("@") for item in (allowed_recipient_domains or set()) if item
+        }
         self._sender = sender
 
     @classmethod
@@ -506,6 +514,7 @@ class EmailSendHandler(WorldActionHandler):
             smtp_password=_world_env("KUN_WORLD_SMTP_PASSWORD") or None,
             smtp_from=_world_env("KUN_WORLD_SMTP_FROM") or "",
             use_tls=_env_bool("KUN_WORLD_SMTP_TLS", default=True),
+            allowed_recipient_domains=_csv_set(_world_env("KUN_WORLD_EMAIL_ALLOWED_DOMAINS")),
         )
 
     async def preview(self, action: WorldAction) -> WorldHandlerResult:
@@ -524,6 +533,7 @@ class EmailSendHandler(WorldActionHandler):
                 "smtp_port": config["smtp_port"],
                 "smtp_tls": config["use_tls"],
                 "smtp_username_set": bool(config["smtp_username"]),
+                "allowed_recipient_domains": sorted(config["allowed_recipient_domains"]),
                 "tenant_scoped_config": config["tenant_scoped_config"],
                 "config_source": config["config_source"],
                 "compensation": "cannot_recall_automatically; send follow-up correction if needed",
@@ -545,6 +555,7 @@ class EmailSendHandler(WorldActionHandler):
             "smtp_port": config["smtp_port"],
             "smtp_tls": config["use_tls"],
             "smtp_username_set": bool(config["smtp_username"]),
+            "allowed_recipient_domains": sorted(config["allowed_recipient_domains"]),
             "tenant_scoped_config": config["tenant_scoped_config"],
             "config_source": config["config_source"],
             "compensation": "cannot_recall_automatically; send follow-up correction if needed",
@@ -597,6 +608,7 @@ class EmailSendHandler(WorldActionHandler):
             password = self.smtp_password
 
         has_scoped = has_any_tenant_env_prefix(action.tenant_id, "KUN_WORLD_SMTP_")
+        scoped_email_config = has_any_tenant_env_prefix(action.tenant_id, "KUN_WORLD_EMAIL_")
         return {
             "smtp_host": host,
             "smtp_port": env_int_for_tenant(
@@ -612,8 +624,13 @@ class EmailSendHandler(WorldActionHandler):
                 "KUN_WORLD_SMTP_TLS",
                 default=self.use_tls,
             ),
-            "tenant_scoped_config": has_scoped,
-            "config_source": "tenant_override" if has_scoped else "global",
+            "allowed_recipient_domains": csv_set_for_tenant(
+                action.tenant_id,
+                "KUN_WORLD_EMAIL_ALLOWED_DOMAINS",
+                default=self.allowed_recipient_domains,
+            ),
+            "tenant_scoped_config": has_scoped or scoped_email_config,
+            "config_source": "tenant_override" if has_scoped or scoped_email_config else "global",
         }
 
     def _message(
@@ -625,12 +642,21 @@ class EmailSendHandler(WorldActionHandler):
         to_values = _string_list(action.payload.get("to") or action.target_ref)
         if not to_values:
             raise ValueError("email.send requires payload.to or target_ref")
+        cc_values = _string_list(action.payload.get("cc"))
+        bcc_values = _string_list(action.payload.get("bcc"))
+        allowed_domains = csv_set_for_tenant(
+            action.tenant_id,
+            "KUN_WORLD_EMAIL_ALLOWED_DOMAINS",
+            default=self.allowed_recipient_domains,
+        )
+        _assert_email_recipients_allowed(
+            [*to_values, *cc_values, *bcc_values],
+            allowed_domains=allowed_domains,
+        )
         subject = str(action.payload.get("subject") or "").strip()
         body = str(action.payload.get("body") or "").strip()
         if not subject or not body:
             raise ValueError("email.send requires subject and body")
-        cc_values = _string_list(action.payload.get("cc"))
-        bcc_values = _string_list(action.payload.get("bcc"))
         message = EmailMessage()
         message["From"] = smtp_from
         message["To"] = ", ".join(to_values)
@@ -1349,6 +1375,27 @@ def _redact_request(request: dict[str, Any]) -> dict[str, Any]:
         if key.lower() in {"authorization", "proxy-authorization", "x-api-key"}:
             headers[key] = "[redacted]"
     return {**request, "headers": headers}
+
+
+def _assert_email_recipients_allowed(
+    recipients: list[str],
+    *,
+    allowed_domains: set[str],
+) -> None:
+    if not allowed_domains:
+        raise ValueError(
+            "email.send requires KUN_WORLD_EMAIL_ALLOWED_DOMAINS before real email can be sent"
+        )
+    blocked: list[str] = []
+    for raw in recipients:
+        email = raw.strip().lower()
+        domain = email.rsplit("@", 1)[-1] if "@" in email else ""
+        if not domain or domain not in allowed_domains:
+            blocked.append(raw)
+    if blocked:
+        raise ValueError(
+            "email.send recipient domain is not allowlisted: " + ", ".join(blocked[:5])
+        )
 
 
 def _assert_allowed_https_host(

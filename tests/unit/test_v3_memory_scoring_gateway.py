@@ -486,6 +486,7 @@ async def test_world_gateway_email_send_handler_can_use_injected_sender(tmp_path
                 smtp_username=None,
                 smtp_password=None,
                 smtp_from="kun@example.com",
+                allowed_recipient_domains={"example.com"},
                 sender=sender,
             )
         ],
@@ -540,6 +541,7 @@ async def test_world_gateway_email_send_uses_tenant_scoped_config(
                 smtp_username=None,
                 smtp_password=None,
                 smtp_from="global@example.com",
+                allowed_recipient_domains={"example.com"},
                 sender=sender,
             )
         ],
@@ -570,6 +572,51 @@ async def test_world_gateway_email_send_uses_tenant_scoped_config(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_world_gateway_blocks_real_email_to_unapproved_domain(tmp_path) -> None:
+    sent: list[EmailMessage] = []
+
+    async def sender(message: EmailMessage) -> dict[str, Any]:
+        sent.append(message)
+        return {"provider_message_id": "smtp-1"}
+
+    gateway = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[
+            EmailSendHandler(
+                output_root=tmp_path,
+                smtp_host="smtp.example.com",
+                smtp_port=587,
+                smtp_username=None,
+                smtp_password=None,
+                smtp_from="kun@example.com",
+                allowed_recipient_domains={"example.com"},
+                sender=sender,
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="recipient domain is not allowlisted"):
+        await gateway.execute_approved(
+            WorldAction(
+                action_id="act-email-domain-blocked",
+                task_ref="task-1",
+                action_type="email.send",
+                target_ref="user@unknown.test",
+                risk_level="high",
+                payload={
+                    "subject": "Hi",
+                    "body": "Real send",
+                    "to": "user@unknown.test",
+                    "external_dispatch_confirmed": True,
+                },
+            )
+        )
+
+    assert sent == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_world_gateway_blocks_real_email_without_external_confirmation(tmp_path) -> None:
     sent: list[EmailMessage] = []
 
@@ -587,6 +634,7 @@ async def test_world_gateway_blocks_real_email_without_external_confirmation(tmp
                 smtp_username=None,
                 smtp_password=None,
                 smtp_from="kun@example.com",
+                allowed_recipient_domains={"example.com"},
                 sender=sender,
             )
         ],

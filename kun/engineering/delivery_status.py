@@ -457,6 +457,7 @@ def _world_gateway_delivery_status(
         "执行中 LLM 可通过 world-request 内置 skill 生成待审批动作并暂停任务，但真实外发仍必须走 NUO/WorldGateway 审批链",
         "真实外发和高风险动作读取 handler health/control 失败时默认 fail-closed，避免绕过傩控制",
         "真实外发和高风险动作必须带显式 idempotency_key，重复幂等键会被代码和 DB partial unique index 双层拦截",
+        "真实 email.send 需要 KUN_WORLD_EMAIL_ALLOWED_DOMAINS 收件人域名白名单，避免 SMTP 配好后误发陌生域名",
     ]
     done.extend(_handler_done_line(item) for item in descriptors)
 
