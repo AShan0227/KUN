@@ -237,6 +237,7 @@ def _selected_step_names(enabled: set[str] | None) -> list[str]:
         "health_report": 0,
         "world_handler_auto_quarantine": 1,
         "compiler_intake_review": 2,
+        "external_skill_scout_plan": 2,
         "qi_idle_replay": 2,
         "external_skill_candidate_review": 2,
         "knowledge_precipitation": 2,
@@ -994,6 +995,57 @@ class ExternalSkillCandidateReviewStep(IdleBatchStep):
         }
 
 
+class ExternalSkillScoutPlanStep(IdleBatchStep):
+    """Build review-only external-skill scout plans from real task needs."""
+
+    step_id = "external_skill_scout_plan"
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        from kun.qi.external_skill_review import (
+            build_external_skill_scout_plan,
+            enqueue_external_skill_scout_plans,
+        )
+
+        task_needs = await _external_skill_task_needs(tenant_id)
+        if not task_needs:
+            return {
+                "skipped": True,
+                "reason": "no task needs available for external skill scout planning",
+                "task_needs": 0,
+                "plans": 0,
+                "persisted_scout_signals": 0,
+                "production_action": False,
+                "auto_fetch_allowed": False,
+                "auto_install_allowed": False,
+            }
+
+        plans = [build_external_skill_scout_plan(task_need) for task_need in task_needs[:10]]
+        persisted = await enqueue_external_skill_scout_plans(
+            tenant_id=tenant_id,
+            plans=plans,
+        )
+        return {
+            "skipped": False,
+            "task_needs": len(task_needs),
+            "plans": len(plans),
+            "persisted_scout_signals": persisted,
+            "production_action": False,
+            "auto_fetch_allowed": False,
+            "auto_install_allowed": False,
+            "top_plans": [
+                plan.model_dump(mode="json")
+                for plan in sorted(
+                    plans,
+                    key=lambda item: (
+                        item.task_demand == "unknown",
+                        item.task_demand,
+                        item.task_type,
+                    ),
+                )[:5]
+            ],
+        }
+
+
 class RouteRuleMiningStep(IdleBatchStep):
     """Cluster + association-rule mining over routing logs to surface new route patterns."""
 
@@ -1211,6 +1263,7 @@ def register_default_steps() -> None:
         CompilerIntakeReviewStep(),
         CompilerSyncSourcesStep(),
         ExternalEmergentScanStep(),
+        ExternalSkillScoutPlanStep(),
         ExternalSkillCandidateReviewStep(),
         RouteRuleMiningStep(),
         TaskBoundaryEvalStep(),

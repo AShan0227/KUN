@@ -414,6 +414,7 @@ def get_v3_delivery_status(
                 "idle-batch 已注册 qi_strategy_pack_rollout_plan step，会定期为可审核草稿生成安全推广计划",
                 "idle-batch 已注册 external_emergent_scan step，可消费显式数据源或 KUN_EXTERNAL_SCAN_SOURCE_FILES 配置文件，把外部/内部策略线索写入 EmergentSolution 候选库；默认不联网、不爬网、不伪装全网扫描",
                 "external_emergent_scan 可通过 KUN_EXTERNAL_SCAN_STRONG_REVIEW_ENABLED=1 显式接入强模型 judge，先复审外部线索再写入候选库",
+                "external_skill_scout_plan 已能根据真实 Qi 问题信号/历史任务生成 review-only 外部能力 scout 计划，明确该找什么、去哪类来源找、需要哪些安全验证；不会自动抓取、安装或注册生产 skill",
                 "external_skill_candidate_review 已能消费离线 GitHub repo / skill metadata，也能通过 KUN_EXTERNAL_SKILL_GITHUB_REPOS 显式 opt-in 抓取 GitHub repo 元数据，做来源、许可、执行脚本、外部网络、密钥、文件写入和 sandbox suitability 的保守鉴别，并把 review-only 候选写入 Qi 问题队列；idle-batch 还会用当前 Qi 问题信号和历史任务生成 task need，把外部候选和真实需求做 task-fit review package 匹配",
             ],
             evidence_refs=[
@@ -433,6 +434,7 @@ def get_v3_delivery_status(
                 "kun/engineering/credit_assignment.py",
                 "kun/engineering/external_scan.py",
                 "kun/engineering/idle_batch.py",
+                "kun/qi/external_skill_review.py",
                 "kun/api/nuo/health_panel.py",
                 "kun/cli.py",
                 "kun/watchtower/decision_plane.py",

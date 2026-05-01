@@ -18,6 +18,7 @@ from kun.engineering.idle_batch import (
     ContextGovernanceRuleDistillStep,
     ExternalEmergentScanStep,
     ExternalSkillCandidateReviewStep,
+    ExternalSkillScoutPlanStep,
     HealthReportStep,
     IdleBatchDbDataSource,
     IdleBatchStep,
@@ -171,6 +172,7 @@ def test_default_steps_registered():
     assert "context_governance_rule_distill" in steps
     assert "compiler_sync_sources" in steps
     assert "compiler_intake_review" in steps
+    assert "external_skill_scout_plan" in steps
     assert "external_emergent_scan" in steps
     assert "external_skill_candidate_review" in steps
 
@@ -855,6 +857,52 @@ async def test_external_skill_candidate_review_step_is_opt_in() -> None:
     assert summary["candidates"] == 0
     assert summary["production_action"] is False
     assert summary["auto_install_allowed"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_external_skill_scout_plan_step_queues_review_only_search_plans(
+    monkeypatch,
+) -> None:
+    from kun.qi.problem_queue import get_qi_problem_queue, reset_qi_problem_queue
+
+    class _ExternalSkillScoutNeedDataSource(_FakeIdleBatchDataSource):
+        def qi_problem_signals(self, tenant_id: str) -> list[dict[str, Any]]:
+            return [
+                {
+                    "signal_id": "qps_code_review",
+                    "tenant_id": tenant_id,
+                    "category": "runtime",
+                    "severity": "info",
+                    "summary": "Need stronger TypeScript code review guidance.",
+                    "source": "nuo.system_health",
+                    "task_type": "coding.review",
+                    "evidence": {"language": "typescript", "need": "code review"},
+                }
+            ]
+
+        def completed_task_history(self, tenant_id: str) -> list[dict[str, Any]]:
+            return []
+
+    monkeypatch.setenv("KUN_QI_PROBLEM_QUEUE_DB_ENABLED", "0")
+    reset_qi_problem_queue()
+    set_idle_batch_data_source(_ExternalSkillScoutNeedDataSource())
+
+    summary = await ExternalSkillScoutPlanStep().run("t-1")
+
+    assert summary["skipped"] is False
+    assert summary["task_needs"] == 1
+    assert summary["plans"] == 1
+    assert summary["persisted_scout_signals"] == 1
+    assert summary["production_action"] is False
+    assert summary["auto_fetch_allowed"] is False
+    assert summary["auto_install_allowed"] is False
+    assert "mattpocock/skills" in summary["top_plans"][0]["recommended_repo_refs"]
+    queued = get_qi_problem_queue().pick("t-1")
+    assert queued is not None
+    assert queued.source == "external_skill.scout_plan"
+    assert queued.evidence["queue_intent"] == "external_skill_scout_review_only"
+    assert queued.evidence["auto_fetch_allowed"] is False
 
 
 @pytest.mark.unit

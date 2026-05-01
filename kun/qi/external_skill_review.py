@@ -46,6 +46,125 @@ class ExternalSkillReviewPackage(BaseModel):
     promotion_allowed: Literal[False] = False
 
 
+class ExternalSkillScoutPlan(BaseModel):
+    """Review-only plan for looking for external skills/templates.
+
+    KUN should not blindly install random GitHub skills.  This plan is the
+    missing middle layer: given a real task need, it records what kind of
+    external capability would be useful, where a human/Qi scout may look, and
+    what safety checks are required before any candidate can become usable.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_id: str
+    task_demand: ExternalSkillDemandKind
+    task_type: str = "general"
+    need_summary: str = ""
+    scout_queries: list[str] = Field(default_factory=list)
+    recommended_repo_refs: list[str] = Field(default_factory=list)
+    source_types: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+    required_review_steps: list[str] = Field(default_factory=list)
+    review_only: Literal[True] = True
+    auto_fetch_allowed: Literal[False] = False
+    auto_install_allowed: Literal[False] = False
+    production_action: Literal[False] = False
+    promotion_allowed: Literal[False] = False
+
+
+def build_external_skill_scout_plan(
+    task_need: str | dict[str, Any],
+) -> ExternalSkillScoutPlan:
+    """Create a safe external-skill scout plan from a real KUN task need.
+
+    This deliberately stops at a plan.  A later operator/Qi step may decide to
+    put an approved repo into ``KUN_EXTERNAL_SKILL_GITHUB_REPOS`` or provide
+    offline metadata, but this function itself never fetches or installs.
+    """
+
+    raw = {"description": task_need} if isinstance(task_need, str) else dict(task_need)
+    task_demand = _task_need_demand(raw)
+    task_type = str(raw.get("task_type") or raw.get("category") or "general").strip() or "general"
+    summary = str(
+        raw.get("summary")
+        or raw.get("goal")
+        or raw.get("description")
+        or raw.get("name")
+        or task_type
+    ).strip()[:500]
+    recommended = _recommended_repos_for_demand(task_demand)
+    queries = _scout_queries_for_demand(task_demand, task_type=task_type, summary=summary)
+    source_types = ["github_repo", "skill_marketplace_metadata", "engineering_template"]
+    if task_demand in {"research", "ops"}:
+        source_types.append("vendor_docs")
+    reasons = [
+        "task_need_requires_external_capability_search",
+        f"detected_task_demand:{task_demand}",
+    ]
+    if recommended:
+        reasons.append("known_review_only_repo_suggestions_available")
+    return ExternalSkillScoutPlan(
+        plan_id=_stable_scout_plan_id(
+            task_demand=task_demand, task_type=task_type, summary=summary
+        ),
+        task_demand=task_demand,
+        task_type=task_type,
+        need_summary=summary,
+        scout_queries=queries,
+        recommended_repo_refs=recommended,
+        source_types=source_types,
+        reasons=reasons,
+        required_review_steps=[
+            "fetch_metadata_only",
+            "static_safety_review",
+            "license_check",
+            "sandbox_dry_run_if_scripts_exist",
+            "human_review_before_install",
+            "no_production_registration_without_canary",
+        ],
+    )
+
+
+def external_skill_scout_plan_to_problem_signal(
+    *,
+    tenant_id: str,
+    plan: ExternalSkillScoutPlan,
+) -> QiProblemSignal:
+    """Queue the scout plan for Qi/NUO review without performing the search."""
+
+    return QiProblemSignal.build(
+        tenant_id=tenant_id,
+        category="context",
+        severity="info" if plan.task_demand != "unknown" else "warning",
+        summary=f"Plan external skill scout: {plan.task_type} ({plan.task_demand})",
+        source="external_skill.scout_plan",
+        task_type=f"external_skill_scout:{plan.task_demand}",
+        evidence={
+            **plan.model_dump(mode="json"),
+            "queue_intent": "external_skill_scout_review_only",
+        },
+    )
+
+
+async def enqueue_external_skill_scout_plans(
+    *,
+    tenant_id: str,
+    plans: list[ExternalSkillScoutPlan],
+) -> int:
+    """Persist scout plans as review-only Qi signals."""
+
+    return await persist_problem_signals(
+        [
+            external_skill_scout_plan_to_problem_signal(
+                tenant_id=tenant_id,
+                plan=plan,
+            )
+            for plan in plans
+        ]
+    )
+
+
 def review_external_skill_candidate(
     *,
     task_need: str | dict[str, Any],
@@ -247,6 +366,70 @@ def _task_need_demand(task_need: str | dict[str, Any]) -> ExternalSkillDemandKin
     return pseudo.demand_match.primary
 
 
+def _stable_scout_plan_id(
+    *,
+    task_demand: ExternalSkillDemandKind,
+    task_type: str,
+    summary: str,
+) -> str:
+    import hashlib
+
+    digest = hashlib.sha256(f"{task_demand}|{task_type}|{summary[:200]}".encode()).hexdigest()[:16]
+    return f"esk_plan_{digest}"
+
+
+def _recommended_repos_for_demand(task_demand: ExternalSkillDemandKind) -> list[str]:
+    """Small curated hints, not an auto-fetch allowlist."""
+
+    if task_demand in {"coding", "review"}:
+        return ["mattpocock/skills"]
+    return []
+
+
+def _scout_queries_for_demand(
+    task_demand: ExternalSkillDemandKind,
+    *,
+    task_type: str,
+    summary: str,
+) -> list[str]:
+    base = task_type.replace(".", " ").replace("_", " ").strip() or task_demand
+    summary_hint = " ".join(summary.split()[:12])
+    if task_demand == "coding":
+        return [
+            f"github SKILL.md engineering {base}",
+            f"code review skill {summary_hint}",
+            f"developer workflow template {base}",
+        ]
+    if task_demand == "review":
+        return [
+            f"github SKILL.md review {base}",
+            f"engineering review checklist {summary_hint}",
+            f"pull request review skill {base}",
+        ]
+    if task_demand == "writing":
+        return [
+            f"writing skill template {base}",
+            f"editorial checklist {summary_hint}",
+            f"copywriting workflow skill {base}",
+        ]
+    if task_demand == "research":
+        return [
+            f"research synthesis skill {base}",
+            f"literature review workflow {summary_hint}",
+            f"source finding template {base}",
+        ]
+    if task_demand == "ops":
+        return [
+            f"incident runbook skill {base}",
+            f"deployment ops checklist {summary_hint}",
+            f"monitoring troubleshooting workflow {base}",
+        ]
+    return [
+        f"agent skill template {base}",
+        f"workflow skill {summary_hint}",
+    ]
+
+
 def _task_fit_score(
     task_demand: ExternalSkillDemandKind, candidate: ExternalSkillCandidate
 ) -> float:
@@ -428,9 +611,13 @@ def _dedupe(values: list[str]) -> list[str]:
 __all__ = [
     "ExternalSkillReviewPackage",
     "ExternalSkillReviewStatus",
+    "ExternalSkillScoutPlan",
+    "build_external_skill_scout_plan",
     "enqueue_external_skill_review_packages",
+    "enqueue_external_skill_scout_plans",
     "external_skill_review_package_to_problem_signal",
     "external_skill_review_packages_to_problem_signals",
+    "external_skill_scout_plan_to_problem_signal",
     "review_external_skill_candidate",
     "review_external_skill_candidates",
 ]

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import pytest
 from kun.qi.external_skill_review import (
+    build_external_skill_scout_plan,
     enqueue_external_skill_review_packages,
+    enqueue_external_skill_scout_plans,
     external_skill_review_package_to_problem_signal,
+    external_skill_scout_plan_to_problem_signal,
     review_external_skill_candidate,
     review_external_skill_candidates,
 )
@@ -165,6 +168,62 @@ def test_batch_review_sorts_actionable_review_candidates_first() -> None:
     assert packages[0].candidate_name == "React review"
     assert packages[0].worth_review is True
     assert packages[-1].status == "blocked"
+
+
+@pytest.mark.unit
+def test_external_skill_scout_plan_is_review_only_and_demand_driven() -> None:
+    plan = build_external_skill_scout_plan(
+        {
+            "task_type": "coding.review",
+            "summary": "Review TypeScript pull requests and improve engineering behavior.",
+        }
+    )
+
+    assert plan.task_demand in {"coding", "review"}
+    assert "mattpocock/skills" in plan.recommended_repo_refs
+    assert plan.scout_queries
+    assert "fetch_metadata_only" in plan.required_review_steps
+    assert plan.review_only is True
+    assert plan.auto_fetch_allowed is False
+    assert plan.auto_install_allowed is False
+    assert plan.production_action is False
+
+    signal = external_skill_scout_plan_to_problem_signal(
+        tenant_id="tenant-a",
+        plan=plan,
+    )
+
+    assert signal.source == "external_skill.scout_plan"
+    assert signal.category == "context"
+    assert signal.evidence["queue_intent"] == "external_skill_scout_review_only"
+    assert signal.evidence["auto_fetch_allowed"] is False
+    assert signal.evidence["auto_install_allowed"] is False
+
+
+@pytest.mark.unit
+async def test_enqueue_external_skill_scout_plans_persists_problem_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = build_external_skill_scout_plan("Find a safe code review skill.")
+    persisted: list[QiProblemSignal] = []
+
+    async def fake_persist(signals: list[QiProblemSignal]) -> int:
+        persisted.extend(signals)
+        return len(signals)
+
+    monkeypatch.setattr(
+        "kun.qi.external_skill_review.persist_problem_signals",
+        fake_persist,
+    )
+
+    count = await enqueue_external_skill_scout_plans(
+        tenant_id="tenant-a",
+        plans=[plan],
+    )
+
+    assert count == 1
+    assert persisted[0].source == "external_skill.scout_plan"
+    assert persisted[0].evidence["production_action"] is False
 
 
 @pytest.mark.unit
