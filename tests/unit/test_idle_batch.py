@@ -4,6 +4,8 @@ import shlex
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -14,6 +16,7 @@ from kun.engineering.idle_batch import (
     ContextGovernanceRuleDistillStep,
     ExternalEmergentScanStep,
     HealthReportStep,
+    IdleBatchDbDataSource,
     IdleBatchStep,
     IncidentLessonDistillStep,
     KnowledgeConflictStep,
@@ -23,6 +26,7 @@ from kun.engineering.idle_batch import (
     QiStrategyPackRolloutPlanStep,
     RouteRuleMiningStep,
     TaskReplayStep,
+    _task_history_from_db_rows,
     list_steps,
     register_step,
     reset_idle_batch_data_source,
@@ -421,6 +425,88 @@ async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch)
         asset.l1_metadata["decision_ticket"]["status"] == "needs_review" for asset in draft_assets
     )
     assert all("review_only" in asset.tags for asset in draft_assets)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qi_idle_replay_marks_source_problem_signal_consumed(monkeypatch) -> None:
+    from kun.qi.problem_queue import reset_qi_problem_queue
+
+    monkeypatch.setenv("KUN_QI_PROBLEM_QUEUE_DB_ENABLED", "0")
+    reset_qi_problem_queue()
+    set_idle_batch_data_source(_FakeIdleBatchDataSource())
+    calls: list[dict[str, Any]] = []
+
+    async def fake_mark_consumed(
+        *,
+        tenant_id: str,
+        signal_ids: list[str],
+        reason: str = "qi_idle_replay_consumed",
+    ) -> int:
+        calls.append({"tenant_id": tenant_id, "signal_ids": signal_ids, "reason": reason})
+        return len(signal_ids)
+
+    monkeypatch.setattr(
+        "kun.qi.problem_queue.mark_problem_signals_consumed",
+        fake_mark_consumed,
+    )
+
+    summary = await QiIdleReplayStep().run("t-1")
+
+    assert summary["consumed_problem_signals"] == 1
+    assert calls == [
+        {
+            "tenant_id": "t-1",
+            "signal_ids": ["qps_runtime_1"],
+            "reason": "qi_idle_replay_consumed",
+        }
+    ]
+
+
+@pytest.mark.unit
+def test_idle_batch_db_history_row_compacts_completed_task() -> None:
+    completed_at = datetime(2026, 5, 1, tzinfo=UTC)
+    result = SimpleNamespace(
+        task_id="task-1",
+        status="done",
+        answer="完成了一个广告任务",
+        cost_usd_equivalent=0.42,
+        tokens_in=123,
+        tokens_out=45,
+        surprise_score=0.2,
+        result_json={"validation_outcome": "passed", "execution_mode": "SMART"},
+        updated_at=completed_at,
+        created_at=completed_at,
+    )
+    task = SimpleNamespace(
+        task_id="task-1",
+        task_type="marketing.ad",
+        risk_level="medium",
+        success_criteria_short="写一条转化广告",
+    )
+    runtime = SimpleNamespace(
+        status="done",
+        current_step=3,
+        blob={"strategy_pack": "marketing_ad_v1"},
+    )
+
+    history = _task_history_from_db_rows(result, task, runtime)
+
+    assert history["history_id"] == "task-1"
+    assert history["task_type"] == "marketing.ad"
+    assert history["summary"] == "写一条转化广告"
+    assert history["outcome"] == "completed"
+    assert history["risk"] == "medium"
+    assert history["cost_usd"] == 0.42
+    assert history["evidence"]["strategy_pack"] == "marketing_ad_v1"
+
+
+@pytest.mark.unit
+def test_idle_batch_db_data_source_keeps_positive_limits() -> None:
+    source = IdleBatchDbDataSource(history_limit=0, signal_limit=-1)
+
+    assert source.history_limit == 1
+    assert source.signal_limit == 1
 
 
 @pytest.mark.unit

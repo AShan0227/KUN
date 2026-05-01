@@ -27,6 +27,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from sqlalchemy import select
+
 from kun.core.anchor_expand import AnchorExpandIterator
 from kun.core.logging import get_logger
 from kun.core.tenancy import TenantContext, tenant_scope
@@ -81,6 +83,72 @@ def set_idle_batch_data_source(data_source: Any) -> None:
 def reset_idle_batch_data_source() -> None:
     global _data_source
     _data_source = None
+
+
+class IdleBatchDbDataSource:
+    """Small production data source for idle-batch learning inputs.
+
+    This is intentionally read-only.  It turns durable task/result/runtime rows
+    into the same compact dictionaries tests can inject, so Qi can learn from
+    real completed and failed work without bespoke plumbing.
+    """
+
+    def __init__(self, *, history_limit: int = 30, signal_limit: int = 30) -> None:
+        self.history_limit = max(1, history_limit)
+        self.signal_limit = max(1, signal_limit)
+
+    async def qi_problem_signals(self, tenant_id: str) -> list[dict[str, Any]]:
+        from kun.qi.problem_queue import get_configured_qi_problem_queue
+
+        try:
+            queue = get_configured_qi_problem_queue()
+            signals = await _queue_list(queue, tenant_id=tenant_id, limit=self.signal_limit)
+        except Exception:
+            return []
+        out: list[dict[str, Any]] = []
+        for signal in signals:
+            model_dump = getattr(signal, "model_dump", None)
+            if callable(model_dump):
+                out.append(model_dump(mode="json"))
+            elif isinstance(signal, dict):
+                out.append(signal)
+        return out
+
+    async def completed_task_history(self, tenant_id: str) -> list[dict[str, Any]]:
+        from kun.core.db import session_scope
+        from kun.core.orm import RuntimeStateRow, TaskResultRow, TaskRow
+
+        try:
+            async with session_scope(tenant_id=tenant_id) as session:
+                rows = (
+                    await session.execute(
+                        select(TaskResultRow, TaskRow, RuntimeStateRow)
+                        .join(
+                            TaskRow,
+                            (TaskRow.task_id == TaskResultRow.task_id)
+                            & (TaskRow.tenant_id == TaskResultRow.tenant_id),
+                        )
+                        .outerjoin(
+                            RuntimeStateRow,
+                            (RuntimeStateRow.task_ref == TaskResultRow.task_id)
+                            & (RuntimeStateRow.tenant_id == TaskResultRow.tenant_id),
+                        )
+                        .where(
+                            TaskResultRow.tenant_id == tenant_id,
+                            TaskResultRow.status.in_(("done", "failed", "cancelled")),
+                        )
+                        .order_by(TaskResultRow.updated_at.desc())
+                        .limit(self.history_limit)
+                    )
+                ).all()
+        except Exception:
+            log.debug("idle_batch.db_completed_task_history_failed", exc_info=True)
+            return []
+
+        histories: list[dict[str, Any]] = []
+        for result, task, runtime in rows:
+            histories.append(_task_history_from_db_rows(result, task, runtime))
+        return histories
 
 
 # ============= Runner ============
@@ -443,6 +511,7 @@ class QiIdleReplayStep(IdleBatchStep):
         from kun.qi.problem_queue import (
             QiProblemSignal,
             get_configured_qi_problem_queue,
+            mark_problem_signals_consumed,
             persist_problem_signals,
         )
 
@@ -522,6 +591,15 @@ class QiIdleReplayStep(IdleBatchStep):
             ],
             lab_replay_records=lab_replay_pool.records,
         )
+        source_signal_ids = {signal.signal_id for signal in signals}
+        consumed_problem_signals = await mark_problem_signals_consumed(
+            tenant_id=tenant_id,
+            signal_ids=[
+                candidate.source_signal_id
+                for candidate in candidates
+                if candidate.source_signal_id in source_signal_ids
+            ],
+        )
         return {
             "signals": len(signals),
             "completed_task_histories": len(histories),
@@ -546,6 +624,7 @@ class QiIdleReplayStep(IdleBatchStep):
             else "disabled",
             "lab_replay_pool": lab_replay_pool.model_dump(mode="json"),
             "persisted_review_signals": persisted,
+            "consumed_problem_signals": consumed_problem_signals,
             "persisted_strategy_pack_draft_assets": len(draft_asset_ids),
             "strategy_pack_draft_asset_ids": draft_asset_ids[:10],
             "engine": "heuristic_local",
@@ -1005,15 +1084,85 @@ async def _queue_list(queue: Any, *, tenant_id: str, limit: int) -> list[Any]:
 
 
 async def _call_data_source(method_name: str, tenant_id: str) -> Any:
-    if _data_source is None:
+    data_source = _data_source
+    if data_source is None and method_name in {
+        "completed_task_history",
+        "qi_problem_signals",
+    }:
+        data_source = IdleBatchDbDataSource()
+    if data_source is None:
         return None
-    method = getattr(_data_source, method_name, None)
+    method = getattr(data_source, method_name, None)
     if method is None:
         return None
     result = method(tenant_id)
     if asyncio.iscoroutine(result):
         return await result
     return result
+
+
+def _task_history_from_db_rows(result: Any, task: Any, runtime: Any | None) -> dict[str, Any]:
+    result_json = dict(getattr(result, "result_json", None) or {})
+    runtime_blob = dict(getattr(runtime, "blob", None) or {}) if runtime is not None else {}
+    status = str(getattr(result, "status", "") or "done")
+    verification_status = str(
+        result_json.get("validation_outcome")
+        or result_json.get("verification_status")
+        or result_json.get("status")
+        or status
+    )
+    task_type = str(getattr(task, "task_type", "") or result_json.get("task_type") or "general")
+    success_criteria = str(getattr(task, "success_criteria_short", "") or "").strip()
+    answer = str(getattr(result, "answer", "") or "").strip()
+    summary = success_criteria or answer or f"{task_type} task {status}"
+    if len(summary) > 240:
+        summary = f"{summary[:237]}..."
+    updated_at = getattr(result, "updated_at", None) or getattr(result, "created_at", None)
+    return {
+        "history_id": str(getattr(result, "task_id", "") or getattr(task, "task_id", "")),
+        "task_type": task_type,
+        "summary": summary,
+        "outcome": _history_outcome_from_status(status, verification_status),
+        "risk": _normalize_idle_history_risk(getattr(task, "risk_level", None)),
+        "verification_status": verification_status,
+        "cost_usd": _float(getattr(result, "cost_usd_equivalent", None), default=0.0),
+        "completed_at": updated_at.isoformat() if isinstance(updated_at, datetime) else None,
+        "evidence": {
+            "source": "idle_batch.db.completed_task_history",
+            "task_id": str(getattr(task, "task_id", "") or getattr(result, "task_id", "")),
+            "result_status": status,
+            "runtime_status": str(getattr(runtime, "status", "") or ""),
+            "runtime_step": int(getattr(runtime, "current_step", 0) or 0)
+            if runtime is not None
+            else 0,
+            "execution_mode": result_json.get("execution_mode")
+            or runtime_blob.get("execution_mode"),
+            "strategy_pack": result_json.get("strategy_pack") or runtime_blob.get("strategy_pack"),
+            "answer_preview": answer[:400],
+            "surprise_score": _float(getattr(result, "surprise_score", None), default=0.0),
+            "tokens_in": int(getattr(result, "tokens_in", 0) or 0),
+            "tokens_out": int(getattr(result, "tokens_out", 0) or 0),
+        },
+    }
+
+
+def _history_outcome_from_status(status: str, verification_status: str) -> str:
+    normalized = status.lower()
+    verification = verification_status.lower()
+    if normalized == "done" and not any(token in verification for token in ("fail", "error")):
+        return "completed"
+    if normalized == "done":
+        return "completed_with_verification_issue"
+    if normalized:
+        return f"{normalized}_task"
+    return "completed"
+
+
+def _normalize_idle_history_risk(value: Any) -> Literal["low", "medium", "high", "critical"]:
+    normalized = str(value or "low").strip().lower()
+    if normalized in {"low", "medium", "high", "critical"}:
+        return cast(Literal["low", "medium", "high", "critical"], normalized)
+    return "low"
 
 
 async def _external_scan_rows(tenant_id: str) -> list[dict[str, Any]]:

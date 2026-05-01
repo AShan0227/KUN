@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +8,7 @@ from kun.qi.cron_jobs import _pick_explore_prompt
 from kun.qi.problem_queue import (
     QiProblemSignal,
     SqlQiProblemQueue,
+    _mark_problem_signals_consumed_stmt,
     _upsert_problem_signal_stmt,
     get_configured_qi_problem_queue,
     get_qi_problem_queue,
@@ -122,6 +124,22 @@ def test_sql_problem_queue_upsert_dedupes_by_tenant_signal() -> None:
     assert "ON CONFLICT (tenant_id, signal_id) DO UPDATE" in sql
     assert "occurrence_count = (qi_problem_signals.occurrence_count + " in sql
     assert "status = " in sql
+
+
+def test_sql_problem_queue_mark_consumed_is_single_update() -> None:
+    stmt = _mark_problem_signals_consumed_stmt(
+        tenant_id="u-test",
+        signal_ids=["qps_1", "qps_2"],
+        now=datetime(2026, 5, 1, tzinfo=UTC),
+        reason="unit_test",
+    )
+    dialect = postgresql.dialect()  # type: ignore[no-untyped-call]
+    sql = str(stmt.compile(dialect=dialect))
+
+    assert "UPDATE qi_problem_signals" in sql
+    assert "signal_id IN" in sql or "signal_id IN (__[POSTCOMPILE_signal_id_1])" in sql
+    assert "status = " in sql
+    assert "evidence=(qi_problem_signals.evidence || " in sql
 
 
 @pytest.mark.asyncio

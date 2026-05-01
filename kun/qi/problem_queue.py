@@ -9,12 +9,14 @@ from __future__ import annotations
 import hashlib
 import os
 from collections import defaultdict
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import delete, literal, select
+from sqlalchemy import update as sql_update
+from sqlalchemy.dialects.postgresql import JSONB, insert
 
 ProblemCategory = Literal[
     "world_gateway",
@@ -180,6 +182,29 @@ class SqlQiProblemQueue:
                 stmt = stmt.where(QiProblemSignalRow.tenant_id == tenant_id)
             await session.execute(stmt)
 
+    async def mark_consumed(
+        self,
+        tenant_id: str,
+        signal_ids: Sequence[str],
+        *,
+        reason: str = "qi_idle_replay_consumed",
+    ) -> int:
+        if not signal_ids:
+            return 0
+        from kun.core.db import session_scope
+
+        now = datetime.now(UTC)
+        async with session_scope(tenant_id=tenant_id) as session:
+            result = await session.execute(
+                _mark_problem_signals_consumed_stmt(
+                    tenant_id=tenant_id,
+                    signal_ids=signal_ids,
+                    now=now,
+                    reason=reason,
+                )
+            )
+        return int(getattr(result, "rowcount", 0) or 0)
+
 
 _queue: QiProblemQueue | None = None
 _sql_queue: SqlQiProblemQueue | None = None
@@ -271,6 +296,27 @@ async def persist_problem_signals(signals: list[QiProblemSignal]) -> int:
     return get_qi_problem_queue().enqueue_many(signals)
 
 
+async def mark_problem_signals_consumed(
+    *,
+    tenant_id: str,
+    signal_ids: Sequence[str],
+    reason: str = "qi_idle_replay_consumed",
+) -> int:
+    """Mark durable Qi signals as consumed after Qi produced review artifacts."""
+
+    unique_ids = sorted({signal_id for signal_id in signal_ids if signal_id})
+    if not unique_ids or not _durable_problem_queue_enabled():
+        return 0
+    try:
+        return await get_sql_qi_problem_queue().mark_consumed(
+            tenant_id,
+            unique_ids,
+            reason=reason,
+        )
+    except Exception:
+        return 0
+
+
 def prompt_for_problem(signal: QiProblemSignal) -> str:
     """把真实问题压成启可探索的 prompt。"""
     return (
@@ -348,6 +394,39 @@ def _upsert_problem_signal_stmt(signal: QiProblemSignal, now: datetime) -> Any:
     ).returning(QiProblemSignalRow.occurrence_count == 1)
 
 
+def _mark_problem_signals_consumed_stmt(
+    *,
+    tenant_id: str,
+    signal_ids: Sequence[str],
+    now: datetime,
+    reason: str,
+) -> Any:
+    from kun.core.orm import QiProblemSignalRow
+
+    return (
+        sql_update(QiProblemSignalRow)
+        .where(
+            QiProblemSignalRow.tenant_id == tenant_id,
+            QiProblemSignalRow.signal_id.in_(signal_ids),
+            QiProblemSignalRow.status == "open",
+        )
+        .values(
+            status="consumed",
+            evidence=QiProblemSignalRow.evidence.op("||")(
+                literal(
+                    {
+                        "consumed_by": "qi_idle_replay",
+                        "consumed_reason": reason,
+                        "consumed_at": now.isoformat(),
+                    },
+                    type_=JSONB,
+                )
+            ),
+            updated_at=now,
+        )
+    )
+
+
 def _row_to_signal(row: Any) -> QiProblemSignal:
     return QiProblemSignal(
         signal_id=row.signal_id,
@@ -371,6 +450,7 @@ __all__ = [
     "get_configured_qi_problem_queue",
     "get_qi_problem_queue",
     "get_sql_qi_problem_queue",
+    "mark_problem_signals_consumed",
     "persist_problem_signals",
     "prompt_for_problem",
     "reset_qi_problem_queue",

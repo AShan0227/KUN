@@ -959,7 +959,7 @@ V5 必须防止“写了但没用”。
 | ContextPacker | 已接 importance / credit | 还缺 MemoryPolicyTicket |
 | Similar task recall | 已有 | 还要影响更多执行动作 |
 | Context maintenance | 已有 dry-run / mutation | 还要接编译器和更强治理规则 |
-| Qi problem queue | 已有 | 还要接 idle replay / local model |
+| Qi problem queue | 已接 idle replay，能读真实问题信号和任务结果历史 | 还要把通过评审的策略候选接进守望影子路径 |
 | AI Scientist tree search | 有基础 | 还要用于真实策略候选 |
 | WorldGateway | 有 handler / 权限 / 审计 | 还要生产级 handler 和傩体检闭环 |
 | StateLedger | 已有快照和回放 | 还要更完整长期账本和信用归因 |
