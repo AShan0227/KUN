@@ -639,6 +639,15 @@ review
 多次验证后，晋升为正式 skill
 ```
 
+当前实现的诚实状态：
+
+- `kun/skills/code_capability` 已有 reader / writer / executor / debugger / reviewer 基础模块和单测。
+- API runtime 会安装 `CodeCapability` 服务，workspace root 固定为 `KUN_CODE_CAPABILITY_WORKSPACE_ROOT` 或进程 cwd。
+- 已有最小 HTTP 链路：`/api/code-capability/review-diff`、`/review-file`、`/run-python`、`/check`。
+- HTTP 链路目前只开放只读 review/diff 与显式 sandbox run/check；路径必须留在 workspace root 内，路径逃逸会被拒绝。
+- HTTP 链路已接租户 scope 守门：生产或显式传 scopes 时，review 需要 `code:read`，run/check 需要 `code:execute`。
+- 完整自动 coding workflow 仍是 partial：尚未把自动生成补丁、写文件、测试、review、回滚、State Ledger 记录和 skill draft 晋升串成闭环。
+
 ### 11.3 编程能力的安全边界
 
 任何临时代码必须：
@@ -898,6 +907,10 @@ V5 必须防止“写了但没用”。
 
 验收：
 
+- 已完成最小 runtime/API 接入：CodeCapability 不再只是单测模块，可由 API runtime 调用。
+- 已完成只读 review/diff 和显式 sandbox run/check。
+- 完整自动 coding workflow 仍未完成，不能宣称 KUN 已能自动编码、验证并沉淀 skill。
+
 - 一个临时数据处理脚本能生成、测试、运行、记录。
 - 成功后可生成 draft skill。
 - 失败不会污染主工作区。
@@ -923,7 +936,9 @@ V5 必须防止“写了但没用”。
 
 - 傩定期体检 compiler、context、memory、skill、WorldGateway、Qi、并发、工程链路。
 - 傩可以生成安全治理建议。
-- 安全动作可自动执行，高风险动作需确认。
+- 安全动作必须默认 dry-run；显式 apply 才能落地。
+- 高风险动作只能生成建议/票据/问题信号，不允许 idle-batch 静默执行。
+- 体检 findings 必须写入 EventRow、State Ledger 或 Qi problem queue，不能只停留在临时 API 响应。
 
 验收：
 
@@ -931,6 +946,8 @@ V5 必须防止“写了但没用”。
 - 能发现未使用 skill。
 - 能发现半配置 WorldGateway handler。
 - 能发现有事件无消费者的伪闭环。
+- 能看到统一 NUO governance report，覆盖 compiler、context/memory、skill、WorldGateway handler、Qi StrategyPack 草案、多车道调度器和 production/deployment risk。
+- 能看到每条治理建议的 risk_level、default_dry_run、can_apply、requires_human_approval。
 
 ### V5-8：真实 dogfood
 
@@ -955,16 +972,18 @@ V5 必须防止“写了但没用”。
 | --- | --- | --- |
 | InputTranslator / OutputTranslator | 附件已走原始 bytes 编译；skill/task/protocol 已能编译成 LayeredAsset；任务启动会真实写入 task 资产 | 还要接企业资料 connector 和更深 Office/OCR 后端 |
 | Hermes | 已进入多处链路 | 和 Compiler / ProtocolPacket 更紧密 |
-| Watchtower DecisionPlane | 已有策略票据雏形 | 扩成 DecisionTicket v2 |
+| Watchtower DecisionPlane | 已有策略票据、MemoryPolicy、MoE 影子候选和 LLMRouteGovernor 热路径治理；模型调用前会过成本/信任/隐私咨询 | 继续用真实 dogfood 校准规则阈值 |
 | ContextPacker | 已接 importance / credit | 还缺 MemoryPolicyTicket |
 | Similar task recall | 已有 | 还要影响更多执行动作 |
-| Context maintenance | 已有 dry-run / mutation | 还要接编译器和更强治理规则 |
-| Qi problem queue | 已接 idle replay，能读真实问题信号和任务结果历史，评审后可进入守望影子观测 | 还要接人工批准 UI 和真实 canary 实验 |
+| Context maintenance | 已有 dry-run / mutation；NUO report 会把瘦身、低价值、风险、compiler review/recompile 候选合并成治理信号 | 还要接更强语义合并和规则蒸馏 |
+| Qi problem queue | 已接 idle replay，能读真实问题信号和任务结果历史；NUO health findings 会写入 Qi problem queue，Qi StrategyPack 草案状态也会回到 NUO governance report | 还要接人工批准 UI 和真实 canary 实验 |
+| External skill discovery | 已有 `external_skill_candidate_review`：可从离线 GitHub repo / skill metadata 归一化候选，做来源、许可、执行脚本、外部网络、密钥、文件写入、sandbox suitability 的保守鉴别，并把 review-only 候选送入 Qi 队列 | 自动安装、生产 skill 注册、真实 GitHub 抓取器、人工批准 UI 仍未做 |
 | AI Scientist tree search | 有基础 | 还要用于真实策略候选 |
-| WorldGateway | 有 handler / 权限 / 审计；傩已能输出 handler 风险分、风险标签、租户密钥状态、失败率和补偿缺口，并把这些信号反馈给执行拦截/自动隔离 | 还要更多生产级 handler、真实补偿演练和线上密钥轮换 |
+| WorldGateway | 有 handler / 权限 / 审计；傩已能输出 handler 风险分、风险标签、租户密钥状态、失败率和补偿缺口，并把这些信号反馈给执行拦截/自动隔离；高风险治理默认只给 dry-run 建议 | 还要更多生产级 handler、真实补偿演练和线上密钥轮换 |
 | StateLedger | 已有快照和回放 | 还要更完整长期账本和信用归因 |
-| CodeCapability | 有基础方向 | 要成为核心能力闭环 |
-| 并发执行 | 已有 fast / mission / qi / nuo / world / high_risk 多车道调度器，并安装到 API runtime；`/api/tasks/scheduler/*` 可查看车道状态和提交异步任务 | 还要把更多后台 worker 和前端任务看板接入这个统一车道 |
+| CodeCapability | 已可被 API/runtime 调用：支持只读 review/diff 和显式 sandbox run/check；完整自动 coding workflow 仍 partial | 还要接 Orchestrator coding task、受控 writer、回滚、StateLedger、skill draft 晋升和更强 sandbox |
+| NUO governance report | 已统一覆盖 compiler、context/memory、skill、WorldGateway handler、Qi 草案、多车道调度和 production/deployment risk；idle-batch 会写 EventRow、StateLedger 和 Qi problem queue | 还要把 governance_recommendations 做成完整人工批准 UI 和显式 apply 队列 |
+| 并发执行 | 已有 fast / mission / qi / nuo / world / high_risk 多车道调度器，并安装到 API runtime；`/api/tasks/scheduler/*` 可查看车道状态和提交异步任务；NUO report 会检查必需 lane 和活跃任务压力 | 还要把更多后台 worker 和前端任务看板接入这个统一车道 |
 
 ## 18. V5 的核心护城河
 

@@ -9,6 +9,7 @@ chat / WS 入口共享同一份实例.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Protocol, cast
 
 from kun.core.emergent_solution import EmergentSolutionLibrary
@@ -47,6 +48,7 @@ from kun.memory.writeback import MemoryWriteback
 from kun.security.diagnose_runner import DiagnoseRunner
 from kun.security.fix_handlers import register_default_fix_handlers
 from kun.security.incident_response import IncidentResponseEngine
+from kun.skills.code_capability import CodeCapability
 from kun.watchtower.decision_plane import WatchtowerDecisionPlane
 from kun.watchtower.engine import RuleEngine
 from kun.watchtower.scoring import UnifiedScoringSystem
@@ -190,6 +192,22 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     diagnose_runner = DiagnoseRunner()
     register_default_fix_handlers(diagnose_runner)
     app.state.diagnose_runner = diagnose_runner
+
+    # V5 CodeCapability: install a real runtime-local facade so API callers use
+    # the same bounded reader/reviewer/executor chain instead of test-only
+    # constructors. Writes remain deliberately unexposed at the API layer.
+    code_workspace_root = Path(_os.getenv("KUN_CODE_CAPABILITY_WORKSPACE_ROOT", ".")).resolve()
+    app.state.code_capability = CodeCapability(workspace_root=code_workspace_root)
+
+    # V5: LLM route governance is the hot-path firewall for model choice.
+    # The router still owns provider invocation; Watchtower only consults and
+    # blocks/redirects based on privacy, cost and trust policy.
+    from kun.interface.llm.capability_router import get_capability_router
+    from kun.interface.llm.router import set_route_governor
+    from kun.watchtower.llm_route_governance import LLMRouteGovernor
+
+    app.state.llm_route_governor = LLMRouteGovernor(rule_engine, get_capability_router())
+    set_route_governor(app.state.llm_route_governor)
 
     # V2.1 M4: 真 cron scheduler (替换固定 interval idle_batch_worker)
     app.state.cron_scheduler = CronScheduler()
@@ -453,6 +471,13 @@ def get_knowledge_precipitation(app: _AppWithState) -> KnowledgePrecipitation:
 
 def get_diagnose_runner(app: _AppWithState) -> DiagnoseRunner:
     return cast(DiagnoseRunner, app.state.diagnose_runner)
+
+
+def get_code_capability(app: _AppWithState) -> CodeCapability:
+    capability = getattr(app.state, "code_capability", None)
+    if capability is None:
+        raise RuntimeError("API runtime has not been initialized")
+    return cast(CodeCapability, capability)
 
 
 def get_incident_response(app: _AppWithState) -> IncidentResponseEngine:

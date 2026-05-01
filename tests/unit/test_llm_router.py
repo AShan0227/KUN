@@ -8,7 +8,7 @@ from kun.interface.llm import (
     TaskProfile,
     get_router,
 )
-from kun.interface.llm.router import reset_router
+from kun.interface.llm.router import reset_router, set_route_governor
 from kun.interface.llm.stub_provider import StubProvider
 
 
@@ -217,6 +217,85 @@ async def test_router_credit_does_not_downgrade_high_risk(monkeypatch):
     )
 
     assert response.tier == "top"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_router_governance_can_redirect_primary_tier(monkeypatch):
+    """守望 route governor 进入真实热路径, 不只是单独测试模块."""
+
+    class FakeGovernor:
+        def __init__(self) -> None:
+            self.task_meta = {}
+            self.candidate_models = []
+
+        async def consult_for_model_select(
+            self,
+            task_meta: dict[str, object],
+            candidate_models: list[str],
+        ) -> str:
+            self.task_meta = task_meta
+            self.candidate_models = candidate_models
+            return "strong"
+
+    governor = FakeGovernor()
+    providers = {
+        "top": StubProvider(model_id="model-top", tier="top"),
+        "strong": StubProvider(model_id="model-strong", tier="strong"),
+        "cheap": StubProvider(model_id="model-cheap", tier="cheap"),
+        "coding": StubProvider(model_id="model-coding", tier="coding"),
+        "fallback": StubProvider(model_id="model-fallback", tier="fallback"),
+    }
+    router = LLMRouter(providers)
+    monkeypatch.setenv("KUN_LLM_ROUTE_GOVERNANCE_ENABLED", "1")
+    monkeypatch.setenv("KUN_LLM_CREDIT_ROUTING_ENABLED", "0")
+    set_route_governor(governor)
+
+    response = await router.invoke(
+        LLMRequest(
+            messages=[LLMMessage(role="user", content="tiny prompt")],
+            profile=TaskProfile(task_type="coding.python"),
+        ),
+        purpose="execution",
+    )
+
+    assert response.tier == "strong"
+    assert response.model == "model-strong"
+    assert response.route_debug["governance_override"] is True
+    assert response.route_debug["governance_to_tier"] == "strong"
+    assert governor.task_meta["task_type"] == "coding.python"
+    assert governor.candidate_models[0] == "cheap"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_router_governance_can_block_call(monkeypatch):
+    """治理层拒绝时, router 不能绕过去继续调模型."""
+
+    from kun.watchtower.llm_route_governance import CostExceededError
+
+    class BlockingGovernor:
+        async def consult_for_model_select(
+            self,
+            _task_meta: dict[str, object],
+            _candidate_models: list[str],
+        ) -> str:
+            raise CostExceededError("too expensive")
+
+    providers = {
+        "cheap": StubProvider(model_id="model-cheap", tier="cheap"),
+        "fallback": StubProvider(model_id="model-fallback", tier="fallback"),
+    }
+    router = LLMRouter(providers)
+    monkeypatch.setenv("KUN_LLM_ROUTE_GOVERNANCE_ENABLED", "1")
+    monkeypatch.setenv("KUN_LLM_CREDIT_ROUTING_ENABLED", "0")
+    set_route_governor(BlockingGovernor())
+
+    with pytest.raises(CostExceededError):
+        await router.invoke(
+            LLMRequest(messages=[LLMMessage(role="user", content="tiny prompt")]),
+            purpose="classification",
+        )
 
 
 @pytest.mark.unit

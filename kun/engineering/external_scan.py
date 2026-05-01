@@ -12,13 +12,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from kun.core.anchor_expand import AnchorExpandIterator
 from kun.core.emergent_solution import (
@@ -38,6 +40,206 @@ LLMReviewer = Callable[[str, dict[str, Any]], Awaitable[tuple[bool, str]]]
 
 EXTERNAL_SCAN_STRONG_REVIEW_ENABLED_ENV = "KUN_EXTERNAL_SCAN_STRONG_REVIEW_ENABLED"
 EXTERNAL_SCAN_STRONG_REVIEW_MAX_TOKENS_ENV = "KUN_EXTERNAL_SCAN_STRONG_REVIEW_MAX_TOKENS"
+
+ExternalSkillRiskLevel = Literal["low", "medium", "high", "critical"]
+ExternalSkillReviewState = Literal["review_only"]
+
+_UNKNOWN_LICENSE_VALUES = {"", "unknown", "noassertion", "other", "none", "unlicensed"}
+_EXECUTABLE_FILE_PATTERNS = (
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ps1",
+    ".bat",
+    ".cmd",
+    ".py",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".rb",
+    ".go",
+    ".rs",
+    ".php",
+    ".pl",
+)
+_EXECUTABLE_NAMES = {
+    "makefile",
+    "dockerfile",
+    "justfile",
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "setup.py",
+    "gemfile",
+}
+_NETWORK_PATTERNS = (
+    r"\bcurl\b",
+    r"\bwget\b",
+    r"\bfetch\s*\(",
+    r"\baxios\.",
+    r"\brequests\.",
+    r"\burllib\.",
+    r"\bhttpx\.",
+    r"\bsocket\.",
+    r"\bgit\s+clone\b",
+    r"https?://",
+)
+_SECRET_PATTERNS = (
+    r"api[_-]?key",
+    r"secret",
+    r"token",
+    r"password",
+    r"process\.env",
+    r"os\.environ",
+    r"\.env",
+)
+_FILE_WRITE_PATTERNS = (
+    r">\s*[\w./~-]+",
+    r"\btee\b",
+    r"\bwriteFile(?:Sync)?\b",
+    r"\bfs\.",
+    r"\bopen\s*\([^)]*,\s*['\"][wa]",
+    r"\bPath\([^)]*\)\.write_",
+    r"\brm\s+-rf\b",
+    r"\bmv\s+",
+    r"\bcp\s+",
+)
+
+
+@dataclass(frozen=True)
+class ExternalSkillSource:
+    """Transparent provenance for an external skill candidate."""
+
+    kind: str
+    repo: str = ""
+    url: str = ""
+    commit_sha: str = ""
+    fetched_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ExternalSkillSafetyAssessment:
+    """Conservative static safety triage for a candidate skill."""
+
+    risk_level: ExternalSkillRiskLevel
+    license_id: str
+    license_unknown: bool
+    contains_execution_scripts: bool
+    external_network_risk: bool
+    secret_access_risk: bool
+    file_write_risk: bool
+    sandbox_suitable: bool
+    reasons: list[str] = field(default_factory=list)
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ExternalSkillCandidate:
+    """Review-only normalized external skill/behavior-template candidate."""
+
+    candidate_id: str
+    name: str
+    summary: str
+    source: ExternalSkillSource
+    safety: ExternalSkillSafetyAssessment
+    tags: list[str] = field(default_factory=list)
+    review_state: ExternalSkillReviewState = "review_only"
+    production_action: bool = False
+    promotion_allowed: bool = False
+    auto_install_allowed: bool = False
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def to_review_signal(self, tenant_id: str) -> Any:
+        """Convert the candidate into a Qi problem signal for background review."""
+
+        from kun.qi.problem_queue import QiProblemSignal
+
+        severity = {
+            "low": "info",
+            "medium": "warning",
+            "high": "error",
+            "critical": "critical",
+        }[self.safety.risk_level]
+        return QiProblemSignal.build(
+            tenant_id=tenant_id,
+            category="risk",
+            severity=severity,
+            summary=f"Review external skill candidate: {self.name}",
+            source="external_skill.discovery.candidate",
+            task_type="skill.external_review",
+            evidence=self.model_dump(),
+        )
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "candidate_id": self.candidate_id,
+            "name": self.name,
+            "summary": self.summary,
+            "source": {
+                "kind": self.source.kind,
+                "repo": self.source.repo,
+                "url": self.source.url,
+                "commit_sha": self.source.commit_sha,
+                "fetched_at": self.source.fetched_at.isoformat()
+                if self.source.fetched_at is not None
+                else None,
+            },
+            "safety": {
+                "risk_level": self.safety.risk_level,
+                "license_id": self.safety.license_id,
+                "license_unknown": self.safety.license_unknown,
+                "contains_execution_scripts": self.safety.contains_execution_scripts,
+                "external_network_risk": self.safety.external_network_risk,
+                "secret_access_risk": self.safety.secret_access_risk,
+                "file_write_risk": self.safety.file_write_risk,
+                "sandbox_suitable": self.safety.sandbox_suitable,
+                "reasons": list(self.safety.reasons),
+                "evidence": dict(self.safety.evidence),
+            },
+            "tags": list(self.tags),
+            "review_state": self.review_state,
+            "production_action": self.production_action,
+            "promotion_allowed": self.promotion_allowed,
+            "auto_install_allowed": self.auto_install_allowed,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True)
+class ExternalSkillScanResult:
+    """Review-only scan result for external skill metadata."""
+
+    source_items: int
+    candidates: list[ExternalSkillCandidate]
+    risk_counts: dict[str, int]
+    sandbox_suitable: int
+    production_action: bool = False
+    auto_install_allowed: bool = False
+    promotion_allowed: bool = False
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "source_items": self.source_items,
+            "candidates": len(self.candidates),
+            "risk_counts": dict(self.risk_counts),
+            "sandbox_suitable": self.sandbox_suitable,
+            "production_action": self.production_action,
+            "auto_install_allowed": self.auto_install_allowed,
+            "promotion_allowed": self.promotion_allowed,
+            "top_candidates": [
+                candidate.model_dump()
+                for candidate in sorted(
+                    self.candidates,
+                    key=lambda item: (
+                        _risk_sort_rank(item.safety.risk_level),
+                        item.name,
+                        item.candidate_id,
+                    ),
+                )[:5]
+            ],
+        }
 
 
 @dataclass
@@ -60,6 +262,161 @@ class ScanResult:
     candidates_added: int = 0
     candidates_rejected: int = 0
     duration_sec: float = 0.0
+
+
+def normalize_external_skill_candidates(
+    raw_items: list[dict[str, Any]],
+) -> list[ExternalSkillCandidate]:
+    """Normalize offline GitHub repo / skill metadata into review-only candidates."""
+
+    candidates: list[ExternalSkillCandidate] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        expanded_items = _expand_external_skill_item(raw)
+        for item in expanded_items:
+            candidate = normalize_external_skill_candidate(item)
+            if candidate is not None:
+                candidates.append(candidate)
+    return _dedupe_external_skill_candidates(candidates)
+
+
+def scan_external_skill_candidates(
+    raw_items: list[dict[str, Any]],
+) -> ExternalSkillScanResult:
+    """Scan offline external skill metadata into review-only candidate evidence."""
+
+    candidates = normalize_external_skill_candidates(raw_items)
+    risk_counts: dict[str, int] = {}
+    sandbox_suitable = 0
+    for candidate in candidates:
+        risk_counts[candidate.safety.risk_level] = (
+            risk_counts.get(candidate.safety.risk_level, 0) + 1
+        )
+        if candidate.safety.sandbox_suitable:
+            sandbox_suitable += 1
+    return ExternalSkillScanResult(
+        source_items=len(raw_items),
+        candidates=candidates,
+        risk_counts=risk_counts,
+        sandbox_suitable=sandbox_suitable,
+    )
+
+
+def normalize_external_skill_candidate(raw: dict[str, Any]) -> ExternalSkillCandidate | None:
+    """Normalize one external skill metadata row without fetching the network."""
+
+    source = _external_skill_source(raw)
+    name = _first_text(
+        raw.get("name"),
+        raw.get("skill_name"),
+        raw.get("repo"),
+        raw.get("full_name"),
+        raw.get("html_url"),
+    )
+    if not name and not source.url:
+        return None
+    summary = _first_text(
+        raw.get("summary"),
+        raw.get("description"),
+        raw.get("readme"),
+        raw.get("snippet"),
+        raw.get("skill_md"),
+    )[:700]
+    safety = assess_external_skill_safety(raw)
+    key = "|".join(
+        [
+            source.kind,
+            source.repo,
+            source.url,
+            source.commit_sha,
+            name,
+            summary[:120],
+        ]
+    )
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    return ExternalSkillCandidate(
+        candidate_id=f"esk_{digest}",
+        name=name or source.repo or source.url,
+        summary=summary,
+        source=source,
+        safety=safety,
+        tags=_external_skill_tags(raw, safety),
+    )
+
+
+def assess_external_skill_safety(raw: dict[str, Any]) -> ExternalSkillSafetyAssessment:
+    """Conservative static safety triage for external skill metadata."""
+
+    license_id = _license_id(raw)
+    license_unknown = license_id.lower() in _UNKNOWN_LICENSE_VALUES
+    files = _external_skill_files(raw)
+    content = "\n".join([_first_text(raw.get("readme"), raw.get("skill_md"), raw.get("snippet"))])
+    content = "\n".join([content, *[file["content"] for file in files]])
+    paths = [file["path"] for file in files]
+
+    executable_paths = [
+        path for path in paths if _looks_like_executable_file(path, content_by_path=files)
+    ]
+    network_hits = _pattern_hits(content, _NETWORK_PATTERNS)
+    secret_hits = _pattern_hits(content, _SECRET_PATTERNS)
+    file_write_hits = _pattern_hits(content, _FILE_WRITE_PATTERNS)
+
+    reasons: list[str] = []
+    if license_unknown:
+        reasons.append("license_unknown")
+    if executable_paths:
+        reasons.append("contains_execution_scripts")
+    if network_hits:
+        reasons.append("external_network_risk")
+    if secret_hits:
+        reasons.append("secret_access_risk")
+    if file_write_hits:
+        reasons.append("file_write_risk")
+
+    risk_score = 0
+    risk_score += 1 if license_unknown else 0
+    risk_score += 1 if executable_paths else 0
+    risk_score += 1 if network_hits else 0
+    risk_score += 2 if secret_hits else 0
+    risk_score += 2 if file_write_hits else 0
+    if secret_hits and file_write_hits:
+        risk_score += 1
+    risk_level: ExternalSkillRiskLevel
+    if risk_score >= 5:
+        risk_level = "critical"
+    elif risk_score >= 3:
+        risk_level = "high"
+    elif risk_score >= 1:
+        risk_level = "medium"
+    else:
+        risk_level = "low"
+
+    sandbox_suitable = risk_level in {"low", "medium"} and not secret_hits
+    if not sandbox_suitable:
+        reasons.append("sandbox_not_suitable_without_manual_controls")
+    if not reasons:
+        reasons.append("static_metadata_no_obvious_risk")
+
+    return ExternalSkillSafetyAssessment(
+        risk_level=risk_level,
+        license_id=license_id,
+        license_unknown=license_unknown,
+        contains_execution_scripts=bool(executable_paths),
+        external_network_risk=bool(network_hits),
+        secret_access_risk=bool(secret_hits),
+        file_write_risk=bool(file_write_hits),
+        sandbox_suitable=sandbox_suitable,
+        reasons=sorted(set(reasons)),
+        evidence={
+            "source_url": str(raw.get("url") or raw.get("html_url") or raw.get("source_url") or ""),
+            "executable_paths": executable_paths[:20],
+            "network_hits": network_hits[:20],
+            "secret_hits": secret_hits[:20],
+            "file_write_hits": file_write_hits[:20],
+            "inspected_file_count": len(files),
+        },
+    )
 
 
 class ExternalInfoScanner:
@@ -426,6 +783,150 @@ def configured_external_scan_reviewer_from_env() -> LLMReviewer | None:
     )
 
 
+def _expand_external_skill_item(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    skills = raw.get("skills")
+    if not isinstance(skills, list):
+        return [raw]
+    expanded: list[dict[str, Any]] = []
+    for skill in skills:
+        if not isinstance(skill, dict):
+            continue
+        files = []
+        if isinstance(raw.get("files"), list):
+            files.extend(raw["files"])
+        if isinstance(skill.get("files"), list):
+            files.extend(skill["files"])
+        expanded.append(
+            {
+                **raw,
+                **skill,
+                "repo": raw.get("repo") or raw.get("full_name") or skill.get("repo"),
+                "url": skill.get("url") or raw.get("url") or raw.get("html_url"),
+                "files": files,
+            }
+        )
+    return expanded or [raw]
+
+
+def _dedupe_external_skill_candidates(
+    candidates: list[ExternalSkillCandidate],
+) -> list[ExternalSkillCandidate]:
+    by_id: dict[str, ExternalSkillCandidate] = {}
+    for candidate in candidates:
+        by_id[candidate.candidate_id] = candidate
+    return list(by_id.values())
+
+
+def _external_skill_source(raw: dict[str, Any]) -> ExternalSkillSource:
+    repo = _first_text(raw.get("repo"), raw.get("full_name"), raw.get("repository"))
+    url = _first_text(raw.get("url"), raw.get("html_url"), raw.get("source_url"))
+    return ExternalSkillSource(
+        kind=_first_text(raw.get("source_kind"), raw.get("kind"), "github_repo") or "github_repo",
+        repo=repo,
+        url=url,
+        commit_sha=_first_text(raw.get("commit_sha"), raw.get("sha")),
+        fetched_at=_parse_datetime(raw.get("fetched_at") or raw.get("pushed_at")),
+    )
+
+
+def _external_skill_tags(
+    raw: dict[str, Any],
+    safety: ExternalSkillSafetyAssessment,
+) -> list[str]:
+    tags = {"external_skill", "review_only", f"risk:{safety.risk_level}"}
+    topics = raw.get("topics") or raw.get("tags") or []
+    if isinstance(topics, list):
+        tags.update(str(item).strip() for item in topics if str(item).strip())
+    if safety.license_unknown:
+        tags.add("license_unknown")
+    if safety.sandbox_suitable:
+        tags.add("sandbox_candidate")
+    else:
+        tags.add("manual_security_review")
+    return sorted(tags)
+
+
+def _external_skill_files(raw: dict[str, Any]) -> list[dict[str, str]]:
+    files = raw.get("files") or raw.get("tree") or []
+    out: list[dict[str, str]] = []
+    if isinstance(files, list):
+        for item in files:
+            if isinstance(item, str):
+                out.append({"path": item, "content": ""})
+            elif isinstance(item, dict):
+                path = _first_text(item.get("path"), item.get("name"), item.get("filename"))
+                content = _first_text(item.get("content"), item.get("text"), item.get("body"))
+                if path or content:
+                    out.append({"path": path, "content": content})
+    for key, path in {
+        "readme": "README.md",
+        "skill_md": "SKILL.md",
+        "package_json": "package.json",
+    }.items():
+        if isinstance(raw.get(key), str):
+            out.append({"path": path, "content": str(raw[key])})
+    return out
+
+
+def _license_id(raw: dict[str, Any]) -> str:
+    license_value = raw.get("license") or raw.get("license_id") or raw.get("spdx_id")
+    if isinstance(license_value, dict):
+        license_value = (
+            license_value.get("spdx_id") or license_value.get("key") or license_value.get("name")
+        )
+    return str(license_value or "unknown").strip() or "unknown"
+
+
+def _looks_like_executable_file(
+    path: str,
+    *,
+    content_by_path: list[dict[str, str]],
+) -> bool:
+    lowered = path.strip().lower()
+    name = lowered.rsplit("/", 1)[-1]
+    if name in _EXECUTABLE_NAMES:
+        return True
+    if any(lowered.endswith(suffix) for suffix in _EXECUTABLE_FILE_PATTERNS):
+        return True
+    for file in content_by_path:
+        if file["path"] == path and file["content"].startswith("#!"):
+            return True
+    return False
+
+
+def _pattern_hits(content: str, patterns: tuple[str, ...]) -> list[str]:
+    hits: list[str] = []
+    for pattern in patterns:
+        if re.search(pattern, content, flags=re.IGNORECASE):
+            hits.append(pattern)
+    return hits
+
+
+def _risk_sort_rank(risk_level: str) -> int:
+    return {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(risk_level, 9)
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def _json_object_from_text(text: str) -> dict[str, Any]:
     try:
         raw = json.loads(text)
@@ -452,9 +953,17 @@ __all__ = [
     "EXTERNAL_SCAN_STRONG_REVIEW_ENABLED_ENV",
     "ExternalFetcher",
     "ExternalInfoScanner",
+    "ExternalSkillCandidate",
+    "ExternalSkillSafetyAssessment",
+    "ExternalSkillScanResult",
+    "ExternalSkillSource",
     "LLMReviewer",
     "ScanBudget",
     "ScanResult",
     "StrongExternalScanReviewer",
+    "assess_external_skill_safety",
     "configured_external_scan_reviewer_from_env",
+    "normalize_external_skill_candidate",
+    "normalize_external_skill_candidates",
+    "scan_external_skill_candidates",
 ]

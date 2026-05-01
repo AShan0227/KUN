@@ -26,6 +26,7 @@ from kun.api.attention_pin import router as attention_pin_router
 from kun.api.billing_transparency import router as billing_router
 from kun.api.blackboard import router as blackboard_router
 from kun.api.chat import router as chat_router
+from kun.api.code_capability import router as code_capability_router
 from kun.api.compiler import router as compiler_router
 from kun.api.diagnose import router as diagnose_router
 from kun.api.graph import router as graph_router
@@ -453,6 +454,7 @@ async def metrics() -> Response:
 app.include_router(health_router, prefix="/health", tags=["health"])
 app.include_router(billing_router, prefix="/api/billing", tags=["billing"])
 app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
+app.include_router(code_capability_router)
 app.include_router(compiler_router)
 app.include_router(session_router)
 app.include_router(ws_router)

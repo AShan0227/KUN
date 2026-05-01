@@ -236,6 +236,7 @@ def _selected_step_names(enabled: set[str] | None) -> list[str]:
         "health_report": 0,
         "world_handler_auto_quarantine": 1,
         "qi_idle_replay": 2,
+        "external_skill_candidate_review": 2,
         "knowledge_precipitation": 2,
         "incident_lessons": 2,
         "knowledge_conflict": 3,
@@ -443,7 +444,15 @@ class HealthReportStep(IdleBatchStep):
             "worst_severity": report.worst_severity,
             "secret_audit_summary": report.secret_audit_summary,
             "world_handler_summary": report.world_handler_summary,
+            "compiler_governance_summary": report.compiler_governance_summary,
+            "context_maintenance_summary": report.context_maintenance_summary,
+            "skill_health_summary": report.skill_health_summary,
+            "qi_strategy_draft_summary": report.qi_strategy_draft_summary,
+            "multi_lane_scheduler_summary": report.multi_lane_scheduler_summary,
+            "multi_lane_scheduler_limits": report.multi_lane_scheduler_limits,
+            "production_risk_summary": report.production_risk_summary,
             "findings": len(report.findings),
+            "governance_recommendations": len(report.governance_recommendations),
             "qi_problem_signals": len(qi_problem_signals),
             "persisted_qi_problem_signals": persisted_qi_problem_signals,
             "top_findings": [
@@ -455,6 +464,19 @@ class HealthReportStep(IdleBatchStep):
                     "suggested_action": finding.suggested_action,
                 }
                 for finding in report.findings[:10]
+            ],
+            "top_governance_recommendations": [
+                {
+                    "recommendation_id": item.recommendation_id,
+                    "finding_id": item.finding_id,
+                    "subsystem": item.subsystem,
+                    "risk_level": item.risk_level,
+                    "default_dry_run": item.default_dry_run,
+                    "can_apply": item.can_apply,
+                    "requires_human_approval": item.requires_human_approval,
+                    "apply_hint": item.apply_hint,
+                }
+                for item in report.governance_recommendations[:10]
             ],
         }
         async with session_scope(tenant_id=tenant_id) as s:
@@ -792,6 +814,55 @@ class ExternalEmergentScanStep(IdleBatchStep):
         }
 
 
+class ExternalSkillCandidateReviewStep(IdleBatchStep):
+    """Normalize external skill metadata and enqueue review-only Qi signals.
+
+    This step is intentionally offline-input first. It does not crawl GitHub,
+    install skills, or modify production skill registries. Explicit data source
+    rows or KUN_EXTERNAL_SKILL_SOURCE_FILES are treated as candidate evidence
+    for Qi / human security review.
+    """
+
+    step_id = "external_skill_candidate_review"
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        from kun.engineering.external_scan import scan_external_skill_candidates
+        from kun.qi.problem_queue import persist_problem_signals
+
+        rows = await _external_skill_rows(tenant_id)
+        if not rows:
+            return {
+                "skipped": True,
+                "reason": "no external skill metadata configured",
+                "input_rows": 0,
+                "candidates": 0,
+                "persisted_review_signals": 0,
+                "production_action": False,
+                "auto_install_allowed": False,
+            }
+
+        scan_result = scan_external_skill_candidates(rows)
+        candidates = scan_result.candidates
+        review_signals = [
+            candidate.to_review_signal(tenant_id=tenant_id) for candidate in candidates
+        ]
+        persisted = await persist_problem_signals(review_signals)
+        summary = scan_result.model_dump()
+
+        return {
+            "skipped": False,
+            "input_rows": len(rows),
+            "candidates": summary["candidates"],
+            "persisted_review_signals": persisted,
+            "risk_counts": summary["risk_counts"],
+            "sandbox_suitable": summary["sandbox_suitable"],
+            "production_action": False,
+            "auto_install_allowed": False,
+            "promotion_allowed": False,
+            "top_candidates": summary["top_candidates"],
+        }
+
+
 class RouteRuleMiningStep(IdleBatchStep):
     """Cluster + association-rule mining over routing logs to surface new route patterns."""
 
@@ -1008,6 +1079,7 @@ def register_default_steps() -> None:
         QiStrategyPackRolloutPlanStep(),
         CompilerSyncSourcesStep(),
         ExternalEmergentScanStep(),
+        ExternalSkillCandidateReviewStep(),
         RouteRuleMiningStep(),
         TaskBoundaryEvalStep(),
         PheromoneDecayStep(),
@@ -1291,6 +1363,50 @@ def _external_scan_fetchers(
     return {
         source_kind: make_fetcher(source_rows) for source_kind, source_rows in by_source.items()
     }
+
+
+async def _external_skill_rows(tenant_id: str) -> list[dict[str, Any]]:
+    rows = await _source_list("external_skill_candidates", tenant_id)
+    rows.extend(_external_skill_rows_from_env(tenant_id))
+    return [
+        {**row, "tenant_id": str(row.get("tenant_id") or tenant_id)}
+        for row in rows
+        if _external_skill_row_matches_tenant(row, tenant_id)
+    ]
+
+
+def _external_skill_rows_from_env(tenant_id: str) -> list[dict[str, Any]]:
+    raw_files = os.getenv("KUN_EXTERNAL_SKILL_SOURCE_FILES", "")
+    source_files = [item.strip() for item in raw_files.split(",") if item.strip()]
+    if not source_files:
+        return []
+
+    config_root_raw = os.getenv("KUN_EXTERNAL_SKILL_CONFIG_ROOT") or None
+    config_root = Path(config_root_raw).expanduser().resolve() if config_root_raw else None
+    rows: list[dict[str, Any]] = []
+    for source_file in source_files:
+        payload = _read_external_scan_payload(source_file, config_root=config_root)
+        if isinstance(payload, list):
+            items = payload
+            payload_tenant = tenant_id
+        else:
+            items = payload.get("items", [])
+            payload_tenant = str(payload.get("tenant_id") or tenant_id)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            row_tenant = str(item.get("tenant_id") or payload_tenant or tenant_id)
+            if row_tenant != tenant_id:
+                continue
+            rows.append({**item, "tenant_id": row_tenant})
+    return rows
+
+
+def _external_skill_row_matches_tenant(row: dict[str, Any], tenant_id: str) -> bool:
+    row_tenant = str(row.get("tenant_id") or tenant_id)
+    return row_tenant == tenant_id
 
 
 async def _persist_methodology_rules(*, tenant_id: str, rules: list[str]) -> list[str]:

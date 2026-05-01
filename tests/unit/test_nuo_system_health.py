@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from kun.engineering.nuo_system_health import _findings
+from kun.engineering.nuo_system_health import _findings, _governance_recommendations
 from kun.world.handler_health import WorldHandlerHealthCard
 
 
@@ -173,6 +173,28 @@ def test_system_health_surfaces_context_maintenance_candidates() -> None:
     assert "可压缩 2" in by_id["context_slimming_candidates"].detail
 
 
+def test_system_health_surfaces_compiler_recompile_candidates() -> None:
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        resumable_mission_task_count=0,
+        mission_resume_worker_enabled=True,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[],
+        world_handlers=[],
+        context_maintenance_summary={
+            "compiler_review": 0,
+            "compiler_recompile_recommended": 2,
+        },
+    )
+
+    finding = next(item for item in findings if item.finding_id == "compiler_recompile_candidates")
+    assert finding.subsystem == "compiler"
+    assert finding.severity == "warn"
+
+
 def test_system_health_surfaces_context_maintenance_error() -> None:
     findings = _findings(
         outbox_lag=0,
@@ -190,3 +212,106 @@ def test_system_health_surfaces_context_maintenance_error() -> None:
     finding = next(item for item in findings if item.finding_id == "context_maintenance_error")
     assert finding.severity == "warn"
     assert "redis unavailable" in finding.detail
+
+
+def test_system_health_surfaces_skill_governance_findings() -> None:
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        resumable_mission_task_count=0,
+        mission_resume_worker_enabled=True,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[],
+        world_handlers=[],
+        skill_health_summary={
+            "manifest_without_executor": 2,
+            "weak_capability_cards": 1,
+            "unused_manifest_skills": 3,
+        },
+    )
+
+    by_id = {item.finding_id: item for item in findings}
+    assert by_id["skill_manifest_without_executor"].severity == "warn"
+    assert by_id["skill_weak_capability_cards"].subsystem == "skill"
+    assert by_id["skill_unused_manifest"].severity == "info"
+
+
+def test_system_health_surfaces_qi_strategy_draft_findings() -> None:
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        resumable_mission_task_count=0,
+        mission_resume_worker_enabled=True,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[],
+        world_handlers=[],
+        qi_strategy_draft_summary={
+            "drafts": 3,
+            "production_action_true": 1,
+            "needs_strong_review": 2,
+            "review_needs_evidence": 1,
+        },
+    )
+
+    by_id = {item.finding_id: item for item in findings}
+    assert by_id["qi_strategy_draft_production_action"].severity == "critical"
+    assert by_id["qi_strategy_drafts_need_review"].severity == "warn"
+
+
+def test_system_health_surfaces_scheduler_and_production_findings() -> None:
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        resumable_mission_task_count=0,
+        mission_resume_worker_enabled=True,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[],
+        world_handlers=[],
+        multi_lane_scheduler_summary={
+            "missing_required_lanes": 1,
+            "lanes_over_pressure_threshold": 1,
+        },
+        production_risk_summary={
+            "production_safety_issues": 2,
+            "partial_or_not_ready_capabilities": 4,
+        },
+        production_risk_issues=[
+            "KUN_DEFAULT_TENANT_ID must be blank in production",
+            "S3/MinIO default credentials must be changed in production",
+        ],
+    )
+
+    by_id = {item.finding_id: item for item in findings}
+    assert by_id["scheduler_missing_required_lanes"].severity == "error"
+    assert by_id["scheduler_lane_pressure"].subsystem == "scheduler"
+    assert by_id["production_safety_issues"].severity == "critical"
+
+
+def test_governance_recommendations_keep_high_risk_advice_manual() -> None:
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        resumable_mission_task_count=0,
+        mission_resume_worker_enabled=True,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[],
+        world_handlers=[],
+        context_maintenance_summary={"compressed": 2, "soft_forgotten": 1},
+        production_risk_summary={"production_safety_issues": 1},
+        production_risk_issues=["KUN_AUTH_SECRET missing"],
+    )
+
+    recommendations = _governance_recommendations(findings=findings)
+    by_finding = {item.finding_id: item for item in recommendations}
+    assert by_finding["context_slimming_candidates"].can_apply is True
+    assert by_finding["context_slimming_candidates"].default_dry_run is True
+    assert by_finding["production_safety_issues"].can_apply is False
+    assert by_finding["production_safety_issues"].requires_human_approval is True

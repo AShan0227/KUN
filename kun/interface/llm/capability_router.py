@@ -34,6 +34,7 @@ from kun.core.anchor_expand import AnchorExpandIterator
 from kun.core.db import session_scope
 from kun.core.logging import get_logger
 from kun.core.orm import CapabilityCardRow
+from kun.core.tenancy import MissingTenantContextError, current_tenant
 
 log = get_logger("kun.llm.capability_router")
 
@@ -121,6 +122,39 @@ class CapabilityRouter:
             )
         scores.sort(key=lambda s: s.score, reverse=True)
         return scores
+
+    async def score_model(self, task_type: str, model_id: str) -> float:
+        """Compatibility hook consumed by ``LLMRouteGovernor``.
+
+        The governor sits inside the router hot path and only knows the
+        candidate ids it is asked to choose from.  This adapter lets it consult
+        the same capability-card data without learning about database rows.
+        When no tenant context exists, return neutral so routing stays stable.
+        """
+
+        tenant_id = _current_tenant_id_or_none()
+        if not tenant_id:
+            return 0.5
+        return (
+            await self.score_for(
+                tenant_id=tenant_id,
+                model_id=model_id,
+                task_type=task_type,
+            )
+        ).score
+
+    async def model_scores(self, task_type: str, candidate_models: list[str]) -> dict[str, float]:
+        """Batch compatibility hook for ``LLMRouteGovernor``."""
+
+        tenant_id = _current_tenant_id_or_none()
+        if not tenant_id:
+            return dict.fromkeys(candidate_models, 0.5)
+        ranked = await self.rank_candidates(
+            tenant_id=tenant_id,
+            model_ids=candidate_models,
+            task_type=task_type,
+        )
+        return {item.model_id: item.score for item in ranked}
 
     async def rank_candidates_anchor_then_expand(
         self,
@@ -240,6 +274,13 @@ def get_capability_router() -> CapabilityRouter:
 def reset_capability_router() -> None:
     global _router_singleton
     _router_singleton = None
+
+
+def _current_tenant_id_or_none() -> str | None:
+    try:
+        return current_tenant().tenant_id
+    except MissingTenantContextError:
+        return None
 
 
 __all__ = [

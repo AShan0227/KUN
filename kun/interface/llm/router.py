@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -29,6 +29,7 @@ from kun.interface.llm.base import (
     LLMResponse,
     ModelTier,
     TaskProfile,
+    UsageInfo,
 )
 from kun.interface.llm.claude_code_provider import ClaudeCodeProvider
 from kun.interface.llm.codex_cli_provider import CodexCliProvider
@@ -289,6 +290,13 @@ class LLMRouter:
                 route_debug["credit_override"] = True
                 route_debug["credit_from_tier"] = before_credit.primary_tier
                 route_debug["credit_to_tier"] = decision.primary_tier
+
+            before_governance = decision
+            decision = await self._maybe_govern_route(decision, request, purpose)
+            if decision.primary_tier != before_governance.primary_tier:
+                route_debug["governance_override"] = True
+                route_debug["governance_from_tier"] = before_governance.primary_tier
+                route_debug["governance_to_tier"] = decision.primary_tier
             route_debug["final_planned_tier"] = decision.primary_tier
             route_debug["final_rationale"] = decision.rationale
 
@@ -446,6 +454,50 @@ class LLMRouter:
                 + " | credit-routing:"
                 + f" {decision.primary_tier}→{best_tier}"
                 + f" score={best_score:.2f} baseline={baseline:.2f}"
+            ),
+        )
+
+    async def _maybe_govern_route(
+        self,
+        decision: RouteDecision,
+        request: LLMRequest,
+        purpose: TaskPurpose,
+    ) -> RouteDecision:
+        """Run the selected tier through Watchtower route governance.
+
+        This is the missing hot-path wire for ``LLMRouteGovernor``.  It keeps
+        the router's normal tier heuristics and credit override, then asks the
+        governance layer to enforce cost/trust/privacy rules before a provider
+        is invoked.  If the governor has no historical scores it simply keeps
+        the current primary tier; if trust policy blocks that tier it can choose
+        the next allowed one.
+        """
+
+        if os.getenv("KUN_LLM_ROUTE_GOVERNANCE_ENABLED", "1") != "1":
+            return decision
+        governor = get_route_governor()
+        if governor is None:
+            return decision
+        candidates = _governance_candidates(decision.primary_tier, self.providers)
+        if not candidates:
+            return decision
+        provider = self.providers.get(decision.primary_tier)
+        task_meta = _governance_task_meta(
+            request=request,
+            purpose=purpose,
+            planned_decision=decision,
+            planned_provider=provider,
+        )
+        selected = await governor.consult_for_model_select(task_meta, candidates)
+        if selected == decision.primary_tier or selected not in self.providers:
+            return decision
+        selected_tier = cast_tier(selected)
+        return RouteDecision(
+            purpose=decision.purpose,
+            primary_tier=selected_tier,
+            fallback_tier=decision.fallback_tier,
+            rationale=(
+                decision.rationale + " | governance:" + f" {decision.primary_tier}→{selected_tier}"
             ),
         )
 
@@ -607,6 +659,22 @@ async def _emit_fallback_event(
 # =============== Factory ===============
 
 _router: LLMRouter | None = None
+_route_governor: Any | None = None
+
+
+def get_route_governor() -> Any | None:
+    return _route_governor
+
+
+def set_route_governor(governor: Any | None) -> None:
+    """Install the process-local LLM route governor.
+
+    Runtime startup wires this to Watchtower's loaded ``RuleEngine``.  Tests can
+    set a fake governor without rebuilding the router.
+    """
+
+    global _route_governor
+    _route_governor = governor
 
 
 def get_router() -> LLMRouter:
@@ -842,5 +910,70 @@ def set_router(router: LLMRouter) -> None:
 
 def reset_router() -> None:
     """Clear cached router."""
-    global _router
+    global _router, _route_governor
     _router = None
+    _route_governor = None
+
+
+def _governance_candidates(
+    primary_tier: ModelTier,
+    providers: dict[ModelTier, LLMProvider],
+) -> list[str]:
+    ordered: list[str] = []
+    for tier in [primary_tier, "top", "strong", "cheap", "coding"]:
+        if tier == "fallback":
+            continue
+        if tier in providers and tier not in ordered:
+            ordered.append(tier)
+    return ordered
+
+
+def _governance_task_meta(
+    *,
+    request: LLMRequest,
+    purpose: TaskPurpose,
+    planned_decision: RouteDecision,
+    planned_provider: LLMProvider | None,
+) -> dict[str, Any]:
+    profile = request.profile
+    estimated = _estimate_request_cost(request, planned_provider)
+    meta: dict[str, Any] = {
+        "task_type": profile.task_type if profile and profile.task_type else f"llm.{purpose}",
+        "purpose": purpose,
+        "risk_level": profile.risk_level if profile else "low",
+        "planned_tier": planned_decision.primary_tier,
+        "planned_provider": planned_provider.name if planned_provider else "unknown",
+        "planned_model": planned_provider.model_id
+        if planned_provider
+        else planned_decision.primary_tier,
+        "estimated_cost_usd": estimated,
+        "prompt_chars": sum(len(message.content or "") for message in request.messages),
+        "max_tokens": request.max_tokens,
+    }
+    if profile and profile.max_cost_usd is not None:
+        meta["cost_ceiling_usd"] = profile.max_cost_usd
+    if profile and profile.needs_coding:
+        meta["needs_coding"] = True
+    if profile and profile.needs_reasoning:
+        meta["needs_reasoning"] = True
+    if profile and profile.force_fallback:
+        meta["force_fallback"] = True
+    # Keep a short redaction test surface for the governor; it will redact
+    # before RuleEngine events.  Do not put full prompts into telemetry by
+    # default.
+    meta["prompt_preview"] = "\n".join(message.content for message in request.messages[-2:])[:800]
+    return meta
+
+
+def _estimate_request_cost(request: LLMRequest, provider: LLMProvider | None) -> float | None:
+    if provider is None:
+        return None
+    input_tokens = max(1, sum(len(message.content or "") for message in request.messages) // 4)
+    output_tokens = max(1, request.max_tokens)
+    try:
+        return provider.compute_cost(
+            UsageInfo(input_tokens=input_tokens, output_tokens=output_tokens),
+            equivalent=True,
+        )
+    except Exception:
+        return None
