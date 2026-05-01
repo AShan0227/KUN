@@ -818,13 +818,29 @@ class QiStrategyPackRolloutPlanStep(IdleBatchStep):
     step_id = "qi_strategy_pack_rollout_plan"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        from kun.qi.strategy_pack_rollout import plan_strategy_pack_rollouts
+        from kun.qi.strategy_pack_rollout import (
+            create_strategy_pack_shadow_experiment,
+            plan_strategy_pack_rollouts,
+        )
 
         report = await plan_strategy_pack_rollouts(
             tenant_id=tenant_id,
             dry_run=False,
         )
-        return report.model_dump(mode="json")
+        payload = report.model_dump(mode="json")
+        if os.getenv("KUN_QI_ROLLOUT_EXPERIMENT_CREATE_ENABLED", "0") == "1":
+            experiment_reports = []
+            for plan in report.plans:
+                if plan.status != "shadow_plan":
+                    continue
+                experiment_report = await create_strategy_pack_shadow_experiment(
+                    tenant_id=tenant_id,
+                    draft_id=plan.draft_id,
+                    dry_run=os.getenv("KUN_QI_ROLLOUT_EXPERIMENT_CREATE_DRY_RUN", "1") != "0",
+                )
+                experiment_reports.append(experiment_report.model_dump(mode="json"))
+            payload["experiment_bridge_reports"] = experiment_reports
+        return payload
 
 
 class CompilerSyncSourcesStep(IdleBatchStep):

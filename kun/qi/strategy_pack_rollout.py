@@ -8,6 +8,8 @@ create or activate production experiments by itself.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,6 +18,16 @@ from kun.context.assets import LayeredAsset
 from kun.context.storage import AssetStore, get_store
 
 RolloutPlanStatus = Literal["blocked", "needs_review", "shadow_plan"]
+ExperimentBridgeStatus = Literal[
+    "blocked",
+    "dry_run",
+    "experiment_draft_created",
+    "experiment_exists",
+]
+ExperimentCreator = Callable[
+    [str, str, dict[str, Any], dict[str, Any], dict[str, Any]],
+    Awaitable[bool],
+]
 
 
 class StrategyPackRolloutPhase(BaseModel):
@@ -55,6 +67,20 @@ class StrategyPackRolloutPlanReport(BaseModel):
     dry_run: bool = True
     plans: list[StrategyPackRolloutPlan] = Field(default_factory=list)
     production_action: Literal[False] = False
+
+
+class StrategyPackExperimentBridgeReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str
+    experiment_id: str = ""
+    status: ExperimentBridgeStatus
+    reasons: list[str] = Field(default_factory=list)
+    dry_run: bool = True
+    human_approved: bool = False
+    production_action: Literal[False] = False
+    rollout_percent: Literal[0] = 0
+    created: bool = False
 
 
 def build_strategy_pack_rollout_plan(asset: LayeredAsset) -> StrategyPackRolloutPlan:
@@ -127,6 +153,114 @@ async def plan_strategy_pack_rollouts(
     )
 
 
+async def create_strategy_pack_shadow_experiment(
+    *,
+    tenant_id: str,
+    draft_id: str,
+    store: AssetStore | None = None,
+    dry_run: bool = True,
+    experiment_creator: ExperimentCreator | None = None,
+) -> StrategyPackExperimentBridgeReport:
+    """Bridge a reviewed Qi StrategyPack draft into a draft experiment.
+
+    This is deliberately conservative:
+    - no production traffic;
+    - rollout_percent stays 0;
+    - requires an explicit metadata approval marker;
+    - creates only an ADR-009 ``draft`` experiment, not shadow/canary/stable.
+    """
+
+    store = store or get_store()
+    asset = await _find_strategy_pack_draft_asset(store, tenant_id=tenant_id, draft_id=draft_id)
+    if asset is None:
+        return StrategyPackExperimentBridgeReport(
+            draft_id=draft_id,
+            status="blocked",
+            reasons=["draft_asset_not_found"],
+            dry_run=dry_run,
+        )
+    human_approved = _human_approved(asset)
+    plan = _plan_from_asset(asset)
+    experiment_id = _experiment_id(plan.draft_id, plan.proposed_pack_id)
+    if plan.status != "shadow_plan":
+        return StrategyPackExperimentBridgeReport(
+            draft_id=draft_id,
+            experiment_id=experiment_id,
+            status="blocked",
+            reasons=[f"rollout_plan_not_shadow:{plan.status}", *plan.reasons],
+            dry_run=dry_run,
+            human_approved=human_approved,
+        )
+    if not human_approved:
+        return StrategyPackExperimentBridgeReport(
+            draft_id=draft_id,
+            experiment_id=experiment_id,
+            status="blocked",
+            reasons=["human_approval_required_before_experiment_draft"],
+            dry_run=dry_run,
+            human_approved=False,
+        )
+
+    control_variant = {
+        "source": "watchtower.current_strategy",
+        "description": "Current Watchtower strategy selection remains control.",
+    }
+    treatment_variant = {
+        "source": "qi.strategy_pack_draft",
+        "draft_id": plan.draft_id,
+        "proposed_pack_id": plan.proposed_pack_id,
+        "asset_id": asset.asset_id,
+        "shadow_only": True,
+        "production_action": False,
+    }
+    guardrails = {
+        **plan.guardrails,
+        "rollout_plan": plan.model_dump(mode="json"),
+        "requires_human_approval_before_canary": True,
+    }
+
+    if dry_run:
+        return StrategyPackExperimentBridgeReport(
+            draft_id=draft_id,
+            experiment_id=experiment_id,
+            status="dry_run",
+            reasons=["would_create_draft_experiment"],
+            dry_run=True,
+            human_approved=True,
+        )
+
+    creator = experiment_creator or _default_create_experiment
+    created = await creator(
+        tenant_id,
+        experiment_id,
+        control_variant,
+        treatment_variant,
+        guardrails,
+    )
+    asset.l1_metadata["qi_rollout_experiment_id"] = experiment_id
+    asset.l1_metadata["qi_rollout_experiment_status"] = (
+        "draft_created" if created else "experiment_exists"
+    )
+    asset.l1_metadata["promotion_allowed"] = False
+    asset.l1_metadata["production_action"] = False
+    asset.tags = sorted(
+        {
+            *asset.tags,
+            "qi_rollout:experiment_draft" if created else "qi_rollout:experiment_exists",
+        }
+    )
+    await store.put(asset)
+    return StrategyPackExperimentBridgeReport(
+        draft_id=draft_id,
+        experiment_id=experiment_id,
+        status="experiment_draft_created" if created else "experiment_exists",
+        reasons=["draft_experiment_created" if created else "draft_experiment_already_exists"],
+        dry_run=False,
+        human_approved=True,
+        created=created,
+    )
+
+
 def _apply_rollout_plan(asset: LayeredAsset, plan: StrategyPackRolloutPlan) -> bool:
     payload = plan.model_dump(mode="json")
     if asset.l1_metadata.get("qi_rollout_plan") == payload:
@@ -143,6 +277,80 @@ def _apply_rollout_plan(asset: LayeredAsset, plan: StrategyPackRolloutPlan) -> b
         }
     )
     return True
+
+
+async def _find_strategy_pack_draft_asset(
+    store: AssetStore,
+    *,
+    tenant_id: str,
+    draft_id: str,
+) -> LayeredAsset | None:
+    assets = await store.list(tenant_id=tenant_id, asset_kind="methodology", limit=1000)
+    for asset in assets:
+        if (
+            str(asset.l1_metadata.get("draft_id") or asset.asset_id) == draft_id
+            and asset.l1_metadata.get("source") == "qi.idle_replay.strategy_pack_draft"
+        ):
+            return asset
+    return None
+
+
+def _plan_from_asset(asset: LayeredAsset) -> StrategyPackRolloutPlan:
+    raw = asset.l1_metadata.get("qi_rollout_plan")
+    if isinstance(raw, dict):
+        try:
+            return StrategyPackRolloutPlan.model_validate(raw)
+        except Exception:
+            pass
+    return build_strategy_pack_rollout_plan(asset)
+
+
+def _human_approved(asset: LayeredAsset) -> bool:
+    return bool(
+        asset.l1_metadata.get("qi_rollout_human_approved")
+        or asset.l1_metadata.get("human_approved_rollout")
+        or asset.l1_metadata.get("approved_for_shadow_experiment")
+    )
+
+
+async def _default_create_experiment(
+    tenant_id: str,
+    experiment_id: str,
+    control_variant: dict[str, Any],
+    treatment_variant: dict[str, Any],
+    guardrails: dict[str, Any],
+) -> bool:
+    from sqlalchemy import select
+
+    from kun.core.db import session_scope
+    from kun.core.orm import ExperimentRow
+
+    async with session_scope(tenant_id=tenant_id) as session:
+        existing = (
+            await session.execute(
+                select(ExperimentRow).where(
+                    ExperimentRow.tenant_id == tenant_id,
+                    ExperimentRow.id == experiment_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return False
+        session.add(
+            ExperimentRow(
+                tenant_id=tenant_id,
+                id=experiment_id,
+                kind="route_rule",
+                status="draft",
+                rollout_percent=0,
+                control_variant=control_variant,
+                treatment_variant=treatment_variant,
+                guardrails=guardrails,
+                metrics={},
+                created_at=datetime.now(UTC),
+            )
+        )
+        return True
 
 
 def _phases_for_risk(risk: str) -> list[StrategyPackRolloutPhase]:
@@ -225,10 +433,19 @@ def _plan_id(draft_id: str, proposed_pack_id: str) -> str:
     return f"qsp_plan_{digest[:16]}"
 
 
+def _experiment_id(draft_id: str, proposed_pack_id: str) -> str:
+    digest = hashlib.sha256(f"experiment:{draft_id}:{proposed_pack_id}".encode()).hexdigest()
+    return f"qsp_exp_{digest[:16]}"
+
+
 __all__ = [
+    "ExperimentBridgeStatus",
+    "ExperimentCreator",
+    "StrategyPackExperimentBridgeReport",
     "StrategyPackRolloutPhase",
     "StrategyPackRolloutPlan",
     "StrategyPackRolloutPlanReport",
     "build_strategy_pack_rollout_plan",
+    "create_strategy_pack_shadow_experiment",
     "plan_strategy_pack_rollouts",
 ]
