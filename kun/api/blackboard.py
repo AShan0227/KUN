@@ -82,6 +82,10 @@ class StateLedgerStory(BaseModel):
     latest_reason: str = ""
     status: str = "unknown"
     current_action: str = ""
+    decision_summary: dict[str, int] = Field(default_factory=dict)
+    decision_status_summary: dict[str, int] = Field(default_factory=dict)
+    needs_review_decision_count: int = 0
+    blocked_decision_count: int = 0
     pending_confirmations: list[str] = Field(default_factory=list)
     risk_flags: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)

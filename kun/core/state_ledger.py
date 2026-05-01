@@ -893,6 +893,8 @@ def replay_state_ledger_story(
     current_action = ""
     latest_reason = ""
     decision_ids: list[str] = []
+    decision_summary: dict[str, int] = {}
+    decision_status_summary: dict[str, int] = {}
     model_routes: list[str] = []
     skill_refs: list[str] = []
     context_asset_ids: list[str] = []
@@ -933,6 +935,10 @@ def replay_state_ledger_story(
         ticket_id = _first_non_empty(item.get("decision_ticket_id"), ticket.get("ticket_id"))
         if ticket_id:
             _append_unique(decision_ids, ticket_id)
+            point = str(ticket.get("decision_point") or "unknown")
+            status_value = str(ticket.get("status") or "unknown")
+            decision_summary[point] = decision_summary.get(point, 0) + 1
+            decision_status_summary[status_value] = decision_status_summary.get(status_value, 0) + 1
             _apply_decision_ticket_replay(
                 ticket,
                 model_routes=model_routes,
@@ -1007,6 +1013,10 @@ def replay_state_ledger_story(
         "latest_reason": latest_reason,
         "status": status,
         "current_action": current_action,
+        "decision_summary": decision_summary,
+        "decision_status_summary": decision_status_summary,
+        "needs_review_decision_count": decision_status_summary.get("needs_review", 0),
+        "blocked_decision_count": decision_status_summary.get("blocked", 0),
         "pending_confirmations": pending_confirmations,
         "risk_flags": risk_flags[-20:],
         "open_questions": [item for item in open_questions if item][-20:],

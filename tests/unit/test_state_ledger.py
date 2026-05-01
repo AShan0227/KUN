@@ -566,6 +566,22 @@ def test_state_ledger_replay_reconstructs_task_story_from_durable_events() -> No
             },
             {
                 "event_id": "evt-3",
+                "event_type": "delivery.needs_review",
+                "occurred_at": "2026-04-30T08:01:30Z",
+                "task_id": "task-1",
+                "summary": "needs review",
+                "decision_ticket_id": "decision-2",
+                "payload": {
+                    "ticket_id": "decision-2",
+                    "decision_point": "delivery_review",
+                    "phase": "delivery",
+                    "selected_action": "needs_review",
+                    "status": "needs_review",
+                    "reason": "人工复核更稳",
+                },
+            },
+            {
+                "event_id": "evt-4",
                 "event_type": "task.pending_actions.created",
                 "occurred_at": "2026-04-30T08:02:00Z",
                 "task_id": "task-1",
@@ -577,7 +593,7 @@ def test_state_ledger_replay_reconstructs_task_story_from_durable_events() -> No
                 },
             },
             {
-                "event_id": "evt-4",
+                "event_id": "evt-5",
                 "event_type": "task.pending_action.executed",
                 "occurred_at": "2026-04-30T08:03:00Z",
                 "task_id": "task-1",
@@ -589,7 +605,7 @@ def test_state_ledger_replay_reconstructs_task_story_from_durable_events() -> No
                 },
             },
             {
-                "event_id": "evt-5",
+                "event_id": "evt-6",
                 "event_type": "task.done",
                 "occurred_at": "2026-04-30T08:04:00Z",
                 "task_id": "task-1",
@@ -601,7 +617,13 @@ def test_state_ledger_replay_reconstructs_task_story_from_durable_events() -> No
     )
 
     assert story["status"] == "done"
-    assert story["decision_count"] == 1
+    assert story["decision_count"] == 2
+    assert story["decision_summary"] == {
+        "llm_model_selected": 1,
+        "delivery_review": 1,
+    }
+    assert story["decision_status_summary"]["needs_review"] == 1
+    assert story["needs_review_decision_count"] == 1
     assert story["world_action_count"] == 1
     assert story["external_action_count"] == 1
     assert story["pending_confirmations"] == []
