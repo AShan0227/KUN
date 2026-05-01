@@ -1853,9 +1853,9 @@ def idle_batch(
         help="all 或 anchor_expand；后台 worker 默认用 anchor_expand，CLI 默认保留 all 方便完整体检",
     ),
     max_rounds: int = typer.Option(
-        3,
+        5,
         "--max-rounds",
-        help="anchor_expand 模式最多展开几轮",
+        help="anchor_expand 模式最多展开几轮；默认 5，保证启的 replay/review/rollout 链能跑到。",
     ),
 ) -> None:
     """Run one pass of the idle-batch scheduler (§6.4)."""

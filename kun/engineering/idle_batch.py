@@ -35,6 +35,7 @@ from kun.core.tenancy import TenantContext, tenant_scope
 from kun.engineering.external_scan import fetch_github_repo_external_skill_metadata
 
 log = get_logger("kun.engineering.idle_batch")
+DEFAULT_ANCHOR_EXPAND_MAX_ROUNDS = 5
 
 
 @dataclass
@@ -226,7 +227,7 @@ async def run_all_anchor_then_expand(
     tenant_id: str,
     *,
     enabled: set[str] | None = None,
-    max_rounds: int = 3,
+    max_rounds: int = DEFAULT_ANCHOR_EXPAND_MAX_ROUNDS,
 ) -> AsyncIterator[StepReport]:
     """按需运行 idle-batch step.
 
@@ -264,7 +265,7 @@ async def run_anchor_then_expand_once(
     tenant_id: str,
     *,
     enabled: set[str] | None = None,
-    max_rounds: int = 3,
+    max_rounds: int = DEFAULT_ANCHOR_EXPAND_MAX_ROUNDS,
 ) -> list[StepReport]:
     """Collect one anchor-expand idle-batch pass into a plain list."""
 
@@ -282,17 +283,17 @@ def _selected_step_names(enabled: set[str] | None) -> list[str]:
     names = [n for n in list_steps() if enabled is None or n in enabled]
     priority = {
         "health_report": 0,
-        "world_handler_auto_quarantine": 1,
-        "coordination_remediation": 1,
-        "compiler_recompile": 2,
-        "compiler_intake_review": 2,
-        "external_skill_scout_plan": 2,
-        "qi_idle_replay": 2,
-        "qi_strategy_pack_review": 2,
-        "qi_strategy_pack_rollout_plan": 2,
-        "external_skill_candidate_review": 2,
-        "knowledge_precipitation": 2,
-        "incident_lessons": 2,
+        "world_handler_auto_quarantine": 0,
+        "qi_idle_replay": 1,
+        "qi_strategy_pack_review": 1,
+        "qi_strategy_pack_rollout_plan": 1,
+        "coordination_remediation": 2,
+        "compiler_recompile": 3,
+        "compiler_intake_review": 3,
+        "external_skill_scout_plan": 3,
+        "external_skill_candidate_review": 3,
+        "knowledge_precipitation": 3,
+        "incident_lessons": 3,
         "knowledge_conflict": 3,
         "methodology_distill": 4,
         "route_rule_mining": 5,
@@ -1486,7 +1487,15 @@ async def idle_batch_worker(
     if use_anchor_expand is None:
         use_anchor_expand = os.getenv("KUN_IDLE_BATCH_ANCHOR_EXPAND_ENABLED", "1") == "1"
     if anchor_max_rounds is None:
-        anchor_max_rounds = max(1, int(os.getenv("KUN_IDLE_BATCH_ANCHOR_EXPAND_MAX_ROUNDS", "3")))
+        anchor_max_rounds = max(
+            1,
+            int(
+                os.getenv(
+                    "KUN_IDLE_BATCH_ANCHOR_EXPAND_MAX_ROUNDS",
+                    str(DEFAULT_ANCHOR_EXPAND_MAX_ROUNDS),
+                )
+            ),
+        )
     mode = "anchor_expand" if use_anchor_expand else "all"
     log.info(
         "idle_batch.worker.start",
@@ -1522,7 +1531,7 @@ async def run_once(
     enabled: set[str] | None = None,
     on_done: RunCallback | None = None,
     strategy: Literal["all", "anchor_expand"] = "all",
-    max_rounds: int = 3,
+    max_rounds: int = DEFAULT_ANCHOR_EXPAND_MAX_ROUNDS,
 ) -> list[StepReport]:
     """Run one pass of all steps. Used by CLI + tests."""
     if strategy == "anchor_expand":

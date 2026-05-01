@@ -184,6 +184,30 @@ def test_default_steps_registered():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_default_anchor_budget_reaches_qi_replay_review_and_rollout() -> None:
+    reports = await run_anchor_then_expand_once(
+        "u-test",
+        enabled={
+            "health_report",
+            "world_handler_auto_quarantine",
+            "qi_idle_replay",
+            "qi_strategy_pack_review",
+            "qi_strategy_pack_rollout_plan",
+            "coordination_remediation",
+        },
+    )
+
+    assert [report.step_id for report in reports] == [
+        "health_report",
+        "world_handler_auto_quarantine",
+        "qi_idle_replay",
+        "qi_strategy_pack_review",
+        "qi_strategy_pack_rollout_plan",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_run_once_enabled_filter():
     recorder = _RecordingStep()
     register_step(recorder)
