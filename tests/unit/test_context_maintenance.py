@@ -89,3 +89,54 @@ async def test_context_maintenance_flags_risky_compiler_assets() -> None:
 
     assert report.compiler_review == 1
     assert any(item.action == "compiler_review" for item in report.findings)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_maintenance_marks_duplicates_without_deleting() -> None:
+    store = InMemoryAssetStore()
+    first = LayeredAsset.build("knowledge", "tenant-a", metadata={"title": "A"}, summary="same")
+    duplicate = LayeredAsset.build(
+        "knowledge",
+        "tenant-a",
+        metadata={"title": "B"},
+        summary="same",
+    )
+    await store.put(first)
+    await store.put(duplicate)
+
+    report = await run_context_maintenance(tenant_id="tenant-a", dry_run=False, store=store)
+    after = await store.get(duplicate.asset_id, tenant_id="tenant-a")
+
+    assert report.duplicate_candidates == 1
+    assert after is not None
+    assert after.l1_metadata["duplicate_candidate"] is True
+    assert after.l1_metadata["duplicate_of"] == first.asset_id
+    assert "duplicate_candidate" in after.tags
+    assert await store.get(first.asset_id, tenant_id="tenant-a") is not None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_maintenance_marks_compiler_review_assets_when_not_dry_run() -> None:
+    store = InMemoryAssetStore()
+    asset = LayeredAsset.build(
+        "knowledge",
+        "tenant-a",
+        metadata={
+            "compiler_profile": {"name": "kun-v5-lightweight", "limitations": []},
+            "risk": {"level": "medium", "flags": ["pdf_text_unavailable"]},
+            "provenance": {"input_sha256": "abc"},
+        },
+        summary="PDF document; text extraction unavailable",
+    )
+    await store.put(asset)
+
+    report = await run_context_maintenance(tenant_id="tenant-a", dry_run=False, store=store)
+    after = await store.get(asset.asset_id, tenant_id="tenant-a")
+
+    assert report.compiler_review == 1
+    assert after is not None
+    assert after.l1_metadata["compiler_review_required"] is True
+    assert "pdf_text_unavailable" in after.l1_metadata["compiler_review_reason"]
+    assert "compiler_review_required" in after.tags

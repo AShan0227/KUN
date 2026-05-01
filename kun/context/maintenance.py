@@ -68,7 +68,7 @@ async def run_context_maintenance(
 ) -> ContextMaintenanceReport:
     store = store or get_store()
     report = ContextMaintenanceReport(tenant_id=tenant_id, dry_run=dry_run)
-    seen_summaries: set[tuple[str, str]] = set()
+    seen_summaries: dict[tuple[str, str], str] = {}
     now = datetime.now(UTC)
     for kind in _ASSET_KINDS:
         assets = await store.list(tenant_id=tenant_id, asset_kind=kind, limit=max_assets)
@@ -81,14 +81,26 @@ async def run_context_maintenance(
                 report.findings.append(
                     _finding(asset, "duplicate", "same kind and identical summary", dry_run)
                 )
+                if not dry_run:
+                    asset.l1_metadata["duplicate_candidate"] = True
+                    asset.l1_metadata["duplicate_of"] = seen_summaries[summary_key]
+                    asset.tags = sorted({*asset.tags, "duplicate_candidate"})
+                    await store.put(asset)
+                    await _emit_maintenance_event(tenant_id, asset, "duplicate")
                 continue
             if summary_key[1]:
-                seen_summaries.add(summary_key)
+                seen_summaries[summary_key] = asset.asset_id
 
             compiler_reason = _compiler_review_reason(asset)
             if compiler_reason:
                 report.compiler_review += 1
                 report.findings.append(_finding(asset, "compiler_review", compiler_reason, dry_run))
+                if not dry_run:
+                    asset.l1_metadata["compiler_review_required"] = True
+                    asset.l1_metadata["compiler_review_reason"] = compiler_reason
+                    asset.tags = sorted({*asset.tags, "compiler_review_required"})
+                    await store.put(asset)
+                    await _emit_maintenance_event(tenant_id, asset, "compiler_review")
 
             if (
                 age_days >= hard_delete_after_days
@@ -165,7 +177,9 @@ def _finding(
 
 
 async def _emit_maintenance_event(tenant_id: str, asset: LayeredAsset, action: ActionKind) -> None:
-    event_type: EventKind = "context.updated" if action == "compress" else "context.forgotten"
+    event_type: EventKind = (
+        "context.forgotten" if action in {"soft_forget", "hard_delete"} else "context.updated"
+    )
     try:
         async with session_scope(tenant_id=tenant_id) as s:
             await emit(
