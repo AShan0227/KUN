@@ -20,6 +20,7 @@ from kun.engineering.idle_batch import (
     MethodologyDistillStep,
     QiIdleReplayStep,
     QiStrategyPackReviewStep,
+    QiStrategyPackRolloutPlanStep,
     RouteRuleMiningStep,
     TaskReplayStep,
     list_steps,
@@ -139,6 +140,7 @@ def test_default_steps_registered():
     assert "route_rule_mining" in steps
     assert "qi_idle_replay" in steps
     assert "qi_strategy_pack_review" in steps
+    assert "qi_strategy_pack_rollout_plan" in steps
     assert "context_governance_rule_distill" in steps
     assert "compiler_sync_sources" in steps
     assert "external_emergent_scan" in steps
@@ -441,6 +443,40 @@ async def test_qi_strategy_pack_review_step_classifies_existing_drafts(monkeypat
     draft_assets = await get_store().list(tenant_id="t-1", asset_kind="methodology")
     assert all("qi_review_status" in asset.l1_metadata for asset in draft_assets)
     assert all(any(tag.startswith("qi_review:") for tag in asset.tags) for asset in draft_assets)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qi_strategy_pack_rollout_plan_step_only_plans_ready_drafts() -> None:
+    from kun.context.assets import LayeredAsset
+    from kun.context.storage import get_store
+
+    store = get_store()
+    await store.put(
+        LayeredAsset.build(
+            "methodology",
+            "t-1",
+            metadata={
+                "source": "qi.idle_replay.strategy_pack_draft",
+                "draft_id": "spd-ready",
+                "proposed_pack_id": "qi_ready",
+                "qi_review_status": "ready_for_human_review",
+                "qi_review_risk": "low",
+                "production_action": False,
+            },
+            summary="ready strategy draft",
+            tags=["strategy_pack_draft", "qi_review:ready_for_human_review"],
+        )
+    )
+
+    summary = await QiStrategyPackRolloutPlanStep().run("t-1")
+
+    assert summary["scanned"] == 1
+    assert summary["planned"] == 1
+    assert summary["updated"] == 1
+    assets = await store.list(tenant_id="t-1", asset_kind="methodology")
+    assert assets[0].l1_metadata["qi_rollout_plan_status"] == "shadow_plan"
+    assert assets[0].l1_metadata["production_action"] is False
 
 
 @pytest.mark.unit

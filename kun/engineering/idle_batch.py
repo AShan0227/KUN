@@ -584,6 +584,21 @@ class QiStrategyPackReviewStep(IdleBatchStep):
         return report.model_dump(mode="json")
 
 
+class QiStrategyPackRolloutPlanStep(IdleBatchStep):
+    """Create guarded rollout plans for reviewed Qi StrategyPack drafts."""
+
+    step_id = "qi_strategy_pack_rollout_plan"
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        from kun.qi.strategy_pack_rollout import plan_strategy_pack_rollouts
+
+        report = await plan_strategy_pack_rollouts(
+            tenant_id=tenant_id,
+            dry_run=False,
+        )
+        return report.model_dump(mode="json")
+
+
 class CompilerSyncSourcesStep(IdleBatchStep):
     """Run explicitly configured compiler sync sources during idle time.
 
@@ -905,6 +920,7 @@ def register_default_steps() -> None:
         WorldHandlerAutoQuarantineStep(),
         QiIdleReplayStep(),
         QiStrategyPackReviewStep(),
+        QiStrategyPackRolloutPlanStep(),
         CompilerSyncSourcesStep(),
         ExternalEmergentScanStep(),
         RouteRuleMiningStep(),
