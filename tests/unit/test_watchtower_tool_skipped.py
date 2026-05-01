@@ -6,7 +6,10 @@ from collections.abc import AsyncIterator
 
 import pytest
 from kun.core.orm import EventRow
-from kun.watchtower.handlers import handle_tool_skipped
+from kun.watchtower.handlers import (
+    _enqueue_external_skill_scout_for_promoted_miss,
+    handle_tool_skipped,
+)
 
 
 class _FakeScope:
@@ -44,6 +47,7 @@ async def test_tool_skipped_handler_promotes_after_threshold(
 ) -> None:
     counts: dict[tuple[str, str, str], int] = {}
     emitted: list[dict[str, object]] = []
+    scout_requests: list[dict[str, object]] = []
 
     async def fake_record(
         _session: object,
@@ -75,6 +79,29 @@ async def test_tool_skipped_handler_promotes_after_threshold(
     monkeypatch.setattr("kun.watchtower.handlers._record_proactive_miss", fake_record)
     monkeypatch.setattr("kun.watchtower.handlers.emit", fake_emit)
 
+    async def fake_enqueue_scout(
+        *,
+        tenant_id: str,
+        task_ref: str,
+        miss: dict[str, str],
+        prompt_excerpt: str = "",
+    ) -> int:
+        scout_requests.append(
+            {
+                "tenant_id": tenant_id,
+                "task_ref": task_ref,
+                "skill_id": miss["skill_id"],
+                "pattern": miss["pattern"],
+                "prompt_excerpt": prompt_excerpt,
+            }
+        )
+        return 1
+
+    monkeypatch.setattr(
+        "kun.watchtower.handlers._enqueue_external_skill_scout_for_promoted_miss",
+        fake_enqueue_scout,
+    )
+
     for _ in range(9):
         await handle_tool_skipped(_event("tenant-a"))
         await handle_tool_skipped(_event("tenant-b"))
@@ -93,3 +120,46 @@ async def test_tool_skipped_handler_promotes_after_threshold(
         "threshold": 10,
         "trigger_source": "skill_manifest",
     }
+    assert scout_requests == [
+        {
+            "tenant_id": "tenant-a",
+            "task_ref": "task-001",
+            "skill_id": "web-search",
+            "pattern": "latest|today",
+            "prompt_excerpt": "",
+        }
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_promoted_tool_miss_queues_review_only_external_skill_scout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kun.qi.problem_queue import get_qi_problem_queue, reset_qi_problem_queue
+
+    reset_qi_problem_queue()
+    monkeypatch.setenv("KUN_QI_PROBLEM_QUEUE_DB_ENABLED", "0")
+
+    persisted = await _enqueue_external_skill_scout_for_promoted_miss(
+        tenant_id="tenant-a",
+        task_ref="task-001",
+        miss={
+            "skill_id": "code-review",
+            "pattern": "typescript|diff",
+            "reason": "executor_unregistered",
+            "trigger_source": "skill_manifest",
+        },
+        prompt_excerpt="Need stronger TypeScript pull request review.",
+    )
+
+    queued = get_qi_problem_queue().list("tenant-a", limit=10)
+    assert persisted == 1
+    assert len(queued) == 1
+    signal = queued[0]
+    assert signal.source == "external_skill.scout_plan"
+    assert signal.evidence["queue_intent"] == "external_skill_scout_review_only"
+    assert signal.evidence["review_only"] is True
+    assert signal.evidence["auto_install_allowed"] is False
+    assert signal.evidence["production_action"] is False
+    assert "mattpocock/skills" in signal.evidence["recommended_repo_refs"]

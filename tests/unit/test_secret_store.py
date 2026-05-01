@@ -9,6 +9,7 @@ from kun.ops.secret_store import (
     SECRET_STORE_FILE_ENV,
     secret_for_tenant,
     secret_store_has_required,
+    secret_store_metadata_entries,
     secret_store_status,
     upsert_secret_store_value,
 )
@@ -46,6 +47,45 @@ def test_secret_store_reads_tenant_scoped_values(tmp_path: Path) -> None:
         "kun@tenant-a.example.com"
     )
     assert env_for_tenant("tenant-a", "KUN_WORLD_SMTP_PORT", env=env) == "2525"
+
+
+@pytest.mark.unit
+def test_secret_store_reads_structured_value_and_redacted_metadata(tmp_path: Path) -> None:
+    store = tmp_path / "secrets.json"
+    store.write_text(
+        json.dumps(
+            {
+                "tenants": {
+                    "tenant-a": {
+                        "KUN_WORLD_SMTP_PASSWORD": {
+                            "value": "super-secret-password",
+                            "metadata": {
+                                "source": "ops-ticket-123",
+                                "last_rotated_at": "2026-04-01T00:00:00Z",
+                                "expires_at": "2999-01-01T00:00:00Z",
+                            },
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = {SECRET_STORE_FILE_ENV: str(store)}
+
+    assert secret_for_tenant("tenant-a", "KUN_WORLD_SMTP_PASSWORD", env=env) == (
+        "super-secret-password"
+    )
+    metadata = secret_store_metadata_entries(env=env)
+
+    assert len(metadata) == 1
+    entry = metadata[0]
+    assert entry.name == "KUN_WORLD_SMTP_PASSWORD"
+    assert entry.tenant_id == "tenant-a"
+    assert entry.source == "ops-ticket-123"
+    assert entry.rotation_metadata_present is True
+    assert entry.expired is False
+    assert "super-secret-password" not in repr(entry)
 
 
 @pytest.mark.unit
@@ -115,6 +155,102 @@ def test_secret_audit_reports_configured_secret_store(tmp_path: Path) -> None:
 
     assert item.severity == "ok"
     assert "smtp.tenant-a.example.com" not in item.detail
+
+
+@pytest.mark.unit
+def test_secret_audit_accepts_healthy_world_gateway_secret_metadata(tmp_path: Path) -> None:
+    store = tmp_path / "secrets.json"
+    store.write_text(
+        json.dumps(
+            {
+                "tenants": {
+                    "tenant-a": {
+                        "KUN_WORLD_API_AUTH_VALUE": {
+                            "value": "secret-token",
+                            "metadata": {
+                                "source": "vault-export:test",
+                                "last_rotated_at": "2026-04-01T00:00:00Z",
+                                "expires_at": "2999-01-01T00:00:00Z",
+                            },
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = audit_runtime_secrets(environ={SECRET_STORE_FILE_ENV: str(store)})
+
+    assert not [
+        item
+        for item in report.items
+        if item.item_id.startswith("world_gateway.secret_store.tenant_tenant_a")
+        and item.severity != "ok"
+    ]
+    assert "secret-token" not in report.model_dump_json()
+
+
+@pytest.mark.unit
+def test_secret_audit_flags_expired_world_gateway_secret_without_value(tmp_path: Path) -> None:
+    store = tmp_path / "secrets.json"
+    store.write_text(
+        json.dumps(
+            {
+                "tenants": {
+                    "tenant-a": {
+                        "KUN_WORLD_SMTP_PASSWORD": {
+                            "value": "expired-secret",
+                            "metadata": {
+                                "source": "ops-ticket-456",
+                                "last_rotated_at": "2025-01-01T00:00:00Z",
+                                "expires_at": "2025-02-01T00:00:00Z",
+                            },
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = audit_runtime_secrets(environ={SECRET_STORE_FILE_ENV: str(store)})
+    item = next(item for item in report.items if item.item_id.endswith(".expired"))
+
+    assert item.severity == "blocker"
+    assert "已过期" in item.title
+    assert "立即轮换" in item.suggested_action
+    assert "expired-secret" not in report.model_dump_json()
+
+
+@pytest.mark.unit
+def test_secret_audit_flags_missing_world_gateway_rotation_metadata(tmp_path: Path) -> None:
+    store = tmp_path / "secrets.json"
+    store.write_text(
+        json.dumps(
+            {
+                "tenants": {
+                    "tenant-a": {
+                        "KUN_WORLD_API_AUTH_VALUE": {
+                            "value": "token-without-metadata",
+                            "metadata": {"source": "manual-import"},
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = audit_runtime_secrets(environ={SECRET_STORE_FILE_ENV: str(store)})
+    item = next(
+        item for item in report.items if item.item_id.endswith(".missing_rotation_metadata")
+    )
+
+    assert item.severity == "warn"
+    assert "缺少轮换元数据" in item.title
+    assert "last_rotated_at" in item.detail
+    assert "token-without-metadata" not in report.model_dump_json()
 
 
 @pytest.mark.unit

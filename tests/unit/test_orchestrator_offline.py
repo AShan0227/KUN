@@ -174,6 +174,40 @@ class _CostlyRoutingStub(_RoutingStub):
         return await StubProvider.invoke(self, request)
 
 
+class _PromptCaptureRoutingStub(StubProvider):
+    def __init__(self, *, task_type: str, prompt_log: list[str], **kwargs):
+        super().__init__(**kwargs)
+        self.task_type = task_type
+        self.prompt_log = prompt_log
+
+    async def invoke(self, request):
+        sys_text = " ".join(m.content for m in request.messages if m.role == "system")
+        if "意图理解层" in sys_text:
+            self._builder = lambda _request: LLMResponse(
+                content=json.dumps(
+                    {
+                        "task_type": self.task_type,
+                        "risk_level": "low",
+                        "complexity_score": 0.1,
+                        "estimated_cost_usd": 0.01,
+                        "estimated_duration_sec": 5,
+                        "success_criteria_short": "captured prompt task",
+                        "goal_detail": "captured prompt task",
+                        "success_metrics": ["answer is produced"],
+                        "required_skills": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                usage=UsageInfo(input_tokens=5, output_tokens=20),
+            )
+        elif "评估判官" in sys_text:
+            self._builder = _judge_builder  # type: ignore[assignment]
+        else:
+            self.prompt_log.append(sys_text)
+            self._builder = _exec_builder  # type: ignore[assignment]
+        return await super().invoke(request)
+
+
 class _WorldRequestRoutingStub(_RoutingStub):
     async def invoke(self, request):
         sys_text = " ".join(m.content for m in request.messages if m.role == "system")
@@ -301,6 +335,69 @@ async def test_orchestrator_uses_llm_planner_for_complex_task():
     assert top.planning_calls == 1
     assert "answer" in events_seen
     assert "done" in events_seen
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_code_task_prompt_includes_code_capability_guardrails():
+    prompt_log: list[str] = []
+    shared = _PromptCaptureRoutingStub(
+        tier="top",
+        task_type="coding.python",
+        prompt_log=prompt_log,
+    )
+    providers = {
+        "top": shared,
+        "cheap": shared,
+        "coding": shared,
+        "fallback": shared,
+    }
+    set_router(LLMRouter(providers))
+
+    events = []
+    async for ev in Orchestrator(output_translator=_identity_translator).stream(
+        "Fix this Python bug and add a unit test"
+    ):
+        events.append(ev)
+
+    assert any(ev.kind == "done" for ev in events)
+    exec_prompt = "\n\n".join(prompt_log)
+    assert "CodeCapability coding-task policy" in exec_prompt
+    assert "code-review" in exec_prompt
+    assert "code-propose-change" in exec_prompt
+    assert "dry-run" in exec_prompt
+    assert "KUN_CODE_PROPOSE_CHANGE_SKILL_ALLOW_APPLY" in exec_prompt
+    assert "全自动 coder" in exec_prompt
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_non_code_task_prompt_omits_code_capability_guardrails():
+    prompt_log: list[str] = []
+    shared = _PromptCaptureRoutingStub(
+        tier="top",
+        task_type="writing.greeting",
+        prompt_log=prompt_log,
+    )
+    providers = {
+        "top": shared,
+        "cheap": shared,
+        "coding": shared,
+        "fallback": shared,
+    }
+    set_router(LLMRouter(providers))
+
+    events = []
+    async for ev in Orchestrator(output_translator=_identity_translator).stream(
+        "Please greet the world"
+    ):
+        events.append(ev)
+
+    assert any(ev.kind == "done" for ev in events)
+    exec_prompt = "\n\n".join(prompt_log)
+    assert "CodeCapability coding-task policy" not in exec_prompt
+    assert "code-review" not in exec_prompt
+    assert "code-propose-change" not in exec_prompt
 
 
 @pytest.mark.unit

@@ -269,12 +269,26 @@ def test_handler_health_reads_expected_handler_config_from_secret_store(
     store.write_text(
         json.dumps(
             {
-                "global": {"KUN_WORLD_EMAIL_SEND_ENABLED": "true"},
+                "global": {
+                    "KUN_WORLD_EMAIL_SEND_ENABLED": {
+                        "value": "true",
+                        "metadata": {"source": "ops-runbook"},
+                    }
+                },
                 "tenants": {
                     "tenant-1": {
-                        "KUN_WORLD_SMTP_HOST": "smtp.secret.example.com",
-                        "KUN_WORLD_SMTP_FROM": "kun@secret.example.com",
-                        "KUN_WORLD_EMAIL_ALLOWED_DOMAINS": "example.com",
+                        "KUN_WORLD_SMTP_HOST": {
+                            "value": "smtp.secret.example.com",
+                            "metadata": {"source": "ops-runbook"},
+                        },
+                        "KUN_WORLD_SMTP_FROM": {
+                            "value": "kun@secret.example.com",
+                            "metadata": {"source": "ops-runbook"},
+                        },
+                        "KUN_WORLD_EMAIL_ALLOWED_DOMAINS": {
+                            "value": "example.com",
+                            "metadata": {"source": "ops-runbook"},
+                        },
                     }
                 },
             }

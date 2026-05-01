@@ -72,6 +72,11 @@ from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
 from kun.engineering.budget_tracker import HARD_BREAK_RATIO_TASK, BudgetTracker
 from kun.engineering.capability_writeback import Outcome, TaskOutcome, record_outcome
+from kun.engineering.code_task_policy import (
+    code_task_directive,
+    is_code_task,
+    merge_code_capability_skill_summaries,
+)
 from kun.engineering.concurrency import (
     PendingActionSpec,
     PreConflictReport,
@@ -1446,8 +1451,12 @@ class Orchestrator:
         # can dispatch real tool calls (R-A2). We feed every executable
         # builtin that's both registered AND a candidate into the directive.
         from kun.engineering.agent_loop import build_skill_directive
+        from kun.skills.dispatcher import autoload_builtins
         from kun.skills.dispatcher import is_registered as _skill_is_registered
 
+        coding_task_policy_active = is_code_task(task_ref)
+        if coding_task_policy_active:
+            autoload_builtins()
         skill_summaries = [
             (
                 s.skill_id,
@@ -1457,6 +1466,12 @@ class Orchestrator:
             for s in skill_candidates
             if _skill_is_registered(s.skill_id)
         ]
+        if coding_task_policy_active:
+            skill_summaries = [
+                summary
+                for summary in merge_code_capability_skill_summaries(skill_summaries)
+                if _skill_is_registered(summary[0])
+            ]
         if _skill_is_registered("world-request") and not any(
             skill_id == "world-request" for skill_id, _, _ in skill_summaries
         ):
@@ -3621,6 +3636,9 @@ class Orchestrator:
         ]
         if skills_summary:
             system_parts.append(skills_summary)
+        code_policy_directive = code_task_directive(task_ref)
+        if code_policy_directive:
+            system_parts.append(code_policy_directive)
         if skill_directive:
             system_parts.append(skill_directive)
         if context_summary:
@@ -3717,6 +3735,9 @@ class Orchestrator:
         ]
         if skills_summary:
             system_parts.append(skills_summary)
+        code_policy_directive = code_task_directive(task_ref)
+        if code_policy_directive:
+            system_parts.append(code_policy_directive)
         if skill_directive:
             system_parts.append(skill_directive)
         if context_summary:

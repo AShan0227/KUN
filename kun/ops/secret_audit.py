@@ -14,7 +14,12 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field
 
 from kun.core.config import Settings, settings
-from kun.ops.secret_store import SECRET_STORE_FILE_ENV, secret_store_status
+from kun.ops.secret_store import (
+    SECRET_STORE_FILE_ENV,
+    SecretStoreMetadataEntry,
+    secret_store_metadata_entries,
+    secret_store_status,
+)
 from kun.world.handler_health import EXPECTED_REAL_WORLD_HANDLERS
 from kun.world.tenant_env import (
     env_for_tenant,
@@ -363,7 +368,7 @@ def _secret_store_items(env: Mapping[str, str]) -> list[SecretAuditItem]:
                 env_vars=[SECRET_STORE_FILE_ENV],
             )
         ]
-    return [
+    items = [
         SecretAuditItem(
             item_id="world_gateway.secret_store.configured",
             area="world_gateway",
@@ -377,6 +382,75 @@ def _secret_store_items(env: Mapping[str, str]) -> list[SecretAuditItem]:
             env_vars=[SECRET_STORE_FILE_ENV],
         )
     ]
+    items.extend(_world_gateway_secret_metadata_items(env))
+    return items
+
+
+def _world_gateway_secret_metadata_items(env: Mapping[str, str]) -> list[SecretAuditItem]:
+    entries = [
+        entry
+        for entry in secret_store_metadata_entries(env=env)
+        if _is_rotatable_world_gateway_secret(entry)
+    ]
+    items: list[SecretAuditItem] = []
+    for entry in entries:
+        env_vars = [entry.name, SECRET_STORE_FILE_ENV]
+        label = _metadata_label(entry)
+        if entry.expired:
+            items.append(
+                SecretAuditItem(
+                    item_id=f"world_gateway.secret_store.{_metadata_item_key(entry)}.expired",
+                    area="world_gateway",
+                    severity="blocker",
+                    title=f"{label} 已过期",
+                    detail=(
+                        f"{label} 的 expires_at={entry.expires_at} 已过期；"
+                        "审计只输出名称和元数据，不输出密钥值。"
+                    ),
+                    suggested_action=(
+                        "立即轮换该 WorldGateway 密钥，更新 last_rotated_at/expires_at/source；"
+                        "这仍只是本地 JSON secret store，不是云 KMS。"
+                    ),
+                    env_vars=env_vars,
+                )
+            )
+        if not entry.rotation_metadata_present:
+            items.append(
+                SecretAuditItem(
+                    item_id=(
+                        f"world_gateway.secret_store."
+                        f"{_metadata_item_key(entry)}.missing_rotation_metadata"
+                    ),
+                    area="world_gateway",
+                    severity="warn",
+                    title=f"{label} 缺少轮换元数据",
+                    detail=(
+                        f"{label} 缺少 last_rotated_at 或 expires_at；"
+                        "无法判断轮换窗口，且报告不会输出密钥值。"
+                    ),
+                    suggested_action=(
+                        "给该条目补 last_rotated_at、expires_at；"
+                        "正式生产仍应接云 KMS/Secret Manager 做托管轮换和访问审计。"
+                    ),
+                    env_vars=env_vars,
+                )
+            )
+        if not entry.source_metadata_present:
+            items.append(
+                SecretAuditItem(
+                    item_id=(
+                        f"world_gateway.secret_store."
+                        f"{_metadata_item_key(entry)}.missing_source_metadata"
+                    ),
+                    area="world_gateway",
+                    severity="warn",
+                    title=f"{label} 缺少来源元数据",
+                    detail=f"{label} 缺少 source/source_ref/provisioned_by；无法追溯来源。",
+                    suggested_action="补充来源元数据，至少标明来源系统、工单或人工写入记录。",
+                    env_vars=env_vars,
+                )
+            )
+    return items
 
 
 def _world_gateway_extra_risks(
@@ -426,6 +500,39 @@ def _world_gateway_extra_risks(
                 )
             ]
     return []
+
+
+def _is_rotatable_world_gateway_secret(entry: SecretStoreMetadataEntry) -> bool:
+    if not entry.name.startswith("KUN_WORLD_"):
+        return False
+    non_secret_suffixes = (
+        "_ENABLED",
+        "_ALLOWED_DOMAINS",
+        "_ALLOWED_HOSTS",
+        "_HOST",
+        "_PORT",
+        "_FROM",
+        "_AUTH_HEADER",
+    )
+    if entry.name.endswith(non_secret_suffixes):
+        return False
+    secret_markers = ("PASSWORD", "SECRET", "TOKEN", "AUTH", "KEY", "CREDENTIAL")
+    return any(marker in entry.name for marker in secret_markers)
+
+
+def _metadata_label(entry: SecretStoreMetadataEntry) -> str:
+    if entry.scope == "tenant":
+        return f"租户 {entry.tenant_id} 的 {entry.name}"
+    return f"全局 {entry.name}"
+
+
+def _metadata_item_key(entry: SecretStoreMetadataEntry) -> str:
+    scope = "global" if entry.scope == "global" else f"tenant_{entry.tenant_id}"
+    return _safe_item_key(f"{scope}.{entry.name}")
+
+
+def _safe_item_key(raw: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else "_" for ch in raw).strip("_")
 
 
 def _llm_items(env: Mapping[str, str]) -> list[SecretAuditItem]:
