@@ -11,6 +11,7 @@ from kun.engineering.idle_batch import (
     ABDecisionRollupStep,
     CompilerSyncSourcesStep,
     ConsistencyTestStep,
+    ExternalEmergentScanStep,
     HealthReportStep,
     IdleBatchStep,
     IncidentLessonDistillStep,
@@ -100,16 +101,32 @@ class _FakeIdleBatchDataSource:
             }
         ]
 
+    def external_scan_items(self, tenant_id: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "tenant_id": tenant_id,
+                "task_type": "coding",
+                "source_kind": "internal_history",
+                "url": "kun://history/coding-review",
+                "snippet": "先写失败测试，再做最小修复，最后跑 targeted + affected tests。",
+                "estimated_outcome_delta": 0.22,
+                "estimated_cost_delta": -0.03,
+            }
+        ]
+
 
 @pytest.fixture(autouse=True)
 def _reset_data_source():
     from kun.context.storage import reset_store
+    from kun.core.emergent_solution import reset_library
 
     reset_idle_batch_data_source()
     reset_store()
+    reset_library()
     yield
     reset_idle_batch_data_source()
     reset_store()
+    reset_library()
 
 
 @pytest.mark.unit
@@ -120,6 +137,7 @@ def test_default_steps_registered():
     assert "route_rule_mining" in steps
     assert "qi_idle_replay" in steps
     assert "compiler_sync_sources" in steps
+    assert "external_emergent_scan" in steps
 
 
 @pytest.mark.unit
@@ -457,6 +475,74 @@ async def test_compiler_sync_sources_step_runs_configured_sources(
     assets = await get_store().list(tenant_id="t-1", asset_kind="knowledge")
     assert len(assets) == 1
     assert assets[0].l1_metadata["material_metadata"]["compiler_sync_source_id"] == "idle-docs"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_external_emergent_scan_step_is_opt_in() -> None:
+    summary = await ExternalEmergentScanStep().run("t-1")
+
+    assert summary["skipped"] is True
+    assert summary["candidates_added"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_external_emergent_scan_step_adds_reviewed_candidates() -> None:
+    from kun.core.emergent_solution import get_library
+
+    set_idle_batch_data_source(_FakeIdleBatchDataSource())
+
+    summary = await ExternalEmergentScanStep().run("t-1")
+
+    assert summary["skipped"] is False
+    assert summary["input_rows"] == 1
+    assert summary["sources_queried"] == 1
+    assert summary["candidates_added"] == 1
+    candidates = get_library().list_for_task_type("coding")
+    assert len(candidates) == 1
+    assert candidates[0].discovered_by == "external_scan"
+    assert candidates[0].source.kind == "internal_history"
+    assert candidates[0].description.startswith("先写失败测试")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_external_emergent_scan_step_reads_opt_in_source_file(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from kun.core.emergent_solution import get_library
+
+    source = tmp_path / "external_scan.json"
+    source.write_text(
+        """
+        {
+          "tenant_id": "t-file",
+          "items": [
+            {
+              "task_type": "marketing.ad",
+              "source_kind": "competitor_changelog",
+              "url": "https://example.com/changelog",
+              "snippet": "短视频广告先做强 hook，再压缩到 3 个可测版本。",
+              "estimated_outcome_delta": 0.18,
+              "estimated_cost_delta": 0.01
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KUN_EXTERNAL_SCAN_SOURCE_FILES", str(source))
+    monkeypatch.setenv("KUN_EXTERNAL_SCAN_CONFIG_ROOT", str(tmp_path))
+
+    summary = await ExternalEmergentScanStep().run("t-file")
+
+    assert summary["skipped"] is False
+    assert summary["candidates_added"] == 1
+    candidates = get_library().list_for_task_type("marketing.ad")
+    assert len(candidates) == 1
+    assert candidates[0].source.kind == "competitor_changelog"
 
 
 @pytest.mark.unit

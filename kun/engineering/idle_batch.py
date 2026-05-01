@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import os
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any, Literal, cast
 
 from kun.core.anchor_expand import AnchorExpandIterator
 from kun.core.logging import get_logger
@@ -556,6 +559,59 @@ class CompilerSyncSourcesStep(IdleBatchStep):
         }
 
 
+class ExternalEmergentScanStep(IdleBatchStep):
+    """Feed explicit external strategy signals into the EmergentSolution library.
+
+    This is intentionally not a crawler.  It consumes either an injected idle
+    data source or opt-in JSON files and then uses ExternalInfoScanner's review
+    and budget logic.  Real internet fetchers can be added later without
+    changing the idle-batch control surface.
+    """
+
+    step_id = "external_emergent_scan"
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        from kun.core.emergent_solution import get_library
+        from kun.engineering.external_scan import ExternalInfoScanner
+
+        rows = await _external_scan_rows(tenant_id)
+        if not rows:
+            return {
+                "skipped": True,
+                "reason": "no external scan rows configured",
+                "scanned_task_types": [],
+                "sources_queried": 0,
+                "candidates_added": 0,
+                "candidates_rejected": 0,
+            }
+
+        fetchers = _external_scan_fetchers(rows)
+        task_types = _external_scan_task_types(rows)
+        if not fetchers or not task_types:
+            return {
+                "skipped": True,
+                "reason": "no valid source_kind/task_type in external scan rows",
+                "scanned_task_types": [],
+                "sources_queried": 0,
+                "candidates_added": 0,
+                "candidates_rejected": 0,
+            }
+
+        scanner = ExternalInfoScanner(
+            get_library(),
+            fetchers=fetchers,
+            user_top_task_types_lookup=lambda _tenant_id: task_types,
+            user_telemetry_enabled=lambda _tenant_id: True,
+            default_daily_limit=_int_env("KUN_EXTERNAL_SCAN_DAILY_LIMIT", 25),
+        )
+        result = await scanner.scan_for_user(tenant_id)
+        return {
+            "skipped": False,
+            "input_rows": len(rows),
+            **result.__dict__,
+        }
+
+
 class RouteRuleMiningStep(IdleBatchStep):
     """Cluster + association-rule mining over routing logs to surface new route patterns."""
 
@@ -768,6 +824,7 @@ def register_default_steps() -> None:
         WorldHandlerAutoQuarantineStep(),
         QiIdleReplayStep(),
         CompilerSyncSourcesStep(),
+        ExternalEmergentScanStep(),
         RouteRuleMiningStep(),
         TaskBoundaryEvalStep(),
         PheromoneDecayStep(),
@@ -853,6 +910,134 @@ async def _call_data_source(method_name: str, tenant_id: str) -> Any:
     if asyncio.iscoroutine(result):
         return await result
     return result
+
+
+async def _external_scan_rows(tenant_id: str) -> list[dict[str, Any]]:
+    rows = await _source_list("external_scan_items", tenant_id)
+    rows.extend(_external_scan_rows_from_env(tenant_id))
+    return [
+        row
+        for row in rows
+        if str(row.get("task_type") or "").strip() and _external_scan_source_kind(row) is not None
+    ]
+
+
+def _external_scan_rows_from_env(tenant_id: str) -> list[dict[str, Any]]:
+    raw_files = os.getenv("KUN_EXTERNAL_SCAN_SOURCE_FILES", "")
+    source_files = [item.strip() for item in raw_files.split(",") if item.strip()]
+    if not source_files:
+        return []
+
+    config_root_raw = os.getenv("KUN_EXTERNAL_SCAN_CONFIG_ROOT") or None
+    config_root = Path(config_root_raw).expanduser().resolve() if config_root_raw else None
+    rows: list[dict[str, Any]] = []
+    for source_file in source_files:
+        payload = _read_external_scan_payload(source_file, config_root=config_root)
+        if isinstance(payload, list):
+            items = payload
+            payload_tenant = tenant_id
+        else:
+            items = payload.get("items", [])
+            payload_tenant = str(payload.get("tenant_id") or tenant_id)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            row_tenant = str(item.get("tenant_id") or payload_tenant or tenant_id)
+            if row_tenant != tenant_id:
+                continue
+            rows.append({**item, "tenant_id": row_tenant})
+    return rows
+
+
+def _read_external_scan_payload(
+    source_file: str,
+    *,
+    config_root: Path | None,
+) -> dict[str, Any] | list[Any]:
+    raw_path = Path(source_file).expanduser()
+    path = raw_path if raw_path.is_absolute() else (config_root or Path.cwd()) / raw_path
+    resolved = path.resolve(strict=False)
+    if config_root is not None:
+        try:
+            resolved.relative_to(config_root)
+        except ValueError:
+            log.warning("external_scan.source_outside_config_root", source_file=source_file)
+            return {}
+    try:
+        return cast(dict[str, Any] | list[Any], json.loads(resolved.read_text(encoding="utf-8")))
+    except Exception as exc:
+        log.warning("external_scan.source_read_failed", source_file=source_file, error=str(exc))
+        return {}
+
+
+_EXTERNAL_SOURCE_KINDS = {
+    "github_issue",
+    "arxiv",
+    "reddit",
+    "hackernews",
+    "internal_history",
+    "llm_judgment",
+    "competitor_changelog",
+}
+
+
+def _external_scan_source_kind(row: dict[str, Any]) -> str | None:
+    source_kind = str(row.get("source_kind") or row.get("kind") or "").strip()
+    return source_kind if source_kind in _EXTERNAL_SOURCE_KINDS else None
+
+
+def _external_scan_task_types(rows: list[dict[str, Any]]) -> list[str]:
+    task_types: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        task_type = str(row.get("task_type") or "").strip()
+        if task_type and task_type not in seen:
+            task_types.append(task_type)
+            seen.add(task_type)
+    return task_types
+
+
+def _external_scan_fetchers(
+    rows: list[dict[str, Any]],
+) -> dict[Any, Callable[[str], Awaitable[list[dict[str, Any]]]]]:
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        source_kind = _external_scan_source_kind(row)
+        if source_kind is None:
+            continue
+        by_source.setdefault(source_kind, []).append(row)
+
+    def make_fetcher(
+        source_rows: list[dict[str, Any]],
+    ) -> Callable[[str], Awaitable[list[dict[str, Any]]]]:
+        async def fetcher(task_type: str) -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            for row in source_rows:
+                if str(row.get("task_type") or "").strip() != task_type:
+                    continue
+                out.append(
+                    {
+                        "url": str(row.get("url") or row.get("source_url") or ""),
+                        "snippet": str(row.get("snippet") or row.get("summary") or "")[:1000],
+                        "estimated_outcome_delta": _float(
+                            row.get("estimated_outcome_delta"),
+                            default=0.0,
+                        ),
+                        "estimated_cost_delta": _float(
+                            row.get("estimated_cost_delta"),
+                            default=0.0,
+                        ),
+                    }
+                )
+            return out
+
+        return fetcher
+
+    return {
+        source_kind: make_fetcher(source_rows) for source_kind, source_rows in by_source.items()
+    }
 
 
 async def _persist_methodology_rules(*, tenant_id: str, rules: list[str]) -> list[str]:
@@ -988,6 +1173,13 @@ def _float(value: Any, *, default: float = 0.0) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
+        return default
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
         return default
 
 
