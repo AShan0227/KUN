@@ -982,7 +982,7 @@ V5 必须防止“写了但没用”。
 | Similar task recall | 已有 | 还要影响更多执行动作 |
 | Context maintenance | 已有 dry-run / mutation；NUO report 会把瘦身、低价值、风险、compiler review/recompile 候选合并成治理信号 | 还要接更强语义合并和规则蒸馏 |
 | Qi problem queue | 已接 idle replay，能读真实问题信号和任务结果历史；NUO health findings 会写入 Qi problem queue，Qi StrategyPack 草案状态也会回到 NUO governance report | 还要接人工批准 UI 和真实 canary 实验 |
-| External skill discovery | 已有 `external_skill_candidate_review`：可从离线 GitHub repo / skill metadata 归一化候选，也可通过 `KUN_EXTERNAL_SKILL_GITHUB_REPOS` 显式抓取 GitHub repo 元数据；候选会做来源、许可、执行脚本、外部网络、密钥、文件写入、sandbox suitability 的保守鉴别，并以 review-only 送入 Qi 队列；`kun.qi.external_skill_review` 已能把“任务需求 + 外部 skill/工程行为模板候选”编成 review-only 安全包，输出适配任务类型、是否值得 review、缺失证据、风险和建议验证步骤 | 自动安装、生产 skill 注册、arXiv/竞品 changelog 抓取器、人工批准 UI 仍未做；外部候选仍禁止 auto-install，低证据候选不能进生产 |
+| External skill discovery | 已有 `external_skill_candidate_review`：可从离线 GitHub repo / skill metadata 归一化候选，也可通过 `KUN_EXTERNAL_SKILL_GITHUB_REPOS` 显式抓取 GitHub repo 元数据；候选会做来源、许可、执行脚本、外部网络、密钥、文件写入、sandbox suitability 的保守鉴别，并以 review-only 送入 Qi 队列；`kun.qi.external_skill_review` 已能把“任务需求 + 外部 skill/工程行为模板候选”编成 review-only 安全包，并可转成 Qi problem signal / review queue 输入，blocked / needs_evidence / ready_for_human_review 会带不同 severity 和 evidence；所有信号都保留 no-auto-install / no-production 语义 | 自动安装、生产 skill 注册、arXiv/竞品 changelog 抓取器、人工批准 UI 仍未做；外部候选仍禁止 auto-install，低证据候选不能进生产 |
 | AI Scientist tree search | 有基础 | 还要用于真实策略候选 |
 | WorldGateway | 有 handler / 权限 / 审计；傩已能输出 handler 风险分、风险标签、租户密钥状态、失败率和补偿缺口，并把这些信号反馈给执行拦截/自动隔离；高风险治理默认只给 dry-run 建议 | 还要更多生产级 handler、真实补偿演练和线上密钥轮换 |
 | StateLedger | 已有快照和回放 | 还要更完整长期账本和信用归因 |

@@ -16,6 +16,7 @@ from kun.engineering.external_scan import (
     ExternalSkillDemandKind,
     normalize_external_skill_candidate,
 )
+from kun.qi.problem_queue import QiProblemSignal, persist_problem_signals
 
 ExternalSkillReviewStatus = Literal["blocked", "needs_evidence", "ready_for_human_review"]
 
@@ -152,6 +153,80 @@ def review_external_skill_candidates(
             package.candidate_name,
         ),
     )
+
+
+def external_skill_review_package_to_problem_signal(
+    *,
+    tenant_id: str,
+    package: ExternalSkillReviewPackage,
+) -> QiProblemSignal:
+    """Turn a review-only package into a Qi/NUO-consumable problem signal.
+
+    This is a review queue bridge, not an installation path. The evidence keeps
+    the no-production flags explicit so later Qi / NUO / human reviewers cannot
+    accidentally treat an external candidate as approved capability.
+    """
+
+    evidence = {
+        "candidate_id": package.candidate_id,
+        "candidate_name": package.candidate_name,
+        "task_demand": package.task_demand,
+        "adapted_task_type": package.adapted_task_type,
+        "status": package.status,
+        "worth_review": package.worth_review,
+        "confidence": package.confidence,
+        "risk_level": package.risk_level,
+        "reasons": list(package.reasons),
+        "safety_risks": list(package.safety_risks),
+        "missing_evidence": list(package.missing_evidence),
+        "suggested_validation_steps": list(package.suggested_validation_steps),
+        "source": dict(package.source),
+        "candidate_summary": dict(package.candidate_summary),
+        "review_only": package.review_only,
+        "auto_install_allowed": package.auto_install_allowed,
+        "production_action": package.production_action,
+        "promotion_allowed": package.promotion_allowed,
+        "queue_intent": "external_skill_review_only",
+    }
+    return QiProblemSignal.build(
+        tenant_id=tenant_id,
+        category=_signal_category(package),
+        severity=_signal_severity(package),
+        summary=_signal_summary(package),
+        source="external_skill.review.package",
+        task_type=f"external_skill:{package.adapted_task_type}",
+        evidence=evidence,
+    )
+
+
+def external_skill_review_packages_to_problem_signals(
+    *,
+    tenant_id: str,
+    packages: list[ExternalSkillReviewPackage],
+) -> list[QiProblemSignal]:
+    """Convert review packages to dedupable Qi signals."""
+
+    return [
+        external_skill_review_package_to_problem_signal(
+            tenant_id=tenant_id,
+            package=package,
+        )
+        for package in packages
+    ]
+
+
+async def enqueue_external_skill_review_packages(
+    *,
+    tenant_id: str,
+    packages: list[ExternalSkillReviewPackage],
+) -> int:
+    """Persist review-only external skill signals for Qi/NUO consumption."""
+
+    signals = external_skill_review_packages_to_problem_signals(
+        tenant_id=tenant_id,
+        packages=packages,
+    )
+    return await persist_problem_signals(signals)
 
 
 def _task_need_demand(task_need: str | dict[str, Any]) -> ExternalSkillDemandKind:
@@ -312,6 +387,34 @@ def _validation_steps(candidate: ExternalSkillCandidate, task_fit: float) -> lis
     return steps
 
 
+def _signal_category(package: ExternalSkillReviewPackage) -> Literal["risk", "context"]:
+    if package.status == "blocked":
+        return "risk"
+    if package.risk_level in {"high", "critical"}:
+        return "risk"
+    if any("risk" in item or "security" in item for item in package.missing_evidence):
+        return "risk"
+    return "context"
+
+
+def _signal_severity(package: ExternalSkillReviewPackage) -> str:
+    if package.status == "blocked":
+        return "critical" if package.risk_level == "critical" else "error"
+    if package.status == "needs_evidence":
+        return "warning"
+    return "info"
+
+
+def _signal_summary(package: ExternalSkillReviewPackage) -> str:
+    if package.status == "blocked":
+        prefix = "External skill blocked"
+    elif package.status == "needs_evidence":
+        prefix = "External skill needs evidence"
+    else:
+        prefix = "External skill ready for human review"
+    return f"{prefix}: {package.candidate_name}"
+
+
 def _dedupe(values: list[str]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -325,6 +428,9 @@ def _dedupe(values: list[str]) -> list[str]:
 __all__ = [
     "ExternalSkillReviewPackage",
     "ExternalSkillReviewStatus",
+    "enqueue_external_skill_review_packages",
+    "external_skill_review_package_to_problem_signal",
+    "external_skill_review_packages_to_problem_signals",
     "review_external_skill_candidate",
     "review_external_skill_candidates",
 ]
