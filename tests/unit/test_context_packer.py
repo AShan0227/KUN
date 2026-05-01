@@ -182,6 +182,41 @@ async def test_context_packer_penalizes_failed_memories() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_context_packer_penalizes_compiler_assets_marked_for_recompile() -> None:
+    store = InMemoryAssetStore()
+    clean = LayeredAsset.build(
+        "knowledge",
+        "u-sylvan",
+        metadata={
+            "title": "pytest clean compiled",
+            "compiler_quality_score": 0.98,
+        },
+        summary="pytest 修复 复现 回归 编译资料",
+        tags=["pytest", "compiler"],
+    )
+    stale = LayeredAsset.build(
+        "knowledge",
+        "u-sylvan",
+        metadata={
+            "title": "pytest stale compiled",
+            "compiler_quality_score": 0.25,
+            "compiler_recompile_recommended": True,
+            "compiler_review_required": True,
+        },
+        summary="pytest 修复 复现 回归 编译资料",
+        tags=["pytest", "compiler"],
+    )
+    await store.put(stale)
+    await store.put(clean)
+
+    pack = await ContextPacker(store).pack(_task(), tenant_id="u-sylvan", limit=2)
+
+    assert [item.asset_id for item in pack.items][:2] == [clean.asset_id, stale.asset_id]
+    assert "quality_delta" in pack.items[1].score_rationale
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_context_packer_adds_recalled_execution_process_hint() -> None:
     store = InMemoryAssetStore()
     process = LayeredAsset.build(

@@ -528,6 +528,14 @@ def _quality_adjusted_score(asset: LayeredAsset, score: ImportanceScore) -> Impo
     if isinstance(surprise, int | float) and float(surprise) >= 0.75:
         quality_delta += 0.05
 
+    compiler_quality = meta.get("compiler_quality_score")
+    if isinstance(compiler_quality, int | float):
+        quality_delta += max(-0.18, min(0.08, (float(compiler_quality) - 0.7) * 0.25))
+    if meta.get("compiler_recompile_recommended") is True:
+        quality_delta -= 0.18
+    if meta.get("compiler_review_required") is True:
+        quality_delta -= 0.08
+
     if quality_delta == 0:
         return score
     adjusted = max(0.0, min(1.0, score.overall + quality_delta))
