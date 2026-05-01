@@ -121,6 +121,7 @@ _GITHUB_REPO_REF_RE = re.compile(
 )
 _GITHUB_OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
 _GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+_GITHUB_COMMIT_SHA_RE = re.compile(r"^[a-fA-F0-9]{40}$")
 _GITHUB_TEXT_FILE_SUFFIXES = (".md", ".mdx", ".txt", ".json", ".yaml", ".yml", ".toml")
 _GITHUB_NON_SKILL_DOC_NAMES = {
     "changelog.md",
@@ -547,13 +548,20 @@ async def fetch_github_repo_external_skill_metadata(
     default_branch = _safe_github_ref(
         _first_text(repo_payload.get("default_branch"), "main") or "main"
     )
+    commit_payload = await _github_fetch_json(
+        _github_api_url(f"/repos/{owner}/{repo}/commits/{quote(default_branch, safe='')}"),
+        fetcher=safe_fetcher,
+        max_bytes=max_repo_metadata_bytes,
+        timeout_sec=safe_timeout,
+    )
+    pinned_commit_sha = _safe_github_commit_sha(_first_text(commit_payload.get("sha")))
     html_url = f"https://github.com/{owner}/{repo}"
     description = _first_text(repo_payload.get("description"))
     stars = _safe_int(repo_payload.get("stargazers_count"))
     license_value = repo_payload.get("license")
 
     tree_api_url = _github_api_url(
-        f"/repos/{owner}/{repo}/git/trees/{quote(default_branch, safe='')}?recursive=1"
+        f"/repos/{owner}/{repo}/git/trees/{pinned_commit_sha}?recursive=1"
     )
     tree_payload = await _github_fetch_json(
         tree_api_url,
@@ -580,7 +588,7 @@ async def fetch_github_repo_external_skill_metadata(
         await _github_fetch_tree_file_fragment(
             owner=owner,
             repo=repo,
-            ref=default_branch,
+            ref=pinned_commit_sha,
             entry=entry,
             fetcher=safe_fetcher,
             timeout_sec=safe_timeout,
@@ -592,7 +600,7 @@ async def fetch_github_repo_external_skill_metadata(
         await _github_fetch_tree_file_fragment(
             owner=owner,
             repo=repo,
-            ref=default_branch,
+            ref=pinned_commit_sha,
             entry=entry,
             fetcher=safe_fetcher,
             timeout_sec=safe_timeout,
@@ -604,7 +612,7 @@ async def fetch_github_repo_external_skill_metadata(
         _github_skill_payload_from_file(
             owner=owner,
             repo=repo,
-            ref=default_branch,
+            ref=pinned_commit_sha,
             repo_description=description,
             file=file,
         )
@@ -619,6 +627,7 @@ async def fetch_github_repo_external_skill_metadata(
         "url": html_url,
         "html_url": html_url,
         "default_branch": default_branch,
+        "commit_sha": pinned_commit_sha,
         "license": license_value,
         "stars": stars,
         "stargazers_count": stars,
@@ -635,6 +644,7 @@ async def fetch_github_repo_external_skill_metadata(
         "auto_install_allowed": False,
         "metadata": {
             "github_repo_id": repo_payload.get("id"),
+            "pinned_commit_sha": pinned_commit_sha,
             "tree_sha": tree_payload.get("sha"),
             "tree_truncated": bool(tree_payload.get("truncated")),
             "tree_entry_count": len(tree_entries),
@@ -1635,6 +1645,13 @@ def _safe_github_ref(ref: str) -> str:
     return value
 
 
+def _safe_github_commit_sha(sha: str) -> str:
+    value = str(sha or "").strip()
+    if not _GITHUB_COMMIT_SHA_RE.fullmatch(value):
+        raise ValueError("GitHub commit SHA is required before fetching tree or raw files")
+    return value.lower()
+
+
 def _safe_github_tree_path(path: Any) -> str:
     value = str(path or "").strip()
     if not value or len(value) > 4096:
@@ -1801,6 +1818,7 @@ def _github_skill_payload_from_file(
         "name": _github_skill_name_from_file(path, content),
         "description": _github_skill_summary_from_file(content) or repo_description,
         "url": skill_url,
+        "commit_sha": ref,
         "files": [file],
     }
 
