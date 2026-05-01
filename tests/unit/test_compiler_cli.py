@@ -180,6 +180,54 @@ def test_compiler_ingest_manifest_fail_on_error_exits_nonzero(tmp_path) -> None:
     assert payload["errors"] == 1
 
 
+def test_compiler_sync_source_runs_manifest_config(tmp_path) -> None:
+    runner = CliRunner()
+    config_root = tmp_path / "sync"
+    docs_root = tmp_path / "docs"
+    config_root.mkdir()
+    docs_root.mkdir()
+    (docs_root / "note.md").write_text("# KUN\n\nSync CLI", encoding="utf-8")
+    manifest = config_root / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "tenant_id": "ignored",
+                "items": [
+                    {"id": "path", "type": "path", "value": "note.md"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = config_root / "source.json"
+    source.write_text(
+        json.dumps(
+            {
+                "source_id": "docs-sync-cli",
+                "tenant_id": "tenant-cli",
+                "type": "manifest_file",
+                "manifest_path": "manifest.json",
+                "allowed_root": str(docs_root),
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = InMemoryAssetStore()
+    set_store(store)
+    try:
+        result = runner.invoke(app, ["compiler", "sync-source", str(source)])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["status"] == "synced"
+        assert payload["source_id"] == "docs-sync-cli"
+        assert payload["batch_report"]["stored"] == 1
+        stored = asyncio.run(store.list(tenant_id="tenant-cli"))
+        assert len(stored) == 1
+    finally:
+        reset_store()
+
+
 def test_compiler_recompile_candidates_apply_marks_original() -> None:
     runner = CliRunner()
     store = InMemoryAssetStore()

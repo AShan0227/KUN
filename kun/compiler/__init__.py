@@ -32,6 +32,11 @@ from kun.compiler.recompile import (
     RecompileStatus,
 )
 from kun.compiler.registry import CompilerRegistry, MaterialCompiler, default_registry
+from kun.compiler.sync import (
+    CompilerSyncReport,
+    CompilerSyncRunner,
+    CompilerSyncSource,
+)
 
 __all__ = [
     "CanonicalAsset",
@@ -48,6 +53,9 @@ __all__ = [
     "CompilerProfile",
     "CompilerRecompiler",
     "CompilerRegistry",
+    "CompilerSyncReport",
+    "CompilerSyncRunner",
+    "CompilerSyncSource",
     "LightweightMaterialCompiler",
     "MarkItDownMaterialCompiler",
     "MaterialCompiler",

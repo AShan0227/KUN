@@ -528,6 +528,40 @@ def compiler_ingest_manifest(
         raise typer.Exit(code=1)
 
 
+@compiler_app.command("sync-source")
+def compiler_sync_source(
+    config_path: Path = typer.Argument(..., help="JSON compiler sync source config"),
+    config_root: Path | None = typer.Option(
+        None,
+        "--config-root",
+        help="Root that sync source files must stay under; defaults to config file directory",
+    ),
+    tenant: str | None = typer.Option(None, "--tenant", help="Override source tenant_id"),
+    fail_on_error: bool = typer.Option(False, "--fail-on-error"),
+) -> None:
+    """Run a repeatable compiler sync source.
+
+    First supported source type is ``manifest_file``.  It is intentionally
+    boring: no enterprise API is claimed yet, but a scheduler can safely rerun
+    the same source config.
+    """
+    from kun.compiler import CompilerSyncRunner
+
+    async def _run() -> dict[str, Any]:
+        report = await CompilerSyncRunner().sync_source_file(
+            config_path,
+            config_root=config_root,
+            tenant_override=tenant,
+        )
+        return report.model_dump(mode="json")
+
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        output = asyncio.run(_run())
+    _json_print(output)
+    if fail_on_error and output.get("status") == "error":
+        raise typer.Exit(code=1)
+
+
 @compiler_app.command("recompile-candidates")
 def compiler_recompile_candidates(
     tenant: str = typer.Option("u-sylvan", "--tenant"),
