@@ -44,6 +44,7 @@ from kun.core.orm import IdempotencyRow, MissionRow, RuntimeStateRow, TaskResult
 from kun.core.tenancy import current_tenant
 from kun.datamodel.decision_ticket import (
     DecisionTicket,
+    ticket_from_anti_gaming_finding,
     ticket_from_budget_policy,
     ticket_from_context_selection,
     ticket_from_delivery_review,
@@ -1882,6 +1883,19 @@ class Orchestrator:
                             has_skill_traces=bool(step_record.skill_used),
                         )
                         if finding is not None:
+                            anti_gaming_ticket = ticket_from_anti_gaming_finding(
+                                tenant_id=tenant.tenant_id,
+                                task_id=task_ref.meta.task_id,
+                                risk_level=task_ref.meta.risk_level,
+                                step_id=step_plan.step_id,
+                                finding=finding,
+                                mission_id=_mission_id_from_task(task_ref),
+                            )
+                            decision_tickets.append(anti_gaming_ticket)
+                            self._record_state_ledger(
+                                "record_decision_ticket",
+                                anti_gaming_ticket,
+                            )
                             try:
                                 from kun.core.metrics import anti_gaming_detection_total
 
@@ -1900,6 +1914,7 @@ class Orchestrator:
                                             "pattern": finding.pattern,
                                             "severity": finding.severity,
                                             "evidence": finding.evidence,
+                                            "decision_ticket": anti_gaming_ticket.event_payload(),
                                         },
                                         task_ref=task_ref.meta.task_id,
                                     ),

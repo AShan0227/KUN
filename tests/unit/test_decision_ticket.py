@@ -5,6 +5,7 @@ from typing import ClassVar
 
 from kun.context.packer import ContextPack, PackedContextItem
 from kun.datamodel.decision_ticket import (
+    ticket_from_anti_gaming_finding,
     ticket_from_budget_policy,
     ticket_from_context_selection,
     ticket_from_delivery_review,
@@ -29,6 +30,7 @@ from kun.engineering.concurrency import (
 )
 from kun.engineering.proactive_tools import ProactiveDispatch, ProactiveScanResult
 from kun.memory.policy import MemoryDepth, MemoryLayer, MemoryPolicyTicket
+from kun.security.anti_gaming import GamingFinding
 from kun.skills.dispatcher import SkillResult
 from kun.watchtower.value_gate import ValueGateDecision
 
@@ -343,6 +345,31 @@ def test_proactive_tool_ticket_records_dispatch_and_missed_triggers() -> None:
     assert ticket.metadata["dispatched_skills"] == ["python-exec"]
     assert ticket.metadata["missed_skills"] == ["ghost-skill"]
     assert ticket.evidence["dispatched"][0]["ok"] is True
+
+
+def test_anti_gaming_ticket_records_fake_completion_finding() -> None:
+    finding = GamingFinding(
+        pattern="fake_completion",
+        confidence=0.91,
+        reason="claims done without asset",
+        severity="high",
+        evidence={"has_assets": False},
+    )
+
+    ticket = ticket_from_anti_gaming_finding(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        risk_level="medium",
+        step_id=4,
+        finding=finding,
+    )
+
+    assert ticket.phase == "step"
+    assert ticket.decision_point == "anti_gaming_detected"
+    assert ticket.status == "needs_review"
+    assert ticket.selected_action == "fake_completion"
+    assert ticket.metadata["severity"] == "high"
+    assert ticket.evidence["evidence"]["has_assets"] is False
 
 
 def test_protocol_applied_ticket_wraps_protocol_registry_choice() -> None:

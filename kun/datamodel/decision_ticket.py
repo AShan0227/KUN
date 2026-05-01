@@ -42,6 +42,7 @@ DecisionPoint = Literal[
     "memory_policy_selected",
     "skill_selected",
     "step_action_selected",
+    "anti_gaming_detected",
     "value_gate",
     "budget_policy",
     "world_policy",
@@ -629,6 +630,48 @@ def ticket_from_proactive_tool_dispatch(
     )
 
 
+def ticket_from_anti_gaming_finding(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    step_id: int,
+    finding: Any,
+    mission_id: str | None = None,
+) -> DecisionTicket:
+    """Wrap anti-gaming / fake-completion findings for credit and review."""
+
+    pattern = str(getattr(finding, "pattern", "") or "unknown")
+    severity = str(getattr(finding, "severity", "") or "medium")
+    confidence = _float_or_default(getattr(finding, "confidence", None), 0.5)
+    evidence = _dict_or_empty(getattr(finding, "evidence", {}))
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="step",
+        decision_point="anti_gaming_detected",
+        source_module="security.anti_gaming",
+        selected_action=pattern,
+        status="needs_review",
+        reason=str(getattr(finding, "reason", "") or pattern),
+        confidence=confidence,
+        risk_level=risk_level,
+        inputs_summary={"step_id": step_id, "severity": severity},
+        evidence={
+            "pattern": pattern,
+            "severity": severity,
+            "confidence": confidence,
+            "evidence": evidence,
+        },
+        metadata={
+            "step_id": step_id,
+            "pattern": pattern,
+            "severity": severity,
+        },
+    )
+
+
 def ticket_from_budget_policy(
     *,
     tenant_id: str,
@@ -984,6 +1027,7 @@ __all__ = [
     "DecisionStatus",
     "DecisionTicket",
     "DecisionTicketRef",
+    "ticket_from_anti_gaming_finding",
     "ticket_from_budget_policy",
     "ticket_from_context_selection",
     "ticket_from_delivery_review",
