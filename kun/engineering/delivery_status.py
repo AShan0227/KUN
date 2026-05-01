@@ -323,6 +323,7 @@ def get_v3_delivery_status(
                 "前端已补 /account 会话入口，可手动录入 bearer token 并显示服务端 session，不再只能改 env/localStorage",
                 "前端 /account 可调用邀请码注册、接受邀请和 refresh-token 续期接口；仍诚实标注这不是密码登录/OAuth",
                 "前端 /account 可查看自己的 token 账本并撤销 token，且不展示原始 token/hash",
+                "前端 /account 已补本地租户/用户档案切换器；切换时会清除旧 token，避免跨租户误用",
                 "WebSocket 支持 auth_token 查询参数；生产环境必须使用签名 token，不再接受裸 tenant_id/user_id 打开会话",
                 "ops dogfood CLI 可跑 V4 低风险 smoke，验证 preflight / token / WorldGateway / 诚实边界",
                 "ops dogfood --include-db-mission 可额外验证 Mission/RuntimeState/Orchestrator runner 的真实 DB 续跑闭环",
@@ -365,7 +366,7 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "完整密码登录 / OAuth 账号体系",
-                "前端已有手动会话/邀请码注册/接受邀请/refresh 入口，但还没有密码登录、OAuth、租户切换器、CSRF/设备态风控；WebSocket token 通过 query 传递，生产还应升级到更正式的会话/短期票据方案",
+                "前端已有手动会话/邀请码注册/接受邀请/refresh 和本地租户档案切换入口，但还没有密码登录、OAuth、服务端租户切换器、CSRF/设备态风控；WebSocket token 通过 query 传递，生产还应升级到更正式的会话/短期票据方案",
                 "完整设备登录态和异常登录风控",
                 "前端已有本地 JSON secret-store 写入入口，但还不是云 KMS / 托管 Secret Manager / 自动轮换 / 完整租户自助密钥平台",
                 "对象存储备份包往返演练已有命令；真实生产数据库和生产 S3/MinIO 账号的定期恢复演练还没跑过",

@@ -5,11 +5,15 @@ import {
   apiFetch,
   clearKunIdentity,
   clearKunRefreshToken,
+  deleteKunIdentityProfile,
   getKunIdentitySource,
   getKunRefreshToken,
+  listKunIdentityProfiles,
   saveKunIdentity,
+  saveKunIdentityProfile,
   saveKunRefreshToken,
   type KunIdentity,
+  type KunIdentityProfile,
   type KunIdentitySource,
 } from "@/kunApiClient";
 
@@ -71,6 +75,10 @@ function tokenLabel(identity: KunIdentity): string {
 export function SessionAccountEntry({ compact = false }: SessionAccountEntryProps) {
   const [identitySource, setIdentitySource] = useState(() => getKunIdentitySource());
   const [draft, setDraft] = useState<KunIdentity>(() => identitySource.identity);
+  const [profiles, setProfiles] = useState<KunIdentityProfile[]>(() =>
+    listKunIdentityProfiles(),
+  );
+  const [profileLabel, setProfileLabel] = useState("");
   const [signupDraft, setSignupDraft] = useState({
     inviteCode: "",
     tenantId: identitySource.identity.tenantId,
@@ -101,6 +109,7 @@ export function SessionAccountEntry({ compact = false }: SessionAccountEntryProp
     setIdentitySource(next);
     setDraft(next.identity);
     setRefreshToken(getKunRefreshToken());
+    setProfiles(listKunIdentityProfiles());
   }, []);
 
   const refreshCurrentSession = useCallback(async () => {
@@ -144,6 +153,41 @@ export function SessionAccountEntry({ compact = false }: SessionAccountEntryProp
     saveKunIdentity(draft);
     setSavedNotice("已保存，正在用新 session 重载");
     window.location.reload();
+  };
+
+  const saveProfile = () => {
+    const tenantId = draft.tenantId.trim();
+    const userId = draft.userId.trim();
+    if (!tenantId || !userId) {
+      setSavedNotice("tenant_id 和 user_id 都要填写后才能保存档案");
+      return;
+    }
+    saveKunIdentityProfile({
+      profileId: `${tenantId}:${userId}`,
+      label: profileLabel.trim() || `${tenantId} / ${userId}`,
+      tenantId,
+      userId,
+    });
+    setProfiles(listKunIdentityProfiles());
+    setProfileLabel("");
+    setSavedNotice("已保存身份档案；档案不会保存 token");
+  };
+
+  const switchProfile = (profile: KunIdentityProfile) => {
+    saveKunIdentity({
+      tenantId: profile.tenantId,
+      userId: profile.userId,
+      authToken: "",
+    });
+    clearKunRefreshToken();
+    setSavedNotice("已切换身份档案并清除 token，正在重载");
+    window.location.reload();
+  };
+
+  const deleteProfile = (profileId: string) => {
+    deleteKunIdentityProfile(profileId);
+    setProfiles(listKunIdentityProfiles());
+    setSavedNotice("已删除身份档案");
   };
 
   const clearAndReload = () => {
@@ -320,6 +364,64 @@ export function SessionAccountEntry({ compact = false }: SessionAccountEntryProp
         </button>
         {savedNotice && <span className="text-xs text-gray-500">{savedNotice}</span>}
       </div>
+
+      <details className="mt-3 rounded border border-gray-200 bg-gray-50 p-3 text-xs">
+        <summary className="cursor-pointer font-medium text-gray-700">
+          租户 / 用户切换器
+        </summary>
+        <p className="mt-2 text-gray-500">
+          只保存 tenant_id 和 user_id，不保存 token。切换档案会清除 access/refresh
+          token，避免把旧租户 token 带到新租户。
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <input
+            className="min-w-48 rounded border border-gray-200 px-2 py-1.5"
+            placeholder="档案名，可空"
+            value={profileLabel}
+            onChange={(event) => setProfileLabel(event.target.value)}
+          />
+          <button
+            className="rounded border border-gray-300 bg-white px-3 py-1.5 hover:bg-gray-100"
+            onClick={saveProfile}
+          >
+            保存当前身份为档案
+          </button>
+        </div>
+        {profiles.length > 0 ? (
+          <div className="mt-3 divide-y divide-gray-200 rounded border border-gray-200 bg-white">
+            {profiles.map((profile) => (
+              <div
+                key={profile.profileId}
+                className="grid gap-2 p-2 md:grid-cols-[1fr_1fr_auto_auto]"
+              >
+                <div>
+                  <div className="font-medium text-gray-700">{profile.label}</div>
+                  <div className="text-gray-500">
+                    {profile.tenantId} / {profile.userId}
+                  </div>
+                </div>
+                <div className="text-gray-500">
+                  {profile.updatedAt ? `更新于 ${new Date(profile.updatedAt).toLocaleString()}` : ""}
+                </div>
+                <button
+                  className="rounded bg-kun-accent px-3 py-1.5 text-white hover:opacity-90"
+                  onClick={() => switchProfile(profile)}
+                >
+                  切换
+                </button>
+                <button
+                  className="rounded border border-red-200 bg-white px-3 py-1.5 text-red-600 hover:bg-red-50"
+                  onClick={() => deleteProfile(profile.profileId)}
+                >
+                  删除
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-2 text-gray-500">还没有保存过身份档案。</p>
+        )}
+      </details>
 
       <div className="mt-3 rounded border border-gray-200 bg-white p-3 text-xs">
         <div className="font-medium text-gray-700">服务端 session</div>

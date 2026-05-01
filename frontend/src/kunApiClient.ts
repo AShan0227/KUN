@@ -13,6 +13,7 @@ const STORAGE_KEYS = {
   userId: "kun.user_id",
   authToken: "kun.auth_token",
   refreshToken: "kun.refresh_token",
+  identityProfiles: "kun.identity_profiles",
 } as const;
 
 export type KunIdentity = {
@@ -28,12 +29,38 @@ export type KunIdentitySource = {
   authTokenSource: "saved" | "empty";
 };
 
+export type KunIdentityProfile = {
+  profileId: string;
+  label: string;
+  tenantId: string;
+  userId: string;
+  updatedAt: string;
+};
+
 function readLocalStorage(key: string): string {
   if (typeof window === "undefined") return "";
   try {
     return window.localStorage.getItem(key)?.trim() || "";
   } catch {
     return "";
+  }
+}
+
+function writeLocalStorage(key: string, value: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // LocalStorage may be unavailable in private/browser-restricted contexts.
+  }
+}
+
+function removeLocalStorage(key: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Ignore browser storage failures; the API headers will fall back to defaults.
   }
 }
 
@@ -62,20 +89,20 @@ export function saveKunIdentity(identity: KunIdentity): void {
   const tenantId = identity.tenantId.trim();
   const userId = identity.userId.trim();
   const authToken = identity.authToken?.trim() || "";
-  window.localStorage.setItem(STORAGE_KEYS.tenantId, tenantId || DEFAULT_TENANT_ID);
-  window.localStorage.setItem(STORAGE_KEYS.userId, userId || DEFAULT_USER_ID);
+  writeLocalStorage(STORAGE_KEYS.tenantId, tenantId || DEFAULT_TENANT_ID);
+  writeLocalStorage(STORAGE_KEYS.userId, userId || DEFAULT_USER_ID);
   if (authToken) {
-    window.localStorage.setItem(STORAGE_KEYS.authToken, authToken);
+    writeLocalStorage(STORAGE_KEYS.authToken, authToken);
   } else {
-    window.localStorage.removeItem(STORAGE_KEYS.authToken);
+    removeLocalStorage(STORAGE_KEYS.authToken);
   }
 }
 
 export function clearKunIdentity(): void {
   if (typeof window === "undefined") return;
-  window.localStorage.removeItem(STORAGE_KEYS.tenantId);
-  window.localStorage.removeItem(STORAGE_KEYS.userId);
-  window.localStorage.removeItem(STORAGE_KEYS.authToken);
+  removeLocalStorage(STORAGE_KEYS.tenantId);
+  removeLocalStorage(STORAGE_KEYS.userId);
+  removeLocalStorage(STORAGE_KEYS.authToken);
 }
 
 export function getKunRefreshToken(): string {
@@ -86,15 +113,68 @@ export function saveKunRefreshToken(token: string): void {
   if (typeof window === "undefined") return;
   const cleaned = token.trim();
   if (cleaned) {
-    window.localStorage.setItem(STORAGE_KEYS.refreshToken, cleaned);
+    writeLocalStorage(STORAGE_KEYS.refreshToken, cleaned);
   } else {
-    window.localStorage.removeItem(STORAGE_KEYS.refreshToken);
+    removeLocalStorage(STORAGE_KEYS.refreshToken);
   }
 }
 
 export function clearKunRefreshToken(): void {
   if (typeof window === "undefined") return;
-  window.localStorage.removeItem(STORAGE_KEYS.refreshToken);
+  removeLocalStorage(STORAGE_KEYS.refreshToken);
+}
+
+export function listKunIdentityProfiles(): KunIdentityProfile[] {
+  const raw = readLocalStorage(STORAGE_KEYS.identityProfiles);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item): KunIdentityProfile | null => {
+        if (!item || typeof item !== "object") return null;
+        const candidate = item as Partial<KunIdentityProfile>;
+        const tenantId = String(candidate.tenantId || "").trim();
+        const userId = String(candidate.userId || "").trim();
+        if (!tenantId || !userId) return null;
+        return {
+          profileId: String(candidate.profileId || `${tenantId}:${userId}`),
+          label: String(candidate.label || `${tenantId} / ${userId}`),
+          tenantId,
+          userId,
+          updatedAt: String(candidate.updatedAt || ""),
+        };
+      })
+      .filter((item): item is KunIdentityProfile => item !== null)
+      .slice(0, 20);
+  } catch {
+    return [];
+  }
+}
+
+export function saveKunIdentityProfile(profile: Omit<KunIdentityProfile, "updatedAt">): void {
+  const tenantId = profile.tenantId.trim();
+  const userId = profile.userId.trim();
+  if (!tenantId || !userId) return;
+  const next: KunIdentityProfile = {
+    profileId: profile.profileId || `${tenantId}:${userId}`,
+    label: profile.label.trim() || `${tenantId} / ${userId}`,
+    tenantId,
+    userId,
+    updatedAt: new Date().toISOString(),
+  };
+  const profiles = listKunIdentityProfiles().filter(
+    (item) => item.profileId !== next.profileId,
+  );
+  writeLocalStorage(
+    STORAGE_KEYS.identityProfiles,
+    JSON.stringify([next, ...profiles].slice(0, 20)),
+  );
+}
+
+export function deleteKunIdentityProfile(profileId: string): void {
+  const profiles = listKunIdentityProfiles().filter((item) => item.profileId !== profileId);
+  writeLocalStorage(STORAGE_KEYS.identityProfiles, JSON.stringify(profiles));
 }
 
 function authHeaderValue(token: string): string {
