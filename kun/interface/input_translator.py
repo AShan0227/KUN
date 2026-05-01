@@ -1,8 +1,9 @@
 """Input translator for real-world content entering KUN.
 
 This module intentionally keeps heavyweight detection lazy. Magika is imported
-only when binary detection needs it, and all content understanding stays local
-and deterministic until Claude wires the expensive LLM path.
+only when binary detection needs it. Deep understanding is opt-in through an
+injected analyzer, so KUN never pretends a third-round analysis happened when
+no real analyzer was configured.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import json
 import re
 import struct
 import zipfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -121,6 +122,9 @@ class InputDescriptor(BaseModel):
         return min(1.0, max(0.0, confidence))
 
 
+DeepAnalyzer = Callable[[InputDescriptor, bytes], Awaitable[str]]
+
+
 class RealWorldTranslator:
     """Detect input kind and recommend the next handler.
 
@@ -128,10 +132,11 @@ class RealWorldTranslator:
     # User upload -> ws.binary frame -> translator.detect -> route by suggested_handler.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, deep_analyzer: DeepAnalyzer | None = None) -> None:
         self._magika: Any | None = None
         self._magika_unavailable = False
         self._extractor = ContentExtractor()
+        self._deep_analyzer = deep_analyzer
 
     async def detect(self, raw: bytes | str | Path) -> InputDescriptor:
         """Detect text streams, filesystem paths, or raw bytes."""
@@ -211,13 +216,25 @@ class RealWorldTranslator:
         )
         yield round2
 
+        deep_metadata: dict[str, Any] = {"anchor_round": 3}
+        deep_summary = ""
+        if self._deep_analyzer is None:
+            deep_metadata["deep_understanding"] = "not_configured"
+        else:
+            try:
+                deep_summary = (await self._deep_analyzer(round2, content)).strip()
+            except Exception as exc:
+                deep_metadata["deep_understanding"] = "unavailable"
+                deep_metadata["deep_error_type"] = type(exc).__name__
+            else:
+                deep_metadata["deep_understanding"] = "provided" if deep_summary else "empty"
         round3 = round2.model_copy(
             update={
+                "content_summary": deep_summary or round2.content_summary,
                 "metadata": {
                     **round2.metadata,
-                    "anchor_round": 3,
-                    "deep_understanding": "placeholder_no_llm_called",
-                }
+                    **deep_metadata,
+                },
             }
         )
         yield round3
@@ -584,4 +601,10 @@ def _coerce_to_bytes(raw: bytes | str | Path) -> bytes:
     return raw.encode()
 
 
-__all__ = ["ContentExtractor", "InputDescriptor", "InputKind", "RealWorldTranslator"]
+__all__ = [
+    "ContentExtractor",
+    "DeepAnalyzer",
+    "InputDescriptor",
+    "InputKind",
+    "RealWorldTranslator",
+]

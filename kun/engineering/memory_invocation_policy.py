@@ -296,6 +296,32 @@ def _task_family(task_type: str, text: str) -> str:
     if _contains_any(
         f"{task} {text}",
         (
+            "ad",
+            "ads",
+            "advertising",
+            "copywriting",
+            "creative",
+            "hook",
+            "ctr",
+            "conversion",
+            "landing page",
+            "short video",
+            "tiktok",
+            "douyin",
+            "广告",
+            "文案",
+            "创意",
+            "钩子",
+            "转化",
+            "短视频",
+            "投放",
+            "素材",
+        ),
+    ):
+        return "marketing"
+    if _contains_any(
+        f"{task} {text}",
+        (
             "strategy",
             "decision",
             "business",
@@ -394,6 +420,13 @@ def _base_layers(family: str) -> list[MemoryLayer]:
             MemoryLayer.METHODOLOGY,
             MemoryLayer.TASK_RESULT,
         ]
+    if family == "marketing":
+        return [
+            MemoryLayer.METHODOLOGY,
+            MemoryLayer.BEHAVIOR,
+            MemoryLayer.TASK_RESULT,
+            MemoryLayer.META_DECISION,
+        ]
     if family == "education":
         return [MemoryLayer.BEHAVIOR, MemoryLayer.METHODOLOGY, MemoryLayer.TASK_RESULT]
     if family == "external":
@@ -406,6 +439,8 @@ def _base_asset_kinds(family: str) -> list[AssetKind]:
         return ["memory", "methodology", "skill", "knowledge"]
     if family == "decision":
         return ["memory", "methodology", "knowledge", "skill", "role_template"]
+    if family == "marketing":
+        return ["memory", "methodology", "skill", "knowledge"]
     if family == "education":
         return ["memory", "methodology", "knowledge", "skill"]
     if family == "external":
@@ -417,6 +452,8 @@ def _base_strategy_tags(family: str, text: str, data: MemoryInvocationInput) -> 
     out = [*data.strategy_tags, family]
     if family == "coding":
         out.extend(["repo", "tests", "debug", "architecture"])
+    elif family == "marketing":
+        out.extend(["marketing", "copywriting", "hook", "conversion", "creative"])
     elif family == "decision":
         out.extend(["strategy", "metrics", "growth", "tradeoff"])
     elif family == "education":
@@ -427,6 +464,8 @@ def _base_strategy_tags(family: str, text: str, data: MemoryInvocationInput) -> 
         out.append("pytest")
     if "pricing" in text or "定价" in text:
         out.append("pricing")
+    if "ctr" in text or "点击率" in text:
+        out.append("ctr")
     return _dedupe_text(out)
 
 

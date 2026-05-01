@@ -196,7 +196,42 @@ async def test_detect_anchor_then_expand_yields_three_rounds() -> None:
     assert [item.metadata["anchor_round"] for item in rounds] == [1, 2, 3]
     assert rounds[0].content_summary == ""
     assert "dimensions: 10x10" in rounds[1].content_summary
-    assert rounds[2].metadata["deep_understanding"] == "placeholder_no_llm_called"
+    assert rounds[2].metadata["deep_understanding"] == "not_configured"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_detect_anchor_then_expand_uses_optional_deep_analyzer() -> None:
+    async def analyzer(descriptor: InputDescriptor, raw: bytes) -> str:
+        return f"deep:{descriptor.kind}:{len(raw)}"
+
+    rounds = [
+        item
+        async for item in RealWorldTranslator(deep_analyzer=analyzer).detect_anchor_then_expand(
+            b"normal text"
+        )
+    ]
+
+    assert rounds[2].content_summary == "deep:plain_text:11"
+    assert rounds[2].metadata["deep_understanding"] == "provided"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_detect_anchor_then_expand_marks_deep_analyzer_failure() -> None:
+    async def analyzer(_descriptor: InputDescriptor, _raw: bytes) -> str:
+        raise RuntimeError("no model")
+
+    rounds = [
+        item
+        async for item in RealWorldTranslator(deep_analyzer=analyzer).detect_anchor_then_expand(
+            b"normal text"
+        )
+    ]
+
+    assert rounds[2].metadata["deep_understanding"] == "unavailable"
+    assert rounds[2].metadata["deep_error_type"] == "RuntimeError"
+    assert rounds[2].content_summary == rounds[1].content_summary
 
 
 @pytest.mark.unit

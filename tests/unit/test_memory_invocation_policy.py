@@ -87,6 +87,28 @@ def test_memory_invocation_retry_deepens_memory_without_waking_everything() -> N
 
 
 @pytest.mark.unit
+def test_memory_invocation_marketing_task_uses_creative_and_conversion_memory() -> None:
+    ticket = decide_memory_invocation_for_task(
+        _task(
+            task_type="content.ad_video",
+            text="写一条短视频广告文案，重点优化 hook、CTR 和转化",
+            complexity=0.42,
+        )
+    )
+
+    assert ticket.use_memory is True
+    assert ticket.memory_depth == MemoryDepth.TARGETED
+    assert ticket.memory_layers[:2] == [
+        MemoryLayer.METHODOLOGY,
+        MemoryLayer.BEHAVIOR,
+    ]
+    assert "skill" in ticket.asset_kinds
+    assert "hook" in ticket.strategy_tags
+    assert "conversion" in ticket.strategy_tags
+    assert "ctr" in ticket.strategy_tags
+
+
+@pytest.mark.unit
 def test_memory_invocation_high_risk_external_task_avoids_behavior_memory() -> None:
     ticket = decide_memory_invocation_for_task(
         _task(
