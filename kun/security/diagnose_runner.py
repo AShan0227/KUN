@@ -113,6 +113,22 @@ class FixOutcome:
 
 
 @dataclass
+class FixConfirmationResult:
+    """用户确认后的真实结果.
+
+    这里刻意区分“用户接受了方案”和“系统真的执行了修复”。有些修复只是
+    需要人工确认的计划，如果没有对应 handler，KUN 只能诚实记录，不应假装已修好。
+    """
+
+    token: str
+    accepted: bool
+    plan_id: str | None = None
+    executed: bool = False
+    outcome: FixOutcome | None = None
+    message: str = ""
+
+
+@dataclass
 class DiagnoseReport:
     """单次诊断完整报告."""
 
@@ -170,7 +186,7 @@ class DiagnoseRunner:
     ) -> None:
         self._llm_reviewer = llm_reviewer
         self._fix_handlers = fix_handlers or {}
-        self._pending_confirms: dict[str, FixPlan] = {}
+        self._pending_confirms: dict[str, tuple[FixPlan, DiagnoseFinding]] = {}
 
     def register_fix_handler(
         self,
@@ -374,7 +390,7 @@ class DiagnoseRunner:
             confirm_token=token,
             estimated_duration_sec=10.0,
         )
-        self._pending_confirms[token] = plan
+        self._pending_confirms[token] = (plan, finding)
         return plan
 
     async def _execute(
@@ -416,10 +432,60 @@ class DiagnoseRunner:
 
     def confirm_user_fix(self, token: str, accept: bool = True) -> bool:
         """用户确认需确认的 fix."""
-        plan = self._pending_confirms.pop(token, None)
-        if plan is None:
+        pending = self._pending_confirms.pop(token, None)
+        if pending is None:
             return False
         return accept
+
+    async def confirm_user_fix_with_result(
+        self,
+        token: str,
+        accept: bool = True,
+    ) -> FixConfirmationResult:
+        """用户确认需确认的 fix，并返回是否真的执行.
+
+        老接口 ``confirm_user_fix`` 只返回 bool，无法表达“已确认但没有执行器”。API
+        层应该走这个接口，把真实状态告诉用户。
+        """
+        pending = self._pending_confirms.pop(token, None)
+        if pending is None:
+            return FixConfirmationResult(
+                token=token,
+                accepted=False,
+                message="confirm_token not found or already consumed",
+            )
+
+        plan, finding = pending
+        if not accept:
+            return FixConfirmationResult(
+                token=token,
+                accepted=False,
+                plan_id=plan.plan_id,
+                executed=False,
+                message="用户拒绝了该修复方案，系统未执行任何动作。",
+            )
+
+        if finding.category not in self._fix_handlers:
+            return FixConfirmationResult(
+                token=token,
+                accepted=True,
+                plan_id=plan.plan_id,
+                executed=False,
+                message=(
+                    "用户已确认该修复方案，但当前没有注册真实执行器；"
+                    "KUN 只记录确认，不会假装已经修复。"
+                ),
+            )
+
+        outcome = await self._execute(plan, [finding])
+        return FixConfirmationResult(
+            token=token,
+            accepted=True,
+            plan_id=plan.plan_id,
+            executed=True,
+            outcome=outcome,
+            message="修复执行器已运行。" if outcome.success else "修复执行器已尝试，但结果未通过。",
+        )
 
 
 def _finding_priority(finding: DiagnoseFinding) -> tuple[int, int]:
@@ -453,6 +519,7 @@ __all__ = [
     "DiagnoseRequest",
     "DiagnoseRunner",
     "DiagnoseTrigger",
+    "FixConfirmationResult",
     "FixHandler",
     "FixOutcome",
     "FixPlan",

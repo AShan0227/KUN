@@ -7,7 +7,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from kun.api.diagnose import router as diag_router
 from kun.api.runtime import get_diagnose_runner, install_runtime
-from kun.security.diagnose_runner import DiagnoseFinding, DiagnoseRequest, FixPlan
+from kun.security.diagnose_runner import (
+    DiagnoseFinding,
+    DiagnoseRequest,
+    DiagnoseRunner,
+    FixOutcome,
+    FixPlan,
+)
 from kun.security.fix_handlers import (
     accelerate_handler,
     clean_handler,
@@ -209,3 +215,75 @@ def test_api_diagnose_confirm_unknown_token_404(diag_app) -> None:
         headers={"X-User-Id": "u-1"},
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_confirm_user_fix_result_distinguishes_recorded_from_executed() -> None:
+    runner = DiagnoseRunner()
+    finding = _make_finding("software_mgmt", "需要安装外部软件")
+    plan = FixPlan(
+        plan_id="diag-plan-confirm",
+        target_finding_id=finding.finding_id,
+        fix_kind="user_confirm_required",
+        description="需要用户确认",
+        confirm_token="TOK123",
+    )
+    runner._pending_confirms["TOK123"] = (plan, finding)
+
+    result = await runner.confirm_user_fix_with_result("TOK123", accept=True)
+
+    assert result.accepted is True
+    assert result.executed is False
+    assert "没有注册真实执行器" in result.message
+
+
+@pytest.mark.asyncio
+async def test_confirm_user_fix_result_executes_registered_handler() -> None:
+    async def handler(plan: FixPlan, _finding: DiagnoseFinding) -> FixOutcome:
+        return FixOutcome(plan_id=plan.plan_id, success=True, verified=True, notes="done")
+
+    runner = DiagnoseRunner()
+    runner.register_fix_handler("software_mgmt", handler)
+    finding = _make_finding("software_mgmt", "需要安装外部软件")
+    plan = FixPlan(
+        plan_id="diag-plan-exec",
+        target_finding_id=finding.finding_id,
+        fix_kind="user_confirm_required",
+        description="需要用户确认",
+        confirm_token="TOK456",
+    )
+    runner._pending_confirms["TOK456"] = (plan, finding)
+
+    result = await runner.confirm_user_fix_with_result("TOK456", accept=True)
+
+    assert result.accepted is True
+    assert result.executed is True
+    assert result.outcome is not None
+    assert result.outcome.success is True
+
+
+def test_api_diagnose_confirm_reports_no_executor_truthfully(diag_app) -> None:
+    runner = get_diagnose_runner(diag_app)
+    finding = _make_finding("software_mgmt", "需要安装外部软件")
+    plan = FixPlan(
+        plan_id="diag-plan-api-confirm",
+        target_finding_id=finding.finding_id,
+        fix_kind="user_confirm_required",
+        description="需要用户确认",
+        confirm_token="TOK789",
+    )
+    runner._pending_confirms["TOK789"] = (plan, finding)
+
+    client = TestClient(diag_app)
+    resp = client.post(
+        "/api/diagnose/confirm",
+        json={"confirm_token": "TOK789", "accept": True},
+        headers={"X-User-Id": "u-1"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["accepted"] is True
+    assert body["executed"] is False
+    assert body["plan_id"] == "diag-plan-api-confirm"
+    assert "不会假装已经修复" in body["message"]

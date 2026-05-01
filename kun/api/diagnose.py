@@ -94,10 +94,27 @@ async def diagnose_confirm(
 ) -> dict[str, Any]:
     """用户确认 user_confirm_required 类 fix."""
     runner = get_diagnose_runner(request.app)
-    accepted = runner.confirm_user_fix(payload.confirm_token, accept=payload.accept)
-    if not accepted and payload.accept:
+    result = await runner.confirm_user_fix_with_result(
+        payload.confirm_token,
+        accept=payload.accept,
+    )
+    if result.plan_id is None and payload.accept:
         raise HTTPException(404, "confirm_token not found or already consumed")
-    return {"accepted": accepted, "user_id": x_user_id}
+    return {
+        "accepted": result.accepted,
+        "executed": result.executed,
+        "plan_id": result.plan_id,
+        "message": result.message,
+        "outcome": None
+        if result.outcome is None
+        else {
+            "plan_id": result.outcome.plan_id,
+            "success": result.outcome.success,
+            "verified": result.outcome.verified,
+            "notes": result.outcome.notes,
+        },
+        "user_id": x_user_id,
+    }
 
 
 @router.get("/audit-log")
