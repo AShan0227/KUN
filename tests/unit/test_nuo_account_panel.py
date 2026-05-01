@@ -216,6 +216,10 @@ def test_invite_member_writes_invitation_ledger(monkeypatch: pytest.MonkeyPatch)
     assert body["acceptance_token_id"] == "tok-invite"
     assert body["acceptance_token"] == "invite.raw"
     assert "尚未发送邮件" in body["message"]
+    assert body["email_draft"]["delivery_status"] == "draft_only"
+    assert "你被邀请加入 KUN 租户" in body["email_draft"]["subject"]
+    assert "invite.raw" in body["email_draft"]["body"]
+    assert "没有自动发送邮件" in body["email_draft"]["body"]
     assert called == {
         "tenant_id": "tenant-a",
         "user_id": "new-user",

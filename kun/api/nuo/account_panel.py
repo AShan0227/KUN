@@ -98,6 +98,15 @@ class InviteMemberRequest(BaseModel):
     invite_ttl_sec: int = Field(default=604800, ge=60, le=2592000)
 
 
+class InviteEmailDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str
+    body: str
+    recipient_user_id: str
+    delivery_status: str = "draft_only"
+
+
 class InviteMemberResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -109,6 +118,7 @@ class InviteMemberResponse(BaseModel):
     acceptance_token_id: str | None = None
     acceptance_token: str | None = None
     invite_expires_at: datetime | None = None
+    email_draft: InviteEmailDraft
     message: str
     honest_limits: list[str]
 
@@ -206,6 +216,7 @@ async def invite_member(payload: InviteMemberRequest) -> InviteMemberResponse:
         acceptance_token_id=invited.acceptance_token_id,
         acceptance_token=invited.acceptance_token,
         invite_expires_at=invited.invite_expires_at,
+        email_draft=_invite_email_draft(invited),
         message=message,
         honest_limits=invited.honest_limits,
     )
@@ -263,6 +274,33 @@ def _member_summary(row: TenantMemberRow) -> TenantMemberSummary:
         status=row.status,
         created_at=row.created_at,
         updated_at=row.updated_at,
+    )
+
+
+def _invite_email_draft(invited: Any) -> InviteEmailDraft:
+    subject = f"你被邀请加入 KUN 租户 {invited.tenant_id}"
+    lines = [
+        f"你被邀请加入 KUN 租户：{invited.tenant_id}",
+        f"用户 ID：{invited.user_id}",
+        f"角色：{invited.role}",
+        f"权限：{', '.join(_string_list(invited.scopes)) or '无'}",
+    ]
+    if invited.invite_expires_at is not None:
+        lines.append(f"过期时间：{invited.invite_expires_at.isoformat()}")
+    lines.extend(
+        [
+            "",
+            "请打开 KUN 前端的账号入口，在“接受成员邀请”里粘贴下面的一次性 invite token：",
+            invited.acceptance_token or "<当前没有生成 invite token>",
+            "",
+            "注意：这个 token 等同于一次性邀请凭证，请不要公开转发。",
+            "系统只生成了邮件草稿，没有自动发送邮件。",
+        ]
+    )
+    return InviteEmailDraft(
+        subject=subject,
+        body="\n".join(lines),
+        recipient_user_id=str(invited.user_id),
     )
 
 

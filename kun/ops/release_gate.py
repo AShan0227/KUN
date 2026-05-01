@@ -107,11 +107,17 @@ def _checklist_checks(root: Path) -> list[ReleaseCheck]:
             )
         ]
     text = path.read_text(encoding="utf-8")
-    missing = [
-        label
-        for label in ("tag", "rollback", "hotfix", "backup", "restore")
-        if label not in text.lower()
-    ]
+    required = {
+        "tag": "tag",
+        "rollback": "rollback",
+        "hotfix": "hotfix",
+        "backup": "backup",
+        "restore": "restore",
+        "object-store-roundtrip": "object-store-roundtrip",
+        "S3/MinIO": "s3",
+    }
+    lower_text = text.lower()
+    missing = [label for label, needle in required.items() if needle not in lower_text]
     if missing:
         return [
             ReleaseCheck(
@@ -119,7 +125,10 @@ def _checklist_checks(root: Path) -> list[ReleaseCheck]:
                 severity="blocker",
                 title="V4 release checklist 不完整",
                 detail="缺少关键词: " + ", ".join(missing),
-                suggested_action="补齐 tag / rollback / hotfix / backup / restore 流程。",
+                suggested_action=(
+                    "补齐 tag / rollback / hotfix / backup / restore / "
+                    "object-store-roundtrip / S3-MinIO 流程。"
+                ),
             )
         ]
     return [

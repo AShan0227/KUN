@@ -213,12 +213,12 @@ export function kunWebSocketUrl(): string {
   const base = API_ORIGIN || `${window.location.protocol}//${window.location.host}`;
   const proto = base.startsWith("https") ? "wss:" : "ws:";
   const host = base.replace(/^https?:\/\//, "");
-  const params = new URLSearchParams({
-    tenant_id: identity.tenantId,
-    user_id: identity.userId,
-  });
+  const params = new URLSearchParams();
   if (identity.authToken) {
     params.set("auth_token", identity.authToken);
+  } else {
+    params.set("tenant_id", identity.tenantId);
+    params.set("user_id", identity.userId);
   }
   return `${proto}//${host}/ws?${params.toString()}`;
 }

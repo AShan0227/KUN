@@ -12,7 +12,7 @@ def _write_release_files(root: Path) -> None:
     docs = root / "docs" / "ops"
     docs.mkdir(parents=True)
     (docs / "release-checklist-v4.md").write_text(
-        "tag rollback hotfix backup restore",
+        "tag rollback hotfix backup restore object-store-roundtrip S3/MinIO",
         encoding="utf-8",
     )
     scripts = root / "scripts"
@@ -55,6 +55,26 @@ def test_release_gate_checks_v4_checklist(tmp_path: Path) -> None:
     assert "release_checklist_v4" in ids
     assert "legal_guard" in ids
     assert not any(item.check_id == "release_checklist_v4" for item in report.blockers)
+
+
+@pytest.mark.unit
+def test_release_gate_blocks_checklist_without_object_store_roundtrip(tmp_path: Path) -> None:
+    _write_release_files(tmp_path)
+    (tmp_path / "docs" / "ops" / "release-checklist-v4.md").write_text(
+        "tag rollback hotfix backup restore",
+        encoding="utf-8",
+    )
+
+    report = run_release_gate(
+        release_tag="v4.0.0",
+        repo_root=tmp_path,
+        run_git=False,
+        run_alembic_heads=False,
+        require_ready=False,
+    )
+
+    checklist = next(item for item in report.blockers if item.check_id == "release_checklist_v4")
+    assert "object-store-roundtrip" in checklist.detail
 
 
 @pytest.mark.unit

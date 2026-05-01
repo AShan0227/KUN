@@ -19,6 +19,7 @@ uv run kun ops release-check --tag v4.0.0 --require-ready
 - `scripts/restore_postgres_smoke.sh` 在目标环境可用
 - `uv run kun ops backup-drill-create --output-dir backups`
 - `uv run kun ops backup-drill-restore-dry-run backups/<manifest>.manifest.json --restore-root /tmp/kun-restore-dry-run`
+- `uv run kun ops backup-drill-object-store-roundtrip backups/<manifest>.manifest.json --restore-root /tmp/kun-restore-object-store-dry-run --object-prefix backup-drills`
 
 没有真实数据库/S3 restore 演练时，只能发内部测试版，不能宣称生产级完成。
 

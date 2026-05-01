@@ -321,6 +321,7 @@ def get_v3_delivery_status(
                 "NUO 账号面板可查看当前租户账号、成员和 token 签发账本，且不会暴露 raw bearer token",
                 "NUO 账号面板可写入成员邀请账本；不会伪装成已发送邮件或已完成成员登录",
                 "NUO 账号面板已接成员邀请入口，可生成一次性 token 和可复制交付文案，但仍不会自动发邮件",
+                "成员邀请 API 会返回结构化邮件草稿，方便复制交付；草稿明确 draft_only，不会伪装成真实发送",
                 "NUO 账号面板可撤销当前租户已签发 token，生产请求中间件会消费撤销结果",
                 "前端主入口 / NUO / billing 已通过统一 apiClient 从 localStorage 或 NEXT_PUBLIC_KUN_TENANT_ID/NEXT_PUBLIC_KUN_USER_ID 注入租户与用户 header，避免页面散落 u-sylvan/sylvan",
                 "前端已补 /account 会话入口，可手动录入 bearer token 并显示服务端 session，不再只能改 env/localStorage",
@@ -328,6 +329,7 @@ def get_v3_delivery_status(
                 "前端 /account 可查看自己的 token 账本并撤销 token，且不展示原始 token/hash",
                 "前端 /account 已补本地租户/用户档案切换器；切换时会清除旧 token，避免跨租户误用",
                 "WebSocket 支持 auth_token 查询参数；生产环境必须使用签名 token，不再接受裸 tenant_id/user_id 打开会话",
+                "前端 WebSocket 有 auth token 时只传 auth_token；没有 token 时才走本地开发 tenant_id/user_id fallback",
                 "ops dogfood CLI 可跑 V4 低风险 smoke，验证 preflight / token / WorldGateway / 诚实边界",
                 "ops dogfood --include-db-mission 可额外验证 Mission/RuntimeState/Orchestrator runner 的真实 DB 续跑闭环",
                 "ops dogfood --include-db-account 可额外验证账号账本、token 使用账本、refresh session、成员邀请和接受邀请的真实 DB smoke",
@@ -336,6 +338,7 @@ def get_v3_delivery_status(
                 "ops delivery-status CLI 可直接查看 ready / partial / not_ready，防止伪功能被误认为已完成",
                 "CI 会检查 scripts/alembic 的 ruff/format，并在 honesty gate 里检查 Alembic 单 head",
                 "ops release-check CLI 会检查 V4 release checklist、preflight、legal guard、git dirty/tag、rollback/hotfix 文档",
+                "V4 release checklist 和 release gate 已要求记录对象存储往返演练命令，避免 S3/MinIO restore 演练被文档漏掉",
             ],
             evidence_refs=[
                 ".github/workflows/ci.yml",
@@ -369,12 +372,12 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "完整密码登录 / OAuth 账号体系",
-                "前端已有手动会话/邀请码注册/接受邀请/refresh 和本地租户档案切换入口，但还没有密码登录、OAuth、服务端租户切换器、CSRF/设备态风控；WebSocket token 通过 query 传递，生产还应升级到更正式的会话/短期票据方案",
+                "前端已有手动会话/邀请码注册/接受邀请/refresh 和本地租户档案切换入口，但还没有密码登录、OAuth、服务端租户切换器、CSRF/设备态风控；WebSocket 仍通过 query 传递 auth_token，生产还应升级到更正式的短期票据方案",
                 "完整设备登录态和异常登录风控",
                 "前端已有本地 JSON secret-store 写入入口，但还不是云 KMS / 托管 Secret Manager / 自动轮换 / 完整租户自助密钥平台",
                 "对象存储备份包往返演练已有命令；真实生产数据库和生产 S3/MinIO 账号的定期恢复演练还没跑过",
                 "跨周真实产品运营 dogfood 验收场景",
-                "成员邀请邮件发送和账单闭环",
+                "成员邀请已有邮件草稿，但还没有真实邮件发送和账单闭环",
             ],
             next_steps=[
                 "把账号账本升级成自助注册、成员管理和完整会话体系",

@@ -88,6 +88,12 @@ type InviteMemberResult = {
   acceptance_token_id?: string | null;
   acceptance_token?: string | null;
   invite_expires_at?: string | null;
+  email_draft: {
+    subject: string;
+    body: string;
+    recipient_user_id: string;
+    delivery_status: string;
+  };
   message: string;
   honest_limits: string[];
 };
@@ -755,11 +761,17 @@ export default function NuoDashboard() {
             {inviteNotice && <p className="mt-2 text-gray-500">{inviteNotice}</p>}
             {inviteResult?.acceptance_token && (
               <div className="mt-3 rounded border bg-white p-2">
-                <div className="font-medium text-gray-700">复制给被邀请人的文案</div>
+                <div className="font-medium text-gray-700">邮件草稿（尚未发送）</div>
+                <div className="mt-2 rounded bg-gray-50 p-2">
+                  <div className="text-[11px] text-gray-400">主题</div>
+                  <div className="font-mono text-[11px] text-gray-700">
+                    {inviteResult.email_draft.subject}
+                  </div>
+                </div>
                 <textarea
                   className="mt-2 h-32 w-full rounded border border-gray-200 p-2 font-mono text-[11px]"
                   readOnly
-                  value={buildInviteHandoffText(inviteResult)}
+                  value={inviteResult.email_draft.body}
                 />
                 <p className="mt-1 text-gray-400">
                   token 只在这次响应里展示。请用可信渠道发送，不要贴到公开 issue、日志或群聊。
@@ -1392,23 +1404,6 @@ function MiniMetric({ label, value }: { label: string; value: string | number })
 function formatHonestyLimit(value: AccountSummary["honest_limits"]) {
   if (!value.length) return "无";
   return String(value.length);
-}
-
-function buildInviteHandoffText(invite: InviteMemberResult) {
-  return [
-    `你被邀请加入 KUN 租户：${invite.tenant_id}`,
-    `用户 ID：${invite.user_id}`,
-    `角色：${invite.role}`,
-    `权限：${invite.scopes.join(", ") || "无"}`,
-    invite.invite_expires_at ? `过期时间：${invite.invite_expires_at}` : "",
-    "",
-    "请打开 KUN 前端的 /account 页面，在“接受成员邀请”里粘贴下面的一次性 invite token：",
-    invite.acceptance_token || "",
-    "",
-    "注意：这个 token 等同于一次性邀请凭证，请不要公开转发。",
-  ]
-    .filter((line) => line !== "")
-    .join("\n");
 }
 
 function StatusPill({ status }: { status: DeliveryCapability["status"] }) {
