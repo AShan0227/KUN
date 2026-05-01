@@ -12,6 +12,12 @@ from kun.compiler.ingestion import (
     CompilerIngestor,
     material_to_layered_asset,
 )
+from kun.compiler.internal_assets import (
+    INTERNAL_COMPILER_NAME,
+    compile_protocol_asset,
+    compile_skill_markdown_asset,
+    compile_task_ref_asset,
+)
 from kun.compiler.markitdown import MarkItDownMaterialCompiler
 from kun.compiler.material import LightweightMaterialCompiler
 from kun.compiler.models import (
@@ -39,6 +45,7 @@ from kun.compiler.sync import (
 )
 
 __all__ = [
+    "INTERNAL_COMPILER_NAME",
     "CanonicalAsset",
     "CanonicalKind",
     "CanonicalMaterial",
@@ -66,6 +73,9 @@ __all__ = [
     "RecompileCandidateResult",
     "RecompileReport",
     "RecompileStatus",
+    "compile_protocol_asset",
+    "compile_skill_markdown_asset",
+    "compile_task_ref_asset",
     "default_registry",
     "material_to_layered_asset",
 ]

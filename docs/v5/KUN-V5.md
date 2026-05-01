@@ -953,7 +953,7 @@ V5 必须防止“写了但没用”。
 
 | 能力 | 当前状态 | 需要补什么 |
 | --- | --- | --- |
-| InputTranslator / OutputTranslator | 有雏形 | 升级成 Compiler 标准 |
+| InputTranslator / OutputTranslator | 附件已走原始 bytes 编译；skill/task/protocol 已能编译成 LayeredAsset | 还要接企业资料 connector 和更深 Office/OCR 后端 |
 | Hermes | 已进入多处链路 | 和 Compiler / ProtocolPacket 更紧密 |
 | Watchtower DecisionPlane | 已有策略票据雏形 | 扩成 DecisionTicket v2 |
 | ContextPacker | 已接 importance / credit | 还缺 MemoryPolicyTicket |
