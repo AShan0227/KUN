@@ -420,6 +420,11 @@ class QiIdleReplayStep(IdleBatchStep):
             evaluate_idle_replay_pool,
             generate_idle_replay_candidates,
         )
+        from kun.qi.lab_replay import (
+            configured_qi_lab_replay_budget_from_env,
+            qi_lab_replay_enabled_from_env,
+            run_qi_lab_replay_pool,
+        )
         from kun.qi.problem_queue import (
             QiProblemSignal,
             get_configured_qi_problem_queue,
@@ -487,10 +492,20 @@ class QiIdleReplayStep(IdleBatchStep):
             )
             strong_review_pool = strong_reviews.model_dump(mode="json")
             strong_review_pool["enabled"] = True
+        lab_replay_pool = await run_qi_lab_replay_pool(
+            drafts,
+            histories,
+            enabled=qi_lab_replay_enabled_from_env(),
+            budget=configured_qi_lab_replay_budget_from_env(),
+        )
         draft_asset_ids = await _persist_strategy_pack_drafts(
             tenant_id=tenant_id,
             drafts=drafts,
-            evaluation_records=[*evaluations.records, *strong_review_pool.get("records", [])],
+            evaluation_records=[
+                *evaluations.records,
+                *strong_review_pool.get("records", []),
+            ],
+            lab_replay_records=lab_replay_pool.records,
         )
         return {
             "signals": len(signals),
@@ -514,6 +529,7 @@ class QiIdleReplayStep(IdleBatchStep):
             "strong_review_engine": "strong_model"
             if strong_model_evaluator is not None
             else "disabled",
+            "lab_replay_pool": lab_replay_pool.model_dump(mode="json"),
             "persisted_review_signals": persisted,
             "persisted_strategy_pack_draft_assets": len(draft_asset_ids),
             "strategy_pack_draft_asset_ids": draft_asset_ids[:10],
@@ -1112,6 +1128,7 @@ async def _persist_strategy_pack_drafts(
     tenant_id: str,
     drafts: list[Any],
     evaluation_records: list[Any] | None = None,
+    lab_replay_records: list[Any] | None = None,
 ) -> list[str]:
     """Persist Qi strategy-pack drafts as review-only methodology assets.
 
@@ -1145,6 +1162,17 @@ async def _persist_strategy_pack_drafts(
         target_id = str(payload.get("target_id") or "")
         if target_id:
             evaluations_by_target.setdefault(target_id, []).append(payload)
+    replays_by_draft: dict[str, list[dict[str, Any]]] = {}
+    for record in lab_replay_records or []:
+        if hasattr(record, "model_dump"):
+            payload = record.model_dump(mode="json")
+        elif isinstance(record, dict):
+            payload = record
+        else:
+            continue
+        draft_id = str(payload.get("draft_id") or "")
+        if draft_id:
+            replays_by_draft.setdefault(draft_id, []).append(payload)
     for draft in drafts:
         draft_id = str(getattr(draft, "draft_id", ""))
         if not draft_id or draft_id in seen_draft_ids:
@@ -1177,6 +1205,7 @@ async def _persist_strategy_pack_drafts(
                 "promotion_blocked_until_review": True,
                 "decision_ticket": qi_ticket.event_payload(),
                 "evaluation_records": evaluations_by_target.get(draft_id, []),
+                "lab_replay_records": replays_by_draft.get(draft_id, []),
                 "strategy_pack_draft": draft.model_dump(mode="json")
                 if hasattr(draft, "model_dump")
                 else {},
