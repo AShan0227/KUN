@@ -73,7 +73,7 @@ def get_v3_delivery_status(
             capability_id="compiler_layer",
             label="KUN 编译层",
             status="partial",
-            summary="已有轻量输入编译器、CLI/AssetStore 写入入口、聊天附件热路径和 Hermes 标准材料包；可处理文本/Markdown/HTML/JSON/CSV/本地 PDF 摘要，但还没接外部网页和 Office/OCR/音视频重后端。",
+            summary="已有轻量输入编译器、CLI/AssetStore 写入入口、聊天附件热路径和 Hermes 标准材料包；可处理文本/Markdown/HTML/JSON/CSV、本地 PDF 摘要，以及可选白名单 URL 文本抓取，但还没接 Office/OCR/音视频重后端。",
             done=[
                 "新增 kun.compiler，定义 CanonicalMaterial / CanonicalAsset / CompilerProfile / Provenance",
                 "轻量编译器已支持 text、markdown、html、json、csv、本地 PDF 文本摘要和安全本地 path 输入",
@@ -81,6 +81,7 @@ def get_v3_delivery_status(
                 "URL 输入现在只生成 blocked/placeholder，不会偷偷联网抓取",
                 "编译结果带 l1/l2/l3_ref、风险、权限、来源、token 估算和编译 profile",
                 "PDF 支持只走本地 pypdf 文本抽取；扫描件/OCR/PDF 深理解仍明确标成限制",
+                "URL 编译默认不联网；开启 KUN_COMPILER_URL_FETCH_ENABLED 后仍必须 HTTPS + KUN_COMPILER_URL_ALLOWED_HOSTS 白名单 + 大小限制",
                 "CompilerIngestor 已能把 compiled material 转成 knowledge LayeredAsset 并写入 AssetStore",
                 "kun compiler compile-text / compile-path 可输出 CanonicalMaterial JSON，不写库",
                 "kun compiler ingest-text / ingest-path 可把编译结果写入 AssetStore，适合运维脚本和离线资料导入",
@@ -108,7 +109,7 @@ def get_v3_delivery_status(
                 "tests/unit/test_hermes_full_chain_adapter.py",
             ],
             missing=[
-                "已有 CLI/脚本级入口、聊天附件写入桥和 Hermes 材料包，但还没接入外部网页/企业资料入口或 RAG ingestion 批处理热路径",
+                "已有 CLI/脚本级入口、聊天附件写入桥、Hermes 材料包和白名单 URL 抓取能力，但还没接企业资料入口或 RAG ingestion 批处理热路径",
                 "还没接 Microsoft MarkItDown、OCR、音频转写、DOCX/PPTX/XLSX 等真实后端",
                 "傩已能做轻量格式质量评分和重编译建议，但还没接真实重编译执行器或重复资产自动合并",
             ],

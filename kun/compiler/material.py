@@ -7,6 +7,8 @@ import hashlib
 import html.parser
 import io
 import json
+import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -33,6 +35,7 @@ _KIND_MAP: dict[str, CanonicalKind] = {
     "csv": "csv",
     "pdf": "pdf",
 }
+UrlFetcher = Callable[[str, int], Awaitable[tuple[str, bytes]]]
 
 
 class LightweightMaterialCompiler:
@@ -43,8 +46,28 @@ class LightweightMaterialCompiler:
     future backends surfaced in the compiler profile.
     """
 
-    def __init__(self, *, translator: RealWorldTranslator | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        translator: RealWorldTranslator | None = None,
+        url_fetcher: UrlFetcher | None = None,
+        url_fetch_enabled: bool | None = None,
+        allowed_url_hosts: set[str] | None = None,
+        max_url_bytes: int = 1_000_000,
+    ) -> None:
         self._translator = translator or RealWorldTranslator()
+        self._url_fetcher = url_fetcher or _default_url_fetcher
+        self._url_fetch_enabled = (
+            _env_bool("KUN_COMPILER_URL_FETCH_ENABLED")
+            if url_fetch_enabled is None
+            else url_fetch_enabled
+        )
+        self._allowed_url_hosts = (
+            _csv_set(os.getenv("KUN_COMPILER_URL_ALLOWED_HOSTS"))
+            if allowed_url_hosts is None
+            else {host.lower() for host in allowed_url_hosts}
+        )
+        self._max_url_bytes = max_url_bytes
 
     async def compile_text(
         self,
@@ -129,7 +152,7 @@ class LightweightMaterialCompiler:
         metadata: dict[str, Any] | None = None,
     ) -> CanonicalMaterial:
         parsed = urlparse(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        if parsed.scheme != "https" or not parsed.netloc:
             return self._rejected(
                 tenant_id=tenant_id,
                 source=MaterialSource(type="url", uri=url),
@@ -137,12 +160,59 @@ class LightweightMaterialCompiler:
                 risk_flags=["unsupported_url"],
                 metadata=metadata,
             )
-        return self._unsupported(
+        host = (parsed.hostname or "").lower()
+        if not self._url_fetch_enabled:
+            return self._unsupported(
+                tenant_id=tenant_id,
+                source=MaterialSource(type="url", uri=url),
+                reason="url_fetch_not_enabled",
+                metadata=metadata,
+                status="placeholder",
+            )
+        if not self._allowed_url_hosts or host not in self._allowed_url_hosts:
+            return self._rejected(
+                tenant_id=tenant_id,
+                source=MaterialSource(type="url", uri=url),
+                reason="url_host_not_allowlisted",
+                risk_flags=["url_host_not_allowlisted"],
+                metadata={
+                    **(metadata or {}),
+                    "host": host,
+                    "allowed_hosts": sorted(self._allowed_url_hosts),
+                },
+            )
+        content_type, raw = await self._url_fetcher(url, self._max_url_bytes)
+        if len(raw) > self._max_url_bytes:
+            return self._rejected(
+                tenant_id=tenant_id,
+                source=MaterialSource(type="url", uri=url),
+                reason="url_response_too_large",
+                risk_flags=["url_too_large"],
+                metadata={**(metadata or {}), "max_url_bytes": self._max_url_bytes},
+            )
+        suffix_kind = _kind_from_suffix(parsed.path)
+        content_kind = _kind_from_content_type(content_type)
+        descriptor = self._descriptor_for(suffix_kind or content_kind or "plain_text")
+        text = raw.decode("utf-8", errors="replace")
+        return self._compile_detected(
+            text,
             tenant_id=tenant_id,
-            source=MaterialSource(type="url", uri=url),
-            reason="url_fetch_not_implemented",
-            metadata=metadata,
-            status="placeholder",
+            source=MaterialSource(
+                type="url",
+                uri=url,
+                detected_kind=descriptor.kind,
+                mime_type=content_type or descriptor.mime_type,
+            ),
+            descriptor=descriptor,
+            input_bytes=raw,
+            metadata={
+                **(metadata or {}),
+                "url_fetch_enabled": True,
+                "host": host,
+                "allowed_hosts": sorted(self._allowed_url_hosts),
+                "content_type": content_type,
+                "bytes": len(raw),
+            },
         )
 
     async def _detect_text(
@@ -355,6 +425,48 @@ def _normalize(kind: CanonicalKind, text: str) -> tuple[str, dict[str, Any], lis
             metadata["pdf_text_unavailable"] = True
         return text.strip(), metadata, risk_flags
     return text.strip(), {}, risk_flags
+
+
+async def _default_url_fetcher(url: str, max_bytes: int) -> tuple[str, bytes]:
+    import httpx
+
+    async with httpx.AsyncClient(follow_redirects=False, timeout=15.0) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        raw = response.content
+    if len(raw) > max_bytes:
+        return response.headers.get("content-type", ""), raw[: max_bytes + 1]
+    return response.headers.get("content-type", ""), raw
+
+
+def _kind_from_content_type(content_type: str) -> str | None:
+    value = content_type.split(";", 1)[0].strip().lower()
+    if value in {"text/plain"}:
+        return "plain_text"
+    if value in {"text/markdown", "text/x-markdown"}:
+        return "markdown"
+    if value in {"text/html", "application/xhtml+xml"}:
+        return "html"
+    if value in {"application/json", "application/ld+json"} or value.endswith("+json"):
+        return "json"
+    if value in {"text/csv", "application/csv"}:
+        return "csv"
+    if value == "application/pdf":
+        return "pdf"
+    return None
+
+
+def _env_bool(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _csv_set(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    return {item.strip().lower() for item in value.split(",") if item.strip()}
 
 
 def _profile() -> CompilerProfile:

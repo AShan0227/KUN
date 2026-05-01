@@ -133,8 +133,70 @@ async def test_compile_url_is_placeholder_without_fetching() -> None:
     assert asset.status == "placeholder"
     assert asset.kind == "unsupported"
     assert asset.source.type == "url"
-    assert asset.risk.reason == "url_fetch_not_implemented"
+    assert asset.risk.reason == "url_fetch_not_enabled"
     assert asset.tokens_estimate == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compile_url_requires_https_allowlist_when_enabled() -> None:
+    asset = await LightweightMaterialCompiler(
+        url_fetch_enabled=True,
+        allowed_url_hosts={"allowed.example.com"},
+    ).compile_url(
+        "https://blocked.example.com/report.html",
+        tenant_id="tenant_a",
+    )
+
+    assert asset.status == "rejected"
+    assert asset.kind == "unsupported"
+    assert "url_host_not_allowlisted" in asset.risk.flags
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compile_url_fetches_allowlisted_html_with_injected_fetcher() -> None:
+    async def fetcher(url: str, max_bytes: int) -> tuple[str, bytes]:
+        assert url == "https://docs.example.com/report.html"
+        assert max_bytes == 1_000_000
+        return "text/html; charset=utf-8", b"<h1>KUN</h1><p>compiler report</p>"
+
+    asset = await LightweightMaterialCompiler(
+        url_fetch_enabled=True,
+        allowed_url_hosts={"docs.example.com"},
+        url_fetcher=fetcher,
+    ).compile_url(
+        "https://docs.example.com/report.html",
+        tenant_id="tenant_a",
+    )
+
+    assert asset.status == "compiled"
+    assert asset.kind == "html"
+    assert asset.source.type == "url"
+    assert asset.metadata["url_fetch_enabled"] is True
+    assert asset.metadata["host"] == "docs.example.com"
+    assert "KUN" in asset.l2
+    assert "<h1>" not in asset.l2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compile_url_rejects_oversized_response() -> None:
+    async def fetcher(_url: str, _max_bytes: int) -> tuple[str, bytes]:
+        return "text/plain", b"x" * 6
+
+    asset = await LightweightMaterialCompiler(
+        url_fetch_enabled=True,
+        allowed_url_hosts={"docs.example.com"},
+        url_fetcher=fetcher,
+        max_url_bytes=5,
+    ).compile_url(
+        "https://docs.example.com/large.txt",
+        tenant_id="tenant_a",
+    )
+
+    assert asset.status == "rejected"
+    assert "url_too_large" in asset.risk.flags
 
 
 @pytest.mark.unit
