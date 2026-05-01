@@ -459,6 +459,20 @@ class StateLedger:
                     ticket.metadata.get("validation_tier") or entry.current_tier
                 )
                 entry.decision_reason = ticket.reason or entry.decision_reason
+            elif ticket.decision_point == "ooda_checkpoint":
+                checkpoint = str(ticket.metadata.get("checkpoint") or "")
+                state = str(ticket.metadata.get("state") or "")
+                step_id = ticket.metadata.get("step_id")
+                entry.current_action = (
+                    f"OODA {checkpoint}: {state}"
+                    if checkpoint
+                    else f"OODA: {state or ticket.selected_action}"
+                )
+                if isinstance(step_id, int):
+                    entry.current_step = max(entry.current_step, step_id)
+                entry.decision_reason = ticket.reason or entry.decision_reason
+                if ticket.status in {"needs_review", "blocked", "failed"}:
+                    _append_unique(entry.alert_flags, f"ooda:{ticket.status}")
             entry.add_trail(
                 "decision.ticket",
                 f"{ticket.decision_point}: {ticket.selected_action}",

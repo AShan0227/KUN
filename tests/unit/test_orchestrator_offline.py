@@ -246,9 +246,10 @@ async def test_orchestrator_runs_end_to_end():
     set_router(LLMRouter(providers))
 
     orch = Orchestrator(output_translator=_identity_translator)
-    events_seen = []
+    events = []
     async for ev in orch.stream("Please greet the world"):
-        events_seen.append(ev.kind)
+        events.append(ev)
+    events_seen = [ev.kind for ev in events]
 
     # Minimum contract: we see thinking → action_plan → action → cost_tick → answer → done
     assert "thinking" in events_seen
@@ -257,6 +258,11 @@ async def test_orchestrator_runs_end_to_end():
     assert "cost_tick" in events_seen
     assert "answer" in events_seen
     assert "done" in events_seen
+    ooda_stages = [ev.data.get("stage") for ev in events if ev.kind == "action_plan"]
+    assert "ooda_orient" in ooda_stages
+    assert "ooda_decide" in ooda_stages
+    assert "ooda_reflect" in ooda_stages
+    assert "ooda_finalize" in ooda_stages
 
 
 @pytest.mark.unit

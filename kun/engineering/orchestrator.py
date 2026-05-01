@@ -40,6 +40,7 @@ from kun.core.metrics import (
     task_started_total,
     task_surprise_score,
 )
+from kun.core.ooda_loop import OODACycle, OODAEngine, OODAState
 from kun.core.orm import IdempotencyRow, MissionRow, RuntimeStateRow, TaskResultRow, TaskRow
 from kun.core.tenancy import current_tenant
 from kun.datamodel.decision_ticket import (
@@ -52,6 +53,7 @@ from kun.datamodel.decision_ticket import (
     ticket_from_execution_mode_selection,
     ticket_from_llm_route,
     ticket_from_memory_policy_selection,
+    ticket_from_ooda_checkpoint,
     ticket_from_preflight_guard,
     ticket_from_proactive_tool_dispatch,
     ticket_from_protocol_applied,
@@ -646,6 +648,42 @@ class Orchestrator:
         # 协议是 KUN 沉淀的 IP, 鲲消费协议 = "怎么做这个 task" 的标准说明书
         active_protocol: Any = None
         decision_tickets: list[DecisionTicket] = []
+        ooda_engine = OODAEngine()
+        ooda_cycle = OODACycle(
+            task_ref=task_ref.meta.task_id,
+            metadata={
+                "mission_id": mission_id or "",
+                "output_kind": output_kind,
+                "duration_cap_sec": duration_cap,
+            },
+        )
+        ooda_cycle = await ooda_engine.transition(
+            ooda_cycle,
+            OODAState.ORIENT,
+            {
+                "task_type": task_ref.meta.task_type,
+                "risk_level": task_ref.meta.risk_level,
+                "complexity_score": task_ref.meta.complexity_score,
+                "estimated_cost_usd": task_ref.meta.estimated_cost_usd,
+                "success_criteria_short": task_ref.meta.success_criteria_short,
+            },
+        )
+        ooda_ticket = await self._record_ooda_checkpoint(
+            tenant_id=tenant.tenant_id,
+            task_ref=task_ref,
+            cycle=ooda_cycle,
+            checkpoint="orient",
+            decision_tickets=decision_tickets,
+            reason="任务已进入外层 OODA 定向阶段",
+            evidence={"task_l1": task_ref.meta.model_dump(mode="json")},
+        )
+        yield OrchestratorEvent(
+            kind="action_plan",
+            data={
+                "stage": "ooda_orient",
+                "decision_ticket": ooda_ticket.event_payload(),
+            },
+        )
         if (
             self.protocol_registry is not None
             and _os.getenv("KUN_PROTOCOL_CONSUME_ENABLED", "1") == "1"
@@ -664,7 +702,14 @@ class Orchestrator:
                     if active_protocol.execution.mode in ("FAST", "SMART", "MAX", "ENSEMBLE"):
                         task_ref.meta.execution_mode = active_protocol.execution.mode
                     # 协议 hermes addon → 注入 step prompt (Wire 31 hermes 已 wire)
-                    # 协议 verification → 加到 task_ref.spec.verification_specs
+                    # 协议 verification → 加到 task_ref.spec.verification_specs.
+                    # 不能因为 intent 没产 L2 TaskSpec 就静默丢掉协议验收；
+                    # 没 spec 时补一个最小 TaskSpec, 保证 PreDeliverGate 真能跑。
+                    if active_protocol.verification and task_ref.spec is None:
+                        task_ref.spec = TaskSpec(
+                            goal_detail=task_ref.meta.success_criteria_short,
+                            success_metrics=[task_ref.meta.success_criteria_short],
+                        )
                     if active_protocol.verification and task_ref.spec is not None:
                         from kun.datamodel.verification_spec import VerificationSpec
 
@@ -886,6 +931,38 @@ class Orchestrator:
                 "stage": "task_route",
                 "task_id": task_ref.meta.task_id,
                 "decision_ticket": route_ticket.event_payload(),
+            },
+        )
+        ooda_cycle = await ooda_engine.transition(
+            ooda_cycle,
+            OODAState.DECIDE,
+            {
+                "execution_mode": task_ref.meta.execution_mode,
+                "planned_steps": len(plan.steps),
+                "role_template_id": choice.role_template_id,
+                "purpose": str(choice.purpose),
+                "expected_outcome": "done",
+            },
+        )
+        ooda_ticket = await self._record_ooda_checkpoint(
+            tenant_id=tenant.tenant_id,
+            task_ref=task_ref,
+            cycle=ooda_cycle,
+            checkpoint="decide",
+            decision_tickets=decision_tickets,
+            reason="任务已完成路线选择，进入可执行决策阶段",
+            evidence={
+                "execution_mode": task_ref.meta.execution_mode,
+                "planned_steps": len(plan.steps),
+                "role_template_id": choice.role_template_id,
+                "purpose": str(choice.purpose),
+            },
+        )
+        yield OrchestratorEvent(
+            kind="action_plan",
+            data={
+                "stage": "ooda_decide",
+                "decision_ticket": ooda_ticket.event_payload(),
             },
         )
 
@@ -1808,6 +1885,76 @@ class Orchestrator:
                             task_ref=task_ref.meta.task_id,
                         ),
                     )
+                try:
+                    if ooda_cycle.current_state == OODAState.REFLECT:
+                        ooda_cycle = await ooda_engine.transition(
+                            ooda_cycle,
+                            OODAState.DECIDE,
+                            {
+                                "step_id": step_plan.step_id,
+                                "expected_outcome": "done",
+                                "reason": "continue_next_step",
+                            },
+                        )
+                    if ooda_cycle.current_state == OODAState.DECIDE:
+                        ooda_cycle = await ooda_engine.transition(
+                            ooda_cycle,
+                            OODAState.ACT,
+                            {
+                                "step_id": step_plan.step_id,
+                                "status": "done",
+                                "outcome": "done",
+                                "skill_used": step_record.skill_used,
+                                "provider": response.provider,
+                                "model": response.model,
+                                "tier": str(response.tier),
+                                "cost_usd": response.cost_usd_equivalent,
+                                "duration_sec": duration,
+                            },
+                        )
+                    reflection = await ooda_engine.reflect(ooda_cycle)
+                    ooda_cycle = await ooda_engine.transition(
+                        ooda_cycle,
+                        OODAState.REFLECT,
+                        reflection,
+                    )
+                    from kun.engineering.dynamic_replan import DynamicReplanner
+
+                    replan_decision = await DynamicReplanner().detect_replan_decision(ooda_cycle)
+                    ooda_status: Literal["applied", "needs_review"] = (
+                        "needs_review" if replan_decision.needs_replan else "applied"
+                    )
+                    ooda_ticket = await self._record_ooda_checkpoint(
+                        tenant_id=tenant.tenant_id,
+                        task_ref=task_ref,
+                        cycle=ooda_cycle,
+                        checkpoint="reflect",
+                        decision_tickets=decision_tickets,
+                        status=ooda_status,
+                        reason=replan_decision.reason,
+                        step_id=step_plan.step_id,
+                        evidence={
+                            "reflection": reflection,
+                            "replan": {
+                                "needs_replan": replan_decision.needs_replan,
+                                "reason": replan_decision.reason,
+                                "confidence": replan_decision.confidence,
+                                "metadata": replan_decision.metadata or {},
+                            },
+                        },
+                    )
+                    yield OrchestratorEvent(
+                        kind="action_plan",
+                        data={
+                            "stage": "ooda_reflect",
+                            "step_id": step_plan.step_id,
+                            "needs_replan": replan_decision.needs_replan,
+                            "reason": replan_decision.reason,
+                            "decision_ticket": ooda_ticket.event_payload(),
+                        },
+                    )
+                except Exception:
+                    log.exception("ooda.checkpoint_failed (non-fatal)")
                 self._record_step_credit(
                     task_ref=task_ref,
                     step=step_record,
@@ -2521,6 +2668,43 @@ class Orchestrator:
             answer = f"Sorry — task failed: {exc}"
 
         # 7. Finalize
+        try:
+            if ooda_cycle.current_state == OODAState.REFLECT:
+                ooda_cycle = await ooda_engine.transition(
+                    ooda_cycle,
+                    OODAState.DONE,
+                    {"task_status": status, "result": status},
+                )
+            final_ooda_status: Literal["applied", "needs_review", "failed", "stopped"]
+            if status == "done":
+                final_ooda_status = "applied"
+            elif status == "failed":
+                final_ooda_status = "failed"
+            elif status == "cancelled":
+                final_ooda_status = "stopped"
+            else:
+                final_ooda_status = "needs_review"
+            final_ooda_ticket = await self._record_ooda_checkpoint(
+                tenant_id=tenant.tenant_id,
+                task_ref=task_ref,
+                cycle=ooda_cycle,
+                checkpoint="finalize",
+                decision_tickets=decision_tickets,
+                status=final_ooda_status,
+                reason=f"任务结束状态: {status}",
+                evidence={"task_status": status},
+            )
+            yield OrchestratorEvent(
+                kind="action_plan",
+                data={
+                    "stage": "ooda_finalize",
+                    "status": status,
+                    "decision_ticket": final_ooda_ticket.event_payload(),
+                },
+            )
+        except Exception:
+            log.exception("ooda.finalize_failed (non-fatal)")
+
         runtime.status = status
         runtime.finished_at = datetime.now(UTC)
         total_duration = time.perf_counter() - t0
@@ -2872,6 +3056,55 @@ class Orchestrator:
             method(*args, **kwargs)
         except Exception:
             log.exception("state_ledger.%s_failed (non-fatal)", method_name)
+
+    async def _record_ooda_checkpoint(
+        self,
+        *,
+        tenant_id: str,
+        task_ref: TaskRef,
+        cycle: OODACycle,
+        checkpoint: str,
+        decision_tickets: list[DecisionTicket],
+        status: Literal[
+            "selected",
+            "applied",
+            "allowed",
+            "blocked",
+            "skipped",
+            "stopped",
+            "escalated",
+            "needs_review",
+            "failed",
+        ] = "applied",
+        reason: str = "",
+        step_id: int | None = None,
+        evidence: dict[str, Any] | None = None,
+    ) -> DecisionTicket:
+        ticket = ticket_from_ooda_checkpoint(
+            tenant_id=tenant_id,
+            task_id=task_ref.meta.task_id,
+            risk_level=task_ref.meta.risk_level,
+            checkpoint=checkpoint,
+            cycle=cycle,
+            status=status,
+            reason=reason,
+            step_id=step_id,
+            mission_id=_mission_id_from_task(task_ref),
+            evidence=evidence,
+        )
+        decision_tickets.append(ticket)
+        self._record_state_ledger("record_decision_ticket", ticket)
+        async with session_scope(tenant_id=tenant_id) as s:
+            await emit(
+                s,
+                Event.build(
+                    tenant_id=tenant_id,
+                    event_type="task.ooda.checkpoint",
+                    payload=ticket.event_payload(),
+                    task_ref=task_ref.meta.task_id,
+                ),
+            )
+        return ticket
 
     def _record_step_credit(
         self,

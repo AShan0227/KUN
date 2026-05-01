@@ -5,6 +5,7 @@ from typing import ClassVar
 
 from kun.context.packer import ContextPack, PackedContextItem
 from kun.core.emergent_solution import EmergentSolution, EmergentSource
+from kun.core.ooda_loop import OODACycle, OODAState
 from kun.datamodel.decision_ticket import (
     ticket_from_anti_gaming_finding,
     ticket_from_budget_policy,
@@ -14,6 +15,7 @@ from kun.datamodel.decision_ticket import (
     ticket_from_execution_mode_selection,
     ticket_from_llm_route,
     ticket_from_memory_policy_selection,
+    ticket_from_ooda_checkpoint,
     ticket_from_preflight_guard,
     ticket_from_proactive_tool_dispatch,
     ticket_from_protocol_applied,
@@ -96,6 +98,29 @@ def test_execution_mode_ticket_records_final_sparse_depth() -> None:
     assert ticket.metadata["execution_mode"] == "MAX"
     assert ticket.evidence["watchtower_decision"]["strategy_pack_id"] == "coding"
     assert "FAST" in ticket.alternatives
+
+
+def test_ooda_checkpoint_ticket_records_outer_loop_state() -> None:
+    cycle = OODACycle(task_ref="tk-1", current_state=OODAState.REFLECT)
+
+    ticket = ticket_from_ooda_checkpoint(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        risk_level="medium",
+        checkpoint="reflect",
+        cycle=cycle,
+        status="needs_review",
+        reason="latest action failed",
+        step_id=2,
+        evidence={"reflection": {"needs_adjust": True}},
+    )
+
+    assert ticket.decision_point == "ooda_checkpoint"
+    assert ticket.phase == "step"
+    assert ticket.selected_action == "reflect:reflect"
+    assert ticket.status == "needs_review"
+    assert ticket.metadata["step_id"] == 2
+    assert ticket.evidence["reflection"]["needs_adjust"] is True
 
 
 def test_value_gate_ticket_maps_intervention_status() -> None:

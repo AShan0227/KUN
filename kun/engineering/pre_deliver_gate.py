@@ -228,7 +228,7 @@ class PreDeliverGate:
                 GateCheckResult(
                     name="protocol.compliance",
                     passed=protocol_check_passed or not bool(self._active_protocol.verification),
-                    severity="medium",
+                    severity="high",
                     reason=(
                         ""
                         if protocol_check_passed

@@ -1,7 +1,6 @@
 """Task execution mode classifier for FAST / SMART / MAX / ENSEMBLE.
 
-# TODO: orchestrator wire by Claude in V2.2
-# orchestrator 用 task_meta.execution_mode 决定:
+# 已接入 orchestrator 主链路：intent 产出 execution_mode 后, orchestrator 用它决定:
 #   - panorama tier (FAST→minimal, SMART→light, MAX→full)
 #   - multi_judge_review 启用与否
 #   - 守望 ValueDecisionRule 启用与否

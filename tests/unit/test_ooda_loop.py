@@ -54,6 +54,26 @@ async def test_full_happy_path_can_finish_done() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reflect_can_continue_to_next_decision() -> None:
+    engine = OODAEngine()
+    cycle = OODACycle(task_ref="task-1")
+
+    cycle = await engine.transition(cycle, OODAState.ORIENT, {"summary": "两步任务"})
+    cycle = await engine.transition(cycle, OODAState.DECIDE, {"expected_outcome": "done"})
+    cycle = await engine.transition(cycle, OODAState.ACT, {"status": "done", "outcome": "done"})
+    cycle = await engine.transition(cycle, OODAState.REFLECT, await engine.reflect(cycle))
+    cycle = await engine.transition(
+        cycle,
+        OODAState.DECIDE,
+        {"expected_outcome": "done", "reason": "continue_next_step"},
+    )
+
+    assert cycle.current_state == OODAState.DECIDE
+    assert cycle.decision is not None
+    assert cycle.decision["reason"] == "continue_next_step"
+
+
+@pytest.mark.asyncio
 async def test_done_is_terminal() -> None:
     engine = OODAEngine()
     cycle = OODACycle(task_ref="task-1", current_state=OODAState.DONE)

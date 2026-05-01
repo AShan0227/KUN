@@ -36,6 +36,7 @@ EventKind = Literal[
     "task.budget_warn",
     "task.budget_exceeded",
     "task.tool_skipped",
+    "task.ooda.checkpoint",
     "hermes.step_action.selected",
     "task.metadata_updated",
     "task.done",

@@ -1,6 +1,7 @@
 """任务成功验证 runner (BATCH4 C3 / T53).
 
-TODO: orchestrator wire in M3.2 — 标记 done 前调用 VerificationRunner.verify().
+Runtime 会把它注入 Orchestrator；PreDeliverGate 在任务交付前调用
+``VerificationRunner.verify()``。这个模块只负责确定性验证动作本身。
 """
 
 from __future__ import annotations

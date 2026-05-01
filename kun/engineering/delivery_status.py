@@ -190,6 +190,7 @@ def get_v3_delivery_status(
                 "普通任务的 pending action 审批通过后会排入 continuation，API 后台和 cron worker 都能恢复执行",
                 "MultiTaskScheduler 已有 V5 并发车道：fast / mission / qi / nuo / world / high_risk，每条车道可独立限流",
                 "任务会按风险、任务类型、skill、execution_mode 自动进入不同车道，避免简单任务被复杂任务拖住",
+                "Orchestrator 已把外层 OODA 的 orient / decide / reflect / finalize 写入 DecisionTicket、EventRow 和 StateLedger，长周期任务能追溯每步为什么继续或需要调整",
             ],
             evidence_refs=[
                 "kun/engineering/mission_worker.py",
@@ -326,6 +327,7 @@ def get_v3_delivery_status(
                 "Watchtower Decision Plane 会用 strategy_pack 历史信用做 MoE 式轻量加权",
                 "ProtocolRegistry 协议消费已进入统一 DecisionTicket 和 StateLedger",
                 "最终 execution_mode 选择已进入统一 DecisionTicket、EventRow、StateLedger 和任务结果记忆，后续能学习为什么快跑/深跑/多路径",
+                "OODA checkpoint 已进入统一 DecisionTicket、EventRow、StateLedger 和结果记忆，后续能把“何时该纠偏/继续/停下”纳入策略复用",
                 "TaskRouter 角色/模型用途选择已进入统一 DecisionTicket 和 StateLedger",
                 "真实 LLM provider/model/tier 选择已进入统一 DecisionTicket 和 StateLedger",
                 "ContextPacker 上下文选择已进入统一 DecisionTicket 和 StateLedger",

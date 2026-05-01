@@ -175,6 +175,28 @@ async def test_review_optional_verification_failure_doesnt_block() -> None:
     assert verdict.final_status == "done"
 
 
+@pytest.mark.asyncio
+async def test_protocol_verification_missing_requires_review() -> None:
+    gate = PreDeliverGate(
+        active_protocol=SimpleNamespace(
+            protocol_id="critical-protocol",
+            version="1",
+            verification=[SimpleNamespace(kind="exact_output")],
+        )
+    )
+
+    verdict = await gate.review(
+        answer="A reasonably long answer to avoid self-check fail",
+        task_ref=_fake_task_ref(),
+        plan=_fake_plan(),
+        step_records=[],
+    )
+
+    assert verdict.final_status == "needs_review"
+    check = next(c for c in verdict.checks if c.name == "protocol.compliance")
+    assert check.severity == "high"
+
+
 def test_gate_check_result_dataclass() -> None:
     c = GateCheckResult(name="x", passed=True)
     assert c.severity == "low"

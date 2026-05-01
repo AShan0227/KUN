@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from kun.context.packer import ContextPack, PackedContextItem
+from kun.core.ooda_loop import OODACycle, OODAState
 from kun.core.state_ledger import StateLedger, StateLedgerEntry, replay_state_ledger_story
 from kun.datamodel.decision_ticket import (
     ticket_from_budget_policy,
@@ -11,6 +12,7 @@ from kun.datamodel.decision_ticket import (
     ticket_from_execution_mode_selection,
     ticket_from_llm_route,
     ticket_from_memory_policy_selection,
+    ticket_from_ooda_checkpoint,
     ticket_from_preflight_guard,
     ticket_from_protocol_applied,
     ticket_from_skill_selection,
@@ -171,8 +173,25 @@ def test_state_ledger_consumes_sparse_decision_tickets() -> None:
             reason="证据不足，暂不切路",
         ),
     )
+    ooda_ticket = ticket_from_ooda_checkpoint(
+        tenant_id=owner.tenant_id,
+        task_id=task_ref.meta.task_id,
+        risk_level=task_ref.meta.risk_level,
+        checkpoint="reflect",
+        cycle=OODACycle(task_ref=task_ref.meta.task_id, current_state=OODAState.REFLECT),
+        status="needs_review",
+        reason="budget drift",
+        step_id=1,
+    )
 
-    for ticket in (mode_ticket, memory_ticket, hermes_ticket, preflight_ticket, switch_ticket):
+    for ticket in (
+        mode_ticket,
+        memory_ticket,
+        hermes_ticket,
+        preflight_ticket,
+        switch_ticket,
+        ooda_ticket,
+    ):
         ledger.record_decision_ticket(ticket)
 
     snapshot = ledger.snapshot(task_ref.meta.task_id)
@@ -183,8 +202,10 @@ def test_state_ledger_consumes_sparse_decision_tickets() -> None:
     assert snapshot.pending_reason == "1 pending approval action(s)"
     assert "preflight_guard_blocked" in snapshot.alert_flags
     assert "emergent_switch_blocked" in snapshot.alert_flags
+    assert "ooda:needs_review" in snapshot.alert_flags
+    assert snapshot.current_action == "OODA reflect: reflect"
     assert snapshot.latest_decision_ticket is not None
-    assert snapshot.latest_decision_ticket["decision_point"] == "emergent_switch"
+    assert snapshot.latest_decision_ticket["decision_point"] == "ooda_checkpoint"
     assert snapshot.recent_events[-1].kind == "decision.ticket"
 
 

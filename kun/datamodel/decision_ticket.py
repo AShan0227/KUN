@@ -53,6 +53,7 @@ DecisionPoint = Literal[
     "memory_writeback",
     "qi_experiment",
     "nuo_diagnosis",
+    "ooda_checkpoint",
 ]
 
 DecisionStatus = Literal[
@@ -1102,6 +1103,62 @@ def ticket_from_validation_tier(
     )
 
 
+def ticket_from_ooda_checkpoint(
+    *,
+    tenant_id: str,
+    task_id: str,
+    risk_level: str,
+    checkpoint: str,
+    cycle: Any,
+    status: DecisionStatus = "applied",
+    reason: str = "",
+    step_id: int | None = None,
+    mission_id: str | None = None,
+    evidence: dict[str, Any] | None = None,
+) -> DecisionTicket:
+    """Record one outer-OODA checkpoint from the real orchestrator path.
+
+    This is intentionally a ticket, not a second runtime state.  StateLedger,
+    memory writeback, Qi, and NUO can all consume the same decision envelope
+    without each subsystem inventing its own OODA trace shape.
+    """
+
+    state = str(getattr(cycle, "current_state", "unknown"))
+    history = list(getattr(cycle, "state_history", []) or [])
+    source_evidence = dict(evidence or {})
+    source_evidence.setdefault("cycle_id", str(getattr(cycle, "cycle_id", "")))
+    source_evidence.setdefault("current_state", state)
+    source_evidence.setdefault("state_count", len(history))
+    if step_id is not None:
+        source_evidence.setdefault("step_id", step_id)
+
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="step" if step_id is not None else "planning",
+        decision_point="ooda_checkpoint",
+        source_module="core.ooda_loop",
+        selected_action=f"{checkpoint}:{state}",
+        status=status,
+        reason=reason or f"OODA checkpoint {checkpoint} reached {state}",
+        confidence=0.7 if status == "applied" else 0.58,
+        risk_level=risk_level,
+        inputs_summary={
+            "checkpoint": checkpoint,
+            "state": state,
+            "step_id": step_id,
+        },
+        evidence=source_evidence,
+        metadata={
+            "checkpoint": checkpoint,
+            "state": state,
+            "step_id": step_id,
+            "cycle_id": str(getattr(cycle, "cycle_id", "")),
+        },
+    )
+
+
 def ticket_from_world_policy(
     *,
     tenant_id: str,
@@ -1262,6 +1319,7 @@ __all__ = [
     "ticket_from_execution_mode_selection",
     "ticket_from_llm_route",
     "ticket_from_memory_policy_selection",
+    "ticket_from_ooda_checkpoint",
     "ticket_from_preflight_guard",
     "ticket_from_proactive_tool_dispatch",
     "ticket_from_protocol_applied",

@@ -1,9 +1,8 @@
 """OODA 外层循环状态机 (BATCH5 C11 / T21).
 
-这个模块只建模外层 Observe → Orient → Decide → Act → Reflect → Adjust
-循环, 不主动接 orchestrator。
-
-TODO: orchestrator wire by Claude in M4.
+这个模块建模外层 Observe → Orient → Decide → Act → Reflect → Adjust
+循环。Orchestrator 会把主执行路径里的关键阶段写成 OODA checkpoint,
+让长周期任务可以被观察、复盘和后续重规划。
 """
 
 from __future__ import annotations
@@ -51,7 +50,7 @@ _ALLOWED_TRANSITIONS: dict[OODAState, set[OODAState]] = {
     OODAState.ORIENT: {OODAState.DECIDE},
     OODAState.DECIDE: {OODAState.ACT},
     OODAState.ACT: {OODAState.REFLECT},
-    OODAState.REFLECT: {OODAState.ADJUST, OODAState.DONE},
+    OODAState.REFLECT: {OODAState.DECIDE, OODAState.ADJUST, OODAState.DONE},
     OODAState.ADJUST: {OODAState.ORIENT, OODAState.DECIDE},
     OODAState.DONE: set(),
 }
