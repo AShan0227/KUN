@@ -16,6 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 
+from kun.context.maintenance import run_context_maintenance
 from kun.core.db import session_scope
 from kun.core.orm import (
     EventRow,
@@ -77,6 +78,8 @@ class SystemHealthReport(BaseModel):
     secret_audit_items: list[SecretAuditItem] = Field(default_factory=list)
     world_handler_summary: dict[str, int] = Field(default_factory=dict)
     world_handlers: list[WorldHandlerHealthCard] = Field(default_factory=list)
+    context_maintenance_summary: dict[str, int] = Field(default_factory=dict)
+    context_maintenance_error: str | None = None
     state_ledger_audit_summary: dict[str, int] = Field(default_factory=dict)
     coordination_summary: dict[str, int] = Field(default_factory=dict)
     coordination_issues: list[CoordinationIssue] = Field(default_factory=list)
@@ -183,6 +186,10 @@ async def collect_system_health_report(
     delivery_issues = validate_delivery_status(get_v3_delivery_status())
     secret_audit = audit_runtime_secrets()
     world_handlers = await collect_world_handler_health(tenant_id=tenant_id)
+    (
+        context_maintenance_summary,
+        context_maintenance_error,
+    ) = await _collect_context_maintenance_summary(tenant_id=tenant_id)
     state_ledger_audit_summary = await _collect_state_ledger_audit_summary(tenant_id=tenant_id)
     coordination_issues = await collect_coordination_issues(tenant_id=tenant_id)
     findings = _findings(
@@ -195,6 +202,8 @@ async def collect_system_health_report(
         delivery_issues=delivery_issues,
         secret_audit_items=secret_audit.items,
         world_handlers=world_handlers,
+        context_maintenance_summary=context_maintenance_summary,
+        context_maintenance_error=context_maintenance_error,
         state_ledger_audit_summary=state_ledger_audit_summary,
         coordination_issues=coordination_issues,
     )
@@ -214,6 +223,8 @@ async def collect_system_health_report(
         secret_audit_items=secret_audit.items,
         world_handler_summary=summarize_handler_health(world_handlers),
         world_handlers=world_handlers,
+        context_maintenance_summary=context_maintenance_summary,
+        context_maintenance_error=context_maintenance_error,
         state_ledger_audit_summary=state_ledger_audit_summary,
         coordination_summary=summarize_coordination_issues(coordination_issues),
         coordination_issues=coordination_issues,
@@ -230,6 +241,8 @@ def _findings(
     delivery_issues: list[str],
     secret_audit_items: list[SecretAuditItem],
     world_handlers: list[WorldHandlerHealthCard],
+    context_maintenance_summary: dict[str, int] | None = None,
+    context_maintenance_error: str | None = None,
     state_ledger_audit_summary: dict[str, int] | None = None,
     coordination_issues: list[CoordinationIssue] | None = None,
     resumable_mission_task_count: int = 0,
@@ -344,6 +357,47 @@ def _findings(
                     suggested_action=card.recommendation,
                 )
             )
+    if context_maintenance_error:
+        findings.append(
+            SystemHealthFinding(
+                finding_id="context_maintenance_error",
+                severity="warn",
+                subsystem="context",
+                title="Context / memory 瘦身体检失败",
+                detail=context_maintenance_error,
+                suggested_action="检查 AssetStore 后端和 context maintenance 配置；不要在无法体检时盲目积累记忆。",
+            )
+        )
+    context_summary = context_maintenance_summary or {}
+    context_hard_delete = int(context_summary.get("hard_deleted", 0) or 0)
+    context_soft_forget = int(context_summary.get("soft_forgotten", 0) or 0)
+    context_compress = int(context_summary.get("compressed", 0) or 0)
+    context_duplicates = int(context_summary.get("duplicate_candidates", 0) or 0)
+    if context_hard_delete > 0:
+        findings.append(
+            SystemHealthFinding(
+                finding_id="context_hard_delete_candidates",
+                severity="warn",
+                subsystem="context",
+                title="Context / memory 有可硬删除的长期未用资产",
+                detail=f"dry-run 发现 {context_hard_delete} 个长期未用且非永久资产。",
+                suggested_action="先查看 /nuo/health/context-maintenance/run?dry_run=true，确认后再执行真实瘦身。",
+            )
+        )
+    if context_soft_forget + context_compress + context_duplicates > 0:
+        findings.append(
+            SystemHealthFinding(
+                finding_id="context_slimming_candidates",
+                severity="info",
+                subsystem="context",
+                title="Context / memory 有可瘦身项",
+                detail=(
+                    f"可压缩 {context_compress}，可软遗忘 {context_soft_forget}，"
+                    f"重复候选 {context_duplicates}。"
+                ),
+                suggested_action="先用 dry-run 看明细，再决定是否让傩执行压缩、软遗忘或人工合并重复资产。",
+            )
+        )
     audit_summary = state_ledger_audit_summary or {}
     drift_count = int(audit_summary.get("drift", 0) or 0)
     missing_history = int(audit_summary.get("missing_history", 0) or 0)
@@ -390,6 +444,34 @@ def _findings(
             )
         )
     return findings
+
+
+async def _collect_context_maintenance_summary(
+    *,
+    tenant_id: str,
+    max_assets: int = 200,
+) -> tuple[dict[str, int], str | None]:
+    """Run a dry-run context slimming audit for NUO's deep health report."""
+
+    try:
+        report = await run_context_maintenance(
+            tenant_id=tenant_id,
+            dry_run=True,
+            max_assets=max_assets,
+        )
+    except Exception as exc:
+        return {}, str(exc)
+    return (
+        {
+            "total_seen": report.total_seen,
+            "compressed": report.compressed,
+            "soft_forgotten": report.soft_forgotten,
+            "hard_deleted": report.hard_deleted,
+            "duplicate_candidates": report.duplicate_candidates,
+            "kept": report.kept,
+        },
+        None,
+    )
 
 
 async def _collect_state_ledger_audit_summary(

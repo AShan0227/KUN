@@ -178,6 +178,7 @@ def get_v3_delivery_status(
                 "WorldGateway handler 健康体检",
                 "未启用的真实外部 handler 会暴露 env/密钥配置缺口",
                 "Context / memory 瘦身维护 dry-run 和真实执行入口",
+                "傩深度健康报告会自动跑 Context / memory 瘦身 dry-run，把可压缩、可软遗忘、硬删候选和重复候选变成系统发现",
                 "默认只露健康 / 成本 / 权限 / 风险，高级诊断折叠",
                 "idle-batch 会定期生成 NUO 深度体检摘要并写入事件账本",
                 "NUO 深度体检发现会进入 StateLedger 当前状态视图，任务看板能看到系统风险",

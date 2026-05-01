@@ -144,3 +144,49 @@ def test_system_health_surfaces_state_ledger_missing_history() -> None:
     )
 
     assert any(item.finding_id == "state_ledger_missing_history" for item in findings)
+
+
+def test_system_health_surfaces_context_maintenance_candidates() -> None:
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        resumable_mission_task_count=0,
+        mission_resume_worker_enabled=True,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[],
+        world_handlers=[],
+        context_maintenance_summary={
+            "total_seen": 12,
+            "compressed": 2,
+            "soft_forgotten": 3,
+            "hard_deleted": 1,
+            "duplicate_candidates": 4,
+            "kept": 2,
+        },
+    )
+
+    by_id = {item.finding_id: item for item in findings}
+    assert by_id["context_hard_delete_candidates"].severity == "warn"
+    assert by_id["context_slimming_candidates"].severity == "info"
+    assert "可压缩 2" in by_id["context_slimming_candidates"].detail
+
+
+def test_system_health_surfaces_context_maintenance_error() -> None:
+    findings = _findings(
+        outbox_lag=0,
+        pending_approvals=0,
+        stale_runtime_count=0,
+        resumable_mission_task_count=0,
+        mission_resume_worker_enabled=True,
+        active_resource_conflicts=0,
+        delivery_issues=[],
+        secret_audit_items=[],
+        world_handlers=[],
+        context_maintenance_error="redis unavailable",
+    )
+
+    finding = next(item for item in findings if item.finding_id == "context_maintenance_error")
+    assert finding.severity == "warn"
+    assert "redis unavailable" in finding.detail
