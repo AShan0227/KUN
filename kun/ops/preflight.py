@@ -9,6 +9,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from collections.abc import Sequence
+from os import environ
 from pathlib import Path
 from typing import Literal
 
@@ -16,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kun.core.config import Settings, settings
 from kun.engineering.delivery_status import delivery_status_summary, validate_delivery_status
+from kun.ops.backup_restore import check_backup_drill_freshness
 from kun.ops.secret_audit import audit_runtime_secrets
 from kun.world.handler_health import EXPECTED_REAL_WORLD_HANDLERS
 from kun.world.tenant_env import env_for_tenant, has_any_scoped_env, missing_required_world_env
@@ -59,6 +61,8 @@ def run_preflight(
     cfg: Settings | None = None,
     repo_root: Path | None = None,
     run_alembic_heads: bool = True,
+    require_recent_backup_drill: bool | None = None,
+    backup_drill_max_age_hours: float = 168.0,
 ) -> PreflightReport:
     """Run deterministic deployment checks.
 
@@ -72,7 +76,14 @@ def run_preflight(
     checks.extend(_config_checks(active))
     checks.extend(_secret_audit_checks(active))
     checks.extend(_world_gateway_config_checks())
-    checks.extend(_tooling_checks(root, run_alembic_heads=run_alembic_heads))
+    checks.extend(
+        _tooling_checks(
+            root,
+            run_alembic_heads=run_alembic_heads,
+            require_recent_backup_drill=_require_recent_backup_drill(require_recent_backup_drill),
+            backup_drill_max_age_hours=backup_drill_max_age_hours,
+        )
+    )
     checks.extend(_delivery_honesty_checks())
 
     if any(check.severity == "blocker" for check in checks):
@@ -144,7 +155,13 @@ def _secret_audit_checks(cfg: Settings) -> list[PreflightCheck]:
     return checks
 
 
-def _tooling_checks(root: Path, *, run_alembic_heads: bool) -> list[PreflightCheck]:
+def _tooling_checks(
+    root: Path,
+    *,
+    run_alembic_heads: bool,
+    require_recent_backup_drill: bool,
+    backup_drill_max_age_hours: float,
+) -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
     backup_script = root / "scripts" / "backup_postgres.sh"
     restore_script = root / "scripts" / "restore_postgres_smoke.sh"
@@ -173,6 +190,13 @@ def _tooling_checks(root: Path, *, run_alembic_heads: bool) -> list[PreflightChe
             else "补齐演练脚本，至少让本地配置备份可校验。",
         )
     )
+    checks.append(
+        _backup_drill_freshness_check(
+            root,
+            require_recent=require_recent_backup_drill,
+            max_age_hours=backup_drill_max_age_hours,
+        )
+    )
     if shutil.which("uv") is None:
         checks.append(
             PreflightCheck(
@@ -187,6 +211,39 @@ def _tooling_checks(root: Path, *, run_alembic_heads: bool) -> list[PreflightChe
     if run_alembic_heads:
         checks.append(_alembic_heads_check(root))
     return checks
+
+
+def _backup_drill_freshness_check(
+    root: Path,
+    *,
+    require_recent: bool,
+    max_age_hours: float,
+) -> PreflightCheck:
+    report = check_backup_drill_freshness(
+        backup_dir=root / "backups",
+        max_age_hours=max_age_hours,
+        require_recent=require_recent,
+    )
+    if report.status == "pass":
+        return PreflightCheck(
+            check_id="backup_drill_freshness",
+            severity="ok",
+            title="最近备份演练存在",
+            detail=(
+                f"{report.latest_manifest_path}；age={report.age_hours}h；"
+                f"max={report.max_age_hours}h"
+            ),
+        )
+    return PreflightCheck(
+        check_id="backup_drill_freshness",
+        severity="blocker" if report.status == "block" else "warn",
+        title="最近备份演练缺失或过期",
+        detail="；".join(report.notes) or f"backup_dir={report.backup_dir}",
+        suggested_action=(
+            "运行 uv run kun ops backup-drill-create --output-dir backups，"
+            "再跑 backup-drill-restore-dry-run；正式发布前建议再跑 object-store-roundtrip。"
+        ),
+    )
 
 
 def _world_gateway_config_checks() -> list[PreflightCheck]:
@@ -329,6 +386,12 @@ def _env_truthy(value: str | None) -> bool:
     if value is None:
         return False
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_recent_backup_drill(value: bool | None) -> bool:
+    if value is not None:
+        return value
+    return _env_truthy(environ.get("KUN_REQUIRE_RECENT_BACKUP_DRILL"))
 
 
 def has_blockers(checks: Sequence[PreflightCheck]) -> bool:

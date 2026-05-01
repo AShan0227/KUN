@@ -12,6 +12,7 @@ from kun.ops import account_sessions as account_sessions_module
 from kun.ops import dogfood as dogfood_module
 from kun.ops.account_registry import build_unpersisted_bootstrap, hash_bearer_token
 from kun.ops.account_sessions import SessionTokenPair
+from kun.ops.backup_restore import create_backup_package
 from kun.ops.dogfood import run_v4_dogfood
 from kun.ops.preflight import run_preflight
 from kun.ops.secret_audit import audit_runtime_secrets
@@ -43,6 +44,13 @@ def _write_ops_scripts(root: Path) -> None:
     (scripts / "backup_postgres.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     (scripts / "restore_postgres_smoke.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     (scripts / "backup_restore_drill.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    create_backup_package(
+        source_paths=[scripts / "backup_postgres.sh"],
+        output_dir=root / "backups",
+        repo_root=root,
+        allowed_roots=[scripts],
+        package_name="test-fresh",
+    )
 
 
 @pytest.mark.unit
@@ -64,6 +72,23 @@ def test_preflight_blocks_unsafe_production_config(tmp_path: Path) -> None:
     assert "KUN_SELF_SIGNUP_INVITE_CODE" in details
     assert any(check.check_id == "backup_script" for check in report.blockers)
     assert any(check.check_id.startswith("secret_audit:") for check in report.blockers)
+
+
+@pytest.mark.unit
+def test_preflight_can_require_recent_backup_drill(tmp_path: Path) -> None:
+    _write_ops_scripts(tmp_path)
+    for path in (tmp_path / "backups").glob("*"):
+        path.unlink()
+
+    report = run_preflight(
+        cfg=_safe_prod_settings(),
+        repo_root=tmp_path,
+        run_alembic_heads=False,
+        require_recent_backup_drill=True,
+    )
+
+    assert report.status == "block"
+    assert any(check.check_id == "backup_drill_freshness" for check in report.blockers)
 
 
 @pytest.mark.unit

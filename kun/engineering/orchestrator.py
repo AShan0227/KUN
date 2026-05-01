@@ -884,7 +884,7 @@ class Orchestrator:
                     await hydrate_contribution_tracker_from_db(
                         s,
                         tenant_id=tenant.tenant_id,
-                        resource_kinds=("strategy_pack",),
+                        resource_kinds=("strategy_pack", "memory_layer", "asset_kind", "tag"),
                         limit=200,
                     )
                 similar_experiences = await recall_similar_task_experiences(

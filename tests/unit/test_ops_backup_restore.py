@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import tarfile
 from pathlib import Path
@@ -12,6 +13,7 @@ from kun.ops.backup_restore import (
     load_manifest,
     object_store_roundtrip_drill,
     restore_dry_run,
+    sha256_file,
 )
 from typer.testing import CliRunner
 
@@ -147,6 +149,70 @@ def test_restore_dry_run_finds_missing_archive_entry(tmp_path: Path) -> None:
     assert report.status == "block"
     assert report.archive_sha256_ok is False
     assert report.missing_from_archive == ["config/b.txt"]
+
+
+def test_restore_dry_run_blocks_unexpected_manifest_version(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = repo / "config"
+    config.mkdir()
+    (config / "app.yaml").write_text("setting: ok\n", encoding="utf-8")
+    create_backup_package(
+        source_paths=[config],
+        output_dir=tmp_path / "backups",
+        repo_root=repo,
+        allowed_roots=[config],
+        package_name="versioned",
+    )
+    manifest_path = tmp_path / "backups" / "versioned.manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["version"] = "kun.backup_restore.v999"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    report = restore_dry_run(manifest_path=manifest_path, restore_root=tmp_path / "restore")
+
+    assert report.status == "block"
+    assert any("unexpected manifest version" in item for item in report.notes)
+
+
+def test_restore_dry_run_blocks_extra_archive_members_even_when_sha_matches(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = repo / "config"
+    config.mkdir()
+    (config / "app.yaml").write_text("setting: ok\n", encoding="utf-8")
+    create_backup_package(
+        source_paths=[config],
+        output_dir=tmp_path / "backups",
+        repo_root=repo,
+        allowed_roots=[config],
+        package_name="extra-member",
+    )
+    archive_path = tmp_path / "backups" / "extra-member.tar.gz"
+    original_members: list[tuple[tarfile.TarInfo, bytes]] = []
+    with tarfile.open(archive_path, "r:gz") as src:
+        for member in src.getmembers():
+            extracted = src.extractfile(member)
+            original_members.append((member, extracted.read() if extracted is not None else b""))
+    with tarfile.open(archive_path, "w:gz") as tar:
+        for member, data in original_members:
+            tar.addfile(member, io.BytesIO(data))
+        data = b"not in manifest\n"
+        info = tarfile.TarInfo("payload/extra.txt")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    manifest_path = tmp_path / "backups" / "extra-member.manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["archive_sha256"] = sha256_file(archive_path)
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    report = restore_dry_run(manifest_path=manifest_path, restore_root=tmp_path / "restore")
+
+    assert report.archive_sha256_ok is True
+    assert report.status == "block"
+    assert any("unexpected members" in item for item in report.notes)
 
 
 def test_ops_backup_drill_cli_create_and_restore_dry_run(tmp_path: Path) -> None:

@@ -82,6 +82,35 @@ def test_normalize_external_skill_candidate_is_review_only() -> None:
 
 
 @pytest.mark.unit
+def test_external_skill_safety_flags_broad_auto_trigger_policy() -> None:
+    safety = assess_external_skill_safety(
+        {
+            "name": "Too eager reviewer",
+            "license": "MIT",
+            "skill_md": (
+                "---\n"
+                "name: too-eager\n"
+                "description: Triggers everywhere.\n"
+                "auto_trigger_when:\n"
+                "  - pattern: '.*'\n"
+                "    extract:\n"
+                "      kind: search_query\n"
+                "      param_name: query\n"
+                "---\n"
+                "Review anything.\n"
+            ),
+        }
+    )
+
+    assert "auto_trigger_policy_review_required" in safety.reasons
+    assert "auto_trigger_risk" in safety.reasons
+    assert safety.evidence["auto_trigger_issue_count"] == 1
+    entry = safety.evidence["auto_trigger_entries"][0]
+    assert "broad_auto_trigger_pattern" in entry["issues"]
+    assert "auto_trigger_matches_empty_input" in entry["issues"]
+
+
+@pytest.mark.unit
 def test_normalize_external_skill_source_registration_scores_offline_evidence() -> None:
     source = normalize_external_skill_source_registration(
         {

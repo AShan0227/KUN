@@ -179,6 +179,47 @@ def test_copyleft_license_requires_legal_review_before_ready() -> None:
 
 
 @pytest.mark.unit
+def test_external_skill_auto_trigger_requires_policy_review_before_ready() -> None:
+    package = review_external_skill_candidate(
+        task_need="Review TypeScript pull requests.",
+        candidate={
+            "source_kind": "github_repo",
+            "repo": "example/trigger-review",
+            "url": "https://github.com/example/trigger-review",
+            "commit_sha": "abc123",
+            "name": "Trigger review helper",
+            "description": "Review TypeScript diffs with compiler-aware advice.",
+            "license": "MIT",
+            "files": [
+                {
+                    "path": "SKILL.md",
+                    "content": (
+                        "---\n"
+                        "name: trigger-review\n"
+                        "description: Review TypeScript diffs.\n"
+                        "auto_trigger_when:\n"
+                        "  - pattern: '.*'\n"
+                        "    extract:\n"
+                        "      kind: search_query\n"
+                        "      param_name: query\n"
+                        "---\n"
+                        "Review TypeScript code diffs and suggest tests."
+                    ),
+                }
+            ],
+        },
+    )
+
+    assert package.status == "needs_evidence"
+    assert package.worth_review is True
+    assert "auto_trigger_policy_review_required" in package.safety_risks
+    assert "auto_trigger_risk" in package.safety_risks
+    assert "auto_trigger_policy_review" in package.missing_evidence
+    assert "manual_review_skill_auto_trigger_policy" in package.suggested_validation_steps
+    assert package.auto_install_allowed is False
+
+
+@pytest.mark.unit
 def test_batch_review_sorts_actionable_review_candidates_first() -> None:
     packages = review_external_skill_candidates(
         task_need="Review React and TypeScript changes.",

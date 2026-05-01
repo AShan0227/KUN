@@ -24,6 +24,8 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import quote, unquote, urlparse
 
+import yaml
+
 from kun.core.anchor_expand import AnchorExpandIterator
 from kun.core.emergent_solution import (
     EmergentSolution,
@@ -114,6 +116,15 @@ _FILE_WRITE_PATTERNS = (
     r"\bmv\s+",
     r"\bcp\s+",
 )
+_AUTO_TRIGGER_EXTRACT_KINDS = {"match_group_0", "match_group_1", "search_query"}
+_BROAD_AUTO_TRIGGER_PATTERNS = {
+    ".*",
+    ".+",
+    "^.*$",
+    ".*?",
+    "[\\s\\S]*",
+    "([\\s\\S]*)",
+}
 _GITHUB_INPUT_HOST = "github.com"
 _GITHUB_FETCH_HOSTS = {"api.github.com", "raw.githubusercontent.com"}
 _GITHUB_REPO_REF_RE = re.compile(
@@ -882,6 +893,9 @@ def assess_external_skill_safety(raw: dict[str, Any]) -> ExternalSkillSafetyAsse
     network_hits = _pattern_hits(content, _NETWORK_PATTERNS)
     secret_hits = _pattern_hits(content, _SECRET_PATTERNS)
     file_write_hits = _pattern_hits(content, _FILE_WRITE_PATTERNS)
+    auto_trigger_assessment = _assess_external_auto_triggers(raw, files)
+    auto_trigger_entries = auto_trigger_assessment["entries"]
+    auto_trigger_issue_count = sum(1 for entry in auto_trigger_entries if entry.get("issues"))
 
     reasons: list[str] = []
     if license_unknown:
@@ -896,6 +910,10 @@ def assess_external_skill_safety(raw: dict[str, Any]) -> ExternalSkillSafetyAsse
         reasons.append("file_write_risk")
     if truncated_paths:
         reasons.append("content_not_fully_inspected")
+    if auto_trigger_entries:
+        reasons.append("auto_trigger_policy_review_required")
+    if auto_trigger_issue_count:
+        reasons.append("auto_trigger_risk")
 
     risk_score = 0
     risk_score += 1 if license_unknown else 0
@@ -904,6 +922,8 @@ def assess_external_skill_safety(raw: dict[str, Any]) -> ExternalSkillSafetyAsse
     risk_score += 1 if network_hits else 0
     risk_score += 2 if secret_hits else 0
     risk_score += 2 if file_write_hits else 0
+    risk_score += 1 if auto_trigger_entries else 0
+    risk_score += 1 if auto_trigger_issue_count else 0
     if secret_hits and file_write_hits:
         risk_score += 1
     risk_level: ExternalSkillRiskLevel
@@ -940,6 +960,8 @@ def assess_external_skill_safety(raw: dict[str, Any]) -> ExternalSkillSafetyAsse
             "file_write_hits": file_write_hits[:20],
             "inspected_file_count": len(files),
             "truncated_paths": truncated_paths[:20],
+            "auto_trigger_entries": auto_trigger_entries[:20],
+            "auto_trigger_issue_count": auto_trigger_issue_count,
         },
     )
 
@@ -2077,6 +2099,91 @@ def _pattern_hits(content: str, patterns: tuple[str, ...]) -> list[str]:
         if re.search(pattern, content, flags=re.IGNORECASE):
             hits.append(pattern)
     return hits
+
+
+def _assess_external_auto_triggers(
+    raw: dict[str, Any],
+    files: list[dict[str, Any]],
+) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    raw_triggers = raw.get("auto_trigger_when")
+    if isinstance(raw_triggers, list):
+        entries.extend(_auto_trigger_entries(raw_triggers, source="metadata:auto_trigger_when"))
+    for file in files:
+        path = str(file.get("path") or "")
+        if not path.lower().endswith("skill.md"):
+            continue
+        manifest = _skill_frontmatter(str(file.get("content") or ""))
+        triggers = manifest.get("auto_trigger_when") if isinstance(manifest, dict) else None
+        if isinstance(triggers, list):
+            entries.extend(_auto_trigger_entries(triggers, source=path or "SKILL.md"))
+    return {"entries": entries}
+
+
+def _auto_trigger_entries(raw_entries: list[Any], *, source: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_entries):
+        issues: list[str] = []
+        if not isinstance(item, dict):
+            entries.append(
+                {
+                    "source": source,
+                    "index": index,
+                    "pattern": "",
+                    "extract_kind": "",
+                    "issues": ["auto_trigger_entry_not_object"],
+                }
+            )
+            continue
+        pattern = str(item.get("pattern") or "").strip()
+        extract = item.get("extract")
+        extract_kind = ""
+        if not pattern:
+            issues.append("missing_auto_trigger_pattern")
+        else:
+            normalized = re.sub(r"\s+", "", pattern)
+            if normalized in _BROAD_AUTO_TRIGGER_PATTERNS:
+                issues.append("broad_auto_trigger_pattern")
+            try:
+                compiled = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
+                if compiled.search(""):
+                    issues.append("auto_trigger_matches_empty_input")
+                if compiled.search("普通任务，不应该自动触发所有外部 skill。") and compiled.search(
+                    "hello"
+                ):
+                    issues.append("auto_trigger_matches_generic_text")
+            except re.error:
+                issues.append("invalid_auto_trigger_regex")
+        if not isinstance(extract, dict):
+            issues.append("missing_auto_trigger_extract")
+        else:
+            extract_kind = str(extract.get("kind") or "").strip()
+            if extract_kind not in _AUTO_TRIGGER_EXTRACT_KINDS:
+                issues.append("unknown_auto_trigger_extract_kind")
+            param_name = str(extract.get("param_name") or "").strip()
+            if not param_name:
+                issues.append("missing_auto_trigger_param_name")
+        entries.append(
+            {
+                "source": source,
+                "index": index,
+                "pattern": pattern,
+                "extract_kind": extract_kind,
+                "issues": sorted(set(issues)),
+            }
+        )
+    return entries
+
+
+def _skill_frontmatter(content: str) -> dict[str, Any]:
+    match = re.match(r"^---\n(.*?)\n---\n", content.strip(), flags=re.DOTALL)
+    if match is None:
+        return {}
+    try:
+        parsed = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError:
+        return {"auto_trigger_when": [{"pattern": "", "extract": {}, "_parse_error": True}]}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _risk_sort_rank(risk_level: str) -> int:

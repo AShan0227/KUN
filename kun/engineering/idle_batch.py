@@ -288,6 +288,8 @@ def _selected_step_names(enabled: set[str] | None) -> list[str]:
         "compiler_intake_review": 2,
         "external_skill_scout_plan": 2,
         "qi_idle_replay": 2,
+        "qi_strategy_pack_review": 2,
+        "qi_strategy_pack_rollout_plan": 2,
         "external_skill_candidate_review": 2,
         "knowledge_precipitation": 2,
         "incident_lessons": 2,

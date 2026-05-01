@@ -1028,6 +1028,10 @@ def _safety_risks(candidate: ExternalSkillCandidate) -> list[str]:
         risks.append("secret_access_risk")
     if safety.file_write_risk:
         risks.append("file_write_risk")
+    if safety.evidence.get("auto_trigger_entries"):
+        risks.append("auto_trigger_policy_review_required")
+    if safety.evidence.get("auto_trigger_issue_count"):
+        risks.append("auto_trigger_risk")
     if not safety.sandbox_suitable:
         risks.append("sandbox_not_suitable_without_manual_controls")
     return risks
@@ -1060,6 +1064,8 @@ def _missing_evidence(
         missing.append("secret_access_review")
     if safety.file_write_risk:
         missing.append("file_write_review")
+    if safety.evidence.get("auto_trigger_entries"):
+        missing.append("auto_trigger_policy_review")
     if safety.risk_level in {"high", "critical"}:
         missing.append("human_security_review")
     if candidate.summary.strip() == "":
@@ -1091,6 +1097,8 @@ def _validation_steps(candidate: ExternalSkillCandidate, task_fit: float) -> lis
         steps.append("use_fake_secrets_only")
     if safety.file_write_risk:
         steps.append("mount_temp_workspace_read_write_only")
+    if safety.evidence.get("auto_trigger_entries"):
+        steps.append("manual_review_skill_auto_trigger_policy")
     if safety.risk_level in {"high", "critical"}:
         steps.append("require_security_reviewer_approval")
     if safety.risk_level in {"low", "medium"} and not safety.contains_execution_scripts:

@@ -45,10 +45,16 @@ async def run_readiness_report(
     include_db_state_ledger_repair: bool = False,
     include_db_long_horizon_drill: bool = False,
     run_alembic_heads: bool = True,
+    require_recent_backup_drill: bool = False,
+    backup_drill_max_age_hours: float = 168.0,
 ) -> ReadinessReport:
     """Run the current readiness gates and return one compact report."""
 
-    preflight = run_preflight(run_alembic_heads=run_alembic_heads)
+    preflight = run_preflight(
+        run_alembic_heads=run_alembic_heads,
+        require_recent_backup_drill=require_recent_backup_drill,
+        backup_drill_max_age_hours=backup_drill_max_age_hours,
+    )
     secret_audit = audit_runtime_secrets()
     delivery_items = get_v3_delivery_status()
     delivery_issues = validate_delivery_status(delivery_items)

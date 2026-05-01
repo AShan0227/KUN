@@ -62,7 +62,13 @@ def run_release_gate(
     checks: list[ReleaseCheck] = []
     checks.append(_tag_shape_check(release_tag))
     checks.extend(_checklist_checks(root))
-    checks.extend(_preflight_checks(root, run_alembic_heads=run_alembic_heads))
+    checks.extend(
+        _preflight_checks(
+            root,
+            run_alembic_heads=run_alembic_heads,
+            require_recent_backup_drill=require_ready,
+        )
+    )
     checks.extend(_delivery_checks(require_ready=require_ready))
     checks.extend(_legal_guard_checks(root))
     if run_git:
@@ -141,8 +147,17 @@ def _checklist_checks(root: Path) -> list[ReleaseCheck]:
     ]
 
 
-def _preflight_checks(root: Path, *, run_alembic_heads: bool) -> list[ReleaseCheck]:
-    report = run_preflight(repo_root=root, run_alembic_heads=run_alembic_heads)
+def _preflight_checks(
+    root: Path,
+    *,
+    run_alembic_heads: bool,
+    require_recent_backup_drill: bool,
+) -> list[ReleaseCheck]:
+    report = run_preflight(
+        repo_root=root,
+        run_alembic_heads=run_alembic_heads,
+        require_recent_backup_drill=require_recent_backup_drill,
+    )
     if report.blockers:
         return [
             ReleaseCheck(

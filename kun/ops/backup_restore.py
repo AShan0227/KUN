@@ -103,6 +103,22 @@ class ObjectStoreBackupRoundTripReport(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class BackupDrillFreshnessReport(BaseModel):
+    """Freshness check for the latest local backup drill manifest."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["pass", "warn", "block"]
+    backup_dir: str
+    latest_manifest_path: str | None = None
+    latest_archive_path: str | None = None
+    latest_created_at: str | None = None
+    age_hours: float | None = None
+    max_age_hours: float
+    archive_exists: bool = False
+    notes: list[str] = Field(default_factory=list)
+
+
 class BackupObjectStore(Protocol):
     """Small protocol so unit tests can use an in-memory fake store."""
 
@@ -274,6 +290,89 @@ def load_manifest(manifest_path: Path) -> BackupManifest:
     return BackupManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
 
 
+def check_backup_drill_freshness(
+    *,
+    backup_dir: Path,
+    max_age_hours: float = 168.0,
+    require_recent: bool = False,
+    now: datetime | None = None,
+) -> BackupDrillFreshnessReport:
+    """Check whether a recent backup drill manifest exists.
+
+    This does not replace ``restore_dry_run``.  It is a cheap release/readiness
+    guard that catches the common fake-safe state: scripts exist, but nobody has
+    actually produced a recent manifest and archive.
+    """
+
+    root = backup_dir.resolve()
+    severity_when_missing: Literal["warn", "block"] = "block" if require_recent else "warn"
+    if not root.exists():
+        return BackupDrillFreshnessReport(
+            status=severity_when_missing,
+            backup_dir=str(root),
+            max_age_hours=max_age_hours,
+            notes=["backup drill directory does not exist"],
+        )
+
+    manifests = sorted(root.glob("*.manifest.json"))
+    if not manifests:
+        return BackupDrillFreshnessReport(
+            status=severity_when_missing,
+            backup_dir=str(root),
+            max_age_hours=max_age_hours,
+            notes=["no backup drill manifest found"],
+        )
+
+    latest: tuple[datetime, Path, BackupManifest] | None = None
+    invalid: list[str] = []
+    for path in manifests:
+        try:
+            manifest = load_manifest(path)
+            created = _parse_manifest_created_at(manifest.created_at)
+        except Exception as exc:  # pragma: no cover - defensive against corrupt local files
+            invalid.append(f"{path.name}: {exc!r}")
+            continue
+        if latest is None or created > latest[0]:
+            latest = (created, path, manifest)
+
+    if latest is None:
+        return BackupDrillFreshnessReport(
+            status="block" if require_recent else "warn",
+            backup_dir=str(root),
+            max_age_hours=max_age_hours,
+            notes=["backup drill manifests exist but none could be parsed", *invalid[:5]],
+        )
+
+    current = now or datetime.now(UTC)
+    created, manifest_path, manifest = latest
+    age_hours = max(0.0, (current - created).total_seconds() / 3600.0)
+    archive_path = Path(manifest.archive_path)
+    archive_exists = archive_path.exists()
+    stale = age_hours > max_age_hours
+    notes: list[str] = []
+    if invalid:
+        notes.append("ignored invalid manifests: " + "; ".join(invalid[:3]))
+    if stale:
+        notes.append(f"latest backup drill is stale: {age_hours:.1f}h old")
+    if not archive_exists:
+        notes.append("latest backup drill archive is missing")
+
+    status: Literal["pass", "warn", "block"] = (
+        ("block" if require_recent else "warn") if not archive_exists or stale else "pass"
+    )
+    return BackupDrillFreshnessReport(
+        status=status,
+        backup_dir=str(root),
+        latest_manifest_path=str(manifest_path),
+        latest_archive_path=str(archive_path),
+        latest_created_at=manifest.created_at,
+        age_hours=round(age_hours, 3),
+        max_age_hours=max_age_hours,
+        archive_exists=archive_exists,
+        notes=notes,
+    )
+
+
 def restore_dry_run(
     *,
     manifest_path: Path,
@@ -284,8 +383,13 @@ def restore_dry_run(
     manifest = load_manifest(manifest_path)
     archive_path = Path(manifest.archive_path)
     notes: list[str] = []
+    manifest_shape_errors: list[str] = []
     if manifest.version != MANIFEST_VERSION:
-        notes.append(f"unexpected manifest version: {manifest.version}")
+        manifest_shape_errors.append(f"unexpected manifest version: {manifest.version}")
+    if manifest.file_count != len(manifest.files):
+        manifest_shape_errors.append(
+            f"manifest file_count={manifest.file_count} but files={len(manifest.files)}"
+        )
     if not archive_path.exists():
         return RestoreDryRunReport(
             status="block",
@@ -294,7 +398,7 @@ def restore_dry_run(
             archive_exists=False,
             file_count=manifest.file_count,
             missing_from_archive=[item.path for item in manifest.files],
-            notes=notes,
+            notes=[*notes, *manifest_shape_errors],
         )
 
     archive_sha256_ok = sha256_file(archive_path) == manifest.archive_sha256
@@ -307,8 +411,17 @@ def restore_dry_run(
     unsafe: list[str] = []
     would_overwrite: list[str] = []
 
+    expected_members = {f"{PAYLOAD_PREFIX}/{entry.path}" for entry in manifest.files}
+    extra_members: list[str] = []
+    non_file_members: list[str] = []
     with tarfile.open(archive_path, "r:gz") as tar:
-        names = set(tar.getnames())
+        members = tar.getmembers()
+        names = {member.name for member in members}
+        for member in members:
+            if member.name not in expected_members:
+                extra_members.append(member.name)
+            if member.name in expected_members and not member.isfile():
+                non_file_members.append(member.name)
         for entry in manifest.files:
             member_name = f"{PAYLOAD_PREFIX}/{entry.path}"
             target = (restore_base / entry.path).resolve()
@@ -328,7 +441,24 @@ def restore_dry_run(
             if sha256_stream(extracted) != entry.sha256:
                 mismatches.append(entry.path)
 
-    blockers = bool(missing or mismatches or unsafe or not archive_sha256_ok)
+    if manifest_shape_errors:
+        notes.extend(manifest_shape_errors)
+    if extra_members:
+        notes.append("archive contains unexpected members: " + ", ".join(extra_members[:8]))
+    if non_file_members:
+        notes.append(
+            "archive contains non-file payload members: " + ", ".join(non_file_members[:8])
+        )
+
+    blockers = bool(
+        missing
+        or mismatches
+        or unsafe
+        or extra_members
+        or non_file_members
+        or manifest_shape_errors
+        or not archive_sha256_ok
+    )
     status: Literal["pass", "warn", "block"]
     if blockers:
         status = "block"
@@ -351,6 +481,13 @@ def restore_dry_run(
         would_overwrite=would_overwrite,
         notes=notes,
     )
+
+
+def _parse_manifest_created_at(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def default_backup_sources(repo_root: Path) -> list[Path]:
@@ -479,10 +616,12 @@ def _normalize_object_prefix(prefix: str) -> str:
 
 
 __all__ = [
+    "BackupDrillFreshnessReport",
     "BackupFileEntry",
     "BackupManifest",
     "ObjectStoreBackupRoundTripReport",
     "RestoreDryRunReport",
+    "check_backup_drill_freshness",
     "create_backup_package",
     "default_allowed_roots",
     "default_backup_sources",

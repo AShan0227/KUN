@@ -914,12 +914,26 @@ def ops_preflight(
         help="有 blocker 时返回非零退出码",
     ),
     skip_alembic: bool = typer.Option(False, "--skip-alembic", help="跳过 alembic heads 检查"),
+    require_recent_backup_drill: bool = typer.Option(
+        False,
+        "--require-recent-backup-drill",
+        help="要求 backups/ 下存在未过期备份演练 manifest；适合生产发布前。",
+    ),
+    backup_drill_max_age_hours: float = typer.Option(
+        168.0,
+        "--backup-drill-max-age-hours",
+        help="最近备份演练允许的最大年龄，默认 7 天。",
+    ),
 ) -> None:
     """上线前硬检查：配置、迁移、备份脚本、能力边界诚实性。"""
 
     from kun.ops.preflight import run_preflight
 
-    report = run_preflight(run_alembic_heads=not skip_alembic)
+    report = run_preflight(
+        run_alembic_heads=not skip_alembic,
+        require_recent_backup_drill=require_recent_backup_drill,
+        backup_drill_max_age_hours=backup_drill_max_age_hours,
+    )
     if json_output:
         console.print_json(data=report.model_dump(mode="json"))
     else:
@@ -1291,6 +1305,16 @@ def ops_readiness(
         help="dogfood 里额外跑时间压缩的多轮长期 Mission drill",
     ),
     skip_alembic: bool = typer.Option(False, "--skip-alembic", help="跳过 alembic heads 检查"),
+    require_recent_backup_drill: bool = typer.Option(
+        False,
+        "--require-recent-backup-drill",
+        help="要求 backups/ 下存在未过期备份演练 manifest。",
+    ),
+    backup_drill_max_age_hours: float = typer.Option(
+        168.0,
+        "--backup-drill-max-age-hours",
+        help="最近备份演练允许的最大年龄，默认 7 天。",
+    ),
     fail_on_blocker: bool = typer.Option(
         True,
         "--fail-on-blocker/--no-fail-on-blocker",
@@ -1310,6 +1334,8 @@ def ops_readiness(
             include_db_state_ledger_repair=include_db_state_ledger_repair,
             include_db_long_horizon_drill=include_db_long_horizon_drill,
             run_alembic_heads=not skip_alembic,
+            require_recent_backup_drill=require_recent_backup_drill,
+            backup_drill_max_age_hours=backup_drill_max_age_hours,
         )
     )
     payload = report.model_dump(mode="json")
