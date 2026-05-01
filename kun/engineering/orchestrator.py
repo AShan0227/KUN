@@ -622,6 +622,10 @@ class Orchestrator:
             tenant_id=tenant.tenant_id,
             status="queued",
         )
+        compiled_task_asset_id = await self._record_compiled_task_asset(
+            tenant_id=tenant.tenant_id,
+            task_ref=task_ref,
+        )
         self._register_task_control(task_ref.meta.task_id)
         yield OrchestratorEvent(
             kind="action_plan",
@@ -631,6 +635,7 @@ class Orchestrator:
                 "risk_level": task_ref.meta.risk_level,
                 "estimated_cost_usd": task_ref.meta.estimated_cost_usd,
                 "estimated_duration_sec": task_ref.meta.estimated_duration_sec,
+                "compiled_task_asset_id": compiled_task_asset_id,
             },
         )
         if self.budget_tracker is not None:
@@ -3420,6 +3425,45 @@ class Orchestrator:
         except Exception as e:
             log.warning("memory.meta_decision_writeback_failed", error=str(e))
 
+    async def _record_compiled_task_asset(
+        self,
+        *,
+        tenant_id: str,
+        task_ref: TaskRef,
+    ) -> str | None:
+        """Compile TASK.md runtime data into the shared Context asset store."""
+
+        store = _context_store_from_packer(self.context_packer) or _memory_store_from_writeback(
+            self.memory_writeback
+        )
+        if store is None:
+            return None
+        try:
+            from kun.compiler.internal_assets import compile_task_ref_asset
+
+            asset = compile_task_ref_asset(task_ref, tenant_id=tenant_id)
+            await store.put(asset)
+            async with session_scope(tenant_id=tenant_id) as s:
+                await emit(
+                    s,
+                    Event.build(
+                        tenant_id=tenant_id,
+                        event_type="task.compiled_asset.created",
+                        payload={
+                            "task_id": task_ref.meta.task_id,
+                            "asset_id": asset.asset_id,
+                            "asset_kind": asset.asset_kind,
+                            "compiled_kind": asset.l1_metadata.get("compiled_kind"),
+                            "production_action": False,
+                        },
+                        task_ref=task_ref.meta.task_id,
+                    ),
+                )
+            return asset.asset_id
+        except Exception:
+            log.debug("compiler.task_asset_record_failed", exc_info=True)
+            return None
+
     async def _record_process_memory(
         self,
         *,
@@ -4370,6 +4414,13 @@ def _memory_store_from_writeback(memory_writeback: Any) -> Any | None:
     """Reuse the same AssetStore used by memory writeback when available."""
 
     store = getattr(memory_writeback, "store", None)
+    return store if store is not None else None
+
+
+def _context_store_from_packer(context_packer: Any) -> Any | None:
+    """Reuse ContextPacker's AssetStore without making tests depend on Redis."""
+
+    store = getattr(context_packer, "_store", None)
     return store if store is not None else None
 
 

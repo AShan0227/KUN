@@ -83,6 +83,7 @@ class _RoutingStub(StubProvider):
 class _RecordingContextPacker:
     def __init__(self) -> None:
         self.limits: list[int] = []
+        self._store = InMemoryAssetStore()
 
     async def pack(
         self, task_ref: TaskRef, *, tenant_id: str, limit: int, **_: object
@@ -431,10 +432,16 @@ async def test_orchestrator_consumes_watchtower_decision_plane(monkeypatch) -> N
         for ev in events
         if ev.kind == "action_plan" and ev.data.get("stage") == "watchtower_decision"
     ]
+    initial_plan = next(ev for ev in events if ev.kind == "action_plan" and "stage" not in ev.data)
     assert watchtower_events
     assert watchtower_events[0].data["strategy_pack_id"] == "education"
+    assert initial_plan.data.get("compiled_task_asset_id")
     # education/SMART 只拉轻量上下文, 证明决策单被执行层消费, 不是只 emit 事件.
     assert packer.limits == [1]
+    task_assets = await packer._store.list(tenant_id="u-sylvan", asset_kind="task")
+    assert len(task_assets) == 1
+    assert task_assets[0].l1_metadata["compiled_kind"] == "task"
+    assert task_assets[0].l1_metadata["task_type"] == "education.lesson"
     snapshot = ledger.snapshot(watchtower_events[0].data["task_id"])
     assert snapshot is not None
     assert snapshot.strategy_pack_id == "education"

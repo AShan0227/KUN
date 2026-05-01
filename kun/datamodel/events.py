@@ -86,6 +86,7 @@ EventKind = Literal[
     "context.selected",
     "context.updated",
     "context.forgotten",
+    "task.compiled_asset.created",
     "skill.selected",
     "memory.policy.selected",
     "memory.writeback.recorded",
