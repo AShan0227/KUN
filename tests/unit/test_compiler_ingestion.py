@@ -38,6 +38,32 @@ async def test_ingest_text_stores_compiled_material_as_knowledge_asset() -> None
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_ingest_bytes_stores_pdf_material_without_text_flattening() -> None:
+    raw = b"%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n"
+    store = InMemoryAssetStore()
+    ingestor = CompilerIngestor(store=store)
+
+    result = await ingestor.ingest_bytes(
+        raw,
+        tenant_id="tenant-compiler",
+        source_uri="attachment:brief.pdf",
+        mime_type="application/pdf",
+        layer=AssetLayer.L2_PROJECT,
+        metadata={"source": "chat_attachment"},
+    )
+
+    assert result.stored is True
+    assert result.material.kind == "pdf"
+    assert result.material.source.type == "bytes"
+    stored = await store.get(result.asset_id or "", tenant_id="tenant-compiler")
+    assert stored is not None
+    assert stored.l1_metadata["kind"] == "pdf"
+    assert stored.l1_metadata["source"]["type"] == "bytes"
+    assert stored.l1_metadata["material_metadata"]["source"] == "chat_attachment"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_ingest_rejected_path_is_not_stored(tmp_path) -> None:
     root = tmp_path / "allowed"
     root.mkdir()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -105,6 +106,26 @@ async def test_compile_csv_from_source_suffix() -> None:
     assert asset.kind == "csv"
     assert asset.metadata["rows"] == 3
     assert asset.metadata["columns"] == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compile_bytes_preserves_pdf_kind_and_raw_hash() -> None:
+    raw = b"%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n"
+
+    asset = await LightweightMaterialCompiler().compile_bytes(
+        raw,
+        tenant_id="tenant_a",
+        source_uri="attachment:brief.pdf",
+        mime_type="application/pdf",
+    )
+
+    assert asset.status == "compiled"
+    assert asset.kind == "pdf"
+    assert asset.source.type == "bytes"
+    assert asset.source.detected_kind == "pdf"
+    assert asset.provenance.input_sha256 == hashlib.sha256(raw).hexdigest()
+    assert asset.metadata["pdf_text_unavailable"] is True
 
 
 @pytest.mark.unit

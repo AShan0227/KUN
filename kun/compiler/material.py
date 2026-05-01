@@ -92,6 +92,39 @@ class LightweightMaterialCompiler:
             metadata=metadata,
         )
 
+    async def compile_bytes(
+        self,
+        raw: bytes,
+        *,
+        tenant_id: str,
+        source_uri: str = "inline:bytes",
+        declared_kind: str | None = None,
+        mime_type: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> CanonicalMaterial:
+        """Compile raw bytes without first flattening them into a text asset."""
+
+        descriptor = await self._detect_bytes(
+            raw,
+            declared_kind=declared_kind,
+            mime_type=mime_type,
+            source_uri=source_uri,
+        )
+        text = _extract_material_text(descriptor, raw) if descriptor.kind in SUPPORTED_KINDS else ""
+        return self._compile_detected(
+            text,
+            tenant_id=tenant_id,
+            source=MaterialSource(
+                type="bytes",
+                uri=source_uri,
+                detected_kind=descriptor.kind,
+                mime_type=mime_type or descriptor.mime_type,
+            ),
+            descriptor=descriptor,
+            input_bytes=raw,
+            metadata=metadata,
+        )
+
     async def compile_path(
         self,
         path: str | Path,
@@ -129,7 +162,7 @@ class LightweightMaterialCompiler:
             if suffix_kind is not None
             else await self._translator.detect_file_kind(raw)
         )
-        text = _extract_material_text(descriptor, raw)
+        text = _extract_material_text(descriptor, raw) if descriptor.kind in SUPPORTED_KINDS else ""
         return self._compile_detected(
             text,
             tenant_id=tenant_id,
@@ -230,7 +263,25 @@ class LightweightMaterialCompiler:
             return self._descriptor_for("csv")
         return await self._translator.detect_text_kind(text)
 
-    def _descriptor_for(self, kind: str) -> InputDescriptor:
+    async def _detect_bytes(
+        self,
+        raw: bytes,
+        *,
+        declared_kind: str | None,
+        mime_type: str | None,
+        source_uri: str,
+    ) -> InputDescriptor:
+        if declared_kind:
+            return self._descriptor_for(declared_kind, mime_type=mime_type)
+        suffix_kind = _kind_from_suffix(source_uri)
+        if suffix_kind is not None:
+            return self._descriptor_for(suffix_kind, mime_type=mime_type)
+        content_kind = _kind_from_content_type(mime_type or "")
+        if content_kind is not None:
+            return self._descriptor_for(content_kind, mime_type=mime_type)
+        return await self._translator.detect_file_kind(raw)
+
+    def _descriptor_for(self, kind: str, *, mime_type: str | None = None) -> InputDescriptor:
         normalized = "plain_text" if kind == "text" else kind
         if normalized not in {
             "plain_text",
@@ -243,16 +294,17 @@ class LightweightMaterialCompiler:
             "binary_unknown",
         }:
             normalized = "binary_unknown"
-        mime_type = {
+        default_mime_type = {
             "plain_text": "text/plain",
             "markdown": "text/markdown",
             "html": "text/html",
             "json": "application/json",
             "csv": "text/csv",
+            "pdf": "application/pdf",
         }.get(normalized, "application/octet-stream")
         return InputDescriptor(
             kind=normalized,
-            mime_type=mime_type,
+            mime_type=mime_type or default_mime_type,
             confidence=1.0,
             suggested_handler="kun.compiler",
             metadata={"detector": "declared_or_suffix"},

@@ -132,6 +132,7 @@ async def translate_attachment(
             descriptor=descriptor,
             filename=attachment.filename,
             tenant_id=tenant_id,
+            raw=raw,
             extracted_text=extracted_text,
         )
         descriptor.metadata.update(
@@ -214,6 +215,7 @@ async def _compile_attachment_to_asset(
     descriptor: InputDescriptor,
     filename: str,
     tenant_id: str,
+    raw: bytes,
     extracted_text: str,
 ) -> tuple[str | None, str, str | None, str | None]:
     """Bridge translated attachments into the compiler/context system.
@@ -227,17 +229,19 @@ async def _compile_attachment_to_asset(
     from kun.interface.hermes import DefaultHermesAdapter
 
     declared_kind = _compiler_declared_kind(descriptor, filename)
-    result = await CompilerIngestor().ingest_text(
-        extracted_text,
+    result = await CompilerIngestor().ingest_bytes(
+        raw,
         tenant_id=tenant_id,
         source_uri=f"attachment:{filename}",
         declared_kind=declared_kind,
+        mime_type=descriptor.mime_type,
         metadata={
             "source": "chat_attachment",
             "filename": filename,
             "input_kind": descriptor.kind,
             "mime_type": descriptor.mime_type,
             "handler": descriptor.suggested_handler,
+            "preview_text": extracted_text[:1000],
             "detector_metadata": descriptor.metadata,
         },
     )
@@ -255,9 +259,11 @@ def _compiler_declared_kind(descriptor: InputDescriptor, filename: str) -> str |
     lowered = filename.lower()
     if lowered.endswith((".txt", ".text", ".md", ".markdown", ".html", ".htm", ".json", ".csv")):
         return None
-    if descriptor.kind in {"plain_text", "markdown", "html", "json", "csv"}:
+    if descriptor.kind in {"plain_text", "markdown", "html", "json", "csv", "pdf"}:
         return descriptor.kind
-    return "text"
+    if descriptor.kind in {"yaml", "xml", "sql", "code"}:
+        return "plain_text"
+    return descriptor.kind
 
 
 __all__ = [

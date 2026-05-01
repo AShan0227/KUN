@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 
 import pytest
 from fastapi import HTTPException
@@ -93,5 +94,36 @@ async def test_translate_chat_input_can_compile_attachment_into_asset_store() ->
         assert stored is not None
         assert stored.asset_kind == "knowledge"
         assert stored.l1_metadata["material_metadata"]["source"] == "chat_attachment"
+    finally:
+        reset_store()
+
+
+@pytest.mark.asyncio
+async def test_translate_chat_input_compiles_pdf_attachment_from_raw_bytes() -> None:
+    store = InMemoryAssetStore()
+    set_store(store)
+    raw = _pdf_bytes()
+    try:
+        translated = await translate_chat_input(
+            "记住这个 PDF",
+            [Attachment(filename="brief.pdf", content_b64=_b64(raw))],
+            tenant_id="tenant-compiler-hot-path",
+            store_compiled_assets=True,
+        )
+
+        descriptor = translated.descriptors[0]
+        asset_id = descriptor["compiler_asset_id"]
+        assert asset_id
+        assert descriptor["compiler_status"] == "stored"
+        assert descriptor["compiler_kind"] == "pdf"
+        assert "compiler_kind: pdf" in translated.message
+        assert "[Hermes v5.compiler]" in translated.message
+
+        stored = await store.get(asset_id, tenant_id="tenant-compiler-hot-path")
+        assert stored is not None
+        assert stored.l1_metadata["kind"] == "pdf"
+        assert stored.l1_metadata["source"]["type"] == "bytes"
+        assert stored.l1_metadata["provenance"]["input_sha256"] == hashlib.sha256(raw).hexdigest()
+        assert stored.l1_metadata["material_metadata"]["input_kind"] == "pdf"
     finally:
         reset_store()

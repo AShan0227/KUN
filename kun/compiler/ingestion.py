@@ -59,6 +59,27 @@ class CompilerIngestor:
         )
         return await self.ingest_material(material, layer=layer)
 
+    async def ingest_bytes(
+        self,
+        raw: bytes,
+        *,
+        tenant_id: str,
+        source_uri: str = "inline:bytes",
+        declared_kind: str | None = None,
+        mime_type: str | None = None,
+        layer: AssetLayer = AssetLayer.L1_TASK,
+        metadata: dict[str, Any] | None = None,
+    ) -> CompilerIngestionResult:
+        material = await self.compiler.compile_bytes(
+            raw,
+            tenant_id=tenant_id,
+            source_uri=source_uri,
+            declared_kind=declared_kind,
+            mime_type=mime_type,
+            metadata=metadata,
+        )
+        return await self.ingest_material(material, layer=layer)
+
     async def ingest_path(
         self,
         path: str | Path,

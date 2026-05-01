@@ -10,6 +10,16 @@ from kun.compiler.models import CanonicalMaterial
 
 
 class MaterialCompiler(Protocol):
+    async def compile_bytes(
+        self,
+        raw: bytes,
+        *,
+        tenant_id: str,
+        source_uri: str = "inline:bytes",
+        declared_kind: str | None = None,
+        mime_type: str | None = None,
+    ) -> CanonicalMaterial: ...
+
     async def compile_text(
         self,
         text: str,
