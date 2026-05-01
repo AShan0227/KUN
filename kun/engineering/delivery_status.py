@@ -310,6 +310,7 @@ def get_v3_delivery_status(
                 "NUO 已有只读 context governance audit 入口，能把低价值、重复、高频可抽象、过期/长尾、缺信用归因资产暴露成 review-only 建议",
                 "idle-batch 已注册 coordination_remediation step：默认 dry-run 消费傩协同体检票据；显式设置 KUN_COORDINATION_REMEDIATION_MODE=auto_low_risk 后，只会触发已批准且低风险的卡住动作执行器",
                 "coordination_remediation 会阻断真实外发、高风险、handler 隔离、暂停无审批门等不适合自动处理的问题，把它们继续留给人工/NUO 治理队列",
+                "后台 idle-batch worker 和 hourly cron 默认走 anchor-expand：先跑最高优先级体检/维护，再按轮次预算展开，避免傩/启维护一启动就全量烧完",
             ],
             evidence_refs=[
                 "kun/api/nuo/health_panel.py",

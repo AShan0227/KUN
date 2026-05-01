@@ -205,7 +205,8 @@ async def run_all_anchor_then_expand(
     老的 ``run_all`` 会一次性跑完所有启用 step. 新接口先跑最高优先级 step,
     调用方需要更多离线工作时再继续 expand.
 
-    # TODO: wire by Claude in V2.2
+    This is the production-friendly path for NUO/Qi maintenance: run the
+    anchor first, expand only while the caller's round budget allows it.
     """
     names = _selected_step_names(enabled)
     if not names:
@@ -229,6 +230,24 @@ async def run_all_anchor_then_expand(
             max_rounds=max_rounds,
         ):
             yield report
+
+
+async def run_anchor_then_expand_once(
+    tenant_id: str,
+    *,
+    enabled: set[str] | None = None,
+    max_rounds: int = 3,
+) -> list[StepReport]:
+    """Collect one anchor-expand idle-batch pass into a plain list."""
+
+    reports: list[StepReport] = []
+    async for report in run_all_anchor_then_expand(
+        tenant_id,
+        enabled=enabled,
+        max_rounds=max_rounds,
+    ):
+        reports.append(report)
+    return reports
 
 
 def _selected_step_names(enabled: set[str] | None) -> list[str]:
@@ -1358,15 +1377,35 @@ async def idle_batch_worker(
     interval_sec: int = 3600,
     tenant_id: str = "u-sylvan",
     enabled: set[str] | None = None,
+    use_anchor_expand: bool | None = None,
+    anchor_max_rounds: int | None = None,
 ) -> None:
     """Background worker: every `interval_sec`, run all enabled steps.
 
     Started from app lifespan if KUN_IDLE_BATCH_ENABLED=true.
     """
-    log.info("idle_batch.worker.start", interval_sec=interval_sec, tenant_id=tenant_id)
+    if use_anchor_expand is None:
+        use_anchor_expand = os.getenv("KUN_IDLE_BATCH_ANCHOR_EXPAND_ENABLED", "1") == "1"
+    if anchor_max_rounds is None:
+        anchor_max_rounds = max(1, int(os.getenv("KUN_IDLE_BATCH_ANCHOR_EXPAND_MAX_ROUNDS", "3")))
+    mode = "anchor_expand" if use_anchor_expand else "all"
+    log.info(
+        "idle_batch.worker.start",
+        interval_sec=interval_sec,
+        tenant_id=tenant_id,
+        mode=mode,
+        anchor_max_rounds=anchor_max_rounds,
+    )
     while True:
         try:
-            await run_all(tenant_id, enabled=enabled)
+            if use_anchor_expand:
+                await run_anchor_then_expand_once(
+                    tenant_id,
+                    enabled=enabled,
+                    max_rounds=anchor_max_rounds,
+                )
+            else:
+                await run_all(tenant_id, enabled=enabled)
         except Exception as e:
             log.exception("idle_batch.worker.cycle_failed", error=str(e))
         await asyncio.sleep(interval_sec)
@@ -1383,9 +1422,18 @@ async def run_once(
     *,
     enabled: set[str] | None = None,
     on_done: RunCallback | None = None,
+    strategy: Literal["all", "anchor_expand"] = "all",
+    max_rounds: int = 3,
 ) -> list[StepReport]:
     """Run one pass of all steps. Used by CLI + tests."""
-    reports = await run_all(tenant_id, enabled=enabled)
+    if strategy == "anchor_expand":
+        reports = await run_anchor_then_expand_once(
+            tenant_id,
+            enabled=enabled,
+            max_rounds=max_rounds,
+        )
+    else:
+        reports = await run_all(tenant_id, enabled=enabled)
     if on_done is not None:
         result = on_done(reports)
         if asyncio.iscoroutine(result):

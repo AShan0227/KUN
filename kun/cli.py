@@ -9,7 +9,7 @@ import io
 import json
 from collections.abc import Coroutine
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import typer
 from rich.console import Console
@@ -1821,6 +1821,16 @@ def idle_batch(
         "--only",
         help="Comma-separated step ids to run (default: all)",
     ),
+    strategy: str = typer.Option(
+        "all",
+        "--strategy",
+        help="all 或 anchor_expand；后台 worker 默认用 anchor_expand，CLI 默认保留 all 方便完整体检",
+    ),
+    max_rounds: int = typer.Option(
+        3,
+        "--max-rounds",
+        help="anchor_expand 模式最多展开几轮",
+    ),
 ) -> None:
     """Run one pass of the idle-batch scheduler (§6.4)."""
     from kun.core.logging import configure_logging
@@ -1831,8 +1841,16 @@ def idle_batch(
 
     async def _go() -> None:
         enabled = set(only.split(",")) if only else None
+        if strategy not in {"all", "anchor_expand"}:
+            raise typer.BadParameter("strategy must be all or anchor_expand")
+        typed_strategy = cast(Literal["all", "anchor_expand"], strategy)
         with tenant_scope(TenantContext(tenant_id=tenant)):
-            reports = await run_once(tenant_id=tenant, enabled=enabled)
+            reports = await run_once(
+                tenant_id=tenant,
+                enabled=enabled,
+                strategy=typed_strategy,
+                max_rounds=max_rounds,
+            )
         table = Table(title=f"idle-batch 报告 — {tenant}")
         table.add_column("step")
         table.add_column("status")

@@ -156,7 +156,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # V2.1 M4: 真 cron scheduler — 默认开, KUN_CRON_SCHEDULER_ENABLED=0 关
     if os.getenv("KUN_CRON_SCHEDULER_ENABLED", "1") == "1":
         from kun.api.runtime import get_cron_scheduler
-        from kun.engineering.idle_batch import run_all as _run_idle_steps
+        from kun.engineering.idle_batch import run_anchor_then_expand_once as _run_idle_steps
         from kun.engineering.precipitation_idle_step import get_kp
 
         sched = get_cron_scheduler(app)

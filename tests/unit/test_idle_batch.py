@@ -35,6 +35,7 @@ from kun.engineering.idle_batch import (
     list_steps,
     register_step,
     reset_idle_batch_data_source,
+    run_anchor_then_expand_once,
     run_once,
     set_idle_batch_data_source,
 )
@@ -190,6 +191,49 @@ async def test_run_once_enabled_filter():
     assert reports[0].status == "ok"
     assert recorder.calls == 1
     assert reports[0].summary == {"tenant": "u-test", "calls": 1}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_anchor_then_expand_once_respects_round_budget() -> None:
+    first = _RecordingStep()
+    first.step_id = "aa_anchor_budget_first"
+    second = _RecordingStep()
+    second.step_id = "zz_anchor_budget_second"
+    register_step(first)
+    register_step(second)
+
+    reports = await run_anchor_then_expand_once(
+        "u-test",
+        enabled={"aa_anchor_budget_first", "zz_anchor_budget_second"},
+        max_rounds=1,
+    )
+
+    assert [report.step_id for report in reports] == ["aa_anchor_budget_first"]
+    assert first.calls == 1
+    assert second.calls == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_once_can_use_anchor_expand_strategy() -> None:
+    first = _RecordingStep()
+    first.step_id = "aa_run_once_anchor_first"
+    second = _RecordingStep()
+    second.step_id = "zz_run_once_anchor_second"
+    register_step(first)
+    register_step(second)
+
+    reports = await run_once(
+        "u-test",
+        enabled={"aa_run_once_anchor_first", "zz_run_once_anchor_second"},
+        strategy="anchor_expand",
+        max_rounds=1,
+    )
+
+    assert [report.step_id for report in reports] == ["aa_run_once_anchor_first"]
+    assert first.calls == 1
+    assert second.calls == 0
 
 
 @pytest.mark.unit
