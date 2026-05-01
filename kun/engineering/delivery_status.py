@@ -318,6 +318,7 @@ def get_v3_delivery_status(
                 "已补默认关闭的邀请接受 API：可用全局邀请码或一次性邀请 token 激活 invited 成员并签发 access+refresh 会话",
                 "已补最小用户会话自助面板 API：查看当前 session、列出自己的 token、撤销自己的 token",
                 "生产请求会记录 token 最后使用时间、使用次数、UA 摘要和 IP 哈希，NUO 账号面板可查看最小会话使用账本",
+                "NUO 账号面板会把长期 token、缺 IP 指纹、缺 UA 摘要等最小会话风险汇总成会话风险提示",
                 "NUO 账号面板可查看当前租户账号、成员和 token 签发账本，且不会暴露 raw bearer token",
                 "NUO 账号面板可写入成员邀请账本；不会伪装成已发送邮件或已完成成员登录",
                 "NUO 账号面板已接成员邀请入口，可生成一次性 token 和可复制交付文案，但仍不会自动发邮件",
@@ -373,7 +374,7 @@ def get_v3_delivery_status(
             missing=[
                 "完整密码登录 / OAuth 账号体系",
                 "前端已有手动会话/邀请码注册/接受邀请/refresh 和本地租户档案切换入口，但还没有密码登录、OAuth、服务端租户切换器、CSRF/设备态风控；WebSocket 仍通过 query 传递 auth_token，生产还应升级到更正式的短期票据方案",
-                "完整设备登录态和异常登录风控",
+                "已有最小 token 使用风险提示，但还不是完整设备登录态、异常登录风控或多设备管理",
                 "前端已有本地 JSON secret-store 写入入口，但还不是云 KMS / 托管 Secret Manager / 自动轮换 / 完整租户自助密钥平台",
                 "对象存储备份包往返演练已有命令；真实生产数据库和生产 S3/MinIO 账号的定期恢复演练还没跑过",
                 "跨周真实产品运营 dogfood 验收场景",

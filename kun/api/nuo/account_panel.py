@@ -66,6 +66,8 @@ class TenantTokenSummary(BaseModel):
     last_ip_hash: str | None = None
     last_user_agent: str | None = None
     use_count: int = 0
+    session_risk_level: str = "info"
+    session_risk_reasons: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     expired: bool
@@ -171,10 +173,14 @@ async def account_summary() -> TenantAccountLedgerSummary:
             "issued_tokens": sum(1 for item in token_items if item.status == "issued"),
             "revoked_tokens": sum(1 for item in token_items if item.status == "revoked"),
             "expired_tokens": sum(1 for item in token_items if item.expired),
+            "session_risk_tokens": sum(
+                1 for item in token_items if item.session_risk_level != "info"
+            ),
         },
         honest_limits=[
             "这里只展示账号/成员/token 签发账本，不返回 raw bearer token 或 token_hash。",
             "refresh token 续期已有最小闭环，但这还不是完整自助注册 / OAuth / 设备登录态。",
+            "会话风险只是最小账本提示，不等于完整设备登录态或异常登录风控。",
             "账单字段仍是运营状态记录，不代表已经接入真实支付闭环。",
         ],
     )
@@ -310,6 +316,14 @@ def _token_summary(row: TenantTokenIssueRow) -> TenantTokenSummary:
     expires_in_sec = None
     if row.expires_at is not None:
         expires_in_sec = max(0, int((row.expires_at - now).total_seconds()))
+    risk_level, risk_reasons = _token_session_risk(
+        status=str(row.status),
+        expired=expired,
+        expires_in_sec=expires_in_sec,
+        use_count=int(row.use_count or 0),
+        last_ip_hash=row.last_ip_hash,
+        last_user_agent=row.last_user_agent,
+    )
     return TenantTokenSummary(
         token_id=row.token_id,
         user_id=row.user_id,
@@ -321,12 +335,52 @@ def _token_summary(row: TenantTokenIssueRow) -> TenantTokenSummary:
         last_used_at=row.last_used_at,
         last_ip_hash=row.last_ip_hash,
         last_user_agent=row.last_user_agent,
-        use_count=row.use_count,
+        use_count=int(row.use_count or 0),
+        session_risk_level=risk_level,
+        session_risk_reasons=risk_reasons,
         created_at=row.created_at,
         updated_at=row.updated_at,
         expired=expired,
         expires_in_sec=expires_in_sec,
     )
+
+
+def _token_session_risk(
+    *,
+    status: str,
+    expired: bool,
+    expires_in_sec: int | None,
+    use_count: int,
+    last_ip_hash: str | None,
+    last_user_agent: str | None,
+) -> tuple[str, list[str]]:
+    if status == "revoked":
+        return "info", ["token 已撤销"]
+    if expired:
+        return "info", ["token 已过期"]
+
+    reasons: list[str] = []
+    level = "info"
+    if expires_in_sec is None:
+        reasons.append("token 没有过期时间")
+        level = "warn"
+    elif expires_in_sec > 60 * 60 * 24 * 30:
+        reasons.append("token 有效期超过 30 天")
+        level = "warn"
+
+    if use_count > 0 and not last_ip_hash:
+        reasons.append("已有调用但缺少 IP 指纹")
+        level = "warn"
+    if use_count > 0 and not last_user_agent:
+        reasons.append("已有调用但缺少 UA 摘要")
+        level = "warn"
+    if use_count > 1000:
+        reasons.append("token 使用次数很高，需要定期复核")
+        level = "warn"
+
+    if not reasons:
+        reasons.append("未发现明显会话风险")
+    return level, reasons
 
 
 def _string_list(value: Any) -> list[str]:

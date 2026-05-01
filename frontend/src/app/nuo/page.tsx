@@ -75,6 +75,7 @@ type AccountSummary = {
     issued_tokens: number;
     revoked_tokens: number;
     expired_tokens: number;
+    session_risk_tokens?: number;
   };
   honest_limits: string[];
 };
@@ -709,6 +710,10 @@ export default function NuoDashboard() {
             <MiniMetric label="成员数" value={accountSummary.counts.members} />
             <MiniMetric label="已签发 token" value={accountSummary.counts.issued_tokens} />
             <MiniMetric label="已撤销 token" value={accountSummary.counts.revoked_tokens} />
+            <MiniMetric
+              label="会话风险"
+              value={accountSummary.counts.session_risk_tokens ?? 0}
+            />
             <MiniMetric
               label="诚实限制"
               value={formatHonestyLimit(accountSummary.honest_limits)}

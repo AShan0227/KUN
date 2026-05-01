@@ -126,9 +126,40 @@ def test_account_summary_hides_token_secrets(monkeypatch: pytest.MonkeyPatch) ->
     assert body["tokens"][0]["last_ip_hash"] == "ip-hash"
     assert body["tokens"][0]["last_user_agent"] == "pytest-agent"
     assert body["tokens"][0]["use_count"] == 3
+    assert body["tokens"][0]["session_risk_level"] == "info"
+    assert body["counts"]["session_risk_tokens"] == 0
     assert "token_hash" not in body["tokens"][0]
     assert "secret-hash-that-must-not-leak" not in response.text
     assert body["counts"]["issued_tokens"] == 1
+
+
+@pytest.mark.unit
+def test_token_summary_flags_minimal_session_risk() -> None:
+    now = datetime.now(UTC)
+    row = TenantTokenIssueRow(
+        tenant_id="tenant-a",
+        token_id="tok-risk",
+        token_hash="hash",
+        user_id="owner-a",
+        audience="developer",
+        scopes=["account:read"],
+        status="issued",
+        expires_at=now + timedelta(days=90),
+        revoked_at=None,
+        last_used_at=now,
+        last_ip_hash=None,
+        last_user_agent=None,
+        use_count=2,
+        created_at=now,
+        updated_at=now,
+    )
+
+    item = account_panel._token_summary(row)
+
+    assert item.session_risk_level == "warn"
+    assert "token 有效期超过 30 天" in item.session_risk_reasons
+    assert "已有调用但缺少 IP 指纹" in item.session_risk_reasons
+    assert "已有调用但缺少 UA 摘要" in item.session_risk_reasons
 
 
 @pytest.mark.unit
