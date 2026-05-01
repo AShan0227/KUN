@@ -19,6 +19,7 @@ def test_routes_registered():
         "/health/",
         "/health/ready",
         "/api/chat/run",
+        "/api/compiler/ingest-manifest",
         "/api/lab/experiments",
         "/api/lab/experiments/{experiment_id}",
         "/api/lab/run",
