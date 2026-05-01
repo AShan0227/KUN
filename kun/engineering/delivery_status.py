@@ -315,6 +315,7 @@ def get_v3_delivery_status(
                 "支持 KUN_SECRET_STORE_FILE 外部 JSON secret store，WorldGateway 租户级密钥不再只能散落在 env",
                 "ops secret-store-set 可把 KUN_WORLD_* 租户外部动作配置写入本地 JSON secret store，输出不会回显密钥值",
                 "NUO /nuo/health/secret-store/set 可受控写入 KUN_WORLD_* 外部动作配置，响应不回显密钥值",
+                "NUO 写入真实 handler 启用开关时强制使用全局 scope，并刷新 WorldGateway 注册表，避免用户以为租户级开关已生效",
                 "NUO 外部动作网关面板可写入 KUN_WORLD_* 本地 secret-store 配置，帮助邮件/浏览器/企业 API handler 补齐密钥或开关",
                 "ops onboard-tenant CLI 可生成租户启动 token、权限 scope 和 smoke curl",
                 "ops account-bootstrap CLI 可把租户、owner 成员、token 签发记录写入持久账本",

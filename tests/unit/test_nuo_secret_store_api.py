@@ -39,6 +39,58 @@ async def test_nuo_secret_store_set_writes_without_echoing_value(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_nuo_secret_store_set_rejects_tenant_scoped_handler_switch(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(SECRET_STORE_FILE_ENV, str(tmp_path / "secrets.json"))
+
+    with (
+        tenant_scope(TenantContext(tenant_id="tenant-a", user_id="owner-a")),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await set_secret_store_value(
+            SecretStoreSetRequest(
+                name="KUN_WORLD_EMAIL_SEND_ENABLED",
+                value="true",
+                scope="tenant",
+            )
+        )
+
+    assert exc.value.status_code == 422
+    assert "global" in str(exc.value.detail)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_nuo_secret_store_set_refreshes_world_gateway_registry(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = tmp_path / "secrets.json"
+    monkeypatch.setenv(SECRET_STORE_FILE_ENV, str(store))
+    calls: list[object] = []
+    monkeypatch.setattr(health_panel, "set_world_gateway", lambda gateway: calls.append(gateway))
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a", user_id="owner-a")):
+        response = await set_secret_store_value(
+            SecretStoreSetRequest(
+                name="KUN_WORLD_EMAIL_SEND_ENABLED",
+                value="true",
+                scope="global",
+            )
+        )
+
+    assert response.scope == "global"
+    assert calls
+    assert (
+        json.loads(store.read_text(encoding="utf-8"))["global"]["KUN_WORLD_EMAIL_SEND_ENABLED"]
+        == "true"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_nuo_secret_store_set_requires_configured_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

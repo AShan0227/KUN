@@ -410,6 +410,8 @@ export default function NuoDashboard() {
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteNotice, setInviteNotice] = useState("");
   const [inviteResult, setInviteResult] = useState<InviteMemberResult | null>(null);
+  const secretEnableFlag = isGlobalWorldEnableFlag(secretName);
+  const secretScopeForWrite = secretEnableFlag ? "global" : secretScope;
 
   const reload = useCallback(() => {
     Promise.all([
@@ -588,7 +590,7 @@ export default function NuoDashboard() {
       const result = await fetchJson<SecretStoreSetResponse>("/nuo/health/secret-store/set", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: secretName, value, scope: secretScope }),
+        body: JSON.stringify({ name: secretName, value, scope: secretScopeForWrite }),
       });
       setSecretValue("");
       setSecretNotice(
@@ -600,7 +602,7 @@ export default function NuoDashboard() {
     } finally {
       setSecretBusy(false);
     }
-  }, [reload, secretName, secretScope, secretValue]);
+  }, [reload, secretName, secretScopeForWrite, secretValue]);
 
   const inviteMember = useCallback(async () => {
     const userId = inviteDraft.userId.trim();
@@ -1054,7 +1056,8 @@ export default function NuoDashboard() {
               />
               <select
                 className="rounded border px-2 py-1.5 text-sm"
-                value={secretScope}
+                value={secretScopeForWrite}
+                disabled={secretEnableFlag}
                 onChange={(event) => setSecretScope(event.target.value as "tenant" | "global")}
               >
                 <option value="tenant">当前租户</option>
@@ -1068,6 +1071,11 @@ export default function NuoDashboard() {
                 {secretBusy ? "写入中" : "写入"}
               </button>
             </div>
+            {secretEnableFlag && (
+              <p className="mt-2 text-xs text-yellow-700">
+                真实 handler 开关必须写全局；租户级只用于 SMTP/API/浏览器白名单这类配置。
+              </p>
+            )}
             {secretNotice && <p className="mt-2 text-xs text-gray-600">{secretNotice}</p>}
           </div>
           {missingWorldChannels.length > 0 && (
@@ -1608,6 +1616,14 @@ function needsExternalDispatchConfirmation(action?: PendingAction) {
   if (permissions.includes("external_dispatch_confirmation")) return true;
   const policy = action.gateway_preview.audit?.policy;
   return (policy?.missing_permissions || []).includes("external_dispatch_confirmation");
+}
+
+function isGlobalWorldEnableFlag(name: string) {
+  return (
+    name === "KUN_WORLD_EMAIL_SEND_ENABLED" ||
+    name === "KUN_WORLD_BROWSER_EXECUTE_ENABLED" ||
+    name === "KUN_WORLD_API_POST_ENABLED"
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

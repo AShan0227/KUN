@@ -32,6 +32,8 @@ from kun.ops.secret_store import (
     SecretStoreWriteResult,
     upsert_secret_store_value,
 )
+from kun.world.gateway import WorldGateway, set_world_gateway
+from kun.world.handler_health import EXPECTED_REAL_WORLD_HANDLERS
 
 router = APIRouter()
 
@@ -185,6 +187,14 @@ async def set_secret_store_value(req: SecretStoreSetRequest) -> SecretStoreSetRe
                 "WorldGateway secrets through NUO."
             ),
         )
+    if req.scope == "tenant" and _is_global_world_enable_flag(req.name):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{req.name} is a global WorldGateway handler switch. "
+                "Use scope=global; tenant scope is only for credentials and allowlists."
+            ),
+        )
     try:
         result = upsert_secret_store_value(
             path=Path(raw_path),
@@ -194,6 +204,7 @@ async def set_secret_store_value(req: SecretStoreSetRequest) -> SecretStoreSetRe
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    set_world_gateway(WorldGateway())
     return _secret_write_response(result)
 
 
@@ -245,6 +256,10 @@ def _require_secret_write_scope() -> None:
     raise HTTPException(status_code=403, detail="world:dispatch or account:admin scope required")
 
 
+def _is_global_world_enable_flag(name: str) -> bool:
+    return name in {enable for enable, _required in EXPECTED_REAL_WORLD_HANDLERS.values()}
+
+
 def _secret_write_response(result: SecretStoreWriteResult) -> SecretStoreSetResponse:
     return SecretStoreSetResponse(
         path=result.path,
@@ -256,6 +271,6 @@ def _secret_write_response(result: SecretStoreWriteResult) -> SecretStoreSetResp
         honest_limits=list(result.honest_limits),
         message=(
             "Secret store updated. Value is hidden. This is a local JSON bridge, "
-            "not cloud KMS or automatic rotation."
+            "not cloud KMS or automatic rotation. WorldGateway registry was refreshed."
         ),
     )
