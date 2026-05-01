@@ -90,6 +90,7 @@ def get_v3_delivery_status(
                 "聊天附件 prompt 会包含 Hermes v5.compiler 材料包，LLM 看到的是 CanonicalMaterial 契约而不是随意文本",
                 "rejected / placeholder / unsupported material 默认不会污染普通 Context 检索",
                 "傩 context maintenance 已能识别编译资产的风险、来源和 profile 缺口",
+                "傩 context maintenance 已能给编译资产写入 compiler_quality_score，并对低质量/受限资产标记重新编译建议",
                 "CompilerRegistry 可注册后续 MarkItDown / 音视频 / OCR 后端，但当前不伪装成已接入",
             ],
             evidence_refs=[
@@ -109,7 +110,7 @@ def get_v3_delivery_status(
             missing=[
                 "已有 CLI/脚本级入口、聊天附件写入桥和 Hermes 材料包，但还没接入外部网页/企业资料入口或 RAG ingestion 批处理热路径",
                 "还没接 Microsoft MarkItDown、OCR、音频转写、DOCX/PPTX/XLSX 等真实后端",
-                "傩已能扫 compiler 风险/来源缺口，但还没做格式质量评分、重新编译建议和重复资产自动合并",
+                "傩已能做轻量格式质量评分和重编译建议，但还没接真实重编译执行器或重复资产自动合并",
             ],
             next_steps=[
                 "把外部文件/网页/企业资料先过 compiler，再进入 Context / Memory / Skill / Hermes",
@@ -320,6 +321,7 @@ def get_v3_delivery_status(
                 "ContextPacker 已消费 MemoryPolicyTicket 的 memory_layers / avoid_memory_layers，能按任务稀疏激活结果记忆、过程记忆、元决策和方法论",
                 "Context DecisionTicket 会记录 memory_policy，后续可追踪“为什么这次用了/没用记忆”",
                 "启 idle replay 已能从问题信号或历史任务生成 review-only 策略候选，用于后台探索更优路径",
+                "启 idle replay 已能把候选转成 review-only StrategyPack 草稿，并写入持久化 Qi 信号 evidence，供人/强模型/NUO 后续审查",
                 "高严重度或高风险 idle replay 候选会标记 requires_strong_review，不会直接推入生产",
                 "idle-batch 已注册 qi_idle_replay step，会把真实问题和已完成任务历史转成 review-only 候选信号",
             ],
@@ -351,6 +353,7 @@ def get_v3_delivery_status(
                 "MemoryPolicyTicket 已进入 ContextPacker 过滤，但还没接向量库、跨租户匿名经验池和更细的 step 级 action memory 过滤",
                 "MemoryPolicyTicket 还没和 NUO 记忆治理结果、FadeMem 衰减、重复合并策略完全打通",
                 "Qi idle replay 目前是 heuristic_local 候选生成并接入 idle-batch，还没接真实本地模型、离线回放执行池、shadow/canary 推广链路",
+                "StrategyPack 草稿目前只做 review-only，不会自动 promotion，也还没接强模型复审和人工批准 UI",
                 "执行过程经验已能影响 Watchtower skill_hints；但还没有做到 step 级 action choice 的精细策略改写",
                 "贡献信用对模型路由已进热路径，但还需要真实 dogfood 样本校准阈值",
                 "ValueGate 已接轻量历史信用，但还没用真实 dogfood 样本训练成稳定的跨任务 gate estimator",

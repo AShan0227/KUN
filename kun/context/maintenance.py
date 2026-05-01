@@ -28,6 +28,7 @@ ActionKind = Literal[
     "hard_delete",
     "duplicate",
     "compiler_review",
+    "compiler_recompile",
 ]
 
 
@@ -52,6 +53,7 @@ class ContextMaintenanceReport(BaseModel):
     hard_deleted: int = 0
     duplicate_candidates: int = 0
     compiler_review: int = 0
+    compiler_recompile_recommended: int = 0
     kept: int = 0
     findings: list[ContextMaintenanceFinding] = Field(default_factory=list)
 
@@ -92,6 +94,7 @@ async def run_context_maintenance(
                 seen_summaries[summary_key] = asset.asset_id
 
             compiler_reason = _compiler_review_reason(asset)
+            compiler_quality = _compiler_quality(asset)
             if compiler_reason:
                 report.compiler_review += 1
                 report.findings.append(_finding(asset, "compiler_review", compiler_reason, dry_run))
@@ -101,6 +104,34 @@ async def run_context_maintenance(
                     asset.tags = sorted({*asset.tags, "compiler_review_required"})
                     await store.put(asset)
                     await _emit_maintenance_event(tenant_id, asset, "compiler_review")
+            if compiler_quality is not None:
+                if not dry_run:
+                    asset.l1_metadata["compiler_quality_score"] = compiler_quality.score
+                    asset.l1_metadata["compiler_quality_reasons"] = compiler_quality.reasons
+                if compiler_quality.recompile_recommended:
+                    report.compiler_recompile_recommended += 1
+                    report.findings.append(
+                        _finding(
+                            asset,
+                            "compiler_recompile",
+                            compiler_quality.recompile_reason,
+                            dry_run,
+                        )
+                    )
+                    if not dry_run:
+                        asset.l1_metadata["compiler_recompile_recommended"] = True
+                        asset.l1_metadata["compiler_recompile_reason"] = (
+                            compiler_quality.recompile_reason
+                        )
+                        asset.tags = sorted({*asset.tags, "compiler_recompile_recommended"})
+                        await store.put(asset)
+                        await _emit_maintenance_event(
+                            tenant_id,
+                            asset,
+                            "compiler_recompile",
+                        )
+                elif not dry_run:
+                    await store.put(asset)
 
             if (
                 age_days >= hard_delete_after_days
@@ -231,6 +262,93 @@ def _compiler_review_reason(asset: LayeredAsset) -> str:
     return ""
 
 
+class _CompilerQuality(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    score: float
+    reasons: list[str]
+    recompile_recommended: bool = False
+    recompile_reason: str = ""
+
+
+def _compiler_quality(asset: LayeredAsset) -> _CompilerQuality | None:
+    meta = asset.l1_metadata or {}
+    has_compiler_meta = "compiler_profile" in meta or str(meta.get("compiler") or "").startswith(
+        "kun.compiler"
+    )
+    if not has_compiler_meta:
+        return None
+
+    score = 1.0
+    reasons: list[str] = []
+    risk = meta.get("risk")
+    if isinstance(risk, dict):
+        level = str(risk.get("level") or "low")
+        flags = risk.get("flags")
+        if level == "high":
+            score -= 0.35
+            reasons.append("risk_high")
+        elif level == "medium":
+            score -= 0.20
+            reasons.append("risk_medium")
+        if isinstance(flags, list) and flags:
+            score -= min(0.25, 0.05 * len(flags))
+            reasons.extend(f"risk_flag:{flag}" for flag in flags[:5])
+
+    provenance = meta.get("provenance")
+    if isinstance(provenance, dict) and not provenance.get("input_sha256"):
+        score -= 0.25
+        reasons.append("missing_input_sha256")
+
+    profile = meta.get("compiler_profile")
+    if isinstance(profile, dict):
+        limitations = profile.get("limitations")
+        if isinstance(limitations, list):
+            for limitation in limitations[:8]:
+                limitation_text = str(limitation).lower()
+                if any(
+                    needle in limitation_text
+                    for needle in ("placeholder", "ocr", "audio", "office", "unavailable")
+                ):
+                    score -= 0.15
+                    reasons.append(f"limitation:{limitation}")
+
+    text = asset.l2_summary or ""
+    if len(text.strip()) < 20:
+        score -= 0.25
+        reasons.append("summary_too_short")
+    if "text extraction unavailable" in text.lower():
+        score -= 0.25
+        reasons.append("text_extraction_unavailable")
+    if _looks_like_encoding_noise(text):
+        score -= 0.20
+        reasons.append("encoding_noise")
+
+    score = round(max(0.0, min(1.0, score)), 3)
+    recompile_recommended = score < 0.65 or any(
+        reason.startswith("limitation:") or reason in {"text_extraction_unavailable"}
+        for reason in reasons
+    )
+    recompile_reason = (
+        f"compiler_quality_score={score:.2f}; reasons={','.join(reasons[:6]) or 'none'}"
+        if recompile_recommended
+        else ""
+    )
+    return _CompilerQuality(
+        score=score,
+        reasons=reasons,
+        recompile_recommended=recompile_recommended,
+        recompile_reason=recompile_reason,
+    )
+
+
+def _looks_like_encoding_noise(text: str) -> bool:
+    if not text:
+        return False
+    noisy = sum(text.count(ch) for ch in ("�", "\x00", "\ufffd"))
+    return noisy >= 3 or noisy / max(1, len(text)) > 0.02
+
+
 def _emit_metrics(report: ContextMaintenanceReport) -> None:
     dry_run = "true" if report.dry_run else "false"
     counts = {
@@ -239,6 +357,7 @@ def _emit_metrics(report: ContextMaintenanceReport) -> None:
         "hard_delete": report.hard_deleted,
         "duplicate": report.duplicate_candidates,
         "compiler_review": report.compiler_review,
+        "compiler_recompile": report.compiler_recompile_recommended,
         "keep": report.kept,
     }
     for action, count in counts.items():

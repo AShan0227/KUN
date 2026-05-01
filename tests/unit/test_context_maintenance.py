@@ -140,3 +140,61 @@ async def test_context_maintenance_marks_compiler_review_assets_when_not_dry_run
     assert after.l1_metadata["compiler_review_required"] is True
     assert "pdf_text_unavailable" in after.l1_metadata["compiler_review_reason"]
     assert "compiler_review_required" in after.tags
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_maintenance_scores_compiler_assets_and_recommends_recompile() -> None:
+    store = InMemoryAssetStore()
+    asset = LayeredAsset.build(
+        "knowledge",
+        "tenant-a",
+        metadata={
+            "compiler": "kun.compiler.lightweight",
+            "compiler_profile": {
+                "name": "kun-v5-lightweight",
+                "limitations": ["OCR not available", "Office placeholder backend"],
+            },
+            "risk": {"level": "medium", "flags": ["pdf_text_unavailable"]},
+            "provenance": {"input_sha256": "abc"},
+        },
+        summary="PDF document; text extraction unavailable",
+    )
+    await store.put(asset)
+
+    report = await run_context_maintenance(tenant_id="tenant-a", dry_run=False, store=store)
+    after = await store.get(asset.asset_id, tenant_id="tenant-a")
+
+    assert report.compiler_recompile_recommended == 1
+    assert any(item.action == "compiler_recompile" for item in report.findings)
+    assert after is not None
+    assert after.l1_metadata["compiler_quality_score"] < 0.65
+    assert after.l1_metadata["compiler_recompile_recommended"] is True
+    assert "compiler_recompile_recommended" in after.tags
+    assert "compiler_quality_score" in after.l1_metadata["compiler_recompile_reason"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_maintenance_records_healthy_compiler_quality_without_recompile() -> None:
+    store = InMemoryAssetStore()
+    asset = LayeredAsset.build(
+        "knowledge",
+        "tenant-a",
+        metadata={
+            "compiler": "kun.compiler.lightweight",
+            "compiler_profile": {"name": "kun-v5-lightweight", "limitations": []},
+            "risk": {"level": "low", "flags": []},
+            "provenance": {"input_sha256": "abc"},
+        },
+        summary="Clean markdown material with enough useful normalized text for retrieval.",
+    )
+    await store.put(asset)
+
+    report = await run_context_maintenance(tenant_id="tenant-a", dry_run=False, store=store)
+    after = await store.get(asset.asset_id, tenant_id="tenant-a")
+
+    assert report.compiler_recompile_recommended == 0
+    assert after is not None
+    assert after.l1_metadata["compiler_quality_score"] >= 0.9
+    assert "compiler_recompile_recommended" not in after.tags
