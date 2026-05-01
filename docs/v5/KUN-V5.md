@@ -1029,7 +1029,7 @@ V5 必须防止“写了但没用”。
 | StateLedger | 已有快照和回放；当前快照和 EventRow 回放都会暴露 credit assignment 摘要、top 资源类型、top 具体资源 key、关键路径步骤和资源贡献概览 | 还要更完整长期事件溯源、跨 Mission 聚合信用和具体资产级信用归因 |
 | CodeCapability | 已可被 API/runtime 调用：支持只读 review/diff、显式 sandbox run/check、默认 dry-run 的单文件 propose-change；内置 `code-review` 和 `code-propose-change` skill 已接入 agent-loop，可让任务执行中真实调用只读审查和受控 dry-run 改动验证；apply 后检查失败会自动恢复原文件；propose-change 会写 resource_credit_stats 和热贡献缓存；成功且通过检查的改动会生成 review-only 的 draft skill LayeredAsset；可选 code strategy tree search 会把更优代码工作流建议写入 draft skill 证据 | 还要接 Orchestrator 自动补丁生成、skill draft 审批晋升和更强 sandbox |
 | NUO governance report | 已统一覆盖 compiler、context/memory、skill、WorldGateway handler、Qi 草案、多车道调度和 production/deployment risk；已有低风险 governance apply API，只允许 context maintenance 显式 dry-run/apply，高风险会 blocked + action ticket；context governance audit 只读接入 health report，不进入自动 apply 路径 | 还要把 governance_recommendations 做成完整人工批准 UI，并扩展更多低风险治理 action |
-| 并发执行 | 已有 fast / mission / qi / nuo / world / high_risk 多车道调度器，并安装到 API runtime；`/api/tasks/scheduler/*` 可查看车道状态和提交异步任务；NUO report 会检查必需 lane 和活跃任务压力 | 还要把更多后台 worker 和前端任务看板接入这个统一车道 |
+| 并发执行 | 已有 fast / mission / qi / nuo / world / high_risk 多车道调度器，并安装到 API runtime；`/api/tasks/scheduler/*` 可查看车道状态和提交异步任务；NUO report 会检查必需 lane 和活跃任务压力；cron 触发的 idle-batch、KnowledgePrecipitation、Mission resume/reaper、pending task resume 和 Qi 探索默认先进入对应车道，`KUN_CRON_JOBS_USE_MULTI_LANE=0` 可回退直跑 | 还要把 WorldGateway 真实动作执行器、高风险审批、未来分布式 worker 和前端任务看板继续接入统一车道；当前仍是进程内调度器，不是假装成生产级分布式队列 |
 
 ## 18. V5 的核心护城河
 

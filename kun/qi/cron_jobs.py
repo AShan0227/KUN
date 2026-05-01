@@ -430,13 +430,40 @@ def register_qi_cron_jobs(sched: Any, app: Any, tenant_id: str) -> None:
     async def _dogfood_long_job() -> None:
         await _qi_dogfood_long(app, tenant_id)
 
+    from kun.api.runtime import schedule_cron_job_via_lane
+
+    def _lane_job(name: str, callback: Any) -> Any:
+        return schedule_cron_job_via_lane(
+            app,
+            name=name,
+            lane="qi",
+            callback=callback,
+            tenant_id=tenant_id,
+        )
+
     # 每小时 tick 一次 (深夜窗口活跃 → 真跑; 窗口外 skip)
-    sched.register("qi_pc_train_hourly", "@hourly", _pc_job)
-    sched.register("qi_darwin_explore_hourly", "@hourly", _darwin_job)
-    sched.register("qi_ai_scientist_hourly", "@hourly", _ai_scientist_job)
-    sched.register("qi_auto_promote_hourly", "@hourly", _auto_promote_job)
+    sched.register("qi_pc_train_hourly", "@hourly", _lane_job("qi_pc_train_hourly", _pc_job))
+    sched.register(
+        "qi_darwin_explore_hourly",
+        "@hourly",
+        _lane_job("qi_darwin_explore_hourly", _darwin_job),
+    )
+    sched.register(
+        "qi_ai_scientist_hourly",
+        "@hourly",
+        _lane_job("qi_ai_scientist_hourly", _ai_scientist_job),
+    )
+    sched.register(
+        "qi_auto_promote_hourly",
+        "@hourly",
+        _lane_job("qi_auto_promote_hourly", _auto_promote_job),
+    )
     # dogfood 每天 3 AM 跑一次 (启窗口里)
-    sched.register("qi_dogfood_long_daily", "0 3 * * *", _dogfood_long_job)
+    sched.register(
+        "qi_dogfood_long_daily",
+        "0 3 * * *",
+        _lane_job("qi_dogfood_long_daily", _dogfood_long_job),
+    )
 
 
 __all__ = ["register_qi_cron_jobs"]

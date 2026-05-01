@@ -9,11 +9,14 @@ chat / WS 入口共享同一份实例.
 
 from __future__ import annotations
 
+import os
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
 from kun.core.emergent_solution import EmergentSolutionLibrary
-from kun.core.multi_task_scheduler import MultiTaskScheduler
+from kun.core.multi_task_scheduler import MultiTaskScheduler, TaskLane
 from kun.core.state_ledger import get_state_ledger
 from kun.engineering.capability_cache import CapabilityCardCache
 from kun.engineering.cron_scheduler import CronScheduler
@@ -59,6 +62,10 @@ from kun.world.gateway import WorldGateway, set_world_gateway
 
 class _AppWithState(Protocol):
     state: Any
+
+
+SchedulerBackgroundCallback = Callable[[], Awaitable[Any]]
+SCHEDULER_JOB_REF_PREFIX = "scheduler_job:"
 
 
 def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestrator:
@@ -387,8 +394,16 @@ def install_runtime(app: _AppWithState, *, rule_engine: RuleEngine) -> Orchestra
     )
     app.state.rule_engine = rule_engine
     app.state.orchestrator = orchestrator
+    app.state.scheduler_background_jobs = {}
 
     async def _scheduled_orchestrator_runner(task_ref: Any) -> Any:
+        scheduler_job = _scheduler_job_name_from_task(task_ref)
+        if scheduler_job:
+            callback = get_scheduler_background_job(app, scheduler_job)
+            if callback is None:
+                raise RuntimeError(f"unknown scheduler background job: {scheduler_job}")
+            return await callback()
+
         message = ""
         output_kind = "user"
         spec = getattr(task_ref, "spec", None)
@@ -504,6 +519,116 @@ def get_pending_task_resume_worker(app: _AppWithState) -> PendingTaskResumeWorke
 
 def get_multi_task_scheduler(app: _AppWithState) -> MultiTaskScheduler:
     return cast(MultiTaskScheduler, app.state.multi_task_scheduler)
+
+
+def register_scheduler_background_job(
+    app: _AppWithState,
+    name: str,
+    callback: SchedulerBackgroundCallback,
+) -> None:
+    """Register a cron/maintenance callback that can run through a scheduler lane.
+
+    Cron 仍然负责"什么时候触发"; MultiTaskScheduler 负责"在哪条车道跑、同时
+    最多跑几个"。这让 Mission/Qi/NUO/World 等后台任务不再绕开统一并发闸门。
+    """
+
+    registry = getattr(app.state, "scheduler_background_jobs", None)
+    if registry is None:
+        registry = {}
+        app.state.scheduler_background_jobs = registry
+    cast(dict[str, SchedulerBackgroundCallback], registry)[name] = callback
+
+
+def get_scheduler_background_job(
+    app: _AppWithState,
+    name: str,
+) -> SchedulerBackgroundCallback | None:
+    registry = getattr(app.state, "scheduler_background_jobs", None)
+    if not isinstance(registry, dict):
+        return None
+    callback = registry.get(name)
+    return cast(SchedulerBackgroundCallback | None, callback)
+
+
+def schedule_cron_job_via_lane(
+    app: _AppWithState,
+    *,
+    name: str,
+    lane: TaskLane,
+    callback: SchedulerBackgroundCallback,
+    tenant_id: str,
+    user_id: str | None = None,
+    timeout_sec: int | None = None,
+) -> SchedulerBackgroundCallback:
+    """Return a cron callback that submits the real work to MultiTaskScheduler.
+
+    ``KUN_CRON_JOBS_USE_MULTI_LANE=0`` keeps the old direct behavior for
+    emergency rollback.  The default is on because V5 的并发核心就是分车道。
+    """
+
+    register_scheduler_background_job(app, name, callback)
+
+    async def _wrapped() -> None:
+        if os.getenv("KUN_CRON_JOBS_USE_MULTI_LANE", "1") != "1":
+            await callback()
+            return
+        scheduler = get_multi_task_scheduler(app)
+        task_ref = _scheduler_job_task_ref(
+            name=name, lane=lane, tenant_id=tenant_id, user_id=user_id
+        )
+        task_id = await scheduler.submit(task_ref, lane=lane)
+        wait_timeout = timeout_sec or int(os.getenv("KUN_CRON_JOB_TIMEOUT_SEC", "3600"))
+        result = await scheduler.wait_done(task_id, timeout_sec=wait_timeout)
+        if result.status != "done":
+            raise RuntimeError(f"scheduled background job {name} {result.status}: {result.error}")
+
+    return _wrapped
+
+
+def _scheduler_job_name_from_task(task_ref: Any) -> str:
+    spec = getattr(task_ref, "spec", None)
+    if spec is None:
+        return ""
+    for ref in getattr(spec, "external_resources", []) or []:
+        text = str(ref)
+        if text.startswith(SCHEDULER_JOB_REF_PREFIX):
+            return text.removeprefix(SCHEDULER_JOB_REF_PREFIX)
+    return ""
+
+
+def _scheduler_job_task_ref(
+    *,
+    name: str,
+    lane: TaskLane,
+    tenant_id: str,
+    user_id: str | None,
+) -> Any:
+    from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
+
+    owner = Owner(tenant_id=tenant_id, user_id=user_id or f"system:{lane}")
+    description = f"scheduler background job {name} at {datetime.now(UTC).isoformat()}"
+    return TaskRef(
+        meta=TaskMeta(
+            fingerprint=TaskMeta.compute_fingerprint(description, owner, time_window_min=1),
+            task_type=f"scheduler.{lane}.{_safe_task_segment(name)}",
+            risk_level="low" if lane not in {"world", "high_risk"} else "medium",
+            complexity_score=0.2,
+            owner=owner,
+            execution_mode="FAST" if lane in {"fast", "nuo"} else "SMART",
+            success_criteria_short=f"Run scheduled job {name}",
+        ),
+        spec=TaskSpec(
+            goal_detail=f"Run scheduled background job `{name}` through lane `{lane}`.",
+            success_metrics=["callback completes without exception"],
+            required_tools=["multi_task_scheduler"],
+            external_resources=[f"{SCHEDULER_JOB_REF_PREFIX}{name}"],
+        ),
+    )
+
+
+def _safe_task_segment(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in value.lower()).strip("_")
+    return cleaned or "job"
 
 
 def get_value_gate(app: _AppWithState) -> ValueGate | None:

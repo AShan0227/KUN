@@ -206,6 +206,7 @@ def get_v3_delivery_status(
                 "MultiTaskScheduler 已有 V5 并发车道：fast / mission / qi / nuo / world / high_risk，每条车道可独立限流",
                 "任务会按风险、任务类型、skill、execution_mode 自动进入不同车道，避免简单任务被复杂任务拖住",
                 "/api/chat/run 的非 FastPath 任务默认会先进入 MultiTaskScheduler，再由共享 Orchestrator 执行；可用 KUN_CHAT_SCHEDULER_ENABLED=0 回退直跑",
+                "cron 触发的 idle-batch、KnowledgePrecipitation、Mission resume/reaper、pending task resume 和 Qi 探索默认会先进入 MultiTaskScheduler 对应车道；可用 KUN_CRON_JOBS_USE_MULTI_LANE=0 回退直跑",
                 "Orchestrator 已把外层 OODA 的 orient / decide / reflect / finalize 写入 DecisionTicket、EventRow 和 StateLedger，长周期任务能追溯每步为什么继续或需要调整",
             ],
             evidence_refs=[
@@ -228,12 +229,12 @@ def get_v3_delivery_status(
                 "Mission 复盘和 continuation 摘要只做轻量权重/档位 nudging，还没训练长期策略模型",
                 "还没有跑真实跨周产品运营 dogfood；目前只有时间压缩多轮 drill",
                 "普通任务 continuation 采用子任务续跑并回写原任务视图，还不是原 TaskRow 原地续跑",
-                "Mission / Qi / NUO / WorldGateway worker 还没有全部统一切到 MultiTaskScheduler；目前 chat 热入口和 scheduler API 已接入，后台 worker 仍有分散入口",
+                "多数 cron 后台任务已进入 MultiTaskScheduler，但 WorldGateway 真实动作执行器、独立常驻进程和未来分布式 worker 还不是统一队列；当前仍是进程内调度器，不是假装成生产级分布式队列",
             ],
             next_steps=[
                 "让 Mission review 结果进一步反向影响 Watchtower Decision Plane 权重",
                 "补跨周运营策略模板和真实 dogfood 运营任务",
-                "把 Mission、Qi、NUO、WorldGateway 和高风险审批统一接入 lane scheduler",
+                "把 WorldGateway 执行动作、高风险审批和未来分布式 worker 继续接入 lane scheduler",
             ],
         ),
         DeliveryCapability(

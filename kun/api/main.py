@@ -169,7 +169,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # V2.1 M4: 真 cron scheduler — 默认开, KUN_CRON_SCHEDULER_ENABLED=0 关
     if _cron_scheduler_enabled():
-        from kun.api.runtime import get_cron_scheduler
+        from kun.api.runtime import get_cron_scheduler, schedule_cron_job_via_lane
         from kun.engineering.idle_batch import run_anchor_then_expand_once as _run_idle_steps
         from kun.engineering.precipitation_idle_step import get_kp
 
@@ -179,7 +179,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             async def _hourly_idle_batch() -> None:
                 await _run_idle_steps(default_tenant)
 
-            sched.register("idle_batch_hourly", "@hourly", _hourly_idle_batch)
+            sched.register(
+                "idle_batch_hourly",
+                "@hourly",
+                schedule_cron_job_via_lane(
+                    app,
+                    name="idle_batch_hourly",
+                    lane="qi",
+                    callback=_hourly_idle_batch,
+                    tenant_id=default_tenant,
+                ),
+            )
 
         async def _daily_kp() -> None:
             await get_kp().run_scheduled("daily")
@@ -187,8 +197,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async def _weekly_kp() -> None:
             await get_kp().run_scheduled("weekly")
 
-        sched.register("kp_daily", "@daily", _daily_kp)
-        sched.register("kp_weekly", "@weekly", _weekly_kp)
+        if default_tenant:
+            sched.register(
+                "kp_daily",
+                "@daily",
+                schedule_cron_job_via_lane(
+                    app,
+                    name="kp_daily",
+                    lane="qi",
+                    callback=_daily_kp,
+                    tenant_id=default_tenant,
+                ),
+            )
+            sched.register(
+                "kp_weekly",
+                "@weekly",
+                schedule_cron_job_via_lane(
+                    app,
+                    name="kp_weekly",
+                    lane="qi",
+                    callback=_weekly_kp,
+                    tenant_id=default_tenant,
+                ),
+            )
 
         if default_tenant and os.getenv("KUN_CONTEXT_MAINTENANCE_ENABLED", "1") == "1":
             from kun.context.maintenance import run_context_maintenance
@@ -200,7 +231,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     dry_run=not mutate,
                 )
 
-            sched.register("nuo_context_maintenance_daily", "@daily", _daily_context_maintenance)
+            sched.register(
+                "nuo_context_maintenance_daily",
+                "@daily",
+                schedule_cron_job_via_lane(
+                    app,
+                    name="nuo_context_maintenance_daily",
+                    lane="nuo",
+                    callback=_daily_context_maintenance,
+                    tenant_id=default_tenant,
+                ),
+            )
 
         if default_tenant and os.getenv("KUN_MISSION_RESUME_WORKER_ENABLED", "1") == "1":
             from kun.api.runtime import get_mission_resume_worker
@@ -208,7 +249,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             async def _mission_resume_once() -> None:
                 await get_mission_resume_worker(app).run_once(tenant_id=default_tenant)
 
-            sched.register("mission_resume_every_minute", "* * * * *", _mission_resume_once)
+            sched.register(
+                "mission_resume_every_minute",
+                "* * * * *",
+                schedule_cron_job_via_lane(
+                    app,
+                    name="mission_resume_every_minute",
+                    lane="mission",
+                    callback=_mission_resume_once,
+                    tenant_id=default_tenant,
+                ),
+            )
 
         if default_tenant and os.getenv("KUN_MISSION_REAPER_ENABLED", "1") == "1":
             from datetime import timedelta
@@ -225,7 +276,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     max_attempts=max_attempts,
                 )
 
-            sched.register("mission_reaper_every_5_minutes", "*/5 * * * *", _mission_reaper_once)
+            sched.register(
+                "mission_reaper_every_5_minutes",
+                "*/5 * * * *",
+                schedule_cron_job_via_lane(
+                    app,
+                    name="mission_reaper_every_5_minutes",
+                    lane="mission",
+                    callback=_mission_reaper_once,
+                    tenant_id=default_tenant,
+                ),
+            )
 
         if default_tenant and os.getenv("KUN_TASK_RESUME_WORKER_ENABLED", "1") == "1":
             from kun.api.runtime import get_pending_task_resume_worker
@@ -234,7 +295,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await get_pending_task_resume_worker(app).run_once(tenant_id=default_tenant)
 
             sched.register(
-                "pending_task_resume_every_minute", "* * * * *", _pending_task_resume_once
+                "pending_task_resume_every_minute",
+                "* * * * *",
+                schedule_cron_job_via_lane(
+                    app,
+                    name="pending_task_resume_every_minute",
+                    lane="mission",
+                    callback=_pending_task_resume_once,
+                    tenant_id=default_tenant,
+                ),
             )
 
         # V2.3: 启 (Qi) cron — 启窗口内自动跑探索 (Darwin / AI Scientist /
