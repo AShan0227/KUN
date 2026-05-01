@@ -344,7 +344,7 @@ async def _emerge_protocol_from_darwin(app: Any, tenant_id: str, prompt: str, re
 
 def _check_qi_active(app: Any) -> bool:
     """守门: 启窗口活跃 + KUN_QI_ENABLED=1 才跑."""
-    if os.getenv("KUN_QI_ENABLED", "0") != "1":
+    if os.getenv("KUN_QI_ENABLED", "1") != "1":
         return False
     if os.getenv("KUN_QI_FORCE_DISABLE") == "1":
         return False

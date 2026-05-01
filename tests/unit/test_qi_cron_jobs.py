@@ -32,6 +32,14 @@ def test_register_qi_cron_jobs_registers_3() -> None:
     assert "qi_ai_scientist_hourly" in jobs
 
 
+def test_qi_active_defaults_enabled_when_force_active() -> None:
+    from kun.qi.cron_jobs import _check_qi_active
+
+    app = _app_with_state()
+    with patch.dict(os.environ, {"KUN_QI_FORCE_ACTIVE": "1"}, clear=True):
+        assert _check_qi_active(app) is True
+
+
 @pytest.mark.asyncio
 async def test_qi_cron_pc_train_skip_when_window_inactive() -> None:
     """启窗口外 → cron skip, 不抛."""

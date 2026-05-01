@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 
@@ -52,6 +53,21 @@ from kun.core.tenancy import (
 from kun.watchtower.engine import RuleEngine, load_rules
 
 log = get_logger("kun.api.main")
+
+
+def _env_flag(name: str, *, default: str) -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cron_scheduler_enabled() -> bool:
+    return _env_flag("KUN_CRON_SCHEDULER_ENABLED", default="1")
+
+
+def _standalone_idle_batch_enabled() -> bool:
+    """Avoid double-running idle-batch when the cron scheduler owns it by default."""
+
+    default = "0" if _cron_scheduler_enabled() else "1"
+    return _env_flag("KUN_IDLE_BATCH_ENABLED", default=default)
 
 
 @asynccontextmanager
@@ -138,10 +154,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Start idle-batch worker (R-A8) if enabled.
     # Default ON in dev, off in production until we've verified it.
-    import os
-
     default_tenant = settings().default_tenant_id
-    if os.getenv("KUN_IDLE_BATCH_ENABLED", "1") == "1" and default_tenant:
+    if _standalone_idle_batch_enabled() and default_tenant:
         from kun.engineering.idle_batch import idle_batch_worker
 
         idle_interval = int(os.getenv("KUN_IDLE_BATCH_INTERVAL_SEC", "3600"))
@@ -154,7 +168,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("idle_batch.scheduled", interval_sec=idle_interval)
 
     # V2.1 M4: 真 cron scheduler — 默认开, KUN_CRON_SCHEDULER_ENABLED=0 关
-    if os.getenv("KUN_CRON_SCHEDULER_ENABLED", "1") == "1":
+    if _cron_scheduler_enabled():
         from kun.api.runtime import get_cron_scheduler
         from kun.engineering.idle_batch import run_anchor_then_expand_once as _run_idle_steps
         from kun.engineering.precipitation_idle_step import get_kp
