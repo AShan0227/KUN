@@ -515,7 +515,7 @@ def test_handler_health_counts_eventrow_failure_and_exception_events(tmp_path: P
         _event(
             "evt-blocked",
             "task.pending_action.blocked",
-            payload={"executor_mode": "policy_blocked"},
+            payload={"gateway_mode": "policy_blocked"},
         ),
         _event(
             "evt-exception",

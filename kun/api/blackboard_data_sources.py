@@ -715,6 +715,7 @@ def _entry_from_replayed_story(
         top_credit_resource_kinds=[
             str(item) for item in story.get("top_credit_resource_kinds", []) if item
         ],
+        top_credit_resources=[str(item) for item in story.get("top_credit_resources", []) if item],
         critical_path_step_ids=[
             int(item) for item in story.get("critical_path_step_ids", []) if isinstance(item, int)
         ],

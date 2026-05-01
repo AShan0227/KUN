@@ -188,6 +188,7 @@ async def test_state_ledger_main_source_replays_events_when_hot_and_runtime_are_
                         "positive_count": 1,
                         "negative_count": 0,
                         "resource_count": 1,
+                        "top_resource_keys": ["skill:planner"],
                     },
                     {
                         "resource_kind": "context",
@@ -196,6 +197,7 @@ async def test_state_ledger_main_source_replays_events_when_hot_and_runtime_are_
                         "positive_count": 1,
                         "negative_count": 0,
                         "resource_count": 1,
+                        "top_resource_keys": ["memory:previous-plan"],
                     },
                 ],
             },
@@ -218,6 +220,7 @@ async def test_state_ledger_main_source_replays_events_when_hot_and_runtime_are_
     assert result[0]["cost_so_far_usd"] == 0.04
     assert result[0]["credit_assignment_count"] == 1
     assert result[0]["top_credit_resource_kinds"] == ["skill", "context"]
+    assert result[0]["top_credit_resources"] == ["skill:planner", "memory:previous-plan"]
     assert result[0]["critical_path_step_ids"] == [1]
     assert fake_session.saw_user_filter
 

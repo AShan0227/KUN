@@ -600,6 +600,7 @@ def test_state_ledger_records_credit_assignment_summary() -> None:
                 "positive_count": 2,
                 "negative_count": 0,
                 "resource_count": 2,
+                "top_resource_keys": ["skill:writer", "skill:reviewer"],
             },
             {
                 "resource_kind": "context",
@@ -608,6 +609,7 @@ def test_state_ledger_records_credit_assignment_summary() -> None:
                 "positive_count": 1,
                 "negative_count": 0,
                 "resource_count": 1,
+                "top_resource_keys": ["memory:lesson-1"],
             },
             {
                 "resource_kind": "model",
@@ -632,9 +634,15 @@ def test_state_ledger_records_credit_assignment_summary() -> None:
         "resource_count": 4,
         "resource_kind_count": 3,
         "top_resource_kinds": ["skill", "context"],
+        "top_resources": ["skill:writer", "skill:reviewer", "memory:lesson-1"],
     }
     assert snapshot.resource_credit_summaries[0]["resource_kind"] == "skill"
+    assert snapshot.resource_credit_summaries[0]["top_resource_keys"] == [
+        "skill:writer",
+        "skill:reviewer",
+    ]
     assert snapshot.top_credit_resource_kinds == ["skill", "context"]
+    assert snapshot.top_credit_resources == ["skill:writer", "skill:reviewer", "memory:lesson-1"]
     assert snapshot.critical_path_step_ids == [1, 3]
     assert snapshot.current_action == "完成信用归因：skill、context 贡献最高"
     assert snapshot.recent_events[-1].kind == "credit.assignment.completed"
@@ -731,6 +739,7 @@ def test_state_ledger_replay_reconstructs_task_story_from_durable_events() -> No
                             "positive_count": 2,
                             "negative_count": 0,
                             "resource_count": 2,
+                            "top_resource_keys": ["memory:lesson-1"],
                         },
                         {
                             "resource_kind": "model",
@@ -739,6 +748,7 @@ def test_state_ledger_replay_reconstructs_task_story_from_durable_events() -> No
                             "positive_count": 1,
                             "negative_count": 0,
                             "resource_count": 1,
+                            "top_resource_keys": ["model:gpt-5.5"],
                         },
                     ],
                 },
@@ -770,8 +780,13 @@ def test_state_ledger_replay_reconstructs_task_story_from_durable_events() -> No
     assert story["total_cost_usd"] == 0.05
     assert story["credit_assignment_count"] == 1
     assert story["top_credit_resource_kinds"] == ["context", "model"]
+    assert story["top_credit_resources"] == ["memory:lesson-1", "model:gpt-5.5"]
     assert story["critical_path_step_ids"] == [1, 2]
     assert story["credit_assignment_summary"]["resource_kind_count"] == 2
+    assert story["credit_assignment_summary"]["top_resources"] == [
+        "memory:lesson-1",
+        "model:gpt-5.5",
+    ]
     assert story["resource_credit_summaries"][0]["resource_kind"] == "context"
     assert story["reconstruction_confidence"] > 0.7
     assert "missing_terminal_status_event" not in story["gaps"]

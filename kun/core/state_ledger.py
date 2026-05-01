@@ -76,6 +76,7 @@ class StateLedgerEntry(BaseModel):
     credit_assignment_summary: dict[str, Any] | None = None
     resource_credit_summaries: list[dict[str, Any]] = Field(default_factory=list)
     top_credit_resource_kinds: list[str] = Field(default_factory=list)
+    top_credit_resources: list[str] = Field(default_factory=list)
     critical_path_step_ids: list[int] = Field(default_factory=list)
     risk_watch: list[str] = Field(default_factory=list)
     alert_flags: list[str] = Field(default_factory=list)
@@ -820,6 +821,7 @@ class StateLedger:
             entry.credit_assignment_count += 1
             entry.resource_credit_summaries = summaries
             entry.top_credit_resource_kinds = _top_credit_resource_kinds(summaries)
+            entry.top_credit_resources = _top_credit_resources(summaries)
             entry.critical_path_step_ids = _int_list(critical_path_step_ids or [])
             entry.credit_assignment_summary = {
                 "task_outcome": task_outcome,
@@ -829,6 +831,7 @@ class StateLedger:
                 "resource_count": max(0, int(resource_count)),
                 "resource_kind_count": len(summaries),
                 "top_resource_kinds": list(entry.top_credit_resource_kinds),
+                "top_resources": list(entry.top_credit_resources),
             }
             if entry.top_credit_resource_kinds:
                 entry.current_action = (
@@ -1009,6 +1012,7 @@ def replay_state_ledger_story(
     context_asset_ids: list[str] = []
     resource_credit_summaries: list[dict[str, Any]] = []
     top_credit_resource_kinds: list[str] = []
+    top_credit_resources: list[str] = []
     critical_path_step_ids: list[int] = []
     credit_assignment_count = 0
     latest_credit_assignment_summary: dict[str, Any] | None = None
@@ -1100,6 +1104,7 @@ def replay_state_ledger_story(
                 _list_of_dicts(payload.get("resource_kind_summaries"))
             )
             top_credit_resource_kinds = _top_credit_resource_kinds(resource_credit_summaries)
+            top_credit_resources = _top_credit_resources(resource_credit_summaries)
             critical_path_step_ids = _int_list(payload.get("critical_path_step_ids"))
             latest_credit_assignment_summary = {
                 "task_outcome": _first_non_empty(payload.get("task_outcome")),
@@ -1109,6 +1114,7 @@ def replay_state_ledger_story(
                 "resource_count": _safe_int(payload.get("resource_count")),
                 "resource_kind_count": len(resource_credit_summaries),
                 "top_resource_kinds": list(top_credit_resource_kinds),
+                "top_resources": list(top_credit_resources),
             }
             if top_credit_resource_kinds:
                 current_action = (
@@ -1162,6 +1168,7 @@ def replay_state_ledger_story(
         "credit_assignment_summary": latest_credit_assignment_summary,
         "resource_credit_summaries": resource_credit_summaries[-30:],
         "top_credit_resource_kinds": top_credit_resource_kinds[-20:],
+        "top_credit_resources": top_credit_resources[-50:],
         "critical_path_step_ids": critical_path_step_ids[-50:],
         "reconstruction_confidence": confidence,
         "gaps": gaps,
@@ -1280,6 +1287,7 @@ def _resource_credit_summaries(value: object) -> list[dict[str, Any]]:
                 "positive_count": _safe_int(item.get("positive_count")),
                 "negative_count": _safe_int(item.get("negative_count")),
                 "resource_count": _safe_int(item.get("resource_count")),
+                "top_resource_keys": _string_list(item.get("top_resource_keys"))[:10],
             }
         )
     out.sort(key=lambda item: float(item.get("total_delta") or 0.0), reverse=True)
@@ -1293,6 +1301,17 @@ def _top_credit_resource_kinds(summaries: Sequence[Mapping[str, Any]]) -> list[s
             continue
         _append_unique(out, item.get("resource_kind"))
     return out[:10]
+
+
+def _top_credit_resources(summaries: Sequence[Mapping[str, Any]]) -> list[str]:
+    out: list[str] = []
+    for item in summaries:
+        keys = item.get("top_resource_keys")
+        if not isinstance(keys, list):
+            continue
+        for key in keys:
+            _append_unique(out, key)
+    return out[:50]
 
 
 def _dict_or_empty(value: object) -> dict[str, Any]:

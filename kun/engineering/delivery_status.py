@@ -372,7 +372,7 @@ def get_v3_delivery_status(
                 "NUO context maintenance 可压缩过长摘要、软遗忘/硬删除长期未用资产",
                 "idle-batch 会把情节规则蒸馏为 methodology 资产，供 ContextPacker 后续复用",
                 "NUO / CLI 可查看 resource_credit_stats 里的 top 贡献资源，避免信用只停留在流水账",
-                "StateLedger 当前快照和 EventRow 回放故事会消费 credit.assignment.completed，能看到本次任务主要由哪些资源类型贡献成功",
+                "StateLedger 当前快照和 EventRow 回放故事会消费 credit.assignment.completed，能看到本次任务主要由哪些资源类型和具体资源 key 贡献成功",
                 "相似任务的结果记忆 / 元决策记忆会召回成小证据包，接入 Watchtower Decision Plane",
                 "相似任务的执行过程记忆会召回成过程经验摘要，并进入 ContextPacker prompt 摘要",
                 "启的问题信号可持久化到 qi_problem_signals，重启后不会全部丢失",

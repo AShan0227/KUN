@@ -793,6 +793,8 @@ def _event_is_blocked(row: EventRow) -> bool:
         "blocked" in row.event_type.lower()
         or str(payload.get("status") or "").lower() == "blocked"
         or str(payload.get("executor_mode") or "").lower() == "policy_blocked"
+        or str(payload.get("gateway_mode") or "").lower() == "policy_blocked"
+        or str(payload.get("capability_status") or "").lower() == "policy_blocked"
     )
 
 
