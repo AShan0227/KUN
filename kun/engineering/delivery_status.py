@@ -422,6 +422,7 @@ def get_v3_delivery_status(
                 "idle-batch 已注册 external_emergent_scan step，可消费显式数据源或 KUN_EXTERNAL_SCAN_SOURCE_FILES 配置文件，把外部/内部策略线索写入 EmergentSolution 候选库；默认不联网、不爬网、不伪装全网扫描",
                 "external_emergent_scan 可通过 KUN_EXTERNAL_SCAN_STRONG_REVIEW_ENABLED=1 显式接入强模型 judge，先复审外部线索再写入候选库",
                 "external_skill_scout_plan 已能根据真实 Qi 问题信号/历史任务生成 review-only 外部能力 scout 计划，明确该找什么、去哪类来源找、需要哪些安全验证；不会自动抓取、安装或注册生产 skill",
+                "内置 external-skill-scout skill 已接入 dispatcher；执行中发现能力缺口时可生成 review-only 外部能力搜索计划，不联网、不安装、不注册生产 skill",
                 "external_skill_candidate_review 已能消费离线 GitHub repo / skill metadata，也能通过 KUN_EXTERNAL_SKILL_GITHUB_REPOS 显式 opt-in 抓取 GitHub repo 元数据，做来源、许可、执行脚本、外部网络、密钥、文件写入和 sandbox suitability 的保守鉴别，并把 review-only 候选写入 Qi 问题队列；idle-batch 还会用当前 Qi 问题信号和历史任务生成 task need，把外部候选和真实需求做 task-fit review package 匹配",
             ],
             evidence_refs=[
@@ -469,7 +470,7 @@ def get_v3_delivery_status(
                 "MemoryPolicyTicket 已开始消费傩治理标签，傩也会写入显式 Fade/低价值/风险标签，并能把重复治理模式沉淀成 review-only 方法论草稿；只读治理审计已覆盖低价值/重复/高频抽象/长尾/缺信用，但还没做完整 MemPalace/FadeMem 语义抽象和强模型规则蒸馏",
                 "Qi idle replay 目前已有 heuristic_local、可配置本地模型评估口、显式 opt-in 强模型复审口、显式 opt-in KUN-Lab 历史任务回放口、显式 opt-in AI Scientist tree search 证据、草稿审核状态机、shadow/canary 护栏计划和守望影子观测；但仓库不内置具体模型权重，也还没接真实流量 canary 执行链路",
                 "StrategyPack 草稿目前只做 review-only，不会自动 promotion；已经能判断是否可交给人审核、生成推广计划，并进入守望 shadow 观测，但还没接人工批准 UI 或真实实验创建",
-                "external_emergent_scan 目前只消费显式线索；external_skill_candidate_review 已有显式 opt-in GitHub repo 抓取、鉴别闭环、真实任务需求匹配和 Qi review queue 接入，但还没接 arXiv/竞品 changelog 抓取器、自动安装、生产 skill 注册或 canary 推广链路",
+                "external_emergent_scan 目前只消费显式线索；external-skill-scout / external_skill_candidate_review 已有显式 opt-in GitHub repo 抓取、鉴别闭环、真实任务需求匹配和 Qi review queue 接入，但还没接 arXiv/竞品 changelog 抓取器、自动安装、生产 skill 注册或 canary 推广链路",
                 "执行过程经验已能影响 Watchtower skill_hints；Hermes use_memory 已开始按单步 action/query 稀疏选择记忆层，但还没有做到全 action choice 的策略改写",
                 "贡献信用对模型路由已进热路径，但还需要真实 dogfood 样本校准阈值",
                 "ValueGate 已接轻量历史信用，但还没用真实 dogfood 样本训练成稳定的跨任务 gate estimator",

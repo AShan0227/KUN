@@ -82,6 +82,32 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
         },
         "auto_trigger_when": ["code review", "diff review", "审查代码", "代码评审"],
     },
+    "external-skill-scout": {
+        "description": (
+            "遇到能力缺口时生成外部 skill / 工程模板搜索计划。只输出 review-only scout plan，"
+            "不会联网抓取、不会安装、不会注册生产 skill。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_need": {
+                    "description": "字符串或对象，描述当前缺什么外部能力",
+                },
+                "task_type": {"type": "string"},
+                "summary": {"type": "string"},
+                "description": {"type": "string"},
+                "goal": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "topics": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+        "auto_trigger_when": [
+            "need external skill",
+            "find skill",
+            "能力缺口",
+            "寻找外部 skill",
+        ],
+    },
 }
 
 
