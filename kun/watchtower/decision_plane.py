@@ -149,6 +149,7 @@ class WatchtowerDecisionPlane:
         metric_dimensions = _dedupe(
             [*BASE_METRICS, *pack.metric_dimensions, *mission_adjustment.metric_dimensions]
         )
+        process_skill_hints = _skill_hints_from_process_experiences(similar_experiences)
         reward_weights = dict(pack.reward_weights)
         if active_protocol is not None:
             protocol_weights = getattr(active_protocol, "reward_weights", None)
@@ -175,13 +176,17 @@ class WatchtowerDecisionPlane:
         if strategy_votes:
             top_vote = next(iter(strategy_votes.items()))
             reason += f"; similar_experience={top_vote[0]}:{top_vote[1]:.2f}"
+        if process_skill_hints:
+            reason += f"; process_skill_hints={','.join(process_skill_hints[:3])}"
 
         return WatchtowerDecision(
             strategy_pack_id=pack.pack_id,
             strategy_pack_name=pack.display_name,
             execution_mode=execution_mode,
             context_limit=context_limit,
-            skill_hints=_dedupe(pack.skill_hints + _protocol_skill_hints(active_protocol)),
+            skill_hints=_dedupe(
+                pack.skill_hints + process_skill_hints + _protocol_skill_hints(active_protocol)
+            ),
             metric_dimensions=metric_dimensions,
             risk_watch=pack.risk_watch,
             reward_weights=reward_weights,
@@ -212,6 +217,7 @@ class WatchtowerDecisionPlane:
                     for item in similar_experiences[:5]
                 ],
                 "similar_strategy_votes": strategy_votes,
+                "process_experience_skill_hints": process_skill_hints,
             },
         )
 
@@ -523,6 +529,37 @@ def _similar_experience_bonus(
     if vote <= 0:
         return 0.0
     return min(0.45, vote * 0.35)
+
+
+def _skill_hints_from_process_experiences(
+    experiences: list[SimilarTaskExperience],
+    *,
+    limit: int = 3,
+) -> list[str]:
+    """Let proven execution-process memory nudge the next task's skill path.
+
+    This closes the small but important loop: execution-process memory should
+    not only be shown in the prompt; if a similar past task succeeded with a
+    concrete skill, Watchtower can pass that skill hint to Orchestrator. Failed
+    or weakly related experiences stay out.
+    """
+
+    candidates = [
+        experience
+        for experience in experiences
+        if experience.memory_layer == "execution_process"
+        and experience.skill_used
+        and experience.positive_weight > 0
+    ]
+    candidates.sort(
+        key=lambda item: (
+            -item.positive_weight,
+            -item.similarity_score,
+            item.step_id if item.step_id is not None else 9999,
+            item.asset_id,
+        )
+    )
+    return _dedupe([item.skill_used or "" for item in candidates])[: max(0, limit)]
 
 
 class MissionStrategyAdjustment(BaseModel):

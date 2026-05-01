@@ -300,6 +300,43 @@ def test_decision_plane_uses_similar_experience_as_moe_signal() -> None:
 
 
 @pytest.mark.unit
+def test_decision_plane_turns_execution_process_memory_into_skill_hint() -> None:
+    task_ref = _task_ref(task_type="coding.python.pytest", text="修复 pytest 失败并回归")
+    decision = WatchtowerDecisionPlane().decide(
+        task_ref,
+        similar_experiences=[
+            SimilarTaskExperience(
+                asset_id="proc-good",
+                memory_layer="execution_process",
+                task_type="coding.python.pytest",
+                summary="上一轮先复现 pytest，再最小修复。",
+                skill_used="coding-pytest",
+                validation_outcome="pass",
+                score_overall=0.9,
+                similarity_score=0.95,
+                step_id=2,
+            ),
+            SimilarTaskExperience(
+                asset_id="proc-failed",
+                memory_layer="execution_process",
+                task_type="coding.python.pytest",
+                summary="失败路径不应该强化。",
+                skill_used="broad-refactor",
+                validation_outcome="fail",
+                score_overall=0.1,
+                similarity_score=1.0,
+                step_id=1,
+            ),
+        ],
+    )
+
+    assert "coding-pytest" in decision.skill_hints
+    assert "broad-refactor" not in decision.skill_hints
+    assert decision.metadata["process_experience_skill_hints"] == ["coding-pytest"]
+    assert "process_skill_hints=coding-pytest" in decision.reason
+
+
+@pytest.mark.unit
 def test_decision_plane_applies_skill_hints_to_task_spec() -> None:
     task_ref = _task_ref()
     plane = WatchtowerDecisionPlane()

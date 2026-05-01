@@ -249,6 +249,7 @@ def get_v3_delivery_status(
                 "required_skills / Watchtower skill_hints 是强信号，但不再绕过贡献信用和能力卡排序",
                 "ValueGate 会把 task_type / execution_mode / strategy_pack / step skill 写入贡献信用",
                 "ProductionValueEstimator 会读取 ValueGate 历史信用，让同类任务的过往效果影响是否继续投入",
+                "相似执行过程记忆里的成功 skill 会进入 Watchtower skill_hints，直接影响 Orchestrator 下一次 required_skills",
                 "Context/Memory 资产启动时可按 KUN_CONTEXT_STORE_BACKEND=auto/redis 装 Redis 持久 store，Redis 不可用时诚实降级为 memory",
                 "傩深度体检会把 StateLedger 漂移/缺历史暴露成 finding，避免账本漂移只藏在 API 里",
                 "主前端任务详情已接用户反馈入口，用户满意度不再只停在后端 API",
@@ -272,7 +273,7 @@ def get_v3_delivery_status(
             ],
             missing=[
                 "相似任务召回目前是确定性轻量检索，还不是向量库 / 跨租户匿名经验池",
-                "执行过程经验目前只进入上下文提示，还没有直接改写 Watchtower 策略权重或 step 级 action choice",
+                "执行过程经验已能影响 Watchtower skill_hints；但还没有做到 step 级 action choice 的精细策略改写",
                 "贡献信用对模型路由已进热路径，但还需要真实 dogfood 样本校准阈值",
                 "ValueGate 已接轻量历史信用，但还没用真实 dogfood 样本训练成稳定的跨任务 gate estimator",
             ],
