@@ -18,7 +18,18 @@ from pydantic import BaseModel, ConfigDict, Field
 from kun.datamodel.task import TaskRef
 
 SchedulerStatus = Literal["queued", "running", "done", "failed", "cancelled"]
+TaskLane = Literal["fast", "mission", "qi", "nuo", "world", "high_risk"]
 TaskRunner = Callable[[TaskRef], Awaitable[Any]]
+
+
+DEFAULT_LANE_LIMITS: dict[TaskLane, int] = {
+    "fast": 20,
+    "mission": 5,
+    "qi": 1,
+    "nuo": 2,
+    "world": 2,
+    "high_risk": 1,
+}
 
 
 class TaskResult(BaseModel):
@@ -37,6 +48,7 @@ class TaskStatusSnapshot(BaseModel):
 
     task_id: str
     user_id: str
+    lane: TaskLane = "fast"
     status: SchedulerStatus
     queued_at: datetime
     started_at: datetime | None = None
@@ -46,10 +58,11 @@ class TaskStatusSnapshot(BaseModel):
 
 
 class _TaskRecord:
-    def __init__(self, task: TaskRef, future: asyncio.Future[TaskResult]) -> None:
+    def __init__(self, task: TaskRef, future: asyncio.Future[TaskResult], lane: TaskLane) -> None:
         self.task = task
         self.task_id = task.meta.task_id
         self.user_id = task.meta.owner.user_id or task.meta.owner.tenant_id
+        self.lane = lane
         self.status: SchedulerStatus = "queued"
         self.queued_at = datetime.now(UTC)
         self.started_at: datetime | None = None
@@ -60,7 +73,12 @@ class _TaskRecord:
 
 
 class MultiTaskScheduler:
-    """Fair-ish in-memory scheduler with per-user and global concurrency caps."""
+    """Fair-ish in-memory scheduler with per-user, global, and lane concurrency caps.
+
+    V5 的关键不是“开很多 worker”，而是把不同性质的任务放进不同车道：
+    普通任务快跑，Qi/NUO 后台任务不抢用户任务，真实世界动作和高风险任务
+    单独限流。这个类仍是轻量内存调度器，不假装成生产级分布式队列。
+    """
 
     def __init__(
         self,
@@ -68,6 +86,7 @@ class MultiTaskScheduler:
         max_concurrent_global: int = 50,
         *,
         runner: TaskRunner | None = None,
+        max_concurrent_per_lane: dict[TaskLane, int] | None = None,
     ) -> None:
         if max_concurrent_per_user <= 0:
             raise ValueError("max_concurrent_per_user must be positive")
@@ -75,18 +94,25 @@ class MultiTaskScheduler:
             raise ValueError("max_concurrent_global must be positive")
         self.max_concurrent_per_user = max_concurrent_per_user
         self.max_concurrent_global = max_concurrent_global
+        self.max_concurrent_per_lane = dict(DEFAULT_LANE_LIMITS)
+        if max_concurrent_per_lane:
+            for lane, limit in max_concurrent_per_lane.items():
+                if limit <= 0:
+                    raise ValueError(f"max_concurrent_per_lane[{lane}] must be positive")
+                self.max_concurrent_per_lane[lane] = limit
         self._runner = runner or _default_runner
         self._records: dict[str, _TaskRecord] = {}
         self._queue: deque[str] = deque()
         self._running_global = 0
         self._running_by_user: dict[str, int] = {}
+        self._running_by_lane: dict[TaskLane, int] = {}
         self._lock = asyncio.Lock()
 
-    async def submit(self, task: TaskRef) -> str:
+    async def submit(self, task: TaskRef, *, lane: TaskLane | None = None) -> str:
         """Submit a task. Over-capacity tasks wait in FIFO queue."""
 
         future: asyncio.Future[TaskResult] = asyncio.get_running_loop().create_future()
-        record = _TaskRecord(task, future)
+        record = _TaskRecord(task, future, lane or route_task_lane(task))
         async with self._lock:
             if record.task_id in self._records:
                 raise ValueError(f"task already submitted: {record.task_id}")
@@ -143,6 +169,9 @@ class MultiTaskScheduler:
                 user_running = self._running_by_user.get(record.user_id, 0)
                 if user_running >= self.max_concurrent_per_user:
                     continue
+                lane_running = self._running_by_lane.get(record.lane, 0)
+                if lane_running >= self.max_concurrent_per_lane[record.lane]:
+                    continue
                 self._queue.remove(task_id)
                 self._start_locked(record)
                 started = True
@@ -155,6 +184,7 @@ class MultiTaskScheduler:
         record.started_at = datetime.now(UTC)
         self._running_global += 1
         self._running_by_user[record.user_id] = self._running_by_user.get(record.user_id, 0) + 1
+        self._running_by_lane[record.lane] = self._running_by_lane.get(record.lane, 0) + 1
         record.worker = asyncio.create_task(self._run_record(record))
 
     async def _run_record(self, record: _TaskRecord) -> None:
@@ -188,6 +218,10 @@ class MultiTaskScheduler:
                     0,
                     self._running_by_user.get(record.user_id, 0) - 1,
                 )
+                self._running_by_lane[record.lane] = max(
+                    0,
+                    self._running_by_lane.get(record.lane, 0) - 1,
+                )
                 self._pump_locked()
 
     def _finish(self, record: _TaskRecord, result: TaskResult) -> None:
@@ -215,6 +249,7 @@ class MultiTaskScheduler:
         return TaskStatusSnapshot(
             task_id=record.task_id,
             user_id=record.user_id,
+            lane=record.lane,
             status=record.status,
             queued_at=record.queued_at,
             started_at=record.started_at,
@@ -228,9 +263,46 @@ async def _default_runner(task: TaskRef) -> dict[str, str]:
     return {"task_id": task.meta.task_id, "summary": task.l1_summary()}
 
 
+def route_task_lane(task: TaskRef) -> TaskLane:
+    """Deterministically route a task into a V5 execution lane.
+
+    This is deliberately cheap and explainable. Watchtower can still override
+    by passing `lane=` to submit(), but the default protects simple tasks from
+    being slowed down by Qi/NUO/World/high-risk work.
+    """
+
+    task_type = task.meta.task_type.lower()
+    mode = task.meta.execution_mode
+    risk = task.meta.risk_level
+    skills = set(task.spec.required_skills if task.spec else [])
+    tools = set(task.spec.required_tools if task.spec else [])
+    merged_refs = " ".join(sorted(skills | tools)).lower()
+
+    if risk in {"high", "critical"} or mode == "ENSEMBLE":
+        return "high_risk"
+    if task_type.startswith("mission") or "mission" in task_type:
+        return "mission"
+    if task_type.startswith("qi") or "experiment" in task_type or "lab" in task_type:
+        return "qi"
+    if task_type.startswith("nuo") or "diagnose" in task_type or "maintenance" in task_type:
+        return "nuo"
+    if (
+        task_type.startswith("world")
+        or "external" in task_type
+        or "world_request" in merged_refs
+        or "world-gateway" in merged_refs
+        or "email.send" in merged_refs
+    ):
+        return "world"
+    return "fast"
+
+
 __all__ = [
+    "DEFAULT_LANE_LIMITS",
     "MultiTaskScheduler",
     "SchedulerStatus",
+    "TaskLane",
     "TaskResult",
     "TaskStatusSnapshot",
+    "route_task_lane",
 ]

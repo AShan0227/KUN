@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import fnmatch
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from kun.datamodel.task import ExecutionMode, TaskRef
 from kun.engineering.credit_assignment import get_contribution_tracker
+from kun.memory.policy import decide_memory_policy
 from kun.memory.similar_task_recall import (
     SimilarTaskExperience,
     summarize_strategy_votes,
@@ -164,6 +166,14 @@ class WatchtowerDecisionPlane:
         _apply_reward_boosts(reward_weights, mission_adjustment.reward_weight_boosts)
 
         alert_flags = _dedupe([*self._alert_flags(task_ref, pack), *mission_adjustment.alert_flags])
+        memory_policy = decide_memory_policy(
+            task_ref,
+            strategy_pack=pack,
+            watchtower_decision=SimpleNamespace(
+                strategy_pack_id=pack.pack_id,
+                alert_flags=alert_flags,
+            ),
+        )
         reason = (
             f"命中策略包 {pack.pack_id}; "
             f"match_score={pack_score:.2f}; "
@@ -218,6 +228,7 @@ class WatchtowerDecisionPlane:
                 ],
                 "similar_strategy_votes": strategy_votes,
                 "process_experience_skill_hints": process_skill_hints,
+                "memory_policy": memory_policy.model_dump(mode="json"),
             },
         )
 

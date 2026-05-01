@@ -13,6 +13,7 @@ from kun.engineering.idle_batch import (
     IncidentLessonDistillStep,
     KnowledgeConflictStep,
     MethodologyDistillStep,
+    QiIdleReplayStep,
     RouteRuleMiningStep,
     TaskReplayStep,
     list_steps,
@@ -69,6 +70,33 @@ class _FakeIdleBatchDataSource:
             {"task_type": "coding", "model": "cheap", "success": False, "cost_usd": 0.05},
         ]
 
+    def qi_problem_signals(self, tenant_id: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "signal_id": "qps_runtime_1",
+                "tenant_id": tenant_id,
+                "category": "runtime",
+                "severity": "warning",
+                "summary": "mission task stalled during resume",
+                "source": "nuo.system_health",
+                "task_type": "mission.product_ops",
+                "evidence": {"runtime_status": "running"},
+            }
+        ]
+
+    def completed_task_history(self, tenant_id: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "history_id": "hist-cost-1",
+                "task_type": "marketing.ad",
+                "summary": "ad copy task cost exceeded estimate but passed",
+                "outcome": "completed",
+                "risk": "medium",
+                "verification_status": "passed",
+                "cost_usd": 0.42,
+            }
+        ]
+
 
 @pytest.fixture(autouse=True)
 def _reset_data_source():
@@ -87,6 +115,7 @@ def test_default_steps_registered():
     assert "health_report" in steps
     assert "task_replay" in steps
     assert "route_rule_mining" in steps
+    assert "qi_idle_replay" in steps
 
 
 @pytest.mark.unit
@@ -282,6 +311,28 @@ async def test_route_rule_mining_step_surfaces_best_model_pattern() -> None:
 
     assert summary["new_patterns"] == 1
     assert summary["patterns"][0]["recommended_model"] == "strong"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch) -> None:
+    from kun.qi.problem_queue import get_qi_problem_queue, reset_qi_problem_queue
+
+    monkeypatch.setenv("KUN_QI_PROBLEM_QUEUE_DB_ENABLED", "0")
+    reset_qi_problem_queue()
+    set_idle_batch_data_source(_FakeIdleBatchDataSource())
+
+    summary = await QiIdleReplayStep().run("t-1")
+
+    assert summary["signals"] == 1
+    assert summary["completed_task_histories"] == 1
+    assert summary["candidates"] == 2
+    assert summary["production_action"] is False
+    assert summary["persisted_review_signals"] == 2
+    assert all(item["production_action"] is False for item in summary["top_candidates"])
+    queued = get_qi_problem_queue().list("t-1", limit=10)
+    assert len(queued) == 2
+    assert all(signal.source == "qi.idle_replay.candidate" for signal in queued)
 
 
 @pytest.mark.unit

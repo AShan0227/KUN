@@ -21,7 +21,14 @@ from kun.datamodel.events import Event, EventKind
 
 log = logging.getLogger(__name__)
 
-ActionKind = Literal["keep", "compress", "soft_forget", "hard_delete", "duplicate"]
+ActionKind = Literal[
+    "keep",
+    "compress",
+    "soft_forget",
+    "hard_delete",
+    "duplicate",
+    "compiler_review",
+]
 
 
 class ContextMaintenanceFinding(BaseModel):
@@ -44,6 +51,7 @@ class ContextMaintenanceReport(BaseModel):
     soft_forgotten: int = 0
     hard_deleted: int = 0
     duplicate_candidates: int = 0
+    compiler_review: int = 0
     kept: int = 0
     findings: list[ContextMaintenanceFinding] = Field(default_factory=list)
 
@@ -76,6 +84,11 @@ async def run_context_maintenance(
                 continue
             if summary_key[1]:
                 seen_summaries.add(summary_key)
+
+            compiler_reason = _compiler_review_reason(asset)
+            if compiler_reason:
+                report.compiler_review += 1
+                report.findings.append(_finding(asset, "compiler_review", compiler_reason, dry_run))
 
             if (
                 age_days >= hard_delete_after_days
@@ -178,6 +191,32 @@ def _compress_summary(text: str, *, max_chars: int = 900) -> str:
     return text[: max_chars - 20].rstrip() + " ... [compressed]"
 
 
+def _compiler_review_reason(asset: LayeredAsset) -> str:
+    meta = asset.l1_metadata or {}
+    has_compiler_meta = "compiler_profile" in meta or str(meta.get("compiler") or "").startswith(
+        "kun.compiler"
+    )
+    if not has_compiler_meta:
+        return ""
+    risk = meta.get("risk")
+    if isinstance(risk, dict):
+        flags = risk.get("flags")
+        level = str(risk.get("level") or "")
+        if level in {"medium", "high"} or (isinstance(flags, list) and flags):
+            return f"compiler asset has risk={level or 'unknown'} flags={flags or []}"
+    provenance = meta.get("provenance")
+    if isinstance(provenance, dict) and not provenance.get("input_sha256"):
+        return "compiler asset is missing input_sha256 provenance"
+    profile = meta.get("compiler_profile")
+    if isinstance(profile, dict):
+        limitations = profile.get("limitations")
+        if isinstance(limitations, list) and any(
+            "placeholder" in str(item) for item in limitations
+        ):
+            return "compiler asset came from a limited/placeholder compiler profile"
+    return ""
+
+
 def _emit_metrics(report: ContextMaintenanceReport) -> None:
     dry_run = "true" if report.dry_run else "false"
     counts = {
@@ -185,6 +224,7 @@ def _emit_metrics(report: ContextMaintenanceReport) -> None:
         "soft_forget": report.soft_forgotten,
         "hard_delete": report.hard_deleted,
         "duplicate": report.duplicate_candidates,
+        "compiler_review": report.compiler_review,
         "keep": report.kept,
     }
     for action, count in counts.items():

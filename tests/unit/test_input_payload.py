@@ -5,6 +5,7 @@ import base64
 import pytest
 from fastapi import HTTPException
 from kun.api.input_payload import Attachment, translate_binary_input, translate_chat_input
+from kun.context.storage import InMemoryAssetStore, reset_store, set_store
 
 
 def _b64(raw: bytes) -> str:
@@ -65,3 +66,30 @@ async def test_translate_binary_input_wraps_websocket_bytes() -> None:
     assert "[Attachment: ws.txt]" in translated.message
     assert "raw websocket text" in translated.message
     assert translated.descriptors[0]["filename"] == "ws.txt"
+
+
+@pytest.mark.asyncio
+async def test_translate_chat_input_can_compile_attachment_into_asset_store() -> None:
+    store = InMemoryAssetStore()
+    set_store(store)
+    try:
+        translated = await translate_chat_input(
+            "记住这个材料",
+            [Attachment(filename="note.md", content_b64=_b64(b"# Title\n\nUseful material"))],
+            tenant_id="tenant-compiler-hot-path",
+            store_compiled_assets=True,
+        )
+
+        descriptor = translated.descriptors[0]
+        asset_id = descriptor["compiler_asset_id"]
+        assert asset_id
+        assert descriptor["compiler_status"] == "stored"
+        assert descriptor["compiler_kind"] == "markdown"
+        assert f"compiler_asset_id: {asset_id}" in translated.message
+
+        stored = await store.get(asset_id, tenant_id="tenant-compiler-hot-path")
+        assert stored is not None
+        assert stored.asset_kind == "knowledge"
+        assert stored.l1_metadata["material_metadata"]["source"] == "chat_attachment"
+    finally:
+        reset_store()

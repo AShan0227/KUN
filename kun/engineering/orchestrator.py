@@ -89,6 +89,7 @@ from kun.interface.llm import (
     get_router,
 )
 from kun.interface.llm.router import TaskPurpose
+from kun.memory.policy import MemoryPolicyTicket
 from kun.memory.similar_task_recall import recall_similar_task_experiences
 from kun.skills.selector import get_selector as get_skill_selector
 from kun.watchtower.engine import RuleEngine
@@ -1020,6 +1021,17 @@ class Orchestrator:
             if watchtower_decision is not None
             else {"FAST": 0, "SMART": 1, "MAX": 3, "ENSEMBLE": 3}.get(_task_mode, 1)
         )
+        memory_policy = _memory_policy_from_watchtower(watchtower_decision)
+        if memory_policy is not None:
+            if not memory_policy.use_memory:
+                _context_limit = 0
+            elif memory_policy.max_items > 0:
+                _context_limit = min(_context_limit, memory_policy.max_items)
+        memory_context_kwargs = (
+            memory_policy.as_context_packer_kwargs()
+            if memory_policy is not None and memory_policy.use_memory
+            else {}
+        )
         if _context_limit > 0:
             if _task_mode in {"MAX", "ENSEMBLE"}:
                 context_items = []
@@ -1027,13 +1039,19 @@ class Orchestrator:
                     task_ref,
                     tenant_id=tenant.tenant_id,
                     max_rounds=_context_limit,
+                    memory_layers=memory_context_kwargs.get("memory_layers"),
+                    avoid_memory_layers=memory_context_kwargs.get("avoid_memory_layers"),
                 ):
                     context_items.append(item)
                     if len(context_items) >= _context_limit:
                         break
-                process_experiences = await self.context_packer.recall_process_experiences(
-                    task_ref,
-                    tenant_id=tenant.tenant_id,
+                process_experiences = (
+                    await self.context_packer.recall_process_experiences(
+                        task_ref,
+                        tenant_id=tenant.tenant_id,
+                    )
+                    if _memory_policy_allows_process_recall(memory_policy)
+                    else []
                 )
                 context_pack = ContextPack(
                     items=context_items,
@@ -1044,6 +1062,8 @@ class Orchestrator:
                     task_ref,
                     tenant_id=tenant.tenant_id,
                     limit=_context_limit,
+                    memory_layers=memory_context_kwargs.get("memory_layers"),
+                    avoid_memory_layers=memory_context_kwargs.get("avoid_memory_layers"),
                 )
         else:
             context_pack = ContextPack()  # FAST 模式跳过, 空 pack
@@ -1063,6 +1083,7 @@ class Orchestrator:
             context_limit=_context_limit,
             context_pack=context_pack,
             mission_id=_mission_id_from_task(task_ref),
+            memory_policy=memory_policy.model_dump(mode="json") if memory_policy else None,
         )
         decision_tickets.append(context_ticket)
         self._record_state_ledger("record_decision_ticket", context_ticket)
@@ -3679,6 +3700,36 @@ def _watchtower_pause_requested(rule_engine: RuleEngine, fired_rule_ids: list[st
         if any(action.handler == "pause_task" for action in rule.actions):
             return True
     return False
+
+
+def _memory_policy_from_watchtower(decision: Any | None) -> MemoryPolicyTicket | None:
+    """Read the V5 memory policy from Watchtower metadata if available."""
+
+    if decision is None:
+        return None
+    metadata = getattr(decision, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get("memory_policy")
+    if raw is None:
+        return None
+    try:
+        return MemoryPolicyTicket.model_validate(raw)
+    except Exception:
+        log.debug("memory_policy.invalid_from_watchtower", exc_info=True)
+        return None
+
+
+def _memory_policy_allows_process_recall(policy: MemoryPolicyTicket | None) -> bool:
+    if policy is None:
+        return True
+    if not policy.use_memory:
+        return False
+    layer_values = {layer.value for layer in policy.layers}
+    avoided_values = {layer.value for layer in policy.avoid_layers}
+    if "execution_process" in avoided_values:
+        return False
+    return not layer_values or "execution_process" in layer_values
 
 
 async def _load_mission_strategy(*, tenant_id: str, mission_id: str) -> dict[str, Any]:

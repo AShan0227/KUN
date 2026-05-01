@@ -164,6 +164,7 @@ def _selected_step_names(enabled: set[str] | None) -> list[str]:
     priority = {
         "health_report": 0,
         "world_handler_auto_quarantine": 1,
+        "qi_idle_replay": 2,
         "knowledge_precipitation": 2,
         "incident_lessons": 2,
         "knowledge_conflict": 3,
@@ -398,6 +399,73 @@ class WorldHandlerAutoQuarantineStep(IdleBatchStep):
         return report.model_dump(mode="json")
 
 
+class QiIdleReplayStep(IdleBatchStep):
+    """Let Qi review real problems and completed tasks during idle time.
+
+    The output is intentionally review-only.  Candidates are persisted back as
+    Qi problem signals so a stronger judge / lab pipeline can inspect them
+    later, but this step never promotes a route, skill, or protocol by itself.
+    """
+
+    step_id = "qi_idle_replay"
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        from kun.qi.idle_replay import generate_idle_replay_candidates
+        from kun.qi.problem_queue import (
+            QiProblemSignal,
+            get_configured_qi_problem_queue,
+            persist_problem_signals,
+        )
+
+        raw_signals = await _source_list("qi_problem_signals", tenant_id)
+        signals: list[QiProblemSignal] = []
+        for raw in raw_signals:
+            try:
+                signal = QiProblemSignal.model_validate(raw)
+            except Exception:
+                log.debug("qi_idle_replay.invalid_signal_from_source", exc_info=True)
+                continue
+            if signal.source != "qi.idle_replay.candidate":
+                signals.append(signal)
+
+        if not signals:
+            try:
+                queue = get_configured_qi_problem_queue()
+                listed = await _queue_list(queue, tenant_id=tenant_id, limit=20)
+                signals.extend(
+                    signal for signal in listed if signal.source != "qi.idle_replay.candidate"
+                )
+            except Exception:
+                log.debug("qi_idle_replay.queue_list_failed", exc_info=True)
+
+        histories = await _source_list("completed_task_history", tenant_id)
+        candidates = generate_idle_replay_candidates([*signals, *histories])
+        review_signals = [
+            candidate.to_problem_signal(tenant_id=tenant_id) for candidate in candidates
+        ]
+        persisted = await persist_problem_signals(review_signals)
+        return {
+            "signals": len(signals),
+            "completed_task_histories": len(histories),
+            "candidates": len(candidates),
+            "requires_strong_review": sum(1 for item in candidates if item.requires_strong_review),
+            "persisted_review_signals": persisted,
+            "engine": "heuristic_local",
+            "production_action": False,
+            "top_candidates": [
+                candidate.to_lab_recipe_draft()
+                for candidate in sorted(
+                    candidates,
+                    key=lambda item: (
+                        not item.requires_strong_review,
+                        item.risk,
+                        item.candidate_id,
+                    ),
+                )[:5]
+            ],
+        }
+
+
 class RouteRuleMiningStep(IdleBatchStep):
     """Cluster + association-rule mining over routing logs to surface new route patterns."""
 
@@ -608,6 +676,7 @@ def register_default_steps() -> None:
         ABDecisionRollupStep(),
         HealthReportStep(),
         WorldHandlerAutoQuarantineStep(),
+        QiIdleReplayStep(),
         RouteRuleMiningStep(),
         TaskBoundaryEvalStep(),
         PheromoneDecayStep(),
@@ -671,6 +740,16 @@ async def _source_list(method_name: str, tenant_id: str) -> list[dict[str, Any]]
 async def _source_dict(method_name: str, tenant_id: str) -> dict[str, Any]:
     result = await _call_data_source(method_name, tenant_id)
     return result if isinstance(result, dict) else {}
+
+
+async def _queue_list(queue: Any, *, tenant_id: str, limit: int) -> list[Any]:
+    method = getattr(queue, "list", None)
+    if method is None:
+        return []
+    result = method(tenant_id, limit=limit)
+    if asyncio.iscoroutine(result):
+        result = await result
+    return list(result) if isinstance(result, list) else []
 
 
 async def _call_data_source(method_name: str, tenant_id: str) -> Any:

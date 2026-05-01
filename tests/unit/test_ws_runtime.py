@@ -16,6 +16,7 @@ from kun.api.ws import (
     _receive_client_message,
     _resolve_ws_tenant_context,
 )
+from kun.context.storage import InMemoryAssetStore, reset_store, set_store
 from kun.security.auth import AuthTokenError, sign_auth_token
 
 
@@ -99,7 +100,14 @@ async def test_receive_client_message_translates_json_attachments() -> None:
         ),
     }
 
-    msg, translated = await _receive_client_message(_FakeWebSocket(packet))  # type: ignore[arg-type]
+    set_store(InMemoryAssetStore())
+    try:
+        msg, translated = await _receive_client_message(  # type: ignore[arg-type]
+            _FakeWebSocket(packet),
+            tenant_id="tenant-ws",
+        )
+    finally:
+        reset_store()
 
     assert msg["type"] == "user_message"
     assert "hello ws" in msg["content"]
@@ -112,7 +120,14 @@ async def test_receive_client_message_translates_json_attachments() -> None:
 async def test_receive_client_message_translates_binary_frame() -> None:
     packet = {"type": "websocket.receive", "bytes": b"binary text"}
 
-    msg, translated = await _receive_client_message(_FakeWebSocket(packet))  # type: ignore[arg-type]
+    set_store(InMemoryAssetStore())
+    try:
+        msg, translated = await _receive_client_message(  # type: ignore[arg-type]
+            _FakeWebSocket(packet),
+            tenant_id="tenant-ws",
+        )
+    finally:
+        reset_store()
 
     assert msg["type"] == "user_message"
     assert "binary text" in msg["content"]

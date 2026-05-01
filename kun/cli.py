@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
+import io
 import json
+from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any, cast
 
@@ -30,6 +33,9 @@ lab_app = typer.Typer(
 lab_benchmark_app = typer.Typer(
     add_completion=False, no_args_is_help=True, help="KUN-Lab benchmark suites"
 )
+compiler_app = typer.Typer(
+    add_completion=False, no_args_is_help=True, help="V5 compiler ingestion tools"
+)
 console = Console()
 app.add_typer(security_app, name="security")
 app.add_typer(promises_app, name="promises")
@@ -38,11 +44,40 @@ app.add_typer(ops_app, name="ops")
 app.add_typer(protocol_app, name="protocol")
 app.add_typer(qi_app, name="qi")
 app.add_typer(lab_app, name="lab")
+app.add_typer(compiler_app, name="compiler")
 lab_app.add_typer(lab_benchmark_app, name="benchmark")
 
 
 def _hash_prompt(prompt: str) -> str:
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:32]
+
+
+def _json_print(payload: dict[str, Any]) -> None:
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def _run_json(coro: Coroutine[Any, Any, dict[str, Any]]) -> None:
+    # Keep compiler commands machine-readable even if lower layers log noisily.
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        payload: dict[str, Any] = asyncio.run(coro)
+    _json_print(payload)
+
+
+def _compiler_metadata(source_uri: str | None = None) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"cli": "kun compiler"}
+    if source_uri is not None:
+        metadata["cli_source_uri"] = source_uri
+    return metadata
+
+
+def _asset_layer(value: str) -> Any:
+    from kun.context.assets import AssetLayer
+
+    try:
+        return AssetLayer(value)
+    except ValueError as exc:
+        allowed = ", ".join(layer.value for layer in AssetLayer)
+        raise typer.BadParameter(f"expected one of: {allowed}") from exc
 
 
 @app.command()
@@ -283,6 +318,110 @@ def serve(
         reload=reload,
         log_level="info",
     )
+
+
+@compiler_app.command("compile-text")
+def compiler_compile_text(
+    text: str = typer.Argument(..., help="Text to compile"),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+    source_uri: str = typer.Option("inline:text", "--source-uri"),
+    declared_kind: str | None = typer.Option(None, "--kind"),
+) -> None:
+    """Compile inline text into CanonicalMaterial JSON without storing it."""
+    from kun.compiler import LightweightMaterialCompiler
+
+    async def _run() -> dict[str, Any]:
+        material = await LightweightMaterialCompiler().compile_text(
+            text,
+            tenant_id=tenant,
+            source_uri=source_uri,
+            declared_kind=declared_kind,
+            metadata=_compiler_metadata(source_uri),
+        )
+        return material.model_dump(mode="json")
+
+    _run_json(_run())
+
+
+@compiler_app.command("compile-path")
+def compiler_compile_path(
+    path: Path = typer.Argument(..., help="Path under --allowed-root to compile"),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+    allowed_root: Path = typer.Option(Path("."), "--allowed-root"),
+) -> None:
+    """Compile a local file into CanonicalMaterial JSON without storing it."""
+    from kun.compiler import LightweightMaterialCompiler
+
+    async def _run() -> dict[str, Any]:
+        material = await LightweightMaterialCompiler().compile_path(
+            path,
+            tenant_id=tenant,
+            allowed_root=allowed_root,
+            metadata=_compiler_metadata(str(path)),
+        )
+        return material.model_dump(mode="json")
+
+    _run_json(_run())
+
+
+@compiler_app.command("ingest-text")
+def compiler_ingest_text(
+    text: str = typer.Argument(..., help="Text to compile and store"),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+    source_uri: str = typer.Option("inline:text", "--source-uri"),
+    declared_kind: str | None = typer.Option(None, "--kind"),
+    layer: str = typer.Option("L1_task", "--layer"),
+) -> None:
+    """Compile inline text and write the resulting asset to the AssetStore."""
+    from kun.compiler import CompilerIngestor
+
+    async def _run() -> dict[str, Any]:
+        result = await CompilerIngestor().ingest_text(
+            text,
+            tenant_id=tenant,
+            source_uri=source_uri,
+            declared_kind=declared_kind,
+            layer=_asset_layer(layer),
+            metadata=_compiler_metadata(source_uri),
+        )
+        return {
+            "asset_id": result.asset_id,
+            "status": "stored" if result.stored else result.reason,
+            "summary": result.material.l1,
+            "stored": result.stored,
+            "material_status": result.material.status,
+        }
+
+    _run_json(_run())
+
+
+@compiler_app.command("ingest-path")
+def compiler_ingest_path(
+    path: Path = typer.Argument(..., help="Path under --allowed-root to compile and store"),
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+    allowed_root: Path = typer.Option(Path("."), "--allowed-root"),
+    layer: str = typer.Option("L1_task", "--layer"),
+) -> None:
+    """Compile a local file and write the resulting asset to the AssetStore."""
+    from kun.compiler import CompilerIngestor
+
+    async def _run() -> dict[str, Any]:
+        result = await CompilerIngestor().ingest_path(
+            path,
+            tenant_id=tenant,
+            allowed_root=allowed_root,
+            layer=_asset_layer(layer),
+            metadata=_compiler_metadata(str(path)),
+        )
+        return {
+            "asset_id": result.asset_id,
+            "status": "stored" if result.stored else result.reason,
+            "summary": result.material.l1,
+            "stored": result.stored,
+            "material_status": result.material.status,
+        }
+
+    _run_json(_run())
 
 
 @app.command()

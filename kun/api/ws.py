@@ -120,7 +120,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             while True:
                 current_task = _clear_finished_task(current_task)
                 try:
-                    msg, translated = await _receive_client_message(ws)
+                    msg, translated = await _receive_client_message(ws, tenant_id=ctx.tenant_id)
                 except ValueError as exc:
                     await _send_json(ws, {"type": "error", "message": str(exc)}, send_lock)
                     continue
@@ -327,6 +327,8 @@ async def _run_task_stream(
 
 async def _receive_client_message(
     ws: WebSocket,
+    *,
+    tenant_id: str,
 ) -> tuple[dict[str, Any], TranslatedInput | None]:
     packet = await ws.receive()
     if packet["type"] == "websocket.disconnect":
@@ -334,7 +336,11 @@ async def _receive_client_message(
 
     raw_bytes = packet.get("bytes")
     if raw_bytes is not None:
-        translated = await translate_binary_input(raw_bytes)
+        translated = await translate_binary_input(
+            raw_bytes,
+            tenant_id=tenant_id,
+            store_compiled_assets=True,
+        )
         return {"type": "user_message", "content": translated.message}, translated
 
     raw_text = packet.get("text")
@@ -351,7 +357,12 @@ async def _receive_client_message(
         return msg, None
 
     attachments = [Attachment.model_validate(item) for item in attachments_raw]
-    translated = await translate_chat_input(str(msg.get("content", "")), attachments)
+    translated = await translate_chat_input(
+        str(msg.get("content", "")),
+        attachments,
+        tenant_id=tenant_id,
+        store_compiled_assets=True,
+    )
     msg["content"] = translated.message
     return msg, translated
 

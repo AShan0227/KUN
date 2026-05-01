@@ -84,7 +84,9 @@ class _RecordingContextPacker:
     def __init__(self) -> None:
         self.limits: list[int] = []
 
-    async def pack(self, task_ref: TaskRef, *, tenant_id: str, limit: int) -> ContextPack:
+    async def pack(
+        self, task_ref: TaskRef, *, tenant_id: str, limit: int, **_: object
+    ) -> ContextPack:
         self.limits.append(limit)
         return ContextPack()
 

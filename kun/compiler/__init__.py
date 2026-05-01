@@ -1,0 +1,39 @@
+"""KUN V5 compiler layer."""
+
+from kun.compiler.ingestion import (
+    CompilerIngestionResult,
+    CompilerIngestor,
+    material_to_layered_asset,
+)
+from kun.compiler.material import LightweightMaterialCompiler
+from kun.compiler.models import (
+    CanonicalAsset,
+    CanonicalKind,
+    CanonicalMaterial,
+    CompilerProfile,
+    CompileStatus,
+    MaterialPermissions,
+    MaterialProvenance,
+    MaterialRisk,
+    MaterialSource,
+)
+from kun.compiler.registry import CompilerRegistry, MaterialCompiler, default_registry
+
+__all__ = [
+    "CanonicalAsset",
+    "CanonicalKind",
+    "CanonicalMaterial",
+    "CompileStatus",
+    "CompilerIngestionResult",
+    "CompilerIngestor",
+    "CompilerProfile",
+    "CompilerRegistry",
+    "LightweightMaterialCompiler",
+    "MaterialCompiler",
+    "MaterialPermissions",
+    "MaterialProvenance",
+    "MaterialRisk",
+    "MaterialSource",
+    "default_registry",
+    "material_to_layered_asset",
+]

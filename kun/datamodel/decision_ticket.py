@@ -252,6 +252,7 @@ def ticket_from_context_selection(
     context_limit: int,
     context_pack: Any,
     mission_id: str | None = None,
+    memory_policy: dict[str, Any] | None = None,
 ) -> DecisionTicket:
     """Wrap ContextPacker output as a V4 decision ticket."""
 
@@ -282,17 +283,20 @@ def ticket_from_context_selection(
         inputs_summary={
             "execution_mode": execution_mode,
             "context_limit": context_limit,
+            "memory_policy": memory_policy or {},
         },
         evidence={
             "asset_ids": asset_ids,
             "asset_kinds": kinds,
             "relevance_scores": scores,
+            "memory_policy": memory_policy or {},
         },
         metadata={
             "asset_ids": asset_ids,
             "asset_count": len(asset_ids),
             "context_limit": context_limit,
             "execution_mode": execution_mode,
+            "memory_policy": memory_policy or {},
         },
     )
 

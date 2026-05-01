@@ -67,3 +67,25 @@ async def test_context_maintenance_hard_deletes_old_unused_asset() -> None:
 
     assert report.hard_deleted == 1
     assert await store.get(old.asset_id, tenant_id="tenant-a") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_maintenance_flags_risky_compiler_assets() -> None:
+    store = InMemoryAssetStore()
+    asset = LayeredAsset.build(
+        "knowledge",
+        "tenant-a",
+        metadata={
+            "compiler_profile": {"name": "kun-v5-lightweight", "limitations": []},
+            "risk": {"level": "medium", "flags": ["invalid_json"]},
+            "provenance": {"input_sha256": "abc"},
+        },
+        summary="invalid json source",
+    )
+    await store.put(asset)
+
+    report = await run_context_maintenance(tenant_id="tenant-a", dry_run=True, store=store)
+
+    assert report.compiler_review == 1
+    assert any(item.action == "compiler_review" for item in report.findings)

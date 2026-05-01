@@ -49,12 +49,17 @@ async def run_task(
     - 命中 → 直接返 FastPathResult (≤200ms)
     - 未命中 → 走完整 orchestrator 决策链
     """
-    translated = await translate_chat_input(req.message, req.attachments)
-    user_message = translated.message
-    fast = get_fast_path(request.app)
     tenant = current_tenant()
     tenant_id = tenant.tenant_id
     user_id = x_user_id or tenant.user_id or tenant_id
+    translated = await translate_chat_input(
+        req.message,
+        req.attachments,
+        tenant_id=tenant_id,
+        store_compiled_assets=True,
+    )
+    user_message = translated.message
+    fast = get_fast_path(request.app)
 
     # V2.1 §17.4a 快速路径
     fp_decision = fast.try_fast(

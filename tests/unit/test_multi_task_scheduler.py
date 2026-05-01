@@ -5,20 +5,31 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from kun.core.multi_task_scheduler import MultiTaskScheduler
-from kun.datamodel.task import Owner, TaskMeta, TaskRef
+from kun.core.multi_task_scheduler import MultiTaskScheduler, route_task_lane
+from kun.datamodel.task import Owner, Risk, TaskMeta, TaskRef, TaskSpec
 
 
-def _task(task_id: str, user_id: str = "u1") -> TaskRef:
+def _task(
+    task_id: str,
+    user_id: str = "u1",
+    *,
+    task_type: str = "coding.python",
+    risk_level: Risk = "low",
+    required_skills: list[str] | None = None,
+) -> TaskRef:
     owner = Owner(tenant_id="tenant", user_id=user_id)
     meta = TaskMeta(
         task_id=task_id,
         fingerprint=TaskMeta.compute_fingerprint(task_id, owner),
-        task_type="coding.python",
+        task_type=task_type,
+        risk_level=risk_level,
         owner=owner,
         success_criteria_short=f"run {task_id}",
     )
-    return TaskRef(meta=meta)
+    spec = None
+    if required_skills is not None:
+        spec = TaskSpec(goal_detail=f"run {task_id}", required_skills=required_skills)
+    return TaskRef(meta=meta, spec=spec)
 
 
 @pytest.mark.unit
@@ -186,3 +197,60 @@ async def test_list_user_tasks_filters_by_owner() -> None:
     await asyncio.sleep(0)
 
     assert {item.task_id for item in scheduler.list_user_tasks("u1")} == {"tk-1"}
+
+
+@pytest.mark.unit
+def test_route_task_lane_defaults_to_fast() -> None:
+    assert route_task_lane(_task("tk-fast")) == "fast"
+
+
+@pytest.mark.unit
+def test_route_task_lane_detects_special_lanes() -> None:
+    assert route_task_lane(_task("tk-mission", task_type="mission.product_ops")) == "mission"
+    assert route_task_lane(_task("tk-qi", task_type="qi.experiment")) == "qi"
+    assert route_task_lane(_task("tk-nuo", task_type="nuo.maintenance")) == "nuo"
+    assert route_task_lane(_task("tk-world", required_skills=["world_request"])) == "world"
+    assert route_task_lane(_task("tk-risk", risk_level="high")) == "high_risk"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_lane_limit_queues_only_same_lane() -> None:
+    started: list[str] = []
+    gate = asyncio.Event()
+
+    async def runner(task: TaskRef) -> str:
+        started.append(task.meta.task_id)
+        await gate.wait()
+        return task.meta.task_id
+
+    scheduler = MultiTaskScheduler(
+        max_concurrent_per_user=10,
+        max_concurrent_global=10,
+        max_concurrent_per_lane={"qi": 1, "fast": 10},
+        runner=runner,
+    )
+    qi_1 = await scheduler.submit(_task("tk-qi-1", task_type="qi.experiment"))
+    qi_2 = await scheduler.submit(_task("tk-qi-2", task_type="qi.experiment"))
+    fast = await scheduler.submit(_task("tk-fast"))
+
+    await asyncio.sleep(0)
+
+    assert started == ["tk-qi-1", "tk-fast"]
+    assert scheduler.get_status(qi_1).lane == "qi"
+    assert scheduler.get_status(qi_2).status == "queued"
+    assert scheduler.get_status(fast).lane == "fast"
+
+    gate.set()
+    assert (await scheduler.wait_done(qi_2, 2)).status == "done"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_submit_allows_lane_override() -> None:
+    scheduler = MultiTaskScheduler()
+
+    task_id = await scheduler.submit(_task("tk-override"), lane="world")
+    await asyncio.sleep(0)
+
+    assert scheduler.get_status(task_id).lane == "world"

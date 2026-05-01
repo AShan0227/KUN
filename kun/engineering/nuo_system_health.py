@@ -376,6 +376,7 @@ def _findings(
     context_soft_forget = int(context_summary.get("soft_forgotten", 0) or 0)
     context_compress = int(context_summary.get("compressed", 0) or 0)
     context_duplicates = int(context_summary.get("duplicate_candidates", 0) or 0)
+    context_compiler_review = int(context_summary.get("compiler_review", 0) or 0)
     if context_hard_delete > 0:
         findings.append(
             SystemHealthFinding(
@@ -399,6 +400,17 @@ def _findings(
                     f"重复候选 {context_duplicates}。"
                 ),
                 suggested_action="先用 dry-run 看明细，再决定是否让傩执行压缩、软遗忘或人工合并重复资产。",
+            )
+        )
+    if context_compiler_review > 0:
+        findings.append(
+            SystemHealthFinding(
+                finding_id="compiler_asset_review_candidates",
+                severity="warn",
+                subsystem="compiler",
+                title="编译资产需要复核",
+                detail=f"dry-run 发现 {context_compiler_review} 个编译资产有风险、来源或 profile 缺口。",
+                suggested_action="检查 compiler 输出来源、风险标记和 profile；必要时重新编译或从 Context 中降权。",
             )
         )
     audit_summary = state_ledger_audit_summary or {}
@@ -471,6 +483,7 @@ async def _collect_context_maintenance_summary(
             "soft_forgotten": report.soft_forgotten,
             "hard_deleted": report.hard_deleted,
             "duplicate_candidates": report.duplicate_candidates,
+            "compiler_review": report.compiler_review,
             "kept": report.kept,
         },
         None,

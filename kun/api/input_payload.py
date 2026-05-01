@@ -26,6 +26,9 @@ class AttachmentTranslation(BaseModel):
     filename: str
     descriptor: InputDescriptor
     extracted_text: str
+    compiler_asset_id: str | None = None
+    compiler_status: str | None = None
+    compiler_kind: str | None = None
 
 
 class TranslatedInput(BaseModel):
@@ -43,6 +46,9 @@ class TranslatedInput(BaseModel):
                 "suggested_handler": attachment.descriptor.suggested_handler,
                 "content_summary": attachment.descriptor.content_summary,
                 "metadata": attachment.descriptor.metadata,
+                "compiler_asset_id": attachment.compiler_asset_id,
+                "compiler_status": attachment.compiler_status,
+                "compiler_kind": attachment.compiler_kind,
             }
             for attachment in self.attachments
         ]
@@ -52,13 +58,22 @@ async def translate_chat_input(
     message: str,
     attachments: list[Attachment] | None = None,
     *,
+    tenant_id: str | None = None,
+    store_compiled_assets: bool = False,
     translator: RealWorldTranslator | None = None,
 ) -> TranslatedInput:
     """Translate optional attachments and append readable blocks to the user message."""
     translator = translator or RealWorldTranslator()
     translated_attachments: list[AttachmentTranslation] = []
     for attachment in attachments or []:
-        translated_attachments.append(await translate_attachment(attachment, translator=translator))
+        translated_attachments.append(
+            await translate_attachment(
+                attachment,
+                translator=translator,
+                tenant_id=tenant_id,
+                store_compiled_asset=store_compiled_assets,
+            )
+        )
 
     parts = [message.strip()] if message.strip() else []
     for translated_attachment in translated_attachments:
@@ -70,6 +85,8 @@ async def translate_binary_input(
     raw: bytes,
     *,
     filename: str = "websocket.bin",
+    tenant_id: str | None = None,
+    store_compiled_assets: bool = False,
     translator: RealWorldTranslator | None = None,
 ) -> TranslatedInput:
     """Translate a raw WebSocket binary frame into a normal chat message."""
@@ -77,6 +94,8 @@ async def translate_binary_input(
     return await translate_chat_input(
         "",
         [Attachment(filename=filename, content_b64=encoded)],
+        tenant_id=tenant_id,
+        store_compiled_assets=store_compiled_assets,
         translator=translator,
     )
 
@@ -85,6 +104,8 @@ async def translate_attachment(
     attachment: Attachment,
     *,
     translator: RealWorldTranslator,
+    tenant_id: str | None = None,
+    store_compiled_asset: bool = False,
 ) -> AttachmentTranslation:
     raw = _decode_attachment(attachment)
     descriptor = await translator.detect_file_kind(raw)
@@ -96,10 +117,30 @@ async def translate_attachment(
     )
     extracted_text = await _extract_supported_content(descriptor, raw)
     descriptor = descriptor.model_copy(update={"content_summary": extracted_text[:500]})
+    compiler_asset_id: str | None = None
+    compiler_status: str | None = None
+    compiler_kind: str | None = None
+    if store_compiled_asset and tenant_id and extracted_text.strip():
+        compiler_asset_id, compiler_status, compiler_kind = await _compile_attachment_to_asset(
+            descriptor=descriptor,
+            filename=attachment.filename,
+            tenant_id=tenant_id,
+            extracted_text=extracted_text,
+        )
+        descriptor.metadata.update(
+            {
+                "compiler_asset_id": compiler_asset_id,
+                "compiler_status": compiler_status,
+                "compiler_kind": compiler_kind,
+            }
+        )
     return AttachmentTranslation(
         filename=attachment.filename,
         descriptor=descriptor,
         extracted_text=extracted_text,
+        compiler_asset_id=compiler_asset_id,
+        compiler_status=compiler_status,
+        compiler_kind=compiler_kind,
     )
 
 
@@ -129,12 +170,20 @@ async def _extract_supported_content(descriptor: InputDescriptor, raw: bytes) ->
 
 def _attachment_prompt_block(attachment: AttachmentTranslation) -> str:
     descriptor = attachment.descriptor
+    compiler_lines = ""
+    if attachment.compiler_asset_id:
+        compiler_lines = (
+            f"compiler_asset_id: {attachment.compiler_asset_id}\n"
+            f"compiler_status: {attachment.compiler_status or 'unknown'}\n"
+            f"compiler_kind: {attachment.compiler_kind or 'unknown'}\n"
+        )
     return (
         f"[Attachment: {attachment.filename}]\n"
         f"kind: {descriptor.kind}\n"
         f"mime_type: {descriptor.mime_type}\n"
         f"handler: {descriptor.suggested_handler}\n"
         f"confidence: {descriptor.confidence:.2f}\n"
+        f"{compiler_lines}"
         f"content:\n{attachment.extracted_text}"
     )
 
@@ -146,6 +195,50 @@ def _decode_text(raw: bytes) -> str:
         except UnicodeDecodeError:
             continue
     return raw.decode("utf-8", errors="replace")
+
+
+async def _compile_attachment_to_asset(
+    *,
+    descriptor: InputDescriptor,
+    filename: str,
+    tenant_id: str,
+    extracted_text: str,
+) -> tuple[str | None, str, str | None]:
+    """Bridge translated attachments into the compiler/context system.
+
+    This only stores material that the conservative lightweight compiler can
+    honestly represent. Heavy backends (OCR, audio, MarkItDown) remain explicit
+    future work and are not faked here.
+    """
+
+    from kun.compiler import CompilerIngestor
+
+    declared_kind = _compiler_declared_kind(descriptor, filename)
+    result = await CompilerIngestor().ingest_text(
+        extracted_text,
+        tenant_id=tenant_id,
+        source_uri=f"attachment:{filename}",
+        declared_kind=declared_kind,
+        metadata={
+            "source": "chat_attachment",
+            "filename": filename,
+            "input_kind": descriptor.kind,
+            "mime_type": descriptor.mime_type,
+            "handler": descriptor.suggested_handler,
+            "detector_metadata": descriptor.metadata,
+        },
+    )
+    status = "stored" if result.stored else result.reason
+    return result.asset_id, status, result.material.kind
+
+
+def _compiler_declared_kind(descriptor: InputDescriptor, filename: str) -> str | None:
+    lowered = filename.lower()
+    if lowered.endswith((".txt", ".text", ".md", ".markdown", ".html", ".htm", ".json", ".csv")):
+        return None
+    if descriptor.kind in {"plain_text", "markdown", "html", "json", "csv"}:
+        return descriptor.kind
+    return "text"
 
 
 __all__ = [

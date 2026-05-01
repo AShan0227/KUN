@@ -84,6 +84,8 @@ class ContextPacker:
         tenant_id: str,
         kinds: Iterable[AssetKind] | None = None,
         limit: int = 3,
+        memory_layers: Iterable[str] | None = None,
+        avoid_memory_layers: Iterable[str] | None = None,
     ) -> ContextPack:
         """Wire 33: 按 query 字符串拉相关 context (不依赖 task_ref).
 
@@ -100,10 +102,16 @@ class ContextPacker:
 
         logger = logging.getLogger(__name__)
         candidates: list[LayeredAsset] = []
+        requested_layers = _normalize_memory_layers(memory_layers)
+        avoided_layers = _normalize_memory_layers(avoid_memory_layers)
         for kind in kinds or ("memory", "knowledge", "methodology"):
             try:
                 candidates.extend(
-                    await self._store.list(tenant_id=tenant_id, asset_kind=kind, limit=100)
+                    _filter_by_memory_policy(
+                        await self._store.list(tenant_id=tenant_id, asset_kind=kind, limit=100),
+                        requested_layers=requested_layers,
+                        avoided_layers=avoided_layers,
+                    )
                 )
             except Exception as exc:
                 logger.debug("packer.pack_query store_list_failed kind=%s err=%s", kind, exc)
@@ -121,24 +129,39 @@ class ContextPacker:
         tenant_id: str,
         kinds: Iterable[AssetKind] | None = None,
         limit: int = 5,
+        memory_layers: Iterable[str] | None = None,
+        avoid_memory_layers: Iterable[str] | None = None,
     ) -> ContextPack:
         query_terms = _task_terms(task_ref)
         if not query_terms:
             return ContextPack()
 
         candidates: list[LayeredAsset] = []
+        requested_layers = _normalize_memory_layers(memory_layers)
+        avoided_layers = _normalize_memory_layers(avoid_memory_layers)
         for kind in kinds or ("memory", "knowledge", "methodology", "role_template", "skill"):
             candidates.extend(
-                await self._store.list(tenant_id=tenant_id, asset_kind=kind, limit=100)
+                _filter_by_memory_policy(
+                    await self._store.list(tenant_id=tenant_id, asset_kind=kind, limit=100),
+                    requested_layers=requested_layers,
+                    avoided_layers=avoided_layers,
+                )
             )
 
         query = _task_query(task_ref)
         scored = await self._rank_assets(candidates, query=query)
         selected = scored[:limit]
         await self._touch_selected(selected)
-        process_experiences = await self._recall_process_experiences(
-            task_ref,
-            tenant_id=tenant_id,
+        process_experiences = (
+            await self._recall_process_experiences(
+                task_ref,
+                tenant_id=tenant_id,
+            )
+            if _allows_process_experiences(
+                requested_layers=requested_layers,
+                avoided_layers=avoided_layers,
+            )
+            else []
         )
         return ContextPack(
             items=[_to_packed(score, asset) for asset, score in selected],
@@ -153,6 +176,8 @@ class ContextPacker:
         kinds: Iterable[AssetKind] | None = None,
         max_rounds: int = 3,
         use_marginal_stop: bool = True,
+        memory_layers: Iterable[str] | None = None,
+        avoid_memory_layers: Iterable[str] | None = None,
     ) -> Any:
         """V2.2 §19.3 + §20.3: 按需扩展式 context 装载.
 
@@ -180,9 +205,15 @@ class ContextPacker:
             if not query_terms:
                 return []
             candidates: list[LayeredAsset] = []
+            requested_layers = _normalize_memory_layers(memory_layers)
+            avoided_layers = _normalize_memory_layers(avoid_memory_layers)
             for kind in kinds or ("memory", "knowledge", "methodology", "role_template", "skill"):
                 candidates.extend(
-                    await self._store.list(tenant_id=tenant_id, asset_kind=kind, limit=100)
+                    _filter_by_memory_policy(
+                        await self._store.list(tenant_id=tenant_id, asset_kind=kind, limit=100),
+                        requested_layers=requested_layers,
+                        avoided_layers=avoided_layers,
+                    )
                 )
             return await self._rank_assets(candidates, query=_task_query(task_ref))
 
@@ -382,6 +413,60 @@ def _task_terms(task_ref: TaskRef) -> set[str]:
             ]
         )
     return _terms(" ".join(parts))
+
+
+def _normalize_memory_layers(layers: Iterable[str] | None) -> set[str]:
+    return {str(layer).strip() for layer in layers or () if str(layer).strip()}
+
+
+def _filter_by_memory_policy(
+    assets: list[LayeredAsset],
+    *,
+    requested_layers: set[str],
+    avoided_layers: set[str],
+) -> list[LayeredAsset]:
+    if not requested_layers and not avoided_layers:
+        return assets
+    out: list[LayeredAsset] = []
+    for asset in assets:
+        logical_layer = _logical_memory_layer(asset)
+        if logical_layer in avoided_layers:
+            continue
+        if (
+            requested_layers
+            and _is_memory_like_asset(asset)
+            and logical_layer not in requested_layers
+        ):
+            continue
+        out.append(asset)
+    return out
+
+
+def _allows_process_experiences(
+    *,
+    requested_layers: set[str],
+    avoided_layers: set[str],
+) -> bool:
+    if "execution_process" in avoided_layers:
+        return False
+    return not requested_layers or "execution_process" in requested_layers
+
+
+def _is_memory_like_asset(asset: LayeredAsset) -> bool:
+    return asset.asset_kind in {"memory", "methodology"}
+
+
+def _logical_memory_layer(asset: LayeredAsset) -> str:
+    raw = asset.l1_metadata.get("memory_layer")
+    if isinstance(raw, str) and raw:
+        return raw
+    if asset.asset_kind == "methodology":
+        return "methodology"
+    if asset.asset_kind == "memory":
+        return "task_result"
+    if asset.asset_kind == "skill":
+        return "behavior"
+    return str(asset.asset_kind)
 
 
 def _task_query(task_ref: TaskRef) -> str:
