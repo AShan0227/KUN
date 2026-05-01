@@ -207,6 +207,9 @@ def test_handler_health_surfaces_expected_real_handler_config_gaps(
     assert any("KUN_WORLD_EMAIL_SEND_ENABLED" in issue for issue in email.issues)
     assert any("KUN_WORLD_SMTP_HOST" in issue for issue in email.issues)
     assert "环境变量" in email.recommendation
+    assert "KUN_WORLD_EMAIL_SEND_ENABLED" in email.missing_env_vars
+    assert "KUN_WORLD_SMTP_HOST" in email.missing_env_vars
+    assert any("补齐配置" in step for step in email.setup_steps)
 
 
 def test_handler_health_accepts_tenant_scoped_expected_handler_config(
@@ -230,6 +233,7 @@ def test_handler_health_accepts_tenant_scoped_expected_handler_config(
     assert email.status == "unregistered"
     assert not any("KUN_WORLD_EMAIL_SEND_ENABLED" in issue for issue in email.issues)
     assert not any("SMTP_HOST" in issue for issue in email.issues)
+    assert email.missing_env_vars == []
 
 
 def test_handler_health_reads_expected_handler_config_from_secret_store(
@@ -268,6 +272,7 @@ def test_handler_health_reads_expected_handler_config_from_secret_store(
     assert email.status == "unregistered"
     assert not any("KUN_WORLD_EMAIL_SEND_ENABLED" in issue for issue in email.issues)
     assert not any("SMTP_HOST" in issue for issue in email.issues)
+    assert email.missing_env_vars == []
 
 
 def test_handler_health_flags_half_enabled_real_external_env(
@@ -283,6 +288,7 @@ def test_handler_health_flags_half_enabled_real_external_env(
     assert email.configured is False
     assert any("真实外发半启用" in issue for issue in email.issues)
     assert any("KUN_WORLD_EMAIL_SEND_ENABLED" in issue for issue in email.issues)
+    assert email.missing_env_vars == ["KUN_WORLD_EMAIL_SEND_ENABLED"]
 
 
 def test_handler_health_flags_high_failure_rate(tmp_path: Path) -> None:

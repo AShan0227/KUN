@@ -249,6 +249,8 @@ type WorldHandlerHealth = {
   total_seen: number;
   recommendation: string;
   issues: string[];
+  missing_env_vars: string[];
+  setup_steps: string[];
 };
 
 type WorldGatewayHandlerHealthResponse = {
@@ -652,6 +654,12 @@ export default function NuoDashboard() {
     incompleteCapabilityCount > 0 || health.events_outbox_lag > 0 || coordinationProblemCount > 0
       ? "有边界"
       : "低";
+  const registeredWorldActionTypes = new Set(worldHandlers.map((handler) => handler.action_type));
+  const missingWorldChannels = worldHealth.filter(
+    (card) =>
+      !registeredWorldActionTypes.has(card.action_type) &&
+      (card.status === "unregistered" || card.missing_env_vars.length > 0),
+  );
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -1062,6 +1070,42 @@ export default function NuoDashboard() {
             </div>
             {secretNotice && <p className="mt-2 text-xs text-gray-600">{secretNotice}</p>}
           </div>
+          {missingWorldChannels.length > 0 && (
+            <div className="mt-3 rounded border border-yellow-200 bg-yellow-50 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-yellow-900">
+                    未启用 / 缺配置的真实通道
+                  </div>
+                  <p className="mt-1 text-xs text-yellow-800">
+                    这些不是“已经能用”的能力。傩只告诉你缺什么，补齐前不会真实外发。
+                  </p>
+                </div>
+                <span className="rounded bg-white px-2 py-1 text-xs text-yellow-800">
+                  {missingWorldChannels.length} 项
+                </span>
+              </div>
+              <div className="mt-3 grid gap-2 md:grid-cols-3">
+                {missingWorldChannels.slice(0, 6).map((card) => (
+                  <div key={card.action_type} className="rounded border border-yellow-200 bg-white p-2 text-xs">
+                    <div className="font-medium text-yellow-900">{card.action_type}</div>
+                    <div className="mt-1 text-yellow-800">
+                      {card.missing_env_vars.length > 0
+                        ? `缺配置：${card.missing_env_vars.slice(0, 3).join(" / ")}`
+                        : card.recommendation}
+                    </div>
+                    {card.setup_steps.length > 0 && (
+                      <ol className="mt-2 list-decimal space-y-1 pl-4 text-yellow-900">
+                        {card.setup_steps.slice(0, 3).map((step) => (
+                          <li key={step}>{step}</li>
+                        ))}
+                      </ol>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="grid md:grid-cols-2 gap-3 mt-3">
             {worldHandlers.map((handler) => (
               <div key={handler.action_type} className="border rounded p-3 text-sm">
@@ -1468,12 +1512,15 @@ function HandlerHealthLine({ card }: { card?: WorldHandlerHealth }) {
       ? ""
       : ` · ${card.control_status}${card.control_reason ? `：${card.control_reason}` : ""}`;
   const issues = card.issues.length > 0 ? ` · ${card.issues.slice(0, 2).join("；")}` : "";
+  const steps =
+    card.setup_steps.length > 0 ? ` · 下一步：${card.setup_steps.slice(0, 1).join("；")}` : "";
   return (
     <div className={`mt-1 text-xs ${cls}`}>
       体检：{card.status} · 配置{card.configured ? "已就绪" : "缺失"} · 补偿
       {card.has_compensation ? "有" : "缺"} · 失败率 {(card.failure_rate * 100).toFixed(0)}%
       {control}
       {issues}
+      {steps}
     </div>
   );
 }

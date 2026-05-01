@@ -68,6 +68,8 @@ class WorldHandlerHealthCard(BaseModel):
     control_reason: str = ""
     recommendation: str
     issues: list[str] = Field(default_factory=list)
+    missing_env_vars: list[str] = Field(default_factory=list)
+    setup_steps: list[str] = Field(default_factory=list)
 
 
 async def collect_world_handler_health(
@@ -222,6 +224,16 @@ def _build_card(
         issues=issues,
         control=control,
     )
+    missing_env_vars = _expected_missing_env_vars(action_type, tenant_id=effective_tenant_id)
+    setup_steps = _setup_steps(
+        action_type=action_type,
+        descriptor=descriptor,
+        control=control,
+        missing_env_vars=missing_env_vars,
+        issues=issues,
+        failure_rate=failure_rate,
+        reject_rate=reject_rate,
+    )
     return WorldHandlerHealthCard(
         action_type=action_type,
         handler_id=descriptor.handler_id if descriptor else "",
@@ -253,6 +265,8 @@ def _build_card(
         control_reason=control.reason if control else "",
         recommendation=_recommendation(status, issues, descriptor, control),
         issues=issues,
+        missing_env_vars=missing_env_vars,
+        setup_steps=setup_steps,
     )
 
 
@@ -422,6 +436,57 @@ def _expected_config_issues(action_type: str, *, tenant_id: str = "") -> list[st
         else:
             issues.append(prefix + "缺少全局或任意租户级环境变量: " + ", ".join(missing))
     return issues
+
+
+def _expected_missing_env_vars(action_type: str, *, tenant_id: str = "") -> list[str]:
+    expected = EXPECTED_REAL_WORLD_HANDLERS.get(action_type)
+    if expected is None:
+        return []
+    enable_env, required_envs = expected
+    missing: list[str] = []
+    if not _env_truthy(env_for_tenant(tenant_id, enable_env)):
+        missing.append(enable_env)
+    missing.extend(missing_required_world_env(required_envs, tenant_id=tenant_id))
+    return missing
+
+
+def _setup_steps(
+    *,
+    action_type: str,
+    descriptor: WorldHandlerDescriptor | None,
+    control: WorldHandlerControl | None,
+    missing_env_vars: list[str],
+    issues: list[str],
+    failure_rate: float,
+    reject_rate: float,
+) -> list[str]:
+    steps: list[str] = []
+    if control is not None and control.status in {"quarantined", "disabled"}:
+        steps.append("先在傩里恢复 handler，或拒绝/取消相关待处理动作。")
+    if missing_env_vars:
+        steps.append("补齐配置：" + ", ".join(missing_env_vars))
+        steps.append("如果写的是环境变量，重启 API；如果写的是 secret-store，刷新傩体检。")
+    if descriptor is None and action_type in EXPECTED_REAL_WORLD_HANDLERS:
+        steps.append("确认 WorldGateway 注册表出现这个 action_type 后，再允许真实外发。")
+    if descriptor is not None and descriptor.external_dispatched:
+        steps.append("保留人工审批和二次外发确认，不要直接自动发送/调用。")
+    if any("补偿策略不清楚" in issue for issue in issues):
+        steps.append("补清楚失败后的补偿办法，例如更正邮件、撤销接口或人工回滚流程。")
+    if failure_rate >= 0.1 or reject_rate >= 0.3:
+        steps.append("先复盘最近失败/拒绝样本，再决定是否恢复自动化。")
+    return _dedupe_steps(steps)
+
+
+def _dedupe_steps(steps: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for step in steps:
+        compact = step.strip()
+        if not compact or compact in seen:
+            continue
+        seen.add(compact)
+        deduped.append(compact)
+    return deduped
 
 
 def _env_present_for_tenant(env_name: str, *, tenant_id: str = "") -> bool:
