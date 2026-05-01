@@ -111,6 +111,7 @@ def get_v3_delivery_status(
                 "kun compiler sync-source 可重复运行 manifest_file 同步源；配置和 manifest 必须留在 config_root 内，适合后续 scheduler/企业资料同步接入",
                 "idle-batch 已注册 compiler_sync_sources step；只有显式配置 KUN_COMPILER_SYNC_SOURCE_FILES 才会在闲时同步资料，不会默认乱扫文件或联网",
                 "POST /api/compiler/ingest-manifest 提供企业/RAG 资料热入口；租户来自 TenantContext，客户端传 item.tenant_id 会被忽略",
+                "POST /api/compiler/ingest-manifest 先生成 CompilerReviewPackage：安全且质量足够才入库，URL/低质量/风险资料会以 review-only 问题信号交给傩/启，不污染普通 Context",
                 "REST / WebSocket 聊天附件会先走 InputTranslator，再把原始 bytes 编译成 knowledge asset 写入当前租户 AssetStore，PDF/CSV 等不会先被压扁成普通文本资产",
                 "聊天附件 prompt 和 descriptor 会带 compiler_asset_id / compiler_status / compiler_kind，后续可追溯资料来源",
                 "Hermes 已能把 CanonicalMaterial 编译成 LLM / skill / API / external_agent / human 不同目标的标准材料包",
