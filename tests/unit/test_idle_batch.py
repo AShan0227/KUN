@@ -11,6 +11,7 @@ from kun.engineering.idle_batch import (
     ABDecisionRollupStep,
     CompilerSyncSourcesStep,
     ConsistencyTestStep,
+    ContextGovernanceRuleDistillStep,
     ExternalEmergentScanStep,
     HealthReportStep,
     IdleBatchStep,
@@ -138,6 +139,7 @@ def test_default_steps_registered():
     assert "route_rule_mining" in steps
     assert "qi_idle_replay" in steps
     assert "qi_strategy_pack_review" in steps
+    assert "context_governance_rule_distill" in steps
     assert "compiler_sync_sources" in steps
     assert "external_emergent_scan" in steps
 
@@ -193,6 +195,33 @@ async def test_methodology_distill_step_extracts_rules() -> None:
     assets = await get_store().list(tenant_id="t-1", asset_kind="methodology")
     assert len(assets) == 2
     assert {asset.l2_summary for asset in assets} >= {"高风险任务先跑验证", "先读 brief 再动手"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_governance_rule_distill_step_persists_rule_drafts() -> None:
+    from kun.context.assets import LayeredAsset
+    from kun.context.storage import get_store
+
+    store = get_store()
+    for _ in range(2):
+        await store.put(
+            LayeredAsset.build(
+                "memory",
+                "t-1",
+                metadata={"low_value": True, "source": "task.result"},
+                summary="low-value repeated task memory",
+                tags=["low_value"],
+            )
+        )
+
+    summary = await ContextGovernanceRuleDistillStep().run("t-1")
+
+    assert summary["scanned"] == 2
+    assert summary["created"] == 1
+    assets = await store.list(tenant_id="t-1", asset_kind="methodology")
+    assert assets[0].l1_metadata["source"] == "context.governance_rule_distill"
+    assert assets[0].l1_metadata["production_action"] is False
 
 
 @pytest.mark.unit

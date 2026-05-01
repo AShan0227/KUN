@@ -268,6 +268,21 @@ class MethodologyDistillStep(IdleBatchStep):
         }
 
 
+class ContextGovernanceRuleDistillStep(IdleBatchStep):
+    """Repeated NUO context findings → review-only methodology drafts."""
+
+    step_id = "context_governance_rule_distill"
+
+    async def run(self, tenant_id: str) -> dict[str, Any]:
+        from kun.context.governance_distill import distill_context_governance_rules
+
+        report = await distill_context_governance_rules(
+            tenant_id=tenant_id,
+            dry_run=False,
+        )
+        return report.model_dump(mode="json")
+
+
 class KnowledgeConflictStep(IdleBatchStep):
     """Resolve conflicting memories in the asset pool."""
 
@@ -883,6 +898,7 @@ def register_default_steps() -> None:
         TaskReplayStep(),
         ConsistencyTestStep(),
         MethodologyDistillStep(),
+        ContextGovernanceRuleDistillStep(),
         KnowledgeConflictStep(),
         ABDecisionRollupStep(),
         HealthReportStep(),
