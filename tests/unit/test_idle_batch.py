@@ -954,25 +954,34 @@ async def test_external_skill_candidate_review_step_enqueues_review_only_signals
     assert summary["task_needs"] == 3
     assert summary["task_fit_review_packages"] >= 1
     assert summary["persisted_task_fit_review_signals"] >= 1
+    assert summary["source_plans"] == 3
+    assert summary["persisted_source_plan_signals"] == 3
     assert summary["production_action"] is False
     assert summary["auto_install_allowed"] is False
     assert summary["promotion_allowed"] is False
     assert summary["top_candidates"][0]["review_state"] == "review_only"
     assert summary["top_candidates"][0]["auto_install_allowed"] is False
     assert summary["top_candidates"][0]["safety"]["license_unknown"] is False
+    assert summary["top_source_plans"][0]["review_only"] is True
+    assert summary["top_source_plans"][0]["auto_fetch_allowed"] is False
+    assert summary["top_source_plans"][0]["auto_install_allowed"] is False
     queued = get_qi_problem_queue().list("t-1", limit=10)
     assert any(signal.source == "external_skill.discovery.candidate" for signal in queued)
     assert any(signal.source == "external_skill.review.package" for signal in queued)
+    assert any(signal.source == "external_skill.source_plan" for signal in queued)
     discovery = next(
         signal for signal in queued if signal.source == "external_skill.discovery.candidate"
     )
     package = next(signal for signal in queued if signal.source == "external_skill.review.package")
+    source_plan = next(signal for signal in queued if signal.source == "external_skill.source_plan")
     assert discovery.evidence["review_state"] == "review_only"
     assert discovery.evidence["production_action"] is False
     assert discovery.evidence["auto_install_allowed"] is False
     assert package.evidence["queue_intent"] == "external_skill_review_only"
     assert package.evidence["production_action"] is False
     assert package.evidence["auto_install_allowed"] is False
+    assert source_plan.evidence["queue_intent"] == "external_skill_source_plan_review_only"
+    assert source_plan.evidence["offline_only"] is True
 
 
 @pytest.mark.unit
@@ -1080,6 +1089,8 @@ async def test_external_skill_candidate_review_step_fetches_opt_in_github_repos(
     assert summary["input_rows"] == 1
     assert summary["candidates"] == 1
     assert summary["persisted_review_signals"] == 1
+    assert summary["source_plans"] >= 1
+    assert summary["persisted_source_plan_signals"] >= 1
     assert summary["production_action"] is False
     assert summary["auto_install_allowed"] is False
     assert summary["top_candidates"][0]["review_state"] == "review_only"
@@ -1088,6 +1099,7 @@ async def test_external_skill_candidate_review_step_fetches_opt_in_github_repos(
         signal for signal in queued if signal.source == "external_skill.discovery.candidate"
     )
     assert discovery.evidence["source"]["repo"] == "mattpocock/skills"
+    assert any(signal.source == "external_skill.source_plan" for signal in queued)
 
 
 @pytest.mark.unit

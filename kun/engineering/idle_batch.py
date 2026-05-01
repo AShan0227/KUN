@@ -949,6 +949,8 @@ class ExternalSkillCandidateReviewStep(IdleBatchStep):
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from kun.engineering.external_scan import scan_external_skill_candidates
         from kun.qi.external_skill_review import (
+            build_external_skill_candidate_source_plan,
+            enqueue_external_skill_candidate_source_plans,
             enqueue_external_skill_review_packages,
             review_external_skill_candidates,
         )
@@ -967,6 +969,8 @@ class ExternalSkillCandidateReviewStep(IdleBatchStep):
                 "task_needs": 0,
                 "task_fit_review_packages": 0,
                 "persisted_task_fit_review_signals": 0,
+                "source_plans": 0,
+                "persisted_source_plan_signals": 0,
             }
 
         scan_result = scan_external_skill_candidates(rows)
@@ -990,6 +994,18 @@ class ExternalSkillCandidateReviewStep(IdleBatchStep):
             tenant_id=tenant_id,
             packages=packages,
         )
+        source_plans = [
+            build_external_skill_candidate_source_plan(
+                task_need,
+                source_registry=cast(list[Any], rows),
+                candidates=cast(list[Any], candidates),
+            )
+            for task_need in task_needs[:5]
+        ]
+        persisted_source_plans = await enqueue_external_skill_candidate_source_plans(
+            tenant_id=tenant_id,
+            plans=source_plans,
+        )
         summary = scan_result.model_dump()
 
         return {
@@ -1000,6 +1016,8 @@ class ExternalSkillCandidateReviewStep(IdleBatchStep):
             "task_needs": len(task_needs),
             "task_fit_review_packages": len(packages),
             "persisted_task_fit_review_signals": persisted_packages,
+            "source_plans": len(source_plans),
+            "persisted_source_plan_signals": persisted_source_plans,
             "risk_counts": summary["risk_counts"],
             "sandbox_suitable": summary["sandbox_suitable"],
             "production_action": False,
@@ -1017,6 +1035,18 @@ class ExternalSkillCandidateReviewStep(IdleBatchStep):
                         item.candidate_name,
                     ),
                 )[:5]
+            ],
+            "top_source_plans": [
+                plan.model_dump(mode="json")
+                for plan in sorted(
+                    source_plans,
+                    key=lambda item: (
+                        not any(review.worth_review for review in item.source_reviews),
+                        not any(review.worth_review for review in item.candidate_reviews),
+                        item.task_demand,
+                        item.plan_id,
+                    ),
+                )[:3]
             ],
         }
 
