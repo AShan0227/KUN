@@ -13,7 +13,7 @@ from kun.world.gateway import (
     WorldGateway,
 )
 from kun.world.handler_control import WorldHandlerControl
-from kun.world.handler_health import build_world_handler_health
+from kun.world.handler_health import build_world_handler_health, summarize_handler_health
 
 
 def _row(
@@ -409,3 +409,38 @@ def test_handler_health_counts_durable_blocked_execution_as_failure(tmp_path: Pa
     assert cards["email.draft"].failure_rate == 1.0
     assert cards["email.draft"].policy_blocked_count == 1
     assert cards["email.draft"].missing_handler_count == 1
+
+
+def test_handler_health_summary_counts_external_risk_dimensions(tmp_path: Path) -> None:
+    handler = EmailSendHandler(
+        output_root=tmp_path,
+        smtp_host="",
+        smtp_port=587,
+        smtp_username=None,
+        smtp_password=None,
+        smtp_from="",
+        allowed_recipient_domains=set(),
+        sender=lambda _message: {"provider_message_id": "ok"},
+    )
+    descriptors = WorldGateway(artifact_root=tmp_path, handlers=[handler]).handler_descriptors()
+    cards = build_world_handler_health(
+        descriptors=descriptors,
+        rows=[_row("act-1", "email.send", "approved")],
+        executions=[
+            _execution(
+                "act-1",
+                "email.send",
+                "failed",
+                external_dispatched=True,
+                handler_id="email.send.smtp.v1",
+            )
+        ],
+    )
+
+    summary = summarize_handler_health(cards)
+
+    assert summary["total"] >= 1
+    assert summary["external_dispatched"] >= 1
+    assert summary["missing_external_config"] >= 1
+    assert summary["high_static_risk"] >= 1
+    assert summary["recent_failures"] >= 1

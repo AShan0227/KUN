@@ -276,8 +276,25 @@ def _build_card(
 
 def summarize_handler_health(cards: list[WorldHandlerHealthCard]) -> dict[str, int]:
     counts: dict[str, int] = defaultdict(int)
+    counts["total"] = len(cards)
     for card in cards:
         counts[card.status] += 1
+        if card.external_dispatched:
+            counts["external_dispatched"] += 1
+        if card.external_dispatched and not card.has_compensation:
+            counts["missing_compensation"] += 1
+        if card.external_dispatched and not card.configured:
+            counts["missing_external_config"] += 1
+        if card.static_risk == "high":
+            counts["high_static_risk"] += 1
+        if card.dynamic_risk == "high":
+            counts["high_dynamic_risk"] += 1
+        if card.failed_count > 0:
+            counts["recent_failures"] += 1
+        if card.missing_handler_count > 0:
+            counts["missing_handler"] += 1
+        if card.policy_blocked_count > 0:
+            counts["policy_blocked"] += 1
     return dict(counts)
 
 

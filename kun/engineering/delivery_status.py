@@ -528,6 +528,7 @@ def _world_gateway_delivery_status(
         "WorldGateway 审批执行会写入 world_action_executions 持久账本，记录 attempt/status/handler/外发/补偿/错误",
         "WorldGateway handler 健康卡会优先消费持久执行账本，避免只读 pending_actions.payload 的脆弱 JSON",
         "WorldGateway handler 健康卡会返回缺失 env 和配置步骤；NUO 会把未启用/缺配置的真实外部通道也展示出来",
+        "WorldGateway handler health summary 会汇总真实外发、缺补偿、缺配置、高风险、近期失败和缺 handler 数量，给傩做外部风险体检",
         "真实外部动作缺少 external_dispatch_confirmed=true 时会被策略层拦截",
         "NUO 判断 handler blocked/unregistered 时，审批后执行器会拦截并保持任务暂停",
         "WorldGateway 执行结果会回写 world_action / world_handler / world_policy 决策票据信用",
