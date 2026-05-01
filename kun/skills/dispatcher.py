@@ -97,6 +97,7 @@ def autoload_builtins() -> None:
         "kun.skills.builtin.csv_query",
         "kun.skills.builtin.pdf_read",
         "kun.skills.builtin.world_request",
+        "kun.skills.builtin.code_review",
     ):
         try:
             importlib.import_module(mod)

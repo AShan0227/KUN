@@ -665,6 +665,7 @@ review
 - `propose-change` 已能把结果写入 `code.change.proposed` 事件；传入 `task_id` 时会进入 State Ledger，记录路径、模式、检查结果、回滚状态和 diff hash。
 - `propose-change` 已能把改动模式、文件后缀、review/check 结果写入 `resource_credit_stats`，并更新热贡献信用 cache，让守望/MoE 后续知道哪些编程路径更可靠。
 - 成功且通过检查的 `propose-change` 会生成 review-only 的 draft skill 资产；它不会自动注册、不会自动安装、不会进入生产路由，只供傩/启/人审核复用。
+- 内置 `code-review` skill 已接入 CodeCapability reviewer，Orchestrator agent-loop 可通过 `<skill name="code-review">` 做只读 diff/path 审查；它不写文件、不执行代码、不自动修复。
 - 可选开启 `KUN_CODE_STRATEGY_TREE_SEARCH_ENABLED=1` 后，成功代码改动会做 review-only 树搜索，探索“下次类似代码任务该走什么工程流程”，结果写入 draft skill 的 `strategy_search_records`。
 - 完整自动 coding workflow 仍是 partial：尚未把 Orchestrator coding task、自动生成补丁和 skill draft 审批晋升串成闭环。
 
@@ -1003,7 +1004,7 @@ V5 必须防止“写了但没用”。
 | AI Scientist tree search | 已接入启的 idle replay StrategyPack 草稿评估，也可选接入 CodeCapability 成功改动后的策略复盘；树搜索结果会写入 `tree_search_records` / `strategy_search_records`，被 review gate 当成 review-only 证据消费 | 还要接真实 canary 和更强 evaluator |
 | WorldGateway | 有 handler / 权限 / 审计；傩已能输出 handler 风险分、风险标签、租户密钥状态、失败率和补偿缺口，并把这些信号反馈给执行拦截/自动隔离；高风险治理默认只给 dry-run 建议 | 还要更多生产级 handler、真实补偿演练和线上密钥轮换 |
 | StateLedger | 已有快照和回放 | 还要更完整长期账本和信用归因 |
-| CodeCapability | 已可被 API/runtime 调用：支持只读 review/diff、显式 sandbox run/check、默认 dry-run 的单文件 propose-change；apply 后检查失败会自动恢复原文件；propose-change 会写 resource_credit_stats 和热贡献缓存；成功且通过检查的改动会生成 review-only 的 draft skill LayeredAsset；可选 code strategy tree search 会把更优代码工作流建议写入 draft skill 证据 | 还要接 Orchestrator coding task、自动补丁生成、skill draft 审批晋升和更强 sandbox |
+| CodeCapability | 已可被 API/runtime 调用：支持只读 review/diff、显式 sandbox run/check、默认 dry-run 的单文件 propose-change；内置 `code-review` skill 已接入 agent-loop，可让任务执行中真实调用只读代码审查；apply 后检查失败会自动恢复原文件；propose-change 会写 resource_credit_stats 和热贡献缓存；成功且通过检查的改动会生成 review-only 的 draft skill LayeredAsset；可选 code strategy tree search 会把更优代码工作流建议写入 draft skill 证据 | 还要接 Orchestrator 自动补丁生成、skill draft 审批晋升和更强 sandbox |
 | NUO governance report | 已统一覆盖 compiler、context/memory、skill、WorldGateway handler、Qi 草案、多车道调度和 production/deployment risk；已有低风险 governance apply API，只允许 context maintenance 显式 dry-run/apply，高风险会 blocked + action ticket | 还要把 governance_recommendations 做成完整人工批准 UI，并扩展更多低风险治理 action |
 | 并发执行 | 已有 fast / mission / qi / nuo / world / high_risk 多车道调度器，并安装到 API runtime；`/api/tasks/scheduler/*` 可查看车道状态和提交异步任务；NUO report 会检查必需 lane 和活跃任务压力 | 还要把更多后台 worker 和前端任务看板接入这个统一车道 |
 

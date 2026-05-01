@@ -64,6 +64,24 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
         },
         "auto_trigger_when": [],
     },
+    "code-review": {
+        "description": (
+            "只读代码审查 skill。输入 unified diff 或 workspace 内文件路径，"
+            "返回安全/可维护性 finding；不写文件、不执行代码、不自动修复。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "diff": {"type": "string", "description": "unified diff 文本"},
+                "path": {"type": "string", "description": "workspace 内待审查文件路径"},
+                "workspace_root": {
+                    "type": "string",
+                    "description": "可选 workspace root；默认 KUN_CODE_CAPABILITY_WORKSPACE_ROOT 或当前目录",
+                },
+            },
+        },
+        "auto_trigger_when": ["code review", "diff review", "审查代码", "代码评审"],
+    },
 }
 
 
