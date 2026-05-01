@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SessionAccountEntry } from "@/components/SessionAccountEntry";
+import { ensureKunNotificationWorker, showKunNotification } from "@/browserNotifications";
 import { apiFetch, getKunIdentitySource, kunWebSocketUrl } from "@/kunApiClient";
 
 /**
@@ -473,6 +474,7 @@ export default function Home() {
     if (typeof window === "undefined" || !("Notification" in window)) return;
     const permission = await Notification.requestPermission();
     if (permission !== "granted") return;
+    await ensureKunNotificationWorker();
     window.localStorage.setItem("kun.browser_notify", "on");
     setBrowserNotifyEnabled(true);
   }, []);
@@ -894,7 +896,8 @@ export default function Home() {
       pendingDecisionCount > 0
         ? `${pendingDecisionCount} 个动作需要你确认。`
         : `${finding?.title || finding?.finding_id}: ${finding?.suggested_action || finding?.detail}`;
-    new Notification(title, {
+    void showKunNotification({
+      title,
       body: body.slice(0, 180),
       tag: key,
     });

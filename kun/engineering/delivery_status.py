@@ -192,6 +192,7 @@ def get_v3_delivery_status(
                 "协同冲突会生成 dry-run 处置票据，标明能否自动执行、风险级别和建议命令；真实外发默认仍需人工确认",
                 "傩系统体检的 warn/error/critical findings 会进入 blackboard 全局状态，并显示在主工作区",
                 "主工作区可开启当前浏览器页级别提醒；有待确认动作或高风险 finding 时会发浏览器 Notification",
+                "主工作区会注册本地 service worker，在页面后台也能显示当前浏览器的本机提醒；这不是远程 Push",
             ],
             evidence_refs=[
                 "kun/api/nuo/health_panel.py",
@@ -203,12 +204,14 @@ def get_v3_delivery_status(
                 "kun/engineering/nuo_system_health.py",
                 "kun/engineering/action_executor.py",
                 "kun/qi/problem_queue.py",
+                "frontend/public/kun-notifications-sw.js",
+                "frontend/src/browserNotifications.ts",
                 "tests/unit/test_delivery_status.py",
                 "tests/unit/test_action_executor.py",
                 "tests/unit/test_system_coordination.py",
             ],
             missing=[
-                "已有当前浏览器页级别提醒；还没做后台 service worker、移动端或多设备主动推送",
+                "已有当前浏览器本地 service worker 提醒；还没做远程 Push、移动端或多设备主动推送",
                 "handler 自动 quarantine 已接入定时体检 dry-run，但真实自动执行仍需用户/运维确认",
                 "协同体检目前会给 dry-run 处置票据，但还没有自动暂停/恢复所有冲突任务",
             ],
