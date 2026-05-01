@@ -7,10 +7,11 @@ not install those drafts into production paths.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,8 +20,17 @@ from kun.qi.problem_queue import QiProblemSignal
 
 ReplayRisk = Literal["low", "medium", "high", "critical"]
 StrategyDraftStatus = Literal["draft", "needs_strong_review"]
+ReplayEvaluationStatus = Literal[
+    "evaluated",
+    "skipped_budget_exhausted",
+    "unavailable",
+    "error",
+]
+ReplayEvaluatorKind = Literal["heuristic", "local_model"]
 
 HEURISTIC_IDLE_REPLAY_ENGINE = "heuristic_local"
+HEURISTIC_REPLAY_EVALUATOR = "heuristic_replay_pool_v1"
+LOCAL_MODEL_REPLAY_EVALUATOR = "local_model_replay_pool"
 
 
 class TaskHistorySummary(BaseModel):
@@ -171,7 +181,160 @@ class StrategyPackDraft(BaseModel):
     production_action: Literal[False] = False
 
 
+class ReplayEvaluationBudget(BaseModel):
+    """Small resource guard for idle replay evaluation work."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_items: int = 8
+    max_cost_usd: float = 0.05
+    max_concurrency: int = 2
+
+
+class ReplayEvaluationRecord(BaseModel):
+    """Review-only score for a replay candidate or StrategyPack draft."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    evaluation_id: str
+    target_id: str
+    target_kind: Literal["strategy_candidate", "strategy_pack_draft"]
+    evaluator: str
+    evaluator_kind: ReplayEvaluatorKind
+    status: ReplayEvaluationStatus
+    score: float = 0.0
+    cost_estimate_usd: float = 0.0
+    risk: ReplayRisk = "low"
+    requires_strong_review: bool = False
+    promotion_allowed: Literal[False] = False
+    production_action: Literal[False] = False
+    notes: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ReplayEvaluationPoolResult(BaseModel):
+    """Ordered review-only evaluation batch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    records: list[ReplayEvaluationRecord] = Field(default_factory=list)
+    evaluated: int = 0
+    skipped_budget_exhausted: int = 0
+    unavailable: int = 0
+    errors: int = 0
+    budget_limit_usd: float = 0.0
+    budget_used_usd: float = 0.0
+    max_concurrency: int = 1
+    promotion_allowed: Literal[False] = False
+    production_action: Literal[False] = False
+
+
+class LocalReplayModelEvaluator(Protocol):
+    """Optional local model scorer.
+
+    Implementations must be explicitly injected.  The default pool never claims
+    a model score when no local evaluator is available.
+    """
+
+    async def evaluate(
+        self,
+        item: StrategyCandidate | StrategyPackDraft,
+    ) -> ReplayEvaluationRecord: ...
+
+
 ReplaySuggestion = StrategyCandidate
+
+
+class IdleReplayEvaluationPool:
+    """Budgeted offline scorer for Qi replay proposals.
+
+    The pool is deliberately review-only: every record blocks promotion by
+    construction, even when a score is high.
+    """
+
+    def __init__(
+        self,
+        *,
+        budget: ReplayEvaluationBudget | None = None,
+        local_model_evaluator: LocalReplayModelEvaluator | None = None,
+    ) -> None:
+        self._budget = budget or ReplayEvaluationBudget()
+        self._local_model_evaluator = local_model_evaluator
+
+    async def evaluate(
+        self,
+        items: Iterable[StrategyCandidate | StrategyPackDraft],
+        *,
+        evaluator_kind: ReplayEvaluatorKind = "heuristic",
+    ) -> ReplayEvaluationPoolResult:
+        all_items = list(items)
+        records: list[ReplayEvaluationRecord] = []
+        spent = 0.0
+        pending: list[StrategyCandidate | StrategyPackDraft] = []
+
+        for idx, item in enumerate(all_items):
+            if idx >= max(0, self._budget.max_items):
+                records.append(
+                    _budget_exhausted_record(
+                        item,
+                        evaluator_kind=evaluator_kind,
+                        budget_limit_usd=self._budget.max_cost_usd,
+                        budget_used_usd=spent,
+                        requested_cost_usd=0.0,
+                        reason="item_limit_exhausted",
+                    )
+                )
+                continue
+            estimate = _evaluation_cost_estimate(item, evaluator_kind=evaluator_kind)
+            if spent + estimate > max(0.0, self._budget.max_cost_usd):
+                records.append(
+                    _budget_exhausted_record(
+                        item,
+                        evaluator_kind=evaluator_kind,
+                        budget_limit_usd=self._budget.max_cost_usd,
+                        budget_used_usd=spent,
+                        requested_cost_usd=estimate,
+                        reason="budget_exhausted",
+                    )
+                )
+                continue
+            spent += estimate
+            pending.append(item)
+
+        max_concurrency = max(1, self._budget.max_concurrency)
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def run_one(
+            item: StrategyCandidate | StrategyPackDraft,
+        ) -> ReplayEvaluationRecord:
+            async with semaphore:
+                try:
+                    if evaluator_kind == "local_model":
+                        if self._local_model_evaluator is None:
+                            return _local_model_unavailable_record(item)
+                        record = await self._local_model_evaluator.evaluate(item)
+                        return _review_only_record(record)
+                    return _heuristic_evaluation_record(item)
+                except Exception as exc:
+                    return _error_record(item, evaluator_kind=evaluator_kind, error=exc)
+
+        if pending:
+            records.extend(await asyncio.gather(*(run_one(item) for item in pending)))
+
+        records.sort(key=lambda item: _record_sort_key(item), reverse=True)
+        return ReplayEvaluationPoolResult(
+            records=records,
+            evaluated=sum(1 for record in records if record.status == "evaluated"),
+            skipped_budget_exhausted=sum(
+                1 for record in records if record.status == "skipped_budget_exhausted"
+            ),
+            unavailable=sum(1 for record in records if record.status == "unavailable"),
+            errors=sum(1 for record in records if record.status == "error"),
+            budget_limit_usd=max(0.0, self._budget.max_cost_usd),
+            budget_used_usd=round(spent, 6),
+            max_concurrency=max_concurrency,
+        )
 
 
 class IdleReplayGenerator:
@@ -255,6 +418,21 @@ def generate_idle_replay_candidates(
     return IdleReplayGenerator().generate(items)
 
 
+async def evaluate_idle_replay_pool(
+    items: Iterable[StrategyCandidate | StrategyPackDraft],
+    *,
+    budget: ReplayEvaluationBudget | None = None,
+    evaluator_kind: ReplayEvaluatorKind = "heuristic",
+    local_model_evaluator: LocalReplayModelEvaluator | None = None,
+) -> ReplayEvaluationPoolResult:
+    """Score replay proposals without enabling promotion."""
+
+    return await IdleReplayEvaluationPool(
+        budget=budget,
+        local_model_evaluator=local_model_evaluator,
+    ).evaluate(items, evaluator_kind=evaluator_kind)
+
+
 def _candidate(
     *,
     source_signal_id: str,
@@ -282,6 +460,273 @@ def _candidate(
         requires_strong_review=requires_strong_review,
         evidence=evidence,
     )
+
+
+def _heuristic_evaluation_record(
+    item: StrategyCandidate | StrategyPackDraft,
+) -> ReplayEvaluationRecord:
+    normalized = _normalize_evaluation_target(item)
+    score, notes = _heuristic_score(normalized)
+    return ReplayEvaluationRecord(
+        evaluation_id=_evaluation_id(
+            normalized["target_id"],
+            HEURISTIC_REPLAY_EVALUATOR,
+            "evaluated",
+        ),
+        target_id=normalized["target_id"],
+        target_kind=normalized["target_kind"],
+        evaluator=HEURISTIC_REPLAY_EVALUATOR,
+        evaluator_kind="heuristic",
+        status="evaluated",
+        score=score,
+        cost_estimate_usd=_evaluation_cost_estimate(item, evaluator_kind="heuristic"),
+        risk=normalized["risk"],
+        requires_strong_review=normalized["requires_strong_review"],
+        notes=notes,
+        evidence={
+            "review_only": True,
+            "promotion_allowed": False,
+            "target_summary": normalized["summary"],
+            "target_task_type": normalized["task_type"],
+            "quality_signals": normalized["quality_signals"],
+        },
+    )
+
+
+def _heuristic_score(normalized: dict[str, Any]) -> tuple[float, list[str]]:
+    notes = ["heuristic_local_only", "review_required_before_any_adoption"]
+    score = 0.45
+    quality_signals = {str(item) for item in normalized["quality_signals"]}
+    if "has_acceptance_checks" in quality_signals:
+        score += 0.12
+        notes.append("has_acceptance_checks")
+    if "has_guardrails" in quality_signals:
+        score += 0.10
+        notes.append("has_guardrails")
+    if "has_replay_methodology" in quality_signals:
+        score += 0.08
+        notes.append("has_replay_methodology")
+    if "has_reuse_value" in quality_signals:
+        score += 0.06
+        notes.append("has_reuse_value")
+    if "has_cost_focus" in quality_signals:
+        score += 0.04
+        notes.append("has_cost_focus")
+
+    risk_penalty = {"low": 0.0, "medium": 0.08, "high": 0.18, "critical": 0.28}
+    risk = _normalize_risk(normalized["risk"])
+    score -= risk_penalty[risk]
+    if normalized["requires_strong_review"]:
+        score -= 0.05
+        notes.append("strong_review_required")
+
+    return round(max(0.0, min(1.0, score)), 4), notes
+
+
+def _normalize_evaluation_target(
+    item: StrategyCandidate | StrategyPackDraft,
+) -> dict[str, Any]:
+    if isinstance(item, StrategyCandidate):
+        text = " ".join(
+            [
+                item.task_type,
+                item.summary,
+                item.proposed_change,
+                item.expected_benefit,
+            ]
+        ).lower()
+        return {
+            "target_id": item.candidate_id,
+            "target_kind": "strategy_candidate",
+            "task_type": item.task_type,
+            "summary": item.summary,
+            "risk": item.risk,
+            "requires_strong_review": item.requires_strong_review,
+            "quality_signals": _quality_signals_for_text(text),
+        }
+
+    source_candidate = item.evidence.get("source_candidate")
+    source_risk = "low"
+    if isinstance(source_candidate, dict):
+        source_risk = str(source_candidate.get("risk") or "low")
+    text = " ".join(
+        [
+            item.display_name,
+            item.proposed_pack_id,
+            " ".join(item.methodology_refs),
+            " ".join(item.metric_dimensions),
+            " ".join(item.risk_watch),
+            " ".join(item.promotion_conditions),
+        ]
+    ).lower()
+    return {
+        "target_id": item.draft_id,
+        "target_kind": "strategy_pack_draft",
+        "task_type": ",".join(item.task_type_patterns),
+        "summary": item.display_name,
+        "risk": _max_risk(_normalize_risk(source_risk), _risk_from_draft_watch(item)),
+        "requires_strong_review": item.requires_strong_review,
+        "quality_signals": _quality_signals_for_text(text),
+    }
+
+
+def _quality_signals_for_text(text: str) -> list[str]:
+    signals: list[str] = []
+    if any(word in text for word in ("acceptance", "verification", "metric", "quality")):
+        signals.append("has_acceptance_checks")
+    if any(word in text for word in ("guardrail", "rollback", "compensation", "idempotency")):
+        signals.append("has_guardrails")
+    if any(word in text for word in ("replay", "lab", "shadow", "benchmark")):
+        signals.append("has_replay_methodology")
+    if any(word in text for word in ("reusable", "reuse", "pattern", "protocol")):
+        signals.append("has_reuse_value")
+    if any(word in text for word in ("cost", "budget", "bounded")):
+        signals.append("has_cost_focus")
+    return _dedupe(signals)
+
+
+def _risk_from_draft_watch(draft: StrategyPackDraft) -> ReplayRisk:
+    text = " ".join([draft.status, " ".join(draft.risk_watch)]).lower()
+    if "critical" in text:
+        return "critical"
+    if "high_risk" in text or draft.status == "needs_strong_review":
+        return "high"
+    if draft.risk_watch:
+        return "medium"
+    return "low"
+
+
+def _budget_exhausted_record(
+    item: StrategyCandidate | StrategyPackDraft,
+    *,
+    evaluator_kind: ReplayEvaluatorKind,
+    budget_limit_usd: float,
+    budget_used_usd: float,
+    requested_cost_usd: float,
+    reason: str,
+) -> ReplayEvaluationRecord:
+    normalized = _normalize_evaluation_target(item)
+    return ReplayEvaluationRecord(
+        evaluation_id=_evaluation_id(
+            normalized["target_id"],
+            _evaluator_name(evaluator_kind),
+            "skipped_budget_exhausted",
+        ),
+        target_id=normalized["target_id"],
+        target_kind=normalized["target_kind"],
+        evaluator=_evaluator_name(evaluator_kind),
+        evaluator_kind=evaluator_kind,
+        status="skipped_budget_exhausted",
+        score=0.0,
+        cost_estimate_usd=requested_cost_usd,
+        risk=normalized["risk"],
+        requires_strong_review=normalized["requires_strong_review"],
+        notes=[
+            reason,
+            "not_evaluated",
+            "promotion_blocked",
+        ],
+        evidence={
+            "budget_limit_usd": max(0.0, budget_limit_usd),
+            "budget_used_usd": round(max(0.0, budget_used_usd), 6),
+            "requested_cost_usd": requested_cost_usd,
+        },
+    )
+
+
+def _local_model_unavailable_record(
+    item: StrategyCandidate | StrategyPackDraft,
+) -> ReplayEvaluationRecord:
+    normalized = _normalize_evaluation_target(item)
+    return ReplayEvaluationRecord(
+        evaluation_id=_evaluation_id(
+            normalized["target_id"],
+            LOCAL_MODEL_REPLAY_EVALUATOR,
+            "unavailable",
+        ),
+        target_id=normalized["target_id"],
+        target_kind=normalized["target_kind"],
+        evaluator=LOCAL_MODEL_REPLAY_EVALUATOR,
+        evaluator_kind="local_model",
+        status="unavailable",
+        score=0.0,
+        cost_estimate_usd=_evaluation_cost_estimate(item, evaluator_kind="local_model"),
+        risk=normalized["risk"],
+        requires_strong_review=normalized["requires_strong_review"],
+        notes=[
+            "local_model_evaluator_unavailable",
+            "no_model_score_claimed",
+            "promotion_blocked",
+        ],
+    )
+
+
+def _error_record(
+    item: StrategyCandidate | StrategyPackDraft,
+    *,
+    evaluator_kind: ReplayEvaluatorKind,
+    error: Exception,
+) -> ReplayEvaluationRecord:
+    normalized = _normalize_evaluation_target(item)
+    return ReplayEvaluationRecord(
+        evaluation_id=_evaluation_id(
+            normalized["target_id"],
+            _evaluator_name(evaluator_kind),
+            "error",
+        ),
+        target_id=normalized["target_id"],
+        target_kind=normalized["target_kind"],
+        evaluator=_evaluator_name(evaluator_kind),
+        evaluator_kind=evaluator_kind,
+        status="error",
+        score=0.0,
+        cost_estimate_usd=0.0,
+        risk=normalized["risk"],
+        requires_strong_review=normalized["requires_strong_review"],
+        notes=["evaluation_error", "promotion_blocked"],
+        evidence={"error": str(error)},
+    )
+
+
+def _review_only_record(record: ReplayEvaluationRecord) -> ReplayEvaluationRecord:
+    data = record.model_dump()
+    data["promotion_allowed"] = False
+    data["production_action"] = False
+    return ReplayEvaluationRecord.model_validate(data)
+
+
+def _evaluation_cost_estimate(
+    item: StrategyCandidate | StrategyPackDraft,
+    *,
+    evaluator_kind: ReplayEvaluatorKind,
+) -> float:
+    if evaluator_kind == "local_model":
+        return 0.01
+    text_size = len(str(item.model_dump(mode="json"))) if hasattr(item, "model_dump") else 0
+    return round(0.001 + min(text_size, 4000) / 4_000_000, 6)
+
+
+def _evaluator_name(evaluator_kind: ReplayEvaluatorKind) -> str:
+    if evaluator_kind == "local_model":
+        return LOCAL_MODEL_REPLAY_EVALUATOR
+    return HEURISTIC_REPLAY_EVALUATOR
+
+
+def _evaluation_id(target_id: str, evaluator: str, status: str) -> str:
+    key = "|".join([target_id, evaluator, status])
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    return f"qire_{digest}"
+
+
+def _record_sort_key(record: ReplayEvaluationRecord) -> tuple[int, float, int, str]:
+    status_rank = {
+        "evaluated": 3,
+        "unavailable": 2,
+        "skipped_budget_exhausted": 1,
+        "error": 0,
+    }
+    review_rank = 1 if record.requires_strong_review else 0
+    return (status_rank[record.status], record.score, review_rank, record.target_id)
 
 
 def _strategy_for_signal(signal: QiProblemSignal) -> tuple[str, str]:
@@ -663,10 +1108,18 @@ def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
 
 __all__ = [
     "HEURISTIC_IDLE_REPLAY_ENGINE",
+    "HEURISTIC_REPLAY_EVALUATOR",
+    "LOCAL_MODEL_REPLAY_EVALUATOR",
+    "IdleReplayEvaluationPool",
     "IdleReplayGenerator",
+    "LocalReplayModelEvaluator",
+    "ReplayEvaluationBudget",
+    "ReplayEvaluationPoolResult",
+    "ReplayEvaluationRecord",
     "ReplaySuggestion",
     "StrategyCandidate",
     "StrategyPackDraft",
     "TaskHistorySummary",
+    "evaluate_idle_replay_pool",
     "generate_idle_replay_candidates",
 ]

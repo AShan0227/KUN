@@ -12,6 +12,7 @@ from kun.compiler.ingestion import (
     CompilerIngestor,
     material_to_layered_asset,
 )
+from kun.compiler.markitdown import MarkItDownMaterialCompiler
 from kun.compiler.material import LightweightMaterialCompiler
 from kun.compiler.models import (
     CanonicalAsset,
@@ -48,6 +49,7 @@ __all__ = [
     "CompilerRecompiler",
     "CompilerRegistry",
     "LightweightMaterialCompiler",
+    "MarkItDownMaterialCompiler",
     "MaterialCompiler",
     "MaterialPermissions",
     "MaterialProvenance",

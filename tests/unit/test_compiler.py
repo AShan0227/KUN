@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from kun.compiler import CanonicalAsset, LightweightMaterialCompiler, default_registry
+from kun.compiler import (
+    CanonicalAsset,
+    LightweightMaterialCompiler,
+    MarkItDownMaterialCompiler,
+    default_registry,
+)
 
 
 def _required_fields(asset: CanonicalAsset) -> set[str]:
@@ -254,6 +259,117 @@ async def test_compile_pdf_path_uses_local_text_extraction_profile(tmp_path: Pat
     assert asset.metadata["pdf_text_extract_limited"] is True
     assert "pypdf" in " ".join(asset.provenance.notes)
     assert "OCR" in " ".join(asset.compiler_profile.limitations)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_markitdown_backend_disabled_returns_unsupported(tmp_path: Path) -> None:
+    root = tmp_path / "safe"
+    root.mkdir()
+    doc = root / "brief.docx"
+    doc.write_bytes(b"fake office bytes")
+
+    asset = await MarkItDownMaterialCompiler(enabled=False).compile_path(
+        doc,
+        tenant_id="tenant_a",
+        allowed_root=root,
+    )
+
+    assert asset.status == "unsupported"
+    assert asset.kind == "unsupported"
+    assert asset.risk.reason == "markitdown_backend_not_enabled"
+    assert asset.metadata["backend_status"]["status"] == "disabled"
+    assert "not enabled" in asset.metadata["backend_status"]["reason"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_markitdown_backend_missing_package_returns_unavailable(tmp_path: Path) -> None:
+    root = tmp_path / "safe"
+    root.mkdir()
+    doc = root / "brief.docx"
+    doc.write_bytes(b"fake office bytes")
+
+    def missing_converter() -> object:
+        raise ImportError("No module named markitdown")
+
+    asset = await MarkItDownMaterialCompiler(
+        enabled=True,
+        converter_factory=missing_converter,
+    ).compile_path(
+        doc,
+        tenant_id="tenant_a",
+        allowed_root=root,
+    )
+
+    assert asset.status == "unavailable"
+    assert asset.kind == "unsupported"
+    assert asset.risk.reason == "markitdown_package_not_installed"
+    assert asset.metadata["backend_status"]["status"] == "unavailable"
+    assert "not installed" in asset.metadata["backend_status"]["reason"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_markitdown_backend_reuses_safe_path_constraints(tmp_path: Path) -> None:
+    root = tmp_path / "safe"
+    root.mkdir()
+    outside = tmp_path / "outside.docx"
+    outside.write_bytes(b"secret")
+
+    def should_not_load() -> object:
+        raise AssertionError("converter should not load for rejected paths")
+
+    asset = await MarkItDownMaterialCompiler(
+        enabled=True,
+        converter_factory=should_not_load,
+    ).compile_path(
+        "../outside.docx",
+        tenant_id="tenant_a",
+        allowed_root=root,
+    )
+
+    assert asset.status == "rejected"
+    assert asset.kind == "unsupported"
+    assert "path_traversal" in asset.risk.flags
+    assert asset.metadata["backend_status"]["status"] == "unavailable"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_markitdown_backend_success_with_mock_converter(tmp_path: Path) -> None:
+    root = tmp_path / "safe"
+    root.mkdir()
+    doc = root / "brief.docx"
+    doc.write_bytes(b"fake office bytes")
+    seen_paths: list[str] = []
+
+    class Result:
+        text_content = "# Converted\n\nHello from MarkItDown"
+
+    class Converter:
+        def convert(self, path: str) -> Result:
+            seen_paths.append(path)
+            return Result()
+
+    asset = await MarkItDownMaterialCompiler(
+        enabled=True,
+        converter_factory=Converter,
+    ).compile_path(
+        "brief.docx",
+        tenant_id="tenant_a",
+        allowed_root=root,
+    )
+
+    assert asset.status == "compiled"
+    assert asset.kind == "markdown"
+    assert asset.provenance.backend == "markitdown"
+    assert asset.compiler_profile.name == "kun-v5-markitdown-adapter"
+    assert asset.metadata["backend_status"]["status"] == "available"
+    assert asset.metadata["markitdown_source_bytes"] == len(b"fake office bytes")
+    assert asset.source.uri == str(doc.resolve())
+    assert seen_paths == [str(doc.resolve())]
+    assert "Hello from MarkItDown" in asset.l2
 
 
 @pytest.mark.unit

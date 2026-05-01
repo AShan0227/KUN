@@ -29,6 +29,24 @@ def _task() -> TaskRef:
     return TaskRef(meta=meta, spec=spec)
 
 
+def _high_risk_task() -> TaskRef:
+    owner = Owner(tenant_id="u-sylvan")
+    meta = TaskMeta(
+        fingerprint=TaskMeta.compute_fingerprint("pytest production payment fix", owner),
+        task_type="coding.python.pytest",
+        owner=owner,
+        risk_level="high",
+        complexity_score=0.7,
+        success_criteria_short="修复生产支付 pytest 回归",
+    )
+    spec = TaskSpec(
+        goal_detail="修复生产支付链路 pytest 失败并避免错误历史记忆",
+        success_metrics=["pytest 全部通过"],
+        required_skills=["coding-pytest"],
+    )
+    return TaskRef(meta=meta, spec=spec)
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_context_packer_selects_relevant_assets() -> None:
@@ -244,6 +262,81 @@ async def test_context_packer_downranks_duplicate_candidates() -> None:
 
     assert [item.asset_id for item in pack.items][:2] == [original.asset_id, duplicate.asset_id]
     assert "quality_delta" in pack.items[1].score_rationale
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_downranks_soft_forgotten_and_duplicate_merged_assets() -> None:
+    store = InMemoryAssetStore()
+    active = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest active"},
+        summary="pytest 修复 复现 回归 治理标签",
+        tags=["pytest"],
+    )
+    soft_forgotten = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest soft forgotten", "soft_forgotten": True},
+        summary="pytest 修复 复现 回归 治理标签",
+        tags=["pytest", "soft_forgotten"],
+    )
+    duplicate_merged = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={
+            "title": "pytest duplicate merged",
+            "duplicate_merged_into_asset_id": active.asset_id,
+        },
+        summary="pytest 修复 复现 回归 治理标签",
+        tags=["pytest", "duplicate_merged"],
+    )
+    await store.put(soft_forgotten)
+    await store.put(duplicate_merged)
+    await store.put(active)
+
+    pack = await ContextPacker(store).pack(_task(), tenant_id="u-sylvan", limit=3)
+
+    assert pack.items[0].asset_id == active.asset_id
+    by_id = {item.asset_id: item for item in pack.items}
+    assert "governance_delta" in by_id[soft_forgotten.asset_id].score_rationale
+    assert "soft_forgotten" in by_id[soft_forgotten.asset_id].score_rationale
+    assert "duplicate_merged" in by_id[duplicate_merged.asset_id].score_rationale
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_avoids_stale_or_low_value_assets_for_high_risk_tasks() -> None:
+    store = InMemoryAssetStore()
+    clean = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest clean"},
+        summary="pytest production payment fix rollback regression",
+        tags=["pytest", "payment"],
+    )
+    stale_or_risky = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest risky", "stale_or_risky": True},
+        summary="pytest production payment fix rollback regression",
+        tags=["pytest", "payment", "stale_or_risky"],
+    )
+    low_value = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest low value", "low_value": True},
+        summary="pytest production payment fix rollback regression",
+        tags=["pytest", "payment", "low_value"],
+    )
+    await store.put(stale_or_risky)
+    await store.put(low_value)
+    await store.put(clean)
+
+    pack = await ContextPacker(store).pack(_high_risk_task(), tenant_id="u-sylvan", limit=5)
+
+    assert [item.asset_id for item in pack.items] == [clean.asset_id]
 
 
 @pytest.mark.unit

@@ -332,6 +332,9 @@ async def test_qi_idle_replay_step_generates_review_only_candidates(monkeypatch)
     assert summary["persisted_review_signals"] == 2
     assert summary["persisted_strategy_pack_draft_assets"] == 2
     assert len(summary["strategy_pack_draft_asset_ids"]) == 2
+    assert summary["evaluation_pool"]["evaluated"] == 2
+    assert summary["evaluation_pool"]["promotion_allowed"] is False
+    assert all(item["promotion_allowed"] is False for item in summary["evaluation_pool"]["records"])
     assert len(summary["strategy_pack_drafts"]) == 2
     assert all(item["production_action"] is False for item in summary["strategy_pack_drafts"])
     assert all(item["requires_human_review"] is True for item in summary["strategy_pack_drafts"])

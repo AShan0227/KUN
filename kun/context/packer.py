@@ -87,6 +87,7 @@ class ContextPacker:
         memory_layers: Iterable[str] | None = None,
         avoid_memory_layers: Iterable[str] | None = None,
         preferred_tags: Iterable[str] | None = None,
+        high_risk_task: bool = False,
     ) -> ContextPack:
         """Wire 33: 按 query 字符串拉相关 context (不依赖 task_ref).
 
@@ -122,6 +123,7 @@ class ContextPacker:
             candidates,
             query=query,
             preferred_tags=preferred_tags,
+            high_risk_task=high_risk_task,
         )
         selected = scored[:limit]
         await self._touch_selected(selected)
@@ -137,6 +139,7 @@ class ContextPacker:
         memory_layers: Iterable[str] | None = None,
         avoid_memory_layers: Iterable[str] | None = None,
         preferred_tags: Iterable[str] | None = None,
+        high_risk_task: bool | None = None,
     ) -> ContextPack:
         query_terms = _task_terms(task_ref)
         if not query_terms:
@@ -159,6 +162,9 @@ class ContextPacker:
             candidates,
             query=query,
             preferred_tags=preferred_tags,
+            high_risk_task=_is_high_risk_task(task_ref)
+            if high_risk_task is None
+            else high_risk_task,
         )
         selected = scored[:limit]
         await self._touch_selected(selected)
@@ -189,6 +195,7 @@ class ContextPacker:
         memory_layers: Iterable[str] | None = None,
         avoid_memory_layers: Iterable[str] | None = None,
         preferred_tags: Iterable[str] | None = None,
+        high_risk_task: bool | None = None,
     ) -> Any:
         """V2.2 §19.3 + §20.3: 按需扩展式 context 装载.
 
@@ -230,6 +237,9 @@ class ContextPacker:
                 candidates,
                 query=_task_query(task_ref),
                 preferred_tags=preferred_tags,
+                high_risk_task=_is_high_risk_task(task_ref)
+                if high_risk_task is None
+                else high_risk_task,
             )
 
         scored_cache: list[list[tuple[LayeredAsset, ImportanceScore]]] = []  # 避免多次 fetch
@@ -297,6 +307,7 @@ class ContextPacker:
         *,
         query: str,
         preferred_tags: Iterable[str] | None = None,
+        high_risk_task: bool = False,
     ) -> list[tuple[LayeredAsset, ImportanceScore]]:
         """统一用 ImportanceScorer 排序，并接入历史贡献度。
 
@@ -306,6 +317,10 @@ class ContextPacker:
         """
         if not candidates:
             return []
+        if high_risk_task:
+            candidates = [asset for asset in candidates if not _avoid_for_high_risk_task(asset)]
+            if not candidates:
+                return []
 
         from kun.core.db import session_scope
         from kun.engineering.credit_assignment import (
@@ -351,7 +366,7 @@ class ContextPacker:
                 asset,
                 _tag_adjusted_score(
                     asset,
-                    _quality_adjusted_score(asset, score),
+                    _governance_adjusted_score(asset, _quality_adjusted_score(asset, score)),
                     preferred_tag_set,
                 ),
             )
@@ -440,6 +455,14 @@ def _task_terms(task_ref: TaskRef) -> set[str]:
             ]
         )
     return _terms(" ".join(parts))
+
+
+def _is_high_risk_task(task_ref: TaskRef) -> bool:
+    if task_ref.meta.risk_level in {"high", "critical"}:
+        return True
+    if task_ref.spec is None:
+        return False
+    return any(risk.severity in {"high", "critical"} for risk in task_ref.spec.foreseen_risks)
 
 
 def _normalize_memory_layers(layers: Iterable[str] | None) -> set[str]:
@@ -578,6 +601,69 @@ def _quality_adjusted_score(asset: LayeredAsset, score: ImportanceScore) -> Impo
         contribution=score.contribution,
         rationale=f"{score.rationale}; quality_delta={quality_delta:+.2f}",
     )
+
+
+def _governance_adjusted_score(asset: LayeredAsset, score: ImportanceScore) -> ImportanceScore:
+    """Consume NUO/maintenance governance labels during context ranking."""
+
+    labels = _governance_labels(asset)
+    governance_delta = 0.0
+    if labels & {"soft_forgotten", "duplicate_merged"}:
+        governance_delta -= 0.65
+    elif "duplicate_candidate" in labels:
+        governance_delta -= 0.35
+    if "compiler_recompile_recommended" in labels:
+        governance_delta -= 0.18
+    if "stale_or_risky" in labels:
+        governance_delta -= 0.30
+    if "low_value" in labels:
+        governance_delta -= 0.25
+
+    if governance_delta == 0:
+        return score
+    adjusted = max(0.0, min(1.0, score.overall + governance_delta))
+    return ImportanceScore(
+        overall=adjusted,
+        semantic=score.semantic,
+        frequency=score.frequency,
+        recency=score.recency,
+        dependency=score.dependency,
+        pin=score.pin,
+        contribution=score.contribution,
+        rationale=(
+            f"{score.rationale}; governance_delta={governance_delta:+.2f} "
+            f"labels={','.join(sorted(labels))}"
+        ),
+    )
+
+
+def _governance_labels(asset: LayeredAsset) -> set[str]:
+    labels = {str(tag).lower() for tag in asset.tags}
+    meta = asset.l1_metadata or {}
+    for key in (
+        "soft_forgotten",
+        "duplicate_merged",
+        "duplicate_candidate",
+        "compiler_recompile_recommended",
+        "stale_or_risky",
+        "low_value",
+    ):
+        if meta.get(key) is True:
+            labels.add(key)
+    if meta.get("duplicate_merged_into_asset_id"):
+        labels.add("duplicate_merged")
+
+    risk = meta.get("risk")
+    if isinstance(risk, dict):
+        level = str(risk.get("level") or "").lower()
+        flags = risk.get("flags")
+        if level in {"medium", "high", "critical"} or (isinstance(flags, list) and flags):
+            labels.add("stale_or_risky")
+    return labels
+
+
+def _avoid_for_high_risk_task(asset: LayeredAsset) -> bool:
+    return bool(_governance_labels(asset) & {"stale_or_risky", "low_value"})
 
 
 def _tag_adjusted_score(

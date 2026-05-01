@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import pytest
 from kun.qi.idle_replay import (
     HEURISTIC_IDLE_REPLAY_ENGINE,
     IdleReplayGenerator,
+    ReplayEvaluationBudget,
     TaskHistorySummary,
+    evaluate_idle_replay_pool,
     generate_idle_replay_candidates,
 )
 from kun.qi.problem_queue import QiProblemSignal
@@ -143,3 +146,95 @@ def test_idle_replay_low_risk_strategy_pack_draft_still_needs_human_review() -> 
     assert "marketing*" in draft.task_type_patterns
     assert "conversion_reviewer" in draft.skill_hints
     assert "human_review_approved" in draft.promotion_conditions
+
+
+@pytest.mark.asyncio
+async def test_replay_evaluation_pool_scores_candidates_review_only() -> None:
+    signal = QiProblemSignal.build(
+        tenant_id="u-test",
+        category="delivery",
+        severity="warning",
+        task_type="delivery",
+        summary="Delivery missed artifact verification",
+        source="nuo.system_health",
+    )
+    candidate = IdleReplayGenerator().generate_from_signal(signal)
+
+    result = await evaluate_idle_replay_pool([candidate])
+
+    assert result.evaluated == 1
+    assert result.promotion_allowed is False
+    record = result.records[0]
+    assert record.status == "evaluated"
+    assert 0.0 <= record.score <= 1.0
+    assert record.cost_estimate_usd > 0
+    assert record.promotion_allowed is False
+    assert record.production_action is False
+    assert record.evidence["review_only"] is True
+
+
+@pytest.mark.asyncio
+async def test_replay_evaluation_pool_budget_exhaustion_blocks_evaluation() -> None:
+    candidates = generate_idle_replay_candidates(
+        [
+            {
+                "history_id": "hist-budget",
+                "task_type": "coding",
+                "summary": "Successful task with reusable regression checks",
+                "outcome": "completed",
+            }
+        ]
+    )
+
+    result = await evaluate_idle_replay_pool(
+        candidates,
+        budget=ReplayEvaluationBudget(max_items=1, max_cost_usd=0.0, max_concurrency=1),
+    )
+
+    assert result.evaluated == 0
+    assert result.skipped_budget_exhausted == 1
+    assert result.records[0].status == "skipped_budget_exhausted"
+    assert result.records[0].promotion_allowed is False
+
+
+@pytest.mark.asyncio
+async def test_replay_evaluation_pool_high_risk_requires_strong_review() -> None:
+    signal = QiProblemSignal.build(
+        tenant_id="u-test",
+        category="world_gateway",
+        severity="critical",
+        task_type="world.email",
+        summary="Outbound email handler retried without idempotency",
+        source="nuo.system_health",
+    )
+    draft = IdleReplayGenerator().generate_from_signal(signal).to_strategy_pack_draft()
+
+    result = await evaluate_idle_replay_pool([draft])
+
+    record = result.records[0]
+    assert record.status == "evaluated"
+    assert record.risk == "critical"
+    assert record.requires_strong_review is True
+    assert record.promotion_allowed is False
+
+
+@pytest.mark.asyncio
+async def test_replay_evaluation_pool_local_model_is_honestly_unavailable() -> None:
+    candidate = generate_idle_replay_candidates(
+        [
+            {
+                "history_id": "hist-model",
+                "task_type": "general",
+                "summary": "Candidate needs optional model review",
+                "outcome": "completed",
+            }
+        ]
+    )[0]
+
+    result = await evaluate_idle_replay_pool([candidate], evaluator_kind="local_model")
+
+    assert result.evaluated == 0
+    assert result.unavailable == 1
+    assert result.records[0].status == "unavailable"
+    assert "no_model_score_claimed" in result.records[0].notes
+    assert result.records[0].promotion_allowed is False

@@ -410,7 +410,11 @@ class QiIdleReplayStep(IdleBatchStep):
     step_id = "qi_idle_replay"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        from kun.qi.idle_replay import generate_idle_replay_candidates
+        from kun.qi.idle_replay import (
+            ReplayEvaluationBudget,
+            evaluate_idle_replay_pool,
+            generate_idle_replay_candidates,
+        )
         from kun.qi.problem_queue import (
             QiProblemSignal,
             get_configured_qi_problem_queue,
@@ -445,6 +449,10 @@ class QiIdleReplayStep(IdleBatchStep):
         ]
         persisted = await persist_problem_signals(review_signals)
         drafts = [candidate.to_strategy_pack_draft() for candidate in candidates]
+        evaluations = await evaluate_idle_replay_pool(
+            drafts,
+            budget=ReplayEvaluationBudget(max_items=5, max_cost_usd=0.02, max_concurrency=2),
+        )
         draft_asset_ids = await _persist_strategy_pack_drafts(
             tenant_id=tenant_id,
             drafts=drafts,
@@ -465,6 +473,7 @@ class QiIdleReplayStep(IdleBatchStep):
                 )[:5]
             ],
             "requires_strong_review": sum(1 for item in candidates if item.requires_strong_review),
+            "evaluation_pool": evaluations.model_dump(mode="json"),
             "persisted_review_signals": persisted,
             "persisted_strategy_pack_draft_assets": len(draft_asset_ids),
             "strategy_pack_draft_asset_ids": draft_asset_ids[:10],

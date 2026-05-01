@@ -65,6 +65,7 @@ class MemoryPolicyTicket(BaseModel):
             "preferred_tags": list(self.preferred_tags),
             "memory_layers": [layer.value for layer in self.layers],
             "avoid_memory_layers": [layer.value for layer in self.avoid_layers],
+            "high_risk_task": self.risk,
         }
 
 

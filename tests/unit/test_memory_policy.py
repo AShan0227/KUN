@@ -151,3 +151,21 @@ def test_strategy_pack_context_tags_flow_into_memory_policy() -> None:
     kwargs = ticket.as_context_packer_kwargs()
     assert kwargs["kinds"]
     assert kwargs["preferred_tags"]
+    assert kwargs["high_risk_task"] is False
+
+
+@pytest.mark.unit
+def test_high_risk_memory_policy_ticket_marks_context_packer_kwargs() -> None:
+    ticket = decide_memory_policy(
+        _task(
+            goal="生产环境支付链路变更前制定回滚方案",
+            task_type="coding.backend.payments",
+            risk_level="high",
+            complexity_score=0.8,
+        ),
+    )
+
+    kwargs = ticket.as_context_packer_kwargs()
+
+    assert ticket.risk is True
+    assert kwargs["high_risk_task"] is True
