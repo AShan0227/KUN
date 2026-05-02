@@ -4,6 +4,7 @@ import pytest
 from kun.context.maintenance import ContextMaintenanceReport
 from kun.engineering import nuo_system_health
 from kun.engineering.nuo_system_health import (
+    GovernanceRecommendationApplyResult,
     SystemGovernanceRecommendation,
     SystemHealthReport,
     _findings,
@@ -417,6 +418,7 @@ async def test_governance_apply_low_risk_context_maintenance_dry_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, object]] = []
+    recorded: list[GovernanceRecommendationApplyResult] = []
 
     async def fake_collect_system_health_report(*, tenant_id: str) -> SystemHealthReport:
         return _report_with_recommendations(tenant_id, [_low_risk_context_recommendation()])
@@ -439,6 +441,18 @@ async def test_governance_apply_low_risk_context_maintenance_dry_run(
         nuo_system_health,
         "run_context_maintenance",
         fake_run_context_maintenance,
+    )
+
+    async def fake_record_governance_apply_decision(
+        *, tenant_id: str, result: GovernanceRecommendationApplyResult
+    ) -> None:
+        assert tenant_id == "tenant-a"
+        recorded.append(result)
+
+    monkeypatch.setattr(
+        nuo_system_health,
+        "_record_governance_apply_decision",
+        fake_record_governance_apply_decision,
     )
 
     result = await apply_governance_recommendation(
@@ -469,6 +483,7 @@ async def test_governance_apply_low_risk_context_maintenance_dry_run(
     assert result.decision_ticket.decision_point == "nuo_diagnosis"
     assert result.decision_ticket.selected_action == "dry_run:context_maintenance"
     assert result.decision_ticket.status == "selected"
+    assert recorded == [result]
 
 
 @pytest.mark.asyncio
@@ -524,6 +539,7 @@ async def test_governance_apply_blocks_high_risk_recommendation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, object]] = []
+    recorded: list[GovernanceRecommendationApplyResult] = []
     high_risk = SystemGovernanceRecommendation(
         recommendation_id="govern:world:email.send",
         finding_id="world:email.send",
@@ -554,6 +570,18 @@ async def test_governance_apply_blocks_high_risk_recommendation(
         fake_run_context_maintenance,
     )
 
+    async def fake_record_governance_apply_decision(
+        *, tenant_id: str, result: GovernanceRecommendationApplyResult
+    ) -> None:
+        assert tenant_id == "tenant-a"
+        recorded.append(result)
+
+    monkeypatch.setattr(
+        nuo_system_health,
+        "_record_governance_apply_decision",
+        fake_record_governance_apply_decision,
+    )
+
     result = await apply_governance_recommendation(
         tenant_id="tenant-a",
         recommendation_id="govern:world:email.send",
@@ -576,6 +604,7 @@ async def test_governance_apply_blocks_high_risk_recommendation(
         "requires_human_approval",
         "can_apply_false",
     }
+    assert recorded == [result]
     assert calls == []
 
 

@@ -129,6 +129,7 @@ EventKind = Literal[
     "delivery.failed",
     # NUO manager
     "nuo.health_report.generated",
+    "nuo.governance.recommendation.decided",
 ]
 
 

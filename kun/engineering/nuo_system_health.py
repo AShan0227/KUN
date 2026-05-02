@@ -21,6 +21,7 @@ from kun.context.governance_audit import run_context_governance_audit
 from kun.context.maintenance import ContextMaintenanceReport, run_context_maintenance
 from kun.core.config import settings
 from kun.core.db import session_scope
+from kun.core.logging import get_logger
 from kun.core.multi_task_scheduler import DEFAULT_LANE_LIMITS, TaskLane
 from kun.core.orm import (
     CapabilityCardRow,
@@ -62,6 +63,7 @@ GovernanceApplyStatus = Literal["applied", "dry_run", "blocked"]
 GovernanceApplyRisk = Literal["low", "medium", "high", "unknown"]
 _SAFE_CONTEXT_MAINTENANCE_RECOMMENDATION_IDS = {"govern:context_slimming_candidates"}
 _SAFE_CONTEXT_MAINTENANCE_HARD_DELETE_AFTER_DAYS = 1_000_000_000
+log = get_logger("kun.engineering.nuo_system_health")
 
 
 class SystemHealthFinding(BaseModel):
@@ -422,7 +424,7 @@ async def _apply_governance_recommendation_from_queue(
         None,
     )
     if recommendation is None:
-        return _blocked_apply_result(
+        result = _blocked_apply_result(
             tenant_id=tenant_id,
             recommendation_id=recommendation_id,
             finding_id="recommendation_not_found",
@@ -436,10 +438,12 @@ async def _apply_governance_recommendation_from_queue(
                 )
             ],
         )
+        await _record_governance_apply_decision(tenant_id=tenant_id, result=result)
+        return result
 
     blocked_reasons = _governance_apply_blocked_reasons(recommendation)
     if blocked_reasons:
-        return _blocked_apply_result(
+        result = _blocked_apply_result(
             tenant_id=tenant_id,
             recommendation_id=recommendation.recommendation_id,
             finding_id=recommendation.finding_id,
@@ -452,6 +456,8 @@ async def _apply_governance_recommendation_from_queue(
             reasons=blocked_reasons,
             action_ticket=_action_ticket_for(recommendation),
         )
+        await _record_governance_apply_decision(tenant_id=tenant_id, result=result)
+        return result
 
     context_report = await run_context_maintenance(
         tenant_id=tenant_id,
@@ -461,7 +467,7 @@ async def _apply_governance_recommendation_from_queue(
         merge_duplicates=False,
     )
     status: GovernanceApplyStatus = "dry_run" if dry_run else "applied"
-    return GovernanceRecommendationApplyResult(
+    result = GovernanceRecommendationApplyResult(
         status=status,
         applied=not dry_run,
         dry_run=dry_run,
@@ -501,6 +507,8 @@ async def _apply_governance_recommendation_from_queue(
             "context_maintenance": _context_maintenance_details(context_report),
         },
     )
+    await _record_governance_apply_decision(tenant_id=tenant_id, result=result)
+    return result
 
 
 def _findings(
@@ -1636,6 +1644,49 @@ def _blocked_apply_result(
             },
         ),
     )
+
+
+async def _record_governance_apply_decision(
+    *,
+    tenant_id: str,
+    result: GovernanceRecommendationApplyResult,
+) -> None:
+    """Best-effort audit trail for NUO governance apply/block decisions."""
+
+    ticket = result.decision_ticket
+    if ticket is None:
+        return
+    try:
+        from kun.core.events import emit
+        from kun.core.state_ledger import get_state_ledger
+        from kun.datamodel.events import Event
+
+        get_state_ledger().record_decision_ticket(ticket)
+        async with session_scope(tenant_id=tenant_id) as session:
+            await emit(
+                session,
+                Event.build(
+                    tenant_id=tenant_id,
+                    event_type="nuo.governance.recommendation.decided",
+                    payload={
+                        "recommendation_id": result.recommendation_id,
+                        "status": result.status,
+                        "applied": result.applied,
+                        "dry_run": result.dry_run,
+                        "blocked": result.blocked,
+                        "risk_level": result.risk_level,
+                        "blocked_reason": result.blocked_reason,
+                        "decision_ticket": ticket.event_payload(),
+                    },
+                    task_ref=ticket.task_id,
+                ),
+            )
+    except Exception as exc:
+        log.debug(
+            "nuo.governance_decision_audit_skipped",
+            recommendation_id=result.recommendation_id,
+            error=str(exc),
+        )
 
 
 def _action_ticket_for(recommendation: SystemGovernanceRecommendation) -> GovernanceActionTicket:
