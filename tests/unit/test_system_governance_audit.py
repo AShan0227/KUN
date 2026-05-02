@@ -56,6 +56,31 @@ def test_system_governance_audit_accepts_route_governance_with_decision_ticket()
     assert not any(item.issue_id.startswith("decision_missing_ticket:") for item in report.issues)
 
 
+def test_system_governance_audit_flags_missing_decision_ticket_for_nuo_governance() -> None:
+    report = run_system_governance_audit(
+        tenant_id="tenant-a",
+        decision_event_samples=[
+            {
+                "event_type": "nuo.governance.recommendation.decided",
+                "task_ref": "nuo:govern:world",
+                "payload": {
+                    "recommendation_id": "govern:world:email.send",
+                    "status": "blocked",
+                },
+            }
+        ],
+    )
+
+    issue = next(
+        item
+        for item in report.issues
+        if item.issue_id
+        == "decision_missing_ticket:nuo.governance.recommendation.decided:nuo:govern:world"
+    )
+    assert issue.severity == "warn"
+    assert issue.category == "decision_coverage"
+
+
 def test_system_governance_audit_flags_decision_mode_conflict() -> None:
     report = run_system_governance_audit(
         tenant_id="tenant-a",

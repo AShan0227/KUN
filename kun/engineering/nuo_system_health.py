@@ -1368,6 +1368,7 @@ def _is_decision_relevant_event_type(event_type: str) -> bool:
         "llm.model_select.consulted",
         "llm.model_select.blocked",
         "llm.route_change.proposed",
+        "nuo.governance.recommendation.decided",
     }
 
 

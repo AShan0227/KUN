@@ -491,6 +491,7 @@ async def test_governance_apply_low_risk_context_maintenance_apply_calls_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, object]] = []
+    recorded: list[GovernanceRecommendationApplyResult] = []
 
     async def fake_collect_system_health_report(*, tenant_id: str) -> SystemHealthReport:
         return _report_with_recommendations(tenant_id, [_low_risk_context_recommendation()])
@@ -514,6 +515,18 @@ async def test_governance_apply_low_risk_context_maintenance_apply_calls_runner(
         fake_run_context_maintenance,
     )
 
+    async def fake_record_governance_apply_decision(
+        *, tenant_id: str, result: GovernanceRecommendationApplyResult
+    ) -> None:
+        assert tenant_id == "tenant-a"
+        recorded.append(result)
+
+    monkeypatch.setattr(
+        nuo_system_health,
+        "_record_governance_apply_decision",
+        fake_record_governance_apply_decision,
+    )
+
     result = await apply_governance_recommendation(
         tenant_id="tenant-a",
         recommendation_id="govern:context_slimming_candidates",
@@ -530,6 +543,7 @@ async def test_governance_apply_low_risk_context_maintenance_apply_calls_runner(
     assert result.decision_ticket is not None
     assert result.decision_ticket.selected_action == "apply:context_maintenance"
     assert result.decision_ticket.status == "applied"
+    assert recorded == [result]
     assert calls[0]["dry_run"] is False
     assert calls[0]["tenant_id"] == "tenant-a"
 
@@ -612,6 +626,8 @@ async def test_governance_apply_blocks_high_risk_recommendation(
 async def test_governance_apply_blocks_missing_recommendation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    recorded: list[GovernanceRecommendationApplyResult] = []
+
     async def fake_collect_system_health_report(*, tenant_id: str) -> SystemHealthReport:
         return _report_with_recommendations(tenant_id, [])
 
@@ -619,6 +635,18 @@ async def test_governance_apply_blocks_missing_recommendation(
         nuo_system_health,
         "collect_system_health_report",
         fake_collect_system_health_report,
+    )
+
+    async def fake_record_governance_apply_decision(
+        *, tenant_id: str, result: GovernanceRecommendationApplyResult
+    ) -> None:
+        assert tenant_id == "tenant-a"
+        recorded.append(result)
+
+    monkeypatch.setattr(
+        nuo_system_health,
+        "_record_governance_apply_decision",
+        fake_record_governance_apply_decision,
     )
 
     result = await apply_governance_recommendation(
@@ -635,6 +663,7 @@ async def test_governance_apply_blocks_missing_recommendation(
     assert "not in the current queue" in result.message
     assert result.decision_ticket is not None
     assert result.decision_ticket.selected_action == "blocked"
+    assert recorded == [result]
 
 
 def _low_risk_context_recommendation() -> SystemGovernanceRecommendation:

@@ -32,6 +32,7 @@ _TICKET_REQUIRED_EVENT_TYPES = {
     "llm.model_select.consulted",
     "llm.model_select.blocked",
     "llm.route_change.proposed",
+    "nuo.governance.recommendation.decided",
 }
 
 
