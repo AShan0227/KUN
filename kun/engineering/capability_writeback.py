@@ -73,6 +73,16 @@ async def record_outcome(tenant_id: str, outcome: TaskOutcome) -> None:
         task_type=outcome.task_type,
         outcome=outcome.outcome,
     )
+    try:
+        from kun.engineering.capability_cache import get_capability_card_cache
+
+        get_capability_card_cache().invalidate(
+            tenant_id=tenant_id,
+            entity_type=outcome.entity_type,
+            entity_id=outcome.entity_id,
+        )
+    except Exception:
+        log.debug("capability.cache_invalidate_skipped", exc_info=True)
 
 
 async def _record_outcome_in_txn(

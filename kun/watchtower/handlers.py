@@ -102,6 +102,14 @@ async def handle_tool_skipped(row: EventRow) -> None:
                 skill_id=miss["skill_id"],
                 miss_count=promoted_count,
             )
+            await _enqueue_external_skill_scout_for_promoted_miss(
+                tenant_id=tenant_id,
+                task_ref=str(row.task_ref or ""),
+                miss=miss,
+                prompt_excerpt=str(row.payload.get("prompt_excerpt") or "")
+                if isinstance(row.payload, dict)
+                else "",
+            )
 
 
 def _coerce_tool_miss(raw: object) -> dict[str, str] | None:
@@ -117,6 +125,57 @@ def _coerce_tool_miss(raw: object) -> dict[str, str] | None:
         "reason": str(raw.get("reason") or "")[:500],
         "trigger_source": str(raw.get("trigger_source") or "")[:64],
     }
+
+
+async def _enqueue_external_skill_scout_for_promoted_miss(
+    *,
+    tenant_id: str,
+    task_ref: str,
+    miss: dict[str, str],
+    prompt_excerpt: str = "",
+) -> int:
+    """Turn repeated missing-tool evidence into a review-only external scout plan.
+
+    A promoted proactive miss means KUN has seen the same capability gap often
+    enough to learn from it.  The safe next step is not auto-installing a random
+    skill; it is queuing a Qi/NUO review plan that says what to look for and
+    which checks must pass first.
+    """
+
+    try:
+        from kun.qi.external_skill_review import (
+            build_external_skill_scout_plan,
+            enqueue_external_skill_scout_plans,
+        )
+
+        plan = build_external_skill_scout_plan(
+            {
+                "task_type": f"skill_gap.{miss['skill_id']}",
+                "summary": f"Repeated missing skill: {miss['skill_id']}",
+                "description": " ".join(
+                    part
+                    for part in [
+                        miss.get("skill_id", ""),
+                        miss.get("pattern", ""),
+                        miss.get("reason", ""),
+                        miss.get("trigger_source", ""),
+                        prompt_excerpt[:300],
+                    ]
+                    if part
+                ),
+                "source": "proactive.trigger_promoted",
+                "task_ref": task_ref,
+            }
+        )
+        return await enqueue_external_skill_scout_plans(tenant_id=tenant_id, plans=[plan])
+    except Exception as exc:
+        log.warning(
+            "external_skill.scout_plan_from_tool_miss_failed",
+            tenant_id=tenant_id,
+            skill_id=miss.get("skill_id"),
+            error=str(exc),
+        )
+        return 0
 
 
 async def _record_proactive_miss(

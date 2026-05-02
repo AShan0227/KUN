@@ -87,6 +87,24 @@ def get_admin_sessionmaker() -> async_sessionmaker[AsyncSession]:
     return _admin_sessionmaker
 
 
+async def dispose_engines() -> None:
+    """Dispose cached async engines and reset session factories.
+
+    Unit tests create and tear down many event loops. If a global asyncpg pool
+    survives across those loops, asyncpg may leave an internal cancellation
+    coroutine behind during close. Explicit disposal gives tests and short-lived
+    CLI commands a clean shutdown hook without affecting normal server runtime.
+    """
+    global _admin_engine, _admin_sessionmaker, _engine, _sessionmaker
+    engines = [engine for engine in (_engine, _admin_engine) if engine is not None]
+    _engine = None
+    _admin_engine = None
+    _sessionmaker = None
+    _admin_sessionmaker = None
+    for engine in engines:
+        await engine.dispose()
+
+
 @asynccontextmanager
 async def session_scope(
     *,

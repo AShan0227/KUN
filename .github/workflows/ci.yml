@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feat/v2.1-foundation", "codex/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "feat/v2.1-foundation"]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -20,8 +21,8 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --extra dev
-      - run: uv run ruff check kun tests
-      - run: uv run ruff format --check kun tests
+      - run: uv run ruff check kun tests scripts alembic
+      - run: uv run ruff format --check kun tests scripts alembic
 
   typecheck:
     name: Typecheck (mypy, soft)
@@ -45,6 +46,33 @@ jobs:
           enable-cache: true
       - run: uv sync --extra dev
       - run: uv run pytest tests/unit -q
+
+  delivery-honesty:
+    name: Delivery honesty gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      # This intentionally does not require every capability to be ready.
+      # It only blocks fake readiness: ready with missing evidence / partial
+      # without an honest missing list.
+      - run: uv run alembic heads
+      - run: uv run kun ops delivery-status --json
+      - run: uv run kun ops preflight --skip-alembic --no-fail-on-blocker --json
+      - run: uv run kun ops readiness --skip-alembic --no-fail-on-blocker --json
+
+  legal-guard:
+    name: Legal/IP guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv run python scripts/check_legal_guard.py
 
   integration-tests:
     name: Integration tests

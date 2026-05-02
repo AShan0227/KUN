@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import yaml
 from simpleeval import EvalWithCompoundTypes
@@ -21,10 +21,13 @@ from simpleeval import EvalWithCompoundTypes
 from kun.core.logging import get_logger
 from kun.core.metrics import watchtower_intervention_rate, watchtower_rule_latency_seconds
 from kun.core.tenancy import MissingTenantContextError, current_tenant
+from kun.security.incident_response import IncidentCategory, IncidentSeverity
 from kun.watchtower.handlers import get_handler
 from kun.watchtower.rules import GuardRule, RuleKind
 
 log = get_logger("kun.watchtower.engine")
+
+_RULE_KIND_NAMES = {"guard", "validation", "ci", "anomaly", "cache"}
 
 
 def load_rules(
@@ -43,6 +46,17 @@ def load_rules(
         try:
             data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
             if data is None:
+                continue
+            if not isinstance(data, dict):
+                log.warning(
+                    "rules.load_failed", path=str(yaml_path), error="yaml root must be a map"
+                )
+                continue
+            if (
+                yaml_path.parent.name not in _RULE_KIND_NAMES
+                and data.get("kind") not in _RULE_KIND_NAMES
+            ):
+                log.debug("rules.skipped_non_rule_yaml", path=str(yaml_path))
                 continue
             # Infer kind from parent directory if not in YAML
             if "kind" not in data:
@@ -72,10 +86,14 @@ class RuleEngine:
         "all": all,
     }
 
-    def __init__(self, rules: list[GuardRule] | None = None) -> None:
+    def __init__(self, rules: list[GuardRule] | None = None, incident_response: Any = None) -> None:
         self.rules: list[GuardRule] = rules or []
         self._cooldown: dict[tuple[str, str], float] = {}  # (rule_id, subject_key) → last_fired
         self._evaluator = EvalWithCompoundTypes(functions=self._SAFE_FUNCS)
+        self._incident_response = incident_response
+
+    def set_incident_response(self, incident_response: Any) -> None:
+        self._incident_response = incident_response
 
     def add_rule(self, rule: GuardRule) -> None:
         self.rules.append(rule)
@@ -159,6 +177,8 @@ class RuleEngine:
                 },
             }
 
+            await self._trigger_incident_response(rule, event_type, ctx)
+
             for action in rule.actions:
                 handler = get_handler(action.handler)
                 if handler is None:
@@ -176,6 +196,48 @@ class RuleEngine:
 
         return fired
 
+    async def _trigger_incident_response(
+        self,
+        rule: GuardRule,
+        event_type: str,
+        ctx: dict[str, Any],
+    ) -> None:
+        if self._incident_response is None:
+            return
+        if not _should_create_incident(rule, event_type):
+            return
+        try:
+            from kun.core.ids import new_id
+            from kun.security.incident_response import IncidentEvent
+
+            event_payload = ctx.get("event") if isinstance(ctx.get("event"), dict) else {}
+            payload = event_payload.get("payload", {}) if isinstance(event_payload, dict) else {}
+            incident = IncidentEvent(
+                incident_id=new_id("incident"),
+                severity=_incident_severity(rule.severity),
+                category=_incident_category(event_type, rule.id),
+                title=rule.description or rule.id,
+                affected_user_id=_first_str(
+                    ctx.get("user_id"),
+                    event_payload.get("user_id") if isinstance(event_payload, dict) else None,
+                    payload.get("user_id") if isinstance(payload, dict) else None,
+                ),
+                affected_tenant_id=_first_str(
+                    ctx.get("tenant_id"),
+                    event_payload.get("tenant_id") if isinstance(event_payload, dict) else None,
+                    payload.get("tenant_id") if isinstance(payload, dict) else None,
+                ),
+                affected_task_id=_first_str(
+                    ctx.get("task_ref"),
+                    payload.get("task_id") if isinstance(payload, dict) else None,
+                    payload.get("task_ref") if isinstance(payload, dict) else None,
+                ),
+                payload={"rule_id": rule.id, "event_type": event_type, "context": ctx},
+            )
+            await self._incident_response.handle(incident)
+        except Exception:
+            log.exception("rule.incident_response_failed", rule_id=rule.id)
+
 
 def _tenant_id_from_namespace(namespace: dict[str, Any]) -> str:
     tenant_id = namespace.get("tenant_id") or namespace.get("event", {}).get("tenant_id")
@@ -185,3 +247,36 @@ def _tenant_id_from_namespace(namespace: dict[str, Any]) -> str:
         return current_tenant().tenant_id
     except MissingTenantContextError:
         return "unknown"
+
+
+def _should_create_incident(rule: GuardRule, event_type: str) -> bool:
+    return event_type in {
+        "guard.budget.exceeded",
+        "security.cross_tenant_attempt",
+    } or rule.id in {"cost_runaway", "cross_tenant_attempt"}
+
+
+def _incident_severity(rule_severity: str) -> IncidentSeverity:
+    mapping = {
+        "info": "L1",
+        "low": "L1",
+        "medium": "L2",
+        "high": "L3",
+        "critical": "L4",
+    }
+    return cast(IncidentSeverity, mapping.get(rule_severity, "L2"))
+
+
+def _incident_category(event_type: str, rule_id: str) -> IncidentCategory:
+    if event_type.startswith("security.") or "tenant" in rule_id:
+        return "security"
+    if event_type.startswith("guard.budget") or "cost" in rule_id or "budget" in rule_id:
+        return "cost"
+    return "behavior"
+
+
+def _first_str(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+    return None

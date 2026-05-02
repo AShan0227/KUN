@@ -10,6 +10,7 @@ from kun.datamodel.capability import (
     QualityMetrics,
     Stats,
 )
+from kun.datamodel.decision_ticket import DecisionTicket, DecisionTicketRef
 from kun.datamodel.events import Event, EventKind
 from kun.datamodel.handoff import (
     HandoffL1,
@@ -18,15 +19,30 @@ from kun.datamodel.handoff import (
     HandoffL4,
     HandoffPacket,
 )
+from kun.datamodel.mission import (
+    MilestoneStatus,
+    MissionCreate,
+    MissionMilestone,
+    MissionSnapshot,
+    MissionStatus,
+    MissionTaskLink,
+    MissionTaskStatus,
+    ResumeRequest,
+)
 from kun.datamodel.notification import Notification, NotificationChannel, NotificationKind
+from kun.datamodel.relationship import EntityRelationship, RelationType
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
-from kun.datamodel.task import RiskLevel, TaskMeta, TaskRef, TaskSpec
+from kun.datamodel.task import RiskLevel, TaskLayer3Context, TaskMeta, TaskRef, TaskSpec
+from kun.datamodel.verification_spec import VerificationKind, VerificationResult, VerificationSpec
 
 __all__ = [
     "Capability",
     "CapabilityCard",
     "DecayModel",
+    "DecisionTicket",
+    "DecisionTicketRef",
     "EntityRef",
+    "EntityRelationship",
     "Event",
     "EventKind",
     "FailureMode",
@@ -36,16 +52,29 @@ __all__ = [
     "HandoffL4",
     "HandoffPacket",
     "Maturity",
+    "MilestoneStatus",
+    "MissionCreate",
+    "MissionMilestone",
+    "MissionSnapshot",
+    "MissionStatus",
+    "MissionTaskLink",
+    "MissionTaskStatus",
     "Notification",
     "NotificationChannel",
     "NotificationKind",
     "QualityMetrics",
+    "RelationType",
+    "ResumeRequest",
     "RiskLevel",
     "RuntimeState",
     "Stats",
     "StepRecord",
+    "TaskLayer3Context",
     "TaskMeta",
     "TaskRef",
     "TaskSpec",
     "TaskStatus",
+    "VerificationKind",
+    "VerificationResult",
+    "VerificationSpec",
 ]

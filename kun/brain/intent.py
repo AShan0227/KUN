@@ -87,29 +87,87 @@ class IntentInterpreter:
         parsed = self._parse_json(response.content)
 
         fingerprint = TaskMeta.compute_fingerprint(user_message, owner)
-        meta = TaskMeta(
-            fingerprint=fingerprint,
-            task_type=parsed.get("task_type", "general.default"),
-            risk_level=parsed.get("risk_level", "low"),
-            complexity_score=float(parsed.get("complexity_score", 0.3)),
-            owner=owner,
-            estimated_cost_usd=float(parsed.get("estimated_cost_usd", 0.05)),
-            estimated_duration_sec=float(parsed.get("estimated_duration_sec", 30.0)),
-            success_criteria_short=parsed.get("success_criteria_short", user_message[:200]),
-        )
+        meta_kwargs = {
+            "fingerprint": fingerprint,
+            "task_type": parsed.get("task_type", "general.default"),
+            "risk_level": parsed.get("risk_level", "low"),
+            "complexity_score": float(parsed.get("complexity_score", 0.3)),
+            "owner": owner,
+            "estimated_cost_usd": float(parsed.get("estimated_cost_usd", 0.05)),
+            "estimated_duration_sec": float(parsed.get("estimated_duration_sec", 30.0)),
+            "success_criteria_short": parsed.get("success_criteria_short", user_message[:200]),
+        }
+
+        # V2.2 §21 wire: 自动算 execution_mode (FAST/SMART/MAX)
+        try:
+            from kun.api.execution_mode_classifier import classify_execution_mode
+            from kun.datamodel.soul_file_provider import get_soul_file
+
+            soul = get_soul_file(owner.user_id or "u-anon", tenant_id=owner.tenant_id)
+            classifier_meta = {
+                **meta_kwargs,
+                "user_can_wait": parsed.get("user_can_wait", False),
+            }
+            mode_str, mode_reason = classify_execution_mode(classifier_meta, soul)
+            meta_kwargs["execution_mode"] = mode_str
+            meta_kwargs["mode_override_reason"] = mode_reason
+        except Exception:
+            log.exception("execution_mode classify failed (defaulting FAST)")
+
+        meta = TaskMeta(**meta_kwargs)
 
         spec: TaskSpec | None = None
-        if any(k in parsed for k in ("goal_detail", "success_metrics", "required_skills")):
-            spec = TaskSpec(
-                goal_detail=parsed.get("goal_detail", user_message),
-                success_metrics=parsed.get("success_metrics", []),
-                required_skills=parsed.get("required_skills", []),
-                required_tools=parsed.get("required_tools", []),
-                external_resources=parsed.get("external_resources", []),
-                constraints=parsed.get("constraints", []),
-                foreseen_risks=parsed.get("foreseen_risks", []),
-                fallback_plan=parsed.get("fallback_plan"),
+        if any(
+            k in parsed
+            for k in (
+                "goal_detail",
+                "success_metrics",
+                "required_skills",
+                "verification_specs",
             )
+        ):
+            # V2.3 fix: normalize LLM-emitted constraints — LLM 经常用自由 kind
+            # (e.g. "scope", "time_box", "non_destructive"), 不在 Constraint enum.
+            # 不合法的 kind 转 "custom" + 原 kind 加进 detail, 不抛 ValidationError.
+            _allowed_constraint_kinds = {
+                "no_external_paid_api",
+                "path_only",
+                "budget_cap",
+                "no_irreversible",
+                "custom",
+            }
+            raw_constraints = parsed.get("constraints", []) or []
+            normalized_constraints: list[dict[str, str]] = []
+            for c in raw_constraints:
+                if not isinstance(c, dict):
+                    continue
+                k = str(c.get("kind", "custom"))
+                d = str(c.get("detail", ""))
+                if k not in _allowed_constraint_kinds:
+                    d = f"[{k}] {d}".strip()
+                    k = "custom"
+                normalized_constraints.append({"kind": k, "detail": d})
+
+            try:
+                spec = TaskSpec(
+                    goal_detail=parsed.get("goal_detail", user_message),
+                    success_metrics=parsed.get("success_metrics", []),
+                    required_skills=parsed.get("required_skills", []),
+                    required_tools=parsed.get("required_tools", []),
+                    external_resources=parsed.get("external_resources", []),
+                    constraints=normalized_constraints,
+                    foreseen_risks=parsed.get("foreseen_risks", []),
+                    fallback_plan=parsed.get("fallback_plan"),
+                    # Wire 36: 把 LLM 给的 verification_specs 接进来
+                    verification_specs=parsed.get("verification_specs", []),
+                )
+            except Exception as e:
+                log.warning(
+                    "intent.taskspec_validation_failed_fallback_no_spec",
+                    error=str(e),
+                    task_id=meta.task_id,
+                )
+                spec = None
 
         log.info(
             "intent.parsed",

@@ -13,9 +13,11 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     PrimaryKeyConstraint,
@@ -117,6 +119,151 @@ class TaskRow(Base):
     )
 
 
+# ============== MISSIONS ==============
+
+
+class MissionRow(Base):
+    """Long-horizon mission: one real-world goal spanning many tasks."""
+
+    __tablename__ = "missions"
+
+    mission_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned", index=True)
+    risk_level: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    budget_cap_usd: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    budget_used_usd: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    blocked_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    next_step_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    review_interval_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
+    last_reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    success_metrics: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    strategy_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('planned', 'running', 'paused', 'done', 'failed', 'cancelled')",
+            name="mission_status_valid",
+        ),
+        CheckConstraint(
+            "risk_level IN ('low', 'medium', 'high', 'critical')",
+            name="mission_risk_level_valid",
+        ),
+        CheckConstraint("budget_cap_usd >= 0", name="mission_budget_nonnegative"),
+        CheckConstraint("budget_used_usd >= 0", name="mission_budget_used_nonnegative"),
+        CheckConstraint(
+            "review_interval_hours > 0",
+            name="mission_review_interval_positive",
+        ),
+        CheckConstraint("length(title) > 0", name="mission_title_not_empty"),
+        CheckConstraint("length(objective) > 0", name="mission_objective_not_empty"),
+        Index("ix_missions_tenant_status", "tenant_id", "status"),
+        Index("ix_missions_tenant_project", "tenant_id", "project_id"),
+    )
+
+
+class MissionTaskRow(Base):
+    """Link table between a mission and durable tasks."""
+
+    __tablename__ = "mission_tasks"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    mission_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("missions.mission_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tasks.task_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="primary")
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned", index=True)
+    checkpoint_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    resume_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_resume_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('planned', 'queued', 'running', 'paused', 'blocked', 'done', "
+            "'failed', 'cancelled')",
+            name="mission_task_status_valid",
+        ),
+        CheckConstraint("sequence_no >= 0", name="mission_task_sequence_nonnegative"),
+        CheckConstraint("resume_attempts >= 0", name="mission_task_resume_attempts_nonnegative"),
+        Index("ix_mission_tasks_tenant_task", "tenant_id", "task_id"),
+        Index("ix_mission_tasks_tenant_status", "tenant_id", "mission_id", "status"),
+    )
+
+
+class MissionMilestoneRow(Base):
+    """Mission-level milestone or checkpoint visible to humans and KUN."""
+
+    __tablename__ = "mission_milestones"
+
+    milestone_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    mission_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("missions.mission_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned", index=True)
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    task_ref: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    completed_by_task_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    checkpoint_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('planned', 'active', 'done', 'blocked', 'cancelled')",
+            name="mission_milestone_status_valid",
+        ),
+        CheckConstraint("sequence_no >= 0", name="mission_milestone_sequence_nonnegative"),
+        CheckConstraint("length(title) > 0", name="mission_milestone_title_not_empty"),
+        Index("ix_mission_milestones_tenant_mission", "tenant_id", "mission_id", "status"),
+    )
+
+
 # ============== RUNTIME STATE ==============
 
 
@@ -173,6 +320,39 @@ class RuntimeStateRow(Base):
         ),
         CheckConstraint("accumulated_tokens >= 0", name="runtime_tokens_nonnegative"),
         CheckConstraint("failures_this_run >= 0", name="runtime_failures_nonnegative"),
+    )
+
+
+class StateLedgerEntryRow(Base):
+    """Durable current-state snapshot for one tenant task.
+
+    EventRow remains the append-only history. This table keeps the latest
+    StateLedgerEntry so API/process restarts do not erase the current view.
+    """
+
+    __tablename__ = "state_ledger_entries"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    project_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued", index=True)
+    snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'paused', 'done', 'failed', 'cancelled')",
+            name="state_ledger_status_valid",
+        ),
+        CheckConstraint("length(task_id) > 0", name="state_ledger_task_id_not_empty"),
+        Index("ix_state_ledger_tenant_status_updated", "tenant_id", "status", "updated_at"),
+        Index("ix_state_ledger_tenant_user_updated", "tenant_id", "user_id", "updated_at"),
     )
 
 
@@ -285,6 +465,101 @@ class PendingActionRow(Base):
     )
 
 
+class WorldHandlerControlRow(Base):
+    """Tenant-scoped persistent control state for one WorldGateway handler."""
+
+    __tablename__ = "world_handler_controls"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    action_type: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="enabled", index=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="nuo")
+    updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('enabled', 'quarantined', 'disabled')",
+            name="world_handler_control_status_valid",
+        ),
+        CheckConstraint("length(action_type) > 0", name="world_handler_control_action_not_empty"),
+        Index("ix_world_handler_controls_tenant_status", "tenant_id", "status"),
+    )
+
+
+class WorldActionExecutionRow(Base):
+    """Durable execution ledger for approved WorldGateway side effects."""
+
+    __tablename__ = "world_action_executions"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    action_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_ref: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tasks.task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_ref: Mapped[str] = mapped_column(String(256), nullable=False, default="unknown")
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="claimed", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    handler_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    gateway_mode: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    capability_status: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    external_dispatched: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    requires_handler: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    artifact_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    compensation_strategy: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    retry_policy: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    audit_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    decision_ticket_json: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+    first_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('claimed', 'executed', 'blocked', 'failed', 'cancelled')",
+            name="world_action_execution_status_valid",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="world_action_execution_attempt_count_nonnegative",
+        ),
+        CheckConstraint(
+            "length(idempotency_key) > 0",
+            name="world_action_execution_idempotency_not_empty",
+        ),
+        Index("ix_world_action_executions_tenant_status", "tenant_id", "status"),
+        Index("ix_world_action_executions_tenant_action_type", "tenant_id", "action_type"),
+        Index("ix_world_action_executions_task_ref", "task_ref"),
+    )
+
+
 # ============== CAPABILITY CARDS ==============
 
 
@@ -327,6 +602,116 @@ class CapabilityCardRow(Base):
             name="capability_reliability_range",
         ),
         UniqueConstraint("tenant_id", "entity_type", "entity_id", name="uq_capability_entity"),
+    )
+
+
+# ============== RESOURCE CREDIT STATS ==============
+
+
+class ResourceCreditRow(Base):
+    """Durable MoE credit stats for resources used during task execution."""
+
+    __tablename__ = "resource_credit_stats"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    resource_key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    resource_kind: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    resource_id: Mapped[str] = mapped_column(String(192), nullable=False)
+
+    used_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pass_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    critical_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    credit_total: Mapped[float] = mapped_column(nullable=False, default=0.0)
+
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        nullable=False,
+        index=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        nullable=False,
+        onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        CheckConstraint("length(resource_key) > 0", name="resource_credit_key_not_empty"),
+        CheckConstraint("length(resource_kind) > 0", name="resource_credit_kind_not_empty"),
+        CheckConstraint("length(resource_id) > 0", name="resource_credit_id_not_empty"),
+        CheckConstraint("used_count >= 0", name="resource_credit_used_nonnegative"),
+        CheckConstraint("pass_count >= 0", name="resource_credit_pass_nonnegative"),
+        CheckConstraint("critical_count >= 0", name="resource_credit_critical_nonnegative"),
+        CheckConstraint("credit_total >= 0", name="resource_credit_total_nonnegative"),
+        Index("ix_resource_credit_tenant_kind", "tenant_id", "resource_kind"),
+        Index("ix_resource_credit_tenant_resource", "tenant_id", "resource_kind", "resource_id"),
+    )
+
+
+# ============== ENTITY RELATIONSHIPS ==============
+
+
+class EntityRelationshipRow(Base):
+    """Knowledge graph relationship edge between two tenant-scoped entities."""
+
+    __tablename__ = "entity_relationships"
+
+    relation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_entity_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_entity_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    target_entity_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_entity_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    relation_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[float] = mapped_column(nullable=False, default=0.3)
+    evidence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    pheromone_strength: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        JSONB,
+        nullable=False,
+        default=dict,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    last_reinforced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1",
+            name="entity_relationship_confidence_range",
+        ),
+        CheckConstraint(
+            "evidence_count >= 0",
+            name="entity_relationship_evidence_nonnegative",
+        ),
+        CheckConstraint(
+            "pheromone_strength >= 0 AND pheromone_strength <= 1",
+            name="entity_relationship_pheromone_range",
+        ),
+        CheckConstraint(
+            "relation_type IN ("
+            "'depends_on','mentions','verifies','contradicts','similar_to',"
+            "'co_occurs','produced_by','transfer_confidence'"
+            ")",
+            name="entity_relationship_type_valid",
+        ),
+        Index(
+            "ix_relationships_tenant_source",
+            "tenant_id",
+            "source_entity_kind",
+            "source_entity_id",
+        ),
+        Index(
+            "ix_relationships_tenant_target",
+            "tenant_id",
+            "target_entity_kind",
+            "target_entity_id",
+        ),
     )
 
 
@@ -456,6 +841,256 @@ class ExperimentRow(Base):
     )
 
 
+# ============== KUN-LAB EXPERIMENT LOG ==============
+
+
+class LabExperimentRow(Base):
+    __tablename__ = "lab_experiments"
+
+    experiment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    prompt_hash: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    ensemble_result: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, index=True
+    )
+
+
+# ============== QI PROBLEM SIGNALS ==============
+
+
+class QiProblemSignalRow(Base):
+    """Durable problem queue for Qi exploration inputs."""
+
+    __tablename__ = "qi_problem_signals"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    signal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="info")
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    task_type: Mapped[str] = mapped_column(String(128), nullable=False, default="general")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open", index=True)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint("length(summary) > 0", name="qi_problem_summary_not_empty"),
+        CheckConstraint("occurrence_count >= 1", name="qi_problem_occurrence_positive"),
+        CheckConstraint(
+            "status IN ('open', 'consumed', 'dismissed')",
+            name="qi_problem_status_valid",
+        ),
+        Index("ix_qi_problem_tenant_status", "tenant_id", "status"),
+        Index("ix_qi_problem_tenant_category", "tenant_id", "category"),
+        Index("ix_qi_problem_tenant_last_seen", "tenant_id", "last_seen_at"),
+    )
+
+
+# ============== TENANT ACCOUNT REGISTRY ==============
+
+
+class TenantAccountRow(Base):
+    """Operator-managed tenant/org record.
+
+    This is the first production-accounting slice: it does not replace a full
+    signup/billing product, but it makes tenant ownership and plan state
+    durable instead of living only in env vars or one-off onboarding JSON.
+    """
+
+    __tablename__ = "tenant_accounts"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+    plan: Mapped[str] = mapped_column(String(32), nullable=False, default="dev")
+    billing_status: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'suspended', 'closed')",
+            name="tenant_account_status_valid",
+        ),
+        CheckConstraint(
+            "billing_status IN ('manual', 'trial', 'active', 'past_due', 'cancelled')",
+            name="tenant_account_billing_status_valid",
+        ),
+        CheckConstraint("length(display_name) > 0", name="tenant_account_display_not_empty"),
+        CheckConstraint("length(owner_user_id) > 0", name="tenant_account_owner_not_empty"),
+        Index("ix_tenant_accounts_org_status", "organization_id", "status"),
+    )
+
+
+class TenantMemberRow(Base):
+    """Durable tenant member and scope ledger."""
+
+    __tablename__ = "tenant_members"
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tenant_accounts.tenant_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="owner")
+    scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+    invite_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    invite_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    invite_accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    invited_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'member', 'viewer')",
+            name="tenant_member_role_valid",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'invited', 'disabled')",
+            name="tenant_member_status_valid",
+        ),
+        Index("ix_tenant_members_tenant_status", "tenant_id", "status"),
+        Index("ix_tenant_members_invite_expires", "tenant_id", "invite_expires_at"),
+    )
+
+
+class TenantTokenIssueRow(Base):
+    """Audit ledger for operator-issued bearer tokens.
+
+    The raw token is never stored.  ``token_hash`` lets ops correlate a leaked
+    token with an issuance record later without keeping the secret itself.
+    """
+
+    __tablename__ = "tenant_token_issues"
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tenant_accounts.tenant_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    token_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    audience: Mapped[str] = mapped_column(String(16), nullable=False, default="developer")
+    scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="issued", index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_ip_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_user_agent: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "audience IN ('novice', 'developer', 'expert')",
+            name="tenant_token_audience_valid",
+        ),
+        CheckConstraint(
+            "status IN ('issued', 'revoked')",
+            name="tenant_token_status_valid",
+        ),
+        Index("ix_tenant_tokens_tenant_status", "tenant_id", "status"),
+        Index("ix_tenant_tokens_tenant_user", "tenant_id", "user_id"),
+        Index("ix_tenant_tokens_tenant_last_used", "tenant_id", "last_used_at"),
+    )
+
+
+class TenantPasswordCredentialRow(Base):
+    """Tenant-scoped password credential ledger.
+
+    Stores only salted password hashes.  This is a minimal password login slice,
+    not OAuth or full device/session risk management.
+    """
+
+    __tablename__ = "tenant_password_credentials"
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tenant_accounts.tenant_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    algorithm: Mapped[str] = mapped_column(String(32), nullable=False, default="pbkdf2_sha256")
+    iterations: Mapped[int] = mapped_column(Integer, nullable=False, default=260000)
+    salt_b64: Mapped[str] = mapped_column(String(128), nullable=False)
+    password_hash_b64: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "algorithm IN ('pbkdf2_sha256')",
+            name="tenant_password_algorithm_valid",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'disabled')",
+            name="tenant_password_status_valid",
+        ),
+        CheckConstraint("iterations >= 200000", name="tenant_password_iterations_min"),
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"],
+            ["tenant_members.tenant_id", "tenant_members.user_id"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_tenant_password_status", "tenant_id", "status"),
+        Index("ix_tenant_password_last_login", "tenant_id", "last_login_at"),
+    )
+
+
 # ============== IDEMPOTENCY KEYS ==============
 
 
@@ -475,3 +1110,70 @@ class IdempotencyRow(Base):
     ttl_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
 
     __table_args__ = (CheckConstraint("ttl_sec > 0", name="idempotency_ttl_positive"),)
+
+
+# ============== SOUL FILE (V2.1 §13 / T17 / M4 持久化) ==============
+
+
+class SoulFileRow(Base):
+    """user 级灵魂档案持久化.
+
+    主体字段 (audience / risk_tolerance / etc) 拍平方便查询; nested 字段
+    (revision_history / evolved_traits / preferred_tools / extensions / etc)
+    存 blob JSONB.
+
+    复合 PK (tenant_id, user_id) — 同一 user 在不同 tenant 互相隔离.
+    """
+
+    __tablename__ = "soul_files"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    # 拍平的主体字段 (常用于查询 / NUO 显示)
+    audience: Mapped[str] = mapped_column(String(16), nullable=False, default="developer")
+    default_language: Mapped[str] = mapped_column(String(16), nullable=False, default="zh-CN")
+    risk_tolerance: Mapped[str] = mapped_column(String(8), nullable=False, default="medium")
+    cost_sensitivity: Mapped[str] = mapped_column(String(8), nullable=False, default="medium")
+    speed_sensitivity: Mapped[str] = mapped_column(String(8), nullable=False, default="medium")
+    interruption_tolerance: Mapped[str] = mapped_column(String(8), nullable=False, default="medium")
+    approval_threshold_money: Mapped[float] = mapped_column(nullable=False, default=10.0)
+    professional_role: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+
+    # 整个 SoulFile pydantic dump (含 revisions / evolved_traits / preferred_tools / etc)
+    blob: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    last_updated: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "audience IN ('novice', 'developer', 'expert')",
+            name="soul_file_audience_valid",
+        ),
+        CheckConstraint(
+            "risk_tolerance IN ('low', 'medium', 'high')",
+            name="soul_file_risk_valid",
+        ),
+        CheckConstraint(
+            "cost_sensitivity IN ('low', 'medium', 'high')",
+            name="soul_file_cost_valid",
+        ),
+        CheckConstraint(
+            "speed_sensitivity IN ('low', 'medium', 'high')",
+            name="soul_file_speed_valid",
+        ),
+        CheckConstraint(
+            "interruption_tolerance IN ('low', 'medium', 'high')",
+            name="soul_file_interrupt_valid",
+        ),
+        CheckConstraint(
+            "approval_threshold_money >= 0",
+            name="soul_file_approval_threshold_nonneg",
+        ),
+        Index("ix_soul_files_tenant_updated", "tenant_id", "last_updated"),
+    )

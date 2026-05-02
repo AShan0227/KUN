@@ -11,12 +11,29 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import pytest
+from kun.context.packer import ContextPack, PackedContextItem, PackedProcessExperience
+from kun.core.emergent_solution import (
+    EmergentSolution,
+    EmergentSolutionLibrary,
+    EmergentSource,
+)
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
-from kun.engineering.orchestrator import Orchestrator, TaskResult
+from kun.engineering.emergent_switch import EmergentSwitchManager
+from kun.engineering.orchestrator import (
+    Orchestrator,
+    TaskResult,
+    _context_resource_ids,
+    _memory_policy_credit_keys,
+    _step_memory_policy_credit_resources,
+)
 from kun.interface.llm import LLMRouter
 from kun.interface.llm.base import LLMResponse, UsageInfo
 from kun.interface.llm.router import set_router
 from kun.interface.llm.stub_provider import StubProvider
+from kun.memory.policy import MemoryLayer, StepMemoryPolicy
+from kun.skills.dispatcher import autoload_builtins
+from kun.watchtower.engine import RuleEngine
+from kun.watchtower.rules import GuardRule, RuleAction, RuleTrigger
 
 
 class _FakeSession:
@@ -85,6 +102,117 @@ def _exec_builder(request):
     )
 
 
+def _costly_exec_builder(request):
+    return LLMResponse(
+        content="Hello, world!",
+        usage=UsageInfo(input_tokens=10, output_tokens=4),
+        cost_usd_equivalent=0.03,
+    )
+
+
+def test_context_resource_ids_preserve_asset_kind() -> None:
+    pack = ContextPack(
+        items=[
+            PackedContextItem(
+                asset_id="m-1",
+                asset_kind="memory",
+                relevance_score=0.9,
+                tags=["growth"],
+                memory_layer="meta_decision",
+            ),
+            PackedContextItem(
+                asset_id="method-1",
+                asset_kind="methodology",
+                relevance_score=0.8,
+                tags=["methodology"],
+                memory_layer="methodology",
+            ),
+            PackedContextItem(
+                asset_id="knowledge-1",
+                asset_kind="knowledge",
+                relevance_score=0.7,
+            ),
+        ]
+    )
+
+    assert _context_resource_ids(pack) == [
+        "memory:m-1",
+        "asset_kind:memory",
+        "memory_layer:meta_decision",
+        "tag:growth",
+        "methodology:method-1",
+        "asset_kind:methodology",
+        "memory_layer:methodology",
+        "tag:methodology",
+        "knowledge:knowledge-1",
+        "asset_kind:knowledge",
+    ]
+
+
+def test_context_resource_ids_credit_process_experiences() -> None:
+    pack = ContextPack(
+        process_experiences=[
+            PackedProcessExperience(
+                asset_id="process-1",
+                summary="执行过程: pytest failure fixed by narrower parser change",
+                similarity_score=0.82,
+            )
+        ]
+    )
+
+    assert _context_resource_ids(pack) == [
+        "memory:process-1",
+        "asset_kind:memory",
+        "memory_layer:execution_process",
+    ]
+
+
+def test_step_memory_policy_credit_resources_include_skips() -> None:
+    resources = _step_memory_policy_credit_resources(
+        StepMemoryPolicy(
+            action_type="use_memory",
+            use_memory=False,
+            avoid_layers=[MemoryLayer.EXECUTION_PROCESS],
+            reason="task_policy_disallows_mid_run_retrieval",
+        )
+    )
+
+    assert "memory_policy_scope:mid_run" in resources
+    assert "memory_policy_mid_run:skip" in resources
+    assert "memory_policy_use:no_memory" in resources
+    assert "memory_policy_avoid_layer:execution_process" in resources
+
+
+def test_memory_policy_credit_keys_include_task_tags() -> None:
+    task = TaskRef(
+        meta=TaskMeta(
+            task_id="task-memory-credit",
+            fingerprint="sha256:" + "a" * 64,
+            task_type="coding.debug",
+            risk_level="low",
+            complexity_score=0.55,
+            owner=Owner(tenant_id="tenant-a", user_id="user-a"),
+            estimated_cost_usd=0.01,
+            estimated_duration_sec=30,
+            success_criteria_short="修复 pytest bug",
+        ),
+        spec=TaskSpec(
+            goal_detail="修复 pytest 失败并运行测试",
+            required_skills=["code-review"],
+            required_tools=["pytest"],
+        ),
+    )
+
+    keys = _memory_policy_credit_keys(task)
+
+    assert "memory_layer:execution_process" in keys
+    assert "asset_kind:methodology" in keys
+    assert "tag:coding_debug" in keys
+    assert "tag:code_review" in keys
+    assert "tag:pytest" in keys
+    assert "tag:coding" in keys
+
+
 def _judge_builder(request):
     return LLMResponse(
         content='{"pass": true, "score": 0.9, "reason": "ok"}',
@@ -105,6 +233,69 @@ class _RoutingStub(StubProvider):
         else:
             self._builder = _exec_builder  # type: ignore[assignment]
         return await super().invoke(request)
+
+
+class _CostlyRoutingStub(_RoutingStub):
+    async def invoke(self, request):
+        sys_text = " ".join(m.content for m in request.messages if m.role == "system")
+        if "意图理解层" in sys_text:
+            self._builder = _intent_builder  # type: ignore[assignment]
+        else:
+            self._builder = _costly_exec_builder  # type: ignore[assignment]
+        return await StubProvider.invoke(self, request)
+
+
+class _PromptCaptureRoutingStub(StubProvider):
+    def __init__(self, *, task_type: str, prompt_log: list[str], **kwargs):
+        super().__init__(**kwargs)
+        self.task_type = task_type
+        self.prompt_log = prompt_log
+
+    async def invoke(self, request):
+        sys_text = " ".join(m.content for m in request.messages if m.role == "system")
+        if "意图理解层" in sys_text:
+            self._builder = lambda _request: LLMResponse(
+                content=json.dumps(
+                    {
+                        "task_type": self.task_type,
+                        "risk_level": "low",
+                        "complexity_score": 0.1,
+                        "estimated_cost_usd": 0.01,
+                        "estimated_duration_sec": 5,
+                        "success_criteria_short": "captured prompt task",
+                        "goal_detail": "captured prompt task",
+                        "success_metrics": ["answer is produced"],
+                        "required_skills": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                usage=UsageInfo(input_tokens=5, output_tokens=20),
+            )
+        elif "评估判官" in sys_text:
+            self._builder = _judge_builder  # type: ignore[assignment]
+        else:
+            self.prompt_log.append(sys_text)
+            self._builder = _exec_builder  # type: ignore[assignment]
+        return await super().invoke(request)
+
+
+class _WorldRequestRoutingStub(_RoutingStub):
+    async def invoke(self, request):
+        sys_text = " ".join(m.content for m in request.messages if m.role == "system")
+        if "意图理解层" in sys_text:
+            self._builder = _intent_builder  # type: ignore[assignment]
+        else:
+            self._builder = lambda _request: LLMResponse(
+                content=(
+                    '<skill name="world-request">'
+                    '{"action_type":"email.send","target_ref":"ops@example.com",'
+                    '"risk_level":"medium","payload":{"to":"ops@example.com",'
+                    '"subject":"Need approval","body":"Please review."}}'
+                    "</skill>"
+                ),
+                usage=UsageInfo(input_tokens=10, output_tokens=22),
+            )
+        return await StubProvider.invoke(self, request)
 
 
 class _PlanningRoutingStub(StubProvider):
@@ -177,9 +368,10 @@ async def test_orchestrator_runs_end_to_end():
     set_router(LLMRouter(providers))
 
     orch = Orchestrator(output_translator=_identity_translator)
-    events_seen = []
+    events = []
     async for ev in orch.stream("Please greet the world"):
-        events_seen.append(ev.kind)
+        events.append(ev)
+    events_seen = [ev.kind for ev in events]
 
     # Minimum contract: we see thinking → action_plan → action → cost_tick → answer → done
     assert "thinking" in events_seen
@@ -188,6 +380,11 @@ async def test_orchestrator_runs_end_to_end():
     assert "cost_tick" in events_seen
     assert "answer" in events_seen
     assert "done" in events_seen
+    ooda_stages = [ev.data.get("stage") for ev in events if ev.kind == "action_plan"]
+    assert "ooda_orient" in ooda_stages
+    assert "ooda_decide" in ooda_stages
+    assert "ooda_reflect" in ooda_stages
+    assert "ooda_finalize" in ooda_stages
 
 
 @pytest.mark.unit
@@ -213,6 +410,163 @@ async def test_orchestrator_uses_llm_planner_for_complex_task():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_orchestrator_code_task_prompt_includes_code_capability_guardrails():
+    prompt_log: list[str] = []
+    shared = _PromptCaptureRoutingStub(
+        tier="top",
+        task_type="coding.python",
+        prompt_log=prompt_log,
+    )
+    providers = {
+        "top": shared,
+        "cheap": shared,
+        "coding": shared,
+        "fallback": shared,
+    }
+    set_router(LLMRouter(providers))
+
+    events = []
+    async for ev in Orchestrator(output_translator=_identity_translator).stream(
+        "Fix this Python bug and add a unit test"
+    ):
+        events.append(ev)
+
+    assert any(ev.kind == "done" for ev in events)
+    exec_prompt = "\n\n".join(prompt_log)
+    assert "CodeCapability coding-task policy" in exec_prompt
+    assert "code-review" in exec_prompt
+    assert "code-propose-change" in exec_prompt
+    assert "dry-run" in exec_prompt
+    assert "KUN_CODE_PROPOSE_CHANGE_SKILL_ALLOW_APPLY" in exec_prompt
+    assert "全自动 coder" in exec_prompt
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_non_code_task_prompt_omits_code_capability_guardrails():
+    prompt_log: list[str] = []
+    shared = _PromptCaptureRoutingStub(
+        tier="top",
+        task_type="writing.greeting",
+        prompt_log=prompt_log,
+    )
+    providers = {
+        "top": shared,
+        "cheap": shared,
+        "coding": shared,
+        "fallback": shared,
+    }
+    set_router(LLMRouter(providers))
+
+    events = []
+    async for ev in Orchestrator(output_translator=_identity_translator).stream(
+        "Please greet the world"
+    ):
+        events.append(ev)
+
+    assert any(ev.kind == "done" for ev in events)
+    exec_prompt = "\n\n".join(prompt_log)
+    assert "CodeCapability coding-task policy" not in exec_prompt
+    assert "code-review" not in exec_prompt
+    assert "code-propose-change" not in exec_prompt
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_pauses_out_of_scope_task_before_planning(monkeypatch) -> None:
+    shared = _PlanningRoutingStub(tier="top")
+    providers = {
+        "top": shared,
+        "cheap": shared,
+        "coding": shared,
+        "fallback": shared,
+    }
+    set_router(LLMRouter(providers))
+    monkeypatch.setenv(
+        "KUN_TASK_BOUNDARY_SCOPE_JSON",
+        json.dumps(
+            {
+                "default": {
+                    "role_id": "marketing-agent",
+                    "role_name": "marketing copywriter",
+                    "allowed_task_types": ["marketing.*"],
+                    "forbidden_task_types": ["coding.*"],
+                    "boundary_strict_mode": True,
+                    "out_of_scope_redirect": "coding-agent",
+                }
+            }
+        ),
+    )
+
+    events = []
+    async for ev in Orchestrator(output_translator=_identity_translator).stream("Fix this bug"):
+        events.append(ev)
+
+    assert shared.planning_calls == 0
+    guard_events = [
+        ev
+        for ev in events
+        if ev.kind == "guard_intervention" and ev.data["stage"] == "task_boundary_guard"
+    ]
+    assert guard_events
+    assert guard_events[0].data["level"] == "blocked"
+    done = next(ev for ev in events if ev.kind == "done")
+    result = TaskResult.model_validate(done.data["result"])
+    assert result.status == "paused"
+    assert "当前角色边界不覆盖" in result.answer
+    assert "coding-agent" in result.answer
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_applies_emergent_switch_to_tail_plan():
+    top = _PlanningRoutingStub(tier="top")
+    providers = {
+        "top": top,
+        "cheap": _PlanningRoutingStub(tier="cheap"),
+        "coding": _PlanningRoutingStub(tier="coding"),
+        "fallback": _PlanningRoutingStub(tier="fallback"),
+    }
+    set_router(LLMRouter(providers))
+
+    library = EmergentSolutionLibrary()
+    library.add(
+        EmergentSolution(
+            task_type="coding",
+            discovered_by="capability_card_query",
+            source=EmergentSource(kind="internal_history", snippet="历史路径更好"),
+            description="先重排后续执行，再补一次验证",
+            estimated_outcome_delta=0.35,
+            estimated_cost_delta=-0.05,
+            status="stable",
+            applies_when=["复杂任务第一步后发现更优后续路径"],
+        )
+    )
+    emergent_switch = EmergentSwitchManager(library, switch_threshold=0.05)
+
+    events = []
+    async for ev in Orchestrator(emergent_switch_manager=emergent_switch).stream(
+        "Do a complex thing"
+    ):
+        events.append(ev)
+
+    committed = [ev for ev in events if ev.kind == "emergent_switch_committed"]
+    assert committed
+    assert committed[0].data["replan"]["replacement_step_ids"]
+    replan_events = [
+        ev
+        for ev in events
+        if ev.kind == "action_plan" and ev.data.get("stage") == "emergent_replan_applied"
+    ]
+    assert replan_events
+    assert replan_events[0].data["replacement_step_ids"]
+    actions = [ev.data.get("description") for ev in events if ev.kind == "action"]
+    assert "按涌现方案调整后续执行: 先重排后续执行，再补一次验证" in actions
+    assert "按调整后的方案重新验证结果并交付" in actions
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_orchestrator_run_returns_result():
     providers = {
         "top": _RoutingStub(tier="top"),
@@ -227,6 +581,28 @@ async def test_orchestrator_run_returns_result():
     assert result.answer == "Hello, world!"
     assert result.task_id.startswith("tk-")
     assert result.cost_usd_equivalent == 0.0  # stub has zero prices
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_emits_budget_policy_when_task_cost_crosses_warning():
+    providers = {
+        "top": _CostlyRoutingStub(tier="top"),
+        "cheap": _CostlyRoutingStub(tier="cheap"),
+        "coding": _CostlyRoutingStub(tier="coding"),
+        "fallback": _CostlyRoutingStub(tier="fallback"),
+    }
+    set_router(LLMRouter(providers))
+
+    events = []
+    async for ev in Orchestrator(output_translator=_identity_translator).stream("Say hi"):
+        events.append(ev)
+
+    budget_events = [ev for ev in events if ev.data.get("stage") == "budget_policy"]
+
+    assert budget_events
+    assert budget_events[0].data["level"] == "CRITICAL"
+    assert budget_events[0].data["decision_ticket"]["decision_point"] == "budget_policy"
 
 
 @pytest.mark.unit
@@ -369,7 +745,93 @@ async def test_orchestrator_pauses_side_effect_tasks_before_execution(monkeypatc
     result = TaskResult.model_validate(done.data["result"])
     assert result.status == "paused"
     assert "等待确认" in result.answer
-    assert "message.send" in result.answer
+    assert "email.draft" in result.answer
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_watchtower_pause_rule_stops_hot_execution_loop(monkeypatch):
+    providers = {
+        "top": _CostlyRoutingStub(tier="top"),
+        "cheap": _CostlyRoutingStub(tier="cheap"),
+        "coding": _CostlyRoutingStub(tier="coding"),
+        "fallback": _CostlyRoutingStub(tier="fallback"),
+    }
+    set_router(LLMRouter(providers))
+    rule_engine = RuleEngine(
+        rules=[
+            GuardRule(
+                id="unit_cost_runaway",
+                kind="guard",
+                description="pause when cost exceeds estimate",
+                trigger=RuleTrigger(
+                    event_type="task.step.completed",
+                    when=(
+                        "event['payload'].get('accumulated_cost_usd', 0) > "
+                        "event['payload'].get('estimated_cost_usd', 0) * 1.2"
+                    ),
+                ),
+                severity="high",
+                actions=[RuleAction(handler="pause_task")],
+            )
+        ]
+    )
+
+    orch = Orchestrator(output_translator=_identity_translator, rule_engine=rule_engine)
+    events = []
+    async for ev in orch.stream("Please greet the world"):
+        events.append(ev)
+
+    kinds = [ev.kind for ev in events]
+    assert "guard_intervention" in kinds
+    done = next(ev for ev in events if ev.kind == "done")
+    result = TaskResult.model_validate(done.data["result"])
+    assert result.status == "paused"
+    assert "守望暂停" in result.answer
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_world_request_skill_pauses_and_enqueues_pending_action(monkeypatch):
+    autoload_builtins()
+    providers = {
+        "top": _WorldRequestRoutingStub(tier="top"),
+        "cheap": _WorldRequestRoutingStub(tier="cheap"),
+        "coding": _WorldRequestRoutingStub(tier="coding"),
+        "fallback": _WorldRequestRoutingStub(tier="fallback"),
+    }
+    set_router(LLMRouter(providers))
+    captured_actions = []
+
+    async def fake_enqueue(_session, *, tenant_id, task_ref, actions):
+        captured_actions.extend(actions)
+
+    monkeypatch.setattr("kun.engineering.orchestrator.enqueue_pending_actions", fake_enqueue)
+
+    events = []
+    async for ev in Orchestrator(output_translator=_identity_translator).stream(
+        "Please draft and send an approval email"
+    ):
+        events.append(ev)
+
+    done = next(ev for ev in events if ev.kind == "done")
+    result = TaskResult.model_validate(done.data["result"])
+    assert result.status == "paused"
+    assert "外部动作审批" in result.answer
+    assert [action.action_type for action in captured_actions] == ["email.draft"]
+    preflight = next(
+        ev
+        for ev in events
+        if ev.kind == "action_plan" and ev.data.get("stage") == "preflight_guard"
+    )
+    assert preflight.data["decision_ticket"]["decision_point"] == "preflight_guard"
+    assert preflight.data["decision_ticket"]["status"] == "blocked"
+    guard = next(
+        ev
+        for ev in events
+        if ev.kind == "guard_intervention" and ev.data["stage"] == "world_action_approval"
+    )
+    assert guard.data["pending_actions"][0]["action_type"] == "email.draft"
 
 
 @pytest.mark.unit

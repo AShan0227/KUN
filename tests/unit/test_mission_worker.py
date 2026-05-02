@@ -1,0 +1,245 @@
+"""Mission resume worker tests."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import cast
+
+import pytest
+from kun.core.tenancy import TenantContext, tenant_scope
+from kun.datamodel.mission import ResumeRequest
+from kun.engineering import mission_worker
+from kun.engineering.mission_worker import (
+    MissionOrchestratorRunner,
+    MissionResumeResult,
+    MissionResumeWorker,
+    MissionRunnerOutcome,
+    _mission_strategy_context_lines,
+    _suggest_next_step_from_outcome,
+)
+from kun.engineering.orchestrator import Orchestrator, TaskResult
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resume_worker_is_honest_without_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    emitted: list[tuple[str, str]] = []
+
+    async def fake_requests(**_kwargs: object) -> list[ResumeRequest]:
+        return [_request()]
+
+    async def fake_emit(tenant_id: str, result: MissionResumeResult) -> None:
+        emitted.append((tenant_id, result.status))
+
+    monkeypatch.setattr(mission_worker, "request_resumable_tasks", fake_requests)
+    monkeypatch.setattr(mission_worker, "_emit_resume_result", fake_emit)
+
+    results = await MissionResumeWorker().run_once(tenant_id="tenant-a")
+
+    assert results[0].status == "skipped"
+    assert "no mission resume runner" in results[0].reason
+    assert emitted == [("tenant-a", "skipped")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resume_worker_dispatches_when_runner_accepts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    accepted: list[str] = []
+    emitted: list[str] = []
+
+    async def fake_requests(**_kwargs: object) -> list[ResumeRequest]:
+        return [_request()]
+
+    async def fake_emit(_tenant_id: str, result: MissionResumeResult) -> None:
+        emitted.append(result.status)
+
+    async def runner(request: ResumeRequest) -> None:
+        accepted.append(request.task_id)
+
+    monkeypatch.setattr(mission_worker, "request_resumable_tasks", fake_requests)
+    monkeypatch.setattr(mission_worker, "_emit_resume_result", fake_emit)
+
+    results = await MissionResumeWorker(runner=runner).run_once(tenant_id="tenant-a")
+
+    assert accepted == ["tk-1"]
+    assert results[0].status == "dispatched"
+    assert emitted == ["dispatched"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resume_worker_reports_completed_runner_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    emitted: list[str] = []
+
+    async def fake_requests(**_kwargs: object) -> list[ResumeRequest]:
+        return [_request()]
+
+    async def fake_emit(_tenant_id: str, result: MissionResumeResult) -> None:
+        emitted.append(result.status)
+
+    async def runner(_request: ResumeRequest) -> MissionRunnerOutcome:
+        return MissionRunnerOutcome(
+            executed_task_id="tk-exec",
+            final_status="done",
+            answer_preview="finished",
+        )
+
+    monkeypatch.setattr(mission_worker, "request_resumable_tasks", fake_requests)
+    monkeypatch.setattr(mission_worker, "_emit_resume_result", fake_emit)
+
+    results = await MissionResumeWorker(runner=runner).run_once(tenant_id="tenant-a")
+
+    assert results[0].status == "completed"
+    assert results[0].outcome is not None
+    assert results[0].outcome.executed_task_id == "tk-exec"
+    assert emitted == ["completed"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_resume_worker_marks_runner_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_requests(**_kwargs: object) -> list[ResumeRequest]:
+        return [_request()]
+
+    async def fake_emit(_tenant_id: str, _result: MissionResumeResult) -> None:
+        return None
+
+    async def runner(_request: ResumeRequest) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(mission_worker, "request_resumable_tasks", fake_requests)
+    monkeypatch.setattr(mission_worker, "_emit_resume_result", fake_emit)
+
+    results = await MissionResumeWorker(runner=runner).run_once(tenant_id="tenant-a")
+
+    assert results[0].status == "failed"
+    assert "RuntimeError" in results[0].reason
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orchestrator_runner_marks_and_records_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class FakeOrchestrator:
+        async def run_mission_continuation(
+            self,
+            request: ResumeRequest,
+            resume_prompt: str,
+            *,
+            output_kind: str,
+        ) -> TaskResult:
+            assert request.task_id == "tk-1"
+            prompt = resume_prompt
+            calls.append((prompt, output_kind))
+            return TaskResult(
+                task_id="tk-exec",
+                status="done",
+                answer="mission task finished",
+                cost_usd_equivalent=0.12,
+                tokens_in=10,
+                tokens_out=20,
+                duration_sec=1.5,
+            )
+
+    async def fake_prompt(tenant_id: str, request: ResumeRequest) -> str:
+        assert tenant_id == "tenant-a"
+        assert request.task_id == "tk-1"
+        return "resume prompt"
+
+    async def fake_started(tenant_id: str, request: ResumeRequest) -> None:
+        calls.append((f"started:{tenant_id}", request.task_id))
+
+    async def fake_record(
+        tenant_id: str,
+        request: ResumeRequest,
+        outcome: MissionRunnerOutcome,
+    ) -> None:
+        calls.append((f"recorded:{tenant_id}", outcome.final_status))
+        assert request.mission_id == "msn-1"
+        assert outcome.executed_task_id == "tk-exec"
+
+    monkeypatch.setattr(mission_worker, "_build_orchestrator_resume_prompt", fake_prompt)
+    monkeypatch.setattr(mission_worker, "_mark_execution_started", fake_started)
+    monkeypatch.setattr(mission_worker, "_record_execution_outcome", fake_record)
+
+    with tenant_scope(TenantContext(tenant_id="tenant-a")):
+        outcome = await MissionOrchestratorRunner(cast(Orchestrator, FakeOrchestrator())).__call__(
+            _request()
+        )
+
+    assert outcome.final_status == "done"
+    assert outcome.cost_usd_equivalent == 0.12
+    assert calls == [
+        ("started:tenant-a", "tk-1"),
+        ("resume prompt", "mission_worker"),
+        ("recorded:tenant-a", "done"),
+    ]
+
+
+def _request() -> ResumeRequest:
+    return ResumeRequest(
+        mission_id="msn-1",
+        task_id="tk-1",
+        runtime_status="queued",
+        resume_attempts=1,
+        reason="runtime_state_queued",
+    )
+
+
+def test_mission_strategy_context_lines_include_review_and_next_step() -> None:
+    lines = _mission_strategy_context_lines(
+        {
+            "last_review": {
+                "summary": "上一轮发现用户获取成本太高，要先缩小渠道。",
+                "budget_notes": "暂停高成本投放。",
+                "risk_notes": "避免真实外发。",
+            },
+            "strategy_notes": "优先做低风险验证。",
+            "last_continuation": {
+                "final_status": "done",
+                "answer_preview": "已经完成首轮客户访谈方案，并整理了低风险跟进动作。",
+            },
+        },
+        {
+            "summary": "先生成下一个获客实验方案。",
+            "reason": "预算有限，先小样本验证。",
+            "action_type": "continue",
+        },
+    )
+
+    joined = "\n".join(lines)
+    assert "上一轮发现用户获取成本太高" in joined
+    assert "暂停高成本投放" in joined
+    assert "避免真实外发" in joined
+    assert "先生成下一个获客实验方案" in joined
+    assert "优先做低风险验证" in joined
+    assert "Last continuation status: done" in joined
+    assert "已经完成首轮客户访谈方案" in joined
+
+
+def test_suggest_next_step_from_outcome_keeps_mission_moving() -> None:
+    request = _request()
+    outcome = MissionRunnerOutcome(
+        executed_task_id="tk-next",
+        final_status="done",
+        answer_preview="完成首个渠道验证，建议继续做小样本外联。",
+        cost_usd_equivalent=0.2,
+    )
+
+    next_step = _suggest_next_step_from_outcome(
+        request,
+        outcome,
+        now=datetime(2026, 4, 30, tzinfo=UTC),
+    )
+
+    assert next_step.task_id == "tk-1"
+    assert next_step.action_type == "continue"
+    assert next_step.reason == "continuation_done"
+    assert "继续推进" in next_step.summary

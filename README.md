@@ -8,7 +8,25 @@
 - [`PROGRESS.md`](./PROGRESS.md) — 开发进度
 - [`docs/DEPLOY.md`](./docs/DEPLOY.md) — 另一台机器如何部署 + 做 PR
 
-GitHub: https://github.com/AShan0227/KUN (private)
+GitHub: https://github.com/AShan0227/KUN (public, proprietary)
+
+## Legal / IP Notice
+
+KUN is public for visibility and collaboration, but it is **not open source**.
+Public visibility is not permission to copy, reuse, commercialize, host,
+redistribute, train models on, or build derivative products from this work.
+
+Key files:
+
+- [`LICENSE`](./LICENSE) — proprietary source-available terms, all rights reserved.
+- [`NOTICE`](./NOTICE) — protected materials and product identifiers.
+- [`COMMERCIAL_USE.md`](./COMMERCIAL_USE.md) — commercial use is prohibited without
+  prior written permission.
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — contribution terms and inbound rights.
+- [`SECURITY.md`](./SECURITY.md) — private vulnerability reporting.
+- [`docs/legal/IP_POLICY.md`](./docs/legal/IP_POLICY.md) — plain-language IP policy.
+- [`docs/legal/PUBLIC_REPO_RISK.md`](./docs/legal/PUBLIC_REPO_RISK.md) — what public
+  visibility does and does not protect.
 
 ## Quickstart
 
@@ -23,7 +41,7 @@ brew install uv        # 如未安装
 
 ```bash
 make install     # uv sync --extra dev
-cp .env.example .env && edit .env    # 填入 KUN_OFOX_API_KEY / MINIMAX_API_KEY
+cp .env.example .env && edit .env    # Claude 不可用时保留 KUN_LLM_PRIMARY=codex
 make up          # docker compose up -d (infra)
 make migrate     # alembic upgrade head
 make serve       # 启 API (autoreload)
@@ -35,6 +53,16 @@ Postgres 现在分两条连接：
 
 如果你已有旧 `.env`，确认把 `KUN_PG_DSN` 从 `kun:kun` 改成 `kun_app:kun_app`，并补上 `KUN_PG_ADMIN_DSN`。
 
+Claude 封号 / 不可用时，本机 LLM 推荐这样配：
+
+```bash
+KUN_LLM_PRIMARY=codex
+KUN_DISABLE_CLAUDE_CLI=1
+KUN_CODEX_MCP_MODEL=gpt-5.5
+```
+
+这会让普通执行、规划、判官和代码任务都优先走 `codex mcp-server`，不是只把 Codex 用在写代码档。
+
 ### 常用命令
 
 ```bash
@@ -44,6 +72,10 @@ make format       # 自动修复格式
 make rules        # 看加载的守望规则
 make skills       # 看加载的 starter skills
 make idle-batch   # 跑一次 idle-batch (health_report 子集)
+make preflight    # 换电脑/上线前的基础检查
+make readiness    # preflight + secret + delivery 汇总
+make dogfood      # V4 低风险 dogfood smoke
+make delivery-status # 诚实查看 ready / partial / not_ready
 make run-cli      # 对话框 CLI smoke
 ```
 

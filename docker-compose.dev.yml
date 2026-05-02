@@ -9,6 +9,9 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    labels:
+      com.kun.environment: "dev"
+      com.kun.prod-isolated: "true"
     environment:
       POSTGRES_USER: kun
       POSTGRES_PASSWORD: kun
@@ -80,6 +83,9 @@ services:
   minio:
     image: minio/minio:latest
     restart: unless-stopped
+    labels:
+      com.kun.environment: "dev"
+      com.kun.prod-isolated: "true"
     ports:
       - "19000:9000"    # S3 API (9000 held by dreamapp-minio)
       - "19001:9001"    # console
@@ -156,6 +162,8 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./kun/infra/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./kun/infra/grafana-dashboards-provision.yaml:/etc/grafana/provisioning/dashboards/kun-lab.yml:ro
+      - ./kun/infra/grafana-dashboard-kun-lab.json:/var/lib/grafana/dashboards/kun-lab.json:ro
     depends_on:
       - prometheus
       - loki

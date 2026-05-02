@@ -32,6 +32,8 @@ async def ready() -> dict[str, Any]:
     from kun.core.db import get_engine
 
     checks: dict[str, str] = {}
+    production_issues = settings().production_safety_issues()
+    checks["production_config"] = "ok" if not production_issues else "; ".join(production_issues)
 
     # Postgres + RLS guard
     try:

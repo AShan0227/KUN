@@ -1,0 +1,26 @@
+KUN / 鲲 NOTICE
+================
+
+KUN is proprietary source-available software. The repository may be visible on
+GitHub, but it is not open source.
+
+Copyright (c) 2026 KUN Project Authors. All rights reserved.
+
+Protected materials include, without limitation:
+
+- source code, tests, scripts, migrations, configuration, and deployment files;
+- product strategy, architecture, decision records, roadmaps, and delivery
+  status documents;
+- prompts, workflows, protocols, evaluation rubrics, memory structures,
+  routing rules, Watchtower / NUO / Qi designs, and agent orchestration logic;
+- UI design, task-board design, state-ledger design, names, logos, marks, and
+  product identifiers;
+- generated reports, benchmark fixtures, red-team fixtures, and dogfood
+  scenarios created for this project.
+
+No commercial use, redistribution, hosted use, model training, fine-tuning,
+distillation, dataset creation, or derivative-work use is permitted without
+prior written permission from the project owner.
+
+Third-party dependencies and starter-pack skills keep their own licenses. See
+package metadata and `skills/` license files for those third-party notices.

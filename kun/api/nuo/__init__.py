@@ -5,15 +5,19 @@
 
 from fastapi import APIRouter
 
+from kun.api.nuo.account_panel import router as account_router
 from kun.api.nuo.action_panel import router as action_router
 from kun.api.nuo.benchmark_panel import router as benchmark_router
 from kun.api.nuo.budget_panel import router as budget_router
 from kun.api.nuo.capability_panel import router as capability_router
+from kun.api.nuo.diagnose_panel import router as diagnose_router
 from kun.api.nuo.health_panel import router as health_router
 
 router = APIRouter()
 router.include_router(health_router, prefix="/health")
 router.include_router(budget_router, prefix="/budget")
 router.include_router(action_router, prefix="/actions")
+router.include_router(account_router, prefix="/accounts")
 router.include_router(capability_router, prefix="/capability")
 router.include_router(benchmark_router, prefix="/benchmark")
+router.include_router(diagnose_router, prefix="/diagnose")

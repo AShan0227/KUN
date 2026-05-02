@@ -1,0 +1,145 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "KUN-Lab (V2.2 §26) — 内测分区可视化. Wire 28 metrics + Wire 27 cost cap.",
+  "editable": true,
+  "panels": [
+    {
+      "title": "Lab 实验吞吐 (per task_type, 5min rate)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "sum by (task_type, status) (rate(kun_lab_experiment_total[5m]))",
+          "legendFormat": "{{task_type}} / {{status}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "title": "Lab 累积 cost (per task_type, USD)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "sum by (task_type) (kun_lab_experiment_cost_usd)",
+          "legendFormat": "{{task_type}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}}
+    },
+    {
+      "title": "Wire 27 budget cap 触发率 (rolling 1h)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "sum by (task_type) (rate(kun_lab_budget_cap_total[1h]))",
+          "legendFormat": "{{task_type}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "alert": {
+        "name": "Lab budget cap spike",
+        "conditions": [
+          {
+            "evaluator": {"params": [0.3], "type": "gt"},
+            "operator": {"type": "and"},
+            "query": {"params": ["A", "5m", "now"]},
+            "reducer": {"type": "avg"}
+          }
+        ]
+      }
+    },
+    {
+      "title": "Ensemble path 跑量 (by strategy + tier)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "sum by (strategy, tier, status) (rate(kun_lab_path_total[5m]))",
+          "legendFormat": "{{strategy}} / {{tier}} / {{status}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    },
+    {
+      "title": "Ensemble 总延迟 p95 (per task_type)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, task_type) (rate(kun_lab_experiment_latency_seconds_bucket[5m])))",
+          "legendFormat": "{{task_type}} p95",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "title": "Recipe 推送 (per target_module, 1h rate)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "sum by (task_type, target_module) (rate(kun_lab_promotion_total[1h]))",
+          "legendFormat": "{{task_type}} → {{target_module}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+    },
+    {
+      "title": "LabRecipeRegistry 当前 size (Wire 25)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "kun_lab_registry_size",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 24},
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center"
+      }
+    },
+    {
+      "title": "Top 5 winning strategies (by recent path counts)",
+      "type": "table",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "topk(5, sum by (strategy) (increase(kun_lab_path_total{status=\"ok\"}[24h])))",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 6, "w": 18, "x": 6, "y": 24}
+    }
+  ],
+  "schemaVersion": 38,
+  "tags": ["kun", "lab", "v2.2"],
+  "title": "KUN-Lab (V2.2 §26)",
+  "uid": "kun-lab",
+  "version": 1
+}

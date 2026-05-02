@@ -31,6 +31,11 @@ from kun.core.ids import new_id
 from kun.core.logging import get_logger
 from kun.core.orm import PendingActionRow, RuntimeStateRow, TaskRow
 from kun.datamodel.task import RiskLevel, TaskRef, TaskSpec
+from kun.world.action_taxonomy import (
+    TaxonomyResult,
+    apply_taxonomy_audit_fields,
+    normalize_world_action_type,
+)
 
 log = get_logger("kun.engineering.concurrency")
 
@@ -178,13 +183,18 @@ ResourceMode = Literal["read", "write"]
 
 _ACTIVE_RUNTIME_STATUSES = ("queued", "running", "paused")
 _SIDE_EFFECT_KEYWORDS = {
-    "send": "message.send",
-    "email": "message.send",
-    "mail": "message.send",
-    "slack": "message.send",
-    "sms": "message.send",
-    "publish": "content.publish",
-    "post": "content.publish",
+    "send": "email.draft",
+    "email": "email.draft",
+    "mail": "email.draft",
+    "slack": "email.draft",
+    "sms": "email.draft",
+    "publish": "local_file.write",
+    "post": "webhook.post_dry_run",
+    "webhook": "webhook.post_dry_run",
+    "api": "webhook.post_dry_run",
+    "browser": "browser.plan",
+    "click": "browser.plan",
+    "form": "browser.plan",
     "delete": "resource.delete",
     "remove": "resource.delete",
     "transfer": "payment.transfer",
@@ -193,9 +203,14 @@ _SIDE_EFFECT_KEYWORDS = {
     "refund": "payment.refund",
     "deploy": "deployment.change",
     "merge": "repository.merge",
-    "发送": "message.send",
-    "邮件": "message.send",
-    "发布": "content.publish",
+    "发送": "email.draft",
+    "邮件": "email.draft",
+    "发布": "local_file.write",
+    "网页": "browser.plan",
+    "浏览器": "browser.plan",
+    "点击": "browser.plan",
+    "表单": "browser.plan",
+    "接口": "webhook.post_dry_run",
     "删除": "resource.delete",
     "转账": "payment.transfer",
     "支付": "payment.transfer",
@@ -203,6 +218,9 @@ _SIDE_EFFECT_KEYWORDS = {
     "部署": "deployment.change",
     "合并": "repository.merge",
 }
+_EXPLICIT_ACTION_TYPE_RE = re.compile(
+    r"(?<![a-z0-9])([a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+)(?![a-z0-9])"
+)
 
 
 class ResourceIntent(BaseModel):
@@ -244,6 +262,17 @@ class PendingActionSpec(BaseModel):
     risk_level: RiskLevel = "medium"
     payload: dict[str, Any] = Field(default_factory=dict)
 
+    def model_post_init(self, __context: Any) -> None:
+        taxonomy = normalize_world_action_type(self.action_type, self.payload)
+        self.action_type = taxonomy.action_type
+        if "source_action_type" in self.payload and "taxonomy_reason" in self.payload:
+            self.payload = {
+                **self.payload,
+                "matched_action_type": taxonomy.action_type,
+            }
+            return
+        self.payload = apply_taxonomy_audit_fields(self.payload, taxonomy)
+
 
 async def scan_pre_conflicts(
     session: AsyncSession,
@@ -281,6 +310,47 @@ async def scan_pre_conflicts(
     return PreConflictReport(resources=incoming, conflicts=conflicts)
 
 
+async def scan_active_resource_conflicts(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+) -> list[ConflictFinding]:
+    """Scan already-active tasks for conflicting resource intents.
+
+    `scan_pre_conflicts` protects the entrance. This function is for NUO:
+    periodically ask “do we already have two active tasks fighting over the
+    same resource?” so conflicts do not hide after a resume/rebase/manual edit.
+    """
+    result = await session.execute(
+        select(TaskRow, RuntimeStateRow.status)
+        .join(RuntimeStateRow, RuntimeStateRow.task_ref == TaskRow.task_id)
+        .where(TaskRow.tenant_id == tenant_id)
+        .where(RuntimeStateRow.status.in_(_ACTIVE_RUNTIME_STATUSES))
+    )
+    active = [
+        (cast(TaskRow, row[0]), cast(str, row[1]), _derive_resource_intents_from_task_row(row[0]))
+        for row in result.all()
+    ]
+    conflicts: list[ConflictFinding] = []
+    for left_idx, (left_task, left_status, left_intents) in enumerate(active):
+        for right_task, right_status, right_intents in active[left_idx + 1 :]:
+            pair_conflicts = _compare_resource_intents(
+                task_id=right_task.task_id,
+                status=right_status,
+                existing=left_intents,
+                incoming=right_intents,
+            )
+            for conflict in pair_conflicts:
+                if conflict.reason:
+                    continue
+                conflict.reason = (
+                    f"active task {left_task.task_id} ({left_status}) conflicts "
+                    f"with {right_task.task_id}"
+                )
+            conflicts.extend(pair_conflicts)
+    return conflicts
+
+
 def derive_resource_intents(task_ref: TaskRef) -> list[ResourceIntent]:
     """Derive conservative resource intents from TASK.md L1/L2."""
     intents: dict[str, ResourceIntent] = {}
@@ -315,13 +385,13 @@ def derive_resource_intents(task_ref: TaskRef) -> list[ResourceIntent]:
 def pending_actions_for(task_ref: TaskRef) -> list[PendingActionSpec]:
     """Extract side-effect actions that should wait for approval."""
     text = _task_text(task_ref)
-    action_types = sorted(_matched_action_types(text))
-    if not action_types:
+    taxonomies = _matched_action_taxonomies(text)
+    if not taxonomies:
         return []
 
     target_ref = "unknown"
     if task_ref.spec and task_ref.spec.external_resources:
-        target_ref = _normalize(task_ref.spec.external_resources[0])
+        target_ref = _target_ref(task_ref.spec.external_resources[0])
     elif task_ref.meta.owner.project_id:
         target_ref = f"project:{_normalize(task_ref.meta.owner.project_id)}"
 
@@ -331,17 +401,16 @@ def pending_actions_for(task_ref: TaskRef) -> list[PendingActionSpec]:
 
     return [
         PendingActionSpec(
-            action_type=action_type,
+            action_type=taxonomy.action_type,
             target_ref=target_ref,
             risk_level=risk_level,
-            payload={
-                "task_id": task_ref.meta.task_id,
-                "task_type": task_ref.meta.task_type,
-                "success_criteria_short": task_ref.meta.success_criteria_short,
-                "matched_action_type": action_type,
-            },
+            payload=_pending_action_payload(
+                task_ref=task_ref,
+                taxonomy=taxonomy,
+                target_ref=target_ref,
+            ),
         )
-        for action_type in action_types
+        for taxonomy in sorted(taxonomies.values(), key=lambda item: item.action_type)
     ]
 
 
@@ -545,16 +614,28 @@ def _has_side_effect_text(text: str) -> bool:
 
 
 def _matched_action_types(text: str) -> set[str]:
+    return set(_matched_action_taxonomies(text))
+
+
+def _matched_action_taxonomies(text: str) -> dict[str, TaxonomyResult]:
     normalized = text.lower()
-    ascii_search_text = re.sub(r"[_\-.]+", " ", normalized)
-    matched: set[str] = set()
+    explicit_action_types = _EXPLICIT_ACTION_TYPE_RE.findall(normalized)
+    keyword_search_source = _EXPLICIT_ACTION_TYPE_RE.sub(" ", normalized)
+    ascii_search_text = re.sub(r"[_\-.]+", " ", keyword_search_source)
+    matched: dict[str, TaxonomyResult] = {}
+    for explicit_action_type in explicit_action_types:
+        taxonomy = normalize_world_action_type(explicit_action_type)
+        if taxonomy.taxonomy_reason != "no_taxonomy_mapping_found":
+            matched.setdefault(taxonomy.action_type, taxonomy)
     for keyword, action_type in _SIDE_EFFECT_KEYWORDS.items():
         if keyword.isascii():
             pattern = rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])"
             if re.search(pattern, ascii_search_text):
-                matched.add(action_type)
+                taxonomy = normalize_world_action_type(action_type)
+                matched.setdefault(taxonomy.action_type, taxonomy)
         elif keyword in normalized:
-            matched.add(action_type)
+            taxonomy = normalize_world_action_type(action_type)
+            matched.setdefault(taxonomy.action_type, taxonomy)
     return matched
 
 
@@ -562,3 +643,61 @@ def _normalize(value: str) -> str:
     normalized = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff._:-]+", "-", value.strip().lower())
     normalized = re.sub(r"-+", "-", normalized).strip("-")
     return normalized or "unknown"
+
+
+def _target_ref(value: str) -> str:
+    raw = value.strip()
+    if re.match(r"https?://", raw, flags=re.IGNORECASE):
+        return raw
+    if "@" in raw and not raw.startswith("project:"):
+        return raw
+    return _normalize(raw)
+
+
+def _pending_action_payload(
+    *,
+    task_ref: TaskRef,
+    taxonomy: TaxonomyResult,
+    target_ref: str,
+) -> dict[str, Any]:
+    action_type = taxonomy.action_type
+    base = {
+        "task_id": task_ref.meta.task_id,
+        "task_type": task_ref.meta.task_type,
+        "success_criteria_short": task_ref.meta.success_criteria_short,
+        "matched_action_type": action_type,
+    }
+    base = apply_taxonomy_audit_fields(base, taxonomy)
+    goal = task_ref.spec.goal_detail if task_ref.spec else task_ref.meta.success_criteria_short
+    if action_type == "email.draft":
+        return {
+            **base,
+            "to": "" if target_ref.startswith("project:") else target_ref,
+            "subject": task_ref.meta.success_criteria_short[:120],
+            "body": goal,
+        }
+    if action_type == "local_file.write":
+        safe_name = _normalize(task_ref.meta.task_id or "task")
+        return {
+            **base,
+            "path": f"drafts/{safe_name}.md",
+            "content": goal,
+        }
+    if action_type == "webhook.post_dry_run":
+        return {
+            **base,
+            "url": target_ref if target_ref.startswith(("http://", "https://")) else "",
+            "json": {
+                "task_id": task_ref.meta.task_id,
+                "summary": task_ref.meta.success_criteria_short,
+                "goal": goal,
+            },
+        }
+    if action_type == "browser.plan":
+        return {
+            **base,
+            "url": target_ref if target_ref.startswith(("http://", "https://")) else "",
+            "objective": goal,
+            "steps": [],
+        }
+    return base

@@ -131,6 +131,22 @@ class AnthropicProvider(LLMProvider):
                 for t in request.tools
             ]
 
+        # V2.2 §22 Wire 11: response_format strict mode (Anthropic 用 tool calling 模拟)
+        # 把目标 schema 包成一个虚拟 tool, 强制 LLM 必调它, 输出就是 tool 参数 (合 schema)
+        if request.response_format and not request.tools:
+            schema_obj = dict(request.response_format)
+            # 接受 OpenAI 风格 {"type": "json_schema", "json_schema": {...}}
+            if schema_obj.get("type") == "json_schema":
+                schema_obj = schema_obj.get("json_schema", {}).get("schema", schema_obj)
+            kwargs["tools"] = [
+                {
+                    "name": "structured_output",
+                    "description": "Return your structured response by calling this tool exactly once.",
+                    "input_schema": schema_obj or {"type": "object", "properties": {}},
+                }
+            ]
+            kwargs["tool_choice"] = {"type": "tool", "name": "structured_output"}
+
         resp = await self._client.messages.create(**kwargs)
 
         latency = (time.perf_counter() - started) * 1000
@@ -143,13 +159,21 @@ class AnthropicProvider(LLMProvider):
             if block_type == "text":
                 content_parts.append(str(getattr(block, "text", "")))
             elif block_type == "tool_use":
+                tool_name = str(getattr(block, "name", ""))
+                tool_args = getattr(block, "input", {}) or {}
                 tool_calls.append(
                     ToolCall(
                         id=str(getattr(block, "id", "")),
-                        name=str(getattr(block, "name", "")),
-                        arguments=getattr(block, "input", {}),
+                        name=tool_name,
+                        arguments=tool_args,
                     )
                 )
+                # V2.2 §22 Wire 11: structured_output 虚拟 tool → 把 args 当 content 返
+                # (调用方 StructuredStepGenerator._extract_payload 直接 parse JSON)
+                if tool_name == "structured_output" and tool_args:
+                    import json as _json
+
+                    content_parts.append(_json.dumps(tool_args, ensure_ascii=False))
 
         usage = UsageInfo(
             input_tokens=getattr(resp.usage, "input_tokens", 0),

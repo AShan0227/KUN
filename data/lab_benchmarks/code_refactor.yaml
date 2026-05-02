@@ -1,0 +1,23 @@
+name: code_refactor
+description: 20 code-refactor prompts for KUN-Lab strategy comparison.
+items:
+  - {item_id: c01, task_type: coding.refactor, prompt: "把重复的 Python if/else 分支抽成函数", expected_keywords: ["函数", "重复"]}
+  - {item_id: c02, task_type: coding.refactor, prompt: "重构一个 React 表单组件，让校验逻辑更清楚", expected_keywords: ["React", "校验"]}
+  - {item_id: c03, task_type: coding.refactor, prompt: "把同步文件读取改成异步接口", expected_keywords: ["异步", "读取"]}
+  - {item_id: c04, task_type: coding.refactor, prompt: "给 FastAPI service 层拆分 repository", expected_keywords: ["FastAPI", "repository"]}
+  - {item_id: c05, task_type: coding.refactor, prompt: "把硬编码配置移到 settings 对象", expected_keywords: ["配置", "settings"]}
+  - {item_id: c06, task_type: coding.refactor, prompt: "减少一个函数的圈复杂度", expected_keywords: ["复杂度", "拆分"]}
+  - {item_id: c07, task_type: coding.refactor, prompt: "把 CSV 解析逻辑改成可测试小函数", expected_keywords: ["CSV", "测试"]}
+  - {item_id: c08, task_type: coding.refactor, prompt: "把 SQL 拼接改成参数化查询", expected_keywords: ["SQL", "参数"]}
+  - {item_id: c09, task_type: coding.refactor, prompt: "给缓存模块加清晰的接口边界", expected_keywords: ["缓存", "接口"]}
+  - {item_id: c10, task_type: coding.refactor, prompt: "把长组件拆成 container 和 presentational", expected_keywords: ["组件", "拆"]}
+  - {item_id: c11, task_type: coding.refactor, prompt: "把全局变量改成依赖注入", expected_keywords: ["依赖", "注入"]}
+  - {item_id: c12, task_type: coding.refactor, prompt: "重构异常处理，保留错误上下文", expected_keywords: ["异常", "上下文"]}
+  - {item_id: c13, task_type: coding.refactor, prompt: "把 magic number 改成命名常量", expected_keywords: ["常量", "magic"]}
+  - {item_id: c14, task_type: coding.refactor, prompt: "把业务校验从 controller 移到 domain", expected_keywords: ["controller", "domain"]}
+  - {item_id: c15, task_type: coding.refactor, prompt: "把轮询逻辑改成可取消任务", expected_keywords: ["取消", "任务"]}
+  - {item_id: c16, task_type: coding.refactor, prompt: "统一多个 API response schema", expected_keywords: ["API", "schema"]}
+  - {item_id: c17, task_type: coding.refactor, prompt: "给事件处理器拆出纯函数", expected_keywords: ["事件", "纯函数"]}
+  - {item_id: c18, task_type: coding.refactor, prompt: "把重复测试 fixture 收敛成 helper", expected_keywords: ["fixture", "helper"]}
+  - {item_id: c19, task_type: coding.refactor, prompt: "把日志字段改成结构化输出", expected_keywords: ["日志", "结构化"]}
+  - {item_id: c20, task_type: coding.refactor, prompt: "把同步重试改成指数退避", expected_keywords: ["重试", "退避"]}

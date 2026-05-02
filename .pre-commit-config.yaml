@@ -21,14 +21,13 @@ repos:
         args: ["--fix"]
       - id: ruff-format
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.13.0
+  - repo: local
     hooks:
       - id: mypy
-        additional_dependencies:
-          - pydantic>=2.9.0
-          - types-PyYAML
-        args: [--config-file=pyproject.toml]
+        name: mypy
+        entry: uv run --extra dev mypy kun
+        language: system
+        pass_filenames: false
         files: ^kun/
 
   - repo: https://github.com/fsfe/reuse-tool

@@ -1,0 +1,56 @@
+KUN PROPRIETARY SOURCE-AVAILABLE LICENSE
+
+Copyright (c) 2026 KUN Project Authors. All rights reserved.
+
+This repository is public for visibility, review, and collaboration. Public
+visibility does not make this software open source and does not grant any
+license to use, copy, modify, distribute, sublicense, sell, host, operate,
+train models on, or create derivative works from the software, documentation,
+product plans, architecture, prompts, workflows, datasets, UI designs, names,
+or other materials in this repository.
+
+No rights are granted except where the project owner has given prior written
+permission in a separate signed agreement.
+
+Without prior written permission, you may not:
+
+1. use this project or any substantial part of it in a product, service, demo,
+   benchmark, commercial project, internal business system, or hosted offering;
+2. copy, fork for reuse, mirror, repackage, redistribute, sublicense, or sell
+   the code, documentation, product plans, architecture, prompts, workflows, or
+   generated assets;
+3. remove or alter copyright notices, proprietary notices, attribution,
+   decision records, delivery-status records, or safety warnings;
+4. use the repository content to train, fine-tune, distill, evaluate, benchmark,
+   or otherwise improve machine-learning models, agents, datasets, or retrieval
+   systems;
+5. use the names KUN, 鲲, NUO, 傩, Qi, 启, Hermes, Watchtower, or related product
+   identifiers in a way that suggests endorsement, ownership, or affiliation;
+6. reverse engineer private product strategy, commercial plans, or technical
+   roadmaps for competitive use.
+
+Contributions
+-------------
+
+If you submit an issue, pull request, patch, idea, comment, or other
+contribution to this repository, you represent that you have the right to submit
+it and you grant the project owner a perpetual, worldwide, royalty-free,
+irrevocable, sublicensable license to use, reproduce, modify, distribute,
+commercialize, and otherwise exploit the contribution as part of KUN or related
+products. No compensation or ownership transfer from the project owner is
+implied unless separately agreed in writing.
+
+Third-Party Materials
+---------------------
+
+Third-party materials may be included under their own licenses. Those licenses
+apply only to the third-party materials and do not grant rights to KUN's own
+code, documentation, architecture, product plans, prompts, workflows, or marks.
+
+Disclaimer
+----------
+
+THE SOFTWARE AND MATERIALS ARE PROVIDED "AS IS" FOR REVIEW ONLY, WITHOUT
+WARRANTY OF ANY KIND. TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE PROJECT
+OWNER DISCLAIMS ALL WARRANTIES AND SHALL NOT BE LIABLE FOR ANY CLAIM, DAMAGES,
+OR OTHER LIABILITY ARISING FROM UNAUTHORIZED USE OF THIS REPOSITORY.

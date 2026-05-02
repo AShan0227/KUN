@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     env: Literal["dev", "staging", "production"] = "dev"
     log_level: str = "INFO"
     default_tenant_id: str | None = "u-sylvan"
+    auth_secret: str | None = None
+    # Optional comma-separated secret list for zero-downtime rotation.  The
+    # first secret is used by operators to mint new tokens; all listed secrets
+    # are accepted for verification.
+    auth_secrets: str | None = None
+    self_signup_enabled: bool = False
+    self_signup_invite_code: str | None = None
+    password_login_enabled: bool = False
 
     @field_validator("default_tenant_id", mode="before")
     @classmethod
@@ -40,7 +48,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # Qdrant
-    qdrant_url: str = "http://localhost:16333"
+    qdrant_url: str = "http://127.0.0.1:16333"
     qdrant_api_key: str | None = None
 
     # NATS
@@ -82,7 +90,46 @@ class Settings(BaseSettings):
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    api_cors_origins: str = "http://localhost:3000"
+    api_cors_origins: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002"
+
+    def production_safety_issues(self) -> list[str]:
+        """Return deployment blockers that make a production KUN unsafe."""
+
+        issues: list[str] = []
+        if self.env != "production":
+            return issues
+        if self.default_tenant_id:
+            issues.append("KUN_DEFAULT_TENANT_ID must be blank in production")
+        if not self.auth_secret_candidates():
+            issues.append(
+                "KUN_AUTH_SECRET or KUN_AUTH_SECRETS must contain at least one 32+ character secret"
+            )
+        if self.self_signup_enabled and not (self.self_signup_invite_code or "").strip():
+            issues.append("KUN_SELF_SIGNUP_INVITE_CODE is required when self signup is enabled")
+        if self.password_login_enabled and not self.auth_secret_candidates():
+            issues.append("KUN_AUTH_SECRET or KUN_AUTH_SECRETS is required for password login")
+        if "kun:kun@" in self.pg_dsn:
+            issues.append("KUN_PG_DSN must use the non-admin app role in production")
+        if self.s3_access_key == "minio" or self.s3_secret_key == "minio123":
+            issues.append("S3/MinIO default credentials must be changed in production")
+        return issues
+
+    def auth_secret_candidates(self) -> list[str]:
+        """Return active auth secrets, newest/primary first."""
+
+        secrets: list[str] = []
+        for raw in (self.auth_secret, self.auth_secrets):
+            if not raw:
+                continue
+            secrets.extend(item.strip() for item in raw.split(",") if item.strip())
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for secret in secrets:
+            if len(secret) < 32 or secret in seen:
+                continue
+            deduped.append(secret)
+            seen.add(secret)
+        return deduped
 
 
 @cache

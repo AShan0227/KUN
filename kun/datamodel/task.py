@@ -21,9 +21,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from kun.context.assets import AssetLayer, LayeredAsset
 from kun.core.ids import new_id
+from kun.datamodel.verification_spec import VerificationSpec
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
+ExecutionMode = Literal["FAST", "SMART", "MAX", "ENSEMBLE"]
 
 
 class Owner(BaseModel):
@@ -52,6 +55,8 @@ class TaskMeta(BaseModel):
     owner: Owner
     estimated_cost_usd: float = Field(default=0.05, ge=0.0)
     estimated_duration_sec: float = Field(default=30.0, ge=0.0)
+    execution_mode: ExecutionMode = "FAST"
+    mode_override_reason: str = ""
     deadline_iso: datetime | None = None
     success_criteria_short: str = Field(max_length=200)
     version: int = Field(default=1, description="TASK.md structure version, not run count")
@@ -127,6 +132,34 @@ class TaskSpec(BaseModel):
     fallback_plan: str | None = None
     parent_task_id: str | None = None
     blocking_task_ids: list[str] = Field(default_factory=list)
+    # V2.2 Wire 36 (BATCH4 C3 / T53): 任务完成验证规格 — orchestrator 标记 done 前
+    # 跑 VerificationRunner.verify(), 任何 required spec failed → mark failed
+    verification_specs: list[VerificationSpec] = Field(default_factory=list)
+
+
+class TaskLayer3Context(BaseModel):
+    """Layer 3: full execution context, loaded only when truly needed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_context: str = ""
+    user_context: str = ""
+    historical_notes: list[str] = Field(default_factory=list)
+    asset_refs: list[str] = Field(default_factory=list)
+    raw_input_ref: str | None = None
+
+    def summary(self, *, max_chars: int = 1200) -> str:
+        parts = [
+            self.project_context,
+            self.user_context,
+            "\n".join(self.historical_notes),
+            f"assets: {', '.join(self.asset_refs)}" if self.asset_refs else "",
+            f"raw_input_ref: {self.raw_input_ref}" if self.raw_input_ref else "",
+        ]
+        text = "\n".join(part for part in parts if part).strip()
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 20].rstrip() + "\n...<truncated>"
 
 
 class TaskRef(BaseModel):
@@ -134,6 +167,7 @@ class TaskRef(BaseModel):
 
     meta: TaskMeta
     spec: TaskSpec | None = None
+    layer3_context: TaskLayer3Context | None = None
     layer3_ref: str | None = Field(
         default=None,
         description="对象存储引用 (s3://...) 或内部 asset id (mm-xxx)",
@@ -144,4 +178,41 @@ class TaskRef(BaseModel):
         return (
             f"{self.meta.task_id} [{self.meta.task_type}/{self.meta.risk_level}] "
             f"{self.meta.success_criteria_short}"
+        )
+
+    def to_layered_asset(self, *, layer: AssetLayer = AssetLayer.L1_TASK) -> LayeredAsset:
+        """Expose TASK.md through the same progressive-disclosure asset interface."""
+
+        metadata = {
+            "task_id": self.meta.task_id,
+            "task_type": self.meta.task_type,
+            "risk_level": self.meta.risk_level,
+            "complexity_score": self.meta.complexity_score,
+            "execution_mode": self.meta.execution_mode,
+            "success_criteria_short": self.meta.success_criteria_short,
+            "project_id": self.meta.owner.project_id or "",
+        }
+        summary_parts = [self.meta.success_criteria_short]
+        if self.spec is not None:
+            summary_parts.extend(
+                [
+                    self.spec.goal_detail,
+                    f"success_metrics={self.spec.success_metrics}",
+                    f"required_skills={self.spec.required_skills}",
+                    f"required_tools={self.spec.required_tools}",
+                ]
+            )
+        if self.layer3_context is not None:
+            summary_parts.append(self.layer3_context.summary(max_chars=600))
+        full_ref = self.layer3_ref or (
+            f"task_l3://{self.meta.task_id}" if self.layer3_context is not None else None
+        )
+        return LayeredAsset.build(
+            "task",
+            self.meta.owner.tenant_id,
+            metadata=metadata,
+            summary="\n".join(part for part in summary_parts if part),
+            full_ref=full_ref,
+            layer=layer,
+            tags=[self.meta.task_type, self.meta.risk_level, self.meta.execution_mode],
         )

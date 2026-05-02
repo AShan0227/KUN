@@ -49,6 +49,7 @@ dependencies = [
   "typer>=0.13.0",
   "pypdf>=6.10.2",
   "minio>=7.2.20",
+  "magika>=0.6.0",
 ]
 
 [project.optional-dependencies]
@@ -64,6 +65,9 @@ dev = [
   "pre-commit>=4.0.0",
   "faker>=33.0.0",
   "freezegun>=1.5.0",
+]
+compiler = [
+    "markitdown>=0.1.0",
 ]
 
 [project.scripts]
@@ -126,6 +130,7 @@ ignore_missing_imports = true
 minversion = "8.0"
 addopts = "-ra -q --strict-markers --strict-config"
 testpaths = ["tests"]
+norecursedirs = ["tests/fixtures"]
 asyncio_mode = "auto"
 markers = [
   "unit: unit tests (fast, no external deps)",

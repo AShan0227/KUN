@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
+
 import pytest
 from kun.context.assets import LayeredAsset
 from kun.context.packer import ContextPacker
@@ -19,6 +23,24 @@ def _task() -> TaskRef:
     )
     spec = TaskSpec(
         goal_detail="修复 pytest 失败并输出报告",
+        success_metrics=["pytest 全部通过"],
+        required_skills=["coding-pytest"],
+    )
+    return TaskRef(meta=meta, spec=spec)
+
+
+def _high_risk_task() -> TaskRef:
+    owner = Owner(tenant_id="u-sylvan")
+    meta = TaskMeta(
+        fingerprint=TaskMeta.compute_fingerprint("pytest production payment fix", owner),
+        task_type="coding.python.pytest",
+        owner=owner,
+        risk_level="high",
+        complexity_score=0.7,
+        success_criteria_short="修复生产支付 pytest 回归",
+    )
+    spec = TaskSpec(
+        goal_detail="修复生产支付链路 pytest 失败并避免错误历史记忆",
         success_metrics=["pytest 全部通过"],
         required_skills=["coding-pytest"],
     )
@@ -71,3 +93,373 @@ async def test_context_packer_keeps_tenant_boundary() -> None:
     pack = await ContextPacker(store).pack(_task(), tenant_id="u-sylvan")
 
     assert pack.items == []
+
+
+# ---- Wire 33: pack_query (hermes use_memory) ----
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pack_query_returns_relevant_assets() -> None:
+    """Wire 33: pack_query 用 query string 拉相关 memory."""
+    store = InMemoryAssetStore()
+    relevant = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "auth_service 架构"},
+        summary="JWT 认证服务的设计与实现",
+        tags=["auth", "jwt"],
+    )
+    irrelevant = LayeredAsset.build(
+        "knowledge",
+        "u-sylvan",
+        metadata={"title": "销售话术"},
+        summary="销售跟进套路",
+        tags=["sales"],
+    )
+    await store.put(relevant)
+    await store.put(irrelevant)
+
+    pack = await ContextPacker(store).pack_query("JWT 认证 实现", tenant_id="u-sylvan")
+
+    assert any(it.asset_id == relevant.asset_id for it in pack.items)
+    assert all(it.asset_id != irrelevant.asset_id for it in pack.items)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pack_query_empty_query_returns_empty() -> None:
+    store = InMemoryAssetStore()
+    pack = await ContextPacker(store).pack_query("", tenant_id="u-sylvan")
+    assert pack.items == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pack_query_respects_tenant() -> None:
+    store = InMemoryAssetStore()
+    await store.put(
+        LayeredAsset.build(
+            "memory",
+            "u-other",
+            metadata={"title": "other tenant note"},
+            summary="should not leak",
+            tags=["jwt"],
+        )
+    )
+
+    pack = await ContextPacker(store).pack_query("jwt", tenant_id="u-sylvan")
+    assert pack.items == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pack_query_respects_limit() -> None:
+    store = InMemoryAssetStore()
+    for i in range(5):
+        await store.put(
+            LayeredAsset.build(
+                "memory",
+                "u-sylvan",
+                metadata={"title": f"jwt note {i}"},
+                summary=f"about jwt content {i}",
+                tags=["jwt", "auth"],
+            )
+        )
+
+    pack = await ContextPacker(store).pack_query("jwt auth", tenant_id="u-sylvan", limit=2)
+    assert len(pack.items) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_penalizes_failed_memories() -> None:
+    store = InMemoryAssetStore()
+    good = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest good", "validation_outcome": "pass", "score_overall": 0.9},
+        summary="pytest 修复 复现 回归",
+        tags=["pytest"],
+    )
+    bad = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest bad", "validation_outcome": "fail", "score_overall": 0.1},
+        summary="pytest 修复 复现 回归",
+        tags=["pytest"],
+    )
+    await store.put(bad)
+    await store.put(good)
+
+    pack = await ContextPacker(store).pack(_task(), tenant_id="u-sylvan", limit=2)
+
+    assert [item.asset_id for item in pack.items][:2] == [good.asset_id, bad.asset_id]
+    assert "quality_delta" in pack.items[0].score_rationale
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_penalizes_compiler_assets_marked_for_recompile() -> None:
+    store = InMemoryAssetStore()
+    clean = LayeredAsset.build(
+        "knowledge",
+        "u-sylvan",
+        metadata={
+            "title": "pytest clean compiled",
+            "compiler_quality_score": 0.98,
+        },
+        summary="pytest 修复 复现 回归 编译资料",
+        tags=["pytest", "compiler"],
+    )
+    stale = LayeredAsset.build(
+        "knowledge",
+        "u-sylvan",
+        metadata={
+            "title": "pytest stale compiled",
+            "compiler_quality_score": 0.25,
+            "compiler_recompile_recommended": True,
+            "compiler_review_required": True,
+        },
+        summary="pytest 修复 复现 回归 编译资料",
+        tags=["pytest", "compiler"],
+    )
+    await store.put(stale)
+    await store.put(clean)
+
+    pack = await ContextPacker(store).pack(_task(), tenant_id="u-sylvan", limit=2)
+
+    assert [item.asset_id for item in pack.items][:2] == [clean.asset_id, stale.asset_id]
+    assert "quality_delta" in pack.items[1].score_rationale
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_downranks_duplicate_candidates() -> None:
+    store = InMemoryAssetStore()
+    original = LayeredAsset.build(
+        "knowledge",
+        "u-sylvan",
+        metadata={"title": "pytest original"},
+        summary="pytest 修复 复现 回归 重复资料",
+        tags=["pytest"],
+    )
+    duplicate = LayeredAsset.build(
+        "knowledge",
+        "u-sylvan",
+        metadata={
+            "title": "pytest duplicate",
+            "duplicate_candidate": True,
+            "duplicate_of": original.asset_id,
+        },
+        summary="pytest 修复 复现 回归 重复资料",
+        tags=["pytest", "duplicate_candidate"],
+    )
+    await store.put(duplicate)
+    await store.put(original)
+
+    pack = await ContextPacker(store).pack(_task(), tenant_id="u-sylvan", limit=2)
+
+    assert [item.asset_id for item in pack.items][:2] == [original.asset_id, duplicate.asset_id]
+    assert "quality_delta" in pack.items[1].score_rationale
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_downranks_soft_forgotten_and_duplicate_merged_assets() -> None:
+    store = InMemoryAssetStore()
+    active = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest active"},
+        summary="pytest 修复 复现 回归 治理标签",
+        tags=["pytest"],
+    )
+    soft_forgotten = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest soft forgotten", "soft_forgotten": True},
+        summary="pytest 修复 复现 回归 治理标签",
+        tags=["pytest", "soft_forgotten"],
+    )
+    duplicate_merged = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={
+            "title": "pytest duplicate merged",
+            "duplicate_merged_into_asset_id": active.asset_id,
+        },
+        summary="pytest 修复 复现 回归 治理标签",
+        tags=["pytest", "duplicate_merged"],
+    )
+    await store.put(soft_forgotten)
+    await store.put(duplicate_merged)
+    await store.put(active)
+
+    pack = await ContextPacker(store).pack(_task(), tenant_id="u-sylvan", limit=3)
+
+    assert pack.items[0].asset_id == active.asset_id
+    by_id = {item.asset_id: item for item in pack.items}
+    assert "governance_delta" in by_id[soft_forgotten.asset_id].score_rationale
+    assert "soft_forgotten" in by_id[soft_forgotten.asset_id].score_rationale
+    assert "soft_forgotten" in by_id[soft_forgotten.asset_id].governance_labels
+    assert "semantic" in by_id[soft_forgotten.asset_id].score_breakdown
+    assert by_id[soft_forgotten.asset_id].memory_layer == "task_result"
+    assert "duplicate_merged" in by_id[duplicate_merged.asset_id].score_rationale
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_avoids_stale_or_low_value_assets_for_high_risk_tasks() -> None:
+    store = InMemoryAssetStore()
+    clean = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest clean"},
+        summary="pytest production payment fix rollback regression",
+        tags=["pytest", "payment"],
+    )
+    stale_or_risky = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest risky", "stale_or_risky": True},
+        summary="pytest production payment fix rollback regression",
+        tags=["pytest", "payment", "stale_or_risky"],
+    )
+    low_value = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest low value", "low_value": True},
+        summary="pytest production payment fix rollback regression",
+        tags=["pytest", "payment", "low_value"],
+    )
+    await store.put(stale_or_risky)
+    await store.put(low_value)
+    await store.put(clean)
+
+    pack = await ContextPacker(store).pack(_high_risk_task(), tenant_id="u-sylvan", limit=5)
+
+    assert [item.asset_id for item in pack.items] == [clean.asset_id]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_adds_recalled_execution_process_hint() -> None:
+    store = InMemoryAssetStore()
+    process = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={
+            "memory_layer": "execution_process",
+            "task_type": "coding.python.pytest",
+            "step_id": 1,
+            "skill_used": "coding-pytest",
+            "model": "gpt-test",
+            "tier": "cheap",
+        },
+        summary="执行过程: step=1; skill=coding-pytest; 先复现 pytest 报错，再做最小修复。",
+        tags=["v3", "execution_process", "coding.python.pytest", "coding-pytest", "pytest"],
+    )
+    await store.put(process)
+
+    pack = await ContextPacker(store).pack(_task(), tenant_id="u-sylvan", limit=1)
+
+    assert pack.process_experiences
+    assert pack.process_experiences[0].asset_id == process.asset_id
+    summary = pack.summary()
+    assert "相关执行过程经验" in summary
+    assert "先复现 pytest 报错" in summary
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_exposes_process_experiences_for_anchor_expand_paths() -> None:
+    store = InMemoryAssetStore()
+    process = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={
+            "memory_layer": "execution_process",
+            "task_type": "coding.python.pytest",
+            "step_id": 2,
+            "skill_used": "coding-pytest",
+        },
+        summary="执行过程: step=2; skill=coding-pytest; MAX 模式也要带上历史执行经验。",
+        tags=["v3", "execution_process", "coding.python.pytest", "coding-pytest", "pytest"],
+    )
+    await store.put(process)
+
+    experiences = await ContextPacker(store).recall_process_experiences(
+        _task(),
+        tenant_id="u-sylvan",
+    )
+
+    assert experiences
+    assert experiences[0].asset_id == process.asset_id
+    assert "MAX 模式" in experiences[0].summary
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_uses_durable_resource_credit(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = InMemoryAssetStore()
+    low = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest low"},
+        summary="pytest 修复 复现 回归",
+        tags=["pytest"],
+    )
+    hot = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest hot"},
+        summary="pytest 修复 复现 回归",
+        tags=["pytest"],
+    )
+    await store.put(low)
+    await store.put(hot)
+
+    @asynccontextmanager
+    async def fake_session_scope(**_kwargs: Any) -> AsyncIterator[object]:
+        yield object()
+
+    async def fake_load_scores(
+        _session: object,
+        *,
+        tenant_id: str,
+        resource_keys: list[str],
+    ) -> dict[str, float]:
+        assert tenant_id == "u-sylvan"
+        assert f"memory:{hot.asset_id}" in resource_keys
+        return {f"memory:{hot.asset_id}": 1.0}
+
+    monkeypatch.setattr("kun.core.db.session_scope", fake_session_scope)
+    monkeypatch.setattr(
+        "kun.engineering.credit_assignment.load_resource_credit_scores", fake_load_scores
+    )
+
+    pack = await ContextPacker(store).pack_query("pytest 修复", tenant_id="u-sylvan", limit=1)
+
+    assert [item.asset_id for item in pack.items] == [hot.asset_id]
+    assert "contribution=1.00" in pack.items[0].score_rationale
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_packer_touches_selected_assets() -> None:
+    store = InMemoryAssetStore()
+    asset = LayeredAsset.build(
+        "memory",
+        "u-sylvan",
+        metadata={"title": "pytest touch"},
+        summary="pytest 回归",
+        tags=["pytest"],
+    )
+    await store.put(asset)
+
+    await ContextPacker(store).pack(_task(), tenant_id="u-sylvan", limit=1)
+    touched = await store.get(asset.asset_id, tenant_id="u-sylvan")
+
+    assert touched is not None
+    assert touched.access_count >= 1

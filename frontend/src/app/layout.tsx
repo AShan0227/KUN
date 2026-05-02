@@ -27,6 +27,12 @@ export default function RootLayout({
             <Link href="/nuo" className="hover:text-kun-accent">
               傩 · 管家
             </Link>
+            <Link href="/billing" className="hover:text-kun-accent">
+              计费透明
+            </Link>
+            <Link href="/account" className="hover:text-kun-accent">
+              会话 / 账号
+            </Link>
           </nav>
         </header>
         <main className="flex-1">{children}</main>

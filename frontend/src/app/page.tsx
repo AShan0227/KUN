@@ -1,6 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SessionAccountEntry } from "@/components/SessionAccountEntry";
+import { ensureKunNotificationWorker, showKunNotification } from "@/browserNotifications";
+import { apiFetch, getKunIdentitySource, kunWebSocketUrl } from "@/kunApiClient";
 
 /**
  * KUN 主工作区 — 对话框主入口 (ADR-010).
@@ -28,41 +31,480 @@ type WireMessage = Record<string, unknown> & {
 };
 
 type SideMsg = {
-  kind: "cost_tick" | "insight" | "surprise" | "alert" | "guard_intervention" | "idle_batch_report";
+  kind:
+    | "cost_tick"
+    | "insight"
+    | "surprise"
+    | "alert"
+    | "guard_intervention"
+    | "idle_batch_report"
+    | "scorecard";
   payload: WireMessage;
   at: string;
 };
 
-const WS_URL = (() => {
-  if (typeof window === "undefined") return "";
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const host = window.location.host;
-  return `${proto}//${host}/ws?tenant_id=u-sylvan&user_id=sylvan`;
-})();
+type GraphNeighbor = {
+  entity_kind: string;
+  entity_id: string;
+  relation_type: string;
+  confidence: number;
+  hops: number;
+  score: number;
+};
+
+type QiStatus = {
+  window_active: boolean;
+  daily_limit_usd: number;
+  spent_today_usd: number;
+  remaining_usd: number;
+};
+
+type Protocol = {
+  protocol_id: string;
+  version: string;
+  status: string;
+  trigger: { task_type_pattern: string };
+  execution: { mode: string };
+  created_by: string;
+};
+
+type LedgerEntry = {
+  task_id: string;
+  tenant_id?: string;
+  user_id?: string;
+  title?: string;
+  task_type?: string;
+  status: string;
+  current_goal: string;
+  current_action?: string;
+  current_step: number;
+  total_steps: number;
+  current_risk: string;
+  execution_mode: string;
+  strategy_pack_id?: string | null;
+  decision_reason?: string | null;
+  current_model?: string | null;
+  current_skill?: string | null;
+  budget_estimated_usd?: number;
+  cost_so_far_usd: number;
+  tokens_so_far?: number;
+  pending_confirmations: string[];
+  recent_events?: LedgerTrail[];
+  updated_at?: string;
+};
+
+type LedgerTrail = {
+  at?: string;
+  kind?: string;
+  summary?: string;
+  data?: Record<string, unknown>;
+};
+
+type GlobalState = {
+  task_count_running: number;
+  task_count_queued: number;
+  total_cost_today_usd: number;
+  total_cost_remaining_budget_usd?: number;
+  health_indicator: string;
+  urgent_alert_count: number;
+  system_findings?: Array<{
+    finding_id: string;
+    severity: string;
+    subsystem: string;
+    title: string;
+    detail: string;
+    suggested_action: string;
+  }>;
+  active_state_ledger: LedgerEntry[];
+};
+
+type DeliveryStatus = "ready" | "partial" | "audit_only" | "not_ready";
+
+type DeliveryCapability = {
+  capability_id: string;
+  label: string;
+  status: DeliveryStatus;
+  user_visible: boolean;
+  summary: string;
+  missing: string[];
+  next_steps: string[];
+};
+
+type DeliveryStatusResponse = {
+  items: DeliveryCapability[];
+  summary: Record<DeliveryStatus, number>;
+  validation_issues: string[];
+};
+
+type MissionSnapshot = {
+  mission_id: string;
+  title: string;
+  objective: string;
+  status: string;
+  risk_level: string;
+  budget_cap_usd: number;
+  budget_used_usd: number;
+  blocked_reason?: string;
+  next_step?: {
+    summary: string;
+    reason?: string;
+    task_id?: string | null;
+    action_type?: string;
+    due_at?: string | null;
+  } | null;
+  last_reviewed_at?: string | null;
+  review_interval_hours?: number;
+  tasks: Array<{
+    task_id: string;
+    role: string;
+    sequence_no: number;
+    status: string;
+    resume_attempts: number;
+    last_resume_requested_at?: string | null;
+  }>;
+  milestones: Array<{ milestone_id: string; title: string; status: string }>;
+  updated_at: string;
+};
+
+type MissionResumeResult = {
+  mission_id: string;
+  task_id: string;
+  status: string;
+  reason: string;
+  outcome?: {
+    executed_task_id?: string | null;
+    final_status: string;
+    answer_preview: string;
+  } | null;
+};
+
+type MissionStoryEvent = {
+  event_id: string;
+  event_type: string;
+  occurred_at: string;
+  task_id?: string | null;
+  summary: string;
+  reason: string;
+  cost_usd: number;
+};
+
+type MissionTaskStory = {
+  task_id: string;
+  role: string;
+  status: string;
+  resume_attempts: number;
+  event_count: number;
+  decision_count: number;
+  world_action_count: number;
+  external_action_count: number;
+  total_cost_usd: number;
+  latest_reason: string;
+  current_action: string;
+  reconstruction_confidence: number;
+  gaps: string[];
+};
+
+type MissionStory = {
+  mission_id: string;
+  title: string;
+  objective: string;
+  status: string;
+  risk_level: string;
+  task_count: number;
+  done_task_count: number;
+  blocked_task_count: number;
+  event_count: number;
+  decision_count: number;
+  world_action_count: number;
+  external_action_count: number;
+  total_event_cost_usd: number;
+  budget_used_usd: number;
+  budget_cap_usd: number;
+  latest_reason: string;
+  current_action: string;
+  pending_confirmations: string[];
+  risk_flags: string[];
+  open_questions: string[];
+  reconstruction_confidence: number;
+  history_limit_reached: boolean;
+  next_step?: {
+    summary: string;
+    reason?: string;
+    task_id?: string | null;
+    action_type?: string;
+    due_at?: string | null;
+  } | null;
+  tasks: MissionTaskStory[];
+  timeline: MissionStoryEvent[];
+};
+
+type PendingAction = {
+  action_id: string;
+  task_ref: string;
+  action_type: string;
+  target_ref: string;
+  status: string;
+  risk_level: string;
+  payload: Record<string, unknown>;
+  gateway_preview?: GatewayPreview | null;
+  created_at: string;
+};
+
+type GatewayPreview = {
+  gateway_mode?: string;
+  capability_status?: string;
+  external_dispatched?: boolean;
+  requires_handler?: boolean;
+  rendered_payload?: string;
+  user_summary?: string;
+  next_step?: string;
+  permissions_required?: string[];
+  message?: string;
+  audit?: { handler_id?: string; relative_path?: string; artifact_kind?: string; error?: string };
+};
+
+type PendingActionPage = {
+  actions: PendingAction[];
+};
+
+type TaskDetail = {
+  rendered_for?: string;
+  task_id: string;
+  state_ledger?: LedgerEntry | null;
+  state_ledger_history?: StateLedgerHistoryItem[];
+  state_ledger_story?: StateLedgerStory | null;
+  state_ledger_audit?: StateLedgerAudit | null;
+  workspace?: {
+    artifacts?: Array<Record<string, unknown>>;
+    handoff_packets?: Array<Record<string, unknown>>;
+    last_update?: string;
+  } | null;
+  assets?: Record<string, unknown> | null;
+  events?: Array<{
+    event_id?: string;
+    event_type?: string;
+    occurred_at?: string;
+    summary?: string;
+    severity?: string;
+  }>;
+  rendered_at?: string;
+};
+
+type TaskControlStatus = {
+  task_id: string;
+  registered?: boolean;
+  is_killed: boolean;
+  kill_reason?: string | null;
+  is_timed_out: boolean;
+  timeout_reason: string;
+  timeout_action: string;
+};
+
+type TaskKillResponse = {
+  task_id: string;
+  killed: boolean;
+  reason: string;
+  requested_at: string;
+};
+
+type StateLedgerHistoryItem = {
+  event_id: string;
+  event_type: string;
+  occurred_at: string;
+  task_id?: string | null;
+  summary?: string;
+  reason?: string;
+  cost_usd?: number;
+  decision_ticket_id?: string | null;
+  decision_point?: string;
+  phase?: string;
+  selected_action?: string;
+  decision_status?: string;
+};
+
+type StateLedgerStory = {
+  task_id: string;
+  event_count: number;
+  decision_count: number;
+  world_action_count?: number;
+  external_action_count?: number;
+  total_cost_usd: number;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  latest_event_type?: string;
+  latest_reason?: string;
+  status?: string;
+  current_action?: string;
+  pending_confirmations?: string[];
+  risk_flags?: string[];
+  open_questions?: string[];
+  decision_ticket_ids?: string[];
+  model_routes?: string[];
+  skill_refs?: string[];
+  context_asset_ids?: string[];
+  reconstruction_confidence?: number;
+  gaps?: string[];
+  timeline: StateLedgerHistoryItem[];
+};
+
+type StateLedgerAudit = {
+  task_id: string;
+  tenant_id?: string;
+  snapshot_source?: string;
+  snapshot_found: boolean;
+  replay_found: boolean;
+  snapshot_status: string;
+  replay_status: string;
+  status_matches: boolean;
+  snapshot_updated_at?: string | null;
+  replay_last_seen_at?: string | null;
+  event_count: number;
+  decision_count: number;
+  snapshot_cost_usd: number;
+  replay_cost_usd: number;
+  cost_delta_usd: number;
+  reconstruction_confidence?: number;
+  drift_detected: boolean;
+  issues: string[];
+};
 
 export default function Home() {
+  const [identityOpen, setIdentityOpen] = useState(false);
+  const [identitySource, setIdentitySource] = useState(() => getKunIdentitySource());
   const [messages, setMessages] = useState<Msg[]>([]);
   const [side, setSide] = useState<SideMsg[]>([]);
   const [input, setInput] = useState("");
+  const [graphKind, setGraphKind] = useState("task");
+  const [graphId, setGraphId] = useState("");
+  const [graphNeighbors, setGraphNeighbors] = useState<GraphNeighbor[]>([]);
+  const [graphError, setGraphError] = useState("");
   const [connected, setConnected] = useState(false);
   const [totalCost, setTotalCost] = useState(0);
+  const [qiStatus, setQiStatus] = useState<QiStatus | null>(null);
+  const [protocols, setProtocols] = useState<Protocol[]>([]);
+  const [globalState, setGlobalState] = useState<GlobalState | null>(null);
+  const [deliveryStatus, setDeliveryStatus] = useState<DeliveryStatusResponse | null>(null);
+  const [missions, setMissions] = useState<MissionSnapshot[]>([]);
+  const [missionBusy, setMissionBusy] = useState(false);
+  const [missionNotice, setMissionNotice] = useState("");
+  const [expandedMissionId, setExpandedMissionId] = useState("");
+  const [missionStoryById, setMissionStoryById] = useState<Record<string, MissionStory>>({});
+  const [missionStoryBusyId, setMissionStoryBusyId] = useState("");
+  const [missionStoryErrorById, setMissionStoryErrorById] = useState<Record<string, string>>({});
+  const [missionNextStepDraftById, setMissionNextStepDraftById] = useState<
+    Record<string, string>
+  >({});
+  const [missionNextStepBusyId, setMissionNextStepBusyId] = useState("");
+  const [missionNextStepNoticeById, setMissionNextStepNoticeById] = useState<
+    Record<string, string>
+  >({});
+  const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [expandedTaskId, setExpandedTaskId] = useState("");
+  const [taskDetail, setTaskDetail] = useState<TaskDetail | null>(null);
+  const [taskDetailLoading, setTaskDetailLoading] = useState(false);
+  const [taskDetailError, setTaskDetailError] = useState("");
+  const [taskControlStatusById, setTaskControlStatusById] = useState<
+    Record<string, TaskControlStatus>
+  >({});
+  const [taskControlNoticeById, setTaskControlNoticeById] = useState<Record<string, string>>({});
+  const [taskControlBusyId, setTaskControlBusyId] = useState("");
+  const [browserNotifyEnabled, setBrowserNotifyEnabled] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const lastBrowserNotificationKeyRef = useRef("");
+
+  const refreshDashboard = useCallback(async (cancelledRef?: { current: boolean }) => {
+    try {
+      const [qiRes, protoRes] = await Promise.all([
+        apiFetch("/api/qi/status").catch(() => null),
+        apiFetch("/api/protocols").catch(() => null),
+      ]);
+      if (cancelledRef?.current) return;
+      if (qiRes && qiRes.ok) {
+        const data = await qiRes.json();
+        setQiStatus(data as QiStatus);
+      }
+      if (protoRes && protoRes.ok) {
+        const data = await protoRes.json();
+        setProtocols(data as Protocol[]);
+      }
+      const stateRes = await apiFetch("/api/blackboard/state").catch(() => null);
+      if (!cancelledRef?.current && stateRes && stateRes.ok) {
+        setGlobalState((await stateRes.json()) as GlobalState);
+      }
+      const missionRes = await apiFetch("/api/missions?limit=5").catch(() => null);
+      if (!cancelledRef?.current && missionRes && missionRes.ok) {
+        setMissions((await missionRes.json()) as MissionSnapshot[]);
+      }
+      const actionRes = await apiFetch("/nuo/actions/pending?limit=3").catch(() => null);
+      if (!cancelledRef?.current && actionRes && actionRes.ok) {
+        const page = (await actionRes.json()) as PendingActionPage;
+        setPendingActions(page.actions ?? []);
+      }
+      const deliveryRes = await apiFetch("/nuo/health/delivery-status").catch(() => null);
+      if (!cancelledRef?.current && deliveryRes && deliveryRes.ok) {
+        setDeliveryStatus((await deliveryRes.json()) as DeliveryStatusResponse);
+      }
+    } catch {
+      // ignore polling errors
+    }
+  }, []);
+
+  // V2.3 启状态 + 协议轮询 (每 30s 一次)
+  useEffect(() => {
+    const cancelledRef = { current: false };
+    void refreshDashboard(cancelledRef);
+    const id = setInterval(() => void refreshDashboard(cancelledRef), 30_000);
+    return () => {
+      cancelledRef.current = true;
+      clearInterval(id);
+    };
+  }, [refreshDashboard]);
 
   useEffect(() => {
-    if (!WS_URL) return;
-    const ws = new WebSocket(WS_URL);
-    wsRef.current = ws;
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => setConnected(false);
-    ws.onmessage = (e) => {
+    try {
+      setBrowserNotifyEnabled(window.localStorage.getItem("kun.browser_notify") === "on");
+    } catch {
+      setBrowserNotifyEnabled(false);
+    }
+  }, []);
+
+  const enableBrowserNotifications = useCallback(async () => {
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") return;
+    await ensureKunNotificationWorker();
+    window.localStorage.setItem("kun.browser_notify", "on");
+    setBrowserNotifyEnabled(true);
+  }, []);
+
+  useEffect(() => {
+    let closed = false;
+    void (async () => {
       try {
-        const msg = JSON.parse(e.data) as WireMessage;
-        dispatchIncoming(msg);
+        const wsUrl = await kunWebSocketUrl();
+        if (!wsUrl || closed) return;
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+        ws.onopen = () => setConnected(true);
+        ws.onclose = () => setConnected(false);
+        ws.onmessage = (e) => {
+          try {
+            const msg = JSON.parse(e.data) as WireMessage;
+            dispatchIncoming(msg);
+          } catch {
+            console.warn("bad ws frame", e.data);
+          }
+        };
       } catch {
-        console.warn("bad ws frame", e.data);
+        setConnected(false);
       }
+    })();
+    return () => {
+      closed = true;
+      wsRef.current?.close();
     };
-    return () => ws.close();
   }, []);
 
   const dispatchIncoming = (msg: WireMessage) => {
@@ -89,6 +531,7 @@ export default function Home() {
       case "alert":
       case "guard_intervention":
       case "idle_batch_report":
+      case "scorecard":
         setSide((s) => [...s, { kind: type, payload: msg, at }]);
         break;
       case "done":
@@ -99,33 +542,766 @@ export default function Home() {
     }
   };
 
-  const send = useCallback(() => {
+  const send = useCallback(async () => {
     const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const content = input.trim();
     if (!content) return;
-    ws.send(JSON.stringify({ type: "user_message", content }));
     setMessages((m) => [
       ...m,
       { kind: "user", text: content, at: new Date().toISOString() },
     ]);
     setInput("");
-  }, [input]);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "user_message", content }));
+      return;
+    }
+    setMessages((m) => [
+      ...m,
+      {
+        kind: "thinking",
+        text: "WebSocket 未连接，已改走 HTTP 执行。",
+        at: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const res = await apiFetch("/api/chat/run", {
+        method: "POST",
+        body: JSON.stringify({ message: content }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const payload = (await res.json()) as WireMessage;
+      setMessages((m) => [
+        ...m,
+        {
+          kind: "answer",
+          text: formatHttpTaskResult(payload),
+          at: new Date().toISOString(),
+        },
+      ]);
+      await refreshDashboard();
+    } catch (err) {
+      setMessages((m) => [
+        ...m,
+        {
+          kind: "error",
+          text: err instanceof Error ? err.message : "HTTP 执行失败",
+          at: new Date().toISOString(),
+        },
+      ]);
+    }
+  }, [input, refreshDashboard]);
+
+  const decidePendingAction = useCallback(
+    async (actionId: string, decision: "approve" | "reject") => {
+      setActionBusy(actionId);
+      try {
+        const res = await apiFetch(`/nuo/actions/${actionId}/decision`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ decision }),
+        });
+        const payload = (await res.json().catch(() => ({}))) as WireMessage;
+        if (!res.ok) throw new Error(JSON.stringify(payload));
+        setSide((items) => [
+          ...items,
+          {
+            kind: "guard_intervention",
+            payload: {
+              type: "pending_action_decision",
+              action_id: actionId,
+              decision,
+              ...payload,
+            },
+            at: new Date().toISOString(),
+          },
+        ]);
+        await refreshDashboard();
+      } catch (err) {
+        setSide((items) => [
+          ...items,
+          {
+            kind: "alert",
+            payload: {
+              type: "pending_action_decision_failed",
+              action_id: actionId,
+              message: err instanceof Error ? err.message : "审批动作失败",
+            },
+            at: new Date().toISOString(),
+          },
+        ]);
+      } finally {
+        setActionBusy(null);
+      }
+    },
+    [refreshDashboard],
+  );
+
+  const loadMissionStory = useCallback(async (missionId: string) => {
+    const id = missionId.trim();
+    if (!id) return;
+    setExpandedMissionId((current) => (current === id ? "" : id));
+    if (expandedMissionId === id && missionStoryById[id]) return;
+    setMissionStoryBusyId(id);
+    setMissionStoryErrorById((items) => ({ ...items, [id]: "" }));
+    try {
+      const res = await apiFetch(
+        `/api/missions/${encodeURIComponent(id)}/story?history_limit_per_task=80`,
+      );
+      if (!res.ok) throw new Error(await res.text());
+      const payload = (await res.json()) as MissionStory;
+      setMissionStoryById((items) => ({ ...items, [id]: payload }));
+      setExpandedMissionId(id);
+    } catch (err) {
+      setMissionStoryErrorById((items) => ({
+        ...items,
+        [id]: err instanceof Error ? err.message : "Mission 故事线加载失败",
+      }));
+    } finally {
+      setMissionStoryBusyId("");
+    }
+  }, [expandedMissionId, missionStoryById]);
+
+  const submitMissionNextStep = useCallback(
+    async (mission: MissionSnapshot) => {
+      const id = mission.mission_id;
+      const summary = (
+        missionNextStepDraftById[id] ??
+        mission.next_step?.summary ??
+        ""
+      ).trim();
+      if (!summary) {
+        setMissionNextStepNoticeById((items) => ({ ...items, [id]: "请先写一句下一步。" }));
+        return;
+      }
+      setMissionNextStepBusyId(id);
+      setMissionNextStepNoticeById((items) => ({ ...items, [id]: "正在更新下一步..." }));
+      try {
+        const res = await apiFetch(`/api/missions/${encodeURIComponent(id)}/next-step`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            summary,
+            reason: "user_updated_from_main_workspace",
+            action_type: "continue",
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        setMissionNextStepDraftById((items) => ({ ...items, [id]: "" }));
+        setMissionStoryById((items) => {
+          const next = { ...items };
+          delete next[id];
+          return next;
+        });
+        setMissionNextStepNoticeById((items) => ({ ...items, [id]: "下一步已更新。" }));
+        await refreshDashboard();
+      } catch (err) {
+        setMissionNextStepNoticeById((items) => ({
+          ...items,
+          [id]: err instanceof Error ? err.message : "下一步更新失败",
+        }));
+      } finally {
+        setMissionNextStepBusyId("");
+      }
+    },
+    [missionNextStepDraftById, refreshDashboard],
+  );
+
+  const runMissionResume = useCallback(async () => {
+    setMissionBusy(true);
+    setMissionNotice("");
+    try {
+      const res = await apiFetch("/api/missions/resume-worker/run-once?limit=5", {
+        method: "POST",
+      });
+      const payload = (await res.json().catch(() => [])) as MissionResumeResult[];
+      if (!res.ok) throw new Error(JSON.stringify(payload));
+      const completed = payload.filter((item) => item.status === "completed").length;
+      const failed = payload.filter((item) => item.status === "failed").length;
+      const skipped = payload.filter((item) => item.status === "skipped").length;
+      setMissionNotice(
+        `推进 ${payload.length} 个任务：完成 ${completed}，失败 ${failed}，跳过 ${skipped}`,
+      );
+      await refreshDashboard();
+    } catch (err) {
+      setMissionNotice(err instanceof Error ? err.message : "Mission 推进失败");
+    } finally {
+      setMissionBusy(false);
+    }
+  }, [refreshDashboard]);
+
+  const loadTaskControlStatus = useCallback(async (taskId: string) => {
+    const id = taskId.trim();
+    if (!id) return null;
+    try {
+      const res = await apiFetch(`/api/tasks/${encodeURIComponent(id)}/status`);
+      if (!res.ok) throw new Error(await res.text());
+      const payload = (await res.json()) as TaskControlStatus;
+      setTaskControlStatusById((items) => ({ ...items, [id]: payload }));
+      return payload;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "任务控制状态查询失败";
+      setTaskControlNoticeById((items) => ({ ...items, [id]: message }));
+      return null;
+    }
+  }, []);
+
+  const requestTaskStop = useCallback(
+    async (taskId: string) => {
+      const id = taskId.trim();
+      if (!id) return;
+      setTaskControlBusyId(id);
+      setTaskControlNoticeById((items) => ({ ...items, [id]: "正在发送停止信号..." }));
+      try {
+        const res = await apiFetch(`/api/tasks/${encodeURIComponent(id)}/kill`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ reason: "user_requested_stop_from_task_detail" }),
+        });
+        const raw = await res.text();
+        let payload: TaskKillResponse | string = raw;
+        if (raw) {
+          try {
+            payload = JSON.parse(raw) as TaskKillResponse;
+          } catch {
+            payload = raw;
+          }
+        }
+        if (!res.ok) {
+          const message =
+            typeof payload === "string"
+              ? payload
+              : `停止信号未发送成功：${payload.reason || res.statusText}`;
+          throw new Error(message);
+        }
+        const reason = typeof payload === "string" ? "" : payload.reason;
+        setTaskControlNoticeById((items) => ({
+          ...items,
+          [id]: `已向当前运行中的任务发送停止信号${reason ? `：${reason}` : ""}`,
+        }));
+        await loadTaskControlStatus(id);
+        await refreshDashboard();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "停止信号发送失败";
+        setTaskControlNoticeById((items) => ({ ...items, [id]: message }));
+        await loadTaskControlStatus(id);
+      } finally {
+        setTaskControlBusyId("");
+      }
+    },
+    [loadTaskControlStatus, refreshDashboard],
+  );
+
+  const loadTaskDetail = useCallback(async (taskId: string) => {
+    const id = taskId.trim();
+    if (!id) return;
+    setSelectedTaskId(id);
+    setExpandedTaskId(id);
+    setTaskDetailLoading(true);
+    setTaskDetailError("");
+    try {
+      const res = await apiFetch(`/api/blackboard/full/${encodeURIComponent(id)}`);
+      if (!res.ok) throw new Error(await res.text());
+      const detail = (await res.json()) as TaskDetail;
+      if (!detail.state_ledger_audit) {
+        const auditRes = await apiFetch(
+          `/api/blackboard/state-ledger/${encodeURIComponent(id)}/audit`,
+        ).catch(() => null);
+        if (auditRes?.ok) {
+          detail.state_ledger_audit = (await auditRes.json()) as StateLedgerAudit;
+        }
+      }
+      setTaskDetail(detail);
+      void loadTaskControlStatus(id);
+    } catch (err) {
+      setTaskDetail(null);
+      setTaskDetailError(err instanceof Error ? err.message : "任务详情加载失败");
+    } finally {
+      setTaskDetailLoading(false);
+    }
+  }, [loadTaskControlStatus]);
+
+  const toggleTaskDetail = useCallback(
+    (taskId: string) => {
+      const id = taskId.trim();
+      if (!id) return;
+      if (expandedTaskId === id) {
+        setExpandedTaskId("");
+        return;
+      }
+      void loadTaskDetail(id);
+    },
+    [expandedTaskId, loadTaskDetail],
+  );
+
+  const loadGraph = useCallback(async () => {
+    const kind = graphKind.trim();
+    const id = graphId.trim();
+    if (!kind || !id) return;
+    setGraphError("");
+    try {
+      const params = new URLSearchParams({
+        source_kind: kind,
+        source_id: id,
+        hops: "1",
+      });
+      const res = await apiFetch(`/api/graph/relationships?${params.toString()}`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = (await res.json()) as GraphNeighbor[];
+      setGraphNeighbors(data);
+    } catch (err) {
+      setGraphNeighbors([]);
+      setGraphError(err instanceof Error ? err.message : "关系图查询失败");
+    }
+  }, [graphId, graphKind]);
+
+  const activeLedger = globalState?.active_state_ledger ?? [];
+  const ledgerPendingCount = activeLedger.reduce(
+    (sum, item) => sum + item.pending_confirmations.length,
+    0,
+  );
+  const pendingDecisionCount = Math.max(ledgerPendingCount, pendingActions.length);
+  const deliverySummary = deliveryStatus?.summary;
+  const deliveryBoundaryCount =
+    (deliverySummary?.partial ?? 0) +
+    (deliverySummary?.audit_only ?? 0) +
+    (deliverySummary?.not_ready ?? 0);
+  const visibleDeliveryGaps =
+    deliveryStatus?.items.filter((item) => item.user_visible && item.status !== "ready") ?? [];
+  const systemFindings = useMemo(
+    () => globalState?.system_findings ?? [],
+    [globalState?.system_findings],
+  );
+
+  useEffect(() => {
+    if (!browserNotifyEnabled) return;
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+    const finding = systemFindings.find((item) =>
+      ["blocker", "critical", "error", "warn"].includes(item.severity),
+    );
+    if (!finding && pendingDecisionCount <= 0) return;
+    const key = `${pendingDecisionCount}:${finding?.finding_id ?? "no-finding"}:${
+      finding?.severity ?? "none"
+    }`;
+    if (lastBrowserNotificationKeyRef.current === key) return;
+    lastBrowserNotificationKeyRef.current = key;
+    const title = pendingDecisionCount > 0 ? "KUN 有待确认事项" : "傩发现系统风险";
+    const body =
+      pendingDecisionCount > 0
+        ? `${pendingDecisionCount} 个动作需要你确认。`
+        : `${finding?.title || finding?.finding_id}: ${finding?.suggested_action || finding?.detail}`;
+    void showKunNotification({
+      title,
+      body: body.slice(0, 180),
+      tag: key,
+    });
+  }, [browserNotifyEnabled, pendingDecisionCount, systemFindings]);
 
   return (
     <div className="grid grid-cols-[1fr_360px] gap-4 p-4 h-full">
       {/* Main channel */}
       <section className="bg-white rounded-lg shadow-sm flex flex-col min-h-[calc(100vh-100px)]">
-        <header className="px-4 py-2 border-b text-sm text-gray-600 flex justify-between">
-          <span>主通道 · 对话</span>
-          <span>
-            {connected ? (
-              <span className="text-kun-good">● 已连接</span>
-            ) : (
-              <span className="text-kun-bad">● 未连接</span>
-            )}
-          </span>
+        <header className="px-4 py-2 border-b text-sm text-gray-600">
+          <div className="flex justify-between gap-3">
+            <span>主通道 · 对话 + 任务看板</span>
+            <div className="flex items-center gap-3">
+              <button
+                className="rounded border border-gray-200 px-2 py-0.5 text-xs hover:bg-gray-50"
+                onClick={() => {
+                  setIdentitySource(getKunIdentitySource());
+                  setIdentityOpen((value) => !value);
+                }}
+              >
+                {identitySource.identity.tenantId} / {identitySource.identity.userId}
+              </button>
+              {connected ? (
+                <span className="text-kun-good">● 已连接</span>
+              ) : (
+                <span className="text-kun-bad">● 未连接</span>
+              )}
+            </div>
+          </div>
+          {identityOpen && (
+            <div className="mt-2">
+              <SessionAccountEntry compact />
+            </div>
+          )}
         </header>
+        <div className="border-b bg-gray-50 px-4 py-3">
+          <div className="grid grid-cols-4 gap-2 text-xs">
+            <MiniCard
+              label="运行中"
+              value={String(globalState?.task_count_running ?? 0)}
+              hint={`排队 ${globalState?.task_count_queued ?? 0}`}
+            />
+            <MiniCard
+              label="今日成本"
+              value={`$${(globalState?.total_cost_today_usd ?? totalCost).toFixed(4)}`}
+              hint={`剩余 $${numberValue(globalState?.total_cost_remaining_budget_usd).toFixed(4)}`}
+            />
+            <MiniCard
+              label="风险"
+              value={globalState?.health_indicator ?? "unknown"}
+              hint={`告警 ${globalState?.urgent_alert_count ?? 0} · 边界 ${deliveryBoundaryCount}`}
+            />
+            <MiniCard
+              label="待确认"
+              value={String(pendingDecisionCount)}
+              hint="需要你拍板"
+            />
+          </div>
+          <div className="mt-3 space-y-2">
+            {systemFindings.length > 0 && (
+                <div className="rounded border border-amber-200 bg-amber-50 p-2 text-xs">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="font-medium text-amber-900">傩发现的系统风险</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        className="rounded border border-amber-200 bg-white px-2 py-0.5 text-amber-700 hover:bg-amber-100"
+                        onClick={() => void enableBrowserNotifications()}
+                      >
+                        {browserNotifyEnabled ? "浏览器提醒已开" : "开启浏览器提醒"}
+                      </button>
+                      <a href="/nuo" className="text-amber-700 hover:underline">
+                        去傩处理
+                      </a>
+                    </div>
+                  </div>
+                <div className="space-y-1">
+                  {systemFindings.slice(0, 3).map((finding) => (
+                    <div key={finding.finding_id} className="rounded bg-white px-2 py-1">
+                      <div className="flex justify-between gap-2">
+                        <span className="truncate font-medium">
+                          {finding.title || finding.finding_id}
+                        </span>
+                        <span className="shrink-0 text-amber-700">{finding.severity}</span>
+                      </div>
+                      <div className="mt-0.5 truncate text-gray-500">
+                        {finding.suggested_action || finding.detail}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {pendingActions.length > 0 && (
+              <div className="rounded border border-amber-200 bg-amber-50 p-2 text-xs">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="font-medium text-amber-900">待确认动作</span>
+                  <span className="text-amber-700">{pendingActions.length} 个</span>
+                </div>
+                <div className="space-y-2">
+                  {pendingActions.map((action) => (
+                    <div
+                      key={action.action_id}
+                      className="rounded border border-amber-100 bg-white px-2 py-1.5"
+                    >
+                      <div className="flex justify-between gap-2">
+                        <span className="truncate font-medium">
+                          {action.action_type} → {action.target_ref || action.task_ref}
+                        </span>
+                        <span className="text-amber-700">{action.risk_level}</span>
+                      </div>
+                      <div className="mt-1 truncate text-gray-500">任务 {action.task_ref}</div>
+                      {action.gateway_preview && (
+                        <div className="mt-1 text-gray-500">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate">
+                              网关：{gatewayPreviewLabel(action.gateway_preview)}
+                            </span>
+                            <span
+                              className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${gatewayCapabilityClass(
+                                action.gateway_preview,
+                              )}`}
+                            >
+                              {gatewayCapabilityLabel(action.gateway_preview)}
+                            </span>
+                          </div>
+                          {action.gateway_preview.next_step && (
+                            <div className="truncate text-gray-400">
+                              下一步：{action.gateway_preview.next_step}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          className="rounded border border-green-200 bg-green-50 px-2 py-1 text-green-700 disabled:opacity-50"
+                          disabled={actionBusy === action.action_id}
+                          onClick={() => void decidePendingAction(action.action_id, "approve")}
+                        >
+                          批准
+                        </button>
+                        <button
+                          className="rounded border border-red-200 bg-red-50 px-2 py-1 text-red-700 disabled:opacity-50"
+                          disabled={actionBusy === action.action_id}
+                          onClick={() => void decidePendingAction(action.action_id, "reject")}
+                        >
+                          拒绝
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {missions.length > 0 && (
+              <div className="rounded border border-gray-200 bg-white p-2 text-xs">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="font-medium">长期目标</span>
+                  <button
+                    className="rounded border border-gray-200 bg-gray-50 px-2 py-1 text-gray-700 disabled:opacity-50"
+                    disabled={missionBusy}
+                    onClick={() => void runMissionResume()}
+                  >
+                    {missionBusy ? "推进中" : `推进一次 · ${missions.length}`}
+                  </button>
+                </div>
+                {missionNotice && (
+                  <div className="mb-2 rounded border border-gray-100 bg-gray-50 px-2 py-1 text-gray-600">
+                    {missionNotice}
+                  </div>
+                )}
+                <div className="space-y-2">
+                  {missions.slice(0, 3).map((mission) => (
+                    <div
+                      key={mission.mission_id}
+                      className="rounded border border-gray-100 bg-gray-50 px-2 py-1.5"
+                    >
+                      <div className="flex justify-between gap-2">
+                        <span className="truncate font-medium">{mission.title}</span>
+                        <span className={missionStatusClass(mission.status)}>
+                          {mission.status}
+                        </span>
+                      </div>
+                      <div className="mt-1 truncate text-gray-500">
+                        风险 {mission.risk_level} · 已用 ${mission.budget_used_usd.toFixed(2)} / $
+                        {mission.budget_cap_usd.toFixed(2)} · 任务 {mission.tasks.length} · 里程碑{" "}
+                        {mission.milestones.length}
+                      </div>
+                      {mission.next_step && (
+                        <div className="mt-1 truncate text-gray-500">
+                          下一步：{mission.next_step.summary}
+                        </div>
+                      )}
+                      {mission.blocked_reason && (
+                        <div className="mt-1 rounded border border-amber-100 bg-amber-50 px-2 py-1 text-amber-700">
+                          卡住原因：{mission.blocked_reason}
+                        </div>
+                      )}
+                      {mission.last_reviewed_at && (
+                        <div className="mt-1 truncate text-[11px] text-gray-400">
+                          上次复盘：{new Date(mission.last_reviewed_at).toLocaleString()} · 间隔{" "}
+                          {mission.review_interval_hours ?? 24}h
+                        </div>
+                      )}
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          className="rounded border border-gray-200 bg-white px-2 py-1 text-gray-600 hover:border-kun-accent hover:text-kun-accent disabled:opacity-50"
+                          disabled={missionStoryBusyId === mission.mission_id}
+                          onClick={() => void loadMissionStory(mission.mission_id)}
+                        >
+                          {expandedMissionId === mission.mission_id ? "收起故事线" : "查看故事线"}
+                        </button>
+                        <span className="truncate text-[11px] text-gray-400">
+                          {missionStoryById[mission.mission_id]
+                            ? `事件 ${missionStoryById[mission.mission_id].event_count} · 决策 ${
+                                missionStoryById[mission.mission_id].decision_count
+                              }`
+                            : "按需加载长期账本"}
+                        </span>
+                      </div>
+                      {missionStoryErrorById[mission.mission_id] && (
+                        <div className="mt-2 rounded border border-red-100 bg-red-50 px-2 py-1 text-red-700">
+                          {missionStoryErrorById[mission.mission_id].slice(0, 180)}
+                        </div>
+                      )}
+                      {expandedMissionId === mission.mission_id &&
+                        missionStoryById[mission.mission_id] && (
+                          <MissionStoryPanel story={missionStoryById[mission.mission_id]} />
+                      )}
+                      {expandedMissionId === mission.mission_id && (
+                        <div className="mt-2 rounded border border-gray-100 bg-white p-2">
+                          <label
+                            className="block text-[11px] font-medium text-gray-500"
+                            htmlFor={`mission-next-step-${mission.mission_id}`}
+                          >
+                            轻量调整下一步
+                          </label>
+                          <div className="mt-1 flex gap-2">
+                            <input
+                              id={`mission-next-step-${mission.mission_id}`}
+                              className="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-xs outline-none focus:border-kun-accent"
+                              value={
+                                missionNextStepDraftById[mission.mission_id] ??
+                                mission.next_step?.summary ??
+                                ""
+                              }
+                              onChange={(event) =>
+                                setMissionNextStepDraftById((items) => ({
+                                  ...items,
+                                  [mission.mission_id]: event.target.value,
+                                }))
+                              }
+                              placeholder="例如：先整理 3 个真实客户访谈问题"
+                            />
+                            <button
+                              type="button"
+                              className="shrink-0 rounded border border-kun-accent/30 bg-blue-50 px-2 py-1 text-xs text-kun-accent disabled:opacity-50"
+                              disabled={missionNextStepBusyId === mission.mission_id}
+                              onClick={() => void submitMissionNextStep(mission)}
+                            >
+                              {missionNextStepBusyId === mission.mission_id ? "保存中" : "保存"}
+                            </button>
+                          </div>
+                          {missionNextStepNoticeById[mission.mission_id] && (
+                            <div className="mt-1 truncate text-[11px] text-gray-400">
+                              {missionNextStepNoticeById[mission.mission_id]}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {mission.tasks.length > 0 && (
+                        <div className="mt-2 grid grid-cols-2 gap-1">
+                          {mission.tasks.slice(0, 4).map((task) => (
+                            <button
+                              key={task.task_id}
+                              className={`rounded border bg-white px-2 py-1 text-left ${
+                                expandedTaskId === task.task_id
+                                  ? "border-kun-accent"
+                                  : "border-white"
+                              }`}
+                              onClick={() => toggleTaskDetail(task.task_id)}
+                            >
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="truncate text-gray-600">{task.role}</span>
+                                <span className={missionStatusClass(task.status)}>
+                                  {task.status}
+                                </span>
+                              </div>
+                              <div className="mt-0.5 truncate text-[11px] text-gray-400">
+                                {task.task_id} · 尝试 {task.resume_attempts}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {activeLedger.length > 0 && (
+              <div className="rounded border border-gray-200 bg-white p-2 text-xs">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="font-medium">任务看板</span>
+                  <span className="text-gray-400">点开看状态账本</span>
+                </div>
+                <div className="space-y-2">
+                  {activeLedger.slice(0, 4).map((item) => {
+                    const isExpanded = expandedTaskId === item.task_id;
+                    return (
+                      <div
+                        key={item.task_id}
+                        className={`rounded border bg-gray-50 ${
+                          isExpanded ? "border-kun-accent" : "border-gray-100"
+                        }`}
+                      >
+                        <button
+                          className="w-full p-2 text-left"
+                          onClick={() => toggleTaskDetail(item.task_id)}
+                        >
+                          <div className="flex justify-between gap-2">
+                            <span className="truncate font-medium">
+                              {item.current_goal || item.title || item.task_id}
+                            </span>
+                            <span className={missionStatusClass(item.status)}>{item.status}</span>
+                          </div>
+                          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-gray-500">
+                            <span>
+                              第 {item.current_step}/{item.total_steps || 1} 步
+                            </span>
+                            <span>风险 {item.current_risk}</span>
+                            <span>${item.cost_so_far_usd.toFixed(4)}</span>
+                            <span>
+                              待确认{" "}
+                              {item.pending_confirmations.length +
+                                pendingActions.filter(
+                                  (action) => action.task_ref === item.task_id,
+                                ).length}
+                            </span>
+                          </div>
+                          <div className="mt-1 truncate text-gray-500">
+                            {item.current_action ||
+                              item.current_model ||
+                              item.current_skill ||
+                              item.execution_mode}
+                          </div>
+                          {item.recent_events?.[0]?.summary && (
+                            <div className="mt-1 truncate text-gray-400">
+                              最近：{item.recent_events[0].summary}
+                            </div>
+                          )}
+                        </button>
+                        {isExpanded && (
+                          <div className="border-t border-gray-100 p-2">
+                            <TaskDetailPanel
+                              detail={taskDetail}
+                              loading={taskDetailLoading}
+                              error={taskDetailError}
+                              selectedTaskId={item.task_id}
+                              ledgerFallback={item}
+                              pendingActions={pendingActions.filter(
+                                (action) => action.task_ref === item.task_id,
+                              )}
+                              taskControlStatus={taskControlStatusById[item.task_id]}
+                              taskControlNotice={taskControlNoticeById[item.task_id] ?? ""}
+                              taskControlBusy={taskControlBusyId === item.task_id}
+                              onRefreshTaskControl={() =>
+                                void loadTaskControlStatus(item.task_id)
+                              }
+                              onRequestTaskStop={() => void requestTaskStop(item.task_id)}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {expandedTaskId &&
+              !activeLedger.some((item) => item.task_id === expandedTaskId) &&
+              (selectedTaskId || taskDetailLoading || taskDetailError) && (
+                <TaskDetailPanel
+                  detail={taskDetail}
+                  loading={taskDetailLoading}
+                  error={taskDetailError}
+                  selectedTaskId={selectedTaskId}
+                  pendingActions={pendingActions.filter(
+                    (action) => action.task_ref === selectedTaskId,
+                  )}
+                  taskControlStatus={taskControlStatusById[selectedTaskId]}
+                  taskControlNotice={taskControlNoticeById[selectedTaskId] ?? ""}
+                  taskControlBusy={taskControlBusyId === selectedTaskId}
+                  onRefreshTaskControl={() => void loadTaskControlStatus(selectedTaskId)}
+                  onRequestTaskStop={() => void requestTaskStop(selectedTaskId)}
+                />
+            )}
+            {globalState && activeLedger.length === 0 && (
+              <div className="rounded border border-dashed border-gray-200 bg-white p-2 text-xs text-gray-500">
+                现在没有活跃任务。你可以直接在下面给鲲一个目标。
+              </div>
+            )}
+          </div>
+        </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-2 text-sm">
           {messages.map((m, i) => (
             <div
@@ -172,6 +1348,184 @@ export default function Home() {
           <span className="text-kun-accent">累计 ${totalCost.toFixed(4)}</span>
         </div>
         <div className="flex-1 space-y-2">
+          {/* V2.3: 启 (Qi) 状态卡 + toggle 按钮 */}
+          {deliveryStatus && (
+            <div className="bg-white rounded p-2 border border-gray-200 text-xs space-y-2">
+              <div className="font-medium flex justify-between">
+                <span>能力边界</span>
+                <a href="/nuo" className="text-kun-accent hover:underline">
+                  去傩查看
+                </a>
+              </div>
+              <div className="grid grid-cols-4 gap-1 text-center">
+                <BoundaryCount label="可测" value={deliverySummary?.ready ?? 0} />
+                <BoundaryCount label="半闭环" value={deliverySummary?.partial ?? 0} />
+                <BoundaryCount label="仅审计" value={deliverySummary?.audit_only ?? 0} />
+                <BoundaryCount label="未就绪" value={deliverySummary?.not_ready ?? 0} />
+              </div>
+              {deliveryStatus.validation_issues.length > 0 && (
+                <div className="rounded bg-red-50 px-2 py-1 text-kun-bad">
+                  诚实状态异常：{deliveryStatus.validation_issues[0]}
+                </div>
+              )}
+              {visibleDeliveryGaps.length > 0 ? (
+                <div className="space-y-1">
+                  {visibleDeliveryGaps.slice(0, 3).map((item) => (
+                    <div key={item.capability_id} className="border-t pt-1">
+                      <div className="flex justify-between gap-2">
+                        <span className="truncate font-medium">{item.label}</span>
+                        <span className={deliveryStatusClass(item.status)}>
+                          {deliveryStatusLabel(item.status)}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 truncate text-gray-500">{item.summary}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-gray-500">当前用户可见能力都标为可测。</div>
+              )}
+            </div>
+          )}
+
+          <div className="bg-white rounded p-2 border border-gray-200 text-xs space-y-1">
+            <div className="font-medium flex justify-between">
+              <span>🌙 启 (Qi) 状态</span>
+              {qiStatus ? (
+                qiStatus.window_active ? (
+                  <span className="text-kun-good">● 活跃</span>
+                ) : (
+                  <span className="text-gray-500">○ 窗口外</span>
+                )
+              ) : (
+                <span className="text-gray-400">加载中...</span>
+              )}
+            </div>
+            {qiStatus && (
+              <>
+                <div className="text-gray-500 space-y-0.5">
+                  <div>今日花费: ${qiStatus.spent_today_usd.toFixed(4)}</div>
+                  <div>
+                    剩余预算: ${qiStatus.remaining_usd.toFixed(2)} / $
+                    {qiStatus.daily_limit_usd.toFixed(2)}
+                  </div>
+                </div>
+                <div className="flex gap-1 pt-1">
+                  {qiStatus.window_active ? (
+                    <button
+                      className="border rounded px-2 py-0.5 hover:bg-gray-50 flex-1"
+                      onClick={async () => {
+                        await apiFetch("/api/qi/release", { method: "POST" });
+                        const r = await apiFetch("/api/qi/status");
+                        if (r.ok) setQiStatus(await r.json());
+                      }}
+                    >
+                      关闭
+                    </button>
+                  ) : (
+                    <button
+                      className="border rounded px-2 py-0.5 hover:bg-blue-50 bg-blue-50/30 flex-1"
+                      onClick={async () => {
+                        await apiFetch("/api/qi/force_active", { method: "POST" });
+                        const r = await apiFetch("/api/qi/status");
+                        if (r.ok) setQiStatus(await r.json());
+                      }}
+                    >
+                      强制启动
+                    </button>
+                  )}
+                  <button
+                    className="border rounded px-2 py-0.5 hover:bg-gray-50"
+                    title="跑一次 Darwin 探索 (30 秒, 真调 LLM)"
+                    onClick={async () => {
+                      const r = await apiFetch("/api/qi/trigger_explore", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ job: "darwin" }),
+                      });
+                      const data = await r.json();
+                      alert(`Darwin 探索完成: ${JSON.stringify(data)}`);
+                      // 刷新协议库
+                      const pr = await apiFetch("/api/protocols");
+                      if (pr.ok) setProtocols(await pr.json());
+                    }}
+                  >
+                    🔬 跑探索
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* V2.3: 协议库卡片 */}
+          <div className="bg-white rounded p-2 border border-gray-200 text-xs space-y-1">
+            <div className="font-medium flex justify-between">
+              <span>📜 协议库 ({protocols.length})</span>
+              <span className="text-gray-400">stable+experimental</span>
+            </div>
+            {protocols.length === 0 && (
+              <p className="text-gray-500">没有协议. 跑 `kun protocol list` 自动 seed.</p>
+            )}
+            <div className="space-y-1 max-h-40 overflow-y-auto">
+              {protocols.map((p) => (
+                <div
+                  key={`${p.protocol_id}@${p.version}`}
+                  className="border-t pt-1"
+                >
+                  <div className="font-medium truncate">
+                    {p.protocol_id}
+                    <span className="text-gray-400 ml-1">@{p.version}</span>
+                  </div>
+                  <div className="text-gray-500 flex justify-between">
+                    <span>
+                      {p.status === "stable" ? "🟢" : "🟡"} {p.status}
+                    </span>
+                    <span>{p.execution.mode}</span>
+                    <span className="text-gray-400">
+                      {p.created_by === "qi" ? "🌙 涌现" : "🌱 seed"}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white rounded p-2 border border-gray-200 text-xs space-y-2">
+            <div className="font-medium">关系图</div>
+            <div className="grid grid-cols-[88px_1fr] gap-2">
+              <input
+                className="border rounded px-2 py-1"
+                value={graphKind}
+                onChange={(e) => setGraphKind(e.target.value)}
+                aria-label="关系源类型"
+              />
+              <input
+                className="border rounded px-2 py-1"
+                placeholder="source id"
+                value={graphId}
+                onChange={(e) => setGraphId(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void loadGraph();
+                }}
+                aria-label="关系源 ID"
+              />
+            </div>
+            <button
+              className="border rounded px-2 py-1 text-xs hover:bg-gray-50"
+              onClick={() => void loadGraph()}
+            >
+              查询邻接
+            </button>
+            {graphError && <p className="text-kun-bad">{graphError.slice(0, 140)}</p>}
+            {graphNeighbors.slice(0, 6).map((n, i) => (
+              <div key={`${n.entity_kind}:${n.entity_id}:${i}`} className="border-t pt-1">
+                <div className="font-medium">{n.entity_kind}:{n.entity_id}</div>
+                <div className="text-gray-500">
+                  {n.relation_type} · {n.confidence.toFixed(2)}
+                </div>
+              </div>
+            ))}
+          </div>
           {side.length === 0 && (
             <p className="text-xs text-gray-500">系统消息会出现在这里 (费用 / 洞察 / 告警 / 批处理报告).</p>
           )}
@@ -201,7 +1555,883 @@ const ICONS: Record<string, string> = {
   alert: "⚠️",
   guard_intervention: "🛡️",
   idle_batch_report: "🌙",
+  scorecard: "📊",
 };
+
+function MissionStoryPanel({ story }: { story: MissionStory }) {
+  const confidence = Math.round(numberValue(story.reconstruction_confidence) * 100);
+  return (
+    <div className="mt-2 rounded border border-kun-accent/20 bg-blue-50/40 p-2 text-xs text-gray-600">
+      <div className="grid grid-cols-2 gap-2">
+        <DetailCell
+          label="长期进展"
+          value={`${story.done_task_count}/${story.task_count} 个任务完成`}
+        />
+        <DetailCell
+          label="账本"
+          value={`事件 ${story.event_count} · 决策 ${story.decision_count}`}
+        />
+        <DetailCell
+          label="成本"
+          value={`事件 $${numberValue(story.total_event_cost_usd).toFixed(4)} / Mission $${numberValue(
+            story.budget_used_usd,
+          ).toFixed(4)}`}
+        />
+        <DetailCell label="可信度" value={`${confidence}%`} />
+      </div>
+      {story.current_action && (
+        <div className="mt-2 rounded bg-white px-2 py-1">
+          <span className="font-medium text-gray-700">下一步/当前动作：</span>
+          {story.current_action}
+        </div>
+      )}
+      {story.latest_reason && (
+        <div className="mt-2 rounded bg-white px-2 py-1">
+          <span className="font-medium text-gray-700">最近原因：</span>
+          {story.latest_reason}
+        </div>
+      )}
+      {(story.open_questions.length > 0 || story.pending_confirmations.length > 0) && (
+        <div className="mt-2 rounded bg-amber-50 px-2 py-1 text-amber-800">
+          {[...story.pending_confirmations, ...story.open_questions].slice(0, 3).join("；")}
+        </div>
+      )}
+      {story.tasks.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {story.tasks.slice(0, 4).map((task) => (
+            <div key={task.task_id} className="rounded bg-white px-2 py-1">
+              <div className="flex justify-between gap-2">
+                <span className="truncate">
+                  {task.role} · {task.task_id}
+                </span>
+                <span className={missionStatusClass(task.status)}>{task.status}</span>
+              </div>
+              <div className="mt-0.5 truncate text-gray-400">
+                事件 {task.event_count} · 决策 {task.decision_count}
+                {task.current_action ? ` · ${task.current_action}` : ""}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {story.timeline.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {story.timeline.slice(0, 4).map((event) => (
+            <div key={event.event_id} className="rounded bg-white px-2 py-1">
+              <div className="flex justify-between gap-2">
+                <span className="truncate text-gray-500">{event.event_type}</span>
+                <span className="shrink-0 text-gray-400">{formatTime(event.occurred_at)}</span>
+              </div>
+              <div className="truncate">{event.reason || event.summary || "无摘要"}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {story.history_limit_reached && (
+        <div className="mt-2 text-gray-400">历史较长，这里只展示最近一部分事件。</div>
+      )}
+    </div>
+  );
+}
+
+function TaskDetailPanel({
+  detail,
+  loading,
+  error,
+  selectedTaskId,
+  ledgerFallback,
+  pendingActions,
+  taskControlStatus,
+  taskControlNotice,
+  taskControlBusy,
+  onRefreshTaskControl,
+  onRequestTaskStop,
+}: {
+  detail: TaskDetail | null;
+  loading: boolean;
+  error: string;
+  selectedTaskId: string;
+  ledgerFallback?: LedgerEntry;
+  pendingActions: PendingAction[];
+  taskControlStatus?: TaskControlStatus;
+  taskControlNotice: string;
+  taskControlBusy: boolean;
+  onRefreshTaskControl: () => void;
+  onRequestTaskStop: () => void;
+}) {
+  const ledger = detail?.state_ledger ?? ledgerFallback ?? null;
+  const artifacts = detail?.workspace?.artifacts ?? [];
+  const trails = ledger?.recent_events ?? [];
+  const history = detail?.state_ledger_history ?? [];
+  const story = detail?.state_ledger_story ?? null;
+  const [feedbackRating, setFeedbackRating] = useState(5);
+  const [feedbackComment, setFeedbackComment] = useState("");
+  const [feedbackTag, setFeedbackTag] = useState("done_well");
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
+  const [feedbackNotice, setFeedbackNotice] = useState("");
+  const [metaRisk, setMetaRisk] = useState("");
+  const [metaBudget, setMetaBudget] = useState("");
+  const [metaConstraint, setMetaConstraint] = useState("");
+  const [metaConfirmPolicy, setMetaConfirmPolicy] = useState("normal");
+  const [metaBusy, setMetaBusy] = useState(false);
+  const [metaNotice, setMetaNotice] = useState("");
+  const audit =
+    detail?.state_ledger_audit ??
+    buildStateLedgerAudit({
+      taskId: selectedTaskId,
+      ledger,
+      story,
+    });
+  const submitTaskFeedback = async () => {
+    const id = selectedTaskId.trim();
+    if (!id) return;
+    setFeedbackBusy(true);
+    setFeedbackNotice("");
+    try {
+      const res = await apiFetch(`/api/tasks/${encodeURIComponent(id)}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rating: feedbackRating,
+          comment: feedbackComment,
+          tags: feedbackTag ? [feedbackTag] : [],
+        }),
+      });
+      const raw = await res.text();
+      if (!res.ok) throw new Error(raw || `${res.status} ${res.statusText}`);
+      setFeedbackNotice("已收到。这条反馈会进入事件账本，后续用于策略复盘。");
+      setFeedbackComment("");
+    } catch (err) {
+      setFeedbackNotice(err instanceof Error ? err.message : "反馈提交失败");
+    } finally {
+      setFeedbackBusy(false);
+    }
+  };
+  const submitTaskMetadata = async () => {
+    const id = selectedTaskId.trim();
+    if (!id) return;
+    const body: Record<string, unknown> = {};
+    if (metaRisk) body.risk_level = metaRisk;
+    if (metaBudget.trim()) body.estimated_cost_usd = Number(metaBudget);
+    if (metaConstraint.trim()) body.constraint_note = metaConstraint.trim();
+    if (metaConfirmPolicy !== "normal") body.confirmation_policy = metaConfirmPolicy;
+    if (Object.keys(body).length === 0) {
+      setMetaNotice("没有要保存的调整。");
+      return;
+    }
+    setMetaBusy(true);
+    setMetaNotice("");
+    try {
+      const res = await apiFetch(`/api/tasks/${encodeURIComponent(id)}/metadata`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const raw = await res.text();
+      if (!res.ok) throw new Error(raw || `${res.status} ${res.statusText}`);
+      setMetaNotice("已写入任务账本。后续续跑、守望和复盘会看到这次调整。");
+      setMetaConstraint("");
+    } catch (err) {
+      setMetaNotice(err instanceof Error ? err.message : "任务控制参数保存失败");
+    } finally {
+      setMetaBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-kun-accent/30 bg-blue-50/30 p-3 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="font-medium">任务详情</div>
+          <div className="mt-0.5 text-gray-500">{selectedTaskId}</div>
+        </div>
+        {ledger && <span className={missionStatusClass(ledger.status)}>{ledger.status}</span>}
+      </div>
+
+      {loading && <div className="mt-3 text-gray-500">加载任务状态...</div>}
+      {error && <div className="mt-3 text-red-700">{error.slice(0, 220)}</div>}
+
+      {ledger && (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <DetailCell label="目标" value={ledger.current_goal || ledger.title || "未记录"} />
+          <DetailCell label="当前动作" value={ledger.current_action || "暂无"} />
+          <DetailCell
+            label="进度"
+            value={`第 ${ledger.current_step}/${ledger.total_steps || 1} 步`}
+          />
+          <DetailCell
+            label="预算"
+            value={`已用 $${ledger.cost_so_far_usd.toFixed(4)} / 预估 $${numberValue(
+              ledger.budget_estimated_usd,
+            ).toFixed(4)}`}
+          />
+          <DetailCell label="风险" value={ledger.current_risk || "unknown"} />
+          <DetailCell
+            label="模型/Skill"
+            value={`${ledger.current_model || "未记录"}${
+              ledger.current_skill ? ` · ${ledger.current_skill}` : ""
+            }`}
+          />
+          <DetailCell label="执行模式" value={ledger.execution_mode || "未记录"} />
+          <DetailCell
+            label="待确认"
+            value={
+              ledger.pending_confirmations.length > 0
+                ? ledger.pending_confirmations.join("，")
+                : pendingActions.length > 0
+                  ? `${pendingActions.length} 个待审批动作`
+                  : "暂无"
+            }
+          />
+        </div>
+      )}
+
+      {ledger?.decision_reason && (
+        <div className="mt-3 rounded bg-white p-2 text-gray-600">
+          <span className="font-medium text-gray-700">为什么这么做：</span>
+          {ledger.decision_reason}
+        </div>
+      )}
+
+      {audit && (
+        <div className="mt-3 rounded bg-white p-2 text-gray-600">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium text-gray-700">账本审计</span>
+            <span
+              className={
+                audit.drift_detected || audit.issues.length > 0
+                  ? "text-amber-700"
+                  : "text-green-700"
+              }
+            >
+              issues {audit.issues.length}
+            </span>
+          </div>
+          <div className="mt-2 grid grid-cols-3 gap-2">
+            <AuditCell
+              label="状态漂移"
+              value={auditStatusDriftLabel(audit)}
+              tone={auditStatusDriftTone(audit)}
+            />
+            <AuditCell
+              label="成本漂移"
+              value={Math.abs(audit.cost_delta_usd) > 0.01 ? "有" : "无"}
+              tone={Math.abs(audit.cost_delta_usd) > 0.01 ? "warn" : "good"}
+            />
+            <AuditCell
+              label="issues"
+              value={String(audit.issues.length)}
+              tone={audit.issues.length > 0 ? "warn" : "good"}
+            />
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-gray-400">
+            <span>
+              状态 {audit.snapshot_status} / {audit.replay_status}
+            </span>
+            <span>成本 Δ ${audit.cost_delta_usd.toFixed(4)}</span>
+            <span>
+              事件 {audit.event_count} · 决策 {audit.decision_count}
+            </span>
+          </div>
+          {audit.issues.length > 0 && (
+            <div className="mt-1 truncate text-amber-700">
+              {audit.issues.map(auditIssueLabel).join("，")}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="mt-3 rounded bg-white p-2 text-gray-600">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <div className="font-medium text-gray-700">运行控制</div>
+            <div className="mt-0.5 text-gray-400">
+              这里只是给当前运行中的任务发停止信号，不等于改数据库任务状态。
+            </div>
+          </div>
+          <div className="flex shrink-0 gap-1">
+            <button
+              type="button"
+              className="rounded border border-gray-200 px-2 py-1 text-gray-600 hover:border-kun-accent hover:text-kun-accent disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!selectedTaskId || taskControlBusy}
+              onClick={onRefreshTaskControl}
+            >
+              查状态
+            </button>
+            <button
+              type="button"
+              className="rounded border border-red-200 px-2 py-1 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!selectedTaskId || taskControlBusy}
+              onClick={onRequestTaskStop}
+            >
+              {taskControlBusy ? "发送中..." : "请求停止当前任务"}
+            </button>
+          </div>
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <DetailCell
+            label="控制连接"
+            value={
+              taskControlStatus
+                ? taskControlStatus.registered
+                  ? "当前进程可停止"
+                  : "当前进程未注册"
+                : "未查询"
+            }
+          />
+          <DetailCell
+            label="停止信号"
+            value={
+              taskControlStatus
+                ? taskControlStatus.is_killed
+                  ? `已发送${taskControlStatus.kill_reason ? `：${taskControlStatus.kill_reason}` : ""}`
+                  : "未收到停止信号"
+                : "未查询"
+            }
+          />
+          <DetailCell
+            label="超时守卫"
+            value={
+              taskControlStatus
+                ? taskControlStatus.is_timed_out
+                  ? `${taskControlStatus.timeout_reason || "已超时"}${
+                      taskControlStatus.timeout_action
+                        ? ` · ${taskControlStatus.timeout_action}`
+                        : ""
+                    }`
+                  : "未超时"
+                : "未查询"
+            }
+          />
+        </div>
+        {taskControlNotice && (
+          <div className="mt-2 rounded bg-gray-50 px-2 py-1 text-gray-500">
+            {taskControlNotice.slice(0, 240)}
+          </div>
+        )}
+        <div className="mt-3 rounded border border-gray-100 bg-gray-50 p-2">
+          <div className="font-medium text-gray-700">轻量调整</div>
+          <div className="mt-0.5 text-gray-400">
+            这里是真写任务账本，不是前端假改；但不会强行打断正在进行中的单次模型调用。
+          </div>
+          <div className="mt-2 grid gap-2 md:grid-cols-[0.8fr_0.8fr_1.5fr_1fr_auto]">
+            <select
+              className="rounded border border-gray-200 px-2 py-1 text-xs"
+              value={metaRisk}
+              onChange={(event) => setMetaRisk(event.target.value)}
+            >
+              <option value="">风险不变</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="critical">critical</option>
+            </select>
+            <input
+              className="rounded border border-gray-200 px-2 py-1 text-xs"
+              placeholder="预算上限 $"
+              type="number"
+              min="0"
+              step="0.01"
+              value={metaBudget}
+              onChange={(event) => setMetaBudget(event.target.value)}
+            />
+            <input
+              className="rounded border border-gray-200 px-2 py-1 text-xs"
+              placeholder="新增约束，例如先问我再外发"
+              value={metaConstraint}
+              onChange={(event) => setMetaConstraint(event.target.value)}
+            />
+            <select
+              className="rounded border border-gray-200 px-2 py-1 text-xs"
+              value={metaConfirmPolicy}
+              onChange={(event) => setMetaConfirmPolicy(event.target.value)}
+            >
+              <option value="normal">确认策略不变</option>
+              <option value="ask_before_external">外部动作前问我</option>
+              <option value="always_ask">每个关键动作问我</option>
+            </select>
+            <button
+              type="button"
+              className="rounded bg-gray-900 px-2 py-1 text-xs text-white disabled:opacity-50"
+              disabled={!selectedTaskId || metaBusy}
+              onClick={() => void submitTaskMetadata()}
+            >
+              {metaBusy ? "保存中" : "保存"}
+            </button>
+          </div>
+          {metaNotice && (
+            <div className="mt-2 rounded bg-white px-2 py-1 text-gray-500">
+              {metaNotice.slice(0, 240)}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-3 rounded bg-white p-2 text-gray-600">
+        <div className="font-medium text-gray-700">任务反馈</div>
+        <div className="mt-0.5 text-gray-400">
+          这里不是点赞摆设。反馈会写入 task 事件，给启和策略评分系统做复盘依据。
+        </div>
+        <div className="mt-2 grid gap-2 md:grid-cols-[0.7fr_1fr_2fr_auto]">
+          <select
+            className="rounded border border-gray-200 px-2 py-1 text-xs"
+            value={feedbackRating}
+            onChange={(event) => setFeedbackRating(Number(event.target.value))}
+          >
+            <option value={5}>5 分</option>
+            <option value={4}>4 分</option>
+            <option value={3}>3 分</option>
+            <option value={2}>2 分</option>
+            <option value={1}>1 分</option>
+          </select>
+          <select
+            className="rounded border border-gray-200 px-2 py-1 text-xs"
+            value={feedbackTag}
+            onChange={(event) => setFeedbackTag(event.target.value)}
+          >
+            <option value="done_well">做得好</option>
+            <option value="inaccurate">不准确</option>
+            <option value="too_slow">太慢</option>
+            <option value="too_expensive">太贵</option>
+            <option value="wrong_strategy">策略错了</option>
+            <option value="wrong_skill">工具/skill 用错</option>
+            <option value="unsafe">风险处理不好</option>
+          </select>
+          <input
+            className="rounded border border-gray-200 px-2 py-1 text-xs"
+            placeholder="一句话说明，可空"
+            value={feedbackComment}
+            onChange={(event) => setFeedbackComment(event.target.value)}
+          />
+          <button
+            type="button"
+            className="rounded bg-gray-900 px-2 py-1 text-xs text-white disabled:opacity-50"
+            disabled={!selectedTaskId || feedbackBusy}
+            onClick={() => void submitTaskFeedback()}
+          >
+            {feedbackBusy ? "提交中" : "提交"}
+          </button>
+        </div>
+        {feedbackNotice && (
+          <div className="mt-2 rounded bg-gray-50 px-2 py-1 text-gray-500">
+            {feedbackNotice.slice(0, 240)}
+          </div>
+        )}
+      </div>
+
+      {story && story.event_count > 0 && (
+        <div className="mt-3 rounded bg-white p-2 text-gray-600">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium text-gray-700">状态账本</span>
+            <span className="text-gray-400">
+              事件 {story.event_count} · 决策 {story.decision_count} · $
+              {numberValue(story.total_cost_usd).toFixed(4)}
+            </span>
+          </div>
+          <div className="mt-1 flex flex-wrap gap-1 text-gray-500">
+            {story.status && <span>推断状态：{story.status}</span>}
+            {story.world_action_count ? <span>· 外部动作 {story.world_action_count}</span> : null}
+            {story.external_action_count ? (
+              <span>· 真实外发 {story.external_action_count}</span>
+            ) : null}
+            {typeof story.reconstruction_confidence === "number" ? (
+              <span>· 可信度 {Math.round(story.reconstruction_confidence * 100)}%</span>
+            ) : null}
+          </div>
+          {story.latest_reason && (
+            <div className="mt-1 truncate">最近原因：{story.latest_reason}</div>
+          )}
+          {story.current_action && (
+            <div className="mt-1 truncate">当前推断动作：{story.current_action}</div>
+          )}
+          {(story.open_questions?.length ?? 0) > 0 && (
+            <div className="mt-1 truncate text-amber-700">
+              待处理：{story.open_questions?.slice(0, 2).join("；")}
+            </div>
+          )}
+          {(story.gaps?.length ?? 0) > 0 && (
+            <div className="mt-1 truncate text-gray-400">
+              账本缺口：{story.gaps?.slice(0, 3).join("，")}
+            </div>
+          )}
+          <div className="mt-1 text-gray-400">
+            {story.first_seen_at ? `开始 ${formatTime(story.first_seen_at)}` : "开始时间未知"}
+            {story.last_seen_at ? ` · 最近 ${formatTime(story.last_seen_at)}` : ""}
+          </div>
+        </div>
+      )}
+
+      {(ledger || story) && (
+        <details className="mt-3 rounded bg-white p-2 text-gray-600">
+          <summary className="cursor-pointer font-medium text-gray-700">
+            高级调试：执行路径图
+          </summary>
+          <ExecutionPathGraph
+            ledger={ledger}
+            story={story}
+            pendingActions={pendingActions}
+          />
+        </details>
+      )}
+
+      {pendingActions.length > 0 && (
+        <div className="mt-3 rounded bg-amber-50 p-2 text-amber-900">
+          <div className="font-medium">等你确认</div>
+          {pendingActions.map((action) => (
+            <div key={action.action_id} className="mt-1">
+              {action.action_type} → {action.target_ref || action.task_ref}（{action.risk_level}）
+            </div>
+          ))}
+        </div>
+      )}
+
+      {trails.length > 0 && (
+        <div className="mt-3">
+          <div className="font-medium">最近动作</div>
+          <div className="mt-1 space-y-1">
+            {trails.slice(0, 5).map((event, idx) => (
+              <div key={`${event.kind}-${idx}`} className="rounded bg-white px-2 py-1 text-gray-600">
+                <span className="text-gray-400">{event.kind || "event"}</span>
+                <span className="mx-1">·</span>
+                <span>{event.summary || "无摘要"}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div className="mt-3">
+          <div className="font-medium">关键时间线</div>
+          <div className="mt-1 space-y-1">
+            {(story?.timeline?.length ? [...story.timeline].reverse() : history).slice(0, 5).map((event) => (
+              <div key={event.event_id} className="rounded bg-white px-2 py-1 text-gray-600">
+                <div className="flex justify-between gap-2">
+                  <span className="truncate text-gray-500">{event.event_type}</span>
+                  <span className="shrink-0 text-gray-400">
+                    ${numberValue(event.cost_usd).toFixed(4)}
+                  </span>
+                </div>
+                <div className="truncate">
+                  {event.reason || event.summary || event.decision_ticket_id || "无摘要"}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {artifacts.length > 0 && (
+        <details className="mt-3">
+          <summary className="cursor-pointer text-gray-600">查看产物 / 工作区</summary>
+          <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-[11px] text-gray-600">
+            {JSON.stringify(artifacts.slice(0, 6), null, 2)}
+          </pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function ExecutionPathGraph({
+  ledger,
+  story,
+  pendingActions,
+}: {
+  ledger: LedgerEntry | null;
+  story: StateLedgerStory | null;
+  pendingActions: PendingAction[];
+}) {
+  const modelHints = [
+    ledger?.current_model,
+    ...(story?.model_routes ?? []),
+  ].filter(Boolean) as string[];
+  const skillHints = [
+    ledger?.current_skill,
+    ...(story?.skill_refs ?? []),
+  ].filter(Boolean) as string[];
+  const contextCount = story?.context_asset_ids?.length ?? 0;
+  const riskFlags = [
+    ledger?.current_risk && ledger.current_risk !== "unknown" ? ledger.current_risk : "",
+    ...(story?.risk_flags ?? []),
+  ].filter(Boolean) as string[];
+  const worldCount = Math.max(
+    pendingActions.length,
+    story?.world_action_count ?? 0,
+    story?.external_action_count ?? 0,
+  );
+  const nodes = [
+    {
+      label: "目标",
+      value: ledger?.current_goal || ledger?.title || story?.latest_reason || "未记录目标",
+      tone: "blue" as const,
+    },
+    {
+      label: "执行策略",
+      value: [
+        ledger?.execution_mode || "mode 未记录",
+        story?.decision_count ? `${story.decision_count} 次决策` : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      tone: "gray" as const,
+    },
+    {
+      label: "模型",
+      value: modelHints.length ? uniqueShortList(modelHints, 2) : "未记录模型路线",
+      tone: "gray" as const,
+    },
+    {
+      label: "Skill / Context",
+      value: [
+        skillHints.length ? uniqueShortList(skillHints, 2) : "skill 未记录",
+        contextCount ? `context ${contextCount}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      tone: "gray" as const,
+    },
+    {
+      label: "外部动作",
+      value:
+        worldCount > 0
+          ? `${worldCount} 个动作${pendingActions.length ? ` · ${pendingActions.length} 个待确认` : ""}`
+          : "无外部动作",
+      tone: worldCount > 0 ? ("amber" as const) : ("gray" as const),
+    },
+    {
+      label: "状态 / 风险",
+      value: [
+        ledger?.status || story?.status || "unknown",
+        riskFlags.length ? uniqueShortList(riskFlags, 2) : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      tone:
+        (ledger?.pending_confirmations.length ?? 0) > 0 || pendingActions.length > 0
+          ? ("amber" as const)
+          : ("green" as const),
+    },
+  ];
+  return (
+    <div className="mt-2">
+      <div className="grid gap-2 md:grid-cols-3">
+        {nodes.map((node, idx) => (
+          <div key={`${node.label}-${idx}`} className="flex items-center gap-2">
+            <PathNode label={node.label} value={node.value} tone={node.tone} />
+            {idx < nodes.length - 1 && (
+              <span className="hidden text-gray-300 md:inline">→</span>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 rounded bg-gray-50 px-2 py-1 text-[11px] text-gray-500">
+        这是从当前状态账本和长期事件回放拼出的调试视图，不是主流程编辑器；如果账本缺事件，
+        这里会显示“未记录”，不会假装知道。
+      </div>
+    </div>
+  );
+}
+
+function PathNode({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "blue" | "green" | "amber" | "gray";
+}) {
+  const toneClass =
+    tone === "blue"
+      ? "border-blue-200 bg-blue-50"
+      : tone === "green"
+        ? "border-green-200 bg-green-50"
+        : tone === "amber"
+          ? "border-amber-200 bg-amber-50"
+          : "border-gray-200 bg-white";
+  return (
+    <div className={`min-h-16 flex-1 rounded border p-2 ${toneClass}`}>
+      <div className="text-[11px] text-gray-400">{label}</div>
+      <div className="mt-1 line-clamp-2 break-words text-gray-700">{value}</div>
+    </div>
+  );
+}
+
+function DetailCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded bg-white px-2 py-1">
+      <div className="text-gray-400">{label}</div>
+      <div className="mt-0.5 truncate text-gray-700">{value}</div>
+    </div>
+  );
+}
+
+function AuditCell({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "good" | "warn" | "muted";
+}) {
+  const toneClass =
+    tone === "good" ? "text-green-700" : tone === "warn" ? "text-amber-700" : "text-gray-500";
+  return (
+    <div className="rounded border border-gray-100 bg-gray-50 px-2 py-1">
+      <div className="text-gray-400">{label}</div>
+      <div className={`mt-0.5 font-medium ${toneClass}`}>{value}</div>
+    </div>
+  );
+}
+
+function buildStateLedgerAudit({
+  taskId,
+  ledger,
+  story,
+}: {
+  taskId: string;
+  ledger: LedgerEntry | null;
+  story: StateLedgerStory | null;
+}): StateLedgerAudit | null {
+  if (!ledger && !story) return null;
+  const snapshotFound = Boolean(ledger);
+  const replayFound = numberValue(story?.event_count) > 0;
+  const snapshotStatus = ledger?.status ?? "missing";
+  const replayStatus = story?.status || "unknown";
+  const canCompareStatus = snapshotFound && replayFound && replayStatus !== "unknown";
+  const statusMatches = canCompareStatus && snapshotStatus === replayStatus;
+  const snapshotCost = numberValue(ledger?.cost_so_far_usd);
+  const replayCost = numberValue(story?.total_cost_usd);
+  const costDelta = roundMoney(snapshotCost - replayCost);
+  const issues: string[] = [];
+  if (!snapshotFound) issues.push("missing_current_snapshot");
+  if (!replayFound) issues.push("missing_durable_history");
+  if (canCompareStatus && !statusMatches) issues.push("status_drift");
+  if (Math.abs(costDelta) > 0.01) issues.push("cost_drift");
+  for (const gap of story?.gaps ?? []) {
+    if (gap) issues.push(gap);
+  }
+  return {
+    task_id: taskId,
+    tenant_id: ledger?.tenant_id,
+    snapshot_source: snapshotFound ? "frontend_snapshot" : "missing",
+    snapshot_found: snapshotFound,
+    replay_found: replayFound,
+    snapshot_status: snapshotStatus,
+    replay_status: replayStatus,
+    status_matches: statusMatches,
+    snapshot_updated_at: ledger?.updated_at ?? null,
+    replay_last_seen_at: story?.last_seen_at ?? null,
+    event_count: numberValue(story?.event_count),
+    decision_count: numberValue(story?.decision_count),
+    snapshot_cost_usd: snapshotCost,
+    replay_cost_usd: replayCost,
+    cost_delta_usd: costDelta,
+    reconstruction_confidence: numberValue(story?.reconstruction_confidence),
+    drift_detected: issues.some((issue) => issue.endsWith("_drift")),
+    issues,
+  };
+}
+
+function uniqueShortList(items: string[], limit: number): string {
+  const unique = Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+  const visible = unique.slice(0, limit).join("，");
+  const more = unique.length > limit ? ` +${unique.length - limit}` : "";
+  return `${visible}${more}`;
+}
+
+function auditStatusDriftLabel(audit: StateLedgerAudit): string {
+  if (!audit.snapshot_found || !audit.replay_found || audit.replay_status === "unknown") {
+    return "未知";
+  }
+  return audit.status_matches ? "无" : "有";
+}
+
+function auditStatusDriftTone(audit: StateLedgerAudit): "good" | "warn" | "muted" {
+  if (!audit.snapshot_found || !audit.replay_found || audit.replay_status === "unknown") {
+    return "muted";
+  }
+  return audit.status_matches ? "good" : "warn";
+}
+
+function auditIssueLabel(issue: string): string {
+  if (issue === "status_drift") return "状态漂移";
+  if (issue === "cost_drift") return "成本漂移";
+  if (issue === "missing_current_snapshot") return "缺当前快照";
+  if (issue === "missing_durable_history") return "缺长期历史";
+  if (issue === "missing_task_created_event") return "缺任务创建事件";
+  return issue;
+}
+
+function gatewayPreviewLabel(preview: GatewayPreview) {
+  if (preview.user_summary) return preview.user_summary;
+  if (preview.gateway_mode === "preview_failed") return "预览失败";
+  if (preview.requires_handler) return "没有执行器，只审计";
+  if (preview.external_dispatched) return "批准后会执行受控本地动作";
+  return "批准后只生成草稿 / dry-run";
+}
+
+function gatewayCapabilityLabel(preview: GatewayPreview) {
+  if (preview.capability_status === "preview_failed") return "先检查";
+  if (preview.capability_status === "missing_handler" || preview.requires_handler) return "只审计";
+  if (preview.capability_status === "supported_execute") return "会执行";
+  if (preview.capability_status === "supported_draft") return "草稿";
+  if (preview.capability_status === "supported_dry_run") return "dry-run";
+  if (preview.capability_status === "supported_plan") return "计划";
+  return "待确认";
+}
+
+function gatewayCapabilityClass(preview: GatewayPreview) {
+  if (preview.capability_status === "preview_failed") return "bg-red-50 text-red-700";
+  if (preview.capability_status === "missing_handler" || preview.requires_handler) {
+    return "bg-gray-100 text-gray-600";
+  }
+  if (preview.capability_status === "supported_execute") return "bg-green-50 text-green-700";
+  return "bg-blue-50 text-blue-700";
+}
+
+function MiniCard({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+}) {
+  return (
+    <div className="rounded border border-gray-200 bg-white px-3 py-2">
+      <div className="text-gray-500">{label}</div>
+      <div className="mt-1 text-lg font-semibold text-gray-900">{value}</div>
+      <div className="mt-1 text-gray-400">{hint}</div>
+    </div>
+  );
+}
+
+function BoundaryCount({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded border border-gray-100 bg-gray-50 px-1 py-1">
+      <div className="font-semibold">{value}</div>
+      <div className="text-[11px] text-gray-400">{label}</div>
+    </div>
+  );
+}
+
+function deliveryStatusLabel(status: DeliveryStatus) {
+  if (status === "ready") return "可测";
+  if (status === "partial") return "半闭环";
+  if (status === "audit_only") return "仅审计";
+  return "未就绪";
+}
+
+function deliveryStatusClass(status: DeliveryStatus) {
+  if (status === "ready") return "shrink-0 text-kun-good";
+  if (status === "partial") return "shrink-0 text-kun-warn";
+  if (status === "audit_only") return "shrink-0 text-gray-500";
+  return "shrink-0 text-kun-bad";
+}
 
 function formatMain(msg: WireMessage): string {
   if (msg.type === "thinking") return `思考中... (${stringValue(msg.stage)})`;
@@ -215,6 +2445,20 @@ function formatMain(msg: WireMessage): string {
   return JSON.stringify(msg);
 }
 
+function formatHttpTaskResult(payload: WireMessage): string {
+  if (typeof payload.answer === "string") return payload.answer;
+  if (typeof payload.content === "string") return payload.content;
+  if (payload.fast_path && typeof payload.payload === "object") {
+    return `快速路径完成：${JSON.stringify(payload.payload)}`;
+  }
+  const taskId = stringValue(payload.task_id);
+  const finalStatus = stringValue(payload.final_status);
+  if (taskId || finalStatus) {
+    return `任务已提交${taskId ? `：${taskId}` : ""}${finalStatus ? `（${finalStatus}）` : ""}`;
+  }
+  return JSON.stringify(payload);
+}
+
 function stringValue(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -223,4 +2467,22 @@ function stringValue(value: unknown): string {
 
 function numberValue(value: unknown): number {
   return typeof value === "number" ? value : 0;
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
+}
+
+function formatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function missionStatusClass(status: string): string {
+  if (status === "done") return "shrink-0 text-green-700";
+  if (status === "failed" || status === "cancelled") return "shrink-0 text-red-700";
+  if (status === "paused" || status === "blocked") return "shrink-0 text-amber-700";
+  if (status === "running" || status === "queued") return "shrink-0 text-blue-700";
+  return "shrink-0 text-gray-500";
 }

@@ -62,7 +62,23 @@ class Validator(Protocol):
 
 
 def pick_tier(meta: TaskMeta) -> ValidationTier:
-    """§8.1 risk × complexity matrix."""
+    """§8.1 risk × complexity matrix.
+
+    V2.2 §21 wire: ExecutionMode 显式设置时强制覆盖
+    (FAST→tier0, MAX/ENSEMBLE→tier3).
+    显式标志: mode_override_reason 非空 (说明是 classifier 真算出来的, 不是字段默认值).
+    没显式设 (默认 mode=FAST + 空 reason) → 走老 risk × complexity 矩阵.
+    """
+    # V2.2 mode override (仅在显式设置时生效)
+    mode = getattr(meta, "execution_mode", "FAST")
+    reason = getattr(meta, "mode_override_reason", "") or ""
+    if reason:  # classifier 显式算过
+        if mode == "FAST":
+            return "tier0"
+        if mode in ("MAX", "ENSEMBLE"):
+            return "tier3"
+        # SMART 走下面老矩阵
+    # 老逻辑 (risk × complexity)
     risk_high = meta.risk_level in ("high", "critical")
     complex_high = meta.complexity_score >= 0.5
     if not risk_high and not complex_high:

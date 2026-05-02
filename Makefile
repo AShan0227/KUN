@@ -1,6 +1,6 @@
 # KUN dev convenience targets. Run `make help`.
 
-.PHONY: help install dev test lint format typecheck up down migrate run-cli serve clean
+.PHONY: help install dev test lint format typecheck up down migrate run-cli serve clean preflight readiness dogfood delivery-status
 
 help:  ## show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -53,6 +53,18 @@ skills:  ## list starter skills
 
 idle-batch:  ## run one idle-batch pass (health_report only)
 	uv run kun idle-batch --only health_report
+
+preflight:  ## run production-style static/runtime preflight
+	uv run kun ops preflight
+
+readiness:  ## run V4 readiness summary (preflight + secrets + delivery)
+	uv run kun ops readiness
+
+dogfood:  ## run low-risk V4 dogfood smoke
+	uv run kun ops dogfood --tenant $${KUN_DEFAULT_TENANT_ID:-u-sylvan}
+
+delivery-status:  ## show honest ready/partial/not_ready status
+	uv run kun ops delivery-status
 
 clean:  ## remove caches
 	rm -rf .venv .pytest_cache .mypy_cache .ruff_cache build dist *.egg-info

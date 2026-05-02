@@ -44,6 +44,142 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
         "description": "读 PDF 文件并抽取文本内容",
         "auto_trigger_when": [],
     },
+    "world-request": {
+        "description": (
+            "执行中发现需要外部动作时, 只生成待审批 WorldGateway 动作并暂停任务; "
+            "不会真实发送、支付、发布或控制浏览器。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action_type": {
+                    "type": "string",
+                    "description": "例如 email.draft / local_file.write / browser.plan",
+                },
+                "target_ref": {"type": "string"},
+                "risk_level": {"type": "string"},
+                "payload": {"type": "object"},
+            },
+            "required": ["action_type", "payload"],
+        },
+        "auto_trigger_when": [],
+    },
+    "code-review": {
+        "description": (
+            "只读代码审查 skill。输入 unified diff 或 workspace 内文件路径，"
+            "返回安全/可维护性 finding；不写文件、不执行代码、不自动修复。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "diff": {"type": "string", "description": "unified diff 文本"},
+                "path": {"type": "string", "description": "workspace 内待审查文件路径"},
+                "workspace_root": {
+                    "type": "string",
+                    "description": "可选 workspace root；默认 KUN_CODE_CAPABILITY_WORKSPACE_ROOT 或当前目录",
+                },
+            },
+        },
+        "auto_trigger_when": [
+            {
+                "pattern": r"[\w./~-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|kt|swift|c|cc|cpp|h|hpp|sh|sql|toml|ya?ml)\b",
+                "extract": {
+                    "kind": "match_group_0",
+                    "param_name": "path",
+                    "max_len": 500,
+                },
+            }
+        ],
+    },
+    "code-propose-change": {
+        "description": (
+            "受控代码改动提案。默认只做 dry-run：先审查 patch/replacement，再在临时工作区"
+            "运行可选检查；不会写真实工作区，除非显式开启 KUN_CODE_PROPOSE_CHANGE_SKILL_ALLOW_APPLY=1。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "patch_text": {"type": "string"},
+                "replacement_content": {"type": "string"},
+                "allow_apply": {"type": "boolean"},
+                "checks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string"},
+                            "target": {"type": "string"},
+                            "tool": {"type": "string"},
+                            "timeout_sec": {"type": "integer"},
+                        },
+                    },
+                },
+            },
+            "required": ["path"],
+        },
+        "auto_trigger_when": [],
+    },
+    "external-skill-scout": {
+        "description": (
+            "遇到能力缺口时生成外部 skill / 工程模板搜索计划。只输出 review-only scout plan，"
+            "不会联网抓取、不会安装、不会注册生产 skill。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_need": {
+                    "description": "字符串或对象，描述当前缺什么外部能力",
+                },
+                "task_type": {"type": "string"},
+                "summary": {"type": "string"},
+                "description": {"type": "string"},
+                "goal": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "topics": {"type": "array", "items": {"type": "string"}},
+                "source_registry": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "可选离线外部能力源登记元数据；仅用于审查计划",
+                },
+                "candidate_sources": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "source_registry 的别名；不会联网抓取",
+                },
+                "candidates": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "可选离线外部 skill / 模板候选元数据",
+                },
+            },
+        },
+        "auto_trigger_when": [
+            {
+                "pattern": r"(need external skill|find skill|能力缺口|寻找外部\s*skill|外部能力|缺少.*skill)",
+                "extract": {
+                    "kind": "search_query",
+                    "param_name": "task_need",
+                    "max_len": 500,
+                },
+            }
+        ],
+    },
+    "external-skill-review": {
+        "description": (
+            "鉴别外部 skill / 工程模板候选。只消费离线 metadata，输出安全审查包；"
+            "不会联网、不会安装、不会注册生产 skill。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_need": {"description": "字符串或对象，描述当前缺什么能力"},
+                "candidate": {"type": "object"},
+            },
+            "required": ["candidate"],
+        },
+        "auto_trigger_when": [],
+    },
 }
 
 

@@ -54,10 +54,13 @@ def test_pending_actions_for_requires_approval_for_external_side_effects() -> No
     actions = pending_actions_for(_task(spec=spec, text="发布公告并发送邮件"))
 
     assert {action.action_type for action in actions} == {
-        "content.publish",
-        "message.send",
+        "email.draft",
+        "local_file.write",
     }
     assert all(action.risk_level == "medium" for action in actions)
+    by_type = {action.action_type: action for action in actions}
+    assert by_type["email.draft"].payload["subject"] == "发布公告并发送邮件"
+    assert by_type["local_file.write"].payload["path"].startswith("drafts/")
 
 
 @pytest.mark.unit
@@ -88,7 +91,7 @@ async def test_enqueue_pending_actions_adds_rows() -> None:
     task = _task()
     actions = [
         PendingActionSpec(
-            action_type="message.send",
+            action_type="email.draft",
             target_ref="customer-list",
             risk_level="high",
         )
@@ -103,6 +106,6 @@ async def test_enqueue_pending_actions_adds_rows() -> None:
 
     assert len(session.added) == 1
     row = session.added[0]
-    assert getattr(row, "action_type") == "message.send"
+    assert getattr(row, "action_type") == "email.draft"
     assert getattr(row, "status") == "pending_approval"
     assert getattr(row, "task_ref") == task.meta.task_id

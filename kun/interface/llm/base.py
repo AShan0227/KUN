@@ -120,6 +120,10 @@ class LLMRequest(BaseModel):
     profile: TaskProfile | None = None
     # Stream or not (streaming not used for every call, but supported)
     stream: bool = False
+    # V2.2 §22 Wire 11: hermes 结构化执行 — 强制 LLM JSON output schema
+    # provider 看到这字段就启用 strict mode (Anthropic tool calling 模拟 / OpenAI
+    # response_format json_schema). 不支持的 provider 静默降级到 prompt-only.
+    response_format: dict[str, Any] | None = None
 
 
 class LLMResponse(BaseModel):
@@ -137,6 +141,10 @@ class LLMResponse(BaseModel):
     cost_usd_equivalent: float = 0.0
     latency_ms: float = 0.0
     finish_reason: Literal["stop", "tool_use", "length", "error"] = "stop"
+    route_debug: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Router rationale snapshot for DecisionTicket / StateLedger.",
+    )
     # Original vendor response (optional, for debugging)
     raw: dict[str, Any] | None = None
 

@@ -70,6 +70,18 @@ def resolve_tenant_id(explicit_tenant_id: str | None) -> str:
     return tenant_id
 
 
+def has_scope(scope: str, *, ctx: TenantContext | None = None) -> bool:
+    """Return whether current tenant context carries a permission scope."""
+
+    active = ctx or current_tenant()
+    return "*" in active.scopes or scope in active.scopes
+
+
+def require_scope(scope: str, *, ctx: TenantContext | None = None) -> None:
+    if not has_scope(scope, ctx=ctx):
+        raise PermissionError(f"missing required scope: {scope}")
+
+
 class tenant_scope:  # noqa: N801 — intentional lowercase for `with` usage
     """Override tenant for a block (mostly for tests / internal jobs).
 

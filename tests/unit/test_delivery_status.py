@@ -1,0 +1,95 @@
+"""Honest delivery status for NUO/KUN."""
+
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from kun.api.nuo.health_panel import router
+from kun.engineering.delivery_status import (
+    DeliveryCapability,
+    get_v3_delivery_status,
+    validate_delivery_status,
+)
+from kun.world.gateway import EmailSendHandler, WorldGateway
+
+
+def test_delivery_status_is_honest_about_incomplete_capabilities() -> None:
+    items = get_v3_delivery_status()
+
+    by_id = {item.capability_id: item for item in items}
+    assert by_id["llm_provider"].status == "ready"
+    assert by_id["llm_provider"].can_claim_complete is True
+    assert by_id["world_gateway"].status == "partial"
+    assert by_id["production_deployment"].status == "not_ready"
+    assert by_id["world_gateway"].can_claim_complete is False
+    assert any("local_file.write" in item for item in by_id["world_gateway"].done)
+    assert any("真实 handler 代码已存在" in item for item in by_id["world_gateway"].done)
+    assert any("payment.plan 已注册方案类 handler" in item for item in by_id["world_gateway"].done)
+    assert any("不支付、不公开发布、不部署" in item for item in by_id["world_gateway"].done)
+    assert any("handler 已实现但当前未注册" in item for item in by_id["world_gateway"].missing)
+    assert any("真实支付执行 handler 未实现" in item for item in by_id["world_gateway"].missing)
+    assert any("统一 apiClient" in item for item in by_id["production_deployment"].done)
+    assert any("最小密码登录" in item for item in by_id["production_deployment"].done)
+    assert any("还没有 OAuth" in item for item in by_id["production_deployment"].missing)
+    assert validate_delivery_status(items) == []
+
+
+def test_delivery_status_endpoint() -> None:
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    resp = client.get("/delivery-status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["summary"]["ready"] >= 1
+    assert body["summary"]["not_ready"] >= 1
+    assert body["validation_issues"] == []
+    assert any(item["capability_id"] == "world_gateway" for item in body["items"])
+
+
+def test_delivery_status_partial_claims_need_existing_evidence() -> None:
+    items = [
+        DeliveryCapability(
+            capability_id="fake_partial",
+            label="假闭环",
+            status="partial",
+            summary="有 done 文案，但 evidence 不存在，必须被拦住。",
+            done=["声称已经接入真实热路径"],
+            missing=["还缺真实执行器"],
+            evidence_refs=["kun/no_such_file.py"],
+        )
+    ]
+
+    problems = validate_delivery_status(items)
+
+    assert any("missing evidence" in problem for problem in problems)
+
+
+def test_delivery_status_derives_world_gateway_capabilities_from_registry(tmp_path: Path) -> None:
+    async def sender(_message: object) -> dict[str, str]:
+        return {"provider_message_id": "smtp-test"}
+
+    gateway = WorldGateway(
+        artifact_root=tmp_path,
+        handlers=[
+            EmailSendHandler(
+                output_root=tmp_path,
+                smtp_host="smtp.example.com",
+                smtp_port=587,
+                smtp_username=None,
+                smtp_password=None,
+                smtp_from="kun@example.com",
+                allowed_recipient_domains={"example.com"},
+                sender=sender,
+            )
+        ],
+    )
+
+    items = get_v3_delivery_status(world_gateway=gateway)
+    world_gateway = {item.capability_id: item for item in items}["world_gateway"]
+
+    assert any("email.send 已注册真实执行 handler" in item for item in world_gateway.done)
+    assert not any(item.startswith("真实邮件发送") for item in world_gateway.missing)
+    assert any(item.startswith("真实浏览器操作") for item in world_gateway.missing)

@@ -1,0 +1,147 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "KUN V2.3 启 (Qi) — 协议涌现 / Predictive Coding / Pheromone / Anti-Gaming dashboard.",
+  "editable": true,
+  "panels": [
+    {
+      "title": "启 (Qi) window — 当前活跃状态 (per tenant)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {"expr": "kun_qi_window_active", "legendFormat": "{{tenant_id}}", "refId": "A"}
+      ],
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0}
+    },
+    {
+      "title": "启 (Qi) 今日花费 USD (per tenant)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {"expr": "kun_qi_daily_spent_usd", "legendFormat": "{{tenant_id}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0}
+    },
+    {
+      "title": "Protocol 匹配命中率 (5min rate)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "sum by (protocol_id) (rate(kun_protocol_match_total{hit=\"true\"}[5m]))",
+          "legendFormat": "{{protocol_id}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4}
+    },
+    {
+      "title": "Protocol lifecycle 升级 (per status transition)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "sum by (from_status, to_status) (rate(kun_protocol_promotion_total[1h]))",
+          "legendFormat": "{{from_status}} → {{to_status}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4}
+    },
+    {
+      "title": "Predictive Coding error 分布 (p50 / p95)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, task_type) (rate(kun_predictive_coding_error_bucket[5m])))",
+          "legendFormat": "p50 {{task_type}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, task_type) (rate(kun_predictive_coding_error_bucket[5m])))",
+          "legendFormat": "p95 {{task_type}}",
+          "refId": "B"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12}
+    },
+    {
+      "title": "Pheromone 总强度 (per tenant)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {"expr": "kun_pheromone_total_strength", "legendFormat": "{{tenant_id}}", "refId": "A"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12}
+    },
+    {
+      "title": "Pheromone decay step 跑次 (1h rate)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "sum by (tenant_id, outcome) (rate(kun_pheromone_decay_step_total[1h]))",
+          "legendFormat": "{{tenant_id}} / {{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20}
+    },
+    {
+      "title": "AntiGaming 套路命中 (per pattern, 5min rate)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "sum by (pattern) (rate(kun_anti_gaming_detection_total[5m]))",
+          "legendFormat": "{{pattern}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+      "alert": {
+        "name": "AntiGaming spike",
+        "conditions": [
+          {"evaluator": {"params": [10], "type": "gt"}, "operator": {"type": "and"}, "type": "query"}
+        ],
+        "noDataState": "no_data"
+      }
+    },
+    {
+      "title": "Capability Card cache hit rate (per tenant)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PROMETHEUS"},
+      "targets": [
+        {
+          "expr": "kun_capability_card_cache_hit_rate",
+          "legendFormat": "{{tenant_id}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 28}
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["kun", "v2.3", "qi"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "title": "KUN / V2.3 启 (Qi)",
+  "uid": "kun-v23-qi",
+  "version": 1
+}

@@ -2,7 +2,12 @@
 
 import pytest
 from kun.context.assets import LayeredAsset
-from kun.context.storage import InMemoryAssetStore
+from kun.context.storage import (
+    InMemoryAssetStore,
+    configure_store_from_settings,
+    get_store,
+    reset_store,
+)
 
 
 def _mk(kind: str = "skill", tenant_id: str = "u-sylvan") -> LayeredAsset:
@@ -56,3 +61,16 @@ async def test_list_filter_by_kind():
     assert len(all_memories) == 2
     all_skills = await store.list(tenant_id="u-sylvan", asset_kind="skill")
     assert len(all_skills) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_configure_store_can_force_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    reset_store()
+    monkeypatch.setenv("KUN_CONTEXT_STORE_BACKEND", "memory")
+
+    backend = await configure_store_from_settings()
+
+    assert backend == "memory"
+    assert isinstance(get_store(), InMemoryAssetStore)
+    reset_store()

@@ -103,3 +103,89 @@ def test_load_rules_from_disk(tmp_path):
     assert len(rules) == 1
     assert rules[0].id == "demo"
     assert rules[0].kind == "guard"
+
+
+@pytest.mark.unit
+def test_load_rules_ignores_non_rule_yaml(tmp_path, caplog):
+    rules_dir = tmp_path / "rules" / "guard"
+    proactive_dir = tmp_path / "rules" / "proactive"
+    rules_dir.mkdir(parents=True)
+    proactive_dir.mkdir(parents=True)
+    (rules_dir / "demo.yaml").write_text(
+        "id: demo\ntrigger:\n  event_type: foo\n  when: 'True'\n",
+        encoding="utf-8",
+    )
+    (proactive_dir / "triggers.yaml").write_text(
+        "version: 1\ntriggers:\n  - skill_id: web-search\n",
+        encoding="utf-8",
+    )
+
+    rules = load_rules(tmp_path / "rules")
+
+    assert [r.id for r in rules] == ["demo"]
+    assert "rules.load_failed" not in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cost_rule_triggers_incident_response() -> None:
+    from kun.security.incident_response import IncidentResponseEngine
+
+    incident_engine = IncidentResponseEngine()
+    rule = GuardRule(
+        id="cost_runaway",
+        kind="guard",
+        description="budget exceeded",
+        trigger=RuleTrigger(event_type="task.step.completed", when="True"),
+        severity="high",
+        actions=[],
+    )
+    engine = RuleEngine([rule], incident_response=incident_engine)
+
+    fired = await engine.evaluate(
+        "task.step.completed",
+        namespace={
+            "tenant_id": "t-1",
+            "task_ref": "tk-1",
+            "event": {
+                "tenant_id": "t-1",
+                "payload": {"task_id": "tk-1", "accumulated_cost_usd": 2.0},
+            },
+        },
+    )
+
+    assert fired == ["cost_runaway"]
+    history = incident_engine.get_history()
+    assert len(history) == 1
+    incident, _actions = history[0]
+    assert incident.category == "cost"
+    assert incident.severity == "L3"
+    assert incident.affected_tenant_id == "t-1"
+    assert incident.affected_task_id == "tk-1"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cross_tenant_rule_triggers_security_incident() -> None:
+    from kun.security.incident_response import IncidentResponseEngine
+
+    incident_engine = IncidentResponseEngine()
+    rule = GuardRule(
+        id="cross_tenant_attempt",
+        kind="guard",
+        description="cross tenant",
+        trigger=RuleTrigger(event_type="security.cross_tenant_attempt", when="True"),
+        severity="critical",
+        actions=[],
+    )
+    engine = RuleEngine([rule], incident_response=incident_engine)
+
+    await engine.evaluate(
+        "security.cross_tenant_attempt",
+        namespace={"tenant_id": "t-secure", "user_id": "u-1"},
+    )
+
+    incident, _actions = incident_engine.get_history()[0]
+    assert incident.category == "security"
+    assert incident.severity == "L4"
+    assert incident.affected_user_id == "u-1"

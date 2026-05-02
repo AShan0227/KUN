@@ -24,14 +24,17 @@ Design notes:
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
 
+from kun.core.anchor_expand import AnchorExpandIterator
 from kun.core.db import session_scope
 from kun.core.logging import get_logger
 from kun.core.orm import CapabilityCardRow
+from kun.core.tenancy import MissingTenantContextError, current_tenant
 
 log = get_logger("kun.llm.capability_router")
 
@@ -120,6 +123,79 @@ class CapabilityRouter:
         scores.sort(key=lambda s: s.score, reverse=True)
         return scores
 
+    async def score_model(self, task_type: str, model_id: str) -> float:
+        """Compatibility hook consumed by ``LLMRouteGovernor``.
+
+        The governor sits inside the router hot path and only knows the
+        candidate ids it is asked to choose from.  This adapter lets it consult
+        the same capability-card data without learning about database rows.
+        When no tenant context exists, return neutral so routing stays stable.
+        """
+
+        tenant_id = _current_tenant_id_or_none()
+        if not tenant_id:
+            return 0.5
+        return (
+            await self.score_for(
+                tenant_id=tenant_id,
+                model_id=model_id,
+                task_type=task_type,
+            )
+        ).score
+
+    async def model_scores(self, task_type: str, candidate_models: list[str]) -> dict[str, float]:
+        """Batch compatibility hook for ``LLMRouteGovernor``."""
+
+        tenant_id = _current_tenant_id_or_none()
+        if not tenant_id:
+            return dict.fromkeys(candidate_models, 0.5)
+        ranked = await self.rank_candidates(
+            tenant_id=tenant_id,
+            model_ids=candidate_models,
+            task_type=task_type,
+        )
+        return {item.model_id: item.score for item in ranked}
+
+    async def rank_candidates_anchor_then_expand(
+        self,
+        *,
+        tenant_id: str,
+        model_ids: list[str],
+        task_type: str,
+        max_rounds: int = 3,
+    ) -> AsyncIterator[CapabilityScore]:
+        """按能力画像分数流式返回模型候选.
+
+        第一轮只返回最高分模型; 调用方觉得不够再继续展开后续模型.
+        老的 ``rank_candidates`` 保持不变, 方便现有路由继续一次性排序.
+
+        # TODO: wire by Claude in V2.2
+        """
+        ranked = await self.rank_candidates(
+            tenant_id=tenant_id,
+            model_ids=model_ids,
+            task_type=task_type,
+        )
+        if not ranked:
+            return
+
+        async def anchor_fn() -> CapabilityScore:
+            return ranked[0]
+
+        async def expand_fn(
+            _anchor: CapabilityScore,
+            prior: list[CapabilityScore],
+        ) -> CapabilityScore | None:
+            seen = {item.model_id for item in prior}
+            return next((item for item in ranked if item.model_id not in seen), None)
+
+        async for item in AnchorExpandIterator(
+            anchor_fn,
+            expand_fn,
+            max_rounds=max_rounds,
+        ):
+            yield item
+
 
 def _neutral_score(model_id: str, task_type: str) -> CapabilityScore:
     return CapabilityScore(
@@ -198,6 +274,13 @@ def get_capability_router() -> CapabilityRouter:
 def reset_capability_router() -> None:
     global _router_singleton
     _router_singleton = None
+
+
+def _current_tenant_id_or_none() -> str | None:
+    try:
+        return current_tenant().tenant_id
+    except MissingTenantContextError:
+        return None
 
 
 __all__ = [
