@@ -80,6 +80,12 @@ async def test_consult_evaluates_watchtower_event() -> None:
     assert engine.events[0][0] == "llm.model_select.consulted"
     assert engine.events[0][1]["selected_model"] == "top"
     assert engine.events[0][1]["tenant_id"] == "tenant-a"
+    ticket = engine.events[0][1]["decision_ticket"]
+    assert ticket["decision_point"] == "llm_model_selected"
+    assert ticket["source_module"] == "watchtower.llm_route_governance"
+    assert ticket["selected_action"] == "top"
+    assert ticket["status"] == "selected"
+    assert ticket["task_id"].startswith("route:")
 
 
 @pytest.mark.asyncio
@@ -128,6 +134,10 @@ async def test_consult_blocks_when_cost_ceiling_exceeded() -> None:
 
     assert engine.events[0][0] == "llm.model_select.blocked"
     assert engine.events[0][1]["reason"] == "cost_ceiling"
+    ticket = engine.events[0][1]["decision_ticket"]
+    assert ticket["status"] == "blocked"
+    assert ticket["selected_action"] == "blocked"
+    assert ticket["metadata"]["block_reason"] == "cost_ceiling"
 
 
 @pytest.mark.asyncio
@@ -164,6 +174,9 @@ async def test_consult_blocks_when_all_models_are_distrusted() -> None:
 
     assert engine.events[0][0] == "llm.model_select.blocked"
     assert engine.events[0][1]["reason"] == "model_trust"
+    ticket = engine.events[0][1]["decision_ticket"]
+    assert ticket["status"] == "blocked"
+    assert ticket["source_module"] == "watchtower.llm_route_governance"
 
 
 @pytest.mark.asyncio
@@ -221,3 +234,7 @@ async def test_trigger_route_change_creates_shadow_proposal() -> None:
     assert proposal.rollout_percent == 0.0
     assert proposal.fired_rules == ["route-change"]
     assert engine.events[0][0] == "llm.route_change.proposed"
+    ticket = engine.events[0][1]["decision_ticket"]
+    assert ticket["task_id"] == "route-policy:coding.python"
+    assert ticket["selected_action"] == "cheap->strong"
+    assert ticket["status"] == "needs_review"

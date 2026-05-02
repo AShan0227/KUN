@@ -926,6 +926,95 @@ def ticket_from_llm_route(
     )
 
 
+def ticket_from_llm_route_governance(
+    *,
+    tenant_id: str,
+    task_id: str,
+    task_type: str,
+    selected_model: str,
+    candidate_models: list[str],
+    status: DecisionStatus = "selected",
+    reason: str = "",
+    risk_level: str = "low",
+    estimated_cost_usd: float | None = None,
+    mission_id: str | None = None,
+    selected_score: float | None = None,
+    score_reason: str | None = None,
+    original_candidate_models: list[str] | None = None,
+    from_model: str | None = None,
+    to_model: str | None = None,
+    rollout_phase: str | None = None,
+    constraints: list[str] | None = None,
+    evidence: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> DecisionTicket:
+    """Wrap Watchtower's pre-call LLM route governance as a decision ticket.
+
+    ``ticket_from_llm_route`` records the model that was actually used by the
+    router.  This helper records the upstream governance decision that allowed,
+    blocked, or proposed that route before the call happened.
+    """
+
+    action = (
+        f"{from_model}->{to_model}"
+        if from_model and to_model
+        else selected_model
+        if selected_model
+        else "blocked"
+    )
+    evidence_payload: dict[str, Any] = {
+        "task_type": task_type,
+        "candidate_models": candidate_models,
+        "original_candidate_models": original_candidate_models or candidate_models,
+        "selected_model": selected_model,
+    }
+    if selected_score is not None:
+        evidence_payload["selected_score"] = selected_score
+    if score_reason:
+        evidence_payload["score_reason"] = score_reason
+    if from_model or to_model:
+        evidence_payload["from_model"] = from_model
+        evidence_payload["to_model"] = to_model
+    if rollout_phase:
+        evidence_payload["rollout_phase"] = rollout_phase
+    if evidence:
+        evidence_payload.update(evidence)
+
+    metadata_payload: dict[str, Any] = {
+        "task_type": task_type,
+        "selected_model": selected_model,
+        "score_reason": score_reason,
+    }
+    if rollout_phase:
+        metadata_payload["rollout_phase"] = rollout_phase
+    if metadata:
+        metadata_payload.update(metadata)
+
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        mission_id=mission_id,
+        phase="routing",
+        decision_point="llm_model_selected",
+        source_module="watchtower.llm_route_governance",
+        selected_action=action,
+        status=status,
+        reason=reason,
+        confidence=0.72 if status in {"selected", "allowed"} else 0.86,
+        risk_level=risk_level,
+        cost_estimate_usd=estimated_cost_usd,
+        alternatives=[model for model in candidate_models if model != selected_model],
+        inputs_summary={
+            "task_id": task_id,
+            "task_type": task_type,
+            "candidate_count": len(candidate_models),
+        },
+        constraints=constraints or [],
+        evidence=evidence_payload,
+        metadata=metadata_payload,
+    )
+
+
 def ticket_from_protocol_applied(
     *,
     tenant_id: str,
@@ -997,6 +1086,67 @@ def ticket_from_protocol_applied(
             "version": version,
             "execution_mode": mode,
             "protocol_status": status,
+        },
+    )
+
+
+def ticket_from_nuo_diagnosis(
+    *,
+    tenant_id: str,
+    recommendation_id: str,
+    finding_id: str,
+    subsystem: str,
+    selected_action: str,
+    status: DecisionStatus,
+    reason: str,
+    risk_level: str = "low",
+    task_id: str | None = None,
+    requires_human_approval: bool = False,
+    can_apply: bool = False,
+    dry_run: bool = True,
+    evidence: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> DecisionTicket:
+    """Wrap NUO governance apply/block choices as traceable decisions."""
+
+    return DecisionTicket(
+        tenant_id=tenant_id,
+        task_id=task_id or f"nuo:{recommendation_id}",
+        phase="nuo",
+        decision_point="nuo_diagnosis",
+        source_module="engineering.nuo_system_health",
+        selected_action=selected_action,
+        status=status,
+        reason=reason,
+        confidence=0.88 if status == "blocked" else 0.74,
+        risk_level=risk_level,
+        cost_estimate_usd=0.0,
+        inputs_summary={
+            "recommendation_id": recommendation_id,
+            "finding_id": finding_id,
+            "subsystem": subsystem,
+        },
+        constraints=[
+            "high-risk NUO governance actions require human approval",
+            "first automated apply surface is limited to low-risk context maintenance",
+        ],
+        evidence={
+            "recommendation_id": recommendation_id,
+            "finding_id": finding_id,
+            "subsystem": subsystem,
+            "requires_human_approval": requires_human_approval,
+            "can_apply": can_apply,
+            "dry_run": dry_run,
+            **(evidence or {}),
+        },
+        metadata={
+            "recommendation_id": recommendation_id,
+            "finding_id": finding_id,
+            "subsystem": subsystem,
+            "requires_human_approval": requires_human_approval,
+            "can_apply": can_apply,
+            "dry_run": dry_run,
+            **(metadata or {}),
         },
     )
 
@@ -1326,7 +1476,9 @@ __all__ = [
     "ticket_from_emergent_switch",
     "ticket_from_execution_mode_selection",
     "ticket_from_llm_route",
+    "ticket_from_llm_route_governance",
     "ticket_from_memory_policy_selection",
+    "ticket_from_nuo_diagnosis",
     "ticket_from_ooda_checkpoint",
     "ticket_from_preflight_guard",
     "ticket_from_proactive_tool_dispatch",

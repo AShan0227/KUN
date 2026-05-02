@@ -10,6 +10,7 @@ from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from kun.datamodel.decision_ticket import DecisionTicket, ticket_from_llm_route_governance
 from kun.watchtower.engine import RuleEngine
 
 RouteChangePhase = Literal["shadow", "canary", "stable", "rolled_back"]
@@ -74,6 +75,22 @@ class LLMRouteGovernor:
         task_type = str(task_meta.get("task_type") or "unknown")
         scores = await self._score_candidates(task_type, trusted_candidates)
         best = _pick_best(scores, trusted_candidates)
+        ticket = ticket_from_llm_route_governance(
+            tenant_id=_tenant_id(task_meta),
+            task_id=_task_id(task_meta),
+            mission_id=_mission_id(task_meta),
+            task_type=task_type,
+            selected_model=best.model_id,
+            candidate_models=trusted_candidates,
+            original_candidate_models=candidate_models,
+            status="selected",
+            reason="Watchtower selected a trusted model by capability score.",
+            risk_level=_risk_level(task_meta),
+            estimated_cost_usd=_estimated_cost(task_meta),
+            selected_score=best.score,
+            score_reason=best.reason,
+            evidence={"task_meta": _redact_for_event(task_meta)},
+        )
         await self.rule_engine.evaluate(
             "llm.model_select.consulted",
             namespace={
@@ -87,6 +104,7 @@ class LLMRouteGovernor:
                 "tenant_id": str(
                     task_meta.get("tenant_id") or task_meta.get("owner_tenant_id") or "unknown"
                 ),
+                "decision_ticket": ticket.event_payload(),
             },
         )
         return best.model_id
@@ -100,6 +118,16 @@ class LLMRouteGovernor:
         if estimated is None or ceiling is None or estimated <= ceiling:
             return
 
+        ticket = _blocked_route_ticket(
+            task_meta=task_meta,
+            reason="cost_ceiling",
+            candidate_models=[],
+            constraints=[f"estimated_cost_usd <= {ceiling}"],
+            evidence={
+                "estimated_cost_usd": estimated,
+                "cost_ceiling_usd": ceiling,
+            },
+        )
         await self.rule_engine.evaluate(
             "llm.model_select.blocked",
             namespace={
@@ -110,6 +138,7 @@ class LLMRouteGovernor:
                 "tenant_id": str(
                     task_meta.get("tenant_id") or task_meta.get("owner_tenant_id") or "unknown"
                 ),
+                "decision_ticket": ticket.event_payload(),
             },
         )
         raise CostExceededError(f"estimated LLM cost {estimated} exceeds ceiling {ceiling}")
@@ -135,6 +164,17 @@ class LLMRouteGovernor:
         if trusted:
             return trusted
 
+        ticket = _blocked_route_ticket(
+            task_meta=task_meta,
+            reason="model_trust",
+            candidate_models=candidate_models,
+            constraints=["candidate model must pass trust policy"],
+            evidence={
+                "candidate_models": candidate_models,
+                "distrusted_models": sorted(distrusted),
+                "trusted_models": sorted(allowed),
+            },
+        )
         await self.rule_engine.evaluate(
             "llm.model_select.blocked",
             namespace={
@@ -146,6 +186,7 @@ class LLMRouteGovernor:
                 "tenant_id": str(
                     task_meta.get("tenant_id") or task_meta.get("owner_tenant_id") or "unknown"
                 ),
+                "decision_ticket": ticket.event_payload(),
             },
         )
         raise ModelTrustError("all candidate models are blocked by trust policy")
@@ -167,6 +208,19 @@ class LLMRouteGovernor:
             phase="shadow",
             rollout_percent=0.0,
         )
+        ticket = ticket_from_llm_route_governance(
+            tenant_id="system",
+            task_id=f"route-policy:{task_type}",
+            task_type=task_type,
+            selected_model=to_model,
+            candidate_models=[from_model, to_model],
+            status="needs_review",
+            reason=reason,
+            from_model=from_model,
+            to_model=to_model,
+            rollout_phase=proposal.phase,
+            constraints=["shadow-first rollout; no production switch without review"],
+        )
         fired = await self.rule_engine.evaluate(
             "llm.route_change.proposed",
             namespace={
@@ -175,6 +229,7 @@ class LLMRouteGovernor:
                 "to_model": to_model,
                 "reason": reason,
                 "phase": proposal.phase,
+                "decision_ticket": ticket.event_payload(),
             },
         )
         proposal.fired_rules = fired
@@ -255,6 +310,60 @@ def _redact_for_event(value: Any) -> Any:
         redacted = _EMAIL_RE.sub("[REDACTED_EMAIL]", value)
         return _TOKEN_RE.sub(lambda match: f"{match.group(1)}=[REDACTED_SECRET]", redacted)
     return value
+
+
+def _blocked_route_ticket(
+    *,
+    task_meta: dict[str, Any],
+    reason: str,
+    candidate_models: list[str],
+    constraints: list[str],
+    evidence: dict[str, Any],
+) -> DecisionTicket:
+    return ticket_from_llm_route_governance(
+        tenant_id=_tenant_id(task_meta),
+        task_id=_task_id(task_meta),
+        mission_id=_mission_id(task_meta),
+        task_type=str(task_meta.get("task_type") or "unknown"),
+        selected_model="blocked",
+        candidate_models=candidate_models,
+        status="blocked",
+        reason=f"Watchtower blocked LLM model selection: {reason}",
+        risk_level=_risk_level(task_meta),
+        estimated_cost_usd=_estimated_cost(task_meta),
+        constraints=constraints,
+        evidence={"task_meta": _redact_for_event(task_meta), **evidence},
+        metadata={"block_reason": reason},
+    )
+
+
+def _tenant_id(task_meta: dict[str, Any]) -> str:
+    return str(task_meta.get("tenant_id") or task_meta.get("owner_tenant_id") or "unknown")
+
+
+def _task_id(task_meta: dict[str, Any]) -> str:
+    return str(
+        task_meta.get("task_id")
+        or task_meta.get("task_ref")
+        or task_meta.get("id")
+        or f"route:{task_meta.get('task_type') or 'unknown'}"
+    )
+
+
+def _mission_id(task_meta: dict[str, Any]) -> str | None:
+    mission_id = task_meta.get("mission_id")
+    return str(mission_id) if mission_id else None
+
+
+def _risk_level(task_meta: dict[str, Any]) -> str:
+    return str(task_meta.get("risk_level") or task_meta.get("risk") or "low")
+
+
+def _estimated_cost(task_meta: dict[str, Any]) -> float | None:
+    return _first_float(
+        task_meta,
+        ("estimated_cost_usd", "cost_usd_estimate", "predicted_cost_usd", "estimated_cost"),
+    )
 
 
 def _first_float(task_meta: dict[str, Any], keys: tuple[str, ...]) -> float | None:

@@ -465,6 +465,10 @@ async def test_governance_apply_low_risk_context_maintenance_dry_run(
         }
     ]
     assert result.details["context_maintenance"]["compressed"] == 2
+    assert result.decision_ticket is not None
+    assert result.decision_ticket.decision_point == "nuo_diagnosis"
+    assert result.decision_ticket.selected_action == "dry_run:context_maintenance"
+    assert result.decision_ticket.status == "selected"
 
 
 @pytest.mark.asyncio
@@ -508,6 +512,9 @@ async def test_governance_apply_low_risk_context_maintenance_apply_calls_runner(
     assert result.applied is True
     assert result.dry_run is False
     assert result.blocked is False
+    assert result.decision_ticket is not None
+    assert result.decision_ticket.selected_action == "apply:context_maintenance"
+    assert result.decision_ticket.status == "applied"
     assert calls[0]["dry_run"] is False
     assert calls[0]["tenant_id"] == "tenant-a"
 
@@ -560,6 +567,10 @@ async def test_governance_apply_blocks_high_risk_recommendation(
     assert result.recommendation_id == "govern:world:email.send"
     assert result.risk_level == "high"
     assert result.action_ticket is not None
+    assert result.decision_ticket is not None
+    assert result.decision_ticket.decision_point == "nuo_diagnosis"
+    assert result.decision_ticket.status == "blocked"
+    assert result.decision_ticket.evidence["blocked_reasons"]
     assert {reason.code for reason in result.blocked_reasons} >= {
         "risk_level_not_low",
         "requires_human_approval",
@@ -593,6 +604,8 @@ async def test_governance_apply_blocks_missing_recommendation(
     assert result.risk_level == "unknown"
     assert result.blocked_reason == "recommendation_not_found"
     assert "not in the current queue" in result.message
+    assert result.decision_ticket is not None
+    assert result.decision_ticket.selected_action == "blocked"
 
 
 def _low_risk_context_recommendation() -> SystemGovernanceRecommendation:

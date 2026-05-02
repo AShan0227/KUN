@@ -35,6 +35,7 @@ from kun.core.orm import (
     TaskRow,
 )
 from kun.core.state_ledger import replay_state_ledger_story
+from kun.datamodel.decision_ticket import DecisionTicket, ticket_from_nuo_diagnosis
 from kun.engineering.concurrency import scan_active_resource_conflicts
 from kun.engineering.delivery_status import get_v3_delivery_status, validate_delivery_status
 from kun.engineering.system_coordination import (
@@ -137,6 +138,7 @@ class GovernanceRecommendationApplyResult(BaseModel):
     blocked_reason: str | None = None
     blocked_reasons: list[GovernanceApplyBlockedReason] = Field(default_factory=list)
     action_ticket: GovernanceActionTicket | None = None
+    decision_ticket: DecisionTicket | None = None
     details: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -421,7 +423,10 @@ async def _apply_governance_recommendation_from_queue(
     )
     if recommendation is None:
         return _blocked_apply_result(
+            tenant_id=tenant_id,
             recommendation_id=recommendation_id,
+            finding_id="recommendation_not_found",
+            subsystem="nuo",
             risk_level="unknown",
             message=f"Governance recommendation {recommendation_id!r} is not in the current queue.",
             reasons=[
@@ -435,7 +440,10 @@ async def _apply_governance_recommendation_from_queue(
     blocked_reasons = _governance_apply_blocked_reasons(recommendation)
     if blocked_reasons:
         return _blocked_apply_result(
+            tenant_id=tenant_id,
             recommendation_id=recommendation.recommendation_id,
+            finding_id=recommendation.finding_id,
+            subsystem=recommendation.subsystem,
             risk_level=recommendation.risk_level,
             message=(
                 "NUO refused to auto-apply this governance recommendation; "
@@ -464,6 +472,26 @@ async def _apply_governance_recommendation_from_queue(
             "Dry-run completed for context maintenance; no state was changed."
             if dry_run
             else "Applied low-risk context maintenance recommendation."
+        ),
+        decision_ticket=ticket_from_nuo_diagnosis(
+            tenant_id=tenant_id,
+            recommendation_id=recommendation.recommendation_id,
+            finding_id=recommendation.finding_id,
+            subsystem=recommendation.subsystem,
+            selected_action=(
+                "dry_run:context_maintenance" if dry_run else "apply:context_maintenance"
+            ),
+            status="selected" if dry_run else "applied",
+            reason=(
+                "NUO governance ran a safe dry-run for context maintenance."
+                if dry_run
+                else "NUO governance applied low-risk context maintenance."
+            ),
+            risk_level=recommendation.risk_level,
+            requires_human_approval=recommendation.requires_human_approval,
+            can_apply=recommendation.can_apply,
+            dry_run=dry_run,
+            evidence={"context_maintenance": _context_maintenance_details(context_report)},
         ),
         details={
             "action": "context_maintenance",
@@ -1570,12 +1598,16 @@ def _governance_apply_blocked_reasons(
 
 def _blocked_apply_result(
     *,
+    tenant_id: str,
     recommendation_id: str,
+    finding_id: str,
+    subsystem: str,
     risk_level: GovernanceApplyRisk,
     message: str,
     reasons: list[GovernanceApplyBlockedReason],
     action_ticket: GovernanceActionTicket | None = None,
 ) -> GovernanceRecommendationApplyResult:
+    reason_text = "; ".join(reason.code for reason in reasons) or "blocked"
     return GovernanceRecommendationApplyResult(
         status="blocked",
         applied=False,
@@ -1587,6 +1619,22 @@ def _blocked_apply_result(
         blocked_reason=reasons[0].code if reasons else None,
         blocked_reasons=reasons,
         action_ticket=action_ticket,
+        decision_ticket=ticket_from_nuo_diagnosis(
+            tenant_id=tenant_id,
+            recommendation_id=recommendation_id,
+            finding_id=finding_id,
+            subsystem=subsystem,
+            selected_action="blocked",
+            status="blocked",
+            reason=reason_text,
+            risk_level="high" if risk_level == "unknown" else risk_level,
+            requires_human_approval=bool(action_ticket and action_ticket.requires_human_approval),
+            can_apply=False,
+            dry_run=False,
+            evidence={
+                "blocked_reasons": [reason.model_dump(mode="json") for reason in reasons],
+            },
+        ),
     )
 
 

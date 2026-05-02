@@ -373,7 +373,7 @@ def get_v3_delivery_status(
                 "TaskRouter 角色/模型用途选择已进入统一 DecisionTicket 和 StateLedger",
                 "真实 LLM provider/model/tier 选择已进入统一 DecisionTicket 和 StateLedger",
                 "LLMRouteGovernor 已接入 LLMRouter 调用前热路径，能在真实模型调用前执行成本上限、模型信任和隐私脱敏治理",
-                "傩系统治理审计会扫描关键治理事件是否缺统一 DecisionTicket；例如 llm.model_select.consulted / blocked / route_change.proposed 没带票据会被标为 coverage issue",
+                "LLMRouteGovernor 会给 llm.model_select.consulted / blocked / route_change.proposed 事件附统一 DecisionTicket，傩系统治理审计可追责这些模型路由判断",
                 "ContextPacker 上下文选择已进入统一 DecisionTicket 和 StateLedger",
                 "MemoryPolicy 和 Hermes 步骤动作选择已进入统一 DecisionTicket，StateLedger 会消费这些票据更新当前动作/记忆策略",
                 "SkillSelector 候选技能选择已进入统一 DecisionTicket 和 StateLedger",

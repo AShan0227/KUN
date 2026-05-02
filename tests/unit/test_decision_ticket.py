@@ -14,7 +14,9 @@ from kun.datamodel.decision_ticket import (
     ticket_from_emergent_switch,
     ticket_from_execution_mode_selection,
     ticket_from_llm_route,
+    ticket_from_llm_route_governance,
     ticket_from_memory_policy_selection,
+    ticket_from_nuo_diagnosis,
     ticket_from_ooda_checkpoint,
     ticket_from_preflight_guard,
     ticket_from_proactive_tool_dispatch,
@@ -188,6 +190,47 @@ def test_llm_route_ticket_wraps_actual_model_choice() -> None:
     assert ticket.selected_action == "codex-mcp:gpt-5.5:top"
     assert ticket.evidence["provider"] == "codex-mcp"
     assert ticket.metadata["step_id"] == 2
+
+
+def test_llm_route_governance_ticket_wraps_pre_call_policy() -> None:
+    ticket = ticket_from_llm_route_governance(
+        tenant_id="tenant-1",
+        task_id="tk-1",
+        task_type="coding.python",
+        selected_model="top",
+        candidate_models=["cheap", "top"],
+        selected_score=0.91,
+        score_reason="capability_card",
+        estimated_cost_usd=0.2,
+    )
+
+    assert ticket.phase == "routing"
+    assert ticket.decision_point == "llm_model_selected"
+    assert ticket.source_module == "watchtower.llm_route_governance"
+    assert ticket.selected_action == "top"
+    assert ticket.alternatives == ["cheap"]
+    assert ticket.evidence["selected_score"] == 0.91
+
+
+def test_nuo_diagnosis_ticket_wraps_governance_apply_choice() -> None:
+    ticket = ticket_from_nuo_diagnosis(
+        tenant_id="tenant-1",
+        recommendation_id="govern:context_slimming_candidates",
+        finding_id="context_slimming_candidates",
+        subsystem="context",
+        selected_action="dry_run:context_maintenance",
+        status="selected",
+        reason="NUO dry-run only.",
+        risk_level="low",
+        can_apply=True,
+        dry_run=True,
+    )
+
+    assert ticket.phase == "nuo"
+    assert ticket.decision_point == "nuo_diagnosis"
+    assert ticket.source_module == "engineering.nuo_system_health"
+    assert ticket.task_id == "nuo:govern:context_slimming_candidates"
+    assert ticket.evidence["can_apply"] is True
 
 
 def test_context_selection_ticket_records_selected_assets() -> None:
