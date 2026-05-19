@@ -293,7 +293,7 @@
 
 必须覆盖：
 
-1. 用户提交复杂任务 -> 生成 TaskPlan -> 执行合同 -> work item 入队。
+1. 用户提交复杂任务 -> 意图识别 -> 信息缺口补齐或确认 -> 生成 TaskPlan -> 执行合同 -> work item 入队。
 2. worker 正常完成 -> ArtifactManifest -> GateEvaluation -> 交付。
 3. worker timeout -> 傩判系统阻断 -> repair -> 同题重跑。
 4. Frontier50 round -> comparator healthy -> KUN 未过门禁 -> Qi 生成 repair -> 同题复测。

@@ -181,7 +181,7 @@ TERMINAL_STATUSES: frozenset[MissionStatus] = frozenset(
 )
 
 _ALLOWED_TRANSITIONS: dict[MissionStatus, frozenset[MissionStatus]] = {
-    "intake": frozenset({"planning", "cancelled"}),
+    "intake": frozenset({"info_gap", "planning", "cancelled"}),
     "planning": frozenset({"info_gap", "awaiting_approval", "cancelled", "paused"}),
     "info_gap": frozenset({"planning", "awaiting_approval", "waiting_human", "cancelled"}),
     "awaiting_approval": frozenset({"planning", "contracted", "cancelled", "paused"}),
