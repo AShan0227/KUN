@@ -14,20 +14,34 @@ export default function RootLayout({
 }) {
   return (
     <html lang="zh-CN">
-      <body className="min-h-screen flex flex-col">
-        <header className="px-6 py-3 bg-white border-b border-gray-200 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="text-2xl font-bold tracking-tight">鲲</span>
-            <span className="text-sm text-gray-500">KUN · Agent OS</span>
+      <body className="kun-shell flex flex-col">
+        <header className="kun-topbar">
+          <div className="kun-topbar-inner">
+            <div className="kun-brand">
+              <span className="kun-brand-mark">鲲</span>
+              <div className="min-w-0">
+                <div className="kun-brand-title">KUN 控制台</div>
+                <div className="kun-brand-subtitle">Agent OS · 内测工作台</div>
+              </div>
+            </div>
+            <nav className="kun-nav">
+              <Link href="/" className="kun-nav-link">
+                主工作区
+              </Link>
+              <Link href="/nuo" className="kun-nav-link">
+                傩 · 管家
+              </Link>
+              <Link href={{ pathname: "/control-plane" }} className="kun-nav-link">
+                任务驾驶舱
+              </Link>
+              <Link href="/billing" className="kun-nav-link">
+                计费透明
+              </Link>
+              <Link href="/account" className="kun-nav-link">
+                会话 / 账号
+              </Link>
+            </nav>
           </div>
-          <nav className="flex gap-4 text-sm">
-            <Link href="/" className="hover:text-kun-accent">
-              主工作区
-            </Link>
-            <Link href="/nuo" className="hover:text-kun-accent">
-              傩 · 管家
-            </Link>
-          </nav>
         </header>
         <main className="flex-1">{children}</main>
       </body>
