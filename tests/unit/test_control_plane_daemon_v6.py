@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from kun.control_plane import (
+    CapabilityProfile,
     ControlPlaneDaemon,
     DaemonServiceConfig,
     DaemonServiceState,
@@ -17,6 +20,14 @@ from kun.control_plane import (
     WorkingContext,
     WorkItem,
     WorkItemResult,
+)
+from kun.control_plane.productization import (
+    ProductizationDogfoodRunner,
+    build_productization_dogfood_mission,
+    close_productization_collaboration_loop,
+    distill_external_behavior_signals,
+    materialize_external_behavior_distillation,
+    submit_productization_dogfood_mission,
 )
 
 NOW = datetime(2026, 5, 19, 9, 0, tzinfo=UTC)
@@ -86,6 +97,87 @@ def _runtime(tmp_path, *, retry_budget: int = 0):
     return control_plane, store, mission
 
 
+def _write_passing_ab_round(tmp_path):
+    round_dir = tmp_path / "ab-round"
+    round_dir.mkdir()
+    (round_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "rankings": [
+                    {
+                        "agent_ref": "kun",
+                        "avg_overall_score": 0.95,
+                        "avg_effect_score": 0.93,
+                        "avg_speed_score": 0.82,
+                        "avg_cost_score": 0.81,
+                        "avg_engineering_score": 1.0,
+                    },
+                    {
+                        "agent_ref": "hermes",
+                        "avg_overall_score": 0.9,
+                        "avg_effect_score": 0.89,
+                        "avg_speed_score": 0.8,
+                        "avg_cost_score": 0.8,
+                        "avg_engineering_score": 0.92,
+                    },
+                ],
+                "task_scores": [{"task_id": f"frontier50-r02-t{index}"} for index in range(1, 6)],
+                "gaps": [{"capability": "workflow", "delta": 0.0367}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (round_dir / "comparator_health.json").write_text(
+        json.dumps({"comparator_unhealthy": False}),
+        encoding="utf-8",
+    )
+    (round_dir / "repair_tickets.json").write_text("[]", encoding="utf-8")
+    (round_dir / "runs.jsonl").write_text(
+        "\n".join(json.dumps({"run": index}) for index in range(20)) + "\n",
+        encoding="utf-8",
+    )
+    (round_dir / "reviews.jsonl").write_text(
+        "\n".join(json.dumps({"review": index}) for index in range(45)) + "\n",
+        encoding="utf-8",
+    )
+    return round_dir
+
+
+def _prepare_productization_closures(control_plane, mission_id: str) -> None:
+    signals = distill_external_behavior_signals(
+        {
+            "external_repos/openclaw/README.md": (
+                "Gateway sessions, tools, and multi-agent isolated workspaces."
+            ),
+            "external_repos/hermes-agent/RELEASE_v0.8.0.md": (
+                "Background completion notifications, approval buttons, structured logs, "
+                "and persisted large tool results."
+            ),
+        }
+    )
+    materialize_external_behavior_distillation(control_plane, mission_id, signals)
+    profile = CapabilityProfile(
+        capability_id="cap-daemon-productization-runtime-default",
+        capability_name="KUN-native daemon productization runtime default",
+        evidence_refs=["artifact-productization-distillation"],
+        known_limits=["Keep runtime default rollbackable."],
+        promotion_stage="production",
+        holdout_refs=["artifact-productization-holdout"],
+        regression_refs=["artifact-productization-regression"],
+        rollback_plan=["disable productization runtime default"],
+        runtime_enabled=True,
+    )
+    control_plane.capability_profiles[profile.capability_id] = profile
+    if control_plane.store is not None:
+        control_plane.store.put_capability_profile(profile)
+    close_productization_collaboration_loop(
+        control_plane,
+        mission_id,
+        context_ref=f"ctx-{mission_id}",
+    )
+
+
 def test_daemon_tick_runs_ready_work_and_persists_progress(tmp_path) -> None:
     control_plane, store, mission = _runtime(tmp_path)
     daemon = ControlPlaneDaemon(
@@ -104,6 +196,113 @@ def test_daemon_tick_runs_ready_work_and_persists_progress(tmp_path) -> None:
     assert len(recovered.runs) == 1
     assert next(iter(recovered.runs.values())).exit_status == "succeeded"
     assert report.progress_artifact_refs[0] in recovered.artifacts
+
+
+def test_daemon_productization_runner_executes_canonical_work_items(tmp_path) -> None:
+    store = FileControlPlaneStore(tmp_path / "daemon-productization.json")
+    control_plane = InMemoryControlPlane(store=store)
+    mission = submit_productization_dogfood_mission(
+        control_plane,
+        build_productization_dogfood_mission(mission_id="msn-daemon-productization"),
+    )
+    runner = ProductizationDogfoodRunner(control_plane=control_plane)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={
+            "control-plane": runner,
+            "qi": runner,
+            "nuo": runner,
+        },
+        daemon_id="daemon-productization-test",
+    )
+
+    report = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        now=NOW,
+        max_work_items=1,
+    )
+    recovered = InMemoryControlPlane(store=store)
+
+    assert report.ran_work_item_ids == ["work-v6-persistence-recovery"]
+    assert recovered.work_items["work-v6-persistence-recovery"].status == "done"
+    assert report.no_runner_work_item_ids == []
+
+
+def test_daemon_productization_runner_finalizes_delivery_when_queue_done(tmp_path) -> None:
+    store = FileControlPlaneStore(tmp_path / "daemon-productization-finalize.json")
+    control_plane = InMemoryControlPlane(store=store)
+    mission = submit_productization_dogfood_mission(
+        control_plane,
+        build_productization_dogfood_mission(mission_id="msn-daemon-productization"),
+    )
+    _prepare_productization_closures(control_plane, mission.mission_id)
+    runner = ProductizationDogfoodRunner(
+        control_plane=control_plane,
+        ab_round_dir=_write_passing_ab_round(tmp_path),
+        ab_round_id="round-02-regression",
+    )
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={
+            "control-plane": runner,
+            "qi": runner,
+            "nuo": runner,
+        },
+        daemon_id="daemon-productization-test",
+    )
+
+    report = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        now=NOW,
+        max_work_items=10,
+    )
+    recovered = InMemoryControlPlane(store=store)
+    manifest_refs_after_first_tick = list(
+        recovered.missions[mission.mission_id].artifact_manifest_refs
+    )
+    second_report = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        now=NOW + timedelta(seconds=1),
+        max_work_items=10,
+    )
+    after_second_tick = InMemoryControlPlane(store=store)
+
+    assert len(report.ran_work_item_ids) == 7
+    assert report.finalized_mission_ids == [mission.mission_id]
+    assert report.delivery_manifest_refs == ["manifest-msn-daemon-productization-delivery"]
+    assert report.final_gate_refs == ["gate-msn-daemon-productization-delivery"]
+    assert recovered.missions[mission.mission_id].status == "delivering"
+    assert recovered.artifact_manifests[
+        "manifest-msn-daemon-productization-delivery"
+    ].supports_delivery
+    assert second_report.ran_work_item_ids == []
+    assert after_second_tick.missions[mission.mission_id].artifact_manifest_refs == (
+        manifest_refs_after_first_tick
+    )
+
+
+def test_daemon_runner_can_run_guard_prevents_misrouting_generic_qi_work(
+    tmp_path,
+) -> None:
+    control_plane, _store, mission = _runtime(tmp_path)
+    generic_qi_work = control_plane.work_items["work-daemon"].model_copy(
+        update={"owner": "qi", "type": "research", "work_item_id": "work-generic-qi"}
+    )
+    control_plane.work_items.pop("work-daemon")
+    control_plane.work_items[generic_qi_work.work_item_id] = generic_qi_work
+    assert control_plane.store is not None
+    control_plane.store.put_work_item(generic_qi_work)
+    runner = ProductizationDogfoodRunner(control_plane=control_plane)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"qi": runner},
+        daemon_id="daemon-productization-test",
+    )
+
+    report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW)
+
+    assert report.no_runner_work_item_ids == ["work-generic-qi"]
+    assert report.ran_work_item_ids == []
 
 
 def test_daemon_recovers_stale_running_work_after_restart(tmp_path) -> None:
@@ -265,7 +464,7 @@ def test_daemon_service_store_blocks_duplicate_start_and_claims_stale_service(
             status="running",
             started_at=NOW - timedelta(minutes=5),
             updated_at=NOW - timedelta(minutes=1),
-            process_id=111,
+            process_id=os.getpid(),
             last_heartbeat_at=NOW - timedelta(minutes=1),
         )
     )
@@ -280,7 +479,7 @@ def test_daemon_service_store_blocks_duplicate_start_and_claims_stale_service(
     assert duplicate.accepted is False
     assert duplicate.stale_previous is False
     assert duplicate.state is not None
-    assert duplicate.state.process_id == 111
+    assert duplicate.state.process_id == os.getpid()
 
     state_store.request_stop(daemon_id="daemon-service-test", requested_by="operator", now=NOW)
     state_store.save(
@@ -310,6 +509,37 @@ def test_daemon_service_store_blocks_duplicate_start_and_claims_stale_service(
     assert loaded.process_id == 333
     assert loaded.last_heartbeat_at == NOW
     assert state_store.stop_requested(daemon_id="daemon-service-test") is False
+
+
+def test_daemon_service_store_claims_dead_idle_process_without_waiting_for_stale_timeout(
+    tmp_path,
+) -> None:
+    state_store = FileDaemonServiceStateStore(tmp_path / "daemon-service-state.json")
+    state_store.save(
+        DaemonServiceState(
+            daemon_id="daemon-service-test",
+            status="idle",
+            started_at=NOW - timedelta(minutes=5),
+            updated_at=NOW - timedelta(seconds=10),
+            process_id=999_999_999,
+            last_heartbeat_at=NOW - timedelta(seconds=10),
+        )
+    )
+
+    replacement = state_store.claim_start(
+        daemon_id="daemon-service-test",
+        config=DaemonServiceConfig(stale_heartbeat_after_sec=1800),
+        now=NOW,
+        process_id=444,
+    )
+    loaded = state_store.load()
+
+    assert replacement.accepted is True
+    assert replacement.stale_previous is True
+    assert "进程已不存在" in replacement.text
+    assert loaded is not None
+    assert loaded.status == "starting"
+    assert loaded.process_id == 444
 
 
 def test_managed_daemon_loop_consumes_durable_stop_request(tmp_path) -> None:

@@ -60,6 +60,9 @@ class DaemonTickReport(BaseModel):
     ran_work_item_ids: list[str] = Field(default_factory=list)
     run_refs: list[str] = Field(default_factory=list)
     no_runner_work_item_ids: list[str] = Field(default_factory=list)
+    finalized_mission_ids: list[str] = Field(default_factory=list)
+    final_gate_refs: list[str] = Field(default_factory=list)
+    delivery_manifest_refs: list[str] = Field(default_factory=list)
     progress_artifact_refs: list[str] = Field(default_factory=list)
 
 
@@ -215,6 +218,14 @@ class FileDaemonServiceStateStore:
         active_config = config or DaemonServiceConfig()
         observed_at = now or _now()
         previous = self.load()
+        previous_active = previous is not None and previous.status in {
+            "starting",
+            "running",
+            "idle",
+        }
+        previous_process_missing = (
+            previous is not None and previous_active and not _process_is_alive(previous.process_id)
+        )
         stale_previous = (
             previous.is_stale(
                 now=observed_at,
@@ -222,7 +233,7 @@ class FileDaemonServiceStateStore:
             )
             if previous is not None
             else False
-        )
+        ) or previous_process_missing
         if (
             previous is not None
             and previous.status in {"starting", "running", "idle"}
@@ -250,7 +261,9 @@ class FileDaemonServiceStateStore:
         self.save(starting_state)
         text = (
             "上一次后台监督心跳已过期，已接管服务并准备恢复执行。"
-            if stale_previous
+            if stale_previous and not previous_process_missing
+            else "上一次后台监督进程已不存在，已接管服务并准备恢复执行。"
+            if previous_process_missing
             else "后台监督服务启动声明已写入持久状态。"
         )
         return DaemonServiceClaim(
@@ -326,6 +339,9 @@ class ControlPlaneDaemon:
                 remaining -= 1
                 if self.control_plane.missions[mission_id].status not in {"queued", "running"}:
                     break
+
+        for mission_id in selected_mission_ids:
+            self._finalize_idle_mission(mission_id=mission_id, report=report)
 
         if write_progress:
             for mission_id in selected_mission_ids:
@@ -654,11 +670,52 @@ class ControlPlaneDaemon:
         return max(running, key=lambda run: run.started_at, default=None)
 
     def _runner_for(self, work_item: WorkItem) -> ControlPlaneRunner | None:
-        return (
-            self.runners_by_owner.get(work_item.owner)
-            or self.runners_by_type.get(work_item.type)
-            or self.default_runner
-        )
+        for runner in (
+            self.runners_by_owner.get(work_item.owner),
+            self.runners_by_type.get(work_item.type),
+            self.default_runner,
+        ):
+            if runner is None:
+                continue
+            can_run = getattr(runner, "can_run", None)
+            if callable(can_run) and not can_run(work_item):
+                continue
+            return runner
+        return None
+
+    def _finalize_idle_mission(self, *, mission_id: str, report: DaemonTickReport) -> None:
+        """Let capable runners close mission-level delivery artifacts when ready."""
+
+        seen_runner_ids: set[int] = set()
+        for runner in (
+            *self.runners_by_owner.values(),
+            *self.runners_by_type.values(),
+            self.default_runner,
+        ):
+            if runner is None:
+                continue
+            runner_id = id(runner)
+            if runner_id in seen_runner_ids:
+                continue
+            seen_runner_ids.add(runner_id)
+            finalize = getattr(runner, "finalize_mission", None)
+            if not callable(finalize):
+                continue
+            payload = finalize(mission_id)
+            if not isinstance(payload, Mapping) or not payload.get("finalized"):
+                continue
+            if mission_id not in report.finalized_mission_ids:
+                report.finalized_mission_ids.append(mission_id)
+            final_gate_ref = payload.get("final_gate_ref")
+            if isinstance(final_gate_ref, str) and final_gate_ref not in report.final_gate_refs:
+                report.final_gate_refs.append(final_gate_ref)
+            delivery_manifest_ref = payload.get("delivery_manifest_ref")
+            if (
+                isinstance(delivery_manifest_ref, str)
+                and delivery_manifest_ref not in report.delivery_manifest_refs
+            ):
+                report.delivery_manifest_refs.append(delivery_manifest_ref)
+            return
 
     def _transition_to_queued(self, mission_id: str, *, subject_ref: str) -> None:
         mission = self.control_plane.missions[mission_id]
@@ -729,6 +786,18 @@ def _write_json_atomic(path: Path, payload: str) -> None:
     os.replace(temp_name, path)
 
 
+def _process_is_alive(process_id: int) -> bool:
+    if process_id <= 0:
+        return False
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def _compact_time(value: datetime) -> str:
     return value.strftime("%Y%m%dT%H%M%SZ")
 
@@ -741,6 +810,9 @@ def _tick_is_idle(report: DaemonTickReport) -> bool:
         or report.ran_work_item_ids
         or report.run_refs
         or report.no_runner_work_item_ids
+        or report.finalized_mission_ids
+        or report.final_gate_refs
+        or report.delivery_manifest_refs
     )
 
 

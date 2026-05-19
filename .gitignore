@@ -91,3 +91,4 @@ frontend/.turbo/
 # Uvicorn / runtime
 *.pid
 *.sock
+.kun-local/

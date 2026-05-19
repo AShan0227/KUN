@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
 
@@ -300,7 +301,7 @@ def test_control_plane_api_claims_and_stops_daemon_service(tmp_path) -> None:
         "/api/control-plane/v6/daemon-service/start-claim",
         json={
             "daemon_id": "daemon-api",
-            "process_id": 4321,
+            "process_id": os.getpid(),
             "config": {"stale_heartbeat_after_sec": 1800},
         },
     )
@@ -309,7 +310,7 @@ def test_control_plane_api_claims_and_stops_daemon_service(tmp_path) -> None:
     body = claim.json()
     assert body["claim"]["accepted"] is True
     assert body["claim"]["state"]["status"] == "starting"
-    assert body["claim"]["state"]["process_id"] == 4321
+    assert body["claim"]["state"]["process_id"] == os.getpid()
     assert body["status"]["healthy"] is True
 
     duplicate = client.post(

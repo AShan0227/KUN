@@ -267,6 +267,18 @@ async def submit_mission(request: Request, payload: SubmitMissionRequest) -> Mis
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@router.get("/missions", response_model=list[Mission])
+async def list_missions(request: Request) -> list[Mission]:
+    """List Control Plane missions for cockpit mission selection."""
+
+    runtime = get_v6_control_plane(request)
+    return sorted(
+        runtime.missions.values(),
+        key=lambda mission: mission.mission_id,
+        reverse=True,
+    )
+
+
 @router.get("/missions/{mission_id}", response_model=Mission)
 async def get_mission(request: Request, mission_id: str) -> Mission:
     runtime = get_v6_control_plane(request)

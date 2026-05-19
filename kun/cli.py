@@ -263,6 +263,18 @@ def control_plane_daemon_service_plan(
     state_path: Path = typer.Option(Path(".kun-local/v6-daemon-service.json"), "--state-path"),
     poll_interval_sec: float = typer.Option(30.0, "--poll-interval-sec", min=0),
     max_work_items_per_tick: int = typer.Option(10, "--max-work-items-per-tick", min=0),
+    ab_round_dir: Path | None = typer.Option(
+        None,
+        "--ab-round-dir",
+        envvar="KUN_V6_AB_ROUND_DIR",
+        help="可选 Frontier50 回归轮次目录；写入常驻服务命令",
+    ),
+    ab_round_id: str | None = typer.Option(
+        None,
+        "--ab-round-id",
+        envvar="KUN_V6_AB_ROUND_ID",
+        help="可选 AB 回归轮次 ID；写入常驻服务命令",
+    ),
     json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
 ) -> None:
     """生成跨重启后台常驻服务配置，不写文件。"""
@@ -280,6 +292,8 @@ def control_plane_daemon_service_plan(
         state_path=state_path,
         poll_interval_sec=poll_interval_sec,
         max_work_items_per_tick=max_work_items_per_tick,
+        ab_round_dir=ab_round_dir,
+        ab_round_id=ab_round_id,
     )
     if json_output:
         console.print_json(data=plan.model_dump(mode="json"))
@@ -306,6 +320,18 @@ def control_plane_daemon_service_install(
     install_path: Path | None = typer.Option(None, "--install-path"),
     store_path: Path = typer.Option(Path(".kun-local/v6-control-plane.json"), "--store-path"),
     state_path: Path = typer.Option(Path(".kun-local/v6-daemon-service.json"), "--state-path"),
+    ab_round_dir: Path | None = typer.Option(
+        None,
+        "--ab-round-dir",
+        envvar="KUN_V6_AB_ROUND_DIR",
+        help="可选 Frontier50 回归轮次目录；写入常驻服务命令",
+    ),
+    ab_round_id: str | None = typer.Option(
+        None,
+        "--ab-round-id",
+        envvar="KUN_V6_AB_ROUND_ID",
+        help="可选 AB 回归轮次 ID；写入常驻服务命令",
+    ),
     overwrite: bool = typer.Option(False, "--overwrite", help="覆盖已有服务文件"),
     json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
 ) -> None:
@@ -325,6 +351,8 @@ def control_plane_daemon_service_install(
         install_path=install_path,
         store_path=store_path,
         state_path=state_path,
+        ab_round_dir=ab_round_dir,
+        ab_round_id=ab_round_id,
     )
     written_path = materialize_daemon_service_install_plan(plan, overwrite=overwrite)
     payload = {
@@ -363,6 +391,18 @@ def control_plane_daemon_run(
     ),
     poll_interval_sec: float = typer.Option(30.0, "--poll-interval-sec", min=0),
     max_work_items_per_tick: int = typer.Option(10, "--max-work-items-per-tick", min=0),
+    ab_round_dir: Path | None = typer.Option(
+        None,
+        "--ab-round-dir",
+        envvar="KUN_V6_AB_ROUND_DIR",
+        help="可选 Frontier50 回归轮次目录；提供后 daemon 可执行 Qi AB runner work item",
+    ),
+    ab_round_id: str = typer.Option(
+        "round-02-regression",
+        "--ab-round-id",
+        envvar="KUN_V6_AB_ROUND_ID",
+        help="AB 回归轮次 ID",
+    ),
     max_ticks: int | None = typer.Option(
         None,
         "--max-ticks",
@@ -391,6 +431,7 @@ def control_plane_daemon_run(
         FileDaemonServiceStateStore,
         InMemoryControlPlane,
     )
+    from kun.control_plane.productization import ProductizationDogfoodRunner
 
     if max_ticks is not None and max_ticks <= 0:
         raise typer.BadParameter("max_ticks must be positive when provided")
@@ -401,7 +442,21 @@ def control_plane_daemon_run(
     )
     control_plane = InMemoryControlPlane(store=FileControlPlaneStore(store_path))
     state_store = FileDaemonServiceStateStore(state_path)
-    daemon = ControlPlaneDaemon(control_plane=control_plane, daemon_id=daemon_id)
+    productization_runner = ProductizationDogfoodRunner(
+        control_plane=control_plane,
+        ab_round_dir=ab_round_dir,
+        ab_round_id=ab_round_id,
+    )
+    productization_owners = {
+        "control-plane": productization_runner,
+        "qi": productization_runner,
+        "nuo": productization_runner,
+    }
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        daemon_id=daemon_id,
+        runners_by_owner=productization_owners,
+    )
     config = DaemonServiceConfig(
         poll_interval_sec=poll_interval_sec,
         max_work_items_per_tick=max_work_items_per_tick,
