@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import io
 import json
+import re
 from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -39,6 +40,11 @@ compiler_app = typer.Typer(
 context_app = typer.Typer(
     add_completion=False, no_args_is_help=True, help="Context / memory maintenance tools"
 )
+control_plane_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="KUN V6 Control Plane 长任务后台服务",
+)
 console = Console()
 app.add_typer(security_app, name="security")
 app.add_typer(promises_app, name="promises")
@@ -49,6 +55,7 @@ app.add_typer(qi_app, name="qi")
 app.add_typer(lab_app, name="lab")
 app.add_typer(compiler_app, name="compiler")
 app.add_typer(context_app, name="context")
+app.add_typer(control_plane_app, name="control-plane")
 lab_app.add_typer(lab_benchmark_app, name="benchmark")
 
 
@@ -58,6 +65,30 @@ def _hash_prompt(prompt: str) -> str:
 
 def _json_print(payload: dict[str, Any]) -> None:
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def _print_shell_report(report: Any, *, json_output: bool = False) -> None:
+    payload = report.model_dump(mode="json")
+    if json_output:
+        console.print_json(data=payload)
+        return
+    color = {"ok": "green", "warn": "yellow", "block": "red"}.get(report.status, "white")
+    table = Table(title=f"KUN {report.command} — {report.status}")
+    table.add_column("status")
+    table.add_column("check")
+    table.add_column("summary")
+    table.add_column("next")
+    for check in report.checks:
+        check_color = {"ok": "green", "warn": "yellow", "block": "red"}.get(check.status, "white")
+        table.add_row(
+            f"[{check_color}]{check.status}[/]",
+            check.check_id,
+            check.summary,
+            check.next_action or "-",
+        )
+    console.print(table)
+    if report.next_actions:
+        console.print(f"[{color}]next[/] " + " | ".join(report.next_actions[:4]))
 
 
 def _run_json(coro: Coroutine[Any, Any, dict[str, Any]]) -> None:
@@ -105,6 +136,332 @@ def version() -> None:
     console.print(f"[bold cyan]鲲 (KUN)[/] v{__version__}")
 
 
+@app.command("status")
+def status_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+) -> None:
+    """Show operator-facing runtime status."""
+    from kun.ops.operability_shell import build_status_report
+
+    _print_shell_report(build_status_report(), json_output=json_output)
+
+
+@app.command("onboard")
+def onboard_cmd(
+    tenant: str = typer.Option("u-sylvan", "--tenant"),
+    user: str | None = typer.Option(None, "--user"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+) -> None:
+    """Show first-run onboarding steps without mutating accounts."""
+    from kun.ops.operability_shell import build_onboard_report
+
+    _print_shell_report(
+        build_onboard_report(tenant=tenant, user=user),
+        json_output=json_output,
+    )
+
+
+@app.command("models")
+def models_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+) -> None:
+    """Show model playbook and subscription-backed model status."""
+    from kun.ops.operability_shell import build_models_report
+
+    _print_shell_report(build_models_report(), json_output=json_output)
+
+
+@app.command("plugins")
+def plugins_cmd(
+    path: Path = typer.Option(Path("skills"), "--path", help="Starter-pack skills root"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+) -> None:
+    """Show plugin/skill surface status."""
+    from kun.ops.operability_shell import build_plugins_report
+
+    _print_shell_report(build_plugins_report(skills_root=path), json_output=json_output)
+
+
+@control_plane_app.command("daemon-status")
+def control_plane_daemon_status(
+    state_path: Path = typer.Option(
+        Path(".kun-local/v6-daemon-service.json"),
+        "--state-path",
+        help="后台服务心跳状态文件",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+) -> None:
+    """查看 KUN V6 Control Plane 后台服务心跳和停止请求。"""
+
+    from kun.control_plane import FileDaemonServiceStateStore
+
+    state_store = FileDaemonServiceStateStore(state_path)
+    state = state_store.load()
+    stop_request = state_store.load_stop_request()
+    payload: dict[str, Any] = {
+        "state_path": str(state_path),
+        "status": state.status if state is not None else "stopped",
+        "state": state.model_dump(mode="json") if state is not None else None,
+        "pending_stop_request": stop_request.model_dump(mode="json")
+        if stop_request is not None
+        else None,
+    }
+    if json_output:
+        console.print_json(data=payload)
+        return
+    table = Table(title="KUN V6 Control Plane daemon")
+    table.add_column("字段")
+    table.add_column("值")
+    table.add_row("状态", str(payload["status"]))
+    table.add_row("状态文件", str(state_path))
+    table.add_row(
+        "最近心跳",
+        str(state.last_heartbeat_at if state is not None else "-"),
+    )
+    table.add_row(
+        "下一次醒来",
+        str(state.next_wakeup_at if state is not None and state.next_wakeup_at else "-"),
+    )
+    table.add_row("停止请求", stop_request.reason if stop_request is not None else "-")
+    console.print(table)
+
+
+@control_plane_app.command("daemon-stop")
+def control_plane_daemon_stop(
+    state_path: Path = typer.Option(
+        Path(".kun-local/v6-daemon-service.json"),
+        "--state-path",
+        help="后台服务心跳状态文件",
+    ),
+    daemon_id: str = typer.Option(
+        "kun-control-plane-daemon",
+        "--daemon-id",
+        help="要停止的后台服务 ID",
+    ),
+    requested_by: str = typer.Option("operator", "--requested-by", help="请求停止的人或系统"),
+    reason: str = typer.Option("operator_stop", "--reason", help="停止原因"),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+) -> None:
+    """写入持久停止请求，让后台服务安全收尾。"""
+
+    from kun.control_plane import FileDaemonServiceStateStore
+
+    request = FileDaemonServiceStateStore(state_path).request_stop(
+        daemon_id=daemon_id,
+        requested_by=requested_by,
+        reason=reason,
+    )
+    payload = {
+        "accepted": True,
+        "state_path": str(state_path),
+        "stop_request": request.model_dump(mode="json"),
+    }
+    if json_output:
+        console.print_json(data=payload)
+        return
+    console.print(f"[yellow]stop requested[/] {daemon_id}: {reason}")
+
+
+@control_plane_app.command("daemon-service-plan")
+def control_plane_daemon_service_plan(
+    platform: str = typer.Option(
+        "launchd",
+        "--platform",
+        help="服务管理器：launchd 或 systemd",
+    ),
+    service_name: str = typer.Option(
+        "com.kun.control-plane.v6",
+        "--service-name",
+        help="后台服务名",
+    ),
+    working_directory: Path = typer.Option(Path("."), "--working-directory"),
+    install_path: Path | None = typer.Option(None, "--install-path"),
+    store_path: Path = typer.Option(Path(".kun-local/v6-control-plane.json"), "--store-path"),
+    state_path: Path = typer.Option(Path(".kun-local/v6-daemon-service.json"), "--state-path"),
+    poll_interval_sec: float = typer.Option(30.0, "--poll-interval-sec", min=0),
+    max_work_items_per_tick: int = typer.Option(10, "--max-work-items-per-tick", min=0),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+) -> None:
+    """生成跨重启后台常驻服务配置，不写文件。"""
+
+    from kun.control_plane import build_daemon_service_install_plan
+
+    if platform not in {"launchd", "systemd"}:
+        raise typer.BadParameter("platform must be launchd or systemd")
+    plan = build_daemon_service_install_plan(
+        platform=platform,  # type: ignore[arg-type]
+        service_name=service_name,
+        working_directory=working_directory,
+        install_path=install_path,
+        store_path=store_path,
+        state_path=state_path,
+        poll_interval_sec=poll_interval_sec,
+        max_work_items_per_tick=max_work_items_per_tick,
+    )
+    if json_output:
+        console.print_json(data=plan.model_dump(mode="json"))
+        return
+    console.print(plan.content)
+    console.print(f"\n[green]install path[/] {plan.install_path}")
+    console.print("[green]start[/] " + " ".join(plan.start_command))
+    console.print("[yellow]stop[/] " + " ".join(plan.stop_command))
+
+
+@control_plane_app.command("daemon-service-install")
+def control_plane_daemon_service_install(
+    platform: str = typer.Option(
+        "launchd",
+        "--platform",
+        help="服务管理器：launchd 或 systemd",
+    ),
+    service_name: str = typer.Option(
+        "com.kun.control-plane.v6",
+        "--service-name",
+        help="后台服务名",
+    ),
+    working_directory: Path = typer.Option(Path("."), "--working-directory"),
+    install_path: Path | None = typer.Option(None, "--install-path"),
+    store_path: Path = typer.Option(Path(".kun-local/v6-control-plane.json"), "--store-path"),
+    state_path: Path = typer.Option(Path(".kun-local/v6-daemon-service.json"), "--state-path"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="覆盖已有服务文件"),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+) -> None:
+    """落盘 launchd/systemd 服务文件，但不自动启动服务。"""
+
+    from kun.control_plane import (
+        build_daemon_service_install_plan,
+        materialize_daemon_service_install_plan,
+    )
+
+    if platform not in {"launchd", "systemd"}:
+        raise typer.BadParameter("platform must be launchd or systemd")
+    plan = build_daemon_service_install_plan(
+        platform=platform,  # type: ignore[arg-type]
+        service_name=service_name,
+        working_directory=working_directory,
+        install_path=install_path,
+        store_path=store_path,
+        state_path=state_path,
+    )
+    written_path = materialize_daemon_service_install_plan(plan, overwrite=overwrite)
+    payload = {
+        "written_path": str(written_path),
+        "plan": plan.model_dump(mode="json"),
+    }
+    if json_output:
+        console.print_json(data=payload)
+        return
+    console.print(f"[green]service file written[/] {written_path}")
+    console.print("[green]start[/] " + " ".join(plan.start_command))
+    console.print("[yellow]stop[/] " + " ".join(plan.stop_command))
+
+
+@control_plane_app.command("daemon-run")
+def control_plane_daemon_run(
+    store_path: Path = typer.Option(
+        Path(".kun-local/v6-control-plane.json"),
+        "--store-path",
+        help="Control Plane 持久状态文件",
+    ),
+    state_path: Path = typer.Option(
+        Path(".kun-local/v6-daemon-service.json"),
+        "--state-path",
+        help="后台服务心跳状态文件",
+    ),
+    daemon_id: str = typer.Option(
+        "kun-control-plane-daemon",
+        "--daemon-id",
+        help="后台服务 ID",
+    ),
+    mission_ids: str | None = typer.Option(
+        None,
+        "--mission-ids",
+        help="逗号分隔的 mission_id；为空时自动扫描活跃任务",
+    ),
+    poll_interval_sec: float = typer.Option(30.0, "--poll-interval-sec", min=0),
+    max_work_items_per_tick: int = typer.Option(10, "--max-work-items-per-tick", min=0),
+    max_ticks: int | None = typer.Option(
+        None,
+        "--max-ticks",
+        help="最多唤醒轮数；默认常驻运行，测试或一次性巡检时传入正整数",
+    ),
+    stop_when_idle: bool = typer.Option(
+        False,
+        "--stop-when-idle/--keep-running-when-idle",
+        help="空闲时是否自动停止",
+    ),
+    idle_ticks_to_stop: int = typer.Option(1, "--idle-ticks-to-stop", min=1),
+    stale_heartbeat_after_sec: float = typer.Option(
+        900.0,
+        "--stale-heartbeat-after-sec",
+        min=1,
+        help="多久没有心跳后允许新进程接管",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+) -> None:
+    """以前台服务方式运行 KUN V6 Control Plane daemon。"""
+
+    from kun.control_plane import (
+        ControlPlaneDaemon,
+        DaemonServiceConfig,
+        FileControlPlaneStore,
+        FileDaemonServiceStateStore,
+        InMemoryControlPlane,
+    )
+
+    if max_ticks is not None and max_ticks <= 0:
+        raise typer.BadParameter("max_ticks must be positive when provided")
+    selected_mission_ids = (
+        [mission_id.strip() for mission_id in mission_ids.split(",") if mission_id.strip()]
+        if mission_ids
+        else None
+    )
+    control_plane = InMemoryControlPlane(store=FileControlPlaneStore(store_path))
+    state_store = FileDaemonServiceStateStore(state_path)
+    daemon = ControlPlaneDaemon(control_plane=control_plane, daemon_id=daemon_id)
+    config = DaemonServiceConfig(
+        poll_interval_sec=poll_interval_sec,
+        max_work_items_per_tick=max_work_items_per_tick,
+        max_ticks=max_ticks,
+        stop_when_idle=stop_when_idle,
+        idle_ticks_to_stop=idle_ticks_to_stop,
+        stale_heartbeat_after_sec=stale_heartbeat_after_sec,
+    )
+    report = daemon.run_managed_loop(
+        config=config,
+        state_store=state_store,
+        mission_ids=selected_mission_ids,
+        stop_requested=lambda: state_store.stop_requested(daemon_id=daemon_id),
+    )
+    service_state = state_store.load()
+    payload = {
+        "store_path": str(store_path),
+        "state_path": str(state_path),
+        "report": report.model_dump(mode="json"),
+        "service_state": service_state.model_dump(mode="json") if service_state is not None else None,
+    }
+    if json_output:
+        console.print_json(data=payload)
+        return
+    console.print(
+        f"[green]daemon stopped[/] reason={report.stopped_reason} ticks={report.tick_count}"
+    )
+
+
+@app.command("update")
+def update_cmd(
+    check_remote: bool = typer.Option(False, "--check-remote", help="Include remote-check intent"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+) -> None:
+    """Show a safe update plan. Does not mutate files or fetch unless a caller does so."""
+    from kun.ops.operability_shell import build_update_report
+
+    _print_shell_report(
+        build_update_report(check_remote=check_remote),
+        json_output=json_output,
+    )
+
+
 @app.command()
 def doctor(
     tenant: str = typer.Option("u-sylvan", "--tenant"),
@@ -114,7 +471,7 @@ def doctor(
 
     检查项 (~10 个):
       1. python deps (kun, pydantic, sqlalchemy, prometheus_client)
-      2. alembic head (0016_pheromone)
+      2. alembic current 是否覆盖当前 head(s)
       3. ProtocolRegistry 装上 + 5 seed protocol 在
       4. PheromoneStorage 装上
       5. Prometheus metrics 都注册了
@@ -157,17 +514,34 @@ def doctor(
     try:
         import subprocess
 
-        out = subprocess.run(
+        current = subprocess.run(
             ["uv", "run", "alembic", "current"],  # noqa: S607
             capture_output=True,
             text=True,
             timeout=10,
             check=False,
         )
-        if "0016_pheromone" in out.stdout:
-            _ok("alembic head: 0016_pheromone")
+        heads = subprocess.run(
+            ["uv", "run", "alembic", "heads"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        head_revs = set(re.findall(r"^([0-9a-f]+)\s", heads.stdout, flags=re.MULTILINE))
+        current_revs = set(re.findall(r"^([0-9a-f]+)\s", current.stdout, flags=re.MULTILINE))
+        if heads.returncode == 0 and current.returncode == 0 and head_revs and head_revs <= current_revs:
+            _ok(f"alembic current covers heads: {', '.join(sorted(head_revs))}")
+        elif current.returncode == 0 and current.stdout.strip():
+            _warn(
+                "alembic current 未覆盖全部 head "
+                f"(current={current.stdout.strip()[:100]}, heads={heads.stdout.strip()[:100]})"
+            )
         else:
-            _warn(f"alembic head 不在 0016_pheromone (实际: {out.stdout.strip()[:100]})")
+            _warn(
+                "alembic check inconclusive "
+                f"(current={current.stdout.strip()[:100]}, heads={heads.stdout.strip()[:100]})"
+            )
     except Exception as e:
         _warn(f"alembic check failed: {e}")
 
