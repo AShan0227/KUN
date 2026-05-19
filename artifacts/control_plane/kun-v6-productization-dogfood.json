@@ -1,0 +1,2905 @@
+{
+  "acceptance_reviews": [
+    {
+      "acceptance_id": "accept-msn-kun-v6-productization-delivery",
+      "decision": "accepted",
+      "delivery_manifest_ref": "manifest-msn-kun-v6-productization-delivery",
+      "followup_work_item_refs": [],
+      "gate_evaluation_ref": "gate-msn-kun-v6-productization-delivery",
+      "ledger_event_ref": null,
+      "mission_id": "msn-kun-v6-productization",
+      "new_info_or_constraints": [
+        "Next productization step is real business long-task dogfood.",
+        "Replay-stage capabilities still require holdout/shadow/canary before production."
+      ],
+      "reason": "Productization dogfood delivery passed Control Plane execution, AB regression, audit, and recovery checks.",
+      "requested_changes": [],
+      "reviewer": "kun-dogfood",
+      "satisfaction": 0.95,
+      "task_plan_version": "v6-productization"
+    }
+  ],
+  "artifact_manifests": [
+    {
+      "artifact_refs": [
+        "artifact-work-v6-persistence-recovery"
+      ],
+      "content_hash": "a408f52fb551e562f1204f3ea7a3af185adb7d54535680f36557b8b6c1d47dda",
+      "created_by": "control-plane",
+      "evidence_refs": [
+        "artifact-work-v6-persistence-recovery"
+      ],
+      "kind": "run",
+      "manifest_id": "manifest-work-v6-persistence-recovery",
+      "mission_id": "msn-kun-v6-productization",
+      "primary_artifact_ref": "artifact-work-v6-persistence-recovery",
+      "review_refs": [],
+      "rollback_refs": [],
+      "supports_delivery": false,
+      "test_refs": [],
+      "work_item_id": "work-v6-persistence-recovery"
+    },
+    {
+      "artifact_refs": [
+        "artifact-work-v6-nuo-contamination"
+      ],
+      "content_hash": "405ddf9fc7c429877bf4e6c8ae790848affc1f1b1e830297e53cf5c937cf551a",
+      "created_by": "nuo",
+      "evidence_refs": [
+        "artifact-work-v6-nuo-contamination"
+      ],
+      "kind": "run",
+      "manifest_id": "manifest-work-v6-nuo-contamination",
+      "mission_id": "msn-kun-v6-productization",
+      "primary_artifact_ref": "artifact-work-v6-nuo-contamination",
+      "review_refs": [],
+      "rollback_refs": [],
+      "supports_delivery": false,
+      "test_refs": [],
+      "work_item_id": "work-v6-nuo-contamination"
+    },
+    {
+      "artifact_refs": [
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L1",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L2",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L3",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L4",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L5",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L6",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L7",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L8",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L9",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L10",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L11",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L12",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L13",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L14",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L15",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L16",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L17",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L18",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L19",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L20",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L1",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L2",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L3",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L4",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L5",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L6",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L7",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L8",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L9",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L10",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L11",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L12",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L13",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L14",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L15",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L16",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L17",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L18",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L19",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L20",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L21",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L22",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L23",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L24",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L25",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L26",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L27",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L28",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L29",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L30",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L31",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L32",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L33",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L34",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L35",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L36",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L37",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L38",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L39",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L40",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L41",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L42",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L43",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L44",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L45",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/report.json",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/comparator_health.json"
+      ],
+      "content_hash": "810795912d81ce8d7316795b2eb7547e85a1d4af8d5a8353d85fc4f92d3d3e00",
+      "created_by": "qi",
+      "evidence_refs": [
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/comparator_health.json"
+      ],
+      "kind": "run",
+      "manifest_id": "manifest-qi-ab-round-02-v37-regression",
+      "mission_id": "msn-kun-v6-productization",
+      "primary_artifact_ref": "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/report.json",
+      "review_refs": [
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L1",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L2",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L3",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L4",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L5",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L6",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L7",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L8",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L9",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L10",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L11",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L12",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L13",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L14",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L15",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L16",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L17",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L18",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L19",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L20",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L21",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L22",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L23",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L24",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L25",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L26",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L27",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L28",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L29",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L30",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L31",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L32",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L33",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L34",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L35",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L36",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L37",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L38",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L39",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L40",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L41",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L42",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L43",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L44",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L45"
+      ],
+      "rollback_refs": [],
+      "supports_delivery": false,
+      "test_refs": [],
+      "work_item_id": "work-v6-qi-ab-runner"
+    },
+    {
+      "artifact_refs": [
+        "artifact-work-v6-mission-dashboard"
+      ],
+      "content_hash": "b65c79608d9a35131caa1562db7178d608e0d7f41dae825b927a130e1c24f9c1",
+      "created_by": "control-plane",
+      "evidence_refs": [
+        "artifact-work-v6-mission-dashboard"
+      ],
+      "kind": "run",
+      "manifest_id": "manifest-work-v6-mission-dashboard",
+      "mission_id": "msn-kun-v6-productization",
+      "primary_artifact_ref": "artifact-work-v6-mission-dashboard",
+      "review_refs": [],
+      "rollback_refs": [],
+      "supports_delivery": false,
+      "test_refs": [],
+      "work_item_id": "work-v6-mission-dashboard"
+    },
+    {
+      "artifact_refs": [
+        "artifact-work-v6-collaboration-tickets"
+      ],
+      "content_hash": "e6a95a2983370524954fc66b6d5b2e1af76ce97602f6cdba29fbd790d42c47a4",
+      "created_by": "control-plane",
+      "evidence_refs": [
+        "artifact-work-v6-collaboration-tickets"
+      ],
+      "kind": "run",
+      "manifest_id": "manifest-work-v6-collaboration-tickets",
+      "mission_id": "msn-kun-v6-productization",
+      "primary_artifact_ref": "artifact-work-v6-collaboration-tickets",
+      "review_refs": [],
+      "rollback_refs": [],
+      "supports_delivery": false,
+      "test_refs": [],
+      "work_item_id": "work-v6-collaboration-tickets"
+    },
+    {
+      "artifact_refs": [
+        "artifact-work-v6-qi-capability-evolution"
+      ],
+      "content_hash": "0f85715436b146ffeb94c786bc209079ba0b6bb9829ca13926c29a6eb18e657c",
+      "created_by": "qi",
+      "evidence_refs": [
+        "artifact-work-v6-qi-capability-evolution"
+      ],
+      "kind": "run",
+      "manifest_id": "manifest-work-v6-qi-capability-evolution",
+      "mission_id": "msn-kun-v6-productization",
+      "primary_artifact_ref": "artifact-work-v6-qi-capability-evolution",
+      "review_refs": [],
+      "rollback_refs": [],
+      "supports_delivery": false,
+      "test_refs": [],
+      "work_item_id": "work-v6-qi-capability-evolution"
+    },
+    {
+      "artifact_refs": [
+        "artifact-work-v6-external-behavior-distillation"
+      ],
+      "content_hash": "1cb94b1511005f8c4f836fa4efc16e7b83bdb0c25707b248f493eeda45800d0c",
+      "created_by": "qi",
+      "evidence_refs": [
+        "artifact-work-v6-external-behavior-distillation"
+      ],
+      "kind": "run",
+      "manifest_id": "manifest-work-v6-external-behavior-distillation",
+      "mission_id": "msn-kun-v6-productization",
+      "primary_artifact_ref": "artifact-work-v6-external-behavior-distillation",
+      "review_refs": [],
+      "rollback_refs": [],
+      "supports_delivery": false,
+      "test_refs": [],
+      "work_item_id": "work-v6-external-behavior-distillation"
+    },
+    {
+      "artifact_refs": [
+        "artifact-msn-kun-v6-productization-delivery"
+      ],
+      "content_hash": "fb08d26dffbb3199a3e255db08cfd57d9bbf6d98fed3ff90aa4ba80daff02b89",
+      "created_by": "control-plane",
+      "evidence_refs": [
+        "manifest-qi-ab-round-02-v37-regression",
+        "manifest-work-v6-collaboration-tickets",
+        "manifest-work-v6-external-behavior-distillation",
+        "manifest-work-v6-mission-dashboard",
+        "manifest-work-v6-nuo-contamination",
+        "manifest-work-v6-persistence-recovery",
+        "manifest-work-v6-qi-capability-evolution"
+      ],
+      "kind": "delivery",
+      "manifest_id": "manifest-msn-kun-v6-productization-delivery",
+      "mission_id": "msn-kun-v6-productization",
+      "primary_artifact_ref": "artifact-msn-kun-v6-productization-delivery",
+      "review_refs": [],
+      "rollback_refs": [],
+      "supports_delivery": true,
+      "test_refs": [],
+      "work_item_id": null
+    }
+  ],
+  "artifact_records": [
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-openclaw-local-first-gateway-eda9eb5baf05",
+      "content_hash": "eda9eb5baf053de9b1f3282244d2f2103b78c8d66cc1cce838f77da2255885f2",
+      "created_by": "qi",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "evidence",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/openclaw/README.md#behavior:local-first-gateway-session-tool-event-routing",
+      "source_quality": "credible",
+      "supports": [
+        "external_behavior_distillation",
+        "persistence_recovery",
+        "origin:openclaw",
+        "adoption:kun_native_runtime"
+      ],
+      "work_item_id": null
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-openclaw-isolated-agent-routing-21598cfa3ab6",
+      "content_hash": "21598cfa3ab68a80f08484657c5840b96d7773a6554b49e8170f654512d3a52a",
+      "created_by": "qi",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "evidence",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/openclaw/README.md#behavior:isolated-worker-routing-with-per-agent-workspaces",
+      "source_quality": "credible",
+      "supports": [
+        "external_behavior_distillation",
+        "persistence_recovery",
+        "origin:openclaw",
+        "adoption:kun_native_runtime"
+      ],
+      "work_item_id": null
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-hermes-local-first-gateway-f8327e1410f0",
+      "content_hash": "f8327e1410f025f0e9ad3b1e435e6d57836050db1a7007c3e96c8de4e7a836cc",
+      "created_by": "qi",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "evidence",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/README.md#behavior:local-first-gateway-session-tool-event-routing",
+      "source_quality": "credible",
+      "supports": [
+        "external_behavior_distillation",
+        "persistence_recovery",
+        "origin:hermes",
+        "adoption:kun_native_runtime"
+      ],
+      "work_item_id": null
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-hermes-local-first-gateway-6082a7353f90",
+      "content_hash": "6082a7353f90f4db95e4f6bf46e169a835ba44211925f091def646174ea28e53",
+      "created_by": "qi",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "evidence",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/RELEASE_v0.8.0.md#behavior:local-first-gateway-session-tool-event-routing",
+      "source_quality": "credible",
+      "supports": [
+        "external_behavior_distillation",
+        "persistence_recovery",
+        "origin:hermes",
+        "adoption:kun_native_runtime"
+      ],
+      "work_item_id": null
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-hermes-approval-buttons-999dfcc87935",
+      "content_hash": "999dfcc87935f1bd7e7b506e36feea30c81fe03eb7a80941ae6d9d2f53637837",
+      "created_by": "qi",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "evidence",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/RELEASE_v0.8.0.md#behavior:explicit-approval-interaction-with-resumable-tickets",
+      "source_quality": "credible",
+      "supports": [
+        "external_behavior_distillation",
+        "collaboration_tickets",
+        "origin:hermes",
+        "adoption:kun_native_contract"
+      ],
+      "work_item_id": null
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-hermes-activity-timeout-d015f539c772",
+      "content_hash": "d015f539c772ff9c1d7876ebb3049bfe3a49688de41495d37f75895eaf86dc9e",
+      "created_by": "qi",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "evidence",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/RELEASE_v0.8.0.md#behavior:activity-based-long-run-timeout-instead-of-wall-clock-kill",
+      "source_quality": "credible",
+      "supports": [
+        "external_behavior_distillation",
+        "persistence_recovery",
+        "origin:hermes",
+        "adoption:kun_native_runtime"
+      ],
+      "work_item_id": null
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-hermes-background-notify-023840b1d2c6",
+      "content_hash": "023840b1d2c6fc5979504c8cb7ca7ce7b60e8bb972a75e284fa2cdbb71a003d4",
+      "created_by": "qi",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "evidence",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/RELEASE_v0.8.0.md#behavior:background-run-completion-notification-and-resume",
+      "source_quality": "credible",
+      "supports": [
+        "external_behavior_distillation",
+        "mission_dashboard",
+        "origin:hermes",
+        "adoption:kun_native_runtime"
+      ],
+      "work_item_id": null
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-hermes-behavioral-benchmarking-acfadce8e108",
+      "content_hash": "acfadce8e108c74d7ab2978df89a6f29f700301511ca73103e87f2c67a27682d",
+      "created_by": "qi",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "evidence",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/RELEASE_v0.8.0.md#behavior:behavioral-benchmark-driven-tool-use-guidance",
+      "source_quality": "credible",
+      "supports": [
+        "external_behavior_distillation",
+        "qi_capability_evolution",
+        "origin:hermes",
+        "adoption:qi_review_only"
+      ],
+      "work_item_id": null
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-hermes-structured-logging-45ecac477857",
+      "content_hash": "45ecac477857e46da708fb5df870de9ea6675bfee95a7be219bed4a005e15471",
+      "created_by": "qi",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "evidence",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/RELEASE_v0.8.0.md#behavior:structured-logs-with-user-facing-diagnostics",
+      "source_quality": "credible",
+      "supports": [
+        "external_behavior_distillation",
+        "mission_dashboard",
+        "origin:hermes",
+        "adoption:kun_native_contract"
+      ],
+      "work_item_id": null
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-hermes-tool-result-persistence-f743cbf15acb",
+      "content_hash": "f743cbf15acbda9e41e3d740d81db7a348ce39b290646c5438098ee8a4048b34",
+      "created_by": "qi",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "evidence",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/RELEASE_v0.8.0.md#behavior:large-tool-results-persisted-as-artifacts-instead-of-destructive-truncation",
+      "source_quality": "credible",
+      "supports": [
+        "external_behavior_distillation",
+        "persistence_recovery",
+        "origin:hermes",
+        "adoption:kun_native_contract"
+      ],
+      "work_item_id": null
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-hermes-structured-logging-dad4a8b6ae2f",
+      "content_hash": "dad4a8b6ae2ff6e2d167b3af5b0a6a19462578644b4b26fda8a652614a925327",
+      "created_by": "qi",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "evidence",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/hermes_state.py#behavior:structured-logs-with-user-facing-diagnostics",
+      "source_quality": "credible",
+      "supports": [
+        "external_behavior_distillation",
+        "mission_dashboard",
+        "origin:hermes",
+        "adoption:kun_native_contract"
+      ],
+      "work_item_id": null
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-hermes-tool-result-persistence-6d3cf478dba9",
+      "content_hash": "6d3cf478dba91f293b61928cecaf4b72434d0d4bc9258e0b343da4a53f3f1e16",
+      "created_by": "qi",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "evidence",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/hermes_state.py#behavior:large-tool-results-persisted-as-artifacts-instead-of-destructive-truncation",
+      "source_quality": "credible",
+      "supports": [
+        "external_behavior_distillation",
+        "persistence_recovery",
+        "origin:hermes",
+        "adoption:kun_native_contract"
+      ],
+      "work_item_id": null
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-work-v6-persistence-recovery",
+      "content_hash": "2c118092fdf28036b3938b645f5fca8c8a6d18ab4af164b364d9f91bee9fedf1",
+      "created_by": "control-plane",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "report",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "control-plane://productization/msn-kun-v6-productization/work-v6-persistence-recovery",
+      "source_quality": "primary",
+      "supports": [
+        "persistence_recovery",
+        "productization_dogfood"
+      ],
+      "work_item_id": "work-v6-persistence-recovery"
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-work-v6-nuo-contamination",
+      "content_hash": "f68fce02c650f3be036ef3e5740c72dd132fd97c407e7d13125df5e7fcd0cd8f",
+      "created_by": "nuo",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "report",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "control-plane://productization/msn-kun-v6-productization/work-v6-nuo-contamination",
+      "source_quality": "primary",
+      "supports": [
+        "nuo_contamination",
+        "productization_dogfood"
+      ],
+      "work_item_id": "work-v6-nuo-contamination"
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-work-v6-mission-dashboard",
+      "content_hash": "1d536a39f8d30bc553eee5311e6ea625c36909f22880323e8395508e6511543e",
+      "created_by": "control-plane",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "report",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "control-plane://productization/msn-kun-v6-productization/work-v6-mission-dashboard",
+      "source_quality": "primary",
+      "supports": [
+        "mission_dashboard",
+        "productization_dogfood"
+      ],
+      "work_item_id": "work-v6-mission-dashboard"
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-work-v6-collaboration-tickets",
+      "content_hash": "cb86d56c5a19d8e68bd00b018939bff98dabcde3531942c0ac4d327859b1ca81",
+      "created_by": "control-plane",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "report",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "control-plane://productization/msn-kun-v6-productization/work-v6-collaboration-tickets",
+      "source_quality": "primary",
+      "supports": [
+        "collaboration_tickets",
+        "productization_dogfood"
+      ],
+      "work_item_id": "work-v6-collaboration-tickets"
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-work-v6-qi-capability-evolution",
+      "content_hash": "5d2bad4ef1adc5d57458ccda3b98eb84a2a6b9569afbf2cd0037d2c3fc7f94a5",
+      "created_by": "qi",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "report",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "control-plane://productization/msn-kun-v6-productization/work-v6-qi-capability-evolution",
+      "source_quality": "primary",
+      "supports": [
+        "qi_capability_evolution",
+        "productization_dogfood"
+      ],
+      "work_item_id": "work-v6-qi-capability-evolution"
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-work-v6-external-behavior-distillation",
+      "content_hash": "69ad2ec4b9ad4f98f245afc31a987a6d9ced5789ebc28b7e276e5273853f5a5d",
+      "created_by": "qi",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "report",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "control-plane://productization/msn-kun-v6-productization/work-v6-external-behavior-distillation",
+      "source_quality": "primary",
+      "supports": [
+        "external_behavior_distillation",
+        "productization_dogfood"
+      ],
+      "work_item_id": "work-v6-external-behavior-distillation"
+    },
+    {
+      "access_status": "available",
+      "artifact_id": "artifact-msn-kun-v6-productization-delivery",
+      "content_hash": "7c98f7b5f4a8b08b7a124d7df80132b84e717ab93e5a5b7223b820bc1bce5d1b",
+      "created_by": "control-plane",
+      "expires_at": null,
+      "freshness": "fresh",
+      "kind": "report",
+      "mission_id": "msn-kun-v6-productization",
+      "path_or_uri": "control-plane://productization/msn-kun-v6-productization/delivery",
+      "source_quality": "primary",
+      "supports": [
+        "delivery",
+        "productization_dogfood",
+        "persistence_recovery",
+        "mission_dashboard",
+        "nuo_contamination",
+        "qi_ab_runner",
+        "collaboration_tickets",
+        "qi_capability_evolution",
+        "external_behavior_distillation"
+      ],
+      "work_item_id": null
+    }
+  ],
+  "capability_profiles": [
+    {
+      "capability_id": "cap-openclaw-local-first-gateway-eda9eb5baf05",
+      "capability_name": "local-first gateway/session/tool event routing",
+      "evidence_refs": [
+        "artifact-openclaw-local-first-gateway-eda9eb5baf05",
+        "openclaw:local-first-gateway-session-tool-event-routing:persistence_recovery",
+        "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/openclaw/README.md"
+      ],
+      "holdout_refs": [],
+      "known_limits": [
+        "behavioral distillation only; implementation must remain KUN-native",
+        "not eligible for production until holdout, shadow, canary, and rollback gates pass",
+        "session isolation",
+        "workspace boundary"
+      ],
+      "last_verified_at": "2026-05-18T15:06:08.704548Z",
+      "promotion_stage": "replay",
+      "regression_refs": [
+        "recover mission across restart",
+        "route tool events to ledger"
+      ],
+      "rollback_plan": [
+        "disable CapabilityProfile openclaw-local-first-gateway-eda9eb5baf05",
+        "remove replay profile before runtime policy consumption"
+      ]
+    },
+    {
+      "capability_id": "cap-openclaw-isolated-agent-routing-21598cfa3ab6",
+      "capability_name": "isolated worker routing with per-agent workspaces",
+      "evidence_refs": [
+        "artifact-openclaw-isolated-agent-routing-21598cfa3ab6",
+        "openclaw:isolated-worker-routing-with-per-agent-workspaces:persistence_recovery",
+        "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/openclaw/README.md"
+      ],
+      "holdout_refs": [],
+      "known_limits": [
+        "behavioral distillation only; implementation must remain KUN-native",
+        "not eligible for production until holdout, shadow, canary, and rollback gates pass",
+        "resource lease",
+        "owner map"
+      ],
+      "last_verified_at": "2026-05-18T15:06:08.705732Z",
+      "promotion_stage": "replay",
+      "regression_refs": [
+        "worker lock isolation",
+        "no cross-worker artifact overwrite"
+      ],
+      "rollback_plan": [
+        "disable CapabilityProfile openclaw-isolated-agent-routing-21598cfa3ab6",
+        "remove replay profile before runtime policy consumption"
+      ]
+    },
+    {
+      "capability_id": "cap-hermes-local-first-gateway-f8327e1410f0",
+      "capability_name": "local-first gateway/session/tool event routing",
+      "evidence_refs": [
+        "artifact-hermes-local-first-gateway-f8327e1410f0",
+        "hermes:local-first-gateway-session-tool-event-routing:persistence_recovery",
+        "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/README.md"
+      ],
+      "holdout_refs": [],
+      "known_limits": [
+        "behavioral distillation only; implementation must remain KUN-native",
+        "not eligible for production until holdout, shadow, canary, and rollback gates pass",
+        "session isolation",
+        "workspace boundary"
+      ],
+      "last_verified_at": "2026-05-18T15:06:08.706600Z",
+      "promotion_stage": "replay",
+      "regression_refs": [
+        "recover mission across restart",
+        "route tool events to ledger"
+      ],
+      "rollback_plan": [
+        "disable CapabilityProfile hermes-local-first-gateway-f8327e1410f0",
+        "remove replay profile before runtime policy consumption"
+      ]
+    },
+    {
+      "capability_id": "cap-hermes-local-first-gateway-6082a7353f90",
+      "capability_name": "local-first gateway/session/tool event routing",
+      "evidence_refs": [
+        "artifact-hermes-local-first-gateway-6082a7353f90",
+        "hermes:local-first-gateway-session-tool-event-routing:persistence_recovery",
+        "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/RELEASE_v0.8.0.md"
+      ],
+      "holdout_refs": [],
+      "known_limits": [
+        "behavioral distillation only; implementation must remain KUN-native",
+        "not eligible for production until holdout, shadow, canary, and rollback gates pass",
+        "session isolation",
+        "workspace boundary"
+      ],
+      "last_verified_at": "2026-05-18T15:06:08.707556Z",
+      "promotion_stage": "replay",
+      "regression_refs": [
+        "recover mission across restart",
+        "route tool events to ledger"
+      ],
+      "rollback_plan": [
+        "disable CapabilityProfile hermes-local-first-gateway-6082a7353f90",
+        "remove replay profile before runtime policy consumption"
+      ]
+    },
+    {
+      "capability_id": "cap-hermes-approval-buttons-999dfcc87935",
+      "capability_name": "explicit approval interaction with resumable tickets",
+      "evidence_refs": [
+        "artifact-hermes-approval-buttons-999dfcc87935",
+        "hermes:explicit-approval-interaction-with-resumable-tickets:collaboration_tickets",
+        "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/RELEASE_v0.8.0.md"
+      ],
+      "holdout_refs": [],
+      "known_limits": [
+        "behavioral distillation only; implementation must remain KUN-native",
+        "not eligible for production until holdout, shadow, canary, and rollback gates pass",
+        "high-risk actions require approval",
+        "refusal closes safely"
+      ],
+      "last_verified_at": "2026-05-18T15:06:08.708480Z",
+      "promotion_stage": "replay",
+      "regression_refs": [
+        "approval response resumes work item",
+        "approval timeout applies fallback"
+      ],
+      "rollback_plan": [
+        "disable CapabilityProfile hermes-approval-buttons-999dfcc87935",
+        "remove replay profile before runtime policy consumption"
+      ]
+    },
+    {
+      "capability_id": "cap-hermes-activity-timeout-d015f539c772",
+      "capability_name": "activity-based long-run timeout instead of wall-clock kill",
+      "evidence_refs": [
+        "artifact-hermes-activity-timeout-d015f539c772",
+        "hermes:activity-based-long-run-timeout-instead-of-wall-clock-kill:persistence_recovery",
+        "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/RELEASE_v0.8.0.md"
+      ],
+      "holdout_refs": [],
+      "known_limits": [
+        "behavioral distillation only; implementation must remain KUN-native",
+        "not eligible for production until holdout, shadow, canary, and rollback gates pass",
+        "environment failures not counted as KUN quality failure"
+      ],
+      "last_verified_at": "2026-05-18T15:06:08.709564Z",
+      "promotion_stage": "replay",
+      "regression_refs": [
+        "active heartbeat prevents timeout",
+        "stale heartbeat creates repair item"
+      ],
+      "rollback_plan": [
+        "disable CapabilityProfile hermes-activity-timeout-d015f539c772",
+        "remove replay profile before runtime policy consumption"
+      ]
+    },
+    {
+      "capability_id": "cap-hermes-background-notify-023840b1d2c6",
+      "capability_name": "background run completion notification and resume",
+      "evidence_refs": [
+        "artifact-hermes-background-notify-023840b1d2c6",
+        "hermes:background-run-completion-notification-and-resume:mission_dashboard",
+        "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/RELEASE_v0.8.0.md"
+      ],
+      "holdout_refs": [],
+      "known_limits": [
+        "behavioral distillation only; implementation must remain KUN-native",
+        "not eligible for production until holdout, shadow, canary, and rollback gates pass",
+        "dedupe completion events"
+      ],
+      "last_verified_at": "2026-05-18T15:06:08.710748Z",
+      "promotion_stage": "replay",
+      "regression_refs": [
+        "completed process updates dashboard",
+        "agent can continue other work"
+      ],
+      "rollback_plan": [
+        "disable CapabilityProfile hermes-background-notify-023840b1d2c6",
+        "remove replay profile before runtime policy consumption"
+      ]
+    },
+    {
+      "capability_id": "cap-hermes-behavioral-benchmarking-acfadce8e108",
+      "capability_name": "behavioral benchmark driven tool-use guidance",
+      "evidence_refs": [
+        "artifact-hermes-behavioral-benchmarking-acfadce8e108",
+        "hermes:behavioral-benchmark-driven-tool-use-guidance:qi_capability_evolution",
+        "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/RELEASE_v0.8.0.md"
+      ],
+      "holdout_refs": [],
+      "known_limits": [
+        "behavioral distillation only; implementation must remain KUN-native",
+        "not eligible for production until holdout, shadow, canary, and rollback gates pass",
+        "no direct production writeback",
+        "rollback required"
+      ],
+      "last_verified_at": "2026-05-18T15:06:08.712094Z",
+      "promotion_stage": "replay",
+      "regression_refs": [
+        "peer gap becomes review-only candidate",
+        "candidate needs replay gate"
+      ],
+      "rollback_plan": [
+        "disable CapabilityProfile hermes-behavioral-benchmarking-acfadce8e108",
+        "remove replay profile before runtime policy consumption"
+      ]
+    },
+    {
+      "capability_id": "cap-hermes-structured-logging-45ecac477857",
+      "capability_name": "structured logs with user-facing diagnostics",
+      "evidence_refs": [
+        "artifact-hermes-structured-logging-45ecac477857",
+        "hermes:structured-logs-with-user-facing-diagnostics:mission_dashboard",
+        "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/RELEASE_v0.8.0.md"
+      ],
+      "holdout_refs": [],
+      "known_limits": [
+        "behavioral distillation only; implementation must remain KUN-native",
+        "not eligible for production until holdout, shadow, canary, and rollback gates pass",
+        "secret redaction",
+        "source freshness"
+      ],
+      "last_verified_at": "2026-05-18T15:06:08.713235Z",
+      "promotion_stage": "replay",
+      "regression_refs": [
+        "logs attach artifact refs",
+        "dashboard hides raw stack unless needed"
+      ],
+      "rollback_plan": [
+        "disable CapabilityProfile hermes-structured-logging-45ecac477857",
+        "remove replay profile before runtime policy consumption"
+      ]
+    },
+    {
+      "capability_id": "cap-hermes-tool-result-persistence-f743cbf15acb",
+      "capability_name": "large tool results persisted as artifacts instead of destructive truncation",
+      "evidence_refs": [
+        "artifact-hermes-tool-result-persistence-f743cbf15acb",
+        "hermes:large-tool-results-persisted-as-artifacts-instead-of-destructive-truncation:persistence_recovery",
+        "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/RELEASE_v0.8.0.md"
+      ],
+      "holdout_refs": [],
+      "known_limits": [
+        "behavioral distillation only; implementation must remain KUN-native",
+        "not eligible for production until holdout, shadow, canary, and rollback gates pass",
+        "redaction",
+        "access status"
+      ],
+      "last_verified_at": "2026-05-18T15:06:08.714477Z",
+      "promotion_stage": "replay",
+      "regression_refs": [
+        "large result writes artifact",
+        "manifest links primary output"
+      ],
+      "rollback_plan": [
+        "disable CapabilityProfile hermes-tool-result-persistence-f743cbf15acb",
+        "remove replay profile before runtime policy consumption"
+      ]
+    },
+    {
+      "capability_id": "cap-hermes-structured-logging-dad4a8b6ae2f",
+      "capability_name": "structured logs with user-facing diagnostics",
+      "evidence_refs": [
+        "artifact-hermes-structured-logging-dad4a8b6ae2f",
+        "hermes:structured-logs-with-user-facing-diagnostics:mission_dashboard",
+        "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/hermes_state.py"
+      ],
+      "holdout_refs": [],
+      "known_limits": [
+        "behavioral distillation only; implementation must remain KUN-native",
+        "not eligible for production until holdout, shadow, canary, and rollback gates pass",
+        "secret redaction",
+        "source freshness"
+      ],
+      "last_verified_at": "2026-05-18T15:06:08.715714Z",
+      "promotion_stage": "replay",
+      "regression_refs": [
+        "logs attach artifact refs",
+        "dashboard hides raw stack unless needed"
+      ],
+      "rollback_plan": [
+        "disable CapabilityProfile hermes-structured-logging-dad4a8b6ae2f",
+        "remove replay profile before runtime policy consumption"
+      ]
+    },
+    {
+      "capability_id": "cap-hermes-tool-result-persistence-6d3cf478dba9",
+      "capability_name": "large tool results persisted as artifacts instead of destructive truncation",
+      "evidence_refs": [
+        "artifact-hermes-tool-result-persistence-6d3cf478dba9",
+        "hermes:large-tool-results-persisted-as-artifacts-instead-of-destructive-truncation:persistence_recovery",
+        "/Users/slyvan/Documents/Codex/2026-05-02/git-fetch-origin-git-checkout-codex/external_repos/hermes-agent/hermes_state.py"
+      ],
+      "holdout_refs": [],
+      "known_limits": [
+        "behavioral distillation only; implementation must remain KUN-native",
+        "not eligible for production until holdout, shadow, canary, and rollback gates pass",
+        "redaction",
+        "access status"
+      ],
+      "last_verified_at": "2026-05-18T15:06:08.716935Z",
+      "promotion_stage": "replay",
+      "regression_refs": [
+        "large result writes artifact",
+        "manifest links primary output"
+      ],
+      "rollback_plan": [
+        "disable CapabilityProfile hermes-tool-result-persistence-6d3cf478dba9",
+        "remove replay profile before runtime policy consumption"
+      ]
+    }
+  ],
+  "collaboration_tickets": [
+    {
+      "context_ref": "ctx-msn-kun-v6-productization",
+      "deadline": "2026-05-18T15:36:08.717690Z",
+      "decision_options": [
+        "approve_dry_run_only",
+        "pause_high_risk_actions"
+      ],
+      "escalation_policy": {
+        "after_minutes": 30,
+        "target": "mission_owner"
+      },
+      "fallback_policy": {
+        "option": "pause_high_risk_actions",
+        "reason": "approval timed out; continue safe local verification only"
+      },
+      "mission_id": "msn-kun-v6-productization",
+      "output_contract": "selected option plus risk acknowledgement",
+      "recommended_option": "approve_dry_run_only",
+      "resume_after_response": true,
+      "risk_if_skipped": "KUN may continue a long task without the intended human boundary.",
+      "role_needed": "user",
+      "sla_policy": {
+        "owner": "user",
+        "respond_within_minutes": 30
+      },
+      "status": "answered",
+      "ticket_id": "ticket-msn-kun-v6-productization-productization-boundary",
+      "type": "approval",
+      "why_needed": "Confirm the boundary for high-risk productization actions before KUN continues."
+    }
+  ],
+  "execution_contracts": [
+    {
+      "allowed_actions": [
+        "read local OpenClaw/Hermes source samples",
+        "write KUN-native code and tests",
+        "run local tests and Frontier50 regression",
+        "create review-only Qi capability candidates"
+      ],
+      "approval_policy": {
+        "high_risk_actions": "collaboration_ticket_required"
+      },
+      "budget": {
+        "ab_gap_floor": 0.05,
+        "cost_regression_cap": 0.1,
+        "quality_floor": 0.8
+      },
+      "contract_id": "contract-msn-kun-v6-productization",
+      "deadline": null,
+      "delivery_contract": {
+        "format": "dashboard + audit + recovery bundle + tested code"
+      },
+      "evidence_policy": {
+        "required": [
+          "artifact_manifest",
+          "gate_evaluation",
+          "test_refs"
+        ]
+      },
+      "external_worker_policy": {},
+      "forbidden_actions": [
+        "copy external implementation code",
+        "modify comparator agents as optimization",
+        "promote unverified capability to production",
+        "execute production external action without approval"
+      ],
+      "mission_id": "msn-kun-v6-productization",
+      "permissions": [],
+      "risk_policy": {
+        "quality_precedes_speed_cost": true
+      },
+      "rollback_policy": {
+        "required_for": [
+          "capability_promotion",
+          "runtime_policy_change"
+        ]
+      },
+      "task_plan_version": "v6-productization"
+    }
+  ],
+  "gate_evaluations": [
+    {
+      "artifact_refs": [
+        "artifact-work-v6-persistence-recovery"
+      ],
+      "collaboration_quality": 1.0,
+      "confidence": 0.9,
+      "cost": 0.8,
+      "created_by": "control-plane",
+      "evidence_conflicts": [],
+      "evidence_quality": 1.0,
+      "evidence_refs": [
+        "artifact-work-v6-persistence-recovery"
+      ],
+      "failure_category": null,
+      "gate_evaluation_id": "gate-work-v6-persistence-recovery",
+      "governance_signal": "",
+      "hard_gate_failures": [],
+      "learning_eligibility": "none",
+      "ledger_event_ref": null,
+      "metric_pack_version": "productization-dogfood-v1",
+      "mission_id": "msn-kun-v6-productization",
+      "next_action": "continue",
+      "next_state": "running",
+      "next_ticket_refs": [],
+      "north_star_verdict": "pass",
+      "responsibility_scope": "unknown",
+      "result_quality": 0.95,
+      "review_refs": [],
+      "risk": 0.2,
+      "root_cause": "",
+      "rubric_version": "kun-v6-productization-workitem",
+      "score_breakdown": {
+        "persistence_recovery": 1.0
+      },
+      "source_freshness": "fresh",
+      "speed": 0.8,
+      "stage": "workitem",
+      "subject_ref": "work-v6-persistence-recovery",
+      "task_plan_version": "v6-productization",
+      "task_type": "self_improvement",
+      "test_refs": [],
+      "thresholds": {
+        "result_quality": 0.8
+      }
+    },
+    {
+      "artifact_refs": [
+        "artifact-work-v6-nuo-contamination"
+      ],
+      "collaboration_quality": 1.0,
+      "confidence": 0.9,
+      "cost": 0.8,
+      "created_by": "nuo",
+      "evidence_conflicts": [],
+      "evidence_quality": 1.0,
+      "evidence_refs": [
+        "artifact-work-v6-nuo-contamination"
+      ],
+      "failure_category": null,
+      "gate_evaluation_id": "gate-work-v6-nuo-contamination",
+      "governance_signal": "",
+      "hard_gate_failures": [],
+      "learning_eligibility": "none",
+      "ledger_event_ref": null,
+      "metric_pack_version": "productization-dogfood-v1",
+      "mission_id": "msn-kun-v6-productization",
+      "next_action": "continue",
+      "next_state": "running",
+      "next_ticket_refs": [],
+      "north_star_verdict": "pass",
+      "responsibility_scope": "unknown",
+      "result_quality": 0.95,
+      "review_refs": [],
+      "risk": 0.2,
+      "root_cause": "",
+      "rubric_version": "kun-v6-productization-workitem",
+      "score_breakdown": {
+        "nuo_contamination": 1.0
+      },
+      "source_freshness": "fresh",
+      "speed": 0.8,
+      "stage": "workitem",
+      "subject_ref": "work-v6-nuo-contamination",
+      "task_plan_version": "v6-productization",
+      "task_type": "self_improvement",
+      "test_refs": [],
+      "thresholds": {
+        "result_quality": 0.8
+      }
+    },
+    {
+      "artifact_refs": [
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L1",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L2",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L3",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L4",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L5",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L6",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L7",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L8",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L9",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L10",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L11",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L12",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L13",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L14",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L15",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L16",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L17",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L18",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L19",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L20",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L1",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L2",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L3",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L4",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L5",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L6",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L7",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L8",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L9",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L10",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L11",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L12",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L13",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L14",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L15",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L16",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L17",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L18",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L19",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L20",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L21",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L22",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L23",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L24",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L25",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L26",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L27",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L28",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L29",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L30",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L31",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L32",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L33",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L34",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L35",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L36",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L37",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L38",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L39",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L40",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L41",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L42",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L43",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L44",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L45",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/report.json",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/comparator_health.json"
+      ],
+      "collaboration_quality": 1.0,
+      "confidence": 0.9,
+      "cost": 1.0,
+      "created_by": "qi",
+      "evidence_conflicts": [],
+      "evidence_quality": 1.0,
+      "evidence_refs": [
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/comparator_health.json"
+      ],
+      "failure_category": null,
+      "gate_evaluation_id": "gate-qi-ab-round-02-v37-regression",
+      "governance_signal": "",
+      "hard_gate_failures": [],
+      "learning_eligibility": "none",
+      "ledger_event_ref": null,
+      "metric_pack_version": "qi-ab-round-gates-v1",
+      "mission_id": "msn-kun-v6-productization",
+      "next_action": "continue",
+      "next_state": "running",
+      "next_ticket_refs": [],
+      "north_star_verdict": "pass",
+      "responsibility_scope": "mixed",
+      "result_quality": 0.95,
+      "review_refs": [
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L1",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L2",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L3",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L4",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L5",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L6",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L7",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L8",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L9",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L10",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L11",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L12",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L13",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L14",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L15",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L16",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L17",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L18",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L19",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L20",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L21",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L22",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L23",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L24",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L25",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L26",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L27",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L28",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L29",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L30",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L31",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L32",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L33",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L34",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L35",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L36",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L37",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L38",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L39",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L40",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L41",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L42",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L43",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L44",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L45"
+      ],
+      "risk": 0.2,
+      "root_cause": "qi_ab_round_passed",
+      "rubric_version": "qi-ab-frontier50-v6",
+      "score_breakdown": {
+        "agent_failure_counted": 0.0,
+        "answer_count": 20.0,
+        "comparator_healthy": 1.0,
+        "health_present": 1.0,
+        "next_round_allowed": 1.0,
+        "repair_ticket_count": 0.0,
+        "report_present": 1.0,
+        "review_count": 45.0,
+        "round_valid": 1.0
+      },
+      "source_freshness": "unknown",
+      "speed": 1.0,
+      "stage": "workitem",
+      "subject_ref": "work-v6-qi-ab-runner",
+      "task_plan_version": "v6-productization",
+      "task_type": "self_improvement",
+      "test_refs": [],
+      "thresholds": {
+        "answer_count": 20.0,
+        "health_present": 1.0,
+        "report_present": 1.0,
+        "result_quality": 0.8,
+        "review_count": 45.0
+      }
+    },
+    {
+      "artifact_refs": [
+        "artifact-work-v6-mission-dashboard"
+      ],
+      "collaboration_quality": 1.0,
+      "confidence": 0.9,
+      "cost": 0.8,
+      "created_by": "control-plane",
+      "evidence_conflicts": [],
+      "evidence_quality": 1.0,
+      "evidence_refs": [
+        "artifact-work-v6-mission-dashboard"
+      ],
+      "failure_category": null,
+      "gate_evaluation_id": "gate-work-v6-mission-dashboard",
+      "governance_signal": "",
+      "hard_gate_failures": [],
+      "learning_eligibility": "none",
+      "ledger_event_ref": null,
+      "metric_pack_version": "productization-dogfood-v1",
+      "mission_id": "msn-kun-v6-productization",
+      "next_action": "continue",
+      "next_state": "running",
+      "next_ticket_refs": [],
+      "north_star_verdict": "pass",
+      "responsibility_scope": "unknown",
+      "result_quality": 0.95,
+      "review_refs": [],
+      "risk": 0.2,
+      "root_cause": "",
+      "rubric_version": "kun-v6-productization-workitem",
+      "score_breakdown": {
+        "mission_dashboard": 1.0
+      },
+      "source_freshness": "fresh",
+      "speed": 0.8,
+      "stage": "workitem",
+      "subject_ref": "work-v6-mission-dashboard",
+      "task_plan_version": "v6-productization",
+      "task_type": "self_improvement",
+      "test_refs": [],
+      "thresholds": {
+        "result_quality": 0.8
+      }
+    },
+    {
+      "artifact_refs": [
+        "artifact-work-v6-collaboration-tickets"
+      ],
+      "collaboration_quality": 1.0,
+      "confidence": 0.9,
+      "cost": 0.8,
+      "created_by": "control-plane",
+      "evidence_conflicts": [],
+      "evidence_quality": 1.0,
+      "evidence_refs": [
+        "artifact-work-v6-collaboration-tickets"
+      ],
+      "failure_category": null,
+      "gate_evaluation_id": "gate-work-v6-collaboration-tickets",
+      "governance_signal": "",
+      "hard_gate_failures": [],
+      "learning_eligibility": "none",
+      "ledger_event_ref": null,
+      "metric_pack_version": "productization-dogfood-v1",
+      "mission_id": "msn-kun-v6-productization",
+      "next_action": "continue",
+      "next_state": "running",
+      "next_ticket_refs": [],
+      "north_star_verdict": "pass",
+      "responsibility_scope": "unknown",
+      "result_quality": 0.95,
+      "review_refs": [],
+      "risk": 0.2,
+      "root_cause": "",
+      "rubric_version": "kun-v6-productization-workitem",
+      "score_breakdown": {
+        "collaboration_tickets": 1.0
+      },
+      "source_freshness": "fresh",
+      "speed": 0.8,
+      "stage": "workitem",
+      "subject_ref": "work-v6-collaboration-tickets",
+      "task_plan_version": "v6-productization",
+      "task_type": "self_improvement",
+      "test_refs": [],
+      "thresholds": {
+        "result_quality": 0.8
+      }
+    },
+    {
+      "artifact_refs": [
+        "artifact-work-v6-qi-capability-evolution"
+      ],
+      "collaboration_quality": 1.0,
+      "confidence": 0.9,
+      "cost": 0.8,
+      "created_by": "qi",
+      "evidence_conflicts": [],
+      "evidence_quality": 1.0,
+      "evidence_refs": [
+        "artifact-work-v6-qi-capability-evolution"
+      ],
+      "failure_category": null,
+      "gate_evaluation_id": "gate-work-v6-qi-capability-evolution",
+      "governance_signal": "",
+      "hard_gate_failures": [],
+      "learning_eligibility": "none",
+      "ledger_event_ref": null,
+      "metric_pack_version": "productization-dogfood-v1",
+      "mission_id": "msn-kun-v6-productization",
+      "next_action": "continue",
+      "next_state": "running",
+      "next_ticket_refs": [],
+      "north_star_verdict": "pass",
+      "responsibility_scope": "unknown",
+      "result_quality": 0.95,
+      "review_refs": [],
+      "risk": 0.2,
+      "root_cause": "",
+      "rubric_version": "kun-v6-productization-workitem",
+      "score_breakdown": {
+        "qi_capability_evolution": 1.0
+      },
+      "source_freshness": "fresh",
+      "speed": 0.8,
+      "stage": "workitem",
+      "subject_ref": "work-v6-qi-capability-evolution",
+      "task_plan_version": "v6-productization",
+      "task_type": "self_improvement",
+      "test_refs": [],
+      "thresholds": {
+        "result_quality": 0.8
+      }
+    },
+    {
+      "artifact_refs": [
+        "artifact-work-v6-external-behavior-distillation"
+      ],
+      "collaboration_quality": 1.0,
+      "confidence": 0.9,
+      "cost": 0.8,
+      "created_by": "qi",
+      "evidence_conflicts": [],
+      "evidence_quality": 1.0,
+      "evidence_refs": [
+        "artifact-work-v6-external-behavior-distillation"
+      ],
+      "failure_category": null,
+      "gate_evaluation_id": "gate-work-v6-external-behavior-distillation",
+      "governance_signal": "",
+      "hard_gate_failures": [],
+      "learning_eligibility": "none",
+      "ledger_event_ref": null,
+      "metric_pack_version": "productization-dogfood-v1",
+      "mission_id": "msn-kun-v6-productization",
+      "next_action": "continue",
+      "next_state": "running",
+      "next_ticket_refs": [],
+      "north_star_verdict": "pass",
+      "responsibility_scope": "unknown",
+      "result_quality": 0.95,
+      "review_refs": [],
+      "risk": 0.2,
+      "root_cause": "",
+      "rubric_version": "kun-v6-productization-workitem",
+      "score_breakdown": {
+        "external_behavior_distillation": 1.0
+      },
+      "source_freshness": "fresh",
+      "speed": 0.8,
+      "stage": "workitem",
+      "subject_ref": "work-v6-external-behavior-distillation",
+      "task_plan_version": "v6-productization",
+      "task_type": "self_improvement",
+      "test_refs": [],
+      "thresholds": {
+        "result_quality": 0.8
+      }
+    },
+    {
+      "artifact_refs": [
+        "artifact-msn-kun-v6-productization-delivery"
+      ],
+      "collaboration_quality": 1.0,
+      "confidence": 0.9,
+      "cost": 0.8,
+      "created_by": "control-plane",
+      "evidence_conflicts": [],
+      "evidence_quality": 1.0,
+      "evidence_refs": [
+        "manifest-qi-ab-round-02-v37-regression",
+        "manifest-work-v6-collaboration-tickets",
+        "manifest-work-v6-external-behavior-distillation",
+        "manifest-work-v6-mission-dashboard",
+        "manifest-work-v6-nuo-contamination",
+        "manifest-work-v6-persistence-recovery",
+        "manifest-work-v6-qi-capability-evolution"
+      ],
+      "failure_category": null,
+      "gate_evaluation_id": "gate-msn-kun-v6-productization-delivery",
+      "governance_signal": "",
+      "hard_gate_failures": [],
+      "learning_eligibility": "none",
+      "ledger_event_ref": null,
+      "metric_pack_version": "productization-dogfood-v1",
+      "mission_id": "msn-kun-v6-productization",
+      "next_action": "ready_to_deliver",
+      "next_state": "delivering",
+      "next_ticket_refs": [],
+      "north_star_verdict": "pass",
+      "responsibility_scope": "unknown",
+      "result_quality": 0.95,
+      "review_refs": [],
+      "risk": 0.2,
+      "root_cause": "",
+      "rubric_version": "kun-v6-productization-delivery",
+      "score_breakdown": {
+        "collaboration_tickets": 1.0,
+        "external_behavior_distillation": 1.0,
+        "mission_dashboard": 1.0,
+        "nuo_contamination": 1.0,
+        "persistence_recovery": 1.0,
+        "qi_ab_runner": 1.0,
+        "qi_capability_evolution": 1.0
+      },
+      "source_freshness": "fresh",
+      "speed": 0.8,
+      "stage": "delivery",
+      "subject_ref": "manifest-msn-kun-v6-productization-delivery",
+      "task_plan_version": "v6-productization",
+      "task_type": "self_improvement",
+      "test_refs": [],
+      "thresholds": {
+        "result_quality": 0.8
+      }
+    }
+  ],
+  "ledger_events": [
+    {
+      "actor": "kun-dogfood-bootstrap",
+      "after": {
+        "status": "queued"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "contracted"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXSDREGQV67HGV4NFN5W47G",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:1:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "reason": "mission submitted with approved task plan"
+      },
+      "replay_hint": "",
+      "sequence": 1,
+      "subject_ref": "msn-kun-v6-productization",
+      "time": "2026-05-18T14:56:44.496497Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {},
+      "artifact_refs": [],
+      "before": {},
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXSYZEE7P1TAQEREDGDS2CP",
+      "event_type": "message",
+      "idempotency_key": "msn-kun-v6-productization:2:message",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "deadline": "2026-05-18T15:36:08.717690+00:00",
+        "intent": "approval",
+        "receiver": "user",
+        "recommended_option": "approve_dry_run_only",
+        "requires_response": true,
+        "resume_rule": "resume_after_response",
+        "sender": "control-plane",
+        "why_needed": "Confirm the boundary for high-risk productization actions before KUN continues."
+      },
+      "replay_hint": "",
+      "sequence": 2,
+      "subject_ref": "ticket-msn-kun-v6-productization-productization-boundary",
+      "time": "2026-05-18T15:06:08.718595Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {},
+      "artifact_refs": [],
+      "before": {},
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXSYZEHDNHWR2H1KVH865P2",
+      "event_type": "message",
+      "idempotency_key": "msn-kun-v6-productization:3:message",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "answer": "Approved for dry-run and local verification; production actions stay gated.",
+        "deadline": "2026-05-18T15:06:08.720146+00:00",
+        "intent": "collaboration_answered",
+        "receiver": "kun",
+        "requires_response": false,
+        "resume_rule": "resume",
+        "selected_option": "approve_dry_run_only",
+        "sender": "kun-dogfood"
+      },
+      "replay_hint": "",
+      "sequence": 3,
+      "subject_ref": "ticket-msn-kun-v6-productization-productization-boundary",
+      "time": "2026-05-18T15:06:08.721023Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "running"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "queued"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVC6G42YRR32C2HVMMCHED",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:4:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "reason": "ready work item acquired"
+      },
+      "replay_hint": "",
+      "sequence": 4,
+      "subject_ref": "work-v6-persistence-recovery",
+      "time": "2026-05-18T15:30:50.500058Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "running"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "queued"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVC6G8JBK9T82CB6C2EPKE",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:5:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVC6G7NRRY53HXMGTPRE4Y"
+      },
+      "replay_hint": "",
+      "sequence": 5,
+      "subject_ref": "work-v6-persistence-recovery",
+      "time": "2026-05-18T15:30:50.504116Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "done"
+      },
+      "artifact_refs": [
+        "artifact-work-v6-persistence-recovery"
+      ],
+      "before": {
+        "status": "running"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVC6GFFG6087W1BFJ271RG",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:6:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVC6G7NRRY53HXMGTPRE4Y",
+        "summary": "Durable state, queue, artifacts, decisions, and resume hints verified."
+      },
+      "replay_hint": "",
+      "sequence": 6,
+      "subject_ref": "work-v6-persistence-recovery",
+      "time": "2026-05-18T15:30:50.511233Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {},
+      "artifact_refs": [
+        "artifact-work-v6-persistence-recovery"
+      ],
+      "before": {},
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVC6GH3Z67Q47PTP9BBN3B",
+      "event_type": "gate_evaluation",
+      "idempotency_key": "msn-kun-v6-productization:7:gate_evaluation",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "gate_evaluation_id": "gate-work-v6-persistence-recovery",
+        "next_action": "continue",
+        "north_star_verdict": "pass",
+        "result_quality": 0.95,
+        "stage": "workitem"
+      },
+      "replay_hint": "",
+      "sequence": 7,
+      "subject_ref": "work-v6-persistence-recovery",
+      "time": "2026-05-18T15:30:50.513681Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "running"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "queued"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVC6GNPY6YC1SAJPE5AK3V",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:8:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVC6GMAREF5JK6FZPDY9VS"
+      },
+      "replay_hint": "",
+      "sequence": 8,
+      "subject_ref": "work-v6-nuo-contamination",
+      "time": "2026-05-18T15:30:50.517621Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "done"
+      },
+      "artifact_refs": [
+        "artifact-work-v6-nuo-contamination"
+      ],
+      "before": {
+        "status": "running"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVC6GW1E0AKG1RWD70YD57",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:9:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVC6GMAREF5JK6FZPDY9VS",
+        "summary": "Nuo contamination and system-blocker classification contract verified."
+      },
+      "replay_hint": "",
+      "sequence": 9,
+      "subject_ref": "work-v6-nuo-contamination",
+      "time": "2026-05-18T15:30:50.524709Z"
+    },
+    {
+      "actor": "nuo",
+      "after": {},
+      "artifact_refs": [
+        "artifact-work-v6-nuo-contamination"
+      ],
+      "before": {},
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVC6GZW9TH9224S5CME50F",
+      "event_type": "gate_evaluation",
+      "idempotency_key": "msn-kun-v6-productization:10:gate_evaluation",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "gate_evaluation_id": "gate-work-v6-nuo-contamination",
+        "next_action": "continue",
+        "north_star_verdict": "pass",
+        "result_quality": 0.95,
+        "stage": "workitem"
+      },
+      "replay_hint": "",
+      "sequence": 10,
+      "subject_ref": "work-v6-nuo-contamination",
+      "time": "2026-05-18T15:30:50.527668Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "running"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "queued"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVC6H3SXMEQVVZTRT7G05N",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:11:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVC6H2YJPR3T88ZY4D4AMQ"
+      },
+      "replay_hint": "",
+      "sequence": 11,
+      "subject_ref": "work-v6-qi-ab-runner",
+      "time": "2026-05-18T15:30:50.531285Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "failed"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "running"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVC6H8P7WR38ZZZZHNFC4J",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:12:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVC6H2YJPR3T88ZY4D4AMQ",
+        "summary": ""
+      },
+      "replay_hint": "",
+      "sequence": 12,
+      "subject_ref": "work-v6-qi-ab-runner",
+      "time": "2026-05-18T15:30:50.536680Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "repairing"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "running"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVC6HBCESGY1NYEYQNDAVG",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:13:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "reason": "recovered from tool_failure"
+      },
+      "replay_hint": "",
+      "sequence": 13,
+      "subject_ref": "work-v6-qi-ab-runner",
+      "time": "2026-05-18T15:30:50.539532Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "queued"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "repairing"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP3P1FXY4F49S2GW592B",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:14:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "reason": "AB review-only ticket adapter fixed; rerun same Qi AB work item"
+      },
+      "replay_hint": "",
+      "sequence": 14,
+      "subject_ref": "work-v6-qi-ab-runner",
+      "time": "2026-05-18T15:33:17.558897Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "running"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "queued"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP3TQK2C4K10RX9RJTHR",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:15:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "reason": "ready work item acquired"
+      },
+      "replay_hint": "",
+      "sequence": 15,
+      "subject_ref": "work-v6-qi-ab-runner",
+      "time": "2026-05-18T15:33:17.563004Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "running"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "queued"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP3Z5VQB001MW2W1CR42",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:16:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVGP3YD1PP959YJYYARVRQ"
+      },
+      "replay_hint": "",
+      "sequence": 16,
+      "subject_ref": "work-v6-qi-ab-runner",
+      "time": "2026-05-18T15:33:17.567528Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "done"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "running"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP4AVD76GRSQ7EATEBHC",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:17:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVGP3YD1PP959YJYYARVRQ",
+        "summary": "Qi AB round passed; next round may be queued."
+      },
+      "replay_hint": "",
+      "sequence": 17,
+      "subject_ref": "work-v6-qi-ab-runner",
+      "time": "2026-05-18T15:33:17.578975Z"
+    },
+    {
+      "actor": "qi",
+      "after": {},
+      "artifact_refs": [
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L1",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L2",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L3",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L4",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L5",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L6",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L7",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L8",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L9",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L10",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L11",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L12",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L13",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L14",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L15",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L16",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L17",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L18",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L19",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/runs.jsonl#L20",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L1",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L2",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L3",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L4",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L5",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L6",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L7",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L8",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L9",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L10",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L11",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L12",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L13",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L14",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L15",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L16",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L17",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L18",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L19",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L20",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L21",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L22",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L23",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L24",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L25",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L26",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L27",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L28",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L29",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L30",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L31",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L32",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L33",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L34",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L35",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L36",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L37",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L38",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L39",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L40",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L41",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L42",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L43",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L44",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/reviews.jsonl#L45",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/report.json",
+        "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10/fair_ab_outputs/real_comparator_ab_external_live/groups/group-02/frontier50-r02-strategy-calibrated-v37-20260518T140000Z/comparator_health.json"
+      ],
+      "before": {},
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP4E4DBNDFKZNATWATM0",
+      "event_type": "gate_evaluation",
+      "idempotency_key": "msn-kun-v6-productization:18:gate_evaluation",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "gate_evaluation_id": "gate-qi-ab-round-02-v37-regression",
+        "next_action": "continue",
+        "north_star_verdict": "pass",
+        "result_quality": 0.95,
+        "stage": "workitem"
+      },
+      "replay_hint": "",
+      "sequence": 18,
+      "subject_ref": "work-v6-qi-ab-runner",
+      "time": "2026-05-18T15:33:17.582907Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "running"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "queued"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP4M385RTEJDX73MKGRF",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:19:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVGP4KN60E8HT27DC2MHDX"
+      },
+      "replay_hint": "",
+      "sequence": 19,
+      "subject_ref": "work-v6-mission-dashboard",
+      "time": "2026-05-18T15:33:17.588825Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "done"
+      },
+      "artifact_refs": [
+        "artifact-work-v6-mission-dashboard"
+      ],
+      "before": {
+        "status": "running"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP51CKCHXDSCVQYRDFRY",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:20:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVGP4KN60E8HT27DC2MHDX",
+        "summary": "User-facing mission dashboard can explain status and next step."
+      },
+      "replay_hint": "",
+      "sequence": 20,
+      "subject_ref": "work-v6-mission-dashboard",
+      "time": "2026-05-18T15:33:17.601296Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {},
+      "artifact_refs": [
+        "artifact-work-v6-mission-dashboard"
+      ],
+      "before": {},
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP568Q03VT1ZYB8Y4Z56",
+      "event_type": "gate_evaluation",
+      "idempotency_key": "msn-kun-v6-productization:21:gate_evaluation",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "gate_evaluation_id": "gate-work-v6-mission-dashboard",
+        "next_action": "continue",
+        "north_star_verdict": "pass",
+        "result_quality": 0.95,
+        "stage": "workitem"
+      },
+      "replay_hint": "",
+      "sequence": 21,
+      "subject_ref": "work-v6-mission-dashboard",
+      "time": "2026-05-18T15:33:17.606089Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "running"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "queued"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP5C6Y3PVHQBYSRWZFFD",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:22:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVGP5AGT14SV0G2M5F9CJM"
+      },
+      "replay_hint": "",
+      "sequence": 22,
+      "subject_ref": "work-v6-collaboration-tickets",
+      "time": "2026-05-18T15:33:17.612448Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "done"
+      },
+      "artifact_refs": [
+        "artifact-work-v6-collaboration-tickets"
+      ],
+      "before": {
+        "status": "running"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP5SPPQ7Z71373MCSAXM",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:23:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVGP5AGT14SV0G2M5F9CJM",
+        "summary": "Collaboration ticket loop has question, SLA, fallback, response, and resume semantics."
+      },
+      "replay_hint": "",
+      "sequence": 23,
+      "subject_ref": "work-v6-collaboration-tickets",
+      "time": "2026-05-18T15:33:17.625335Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {},
+      "artifact_refs": [
+        "artifact-work-v6-collaboration-tickets"
+      ],
+      "before": {},
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP5Y4ED58RYJVSF4Z4CG",
+      "event_type": "gate_evaluation",
+      "idempotency_key": "msn-kun-v6-productization:24:gate_evaluation",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "gate_evaluation_id": "gate-work-v6-collaboration-tickets",
+        "next_action": "continue",
+        "north_star_verdict": "pass",
+        "result_quality": 0.95,
+        "stage": "workitem"
+      },
+      "replay_hint": "",
+      "sequence": 24,
+      "subject_ref": "work-v6-collaboration-tickets",
+      "time": "2026-05-18T15:33:17.630804Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "running"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "queued"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP65B721TT22QVVN67J8",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:25:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVGP630F6Y15EVB6NZXEHP"
+      },
+      "replay_hint": "",
+      "sequence": 25,
+      "subject_ref": "work-v6-qi-capability-evolution",
+      "time": "2026-05-18T15:33:17.637626Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "done"
+      },
+      "artifact_refs": [
+        "artifact-work-v6-qi-capability-evolution"
+      ],
+      "before": {
+        "status": "running"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP6KNW4TH6ZPE6AP58Z3",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:26:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVGP630F6Y15EVB6NZXEHP",
+        "summary": "Qi has replay-stage capability profiles with evidence and rollback notes."
+      },
+      "replay_hint": "",
+      "sequence": 26,
+      "subject_ref": "work-v6-qi-capability-evolution",
+      "time": "2026-05-18T15:33:17.651263Z"
+    },
+    {
+      "actor": "qi",
+      "after": {},
+      "artifact_refs": [
+        "artifact-work-v6-qi-capability-evolution"
+      ],
+      "before": {},
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP6RFMWQKT7FF5WF12SQ",
+      "event_type": "gate_evaluation",
+      "idempotency_key": "msn-kun-v6-productization:27:gate_evaluation",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "gate_evaluation_id": "gate-work-v6-qi-capability-evolution",
+        "next_action": "continue",
+        "north_star_verdict": "pass",
+        "result_quality": 0.95,
+        "stage": "workitem"
+      },
+      "replay_hint": "",
+      "sequence": 27,
+      "subject_ref": "work-v6-qi-capability-evolution",
+      "time": "2026-05-18T15:33:17.656649Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "running"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "queued"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP6ZYCHDTNANWWMBP63W",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:28:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVGP6XZKSRR2VBQMDHFWVW"
+      },
+      "replay_hint": "",
+      "sequence": 28,
+      "subject_ref": "work-v6-external-behavior-distillation",
+      "time": "2026-05-18T15:33:17.663621Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "done"
+      },
+      "artifact_refs": [
+        "artifact-work-v6-external-behavior-distillation"
+      ],
+      "before": {
+        "status": "running"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP7DAAZD8T61DVHFYKWZ",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:29:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "run_id": "run-01KRXVGP6XZKSRR2VBQMDHFWVW",
+        "summary": "External behavior samples have been distilled into KUN-native evidence and replay profiles."
+      },
+      "replay_hint": "",
+      "sequence": 29,
+      "subject_ref": "work-v6-external-behavior-distillation",
+      "time": "2026-05-18T15:33:17.677420Z"
+    },
+    {
+      "actor": "qi",
+      "after": {},
+      "artifact_refs": [
+        "artifact-work-v6-external-behavior-distillation"
+      ],
+      "before": {},
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP7J5B0N5FJNTBHAF9JW",
+      "event_type": "gate_evaluation",
+      "idempotency_key": "msn-kun-v6-productization:30:gate_evaluation",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "gate_evaluation_id": "gate-work-v6-external-behavior-distillation",
+        "next_action": "continue",
+        "north_star_verdict": "pass",
+        "result_quality": 0.95,
+        "stage": "workitem"
+      },
+      "replay_hint": "",
+      "sequence": 30,
+      "subject_ref": "work-v6-external-behavior-distillation",
+      "time": "2026-05-18T15:33:17.682567Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "delivering"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "running"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP8093RNVWNCTF9VNKH6",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:31:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "reason": "gate delivery:ready_to_deliver"
+      },
+      "replay_hint": "",
+      "sequence": 31,
+      "subject_ref": "manifest-msn-kun-v6-productization-delivery",
+      "time": "2026-05-18T15:33:17.696392Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {},
+      "artifact_refs": [
+        "artifact-msn-kun-v6-productization-delivery"
+      ],
+      "before": {},
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVGP83FNND45MMN1VWJRRH",
+      "event_type": "gate_evaluation",
+      "idempotency_key": "msn-kun-v6-productization:32:gate_evaluation",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "gate_evaluation_id": "gate-msn-kun-v6-productization-delivery",
+        "next_action": "ready_to_deliver",
+        "north_star_verdict": "pass",
+        "result_quality": 0.95,
+        "stage": "delivery"
+      },
+      "replay_hint": "",
+      "sequence": 32,
+      "subject_ref": "manifest-msn-kun-v6-productization-delivery",
+      "time": "2026-05-18T15:33:17.699948Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "awaiting_acceptance"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "delivering"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVZFG5VTJMMX62RWQM3PEZ",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:33:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "reason": "delivery manifest is ready for acceptance"
+      },
+      "replay_hint": "",
+      "sequence": 33,
+      "subject_ref": "manifest-msn-kun-v6-productization-delivery",
+      "time": "2026-05-18T15:41:22.309188Z"
+    },
+    {
+      "actor": "kun-dogfood",
+      "after": {
+        "status": "learning_writeback"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "awaiting_acceptance"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVZFGCDBVRT2XFGQXV2V2F",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:34:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "reason": "acceptance review accepted"
+      },
+      "replay_hint": "",
+      "sequence": 34,
+      "subject_ref": "accept-msn-kun-v6-productization-delivery",
+      "time": "2026-05-18T15:41:22.316843Z"
+    },
+    {
+      "actor": "kun-dogfood",
+      "after": {},
+      "artifact_refs": [],
+      "before": {},
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVZFGJTVQBHPN6G5EPY39W",
+      "event_type": "acceptance",
+      "idempotency_key": "msn-kun-v6-productization:35:acceptance",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "decision": "accepted",
+        "satisfaction": 0.95
+      },
+      "replay_hint": "",
+      "sequence": 35,
+      "subject_ref": "accept-msn-kun-v6-productization-delivery",
+      "time": "2026-05-18T15:41:22.322652Z"
+    },
+    {
+      "actor": "control-plane",
+      "after": {
+        "status": "closed"
+      },
+      "artifact_refs": [],
+      "before": {
+        "status": "learning_writeback"
+      },
+      "causation_id": null,
+      "correlation_id": "msn-kun-v6-productization",
+      "event_id": "ledger-01KRXVZFGR3XR1A6HFZT2K230P",
+      "event_type": "state_change",
+      "idempotency_key": "msn-kun-v6-productization:36:state_change",
+      "mission_id": "msn-kun-v6-productization",
+      "payload": {
+        "reason": "dogfood acceptance recorded and learning writeback is complete"
+      },
+      "replay_hint": "",
+      "sequence": 36,
+      "subject_ref": "accept-msn-kun-v6-productization-delivery",
+      "time": "2026-05-18T15:41:22.328541Z"
+    }
+  ],
+  "missions": [
+    {
+      "acceptance_ref": "accept-msn-kun-v6-productization-delivery",
+      "artifact_manifest_refs": [
+        "manifest-work-v6-persistence-recovery",
+        "manifest-work-v6-nuo-contamination",
+        "manifest-qi-ab-round-02-v37-regression",
+        "manifest-work-v6-mission-dashboard",
+        "manifest-work-v6-collaboration-tickets",
+        "manifest-work-v6-qi-capability-evolution",
+        "manifest-work-v6-external-behavior-distillation",
+        "manifest-msn-kun-v6-productization-delivery"
+      ],
+      "current_plan_version": "v6-productization",
+      "execution_contract_ref": "contract-msn-kun-v6-productization",
+      "ledger_refs": [
+        "ledger-01KRXSDREGQV67HGV4NFN5W47G",
+        "ledger-01KRXSYZEE7P1TAQEREDGDS2CP",
+        "ledger-01KRXSYZEHDNHWR2H1KVH865P2",
+        "ledger-01KRXVC6G42YRR32C2HVMMCHED",
+        "ledger-01KRXVC6G8JBK9T82CB6C2EPKE",
+        "ledger-01KRXVC6GFFG6087W1BFJ271RG",
+        "ledger-01KRXVC6GH3Z67Q47PTP9BBN3B",
+        "ledger-01KRXVC6GNPY6YC1SAJPE5AK3V",
+        "ledger-01KRXVC6GW1E0AKG1RWD70YD57",
+        "ledger-01KRXVC6GZW9TH9224S5CME50F",
+        "ledger-01KRXVC6H3SXMEQVVZTRT7G05N",
+        "ledger-01KRXVC6H8P7WR38ZZZZHNFC4J",
+        "ledger-01KRXVC6HBCESGY1NYEYQNDAVG",
+        "ledger-01KRXVGP3P1FXY4F49S2GW592B",
+        "ledger-01KRXVGP3TQK2C4K10RX9RJTHR",
+        "ledger-01KRXVGP3Z5VQB001MW2W1CR42",
+        "ledger-01KRXVGP4AVD76GRSQ7EATEBHC",
+        "ledger-01KRXVGP4E4DBNDFKZNATWATM0",
+        "ledger-01KRXVGP4M385RTEJDX73MKGRF",
+        "ledger-01KRXVGP51CKCHXDSCVQYRDFRY",
+        "ledger-01KRXVGP568Q03VT1ZYB8Y4Z56",
+        "ledger-01KRXVGP5C6Y3PVHQBYSRWZFFD",
+        "ledger-01KRXVGP5SPPQ7Z71373MCSAXM",
+        "ledger-01KRXVGP5Y4ED58RYJVSF4Z4CG",
+        "ledger-01KRXVGP65B721TT22QVVN67J8",
+        "ledger-01KRXVGP6KNW4TH6ZPE6AP58Z3",
+        "ledger-01KRXVGP6RFMWQKT7FF5WF12SQ",
+        "ledger-01KRXVGP6ZYCHDTNANWWMBP63W",
+        "ledger-01KRXVGP7DAAZD8T61DVHFYKWZ",
+        "ledger-01KRXVGP7J5B0N5FJNTBHAF9JW",
+        "ledger-01KRXVGP8093RNVWNCTF9VNKH6",
+        "ledger-01KRXVGP83FNND45MMN1VWJRRH",
+        "ledger-01KRXVZFG5VTJMMX62RWQM3PEZ",
+        "ledger-01KRXVZFGCDBVRT2XFGQXV2V2F",
+        "ledger-01KRXVZFGJTVQBHPN6G5EPY39W",
+        "ledger-01KRXVZFGR3XR1A6HFZT2K230P"
+      ],
+      "mission_id": "msn-kun-v6-productization",
+      "non_goals": [],
+      "objective": "Make KUN V6 Control Plane run real long tasks with recovery, dashboard, Nuo, Qi, collaboration, and learning.",
+      "owner": "kun",
+      "priority": 100,
+      "risk_level": "medium",
+      "status": "closed",
+      "task_type": "self_improvement",
+      "working_context_ref": "ctx-msn-kun-v6-productization"
+    }
+  ],
+  "run_records": [
+    {
+      "artifact_manifest_ref": "manifest-work-v6-persistence-recovery",
+      "cost": 0.0,
+      "ended_at": "2026-05-18T15:30:50.509342Z",
+      "exit_status": "succeeded",
+      "failure_category": null,
+      "gate_evaluation_ref": "gate-work-v6-persistence-recovery",
+      "run_id": "run-01KRXVC6G7NRRY53HXMGTPRE4Y",
+      "runner_identity": "kun-productization-dogfood-runner",
+      "runner_type": "agent",
+      "started_at": "2026-05-18T15:30:50.502144Z",
+      "stderr_ref": null,
+      "stdout_ref": null,
+      "work_item_id": "work-v6-persistence-recovery"
+    },
+    {
+      "artifact_manifest_ref": "manifest-work-v6-nuo-contamination",
+      "cost": 0.0,
+      "ended_at": "2026-05-18T15:30:50.522860Z",
+      "exit_status": "succeeded",
+      "failure_category": null,
+      "gate_evaluation_ref": "gate-work-v6-nuo-contamination",
+      "run_id": "run-01KRXVC6GMAREF5JK6FZPDY9VS",
+      "runner_identity": "kun-productization-dogfood-runner",
+      "runner_type": "agent",
+      "started_at": "2026-05-18T15:30:50.515492Z",
+      "stderr_ref": null,
+      "stdout_ref": null,
+      "work_item_id": "work-v6-nuo-contamination"
+    },
+    {
+      "artifact_manifest_ref": null,
+      "cost": 0.0,
+      "ended_at": "2026-05-18T15:30:50.534684Z",
+      "exit_status": "failed",
+      "failure_category": "tool_failure",
+      "gate_evaluation_ref": null,
+      "run_id": "run-01KRXVC6H2YJPR3T88ZY4D4AMQ",
+      "runner_identity": "kun-productization-dogfood-runner",
+      "runner_type": "agent",
+      "started_at": "2026-05-18T15:30:50.529451Z",
+      "stderr_ref": null,
+      "stdout_ref": null,
+      "work_item_id": "work-v6-qi-ab-runner"
+    },
+    {
+      "artifact_manifest_ref": "manifest-qi-ab-round-02-v37-regression",
+      "cost": 0.0,
+      "ended_at": "2026-05-18T15:33:17.576179Z",
+      "exit_status": "succeeded",
+      "failure_category": null,
+      "gate_evaluation_ref": "gate-qi-ab-round-02-v37-regression",
+      "run_id": "run-01KRXVGP3YD1PP959YJYYARVRQ",
+      "runner_identity": "kun-productization-dogfood-runner",
+      "runner_type": "agent",
+      "started_at": "2026-05-18T15:33:17.565154Z",
+      "stderr_ref": null,
+      "stdout_ref": null,
+      "work_item_id": "work-v6-qi-ab-runner"
+    },
+    {
+      "artifact_manifest_ref": "manifest-work-v6-mission-dashboard",
+      "cost": 0.0,
+      "ended_at": "2026-05-18T15:33:17.597941Z",
+      "exit_status": "succeeded",
+      "failure_category": null,
+      "gate_evaluation_ref": "gate-work-v6-mission-dashboard",
+      "run_id": "run-01KRXVGP4KN60E8HT27DC2MHDX",
+      "runner_identity": "kun-productization-dogfood-runner",
+      "runner_type": "agent",
+      "started_at": "2026-05-18T15:33:17.585934Z",
+      "stderr_ref": null,
+      "stdout_ref": null,
+      "work_item_id": "work-v6-mission-dashboard"
+    },
+    {
+      "artifact_manifest_ref": "manifest-work-v6-collaboration-tickets",
+      "cost": 0.0,
+      "ended_at": "2026-05-18T15:33:17.622159Z",
+      "exit_status": "succeeded",
+      "failure_category": null,
+      "gate_evaluation_ref": "gate-work-v6-collaboration-tickets",
+      "run_id": "run-01KRXVGP5AGT14SV0G2M5F9CJM",
+      "runner_identity": "kun-productization-dogfood-runner",
+      "runner_type": "agent",
+      "started_at": "2026-05-18T15:33:17.609161Z",
+      "stderr_ref": null,
+      "stdout_ref": null,
+      "work_item_id": "work-v6-collaboration-tickets"
+    },
+    {
+      "artifact_manifest_ref": "manifest-work-v6-qi-capability-evolution",
+      "cost": 0.0,
+      "ended_at": "2026-05-18T15:33:17.647502Z",
+      "exit_status": "succeeded",
+      "failure_category": null,
+      "gate_evaluation_ref": "gate-work-v6-qi-capability-evolution",
+      "run_id": "run-01KRXVGP630F6Y15EVB6NZXEHP",
+      "runner_identity": "kun-productization-dogfood-runner",
+      "runner_type": "agent",
+      "started_at": "2026-05-18T15:33:17.634232Z",
+      "stderr_ref": null,
+      "stdout_ref": null,
+      "work_item_id": "work-v6-qi-capability-evolution"
+    },
+    {
+      "artifact_manifest_ref": "manifest-work-v6-external-behavior-distillation",
+      "cost": 0.0,
+      "ended_at": "2026-05-18T15:33:17.673742Z",
+      "exit_status": "succeeded",
+      "failure_category": null,
+      "gate_evaluation_ref": "gate-work-v6-external-behavior-distillation",
+      "run_id": "run-01KRXVGP6XZKSRR2VBQMDHFWVW",
+      "runner_identity": "kun-productization-dogfood-runner",
+      "runner_type": "agent",
+      "started_at": "2026-05-18T15:33:17.660293Z",
+      "stderr_ref": null,
+      "stdout_ref": null,
+      "work_item_id": "work-v6-external-behavior-distillation"
+    }
+  ],
+  "schema_version": 1,
+  "task_plans": [
+    {
+      "acceptance_criteria": [
+        "State can be recovered after process restart.",
+        "User can read mission status without terminal logs.",
+        "Pollution and environment blockers are invalidated by Nuo before quality scoring.",
+        "Frontier50 can run as a Control Plane work item.",
+        "Human tickets resume or close work according to SLA/fallback.",
+        "Qi capability candidates require replay/holdout/canary/rollback before production."
+      ],
+      "approval_status": "approved",
+      "assumptions": [
+        "Use local file-backed Control Plane state until database persistence is wired.",
+        "High-risk external actions stay behind collaboration tickets."
+      ],
+      "change_log": [],
+      "constraints": [
+        "Do not optimize OpenClaw, Hermes, or GPT-5.5.",
+        "Do not count comparator pollution as KUN capability failure.",
+        "Do not promote learned capabilities on speed or cost if result quality fails."
+      ],
+      "decomposition": [
+        "persistence_recovery",
+        "mission_dashboard",
+        "nuo_contamination",
+        "qi_ab_runner",
+        "collaboration_tickets",
+        "qi_capability_evolution",
+        "external_behavior_distillation"
+      ],
+      "evidence_plan": [
+        "Control Plane file store snapshot.",
+        "Productization audit report.",
+        "Frontier50 round summaries.",
+        "OpenClaw/Hermes behavior signal refs.",
+        "Unit and regression test refs."
+      ],
+      "human_confirmation_points": [
+        "Production external actions.",
+        "Credential/account changes.",
+        "Capability promotion beyond review-only."
+      ],
+      "info_gaps": [],
+      "known_facts": [
+        "Round-02 Frontier50 passed after KUN-only fixes.",
+        "AB remains a regression gate while dogfood becomes the main productization path.",
+        "OpenClaw/Hermes are behavior samples, not code to copy."
+      ],
+      "merge_plan": [
+        "All subsystem outputs merge through ArtifactManifest and GateEvaluation.",
+        "User-facing report is generated from progress summary, not raw logs."
+      ],
+      "mission_id": "msn-kun-v6-productization",
+      "objective": "Make KUN V6 Control Plane run real long tasks with recovery, dashboard, Nuo, Qi, collaboration, and learning.",
+      "plan_id": "plan-msn-kun-v6-productization",
+      "risk_register": [],
+      "rollback_plan": [
+        "Rollback capability candidates by reverting CapabilityProfile promotion.",
+        "Rollback runtime changes by restoring previous Control Plane state snapshot."
+      ],
+      "test_plan": [
+        "Run control-plane productization tests.",
+        "Run AB round regression when capability behavior changes.",
+        "Run dogfood recovery by rehydrating FileControlPlaneStore."
+      ],
+      "unknowns": [],
+      "version": "v6-productization",
+      "worker_plan": [
+        "control-plane owns state, queue, dashboard, API, and tickets.",
+        "nuo owns contamination and environment health.",
+        "qi owns AB runner, behavior distillation, and capability evolution.",
+        "kun runtime consumes only verified capabilities."
+      ]
+    }
+  ],
+  "work_items": [
+    {
+      "artifact_manifest_ref": "manifest-work-v6-persistence-recovery",
+      "dependencies": [],
+      "expected_output": "Persist mission state, queue, checkpoints, artifacts, decisions, and resume hints.",
+      "heartbeat": "2026-05-18T15:30:50.510309Z",
+      "idempotency_key": "v6:persistence_recovery",
+      "lease": null,
+      "mission_id": "msn-kun-v6-productization",
+      "owner": "control-plane",
+      "priority": 100,
+      "resource_locks": [],
+      "retry_budget": 0,
+      "status": "done",
+      "task_plan_version": "v6-productization",
+      "timeout": null,
+      "type": "governance",
+      "work_item_id": "work-v6-persistence-recovery"
+    },
+    {
+      "artifact_manifest_ref": "manifest-work-v6-mission-dashboard",
+      "dependencies": [],
+      "expected_output": "Render non-technical mission status, risk, next step, and human-needed state.",
+      "heartbeat": "2026-05-18T15:33:17.599492Z",
+      "idempotency_key": "v6:mission_dashboard",
+      "lease": null,
+      "mission_id": "msn-kun-v6-productization",
+      "owner": "control-plane",
+      "priority": 92,
+      "resource_locks": [],
+      "retry_budget": 0,
+      "status": "done",
+      "task_plan_version": "v6-productization",
+      "timeout": null,
+      "type": "governance",
+      "work_item_id": "work-v6-mission-dashboard"
+    },
+    {
+      "artifact_manifest_ref": "manifest-work-v6-nuo-contamination",
+      "dependencies": [],
+      "expected_output": "Classify stub, fallback, misroute, timeout, EOF, missing report, and missing reviews.",
+      "heartbeat": "2026-05-18T15:30:50.523755Z",
+      "idempotency_key": "v6:nuo_contamination",
+      "lease": null,
+      "mission_id": "msn-kun-v6-productization",
+      "owner": "nuo",
+      "priority": 98,
+      "resource_locks": [],
+      "retry_budget": 0,
+      "status": "done",
+      "task_plan_version": "v6-productization",
+      "timeout": null,
+      "type": "repair",
+      "work_item_id": "work-v6-nuo-contamination"
+    },
+    {
+      "artifact_manifest_ref": "manifest-qi-ab-round-02-v37-regression",
+      "dependencies": [],
+      "expected_output": "Run Frontier50 as a Control Plane work item with answers, reviews, report, health, and rerun gates.",
+      "heartbeat": "2026-05-18T15:33:17.577608Z",
+      "idempotency_key": "v6:qi_ab_runner",
+      "lease": null,
+      "mission_id": "msn-kun-v6-productization",
+      "owner": "qi",
+      "priority": 95,
+      "resource_locks": [],
+      "retry_budget": 0,
+      "status": "done",
+      "task_plan_version": "v6-productization",
+      "timeout": null,
+      "type": "test",
+      "work_item_id": "work-v6-qi-ab-runner"
+    },
+    {
+      "artifact_manifest_ref": "manifest-work-v6-collaboration-tickets",
+      "dependencies": [],
+      "expected_output": "Close the human/external ticket loop: who to ask, timeout, fallback, resume, and refusal handling.",
+      "heartbeat": "2026-05-18T15:33:17.623664Z",
+      "idempotency_key": "v6:collaboration_tickets",
+      "lease": null,
+      "mission_id": "msn-kun-v6-productization",
+      "owner": "control-plane",
+      "priority": 90,
+      "resource_locks": [],
+      "retry_budget": 0,
+      "status": "done",
+      "task_plan_version": "v6-productization",
+      "timeout": null,
+      "type": "collaboration",
+      "work_item_id": "work-v6-collaboration-tickets"
+    },
+    {
+      "artifact_manifest_ref": "manifest-work-v6-qi-capability-evolution",
+      "dependencies": [],
+      "expected_output": "Promote learned capability only through replay, holdout, shadow, canary, and rollback gates.",
+      "heartbeat": "2026-05-18T15:33:17.649176Z",
+      "idempotency_key": "v6:qi_capability_evolution",
+      "lease": null,
+      "mission_id": "msn-kun-v6-productization",
+      "owner": "qi",
+      "priority": 88,
+      "resource_locks": [],
+      "retry_budget": 0,
+      "status": "done",
+      "task_plan_version": "v6-productization",
+      "timeout": null,
+      "type": "governance",
+      "work_item_id": "work-v6-qi-capability-evolution"
+    },
+    {
+      "artifact_manifest_ref": "manifest-work-v6-external-behavior-distillation",
+      "dependencies": [],
+      "expected_output": "Distill OpenClaw/Hermes behavior into KUN-native contracts and tests without source copying.",
+      "heartbeat": "2026-05-18T15:33:17.675661Z",
+      "idempotency_key": "v6:external_behavior_distillation",
+      "lease": null,
+      "mission_id": "msn-kun-v6-productization",
+      "owner": "qi",
+      "priority": 86,
+      "resource_locks": [],
+      "retry_budget": 0,
+      "status": "done",
+      "task_plan_version": "v6-productization",
+      "timeout": null,
+      "type": "research",
+      "work_item_id": "work-v6-external-behavior-distillation"
+    }
+  ],
+  "working_contexts": [
+    {
+      "acceptance_criteria": [
+        "State can be recovered after process restart.",
+        "User can read mission status without terminal logs.",
+        "Pollution and environment blockers are invalidated by Nuo before quality scoring.",
+        "Frontier50 can run as a Control Plane work item.",
+        "Human tickets resume or close work according to SLA/fallback.",
+        "Qi capability candidates require replay/holdout/canary/rollback before production."
+      ],
+      "artifact_refs": [],
+      "audience": "control-plane",
+      "constraints": [
+        "Do not optimize OpenClaw, Hermes, or GPT-5.5.",
+        "Do not count comparator pollution as KUN capability failure.",
+        "Do not promote learned capabilities on speed or cost if result quality fails."
+      ],
+      "critical_facts": [
+        "Round-02 Frontier50 passed after KUN-only fixes.",
+        "AB remains a regression gate while dogfood becomes the main productization path.",
+        "OpenClaw/Hermes are behavior samples, not code to copy."
+      ],
+      "decision_refs": [],
+      "freshness": "fresh",
+      "invalidated_by": null,
+      "mission_id": "msn-kun-v6-productization",
+      "omitted_reason": "",
+      "open_questions": [],
+      "risk_flags": [
+        "external action approval",
+        "capability promotion overfit"
+      ],
+      "scope": "kun-v6-productization-dogfood",
+      "source_hashes": [],
+      "summary": "Dogfood KUN V6 productization as a real long task.",
+      "task_plan_version": "v6-productization",
+      "working_context_id": "ctx-msn-kun-v6-productization"
+    }
+  ]
+}
