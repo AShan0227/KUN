@@ -140,6 +140,8 @@
 - 傩检查来源污染、过拟合和风险。
 - Control Plane 记录批准、版本、回滚。
 - KUN Runtime 只消费通过验证的能力。
+- 能力库必须治理去重、合并、来源版本、superseded profile 和 rollback 边界。
+- production 能力必须编译为 `CapabilityExecutionPolicy`，并被 daemon、planner、runner、supervisor、diagnostics、approval、context 或 evaluation 路径实际消费。
 - replay 能力档案必须继续推进到 holdout、shadow、canary、production 的代码路径。
 - 能力晋级必须绑定真实长任务验证和回归门禁。
 - OpenClaw/Hermes 能力样本必须在源码/行为对照后进入 Qi 候选和晋级流程。
@@ -150,6 +152,9 @@
 - 能力晋级必须有证据、回归、回滚。
 - 失败能力可以自动回滚。
 - KUN Runtime 默认只加载 production 阶段能力，不加载 replay 候选。
+- `runtime_enabled=true` 只对 production 有效；review_only、replay、holdout、shadow、canary 都不能显示成默认启用能力。
+- 默认 runtime profile 必须先治理去重；重复 OpenClaw/Hermes 样本必须合并、降级或作为证据保留。
+- production profile 必须生成可审计 `CapabilityExecutionPolicy`，并在执行路径中产生 capability policy binding artifact。
 - GPT-5.5 或等价监督者对晋级结果、负迁移和复杂度给出评审记录。
 
 ### 阶段 6：人机协同和外部人员调度
@@ -203,6 +208,7 @@
 - 将有效能力转成 KUN-native 子系统、协议、测试、CapabilityCandidate 和 CapabilityProfile。
 - 重复、复杂化或不符合奥卡姆剃刀的能力必须合并、降级或舍弃。
 - 通过真实长任务 dogfood、holdout、shadow、canary 和 rollback readiness 后，才能进入 production。
+- production 能力进入默认运行时后，必须通过能力治理和 `CapabilityExecutionPolicy` 影响真实执行模块，而不是只进入档案列表。
 - GPT-5.5 监督能力对照、晋级、真实任务验证和复杂度取舍。
 
 验收：
@@ -210,6 +216,8 @@
 - 不复制粘贴 OpenClaw/Hermes 实现代码。
 - 每个保留能力都有源码/行为引用、KUN-native 设计、测试、回归、真实任务验证和回滚。
 - KUN Runtime 生产默认路径能消费通过 production 晋级的能力。
+- 能力消费路径能覆盖 planner、worker_distribution、runner、supervisor、diagnostics、approval、context 或 evaluation 中的相关模块。
+- 重复 profile 有 governance decision，保留 profile 有 source version 和证据优势说明。
 - 被舍弃或合并的能力有明确原因。
 
 ### 阶段 9：真实长任务 dogfood
@@ -298,6 +306,7 @@
 11. OpenClaw/Hermes 能力样本 -> 源码/行为对照 -> KUN-native 能力 -> 真实长任务验证 -> production runtime。
 12. Nuo 污染样本 -> 自动分类 -> 修复建议 -> 同题复测 -> 不计 KUN 失败。
 13. 真实长任务 dogfood -> 计划 -> 执行 -> 恢复 -> 合并 -> 交付 -> 验收 -> 学习写回。
+14. production capability -> 能力治理去重 -> CapabilityExecutionPolicy -> daemon/runner/supervisor 绑定 -> progress artifact 可审计。
 
 ## 6. 完成定义
 
@@ -311,6 +320,7 @@
 - 人机协同可见、可恢复。
 - 任务驾驶舱对普通用户可读、可追溯，不需要翻终端。
 - 能力进化由启主导，并有 replay、holdout、shadow、canary、production、治理和回滚。
+- KUN Runtime 默认能力库边界清楚：非 production 不启用，production 经治理去重后编译为执行策略并被真实执行路径消费。
 - OpenClaw/Hermes 能力样本完成 KUN-native 化、真实长任务验证和生产默认运行时集成。
 - Nuo 污染样本库覆盖 EOF、timeout、auth、wrapper、stub、fallback、误路由、报告缺失、互评缺失和网络阻断。
 - 真实长任务 dogfood 作为主验收路径通过，AB 后续轮次暂停，只保留回归门禁。
