@@ -313,6 +313,10 @@ def test_productization_audit_passes_when_all_closure_loops_exist(tmp_path) -> N
     assert materialized.candidate_count == len(signals)
     assert materialized.artifact_refs
     assert materialized.capability_profile_refs
+    assert all(
+        control_plane.capability_profiles[profile_ref].runtime_enabled is False
+        for profile_ref in materialized.capability_profile_refs
+    )
     assert "external_behavior_distillation" in report.present_subsystems
     assert "qi_capability_evolution" in report.present_subsystems
     assert recovered.list_default_runtime_capabilities()[0].promotion_stage == "production"

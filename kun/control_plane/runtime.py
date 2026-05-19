@@ -15,6 +15,10 @@ from typing import TYPE_CHECKING, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kun.control_plane.capability_governance import (
+    CapabilityGovernanceReport,
+    govern_default_runtime_capabilities,
+)
 from kun.control_plane.collaboration import CollaborationResponse
 from kun.control_plane.store import ControlPlaneStore
 from kun.control_plane.v6 import (
@@ -618,13 +622,27 @@ class InMemoryControlPlane:
         return profile
 
     def list_default_runtime_capabilities(self) -> list[CapabilityProfile]:
-        """Return only production-stage capabilities for KUN Runtime default use."""
+        """Return governed production-stage capabilities for KUN Runtime default use."""
 
-        return [
+        profiles = [
             profile
             for profile in self.list_capability_profiles(stage="production")
             if profile.runtime_enabled
         ]
+        governed, _report = govern_default_runtime_capabilities(profiles)
+        return governed
+
+    def govern_default_runtime_capabilities(self) -> CapabilityGovernanceReport:
+        """Return the dedupe/source-version decisions for default runtime abilities."""
+
+        _profiles, report = govern_default_runtime_capabilities(
+            [
+                profile
+                for profile in self.list_capability_profiles(stage="production")
+                if profile.runtime_enabled
+            ]
+        )
+        return report
 
     def apply_capability_rollback(
         self,

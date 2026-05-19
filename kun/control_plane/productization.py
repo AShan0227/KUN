@@ -25,6 +25,8 @@ from kun.control_plane.capability_evolution import (
     CapabilityEvaluation,
     build_capability_promotion,
 )
+from kun.control_plane.capability_execution import CapabilityExecutionPolicy
+from kun.control_plane.capability_governance import normalize_capability_governance_key
 from kun.control_plane.collaboration import CollaborationQueueSummary, CollaborationResponse
 from kun.control_plane.frontier50_external import load_frontier50_round_summary
 from kun.control_plane.progress import UserProgressSummary, build_user_progress_summary
@@ -982,6 +984,9 @@ def materialize_external_behavior_distillation(
         profile = CapabilityProfile(
             capability_id=f"cap-{signal_id}",
             capability_name=signal.behavior,
+            governance_key=normalize_capability_governance_key(signal.behavior),
+            source_refs=[signal.source_ref],
+            source_versions=[f"{signal.origin}:{signal.source_ref}"],
             evidence_refs=[artifact.artifact_id, signal_ref, signal.source_ref],
             known_limits=[
                 "behavioral distillation only; implementation must remain KUN-native",
@@ -995,6 +1000,7 @@ def materialize_external_behavior_distillation(
                 f"disable CapabilityProfile {signal_id}",
                 "remove replay profile before runtime policy consumption",
             ],
+            runtime_enabled=False,
         )
         _upsert_capability_profile(control_plane, profile)
         profile_refs.append(profile.capability_id)
@@ -1222,6 +1228,12 @@ class ProductizationDogfoodRunner:
         self.ab_round_dir = Path(ab_round_dir).expanduser().resolve() if ab_round_dir else None
         self.ab_round_id = ab_round_id
         self.ab_task_ids = list(ab_task_ids)
+        self.capability_execution_policy: CapabilityExecutionPolicy | None = None
+
+    def bind_capability_execution_policy(self, policy: CapabilityExecutionPolicy) -> None:
+        """Bind governed production capabilities before daemon execution."""
+
+        self.capability_execution_policy = policy
 
     def can_run(self, work_item: WorkItem) -> bool:
         """Return whether this runner owns the canonical productization item."""
@@ -1251,11 +1263,19 @@ class ProductizationDogfoodRunner:
                 else "evidence_failure",
             )
         if subsystem == "qi_ab_runner":
-            return self._run_ab_regression(work_item)
-        return _successful_dogfood_work_item_result(
+            return self._attach_capability_policy_artifact(
+                self._run_ab_regression(work_item),
+                work_item=work_item,
+                subsystem=subsystem,
+            )
+        return self._attach_capability_policy_artifact(
+            _successful_dogfood_work_item_result(
+                work_item=work_item,
+                subsystem=subsystem,
+                summary=_dogfood_success_summary(subsystem),
+            ),
             work_item=work_item,
             subsystem=subsystem,
-            summary=_dogfood_success_summary(subsystem),
         )
 
     def finalize_mission(self, mission_id: str) -> dict[str, object]:
@@ -1335,6 +1355,44 @@ class ProductizationDogfoodRunner:
         ):
             return "Qi capability profiles have not reached production default runtime."
         return None
+
+    def _attach_capability_policy_artifact(
+        self,
+        result: WorkItemResult,
+        *,
+        work_item: WorkItem,
+        subsystem: ProductizationSubsystem,
+    ) -> WorkItemResult:
+        policy = self.capability_execution_policy
+        if policy is None or not policy.capability_profile_refs:
+            return result
+        payload = {
+            "work_item_id": work_item.work_item_id,
+            "subsystem": subsystem,
+            "policy_id": policy.policy_id,
+            "capability_profile_refs": policy.capability_profile_refs,
+            "directive_categories": sorted({directive.category for directive in policy.directives}),
+        }
+        artifact = ArtifactRecord(
+            artifact_id=f"artifact-{_slug(work_item.work_item_id)}-capability-policy",
+            kind="evidence",
+            path_or_uri=(
+                f"control-plane://runtime-capabilities/{policy.policy_id}/{work_item.work_item_id}"
+            ),
+            content_hash=_hash_payload(payload),
+            created_by=self.runner_identity,
+            mission_id=work_item.mission_id,
+            work_item_id=work_item.work_item_id,
+            supports=[
+                "runtime_capability_binding",
+                "capability_execution_policy",
+                subsystem,
+                *policy.capability_profile_refs,
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        return result.model_copy(update={"artifacts": [*result.artifacts, artifact]})
 
 
 def run_productization_dogfood_execution(

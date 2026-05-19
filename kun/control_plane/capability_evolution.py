@@ -15,6 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from kun.control_plane.capability_governance import normalize_capability_governance_key
 from kun.control_plane.nuo import NuoHealthReport
 from kun.control_plane.v6 import CapabilityProfile, FailureCategory, GateEvaluation, TaskType
 
@@ -253,6 +254,9 @@ def build_capability_promotion(
     profile = CapabilityProfile(
         capability_id=capability_id or f"cap-{candidate.candidate_id}",
         capability_name=candidate.capability_name,
+        governance_key=normalize_capability_governance_key(candidate.capability_name),
+        source_refs=[candidate.source_ref],
+        source_versions=[f"{candidate.source}:{candidate.source_ref}"],
         evidence_refs=evidence_refs,
         known_limits=list(candidate.known_limits),
         promotion_stage=target_stage,
@@ -260,6 +264,7 @@ def build_capability_promotion(
         regression_refs=regression_refs,
         last_verified_at=_now(),
         rollback_plan=rollback_plan,
+        runtime_enabled=target_stage == "production",
     )
     gate = _promotion_gate(
         candidate=candidate,
