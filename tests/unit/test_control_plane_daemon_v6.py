@@ -21,6 +21,7 @@ from kun.control_plane import (
     WorkItem,
     WorkItemResult,
 )
+from kun.control_plane.capability_execution import CapabilityExecutionPolicy
 from kun.control_plane.productization import (
     ProductizationDogfoodRunner,
     build_productization_dogfood_mission,
@@ -39,6 +40,14 @@ class StaticRunner:
 
     def run(self, _work_item: WorkItem) -> WorkItemResult:
         return WorkItemResult(status="done", summary="daemon executed ready work")
+
+
+class PolicyAwareRunner(StaticRunner):
+    def __init__(self) -> None:
+        self.bound_policy: CapabilityExecutionPolicy | None = None
+
+    def bind_capability_execution_policy(self, policy: CapabilityExecutionPolicy) -> None:
+        self.bound_policy = policy
 
 
 def _runtime(tmp_path, *, retry_budget: int = 0):
@@ -196,6 +205,48 @@ def test_daemon_tick_runs_ready_work_and_persists_progress(tmp_path) -> None:
     assert len(recovered.runs) == 1
     assert next(iter(recovered.runs.values())).exit_status == "succeeded"
     assert report.progress_artifact_refs[0] in recovered.artifacts
+
+
+def test_daemon_binds_production_capabilities_to_runner_and_progress(tmp_path) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+    profile = CapabilityProfile(
+        capability_id="cap-daemon-structured-background-runtime",
+        capability_name="Structured logs, background resume, approval tickets, and timeout recovery",
+        governance_key="structured-background-runtime",
+        source_refs=["external_repos/hermes-agent/RELEASE_v0.8.0.md"],
+        source_versions=["hermes:release-v0.8.0"],
+        evidence_refs=["artifact-source-behavior"],
+        known_limits=["KUN-native adaptation only."],
+        promotion_stage="production",
+        holdout_refs=["artifact-holdout"],
+        regression_refs=["artifact-regression"],
+        rollback_plan=["disable structured background runtime"],
+        runtime_enabled=True,
+    )
+    control_plane.capability_profiles[profile.capability_id] = profile
+    store.put_capability_profile(profile)
+    runner = PolicyAwareRunner()
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": runner},
+        daemon_id="daemon-policy-test",
+    )
+
+    report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW)
+    recovered = InMemoryControlPlane(store=store)
+    progress_artifact = recovered.artifacts[report.progress_artifact_refs[0]]
+
+    assert runner.bound_policy is not None
+    assert runner.bound_policy.capability_profile_refs == [profile.capability_id]
+    assert {directive.category for directive in runner.bound_policy.directives} >= {
+        "approval",
+        "diagnostics",
+        "supervisor",
+    }
+    assert report.capability_profile_refs == [profile.capability_id]
+    assert report.capability_directive_count >= 3
+    assert "capability_execution_policy" in progress_artifact.supports
+    assert profile.capability_id in progress_artifact.supports
 
 
 def test_daemon_productization_runner_executes_canonical_work_items(tmp_path) -> None:

@@ -11,6 +11,7 @@ from kun.control_plane.capability_evolution import (
 from kun.control_plane.nuo import NuoObservation, diagnose_nuo_health
 from kun.control_plane.runtime import InMemoryControlPlane
 from kun.control_plane.store import InMemoryControlPlaneStore
+from kun.control_plane.v6 import CapabilityProfile
 from pydantic import ValidationError
 
 pytestmark = pytest.mark.unit
@@ -92,6 +93,7 @@ def test_replay_promotion_outputs_capability_profile() -> None:
     assert promotion.capability_profile is not None
     assert promotion.capability_profile.capability_id == "cap-repair-planning"
     assert promotion.capability_profile.promotion_stage == "replay"
+    assert promotion.capability_profile.runtime_enabled is False
     assert promotion.capability_profile.evidence_refs == [
         "artifact-gap-analysis",
         "artifact-evidence-replay",
@@ -117,6 +119,7 @@ def test_production_promotion_requires_full_stage_chain_and_outputs_profile() ->
     assert promotion.capability_profile is not None
     profile = promotion.capability_profile
     assert profile.promotion_stage == "production"
+    assert profile.runtime_enabled is True
     assert profile.evidence_refs
     assert profile.holdout_refs == ["artifact-holdout-suite"]
     assert profile.regression_refs == ["artifact-regression-suite"]
@@ -143,10 +146,13 @@ def test_runtime_default_capabilities_only_load_production_profiles() -> None:
 
     assert replay_profile is not None
     assert replay_profile.promotion_stage == "replay"
+    assert replay_profile.runtime_enabled is False
     assert runtime.list_default_runtime_capabilities() == []
     assert store.list_capability_profiles()[0].capability_id == "cap-replay-only"
+    assert store.list_capability_profiles()[0].runtime_enabled is False
 
     recovered_runtime = InMemoryControlPlane(store=store)
+    assert recovered_runtime.capability_profiles["cap-replay-only"].runtime_enabled is False
     assert recovered_runtime.list_default_runtime_capabilities() == []
 
     production_promotion = build_capability_promotion(
@@ -228,6 +234,50 @@ def test_runtime_rolls_back_failed_production_capability_from_default_path() -> 
         recovered_runtime.gate_evaluations[rollback.gate_evaluation.gate_evaluation_id].next_action
         == "rollback_capability"
     )
+
+
+def test_runtime_governs_duplicate_production_capabilities_before_default_use() -> None:
+    runtime = InMemoryControlPlane()
+    older = CapabilityProfile(
+        capability_id="cap-runtime-policy-old",
+        capability_name="Structured background runtime",
+        governance_key="structured-background-runtime",
+        source_refs=["external_repos/hermes-agent/old.md"],
+        source_versions=["hermes:old"],
+        evidence_refs=["artifact-old"],
+        known_limits=["old source sample"],
+        promotion_stage="production",
+        holdout_refs=["holdout-old"],
+        regression_refs=["regression-old"],
+        rollback_plan=["disable old profile"],
+        runtime_enabled=True,
+    )
+    newer = CapabilityProfile(
+        capability_id="cap-runtime-policy-new",
+        capability_name="Structured background runtime",
+        governance_key="structured-background-runtime",
+        source_refs=["external_repos/hermes-agent/new.md"],
+        source_versions=["hermes:new"],
+        evidence_refs=["artifact-new", "artifact-new-dogfood"],
+        known_limits=["new source sample"],
+        promotion_stage="production",
+        holdout_refs=["holdout-new"],
+        regression_refs=["regression-new"],
+        rollback_plan=["disable new profile"],
+        runtime_enabled=True,
+    )
+    runtime.capability_profiles = {
+        older.capability_id: older,
+        newer.capability_id: newer,
+    }
+
+    default_profiles = runtime.list_default_runtime_capabilities()
+    governance = runtime.govern_default_runtime_capabilities()
+
+    assert [profile.capability_id for profile in default_profiles] == ["cap-runtime-policy-new"]
+    assert governance.duplicate_profile_refs == ["cap-runtime-policy-old"]
+    assert governance.decisions[0].kept_profile_ref == "cap-runtime-policy-new"
+    assert governance.decisions[0].merged_profile_refs == ["cap-runtime-policy-old"]
 
 
 def test_production_is_blocked_without_replay_or_holdout_evidence() -> None:

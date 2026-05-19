@@ -20,6 +20,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kun.control_plane.capability_execution import (
+    CapabilityExecutionPolicy,
+    build_capability_execution_policy,
+)
 from kun.control_plane.runtime import ControlPlaneRunner, InMemoryControlPlane
 from kun.control_plane.supervisor import MinimalSupervisor, SupervisorFinding
 from kun.control_plane.v6 import ArtifactRecord, MissionStatus, RunRecord, WorkItem
@@ -64,6 +68,9 @@ class DaemonTickReport(BaseModel):
     final_gate_refs: list[str] = Field(default_factory=list)
     delivery_manifest_refs: list[str] = Field(default_factory=list)
     progress_artifact_refs: list[str] = Field(default_factory=list)
+    capability_policy_ref: str | None = None
+    capability_profile_refs: list[str] = Field(default_factory=list)
+    capability_directive_count: int = 0
 
 
 class DaemonLoopReport(BaseModel):
@@ -317,6 +324,15 @@ class ControlPlaneDaemon:
             observed_at=observed_at,
             mission_ids=selected_mission_ids,
         )
+        capability_policy = build_capability_execution_policy(
+            self.control_plane.list_default_runtime_capabilities(),
+            policy_id=f"policy-{self.daemon_id}-{_compact_time(observed_at)}",
+            built_at=observed_at,
+        )
+        if capability_policy.capability_profile_refs:
+            report.capability_policy_ref = capability_policy.policy_id
+            report.capability_profile_refs = list(capability_policy.capability_profile_refs)
+            report.capability_directive_count = len(capability_policy.directives)
 
         for mission_id in selected_mission_ids:
             self._recover_stale_work(mission_id=mission_id, report=report, now=observed_at)
@@ -331,6 +347,7 @@ class ControlPlaneDaemon:
                 if runner is None:
                     report.no_runner_work_item_ids.append(work_item.work_item_id)
                     break
+                _bind_capability_policy(runner, capability_policy)
                 run = self.control_plane.run_next_ready(mission_id=mission_id, runner=runner)
                 if run is None:
                     break
@@ -345,7 +362,11 @@ class ControlPlaneDaemon:
 
         if write_progress:
             for mission_id in selected_mission_ids:
-                artifact = self._progress_artifact(mission_id=mission_id, now=observed_at)
+                artifact = self._progress_artifact(
+                    mission_id=mission_id,
+                    now=observed_at,
+                    capability_policy=capability_policy,
+                )
                 self._upsert_artifact(artifact)
                 report.progress_artifact_refs.append(artifact.artifact_id)
         return report
@@ -730,11 +751,18 @@ class ControlPlaneDaemon:
                 subject_ref=subject_ref,
             )
 
-    def _progress_artifact(self, *, mission_id: str, now: datetime) -> ArtifactRecord:
+    def _progress_artifact(
+        self,
+        *,
+        mission_id: str,
+        now: datetime,
+        capability_policy: CapabilityExecutionPolicy,
+    ) -> ArtifactRecord:
         progress = self.control_plane.progress_report(mission_id)
         payload = progress.model_dump(mode="json")
         payload["daemon_id"] = self.daemon_id
         payload["observed_at"] = now.isoformat()
+        payload["capability_policy"] = capability_policy.model_dump(mode="json")
         return ArtifactRecord(
             artifact_id=f"artifact-daemon-progress-{mission_id}-{_compact_time(now)}",
             kind="report",
@@ -742,7 +770,13 @@ class ControlPlaneDaemon:
             content_hash=_hash_payload(payload),
             created_by=self.daemon_id,
             mission_id=mission_id,
-            supports=["daemon_progress", "mission_dashboard", "persistence_recovery"],
+            supports=[
+                "daemon_progress",
+                "mission_dashboard",
+                "persistence_recovery",
+                "capability_execution_policy",
+                *capability_policy.capability_profile_refs,
+            ],
             freshness="fresh",
             source_quality="primary",
         )
@@ -763,6 +797,15 @@ class ControlPlaneDaemon:
     ) -> None:
         if state_store is not None:
             state_store.save(state)
+
+
+def _bind_capability_policy(
+    runner: ControlPlaneRunner,
+    capability_policy: CapabilityExecutionPolicy,
+) -> None:
+    bind = getattr(runner, "bind_capability_execution_policy", None)
+    if callable(bind):
+        bind(capability_policy)
 
 
 def _hash_payload(payload: object) -> str:

@@ -655,6 +655,10 @@ class CapabilityProfile(BaseModel):
 
     capability_id: str = Field(default_factory=lambda: _v6_id("cap"))
     capability_name: str
+    governance_key: str = ""
+    source_refs: list[str] = Field(default_factory=list)
+    source_versions: list[str] = Field(default_factory=list)
+    supersedes_refs: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     known_limits: list[str] = Field(default_factory=list)
     promotion_stage: Literal["review_only", "replay", "holdout", "shadow", "canary", "production"]
@@ -662,13 +666,15 @@ class CapabilityProfile(BaseModel):
     regression_refs: list[str] = Field(default_factory=list)
     last_verified_at: datetime | None = None
     rollback_plan: list[str] = Field(default_factory=list)
-    runtime_enabled: bool = True
+    runtime_enabled: bool = False
     rolled_back_at: datetime | None = None
     rollback_reason: str = ""
     rollback_refs: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _production_capability_requires_proof_and_rollback(self) -> CapabilityProfile:
+        if self.promotion_stage != "production":
+            self.runtime_enabled = False
         if self.promotion_stage in {"canary", "production"}:
             if not (self.evidence_refs and self.holdout_refs and self.regression_refs):
                 raise ValueError(
@@ -676,7 +682,7 @@ class CapabilityProfile(BaseModel):
                 )
             if not self.rollback_plan:
                 raise ValueError("canary/production capabilities require rollback_plan")
-        if not self.runtime_enabled:
+        if self.promotion_stage == "production" and not self.runtime_enabled:
             if not self.rolled_back_at:
                 raise ValueError("disabled capability profiles require rolled_back_at")
             if not (self.rollback_reason and self.rollback_refs):
