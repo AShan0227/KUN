@@ -122,7 +122,12 @@ type TaskCockpitView = {
   technical_refs: string[];
 };
 
-const DEFAULT_MISSION_ID = "msn-kun-v6-productization";
+type MissionListItem = {
+  mission_id: string;
+  objective: string;
+  status: string;
+  updated_at: string;
+};
 
 const toneClass: Record<CockpitTone, string> = {
   working: "bg-blue-50 text-blue-700 border-blue-200",
@@ -142,7 +147,8 @@ const laneLabel: Record<TaskCockpitView["work_items"][number]["lane"], string> =
 };
 
 export default function ControlPlaneCockpitPage() {
-  const [missionId, setMissionId] = useState(DEFAULT_MISSION_ID);
+  const [missionId, setMissionId] = useState("");
+  const [missions, setMissions] = useState<MissionListItem[]>([]);
   const [cockpit, setCockpit] = useState<TaskCockpitView | null>(null);
   const [loading, setLoading] = useState(false);
   const [daemonAction, setDaemonAction] = useState<"start" | "stop" | null>(null);
@@ -165,6 +171,20 @@ export default function ControlPlaneCockpitPage() {
       setCockpit(null);
     } finally {
       setLoading(false);
+    }
+  }, [missionId]);
+
+  const fetchMissions = useCallback(async () => {
+    try {
+      const response = await apiFetch("/api/control-plane/v6/missions");
+      if (!response.ok) return;
+      const body = (await response.json()) as MissionListItem[];
+      setMissions(body);
+      if (!missionId.trim() && body.length > 0) {
+        setMissionId(body[0].mission_id);
+      }
+    } catch {
+      setMissions([]);
     }
   }, [missionId]);
 
@@ -209,6 +229,10 @@ export default function ControlPlaneCockpitPage() {
   );
 
   useEffect(() => {
+    void fetchMissions();
+  }, [fetchMissions]);
+
+  useEffect(() => {
     void fetchCockpit();
   }, [fetchCockpit]);
 
@@ -232,6 +256,19 @@ export default function ControlPlaneCockpitPage() {
               void fetchCockpit();
             }}
           >
+            {missions.length > 0 && (
+              <select
+                className="kun-input min-w-0 sm:w-80"
+                value={missionId}
+                onChange={(event) => setMissionId(event.target.value)}
+              >
+                {missions.map((mission) => (
+                  <option key={mission.mission_id} value={mission.mission_id}>
+                    {mission.mission_id} · {mission.status}
+                  </option>
+                ))}
+              </select>
+            )}
             <input
               className="kun-input min-w-0 sm:w-80"
               value={missionId}

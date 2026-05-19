@@ -49,6 +49,8 @@ def build_daemon_service_install_plan(
     max_work_items_per_tick: int = 10,
     idle_ticks_to_stop: int = 1,
     stale_heartbeat_after_sec: float = 900.0,
+    ab_round_dir: str | Path | None = None,
+    ab_round_id: str | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> DaemonServiceInstallPlan:
     """Build launchd/systemd service content without mutating the host."""
@@ -88,6 +90,10 @@ def build_daemon_service_install_plan(
         "--stale-heartbeat-after-sec",
         str(stale_heartbeat_after_sec),
     ]
+    if ab_round_dir is not None:
+        command.extend(["--ab-round-dir", str(_resolve_under_workdir(workdir, ab_round_dir))])
+    if ab_round_id:
+        command.extend(["--ab-round-id", ab_round_id])
     env = dict(environment or {})
     if platform == "launchd":
         resolved_install_path = (

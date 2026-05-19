@@ -31,6 +31,24 @@ def test_launchd_daemon_service_plan_contains_persistent_daemon_command(tmp_path
     assert plan.stop_command[:2] == ["launchctl", "bootout"]
 
 
+def test_daemon_service_plan_can_embed_ab_regression_round(tmp_path) -> None:
+    ab_round_dir = tmp_path / "ab-round"
+    plan = build_daemon_service_install_plan(
+        platform="launchd",
+        service_name="com.kun.control-plane.test",
+        working_directory=tmp_path,
+        install_path=tmp_path / "com.kun.control-plane.test.plist",
+        ab_round_dir=ab_round_dir,
+        ab_round_id="round-02-regression",
+    )
+
+    payload = plistlib.loads(plan.content.encode("utf-8"))
+    assert "--ab-round-dir" in payload["ProgramArguments"]
+    assert str(ab_round_dir) in payload["ProgramArguments"]
+    assert "--ab-round-id" in payload["ProgramArguments"]
+    assert "round-02-regression" in payload["ProgramArguments"]
+
+
 def test_systemd_daemon_service_plan_uses_restart_policy(tmp_path) -> None:
     plan = build_daemon_service_install_plan(
         platform="systemd",

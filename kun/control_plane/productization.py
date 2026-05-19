@@ -1223,7 +1223,23 @@ class ProductizationDogfoodRunner:
         self.ab_round_id = ab_round_id
         self.ab_task_ids = list(ab_task_ids)
 
+    def can_run(self, work_item: WorkItem) -> bool:
+        """Return whether this runner owns the canonical productization item."""
+
+        return work_item.work_item_id.startswith("work-v6-") and any(
+            work_item.work_item_id == f"work-v6-{subsystem.replace('_', '-')}"
+            for subsystem in _REQUIRED_SUBSYSTEMS
+        )
+
     def run(self, work_item: WorkItem) -> WorkItemResult:
+        if not self.can_run(work_item):
+            return WorkItemResult(
+                status="failed",
+                summary=(
+                    "Productization runner only handles canonical KUN V6 productization work items."
+                ),
+                failure_category="tool_failure",
+            )
         subsystem = _subsystem_from_work_item(work_item)
         blocker = self._blocker(work_item=work_item, subsystem=subsystem)
         if blocker is not None:
@@ -1241,6 +1257,44 @@ class ProductizationDogfoodRunner:
             subsystem=subsystem,
             summary=_dogfood_success_summary(subsystem),
         )
+
+    def finalize_mission(self, mission_id: str) -> dict[str, object]:
+        """Finalize productization delivery when daemon execution has closed the queue."""
+
+        if not _is_canonical_productization_mission(self.control_plane, mission_id):
+            return {
+                "finalized": False,
+                "summary": "Mission is not the canonical KUN V6 productization dogfood queue.",
+            }
+        if not _all_mission_work_items_done(self.control_plane, mission_id):
+            return {
+                "finalized": False,
+                "summary": "Productization work items are not all done yet.",
+            }
+        audit = audit_control_plane_productization(self.control_plane, mission_id)
+        if not audit.ready:
+            return {
+                "finalized": False,
+                "summary": "Productization audit is not ready for delivery.",
+                "missing_subsystems": list(audit.missing_subsystems),
+            }
+        try:
+            delivery_manifest_ref = _latest_delivery_manifest_ref(self.control_plane, mission_id)
+            final_gate_ref = _latest_delivery_gate_ref(self.control_plane, mission_id)
+        except ValueError:
+            gate = finalize_productization_dogfood_delivery(
+                self.control_plane,
+                mission_id,
+                actor=self.runner_identity,
+            )
+            final_gate_ref = gate.gate_evaluation_id
+            delivery_manifest_ref = _latest_delivery_manifest_ref(self.control_plane, mission_id)
+        return {
+            "finalized": True,
+            "delivery_manifest_ref": delivery_manifest_ref,
+            "final_gate_ref": final_gate_ref,
+            "summary": "Productization delivery manifest and final gate are ready.",
+        }
 
     def _run_ab_regression(self, work_item: WorkItem) -> WorkItemResult:
         if self.ab_round_dir is None:
@@ -2379,6 +2433,19 @@ def _all_mission_work_items_done(
 ) -> bool:
     items = [item for item in control_plane.work_items.values() if item.mission_id == mission_id]
     return bool(items) and all(item.status == "done" for item in items)
+
+
+def _is_canonical_productization_mission(
+    control_plane: InMemoryControlPlane,
+    mission_id: str,
+) -> bool:
+    expected_ids = {f"work-v6-{subsystem.replace('_', '-')}" for subsystem in _REQUIRED_SUBSYSTEMS}
+    observed_ids = {
+        item.work_item_id
+        for item in control_plane.work_items.values()
+        if item.mission_id == mission_id
+    }
+    return expected_ids.issubset(observed_ids)
 
 
 def _latest_delivery_manifest_ref(

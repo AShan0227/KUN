@@ -181,6 +181,10 @@ def test_control_plane_daemon_service_plan_outputs_launchd_payload(tmp_path) -> 
             str(tmp_path),
             "--install-path",
             str(tmp_path / "kun.plist"),
+            "--ab-round-dir",
+            str(tmp_path / "ab-round"),
+            "--ab-round-id",
+            "round-02-regression",
             "--json",
         ],
     )
@@ -191,6 +195,9 @@ def test_control_plane_daemon_service_plan_outputs_launchd_payload(tmp_path) -> 
     assert payload["service_name"] == "com.kun.control-plane.cli-test"
     assert "daemon-run" in payload["command"]
     assert "--max-ticks" not in payload["command"]
+    assert "--ab-round-dir" in payload["command"]
+    assert str(tmp_path / "ab-round") in payload["command"]
+    assert "--ab-round-id" in payload["command"]
     assert payload["install_path"] == str(tmp_path / "kun.plist")
 
 

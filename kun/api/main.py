@@ -12,8 +12,10 @@ Routes:
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +24,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from kun import __version__
 from kun.api.chat import router as chat_router
+from kun.api.control_plane import router as control_plane_router
 from kun.api.health import router as health_router
 from kun.api.nuo import router as nuo_router
 from kun.api.runtime import install_runtime
@@ -40,6 +43,40 @@ from kun.watchtower.engine import RuleEngine, load_rules
 log = get_logger("kun.api.main")
 
 
+def install_v6_control_plane_runtime(
+    app: FastAPI,
+    *,
+    store_path: str | Path | None = None,
+    state_path: str | Path | None = None,
+) -> None:
+    """Install file-backed V6 Control Plane state for API and cockpit views."""
+
+    from kun.control_plane import (
+        FileControlPlaneStore,
+        FileDaemonServiceStateStore,
+        InMemoryControlPlane,
+    )
+
+    store_value = (
+        store_path
+        if store_path is not None
+        else os.getenv("KUN_V6_CONTROL_PLANE_STORE", ".kun-local/v6-control-plane.json")
+    )
+    state_value = (
+        state_path
+        if state_path is not None
+        else os.getenv("KUN_V6_DAEMON_STATE", ".kun-local/v6-daemon-service.json")
+    )
+    resolved_store_path = Path(store_value).expanduser()
+    resolved_state_path = Path(state_value).expanduser()
+    app.state.v6_control_plane_store_path = str(resolved_store_path)
+    app.state.v6_daemon_service_state_path = str(resolved_state_path)
+    app.state.v6_control_plane = InMemoryControlPlane(
+        store=FileControlPlaneStore(resolved_store_path)
+    )
+    app.state.v6_daemon_service_state_store = FileDaemonServiceStateStore(resolved_state_path)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup / shutdown hooks."""
@@ -50,6 +87,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     rules = load_rules("rules")
     rule_engine = RuleEngine(rules)
     install_runtime(app, rule_engine=rule_engine)
+    install_v6_control_plane_runtime(app)
     log.info("rules.ready", count=len(rules))
 
     # Register builtin executable skills (R-A2). Imports the 6 builtin
@@ -208,6 +246,7 @@ app.include_router(health_router, prefix="/health", tags=["health"])
 app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
 app.include_router(ws_router)
 app.include_router(nuo_router, prefix="/nuo", tags=["nuo"])
+app.include_router(control_plane_router)
 
 
 @app.get("/")
