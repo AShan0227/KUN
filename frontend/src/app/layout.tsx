@@ -34,10 +34,10 @@ export default function RootLayout({
               <Link href={{ pathname: "/control-plane" }} className="kun-nav-link">
                 任务驾驶舱
               </Link>
-              <Link href="/billing" className="kun-nav-link">
+              <Link href={{ pathname: "/billing" }} className="kun-nav-link">
                 计费透明
               </Link>
-              <Link href="/account" className="kun-nav-link">
+              <Link href={{ pathname: "/account" }} className="kun-nav-link">
                 会话 / 账号
               </Link>
             </nav>
