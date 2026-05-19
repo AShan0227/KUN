@@ -11,6 +11,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from kun.core.logging import get_logger
 from kun.core.tenancy import current_tenant
 from kun.engineering.agent_benchmark import (
     AgentBenchmarkResult,
@@ -19,8 +20,10 @@ from kun.engineering.agent_benchmark import (
     run_benchmark,
     sample_benchmark_tasks,
 )
+from kun.engineering.capability_writeback import record_benchmark_result
 
 router = APIRouter()
+log = get_logger("kun.api.nuo.benchmark_panel")
 AgentInvoke = Callable[[str], Awaitable[str]]
 
 
@@ -131,6 +134,14 @@ async def start_benchmark_run(req: BenchmarkRunRequest) -> BenchmarkRunRecord:
         results=[_result_to_dict(result) for result in results],
     )
     _RUNS[run.run_id] = run
+    try:
+        await record_benchmark_result(
+            agent_ref=req.agent_ref,
+            results=results,
+            tenant_id=tenant.tenant_id,
+        )
+    except Exception as exc:
+        log.warning("benchmark.capability_writeback_failed", error=str(exc))
     return run
 
 

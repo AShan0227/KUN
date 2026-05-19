@@ -11,12 +11,16 @@ from __future__ import annotations
 
 import pytest
 from kun.datamodel.capability import CapabilityCard, EntityRef
+from kun.engineering.agent_benchmark import AgentBenchmarkResult
 from kun.engineering.capability_writeback import (
     TaskOutcome,
     _apply_outcome,
     _select_card_for_update,
+    record_benchmark_result,
+    record_judge_verdict,
     record_outcome,
 )
+from kun.engineering.multi_judge import JudgeBallot, JuryVerdict
 from sqlalchemy.dialects import postgresql
 
 
@@ -181,3 +185,117 @@ async def test_record_outcome_sets_explicit_rls_tenant(
     )
 
     assert seen == {"tenant_id": "u-explicit"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_record_judge_verdict_writes_each_judge_ballot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[tuple[str, TaskOutcome]] = []
+
+    async def fake_record_outcome(tenant_id: str, outcome: TaskOutcome) -> None:
+        seen.append((tenant_id, outcome))
+
+    monkeypatch.setattr(
+        "kun.engineering.capability_writeback.record_outcome",
+        fake_record_outcome,
+    )
+    verdict = JuryVerdict(
+        pass_=True,
+        avg_score=0.7,
+        spread=0.2,
+        rationale="2/3 judges pass",
+        ballots=[
+            JudgeBallot(
+                judge_id="judge_a",
+                pass_=True,
+                score=0.9,
+                reason="good",
+                cost_usd_actual=0.01,
+                latency_ms=100.0,
+            ),
+            JudgeBallot(
+                judge_id="judge_b",
+                pass_=False,
+                score=0.4,
+                reason="weak",
+                cost_usd_actual=0.02,
+                latency_ms=200.0,
+            ),
+            JudgeBallot(
+                judge_id="judge_c",
+                pass_=True,
+                score=0.8,
+                reason="ok",
+                cost_usd_actual=0.03,
+                latency_ms=300.0,
+            ),
+        ],
+    )
+
+    for ballot in verdict.ballots:
+        await record_judge_verdict(
+            judge_id=ballot.judge_id,
+            task_type="coding.python",
+            verdict=verdict,
+            tenant_id="u-judge",
+        )
+
+    assert len(seen) == 3
+    assert {outcome.entity_id for _, outcome in seen} == {"judge_a", "judge_b", "judge_c"}
+    assert {outcome.task_type for _, outcome in seen} == {"judge.coding.python"}
+    assert seen[0][0] == "u-judge"
+    failed = next(outcome for _, outcome in seen if outcome.entity_id == "judge_b")
+    assert failed.outcome == "fail"
+    assert failed.failure_name == "judge_rejected"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_record_benchmark_result_writes_aggregated_agent_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[tuple[str, TaskOutcome]] = []
+
+    async def fake_record_outcome(tenant_id: str, outcome: TaskOutcome) -> None:
+        seen.append((tenant_id, outcome))
+
+    monkeypatch.setattr(
+        "kun.engineering.capability_writeback.record_outcome",
+        fake_record_outcome,
+    )
+
+    await record_benchmark_result(
+        agent_ref="external_agent:test",
+        tenant_id="u-bench",
+        results=[
+            AgentBenchmarkResult(
+                agent_ref="external_agent:test",
+                task_id="t1",
+                success=True,
+                score=1.0,
+                cost_usd=0.03,
+                duration_sec=1.0,
+            ),
+            AgentBenchmarkResult(
+                agent_ref="external_agent:test",
+                task_id="t2",
+                success=False,
+                score=0.5,
+                cost_usd=0.01,
+                duration_sec=2.0,
+            ),
+        ],
+    )
+
+    assert len(seen) == 1
+    tenant_id, outcome = seen[0]
+    assert tenant_id == "u-bench"
+    assert outcome.entity_type == "external_agent"
+    assert outcome.entity_id == "external_agent:test"
+    assert outcome.task_type == "benchmark"
+    assert outcome.outcome == "partial"
+    assert outcome.cost_usd == pytest.approx(0.04)
+    assert outcome.duration_sec == pytest.approx(3.0)
+    assert outcome.rubric_score == pytest.approx(3.75)

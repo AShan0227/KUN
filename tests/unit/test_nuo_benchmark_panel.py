@@ -16,7 +16,11 @@ from kun.core.tenancy import TenantContext, tenant_scope
 
 
 @pytest.fixture(autouse=True)
-def _clean_state() -> None:
+def _clean_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def noop_writeback(**_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("kun.api.nuo.benchmark_panel.record_benchmark_result", noop_writeback)
     clear_benchmark_state()
     yield
     clear_benchmark_state()
@@ -103,6 +107,38 @@ async def test_benchmark_panel_isolates_agents_and_runs_by_tenant() -> None:
     assert agents_b_before[0].latest_run_id is None
     assert exc.value.status_code == 404
     assert agents_b_after[0].latest_run_id == run_b.run_id
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_benchmark_panel_writes_capability_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def writeback(**kwargs: object) -> None:
+        calls.append(kwargs)
+
+    async def agent(prompt: str) -> str:
+        if "hello" in prompt:
+            return "hello"
+        if "Python function" in prompt:
+            return "def add(a, b):\n    return a + b\n"
+        if "tenant" in prompt:
+            return "tenant isolation"
+        if "budget" in prompt:
+            return "budget cost"
+        return '{"ok":true}'
+
+    monkeypatch.setattr("kun.api.nuo.benchmark_panel.record_benchmark_result", writeback)
+    register_agent("external_agent:test", agent)
+
+    run = await start_benchmark_run(BenchmarkRunRequest(agent_ref="external_agent:test"))
+
+    assert len(calls) == 1
+    assert calls[0]["agent_ref"] == "external_agent:test"
+    assert calls[0]["tenant_id"] == run.tenant_id
+    results = calls[0]["results"]
+    assert isinstance(results, list)
+    assert len(results) == 5
 
 
 @pytest.mark.unit

@@ -132,6 +132,43 @@ async def test_jury_spread_is_zero_when_judges_agree() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_jury_writes_each_ballot_to_capability_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[dict[str, object]] = []
+
+    async def fake_record_judge_verdict(**kwargs: object) -> None:
+        seen.append(kwargs)
+
+    monkeypatch.setattr(
+        "kun.engineering.multi_judge.record_judge_verdict",
+        fake_record_judge_verdict,
+    )
+
+    verdict = await jury_evaluate(
+        artifact="good result",
+        rubric="correctness",
+        judge_models=["a", "b", "c"],
+        router=_QueueRouter(
+            [
+                _response(pass_=True, score=0.9),
+                _response(pass_=False, score=0.4),
+                _response(pass_=True, score=0.8),
+            ]
+        ),
+        tenant_id="u-judge",
+        task_type="coding.python",
+    )
+
+    assert verdict.pass_ is True
+    assert len(seen) == 3
+    assert {item["tenant_id"] for item in seen} == {"u-judge"}
+    assert {item["task_type"] for item in seen} == {"coding.python"}
+    assert {item["judge_id"] for item in seen} == {"a", "b", "c"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_validation_multi_judge_wraps_jury_verdict() -> None:
     validator = MultiJudge(
         n_judges=3,

@@ -153,6 +153,8 @@ class MultiJudge:
             rubric=str(rubric),
             judge_models=[f"judge_{i + 1}" for i in range(self._n)],
             router=self._router,
+            tenant_id=_optional_str(context.get("tenant_id")),
+            task_type=str(context.get("task_type", "general")),
         )
         return ValidationResult(
             validator_kind=self.kind,
@@ -314,6 +316,8 @@ class ValidationPipeline:
             "goal": goal or meta.success_criteria_short,
             "rubric": rubric or {},
             "task_meta": meta.model_dump(mode="json"),
+            "tenant_id": meta.owner.tenant_id,
+            "task_type": meta.task_type,
         }
         results: list[ValidationResult] = []
         for v in validators:
@@ -342,3 +346,9 @@ class ValidationPipeline:
             reason="all_pass" if all_pass else "at_least_one_failed",
             details={"validators": [r.model_dump() for r in results]},
         )
+
+
+def _optional_str(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
