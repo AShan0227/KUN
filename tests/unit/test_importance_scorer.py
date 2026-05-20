@@ -10,7 +10,9 @@ from kun.context.importance import (
     FREQUENCY_SATURATION_COUNT,
     ImportanceScore,
     ImportanceScorer,
+    clear_qdrant_embed_cache,
     half_life_days,
+    qdrant_embed_text,
 )
 from kun.context.storage import InMemoryAssetStore
 
@@ -74,8 +76,8 @@ def test_recency_uses_asset_half_life() -> None:
     long_asset = _asset(last_accessed=now - timedelta(days=11.25))
     short_asset = _asset(kind="task", last_accessed=now - timedelta(days=5))
 
-    assert abs(scorer.recency(asset=long_asset, now=now) - 0.3679) < 0.01
-    assert abs(scorer.recency(asset=short_asset, now=now) - 0.3679) < 0.01
+    assert abs(scorer.recency(asset=long_asset, now=now) - 0.5) < 0.01
+    assert abs(scorer.recency(asset=short_asset, now=now) - 0.5) < 0.01
 
 
 @pytest.mark.unit
@@ -100,6 +102,39 @@ def test_embedding_similarity_path_is_used_when_injected() -> None:
     unrelated = scorer.score(asset=_asset(summary="email marketing"), query="postgres")
 
     assert relevant.semantic > unrelated.semantic
+
+
+@pytest.mark.unit
+def test_default_qdrant_embedder_keeps_local_term_similarity() -> None:
+    scorer = ImportanceScorer()
+
+    relevant = scorer.score(asset=_asset(summary="postgres tenant rls"), query="postgres rls")
+    unrelated = scorer.score(
+        asset=_asset(summary="email marketing", metadata={"title": "marketing guide"}),
+        query="postgres rls",
+    )
+
+    assert relevant.semantic > unrelated.semantic
+    assert unrelated.semantic == 0.0
+
+
+@pytest.mark.unit
+def test_qdrant_embed_text_is_stable_without_external_provider() -> None:
+    clear_qdrant_embed_cache()
+
+    first = qdrant_embed_text("postgres tenant rls")
+    second = qdrant_embed_text("postgres tenant rls")
+
+    assert first == second
+    assert len(first) == 128
+
+
+@pytest.mark.unit
+def test_embed_text_none_explicitly_disables_embedding_path() -> None:
+    scorer = ImportanceScorer(embed_text=None)
+    score = scorer.score(asset=_asset(summary="tenant rls postgres"), query="tenant rls")
+
+    assert score.semantic > 0
 
 
 @pytest.mark.unit

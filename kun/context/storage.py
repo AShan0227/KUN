@@ -14,6 +14,7 @@ import json
 from typing import Any, Protocol
 
 import redis.asyncio as aioredis
+from qdrant_client import QdrantClient
 
 from kun.context.assets import AssetKind, LayeredAsset
 from kun.core.config import settings
@@ -189,6 +190,36 @@ async def build_redis_store() -> RedisAssetStore:
     """Helper to construct a Redis-backed store from settings."""
     client = aioredis.from_url(settings().redis_url, decode_responses=True)
     return RedisAssetStore(client)
+
+
+# =================== Qdrant vector client ===================
+
+
+_qdrant_client: QdrantClient | None = None
+
+
+def get_qdrant_client() -> QdrantClient:
+    """Return the process-level Qdrant client.
+
+    The client is intentionally kept here so context retrieval, importance scoring,
+    and future vector stores all share the same connection settings.
+    """
+    global _qdrant_client
+    if _qdrant_client is None:
+        cfg = settings()
+        _qdrant_client = QdrantClient(
+            url=cfg.qdrant_url,
+            api_key=cfg.qdrant_api_key,
+            timeout=int(cfg.embedding_timeout_sec),
+            check_compatibility=False,
+        )
+    return _qdrant_client
+
+
+def reset_qdrant_client() -> None:
+    """Clear cached Qdrant client (tests / settings reload)."""
+    global _qdrant_client
+    _qdrant_client = None
 
 
 def _noop_use() -> None:
