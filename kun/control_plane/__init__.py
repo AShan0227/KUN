@@ -68,6 +68,12 @@ from kun.control_plane.daemon_service import (
     build_daemon_service_install_plan,
     materialize_daemon_service_install_plan,
 )
+from kun.control_plane.external_sample_comparison import (
+    KUN_EXTERNAL_SAMPLE_COMPARISON_RUNNER_OWNER,
+    ExternalSampleComparisonRunner,
+    ExternalSampleComparisonSpec,
+    ExternalSampleFeatureGap,
+)
 from kun.control_plane.file_store import FileControlPlaneStore
 from kun.control_plane.frontier50 import (
     Frontier50CampaignDecision,
@@ -225,6 +231,7 @@ __all__ = [
     "ACTIVE_DAEMON_MISSION_STATUSES",
     "CAPABILITY_EVOLUTION_METRIC_PACK_VERSION",
     "CAPABILITY_EVOLUTION_RUBRIC_VERSION",
+    "KUN_EXTERNAL_SAMPLE_COMPARISON_RUNNER_OWNER",
     "AcceptanceDecision",
     "AcceptanceReview",
     "AdoptionMode",
@@ -275,6 +282,9 @@ __all__ = [
     "ExternalBehaviorSignal",
     "ExternalBehaviorSourceProductionizationRun",
     "ExternalCommandResult",
+    "ExternalSampleComparisonRunner",
+    "ExternalSampleComparisonSpec",
+    "ExternalSampleFeatureGap",
     "FailureCategory",
     "FailureRecovery",
     "FileControlPlaneStore",

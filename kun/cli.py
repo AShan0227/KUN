@@ -431,6 +431,10 @@ def control_plane_daemon_run(
         FileDaemonServiceStateStore,
         InMemoryControlPlane,
     )
+    from kun.control_plane.external_sample_comparison import (
+        KUN_EXTERNAL_SAMPLE_COMPARISON_RUNNER_OWNER,
+        ExternalSampleComparisonRunner,
+    )
     from kun.control_plane.productization import ProductizationDogfoodRunner
 
     if max_ticks is not None and max_ticks <= 0:
@@ -447,10 +451,12 @@ def control_plane_daemon_run(
         ab_round_dir=ab_round_dir,
         ab_round_id=ab_round_id,
     )
+    external_sample_runner = ExternalSampleComparisonRunner(control_plane=control_plane)
     productization_owners = {
         "control-plane": productization_runner,
         "qi": productization_runner,
         "nuo": productization_runner,
+        KUN_EXTERNAL_SAMPLE_COMPARISON_RUNNER_OWNER: external_sample_runner,
     }
     daemon = ControlPlaneDaemon(
         control_plane=control_plane,
