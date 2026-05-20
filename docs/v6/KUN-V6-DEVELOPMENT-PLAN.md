@@ -72,6 +72,7 @@
 - 常驻 supervisor / daemon 进程。
 - 自动醒来扫描 ready work item。
 - runner 注册和 lease 协议。
+- `kun` owner 的普通 execution、research、review、test、merge work item 必须有默认 KUN runtime runner，不能只依赖产品化 runner、AB runner 或任务专用 runner。
 - heartbeat、timeout、retry、cancel、resume。
 - 进程崩溃恢复、断电/重启恢复、跨天续跑。
 - 卡死检测和失败分类。
@@ -96,6 +97,7 @@
 - 恢复后能继续同一任务方案或触发计划变更。
 - daemon 停止、重启、跨天恢复后能继续正确下一步。
 - 用户无需手动盯终端或手动重跑同一任务。
+- 普通真实任务 work item 能通过默认 KUN runtime runner 执行，产出 artifact，并在完成后形成 delivery manifest。
 - Qi/Nuo follow-up 在默认 daemon 路由下能自动执行，并生成治理/修复 artifact。
 - 信息缺口能自动变成用户可理解的协同票据。
 - workspace 快照能在测试中真实恢复文件内容并移除快照后新增文件。

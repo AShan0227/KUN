@@ -455,6 +455,7 @@ def control_plane_daemon_run(
         ExternalSampleComparisonRunner,
     )
     from kun.control_plane.frontier50_external import Frontier50ExternalRuntimeRunner
+    from kun.control_plane.kun_runtime_runner import KunRuntimeTaskRunner
     from kun.control_plane.productization import ProductizationDogfoodRunner
     from kun.control_plane.runtime_followups import (
         ChainedControlPlaneRunner,
@@ -477,6 +478,7 @@ def control_plane_daemon_run(
         ab_round_id=ab_round_id,
     )
     external_sample_runner = ExternalSampleComparisonRunner(control_plane=control_plane)
+    kun_runner = KunRuntimeTaskRunner(control_plane=control_plane)
     qi_runners = [productization_runner]
     if frontier50_live_workdir is not None:
         qi_runners.append(
@@ -493,6 +495,7 @@ def control_plane_daemon_run(
     ]
     productization_owners = {
         "control-plane": productization_runner,
+        "kun": kun_runner,
         "qi": ChainedControlPlaneRunner(
             runner_identity="qi-control-plane-runtime-router",
             runners=qi_runners,

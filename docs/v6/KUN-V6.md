@@ -196,6 +196,7 @@ Control Plane 是 KUN 的运行中枢，负责把方案变成可持续执行的�
 - 权限、预算、外部动作审批和审计。
 - 产物、证据、日志、账本和门禁统一管理。
 - AB runner、真实长任务 runner、工具 runner 和外部 worker runner 的统一接入。
+- KUN 通用真实任务 runner：`kun` owner 的 execution、research、review、test、merge 工作项必须有默认执行路径，能调用 KUN 任务执行器产出 artifact，并在全部工作项完成后生成 delivery manifest。任务专用 runner 只能作为领域增强，不能替代通用路径。
 - 定时进度汇报和任务驾驶舱 API。
 - 运行时功能激活层：每个 work item 执行前必须显式绑定 production 能力、skill 触发、外部信息信号、沙箱边界、checkpoint、rollback 引用和启/傩反馈通道。
 - 受限预执行层：在主 runner 执行前，按 work item 的 workspace、skill 和外部信息信号运行安全预检查，产出 artifact；预执行失败必须进入启/傩治理，不得静默丢失，也不得直接记为 KUN 能力失败。

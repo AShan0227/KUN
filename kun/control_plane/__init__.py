@@ -93,6 +93,7 @@ from kun.control_plane.frontier50_external import (
     Frontier50ExternalRuntimeRunner,
     load_frontier50_round_summary,
 )
+from kun.control_plane.kun_runtime_runner import KunRuntimeTaskRunner, KunTaskExecutionOutput
 from kun.control_plane.nuo import (
     Finding,
     HealthReport,
@@ -314,6 +315,8 @@ __all__ = [
     "InMemoryCollaborationQueue",
     "InMemoryControlPlane",
     "InMemoryControlPlaneStore",
+    "KunRuntimeTaskRunner",
+    "KunTaskExecutionOutput",
     "LeaseAcquisition",
     "LeaseRelease",
     "LeaseReleaseStatus",
