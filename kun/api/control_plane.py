@@ -212,6 +212,15 @@ def get_v6_daemon_service_state(request: Request) -> DaemonServiceState | None:
     raise HTTPException(status_code=503, detail="invalid v6 daemon service state")
 
 
+def refresh_v6_collaboration_sla(
+    runtime: InMemoryControlPlane,
+    mission_id: str,
+) -> None:
+    """Emit due collaboration reminders before user-facing status reads."""
+
+    runtime.emit_collaboration_sla_reminders(mission_id)
+
+
 def _daemon_status_response(
     state: DaemonServiceState | None,
     *,
@@ -292,6 +301,7 @@ async def get_mission(request: Request, mission_id: str) -> Mission:
 async def get_progress(request: Request, mission_id: str) -> ControlPlaneProgressReport:
     runtime = get_v6_control_plane(request)
     try:
+        refresh_v6_collaboration_sla(runtime, mission_id)
         return runtime.progress_report(mission_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -301,6 +311,7 @@ async def get_progress(request: Request, mission_id: str) -> ControlPlaneProgres
 async def get_user_progress(request: Request, mission_id: str) -> UserProgressSummary:
     runtime = get_v6_control_plane(request)
     try:
+        refresh_v6_collaboration_sla(runtime, mission_id)
         return build_user_progress_summary(runtime.progress_report(mission_id))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -310,6 +321,7 @@ async def get_user_progress(request: Request, mission_id: str) -> UserProgressSu
 async def get_dashboard(request: Request, mission_id: str) -> MissionDashboardCard:
     runtime = get_v6_control_plane(request)
     try:
+        refresh_v6_collaboration_sla(runtime, mission_id)
         return build_dashboard_card(runtime.progress_report(mission_id))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -319,6 +331,7 @@ async def get_dashboard(request: Request, mission_id: str) -> MissionDashboardCa
 async def get_task_cockpit(request: Request, mission_id: str) -> TaskCockpitView:
     runtime = get_v6_control_plane(request)
     try:
+        refresh_v6_collaboration_sla(runtime, mission_id)
         return build_task_cockpit_view(
             runtime,
             mission_id,
@@ -440,6 +453,7 @@ async def list_collaboration_tickets(
 ) -> list[CollaborationTicket]:
     runtime = get_v6_control_plane(request)
     try:
+        refresh_v6_collaboration_sla(runtime, mission_id)
         return runtime.list_collaboration_tickets(mission_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

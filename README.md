@@ -12,6 +12,18 @@ GitHub: https://github.com/AShan0227/KUN (private)
 
 ## Quickstart
 
+**从 GitHub 一键部署到新机器**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AShan0227/KUN/main/scripts/one_click_deploy.sh | bash
+```
+
+默认会 clone/update 到 `~/KUN`，安装 Python 依赖，并在 macOS/Linux 上安装 Control Plane 常驻服务。只安装 CLI、不装常驻服务：
+
+```bash
+KUN_INSTALL_DAEMON=0 curl -fsSL https://raw.githubusercontent.com/AShan0227/KUN/main/scripts/one_click_deploy.sh | bash
+```
+
 **一键启动** (首次):
 
 ```bash

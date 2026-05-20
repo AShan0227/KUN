@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -211,6 +211,86 @@ class InMemoryControlPlane:
             payload={"reason": "mission submitted with approved task plan"},
         )
         return self.missions[queued_mission.mission_id]
+
+    def record_plan_change(
+        self,
+        *,
+        mission_id: str,
+        task_plan: TaskPlan,
+        execution_contract: ExecutionContract,
+        working_context: WorkingContext,
+        work_items: list[WorkItem],
+        actor: str,
+        reason: str,
+    ) -> Mission:
+        """Record a new runnable task-plan version for an active mission.
+
+        Plan changes are a first-class Control Plane operation: the new plan,
+        contract, context, and follow-up work items are durably persisted and
+        tied back to the mission ledger.  This is used when a long task learns
+        that its original plan was incomplete or needs a research-first pass.
+        """
+
+        mission = self._mission(mission_id)
+        if task_plan.mission_id != mission_id:
+            raise ValueError("task_plan mission_id mismatch")
+        if execution_contract.mission_id != mission_id:
+            raise ValueError("execution_contract mission_id mismatch")
+        if working_context.mission_id != mission_id:
+            raise ValueError("working_context mission_id mismatch")
+        if execution_contract.task_plan_version != task_plan.version:
+            raise ValueError("execution_contract task_plan_version mismatch")
+        if working_context.task_plan_version != task_plan.version:
+            raise ValueError("working_context task_plan_version mismatch")
+        if not task_plan.can_contract:
+            raise ValueError("changed task_plan must be approved and have no info_gaps")
+        for item in work_items:
+            if item.mission_id != mission_id:
+                raise ValueError(f"work item {item.work_item_id} mission_id mismatch")
+            if item.task_plan_version != task_plan.version:
+                raise ValueError(f"work item {item.work_item_id} task_plan_version mismatch")
+            if item.work_item_id in self.work_items:
+                raise ValueError(f"work item already exists: {item.work_item_id}")
+
+        validate_workitem_dag(list(self._mission_work_items(mission_id)) + work_items)
+        self.task_plans[task_plan.plan_id] = task_plan
+        self.contracts[execution_contract.contract_id] = execution_contract
+        self.working_contexts[working_context.working_context_id] = working_context
+        self.work_items.update({item.work_item_id: item for item in work_items})
+        self._persist_task_plan(task_plan)
+        self._persist_contract(execution_contract)
+        self._persist_working_context(working_context)
+        for item in work_items:
+            self._persist_work_item(item)
+
+        updated = mission.model_copy(
+            update={
+                "current_plan_version": task_plan.version,
+                "execution_contract_ref": execution_contract.contract_id,
+                "working_context_ref": working_context.working_context_id,
+            }
+        )
+        self.missions[mission_id] = updated
+        self._persist_mission(updated)
+        self._record_ledger_event(
+            mission_id=mission_id,
+            event_type="plan_change",
+            actor=actor,
+            subject_ref=task_plan.plan_id,
+            before={
+                "plan_version": mission.current_plan_version,
+                "execution_contract_ref": mission.execution_contract_ref,
+                "working_context_ref": mission.working_context_ref,
+            },
+            after={
+                "plan_version": task_plan.version,
+                "execution_contract_ref": execution_contract.contract_id,
+                "working_context_ref": working_context.working_context_id,
+                "queued_work_item_ids": [item.work_item_id for item in work_items],
+            },
+            payload={"reason": reason},
+        )
+        return self.missions[mission_id]
 
     def transition_mission(
         self,
@@ -466,6 +546,57 @@ class InMemoryControlPlane:
             ),
             key=lambda ticket: ticket.ticket_id,
         )
+
+    def emit_collaboration_sla_reminders(
+        self,
+        mission_id: str,
+        *,
+        now: datetime | None = None,
+        actor: str = "control-plane",
+    ) -> list[LedgerEvent]:
+        """Ledger due collaboration reminders without changing execution state."""
+
+        self._mission(mission_id)
+        observed_at = now or _now()
+        emitted: list[LedgerEvent] = []
+        for ticket in self.list_collaboration_tickets(mission_id):
+            if ticket.status not in {"open", "waiting", "escalated"}:
+                continue
+            reminder_after_hours = ticket.sla_policy.get("reminder_after_hours")
+            if not isinstance(reminder_after_hours, int | float) or reminder_after_hours <= 0:
+                continue
+            opened_event = self._collaboration_ticket_opened_event(ticket.ticket_id)
+            if opened_event is None:
+                continue
+            reminder_due_at = opened_event.time + timedelta(hours=float(reminder_after_hours))
+            if observed_at < reminder_due_at:
+                continue
+            if self._collaboration_reminder_already_sent(ticket.ticket_id):
+                continue
+            emitted.append(
+                self._record_ledger_event(
+                    mission_id=mission_id,
+                    event_type="message",
+                    actor=actor,
+                    subject_ref=ticket.ticket_id,
+                    payload={
+                        "sender": actor,
+                        "receiver": ticket.role_needed,
+                        "intent": "collaboration_reminder",
+                        "requires_response": ticket.resume_after_response,
+                        "deadline": ticket.deadline.isoformat(),
+                        "resume_rule": "resume_after_response"
+                        if ticket.resume_after_response
+                        else "record_only",
+                        "why_needed": ticket.why_needed,
+                        "recommended_option": ticket.recommended_option or "",
+                        "reminder_after_hours": reminder_after_hours,
+                        "original_message_at": opened_event.time.isoformat(),
+                        "risk_if_skipped": ticket.risk_if_skipped,
+                    },
+                )
+            )
+        return emitted
 
     def get_collaboration_ticket(self, ticket_id: str) -> CollaborationTicket:
         """Return one collaboration ticket or raise a stable runtime error."""
@@ -824,6 +955,24 @@ class InMemoryControlPlane:
             if run.work_item_id in work_item_ids and run.exit_status == "failed"
         ]
         return max(runs, key=lambda run: run.run_id, default=None)
+
+    def _collaboration_ticket_opened_event(self, ticket_id: str) -> LedgerEvent | None:
+        events = [
+            event
+            for event in self.ledger_events.values()
+            if event.subject_ref == ticket_id
+            and event.event_type == "message"
+            and event.payload.get("intent") != "collaboration_reminder"
+        ]
+        return min(events, key=lambda event: event.time, default=None)
+
+    def _collaboration_reminder_already_sent(self, ticket_id: str) -> bool:
+        return any(
+            event.subject_ref == ticket_id
+            and event.event_type == "message"
+            and event.payload.get("intent") == "collaboration_reminder"
+            for event in self.ledger_events.values()
+        )
 
     def _record_ledger_event(
         self,

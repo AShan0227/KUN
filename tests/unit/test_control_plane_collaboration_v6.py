@@ -7,6 +7,8 @@ from kun.control_plane import (
     CollaborationResponse,
     CollaborationTicket,
     InMemoryCollaborationQueue,
+    InMemoryControlPlane,
+    Mission,
 )
 
 
@@ -72,3 +74,35 @@ def test_collaboration_queue_detects_overdue_and_applies_fallback() -> None:
     updated = queue.apply_fallback("ticket-v6")
     assert updated.status == "fallback_selected"
     assert queue.responses["ticket-v6"].selected_option == "hold"
+
+
+@pytest.mark.unit
+def test_control_plane_emits_due_collaboration_sla_reminder_once() -> None:
+    runtime = InMemoryControlPlane()
+    runtime.missions["msn-v6"] = Mission(
+        mission_id="msn-v6",
+        owner="kun",
+        objective="Wait for required product constraints.",
+        task_type="product_development",
+        status="info_gap",
+    )
+    runtime.record_collaboration_ticket(
+        _ticket(
+            deadline=datetime.now(UTC) + timedelta(hours=24),
+        ).model_copy(update={"sla_policy": {"reminder_after_hours": 6}}),
+        actor="kun-intake",
+    )
+
+    first = runtime.emit_collaboration_sla_reminders(
+        "msn-v6",
+        now=datetime.now(UTC) + timedelta(hours=7),
+    )
+    second = runtime.emit_collaboration_sla_reminders(
+        "msn-v6",
+        now=datetime.now(UTC) + timedelta(hours=8),
+    )
+
+    assert len(first) == 1
+    assert second == []
+    assert first[0].payload["intent"] == "collaboration_reminder"
+    assert first[0].payload["receiver"] == "customer"
