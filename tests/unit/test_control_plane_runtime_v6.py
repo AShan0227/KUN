@@ -324,6 +324,44 @@ def test_runtime_recovers_failed_work_item_by_failure_matrix() -> None:
     assert report.work_item_counts["failed"] == 1
 
 
+def test_runtime_can_resume_queued_repair_work_from_repairing_state() -> None:
+    runtime = _submit_runtime([_single_work_item(work_item_id="work-fails")])
+
+    runtime.run_next_ready(
+        mission_id="msn-v6",
+        runner=StaticRunner(
+            lambda _item: WorkItemResult(
+                status="failed",
+                summary="tool unavailable",
+                failure_category="tool_failure",
+            )
+        ),
+    )
+    assert runtime.progress_report("msn-v6").status == "repairing"
+    runtime.work_items["work-repair"] = WorkItem(
+        work_item_id="work-repair",
+        mission_id="msn-v6",
+        task_plan_version="v1",
+        type="repair",
+        owner="kun",
+        priority=90,
+        expected_output="Repair the failed execution path.",
+    )
+
+    run = runtime.run_next_ready(
+        mission_id="msn-v6",
+        runner=StaticRunner(
+            lambda _item: WorkItemResult(
+                status="done",
+                summary="repair path completed",
+            )
+        ),
+    )
+
+    assert run is not None
+    assert runtime.work_items["work-repair"].status == "done"
+
+
 def test_runtime_routes_failed_work_to_nuo_and_qi(tmp_path) -> None:
     store = FileControlPlaneStore(tmp_path / "runtime-nuo-qi.json")
     runtime = InMemoryControlPlane(store=store)

@@ -669,6 +669,15 @@ class InMemoryControlPlane:
         if work_item is None:
             return None
         mission = self._mission(mission_id)
+        if mission.status in {"repairing", "rolling_back", "changing_plan", "paused"}:
+            self.transition_mission(
+                mission_id=mission_id,
+                target="queued",
+                actor="control-plane",
+                reason=f"resume queued work item from {mission.status}",
+                subject_ref=work_item.work_item_id,
+            )
+            mission = self._mission(mission_id)
         if mission.status == "queued":
             self.transition_mission(
                 mission_id=mission_id,
