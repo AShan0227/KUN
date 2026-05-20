@@ -403,6 +403,25 @@ def control_plane_daemon_run(
         envvar="KUN_V6_AB_ROUND_ID",
         help="AB 回归轮次 ID",
     ),
+    frontier50_live_workdir: Path | None = typer.Option(
+        None,
+        "--frontier50-live-workdir",
+        envvar="KUN_FRONTIER50_LIVE_WORKDIR",
+        help="可选 Frontier50 live 工作区；提供后 daemon 可直接执行 AB round work item",
+    ),
+    frontier50_live_run_tag: str | None = typer.Option(
+        None,
+        "--frontier50-live-run-tag",
+        envvar="KUN_FRONTIER50_LIVE_RUN_TAG",
+        help="可选 Frontier50 live RUN_TAG；为空时按 round 自动生成",
+    ),
+    frontier50_live_command_timeout_sec: int | None = typer.Option(
+        None,
+        "--frontier50-live-command-timeout-sec",
+        envvar="KUN_FRONTIER50_LIVE_COMMAND_TIMEOUT_SEC",
+        min=1,
+        help="Frontier50 live 外部命令总超时",
+    ),
     max_ticks: int | None = typer.Option(
         None,
         "--max-ticks",
@@ -435,7 +454,13 @@ def control_plane_daemon_run(
         KUN_EXTERNAL_SAMPLE_COMPARISON_RUNNER_OWNER,
         ExternalSampleComparisonRunner,
     )
+    from kun.control_plane.frontier50_external import Frontier50ExternalRuntimeRunner
     from kun.control_plane.productization import ProductizationDogfoodRunner
+    from kun.control_plane.runtime_followups import (
+        ChainedControlPlaneRunner,
+        NuoRuntimeRepairRunner,
+        QiRuntimeGovernanceRunner,
+    )
 
     if max_ticks is not None and max_ticks <= 0:
         raise typer.BadParameter("max_ticks must be positive when provided")
@@ -452,10 +477,30 @@ def control_plane_daemon_run(
         ab_round_id=ab_round_id,
     )
     external_sample_runner = ExternalSampleComparisonRunner(control_plane=control_plane)
+    qi_runners = [productization_runner]
+    if frontier50_live_workdir is not None:
+        qi_runners.append(
+            Frontier50ExternalRuntimeRunner(
+                workdir=frontier50_live_workdir.expanduser().resolve(),
+                run_tag=frontier50_live_run_tag,
+                command_timeout_sec=frontier50_live_command_timeout_sec,
+            )
+        )
+    qi_runners.append(QiRuntimeGovernanceRunner(control_plane=control_plane))
+    nuo_runners = [
+        productization_runner,
+        NuoRuntimeRepairRunner(control_plane=control_plane),
+    ]
     productization_owners = {
         "control-plane": productization_runner,
-        "qi": productization_runner,
-        "nuo": productization_runner,
+        "qi": ChainedControlPlaneRunner(
+            runner_identity="qi-control-plane-runtime-router",
+            runners=qi_runners,
+        ),
+        "nuo": ChainedControlPlaneRunner(
+            runner_identity="nuo-control-plane-runtime-router",
+            runners=nuo_runners,
+        ),
         KUN_EXTERNAL_SAMPLE_COMPARISON_RUNNER_OWNER: external_sample_runner,
     }
     daemon = ControlPlaneDaemon(

@@ -12,7 +12,7 @@ import os
 import shutil
 import subprocess
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +109,12 @@ class Frontier50ExternalRoundRunner:
         self.next_round_task_ids = next_round_task_ids or []
         self._executor = executor or _subprocess_executor
 
+    def can_run(self, work_item: WorkItem) -> bool:
+        text = f"{work_item.work_item_id}\n{work_item.expected_output}".lower()
+        return work_item.owner == "qi" and work_item.type == "test" and (
+            "frontier50" in text or "ab" in text
+        )
+
     def run(self, work_item: WorkItem) -> WorkItemResult:
         env = self._env()
         result = self._executor(
@@ -169,6 +175,66 @@ class Frontier50ExternalRoundRunner:
             }
         )
         return env
+
+
+class Frontier50ExternalRuntimeRunner:
+    """Daemon-ready Frontier50 runner that builds one round config per work item."""
+
+    runner_type = "command"
+    runner_identity = "qi-frontier50-external-runtime-runner"
+
+    def __init__(
+        self,
+        *,
+        workdir: Path = FRONTIER50_DEFAULT_WORKDIR,
+        command: Path | None = None,
+        run_tag: str | None = None,
+        timeout_sec: int = 900,
+        review_timeout_sec: int = 600,
+        command_timeout_sec: int | None = None,
+        task_ids: Sequence[str] = (),
+        next_round_task_ids: Sequence[str] = (),
+        executor: CommandExecutor | None = None,
+    ) -> None:
+        self.workdir = workdir
+        self.command = command
+        self.run_tag = run_tag
+        self.timeout_sec = timeout_sec
+        self.review_timeout_sec = review_timeout_sec
+        self.command_timeout_sec = command_timeout_sec
+        self.task_ids = list(task_ids)
+        self.next_round_task_ids = list(next_round_task_ids)
+        self._executor = executor
+
+    def can_run(self, work_item: WorkItem) -> bool:
+        text = f"{work_item.work_item_id}\n{work_item.expected_output}".lower()
+        return work_item.owner == "qi" and work_item.type == "test" and (
+            "frontier50" in text or "ab" in text
+        )
+
+    def run(self, work_item: WorkItem) -> WorkItemResult:
+        round_index = _round_index_from_work_item(work_item)
+        round_id = _round_id(round_index)
+        runner = Frontier50ExternalRoundRunner(
+            config=Frontier50ExternalRoundConfig(
+                workdir=self.workdir,
+                command=self.command,
+                round_index=round_index,
+                round_id=round_id,
+                run_tag=self.run_tag or f"frontier50-r{round_index:02d}-control-plane-live",
+                timeout_sec=self.timeout_sec,
+                review_timeout_sec=self.review_timeout_sec,
+                command_timeout_sec=self.command_timeout_sec,
+            ),
+            mission_id=work_item.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            task_ids=self.task_ids or _default_task_ids(round_index),
+            next_round_id=_round_id(round_index + 1) if round_index < 10 else None,
+            next_round_task_ids=list(self.next_round_task_ids)
+            or (_default_task_ids(round_index + 1) if round_index < 10 else []),
+            executor=self._executor,
+        )
+        return runner.run(work_item)
 
 
 def load_frontier50_round_summary(
@@ -394,9 +460,29 @@ def _kun_gate_passed(*, report: dict[str, Any], health: dict[str, Any]) -> bool:
     )
 
 
+def _round_index_from_work_item(work_item: WorkItem) -> int:
+    text = f"{work_item.work_item_id}\n{work_item.expected_output}".lower()
+    for value in range(1, 11):
+        if f"round-{value:02d}" in text or f"round-{value}" in text:
+            return value
+        if f"r{value:02d}" in text:
+            return value
+    return 1
+
+
+def _round_id(round_index: int) -> str:
+    return f"round-{round_index:02d}"
+
+
+def _default_task_ids(round_index: int) -> list[str]:
+    start = ((round_index - 1) * 5) + 1
+    return [f"task-{index}" for index in range(start, start + 5)]
+
+
 __all__ = [
     "ExternalCommandResult",
     "Frontier50ExternalRoundConfig",
     "Frontier50ExternalRoundRunner",
+    "Frontier50ExternalRuntimeRunner",
     "load_frontier50_round_summary",
 ]

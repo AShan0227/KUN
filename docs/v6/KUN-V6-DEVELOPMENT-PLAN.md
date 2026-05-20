@@ -81,6 +81,8 @@
 - 每次运行写 `RunRecord` 和 `LedgerEvent`。
 - 每个 work item 执行前必须运行受限预执行层：绑定 production capability、skill、workspace、checkpoint、rollback、外部信息信号和启/傩反馈通道。
 - 预执行 skill 失败必须生成可审计 artifact；如果启/傩 runner 可用，必须自动创建 Qi/Nuo follow-up work item，不得静默忽略，也不得直接算作 KUN 能力失败。
+- daemon 默认必须注册 Qi runtime governance runner 和 Nuo runtime repair runner，确保预执行、运行时门禁和傩诊断生成的 Qi/Nuo follow-up work item 可以被后台服务自动执行，而不是只停留在待办列表。
+- planning/info_gap 任务如果存在 `TaskPlan.info_gaps`，daemon 必须自动生成协同票据并转入 waiting_human，不能先执行任务方案，也不能只靠 API 抛错。
 - 本地测试类预执行必须绑定明确 workspace，禁止在没有工作区边界时误跑当前仓库。
 - shell、Python 等执行型 skill 必须默认限制在配置的执行根目录内，拒绝越界 cwd，并把 sandbox root、实际 cwd、sandbox_enforced 写入运行元数据；它是默认工作区隔离，不替代容器级隔离。
 - 有 workspace 的 work item 必须生成文件级沙箱快照，而不是只保存 hash manifest；快照必须排除 `.git`、依赖缓存和构建产物，并记录 capture limits。
@@ -94,6 +96,8 @@
 - 恢复后能继续同一任务方案或触发计划变更。
 - daemon 停止、重启、跨天恢复后能继续正确下一步。
 - 用户无需手动盯终端或手动重跑同一任务。
+- Qi/Nuo follow-up 在默认 daemon 路由下能自动执行，并生成治理/修复 artifact。
+- 信息缺口能自动变成用户可理解的协同票据。
 - workspace 快照能在测试中真实恢复文件内容并移除快照后新增文件。
 - Watchtower 规则能在 V6 gate 事件上触发，触发结果进入 daemon tick report。
 
@@ -104,6 +108,7 @@
 开发内容：
 
 - 封装 Frontier50 round 为 Qi WorkItem。
+- Frontier50 live runner 必须能通过 daemon 显式挂载到 Qi test work item；AB 后续轮次暂停时不主动跑 round，但 runner 不能只是孤立模块。
 - 自动执行回答、互评、报告、gap 分析、KUN-only 修复、同题复测。
 - round 输出统一为 `ArtifactManifest`。
 - 20 个回答、45 个互评、report、health、repair tickets 都进入 artifact/ledger。

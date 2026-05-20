@@ -90,6 +90,7 @@ from kun.control_plane.frontier50_external import (
     ExternalCommandResult,
     Frontier50ExternalRoundConfig,
     Frontier50ExternalRoundRunner,
+    Frontier50ExternalRuntimeRunner,
     load_frontier50_round_summary,
 )
 from kun.control_plane.nuo import (
@@ -170,6 +171,11 @@ from kun.control_plane.runtime import (
     ControlPlaneRunner,
     InMemoryControlPlane,
     WorkItemResult,
+)
+from kun.control_plane.runtime_followups import (
+    ChainedControlPlaneRunner,
+    NuoRuntimeRepairRunner,
+    QiRuntimeGovernanceRunner,
 )
 from kun.control_plane.store import ControlPlaneStore, InMemoryControlPlaneStore
 from kun.control_plane.supervisor import (
@@ -255,6 +261,7 @@ __all__ = [
     "CapabilityPromotionStage",
     "CapabilityRollback",
     "CapabilitySource",
+    "ChainedControlPlaneRunner",
     "CodeBoundaryAuditReport",
     "CodeBoundaryFinding",
     "CollaborationQueueSummary",
@@ -298,6 +305,7 @@ __all__ = [
     "Frontier50CampaignPlan",
     "Frontier50ExternalRoundConfig",
     "Frontier50ExternalRoundRunner",
+    "Frontier50ExternalRuntimeRunner",
     "Frontier50RoundSpec",
     "Frontier50RoundStatus",
     "GateEvaluation",
@@ -327,6 +335,7 @@ __all__ = [
     "NuoRecoveryAction",
     "NuoRecoveryPlan",
     "NuoRecoveryRecommendation",
+    "NuoRuntimeRepairRunner",
     "NuoSeverity",
     "ProductizationAuditReport",
     "ProductizationDogfoodAcceptanceReport",
@@ -338,6 +347,7 @@ __all__ = [
     "QiABRoundControlPlaneContract",
     "QiABRoundSummary",
     "QiABRoundVerdict",
+    "QiRuntimeGovernanceRunner",
     "QualityGateStatus",
     "RunRecord",
     "SupervisorFinding",

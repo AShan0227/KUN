@@ -28,7 +28,16 @@ from kun.control_plane.capability_execution import (
 from kun.control_plane.preflight import run_work_item_preflight
 from kun.control_plane.runtime import ControlPlaneRunner, InMemoryControlPlane, WorkItemResult
 from kun.control_plane.supervisor import MinimalSupervisor, SupervisorFinding
-from kun.control_plane.v6 import ArtifactRecord, GateEvaluation, MissionStatus, RunRecord, WorkItem
+from kun.control_plane.v6 import (
+    ArtifactRecord,
+    CollaborationTicket,
+    GateEvaluation,
+    Mission,
+    MissionStatus,
+    RunRecord,
+    TaskPlan,
+    WorkItem,
+)
 from kun.control_plane.watchtower_bridge import evaluate_v6_watchtower_event_sync
 from kun.control_plane.workspace_snapshot import restore_workspace_snapshot
 
@@ -39,6 +48,11 @@ ACTIVE_DAEMON_MISSION_STATUSES: frozenset[MissionStatus] = frozenset(
     {
         "queued",
         "running",
+        "planning",
+        "info_gap",
+        "awaiting_approval",
+        "waiting_human",
+        "waiting_external",
         "blocked",
         "retrying",
         "repairing",
@@ -68,6 +82,7 @@ class DaemonTickReport(BaseModel):
     recovered_work_item_ids: list[str] = Field(default_factory=list)
     recovery_gate_refs: list[str] = Field(default_factory=list)
     created_work_item_ids: list[str] = Field(default_factory=list)
+    created_collaboration_ticket_ids: list[str] = Field(default_factory=list)
     ran_work_item_ids: list[str] = Field(default_factory=list)
     run_refs: list[str] = Field(default_factory=list)
     no_runner_work_item_ids: list[str] = Field(default_factory=list)
@@ -349,6 +364,13 @@ class ControlPlaneDaemon:
             report.capability_directive_count = len(capability_policy.directives)
 
         for mission_id in selected_mission_ids:
+            self._ensure_info_gap_collaboration(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+
+        for mission_id in selected_mission_ids:
             self._recover_stale_work(mission_id=mission_id, report=report, now=observed_at)
 
         remaining = max_work_items
@@ -619,6 +641,84 @@ class ControlPlaneDaemon:
             for mission in self.control_plane.missions.values()
             if mission.status in ACTIVE_DAEMON_MISSION_STATUSES
         )
+
+    def _ensure_info_gap_collaboration(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None:
+            return
+        plan = self._current_task_plan(mission)
+        info_gaps = list(plan.info_gaps) if plan is not None else []
+        if not info_gaps and mission.status != "info_gap":
+            return
+        ticket_id = (
+            f"collab-info-gap-{_slug(mission.mission_id)}-"
+            f"{_slug(plan.version if plan is not None else 'intake')}"
+        )
+        if ticket_id in self.control_plane.collaboration_tickets:
+            return
+        if mission.status == "planning" and info_gaps:
+            self.control_plane.transition_mission(
+                mission_id=mission.mission_id,
+                target="info_gap",
+                actor=self.daemon_id,
+                reason="daemon found unresolved task-plan information gaps before execution",
+                subject_ref=plan.plan_id if plan is not None else mission.mission_id,
+            )
+            mission = self.control_plane.missions[mission.mission_id]
+        ticket = CollaborationTicket(
+            ticket_id=ticket_id,
+            mission_id=mission.mission_id,
+            type="expert_input",
+            role_needed=mission.owner or "mission-owner",
+            why_needed=_info_gap_reason(mission=mission, plan=plan, info_gaps=info_gaps),
+            context_ref=mission.working_context_ref
+            or (plan.plan_id if plan is not None else mission.mission_id),
+            risk_if_skipped=(
+                "KUN may plan or execute against missing constraints, acceptance criteria, "
+                "permissions, or domain facts."
+            ),
+            deadline=observed_at + timedelta(hours=24),
+            sla_policy={"reminder_after_hours": 6, "escalate_after_hours": 24},
+            escalation_policy={
+                "after_deadline": "pause_or_choose_low_risk_fallback_before_execution"
+            },
+            fallback_policy={
+                "allowed": True,
+                "rule": "use lowest-risk assumption only when explicitly safe and reversible",
+            },
+            resume_after_response=True,
+            output_contract="Answer each missing information gap or approve a reversible assumption.",
+        )
+        self.control_plane.record_collaboration_ticket(ticket, actor=self.daemon_id)
+        report.created_collaboration_ticket_ids.append(ticket.ticket_id)
+        if self.control_plane.missions[mission.mission_id].status == "info_gap":
+            self.control_plane.transition_mission(
+                mission_id=mission.mission_id,
+                target="waiting_human",
+                actor=self.daemon_id,
+                reason="daemon opened an information-gap ticket and is waiting for input",
+                subject_ref=ticket.ticket_id,
+            )
+
+    def _current_task_plan(self, mission: Mission) -> TaskPlan | None:
+        plans = [
+            plan
+            for plan in self.control_plane.task_plans.values()
+            if plan.mission_id == mission.mission_id
+        ]
+        if not plans:
+            return None
+        if mission.current_plan_version:
+            for plan in plans:
+                if plan.version == mission.current_plan_version:
+                    return plan
+        return max(plans, key=lambda plan: (plan.version, plan.plan_id))
 
     def _recover_stale_work(
         self,
@@ -1080,11 +1180,30 @@ def _slug(value: str) -> str:
     return "".join(safe).strip("-")[:80] or "item"
 
 
+def _info_gap_reason(
+    *,
+    mission: Mission,
+    plan: TaskPlan | None,
+    info_gaps: Sequence[str],
+) -> str:
+    if info_gaps:
+        missing = "; ".join(info_gaps[:6])
+    elif plan is not None and plan.unknowns:
+        missing = "; ".join(plan.unknowns[:6])
+    else:
+        missing = "the mission is marked info_gap but does not yet have a resolved plan"
+    return (
+        "KUN must clarify missing information before producing or executing the task plan. "
+        f"Mission: {mission.objective}. Missing: {missing}"
+    )
+
+
 def _tick_is_idle(report: DaemonTickReport) -> bool:
     return not (
         report.recovered_work_item_ids
         or report.recovery_gate_refs
         or report.created_work_item_ids
+        or report.created_collaboration_ticket_ids
         or report.ran_work_item_ids
         or report.run_refs
         or report.no_runner_work_item_ids

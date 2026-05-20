@@ -70,6 +70,59 @@ def _seed_control_plane_store(path: Path) -> None:
     )
 
 
+def _seed_qi_followup_store(path: Path) -> None:
+    control_plane = InMemoryControlPlane(store=FileControlPlaneStore(path))
+    mission = Mission(
+        mission_id="msn-cli-qi-v6",
+        owner="kun",
+        objective="Run a Qi runtime follow-up from CLI daemon",
+        task_type="self_improvement",
+        status="contracted",
+    )
+    plan = TaskPlan(
+        plan_id="plan-cli-qi-v6",
+        mission_id=mission.mission_id,
+        version="v1",
+        objective=mission.objective,
+        acceptance_criteria=["Qi follow-up is executed by default daemon routing"],
+        constraints=["non-production learning cannot become default runtime ability"],
+        approval_status="approved",
+    )
+    contract = ExecutionContract(
+        contract_id="contract-cli-qi-v6",
+        mission_id=mission.mission_id,
+        task_plan_version=plan.version,
+        allowed_actions=["record runtime learning evidence"],
+        forbidden_actions=["enable replay candidates by default"],
+    )
+    context = WorkingContext(
+        working_context_id="ctx-cli-qi-v6",
+        mission_id=mission.mission_id,
+        task_plan_version=plan.version,
+        audience="qi",
+        scope="runtime-followup",
+        summary="Qi CLI activation test context.",
+        acceptance_criteria=plan.acceptance_criteria,
+        constraints=plan.constraints,
+    )
+    work = WorkItem(
+        work_item_id="work-qi-runtime-learning-cli",
+        mission_id=mission.mission_id,
+        task_plan_version=plan.version,
+        type="governance",
+        owner="qi",
+        priority=90,
+        expected_output="Review this runtime signal as a capability candidate.",
+    )
+    control_plane.submit_mission(
+        mission=mission,
+        task_plan=plan,
+        execution_contract=contract,
+        working_context=context,
+        work_items=[work],
+    )
+
+
 def test_control_plane_daemon_status_reports_empty_state(tmp_path) -> None:
     runner = CliRunner()
     result = runner.invoke(
@@ -84,7 +137,7 @@ def test_control_plane_daemon_status_reports_empty_state(tmp_path) -> None:
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.output[result.output.find("{\n") :])
     assert payload["status"] == "stopped"
     assert payload["state"] is None
     assert payload["pending_stop_request"] is None
@@ -118,7 +171,7 @@ def test_control_plane_daemon_run_persists_service_state_and_progress(tmp_path) 
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.output[result.output.find("{\n") :])
     assert payload["report"]["daemon_id"] == "daemon-cli-test"
     assert payload["report"]["stopped_reason"] == "max_ticks"
     assert payload["service_state"]["status"] == "stopped"
@@ -126,6 +179,45 @@ def test_control_plane_daemon_run_persists_service_state_and_progress(tmp_path) 
     assert payload["service_state"]["active_mission_ids"] == ["msn-cli-v6"]
     recovered = InMemoryControlPlane(store=FileControlPlaneStore(store_path))
     assert any("daemon_progress" in artifact.supports for artifact in recovered.artifacts.values())
+
+
+def test_control_plane_daemon_run_executes_default_qi_followup_runner(tmp_path) -> None:
+    runner = CliRunner()
+    store_path = tmp_path / "control-plane-qi.json"
+    state_path = tmp_path / "daemon-state-qi.json"
+    _seed_qi_followup_store(store_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "control-plane",
+            "daemon-run",
+            "--store-path",
+            str(store_path),
+            "--state-path",
+            str(state_path),
+            "--daemon-id",
+            "daemon-cli-qi-test",
+            "--mission-ids",
+            "msn-cli-qi-v6",
+            "--poll-interval-sec",
+            "0",
+            "--max-ticks",
+            "1",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output[result.output.find("{\n") :])
+    assert payload["report"]["tick_reports"][0]["ran_work_item_ids"] == [
+        "work-qi-runtime-learning-cli"
+    ]
+    recovered = InMemoryControlPlane(store=FileControlPlaneStore(store_path))
+    assert recovered.capability_profiles
+    profile = next(iter(recovered.capability_profiles.values()))
+    assert profile.promotion_stage == "replay"
+    assert profile.runtime_enabled is False
 
 
 def test_control_plane_daemon_stop_and_status_show_pending_stop_request(tmp_path) -> None:
