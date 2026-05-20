@@ -16,17 +16,24 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kun.control_plane.activation import activate_work_item_features
 from kun.control_plane.capability_execution import (
     CapabilityExecutionPolicy,
     build_capability_execution_policy,
 )
-from kun.control_plane.runtime import ControlPlaneRunner, InMemoryControlPlane
+from kun.control_plane.preflight import run_work_item_preflight
+from kun.control_plane.runtime import ControlPlaneRunner, InMemoryControlPlane, WorkItemResult
 from kun.control_plane.supervisor import MinimalSupervisor, SupervisorFinding
-from kun.control_plane.v6 import ArtifactRecord, MissionStatus, RunRecord, WorkItem
+from kun.control_plane.v6 import ArtifactRecord, GateEvaluation, MissionStatus, RunRecord, WorkItem
+from kun.control_plane.watchtower_bridge import evaluate_v6_watchtower_event_sync
+from kun.control_plane.workspace_snapshot import restore_workspace_snapshot
+
+if TYPE_CHECKING:
+    from kun.watchtower.engine import RuleEngine
 
 ACTIVE_DAEMON_MISSION_STATUSES: frozenset[MissionStatus] = frozenset(
     {
@@ -68,6 +75,11 @@ class DaemonTickReport(BaseModel):
     final_gate_refs: list[str] = Field(default_factory=list)
     delivery_manifest_refs: list[str] = Field(default_factory=list)
     progress_artifact_refs: list[str] = Field(default_factory=list)
+    activation_artifact_refs: list[str] = Field(default_factory=list)
+    preflight_artifact_refs: list[str] = Field(default_factory=list)
+    preflight_failed_skill_ids: list[str] = Field(default_factory=list)
+    watchtower_fired_rule_ids: list[str] = Field(default_factory=list)
+    watchtower_error_count: int = 0
     capability_policy_ref: str | None = None
     capability_profile_refs: list[str] = Field(default_factory=list)
     capability_directive_count: int = 0
@@ -295,6 +307,7 @@ class ControlPlaneDaemon:
         runners_by_owner: Mapping[str, ControlPlaneRunner] | None = None,
         runners_by_type: Mapping[str, ControlPlaneRunner] | None = None,
         default_runner: ControlPlaneRunner | None = None,
+        rule_engine: RuleEngine | None = None,
     ) -> None:
         self.control_plane = control_plane
         self.supervisor = supervisor or MinimalSupervisor()
@@ -302,6 +315,7 @@ class ControlPlaneDaemon:
         self.runners_by_owner = dict(runners_by_owner or {})
         self.runners_by_type = dict(runners_by_type or {})
         self.default_runner = default_runner
+        self.rule_engine = rule_engine
 
     def tick_once(
         self,
@@ -347,12 +361,47 @@ class ControlPlaneDaemon:
                 if runner is None:
                     report.no_runner_work_item_ids.append(work_item.work_item_id)
                     break
+                activation = activate_work_item_features(
+                    control_plane=self.control_plane,
+                    work_item=work_item,
+                    capability_policy=capability_policy,
+                    actor=self.daemon_id,
+                    observed_at=observed_at,
+                )
+                self.control_plane.work_items[activation.work_item.work_item_id] = (
+                    activation.work_item
+                )
+                self._persist_work_item(activation.work_item)
+                for artifact in activation.artifacts:
+                    self._upsert_artifact(artifact)
+                    report.activation_artifact_refs.append(artifact.artifact_id)
+                preflight = run_work_item_preflight(
+                    control_plane=self.control_plane,
+                    work_item=activation.work_item,
+                    actor=self.daemon_id,
+                    observed_at=observed_at,
+                )
+                preflight_artifact_refs: list[str] = []
+                for artifact in preflight.artifacts:
+                    self._upsert_artifact(artifact)
+                    preflight_artifact_refs.append(artifact.artifact_id)
+                    report.preflight_artifact_refs.append(artifact.artifact_id)
+                report.preflight_failed_skill_ids.extend(preflight.failed_skill_ids)
                 _bind_capability_policy(runner, capability_policy)
                 run = self.control_plane.run_next_ready(mission_id=mission_id, runner=runner)
                 if run is None:
                     break
                 report.ran_work_item_ids.append(run.work_item_id)
                 report.run_refs.append(run.run_id)
+                fired, error_count = self._evaluate_watchtower_for_run(run)
+                report.watchtower_fired_rule_ids.extend(fired)
+                report.watchtower_error_count += error_count
+                self._queue_preflight_followups(
+                    work_item=activation.work_item,
+                    failed_skill_ids=preflight.failed_skill_ids,
+                    artifact_refs=preflight_artifact_refs,
+                    report=report,
+                )
                 remaining -= 1
                 if self.control_plane.missions[mission_id].status not in {"queued", "running"}:
                     break
@@ -702,7 +751,125 @@ class ControlPlaneDaemon:
             if callable(can_run) and not can_run(work_item):
                 continue
             return runner
+        if work_item.type == "rollback" and work_item.rollback_refs:
+            return _WorkspaceRollbackRunner(self.control_plane, self.daemon_id)
         return None
+
+    def _evaluate_watchtower_for_run(self, run: RunRecord) -> tuple[list[str], int]:
+        if self.rule_engine is None:
+            return [], 0
+        work_item = self.control_plane.work_items.get(run.work_item_id)
+        if work_item is None:
+            return [], 0
+        mission = self.control_plane.missions.get(work_item.mission_id)
+        if mission is None:
+            return [], 0
+        gate = (
+            self.control_plane.gate_evaluations.get(run.gate_evaluation_ref)
+            if run.gate_evaluation_ref
+            else None
+        )
+        artifacts = self._artifacts_for_run(work_item=work_item, gate=gate)
+        event_types = [
+            "control_plane.work_item.completed"
+            if run.exit_status == "succeeded"
+            else "control_plane.work_item.failed"
+        ]
+        if gate is not None:
+            event_types.append("control_plane.gate_evaluated")
+        fired: list[str] = []
+        errors = 0
+        for event_type in event_types:
+            try:
+                report = evaluate_v6_watchtower_event_sync(
+                    self.rule_engine,
+                    event_type=event_type,
+                    mission=mission,
+                    work_item=work_item,
+                    run=run,
+                    gate=gate,
+                    artifacts=artifacts,
+                    tenant_id="control-plane",
+                )
+            except Exception:
+                errors += 1
+                continue
+            fired.extend(report.fired_rule_ids)
+        return _merge_unique(fired), errors
+
+    def _artifacts_for_run(
+        self,
+        *,
+        work_item: WorkItem,
+        gate: GateEvaluation | None,
+    ) -> list[ArtifactRecord]:
+        artifact_ids = {
+            artifact.artifact_id
+            for artifact in self.control_plane.artifacts.values()
+            if artifact.work_item_id == work_item.work_item_id
+        }
+        if gate is not None:
+            artifact_ids.update(gate.artifact_refs)
+        return [
+            artifact
+            for artifact_id in sorted(artifact_ids)
+            if (artifact := self.control_plane.artifacts.get(artifact_id)) is not None
+        ]
+
+    def _queue_preflight_followups(
+        self,
+        *,
+        work_item: WorkItem,
+        failed_skill_ids: Sequence[str],
+        artifact_refs: Sequence[str],
+        report: DaemonTickReport,
+    ) -> None:
+        if not failed_skill_ids:
+            return
+        failed = ", ".join(sorted(set(failed_skill_ids)))
+        for owner, item_type, prefix, expected_output in (
+            (
+                "nuo",
+                "repair",
+                "work-nuo-preflight",
+                (
+                    "Classify and repair the failed preflight skills. Treat tool, network, "
+                    "auth, timeout, wrapper, and environment problems as system conditions "
+                    "first, then decide whether the original work needs rerun."
+                ),
+            ),
+            (
+                "qi",
+                "governance",
+                "work-qi-preflight",
+                (
+                    "Review this preflight failure as a capability-governance signal. Decide "
+                    "whether to keep, merge, modify, delete, or re-promote the trigger/skill."
+                ),
+            ),
+        ):
+            if owner not in self.runners_by_owner:
+                continue
+            followup_id = f"{prefix}-{_slug(work_item.work_item_id)}"
+            if followup_id in self.control_plane.work_items:
+                continue
+            followup = WorkItem(
+                work_item_id=followup_id,
+                mission_id=work_item.mission_id,
+                task_plan_version=work_item.task_plan_version,
+                type=item_type,
+                owner=owner,
+                priority=85,
+                idempotency_key=f"{prefix}:{work_item.work_item_id}:{failed}",
+                expected_output=f"{expected_output} Failed skills: {failed}.",
+                required_capability_refs=list(work_item.required_capability_refs),
+                skill_refs=sorted(set(failed_skill_ids)),
+                recovery_refs=[work_item.work_item_id, *artifact_refs],
+                rollback_refs=list(work_item.rollback_refs),
+            )
+            self.control_plane.work_items[followup.work_item_id] = followup
+            self._persist_work_item(followup)
+            report.created_work_item_ids.append(followup.work_item_id)
 
     def _finalize_idle_mission(self, *, mission_id: str, report: DaemonTickReport) -> None:
         """Let capable runners close mission-level delivery artifacts when ready."""
@@ -808,6 +975,69 @@ def _bind_capability_policy(
         bind(capability_policy)
 
 
+class _WorkspaceRollbackRunner:
+    runner_type: Literal["tool"] = "tool"
+
+    def __init__(self, control_plane: InMemoryControlPlane, daemon_id: str) -> None:
+        self.control_plane = control_plane
+        self.runner_identity = f"{daemon_id}:workspace-rollback"
+
+    def run(self, work_item: WorkItem) -> WorkItemResult:
+        snapshot = self._snapshot_artifact(work_item)
+        if snapshot is None:
+            return WorkItemResult(
+                status="failed",
+                summary="No restorable workspace snapshot was found for rollback.",
+                failure_category="tool_failure",
+            )
+        try:
+            restored = restore_workspace_snapshot(snapshot)
+        except Exception as exc:
+            return WorkItemResult(
+                status="failed",
+                summary=f"Workspace rollback failed: {type(exc).__name__}: {exc}",
+                failure_category="tool_failure",
+            )
+        payload = restored.model_dump(mode="json")
+        artifact = ArtifactRecord(
+            artifact_id=f"artifact-rollback-restore-{_slug(work_item.work_item_id)}-{_compact_time(_now())}",
+            kind="report",
+            path_or_uri=f"control-plane://rollback/{work_item.mission_id}/{work_item.work_item_id}",
+            content_hash=_hash_payload(payload),
+            created_by=self.runner_identity,
+            mission_id=work_item.mission_id,
+            work_item_id=work_item.work_item_id,
+            supports=[
+                "workspace_restore",
+                "rollback_executed",
+                snapshot.artifact_id,
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        return WorkItemResult(
+            status="done",
+            summary=(
+                "Workspace rollback restored "
+                f"{restored.restored_file_count} files and removed "
+                f"{restored.removed_extra_file_count} extra files."
+            ),
+            artifacts=[artifact],
+        )
+
+    def _snapshot_artifact(self, work_item: WorkItem) -> ArtifactRecord | None:
+        for artifact_ref in work_item.rollback_refs:
+            artifact = self.control_plane.artifacts.get(artifact_ref)
+            if artifact is None:
+                continue
+            if artifact.kind == "snapshot" and (
+                "workspace_snapshot" in artifact.supports
+                or "restore_mode:file_copy" in artifact.supports
+            ):
+                return artifact
+        return None
+
+
 def _hash_payload(payload: object) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
@@ -845,6 +1075,11 @@ def _compact_time(value: datetime) -> str:
     return value.strftime("%Y%m%dT%H%M%SZ")
 
 
+def _slug(value: str) -> str:
+    safe = [ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value]
+    return "".join(safe).strip("-")[:80] or "item"
+
+
 def _tick_is_idle(report: DaemonTickReport) -> bool:
     return not (
         report.recovered_work_item_ids
@@ -856,7 +1091,19 @@ def _tick_is_idle(report: DaemonTickReport) -> bool:
         or report.finalized_mission_ids
         or report.final_gate_refs
         or report.delivery_manifest_refs
+        or report.watchtower_fired_rule_ids
     )
+
+
+def _merge_unique(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        merged.append(value)
+    return merged
 
 
 def _service_state_from_tick(

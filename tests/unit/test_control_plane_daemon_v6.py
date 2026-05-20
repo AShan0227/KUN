@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Literal
 
 from kun.control_plane import (
+    ArtifactRecord,
     CapabilityProfile,
     ControlPlaneDaemon,
     DaemonServiceConfig,
@@ -22,6 +24,7 @@ from kun.control_plane import (
     WorkItemResult,
 )
 from kun.control_plane.capability_execution import CapabilityExecutionPolicy
+from kun.control_plane.preflight import WorkItemPreflight
 from kun.control_plane.productization import (
     ProductizationDogfoodRunner,
     build_productization_dogfood_mission,
@@ -30,6 +33,8 @@ from kun.control_plane.productization import (
     materialize_external_behavior_distillation,
     submit_productization_dogfood_mission,
 )
+from kun.watchtower.engine import RuleEngine
+from kun.watchtower.rules import GuardRule, RuleTrigger
 
 NOW = datetime(2026, 5, 19, 9, 0, tzinfo=UTC)
 
@@ -207,6 +212,85 @@ def test_daemon_tick_runs_ready_work_and_persists_progress(tmp_path) -> None:
     assert report.progress_artifact_refs[0] in recovered.artifacts
 
 
+def test_daemon_creates_restorable_workspace_snapshot_and_rolls_back(tmp_path) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "app.txt"
+    target.write_text("v1", encoding="utf-8")
+    contract = control_plane.contracts["contract-daemon"]
+    contract = contract.model_copy(update={"delivery_contract": {"project_path": str(workspace)}})
+    control_plane.contracts[contract.contract_id] = contract
+    store.put_execution_contract(contract)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": StaticRunner()},
+        daemon_id="daemon-test",
+    )
+
+    report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW)
+    snapshot_ref = next(
+        artifact_ref
+        for artifact_ref in report.activation_artifact_refs
+        if "checkpoint" in artifact_ref
+    )
+    snapshot = control_plane.artifacts[snapshot_ref]
+    assert "restore_mode:file_copy" in snapshot.supports
+    assert json.loads(Path(snapshot.path_or_uri).read_text(encoding="utf-8"))["restore_mode"] == (
+        "file_copy"
+    )
+
+    target.write_text("broken", encoding="utf-8")
+    (workspace / "extra.txt").write_text("extra", encoding="utf-8")
+    rollback = WorkItem(
+        work_item_id="work-rollback",
+        mission_id=mission.mission_id,
+        task_plan_version="v1",
+        type="rollback",
+        owner="control-plane",
+        priority=100,
+        idempotency_key="rollback:test",
+        expected_output="restore workspace snapshot",
+        rollback_refs=[snapshot_ref],
+    )
+    control_plane.work_items[rollback.work_item_id] = rollback
+    store.put_work_item(rollback)
+
+    rollback_report = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        now=NOW + timedelta(minutes=1),
+    )
+    assert rollback_report.ran_work_item_ids == ["work-rollback"]
+    assert target.read_text(encoding="utf-8") == "v1"
+    assert not (workspace / "extra.txt").exists()
+    restored = InMemoryControlPlane(store=store)
+    assert restored.work_items["work-rollback"].status == "done"
+    assert any("workspace_restore" in artifact.supports for artifact in restored.artifacts.values())
+
+
+def test_daemon_bridges_v6_gate_events_to_watchtower(tmp_path) -> None:
+    control_plane, _store, mission = _runtime(tmp_path)
+    rule = GuardRule(
+        id="v6_gate_pass",
+        kind="guard",
+        trigger=RuleTrigger(
+            event_type="control_plane.gate_evaluated",
+            when="event['payload']['north_star_verdict'] == 'pass'",
+        ),
+    )
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": StaticRunner()},
+        daemon_id="daemon-test",
+        rule_engine=RuleEngine([rule]),
+    )
+
+    report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW)
+
+    assert "v6_gate_pass" in report.watchtower_fired_rule_ids
+    assert report.watchtower_error_count == 0
+
+
 def test_daemon_binds_production_capabilities_to_runner_and_progress(tmp_path) -> None:
     control_plane, store, mission = _runtime(tmp_path)
     profile = CapabilityProfile(
@@ -245,8 +329,99 @@ def test_daemon_binds_production_capabilities_to_runner_and_progress(tmp_path) -
     }
     assert report.capability_profile_refs == [profile.capability_id]
     assert report.capability_directive_count >= 3
+    assert report.activation_artifact_refs
+    activated_item = recovered.work_items["work-daemon"]
+    assert activated_item.required_capability_refs == [profile.capability_id]
+    activation_artifact = recovered.artifacts[report.activation_artifact_refs[0]]
+    assert "runtime_feature_activation" in activation_artifact.supports
+    assert profile.capability_id in activation_artifact.supports
     assert "capability_execution_policy" in progress_artifact.supports
     assert profile.capability_id in progress_artifact.supports
+
+
+def test_daemon_runs_skill_preflight_for_activated_work_items(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("print('hello')\n", encoding="utf-8")
+    control_plane, store, mission = _runtime(tmp_path)
+    contract = control_plane.contracts["contract-daemon"].model_copy(
+        update={"delivery_contract": {"project_path": str(workspace)}}
+    )
+    control_plane.contracts[contract.contract_id] = contract
+    store.put_execution_contract(contract)
+    item = control_plane.work_items["work-daemon"].model_copy(
+        update={"expected_output": "inspect app files before execution"}
+    )
+    control_plane.work_items[item.work_item_id] = item
+    store.put_work_item(item)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": StaticRunner()},
+        daemon_id="daemon-preflight-test",
+    )
+
+    report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW)
+    recovered = InMemoryControlPlane(store=store)
+
+    assert report.preflight_artifact_refs
+    preflight_artifact = recovered.artifacts[report.preflight_artifact_refs[0]]
+    assert "skill_preflight" in preflight_artifact.supports
+    assert "skill:shell-exec" in preflight_artifact.supports
+    assert preflight_artifact.path_or_uri.endswith(".json")
+    assert recovered.work_items["work-daemon"].workspace_ref == f"workspace://{workspace}"
+
+
+def test_daemon_routes_preflight_failures_to_qi_and_nuo_when_available(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+
+    def fake_preflight(*, control_plane, work_item, actor, observed_at):
+        return WorkItemPreflight(
+            artifacts=[
+                ArtifactRecord(
+                    artifact_id="artifact-preflight-failed",
+                    kind="test_result",
+                    path_or_uri="mem://preflight-failed",
+                    content_hash="hash-preflight-failed",
+                    created_by=actor,
+                    mission_id=work_item.mission_id,
+                    work_item_id=work_item.work_item_id,
+                    supports=["skill_preflight_failure", "skill:shell-exec"],
+                )
+            ],
+            failed_skill_ids=["shell-exec"],
+        )
+
+    monkeypatch.setattr("kun.control_plane.daemon.run_work_item_preflight", fake_preflight)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={
+            "kun": StaticRunner(),
+            "nuo": StaticRunner(),
+            "qi": StaticRunner(),
+        },
+        daemon_id="daemon-preflight-failure-test",
+    )
+
+    report = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        now=NOW,
+        max_work_items=1,
+    )
+    recovered = InMemoryControlPlane(store=store)
+
+    assert report.preflight_failed_skill_ids == ["shell-exec"]
+    assert sorted(report.created_work_item_ids) == [
+        "work-nuo-preflight-work-daemon",
+        "work-qi-preflight-work-daemon",
+    ]
+    assert recovered.work_items["work-nuo-preflight-work-daemon"].owner == "nuo"
+    assert recovered.work_items["work-qi-preflight-work-daemon"].owner == "qi"
+    assert "artifact-preflight-failed" in recovered.work_items[
+        "work-nuo-preflight-work-daemon"
+    ].recovery_refs
 
 
 def test_daemon_productization_runner_executes_canonical_work_items(tmp_path) -> None:

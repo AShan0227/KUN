@@ -29,6 +29,7 @@ class BenchmarkTask:
 class AgentBenchmarkResult:
     agent_ref: str
     task_id: str
+    task_type: str
     success: bool
     score: float
     cost_usd: float
@@ -60,6 +61,7 @@ async def run_benchmark(
             AgentBenchmarkResult(
                 agent_ref=agent_ref,
                 task_id=task.task_id,
+                task_type=task.task_type,
                 success=success,
                 score=score,
                 cost_usd=cost_usd,

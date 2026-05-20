@@ -7,6 +7,7 @@ from kun.interface.llm import (
     LLMRouter,
     TaskProfile,
 )
+from kun.interface.llm.capability_router import CapabilityScore
 from kun.interface.llm.stub_provider import StubProvider
 
 
@@ -143,3 +144,51 @@ async def test_router_ab_ratio_clamped_to_unit_interval():
     assert router.ab_ratio == 1.0
     router2 = LLMRouter(providers, ab_ratio=-0.5)
     assert router2.ab_ratio == 0.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_router_uses_capability_scores_to_select_challenger(monkeypatch):
+    """Capability cards can promote a measured-stronger candidate into the hot path."""
+
+    class FakeCapabilityRouter:
+        async def rank_candidates(self, *, tenant_id, model_ids, task_type):
+            assert tenant_id
+            assert task_type == "execution"
+            return [
+                CapabilityScore(
+                    model_id="challenger-top",
+                    task_type=task_type,
+                    reliability=0.92,
+                    sample_size=50,
+                    score=0.92,
+                    is_cold_start=False,
+                ),
+                CapabilityScore(
+                    model_id="primary-top",
+                    task_type=task_type,
+                    reliability=0.62,
+                    sample_size=50,
+                    score=0.62,
+                    is_cold_start=False,
+                ),
+            ]
+
+    primary = StubProvider(model_id="primary-top", tier="top")
+    challenger = StubProvider(model_id="challenger-top", tier="top")
+    providers = {"top": primary, "fallback": StubProvider(model_id="fb", tier="fallback")}
+    monkeypatch.setattr(
+        "kun.interface.llm.router.get_capability_router",
+        lambda: FakeCapabilityRouter(),
+    )
+    router = LLMRouter(providers, ab_alternates={"top": challenger}, ab_ratio=0.0)
+
+    response = await router.invoke(
+        LLMRequest(
+            messages=[LLMMessage(role="user", content="x" * 3500)],
+            profile=TaskProfile(task_type="execution"),
+        ),
+        purpose="execution",
+    )
+
+    assert response.model == "challenger-top"

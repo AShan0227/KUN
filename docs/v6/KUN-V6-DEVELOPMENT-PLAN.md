@@ -79,6 +79,12 @@
 - 自动生成 repair、rollback、retest、plan_change work item。
 - 定时生成用户可读进度汇报。
 - 每次运行写 `RunRecord` 和 `LedgerEvent`。
+- 每个 work item 执行前必须运行受限预执行层：绑定 production capability、skill、workspace、checkpoint、rollback、外部信息信号和启/傩反馈通道。
+- 预执行 skill 失败必须生成可审计 artifact；如果启/傩 runner 可用，必须自动创建 Qi/Nuo follow-up work item，不得静默忽略，也不得直接算作 KUN 能力失败。
+- 本地测试类预执行必须绑定明确 workspace，禁止在没有工作区边界时误跑当前仓库。
+- 有 workspace 的 work item 必须生成文件级沙箱快照，而不是只保存 hash manifest；快照必须排除 `.git`、依赖缓存和构建产物，并记录 capture limits。
+- rollback work item 必须能由 Control Plane 内置恢复 runner 执行，真实还原快照文件、清理快照后新增的无关文件，并写入恢复 artifact。
+- V6 runtime 事件必须桥接到 Watchtower rule engine；work item 完成/失败和 GateEvaluation 至少要形成可规则化事件。
 
 验收：
 
@@ -87,6 +93,8 @@
 - 恢复后能继续同一任务方案或触发计划变更。
 - daemon 停止、重启、跨天恢复后能继续正确下一步。
 - 用户无需手动盯终端或手动重跑同一任务。
+- workspace 快照能在测试中真实恢复文件内容并移除快照后新增文件。
+- Watchtower 规则能在 V6 gate 事件上触发，触发结果进入 daemon tick report。
 
 ### 阶段 3：启 Qi AB Runner 接入
 
@@ -142,6 +150,8 @@
 - KUN Runtime 只消费通过验证的能力。
 - 能力库必须治理去重、合并、来源版本、superseded profile 和 rollback 边界。
 - production 能力必须编译为 `CapabilityExecutionPolicy`，并被 daemon、planner、runner、supervisor、diagnostics、approval、context 或 evaluation 路径实际消费。
+- 模型路由必须消费 capability card 评分；当多个候选模型存在时，用真实任务/benchmark 写回的能力分选择候选，冷启动或无数据时保持原路由策略。
+- 傩 benchmark 结果必须写回 capability card，进入启和路由层可消费的数据面，而不是只停留在面板分数。
 - replay 能力档案必须继续推进到 holdout、shadow、canary、production 的代码路径。
 - 能力晋级必须绑定真实长任务验证和回归门禁。
 - OpenClaw/Hermes 能力样本必须在源码/行为对照后进入 Qi 候选和晋级流程。
@@ -307,6 +317,8 @@
 12. Nuo 污染样本 -> 自动分类 -> 修复建议 -> 同题复测 -> 不计 KUN 失败。
 13. 真实长任务 dogfood -> 计划 -> 执行 -> 恢复 -> 合并 -> 交付 -> 验收 -> 学习写回。
 14. production capability -> 能力治理去重 -> CapabilityExecutionPolicy -> daemon/runner/supervisor 绑定 -> progress artifact 可审计。
+15. workspace 执行 -> 文件级快照 -> 文件被破坏 -> rollback work item -> 内置恢复 runner 还原 -> 恢复 artifact 可审计。
+16. V6 work item/gate 事件 -> Watchtower rule engine -> 规则触发 -> daemon tick report 可见。
 
 ## 6. 完成定义
 
@@ -317,6 +329,8 @@
 - Nuo 能系统化识别污染并触发修复。
 - supervisor 能监控、恢复、重试、回滚。
 - daemon 能常驻后台自动醒来、拿任务、崩溃恢复、跨天续跑和定时汇报。
+- 沙箱快照和 rollback 已进入默认执行链路，不是未使用字段。
+- Watchtower 能消费 V6 runtime 事件并参与异常治理。
 - 人机协同可见、可恢复。
 - 任务驾驶舱对普通用户可读、可追溯，不需要翻终端。
 - 能力进化由启主导，并有 replay、holdout、shadow、canary、production、治理和回滚。

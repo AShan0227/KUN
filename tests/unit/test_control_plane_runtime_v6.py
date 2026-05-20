@@ -113,6 +113,18 @@ def _work_items() -> list[WorkItem]:
     ]
 
 
+def _single_work_item(*, work_item_id: str = "work-runtime") -> WorkItem:
+    return WorkItem(
+        work_item_id=work_item_id,
+        mission_id="msn-v6",
+        task_plan_version="v1",
+        type="execution",
+        owner="kun",
+        priority=80,
+        expected_output="Runtime execution result",
+    )
+
+
 def _gate(
     *,
     work_item: WorkItem,
@@ -308,8 +320,90 @@ def test_runtime_recovers_failed_work_item_by_failure_matrix() -> None:
     assert run is not None
     report = runtime.progress_report("msn-v6")
     assert report.status == "repairing"
-    assert report.latest_failure_category == "tool_failure"
+    assert report.latest_failure_category == "environment_failure"
     assert report.work_item_counts["failed"] == 1
+
+
+def test_runtime_routes_failed_work_to_nuo_and_qi(tmp_path) -> None:
+    store = FileControlPlaneStore(tmp_path / "runtime-nuo-qi.json")
+    runtime = InMemoryControlPlane(store=store)
+    work_item = _single_work_item(work_item_id="work-runtime-eof")
+    runtime.submit_mission(
+        mission=_mission(),
+        task_plan=_plan(),
+        execution_contract=_contract(),
+        working_context=_context(),
+        work_items=[work_item],
+    )
+
+    run = runtime.run_next_ready(
+        mission_id="msn-v6",
+        runner=StaticRunner(
+            lambda _item: WorkItemResult(
+                status="failed",
+                summary="unexpected EOF while reading response body",
+                failure_category="environment_failure",
+            )
+        ),
+    )
+
+    restored = InMemoryControlPlane(store=store)
+    assert run is not None
+    assert restored.runs[run.run_id].failure_category == "environment_failure"
+    nuo_gates = [
+        gate
+        for gate in restored.gate_evaluations.values()
+        if gate.created_by == "nuo" and gate.subject_ref == "work-runtime-eof"
+    ]
+    assert nuo_gates
+    assert "network_eof" in nuo_gates[0].hard_gate_failures
+    assert restored.work_items["work-nuo-work-runtime-eof-rerun"].owner == "control-plane"
+    qi_item = restored.work_items["work-qi-runtime-learning-work-runtime-eof"]
+    assert qi_item.owner == "qi"
+    assert qi_item.dependencies == []
+    assert "work-runtime-eof" in qi_item.recovery_refs
+
+
+def test_runtime_applies_default_validation_gate_when_runner_omits_gate() -> None:
+    runtime = _submit_runtime([_single_work_item(work_item_id="work-validation")])
+
+    run = runtime.run_next_ready(
+        mission_id="msn-v6",
+        runner=StaticRunner(
+            lambda _item: WorkItemResult(
+                status="done",
+                summary="runtime result completed with traceable summary",
+            )
+        ),
+    )
+
+    assert run is not None
+    restored_run = runtime.runs[run.run_id]
+    assert restored_run.gate_evaluation_ref == "gate-validation-work-validation"
+    gate = runtime.gate_evaluations[restored_run.gate_evaluation_ref]
+    assert gate.created_by == "validation-pipeline"
+    assert gate.north_star_verdict == "pass"
+    assert gate.next_action == "continue"
+    assert runtime.progress_report("msn-v6").latest_gate_ref == gate.gate_evaluation_id
+
+
+def test_runtime_validation_gate_rejects_complete_status_without_trace() -> None:
+    runtime = _submit_runtime([_single_work_item(work_item_id="work-empty-result")])
+
+    run = runtime.run_next_ready(
+        mission_id="msn-v6",
+        runner=StaticRunner(lambda _item: WorkItemResult(status="done")),
+    )
+
+    assert run is not None
+    restored_run = runtime.runs[run.run_id]
+    assert restored_run.exit_status == "failed"
+    assert restored_run.failure_category == "delivery_failure"
+    gate = runtime.gate_evaluations["gate-validation-work-empty-result"]
+    assert gate.north_star_verdict == "fail"
+    assert gate.next_action == "needs_repair"
+    assert "missing_summary_and_artifact_trace" in gate.hard_gate_failures
+    assert runtime.progress_report("msn-v6").status == "repairing"
 
 
 def test_runtime_routes_human_wait_to_collaboration_queue() -> None:

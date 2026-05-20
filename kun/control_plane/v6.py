@@ -95,6 +95,7 @@ ArtifactKind = Literal[
     "report",
     "screenshot",
     "decision",
+    "snapshot",
 ]
 
 ArtifactManifestKind = Literal["run", "merge", "delivery", "rollback", "retest"]
@@ -353,6 +354,14 @@ class WorkItem(BaseModel):
     idempotency_key: str | None = None
     expected_output: str = ""
     artifact_manifest_ref: str | None = None
+    sandbox_ref: str | None = None
+    workspace_ref: str | None = None
+    required_capability_refs: list[str] = Field(default_factory=list)
+    skill_refs: list[str] = Field(default_factory=list)
+    external_source_refs: list[str] = Field(default_factory=list)
+    checkpoint_refs: list[str] = Field(default_factory=list)
+    recovery_refs: list[str] = Field(default_factory=list)
+    rollback_refs: list[str] = Field(default_factory=list)
     status: WorkItemStatus = "queued"
 
     @model_validator(mode="after")

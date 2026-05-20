@@ -30,6 +30,7 @@ from kun.interface.llm.base import (
     ModelTier,
     TaskProfile,
 )
+from kun.interface.llm.capability_router import CapabilityScore, get_capability_router
 from kun.interface.llm.claude_code_provider import ClaudeCodeProvider
 from kun.interface.llm.codex_cli_provider import CodexCliProvider
 from kun.interface.llm.codex_mcp_provider import CodexMcpProvider
@@ -57,6 +58,13 @@ class RouteDecision:
     primary_tier: ModelTier
     fallback_tier: ModelTier = "fallback"
     rationale: str = ""
+
+
+@dataclass(frozen=True)
+class CapabilityRouteChoice:
+    provider: LLMProvider
+    branch: str
+    scores: list[CapabilityScore]
 
 
 # 目的 → 主档位映射 (ADR-002)
@@ -261,12 +269,49 @@ class LLMRouter:
 
             # A/B 切流: 同 tier 配了挑战者 + 命中 ab_ratio → 用挑战者代替 primary.
             # 失败时挑战者也走同样的 fallback 路径. 不并行调用 (不是 shadow).
-            primary = self.providers.get(decision.primary_tier)
+            base_primary = self.providers.get(decision.primary_tier)
+            primary = base_primary
             challenger = self.ab_alternates.get(decision.primary_tier)
             ab_branch = "primary"
             if challenger is not None and self.ab_ratio > 0.0 and _ab_roll() < self.ab_ratio:
                 primary = challenger
                 ab_branch = "challenger"
+            if primary is not None:
+                route_choice = await _select_by_capability(
+                    selected=primary,
+                    base_primary=base_primary,
+                    challenger=challenger,
+                    request=request,
+                    purpose=purpose,
+                    branch=ab_branch,
+                )
+                primary = route_choice.provider
+                ab_branch = route_choice.branch
+                if route_choice.scores:
+                    span.set_attribute(
+                        "kun.capability_router.selected_model",
+                        route_choice.provider.model_id,
+                    )
+                    span.set_attribute(
+                        "kun.capability_router.best_score",
+                        route_choice.scores[0].score,
+                    )
+                    log.debug(
+                        "router.capability_choice",
+                        purpose=purpose,
+                        task_type=_task_type_for_request(request, purpose),
+                        selected_model=route_choice.provider.model_id,
+                        branch=route_choice.branch,
+                        scores=[
+                            {
+                                "model_id": score.model_id,
+                                "score": score.score,
+                                "sample_size": score.sample_size,
+                                "cold_start": score.is_cold_start,
+                            }
+                            for score in route_choice.scores
+                        ],
+                    )
             span.set_attribute("kun.ab_branch", ab_branch)
 
             # Try primary tier
@@ -317,6 +362,97 @@ class LLMRouter:
             span.set_attribute("kun.final_provider", fallback.name)
             span.set_attribute("kun.cost_usd_equivalent", result.cost_usd_equivalent)
             return result
+
+
+async def _select_by_capability(
+    *,
+    selected: LLMProvider,
+    base_primary: LLMProvider | None,
+    challenger: LLMProvider | None,
+    request: LLMRequest,
+    purpose: TaskPurpose,
+    branch: str,
+) -> CapabilityRouteChoice:
+    """Use capability cards to choose among active provider candidates.
+
+    Ties preserve the existing primary/A-B decision, so cold-start systems keep
+    today's behavior while measured capability data can still take over.
+    """
+
+    if os.getenv("KUN_CAPABILITY_ROUTER_ENABLED", "1") == "0":
+        return CapabilityRouteChoice(provider=selected, branch=branch, scores=[])
+    candidates = _ordered_provider_candidates(selected, base_primary, challenger)
+    if len(candidates) <= 1:
+        scores = await _rank_capability_candidates(
+            candidates=candidates,
+            request=request,
+            purpose=purpose,
+        )
+        return CapabilityRouteChoice(provider=selected, branch=branch, scores=scores)
+    scores = await _rank_capability_candidates(
+        candidates=candidates,
+        request=request,
+        purpose=purpose,
+    )
+    if not scores:
+        return CapabilityRouteChoice(provider=selected, branch=branch, scores=[])
+    provider_by_model = {provider.model_id: provider for provider in candidates}
+    best = provider_by_model.get(scores[0].model_id, selected)
+    selected_branch = branch if best is selected else "capability_router"
+    return CapabilityRouteChoice(provider=best, branch=selected_branch, scores=scores)
+
+
+async def _rank_capability_candidates(
+    *,
+    candidates: list[LLMProvider],
+    request: LLMRequest,
+    purpose: TaskPurpose,
+) -> list[CapabilityScore]:
+    if not candidates:
+        return []
+    try:
+        return await get_capability_router().rank_candidates(
+            tenant_id=_tenant_id_for_capability_routing(),
+            model_ids=[provider.model_id for provider in candidates],
+            task_type=_task_type_for_request(request, purpose),
+        )
+    except Exception as e:
+        log.debug("router.capability_choice_skipped", error=str(e))
+        return []
+
+
+def _ordered_provider_candidates(
+    selected: LLMProvider,
+    base_primary: LLMProvider | None,
+    challenger: LLMProvider | None,
+) -> list[LLMProvider]:
+    candidates: list[LLMProvider] = []
+    seen: set[int] = set()
+    for provider in (selected, base_primary, challenger):
+        if provider is None or id(provider) in seen:
+            continue
+        seen.add(id(provider))
+        candidates.append(provider)
+    return candidates
+
+
+def _task_type_for_request(request: LLMRequest, purpose: TaskPurpose) -> str:
+    if request.profile is not None and request.profile.task_type:
+        return request.profile.task_type
+    return purpose
+
+
+def _tenant_id_for_capability_routing() -> str:
+    try:
+        from kun.core.tenancy import current_tenant
+
+        tenant = current_tenant()
+        tenant_id = getattr(tenant, "tenant_id", None)
+        if isinstance(tenant_id, str) and tenant_id:
+            return tenant_id
+    except Exception:
+        pass
+    return os.getenv("KUN_TENANT_ID", "default")
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))

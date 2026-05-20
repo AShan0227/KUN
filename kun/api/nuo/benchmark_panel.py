@@ -11,6 +11,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from kun.core.logging import get_logger
 from kun.core.tenancy import current_tenant
 from kun.engineering.agent_benchmark import (
     AgentBenchmarkResult,
@@ -19,8 +20,10 @@ from kun.engineering.agent_benchmark import (
     run_benchmark,
     sample_benchmark_tasks,
 )
+from kun.engineering.capability_writeback import TaskOutcome, record_outcome
 
 router = APIRouter()
+log = get_logger("kun.api.nuo.benchmark")
 AgentInvoke = Callable[[str], Awaitable[str]]
 
 
@@ -131,6 +134,7 @@ async def start_benchmark_run(req: BenchmarkRunRequest) -> BenchmarkRunRecord:
         results=[_result_to_dict(result) for result in results],
     )
     _RUNS[run.run_id] = run
+    await _writeback_benchmark_results(tenant_id=tenant.tenant_id, results=results)
     return run
 
 
@@ -166,11 +170,50 @@ def _result_to_dict(result: AgentBenchmarkResult) -> dict[str, Any]:
     return {
         "agent_ref": result.agent_ref,
         "task_id": result.task_id,
+        "task_type": result.task_type,
         "success": result.success,
         "score": result.score,
         "cost_usd": result.cost_usd,
         "duration_sec": result.duration_sec,
     }
+
+
+async def _writeback_benchmark_results(
+    *,
+    tenant_id: str,
+    results: list[AgentBenchmarkResult],
+) -> None:
+    """Feed benchmark outcomes into capability cards for Qi/router consumption."""
+
+    for result in results:
+        try:
+            await record_outcome(
+                tenant_id,
+                TaskOutcome(
+                    entity_type="external_agent",
+                    entity_id=result.agent_ref,
+                    task_type=result.task_type,
+                    outcome="pass"
+                    if result.success
+                    else "partial"
+                    if result.score > 0.0
+                    else "fail",
+                    cost_usd=result.cost_usd,
+                    duration_sec=result.duration_sec,
+                    rubric_score=result.score * 5.0,
+                    failure_name=None if result.success else "benchmark_task_failed",
+                    failure_root_cause=None
+                    if result.success
+                    else f"benchmark score {result.score:.2f} below task threshold",
+                ),
+            )
+        except Exception as exc:
+            log.debug(
+                "benchmark.capability_writeback_skipped",
+                agent_ref=result.agent_ref,
+                task_id=result.task_id,
+                error=str(exc),
+            )
 
 
 __all__ = ["clear_benchmark_state", "register_agent", "router"]

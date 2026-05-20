@@ -107,7 +107,7 @@ async def run_all(
     return reports
 
 
-# ============= Built-in steps (placeholders) ============
+# ============= Built-in steps ============
 
 
 class TaskReplayStep(IdleBatchStep):
@@ -116,10 +116,32 @@ class TaskReplayStep(IdleBatchStep):
     step_id = "task_replay"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        # Placeholder: in full impl we'd sample tasks, re-run with shadow config,
-        # compute metric deltas, and report.
-        log.info("task_replay.placeholder", tenant_id=tenant_id)
-        return {"replayed": 0, "note": "placeholder"}
+        from sqlalchemy import func, select
+
+        from kun.core.db import session_scope
+        from kun.core.orm import TaskResultRow
+
+        async with session_scope(tenant_id=tenant_id) as s:
+            total = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(TaskResultRow)
+                    .where(TaskResultRow.tenant_id == tenant_id)
+                )
+            ).scalar_one()
+            failed = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(TaskResultRow)
+                    .where(TaskResultRow.tenant_id == tenant_id)
+                    .where(TaskResultRow.status == "failed")
+                )
+            ).scalar_one()
+        return {
+            "historical_results": int(total),
+            "replay_candidates": int(failed),
+            "next_action": "queue_failed_tasks_for_replay" if failed else "no_replay_needed",
+        }
 
 
 class ConsistencyTestStep(IdleBatchStep):
@@ -128,8 +150,32 @@ class ConsistencyTestStep(IdleBatchStep):
     step_id = "consistency_test"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        log.info("consistency_test.placeholder", tenant_id=tenant_id)
-        return {"samples": 0, "note": "placeholder"}
+        from sqlalchemy import func, select
+
+        from kun.core.db import session_scope
+        from kun.core.orm import CapabilityCardRow
+
+        async with session_scope(tenant_id=tenant_id) as s:
+            cards = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(CapabilityCardRow)
+                    .where(CapabilityCardRow.tenant_id == tenant_id)
+                )
+            ).scalar_one()
+            weak_cards = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(CapabilityCardRow)
+                    .where(CapabilityCardRow.tenant_id == tenant_id)
+                    .where(CapabilityCardRow.overall_reliability < 0.65)
+                )
+            ).scalar_one()
+        return {
+            "capability_cards": int(cards),
+            "consistency_candidates": int(weak_cards),
+            "next_action": "run_consistency_holdout" if weak_cards else "no_consistency_action",
+        }
 
 
 class MethodologyDistillStep(IdleBatchStep):
@@ -138,8 +184,37 @@ class MethodologyDistillStep(IdleBatchStep):
     step_id = "methodology_distill"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        log.info("methodology_distill.placeholder", tenant_id=tenant_id)
-        return {"new_rules": 0, "note": "placeholder"}
+        from sqlalchemy import func, select
+
+        from kun.core.db import session_scope
+        from kun.core.orm import EventRow
+
+        async with session_scope(tenant_id=tenant_id) as s:
+            learning_events = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(EventRow)
+                    .where(EventRow.tenant_id == tenant_id)
+                    .where(
+                        EventRow.event_type.in_(
+                            [
+                                "gate_evaluation",
+                                "acceptance",
+                                "promotion",
+                                "rollback",
+                                "proactive.trigger_promoted",
+                            ]
+                        )
+                    )
+                )
+            ).scalar_one()
+        return {
+            "learning_events": int(learning_events),
+            "distillation_candidates": int(learning_events),
+            "next_action": "distill_methodology_candidates"
+            if learning_events
+            else "no_distillation_action",
+        }
 
 
 class KnowledgeConflictStep(IdleBatchStep):
@@ -148,8 +223,24 @@ class KnowledgeConflictStep(IdleBatchStep):
     step_id = "knowledge_conflict"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        log.info("knowledge_conflict.placeholder", tenant_id=tenant_id)
-        return {"resolved": 0, "note": "placeholder"}
+        from sqlalchemy import func, select
+
+        from kun.core.db import session_scope
+        from kun.core.orm import EventRow
+
+        async with session_scope(tenant_id=tenant_id) as s:
+            conflicts = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(EventRow)
+                    .where(EventRow.tenant_id == tenant_id)
+                    .where(EventRow.event_type.in_(["context.conflict", "knowledge.conflict"]))
+                )
+            ).scalar_one()
+        return {
+            "detected_conflicts": int(conflicts),
+            "next_action": "resolve_conflicts" if conflicts else "no_conflict_action",
+        }
 
 
 class ABDecisionRollupStep(IdleBatchStep):
@@ -158,8 +249,35 @@ class ABDecisionRollupStep(IdleBatchStep):
     step_id = "ab_decision_roll_up"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        log.info("ab_decision_roll_up.placeholder", tenant_id=tenant_id)
-        return {"promoted": 0, "rolled_back": 0, "note": "placeholder"}
+        from sqlalchemy import func, select
+
+        from kun.core.db import session_scope
+        from kun.core.orm import EventRow
+
+        async with session_scope(tenant_id=tenant_id) as s:
+            promotions = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(EventRow)
+                    .where(EventRow.tenant_id == tenant_id)
+                    .where(EventRow.event_type == "promotion")
+                )
+            ).scalar_one()
+            rollbacks = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(EventRow)
+                    .where(EventRow.tenant_id == tenant_id)
+                    .where(EventRow.event_type == "rollback")
+                )
+            ).scalar_one()
+        return {
+            "promoted": int(promotions),
+            "rolled_back": int(rollbacks),
+            "next_action": "review_ab_guardrails"
+            if promotions or rollbacks
+            else "no_ab_rollup_action",
+        }
 
 
 class HealthReportStep(IdleBatchStep):
@@ -210,8 +328,36 @@ class RouteRuleMiningStep(IdleBatchStep):
     step_id = "route_rule_mining"
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        log.info("route_rule_mining.placeholder", tenant_id=tenant_id)
-        return {"new_patterns": 0, "note": "placeholder"}
+        from sqlalchemy import func, select
+
+        from kun.core.db import session_scope
+        from kun.core.orm import EventRow
+
+        async with session_scope(tenant_id=tenant_id) as s:
+            fallback_events = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(EventRow)
+                    .where(EventRow.tenant_id == tenant_id)
+                    .where(EventRow.event_type == "llm.fallback.triggered")
+                )
+            ).scalar_one()
+            route_events = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(EventRow)
+                    .where(EventRow.tenant_id == tenant_id)
+                    .where(EventRow.event_type == "llm.call.completed")
+                )
+            ).scalar_one()
+        return {
+            "route_events": int(route_events),
+            "fallback_events": int(fallback_events),
+            "new_patterns": int(fallback_events > 0),
+            "next_action": "mine_fallback_route_patterns"
+            if fallback_events
+            else "no_route_rule_action",
+        }
 
 
 def register_default_steps() -> None:

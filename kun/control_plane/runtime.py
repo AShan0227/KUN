@@ -8,6 +8,8 @@ process isolation, and external AB wiring can sit behind this interface later.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import Counter
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
@@ -20,6 +22,12 @@ from kun.control_plane.capability_governance import (
     govern_default_runtime_capabilities,
 )
 from kun.control_plane.collaboration import CollaborationResponse
+from kun.control_plane.nuo import (
+    NuoHealthReport,
+    NuoObservation,
+    build_nuo_recovery_plan,
+    diagnose_nuo_health,
+)
 from kun.control_plane.store import ControlPlaneStore
 from kun.control_plane.v6 import (
     AcceptanceReview,
@@ -73,6 +81,325 @@ def _failure_still_blocks_progress(
         "changing_plan",
         "failed",
     }
+
+
+def _diagnose_result_with_nuo(
+    *,
+    mission: Mission,
+    work_item: WorkItem,
+    result: WorkItemResult,
+    manifest_ref: str | None,
+    contract: ExecutionContract | None,
+) -> NuoHealthReport | None:
+    if not _should_route_to_nuo(work_item=work_item, result=result):
+        return None
+    text = _result_text(result)
+    observation = NuoObservation(
+        mission_id=work_item.mission_id,
+        task_plan_version=work_item.task_plan_version,
+        subject_ref=work_item.work_item_id,
+        task_type=mission.task_type,
+        output_text=text,
+        error_text=text if result.status in {"failed", "blocked", "cancelled"} else "",
+        fallback_engaged=_mentions_fallback_pollution(text),
+        timed_out="timeout" in text.lower() or "timed out" in text.lower(),
+        network_eof="unexpected eof" in text.lower() or "network eof" in text.lower(),
+        wrapper_missing="wrapper missing" in text.lower() or "wrapper not found" in text.lower(),
+        auth_failure="unauthorized" in text.lower() or "invalid api key" in text.lower(),
+        report_required=_runtime_report_required(work_item=work_item, result=result, contract=contract),
+        report_ref=_runtime_report_ref(result=result, manifest_ref=manifest_ref),
+        review_count=_runtime_review_count(result),
+        expected_review_count=_expected_review_count(contract),
+        artifact_refs=[artifact.artifact_id for artifact in result.artifacts],
+        evidence_refs=_runtime_manifest_refs(result, "evidence_refs"),
+        test_refs=_runtime_manifest_refs(result, "test_refs"),
+        review_refs=_runtime_manifest_refs(result, "review_refs"),
+    )
+    return diagnose_nuo_health(observation)
+
+
+def _should_route_to_nuo(*, work_item: WorkItem, result: WorkItemResult) -> bool:
+    if result.failure_category is not None:
+        return True
+    if result.status in {"failed", "blocked", "cancelled", "waiting_external"}:
+        return True
+    text = _result_text(result).lower()
+    if any(
+        token in text
+        for token in (
+            "stub echo",
+            "fallback model",
+            "fallback path",
+            "fallback engaged",
+            "timeout",
+            "timed out",
+            "unexpected eof",
+            "network eof",
+            "connection reset",
+            "unauthorized",
+            "permission denied",
+            "wrapper missing",
+            "schema mismatch",
+            "report missing",
+            "review missing",
+        )
+    ):
+        return True
+    return _runtime_report_required(work_item=work_item, result=result, contract=None)
+
+
+def _mentions_fallback_pollution(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        token in lowered
+        for token in (
+            "using fallback model",
+            "fallback model path",
+            "fallback model",
+            "fallback path engaged",
+            "fallback engaged",
+        )
+    )
+
+
+def _result_text(result: WorkItemResult) -> str:
+    parts = [result.summary, result.failure_category or ""]
+    for artifact in result.artifacts:
+        parts.extend([artifact.kind, artifact.path_or_uri, " ".join(artifact.supports)])
+    return "\n".join(part for part in parts if part)
+
+
+def _runtime_report_required(
+    *,
+    work_item: WorkItem,
+    result: WorkItemResult,
+    contract: ExecutionContract | None,
+) -> bool:
+    if result.status not in {"done", "partial"}:
+        return False
+    policy = contract.delivery_contract if contract is not None else {}
+    if isinstance(policy, dict):
+        if bool(policy.get("report_required")):
+            return True
+        if bool(policy.get("requires_report")):
+            return True
+    text = f"{work_item.type}\n{work_item.expected_output}".lower()
+    return any(token in text for token in ("report", "summary", "验收", "报告"))
+
+
+def _runtime_report_ref(*, result: WorkItemResult, manifest_ref: str | None) -> str | None:
+    if manifest_ref:
+        return manifest_ref
+    for artifact in result.artifacts:
+        if artifact.kind == "report" or any("report" in support for support in artifact.supports):
+            return artifact.artifact_id
+    return None
+
+
+def _runtime_review_count(result: WorkItemResult) -> int | None:
+    if result.artifact_manifest is not None and result.artifact_manifest.review_refs:
+        return len(result.artifact_manifest.review_refs)
+    reviews = [
+        artifact
+        for artifact in result.artifacts
+        if artifact.kind == "review" or "review" in artifact.supports
+    ]
+    return len(reviews) if reviews else None
+
+
+def _expected_review_count(contract: ExecutionContract | None) -> int:
+    if contract is None:
+        return 0
+    candidates = [
+        contract.delivery_contract,
+        contract.evidence_policy,
+        contract.risk_policy,
+    ]
+    keys = ("expected_review_count", "minimum_review_count", "review_count_required")
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        for key in keys:
+            value = candidate.get(key)
+            if isinstance(value, int) and value > 0:
+                return value
+    return 0
+
+
+def _runtime_manifest_refs(result: WorkItemResult, field_name: str) -> list[str]:
+    if result.artifact_manifest is None:
+        return []
+    value = getattr(result.artifact_manifest, field_name)
+    return list(value)
+
+
+def _nuo_report_artifact(
+    *,
+    mission_id: str,
+    work_item_id: str,
+    report: NuoHealthReport,
+) -> ArtifactRecord:
+    payload = report.model_dump(mode="json")
+    return ArtifactRecord(
+        artifact_id=f"artifact-nuo-runtime-health-{_slug(work_item_id)}",
+        kind="report",
+        path_or_uri=f"control-plane://nuo/runtime-health/{mission_id}/{work_item_id}",
+        content_hash=_hash_payload(payload),
+        created_by="nuo",
+        mission_id=mission_id,
+        work_item_id=work_item_id,
+        supports=[
+            "nuo_runtime_health",
+            f"nuo_status:{report.status}",
+            *[f"nuo_finding:{finding.code}" for finding in report.findings],
+        ],
+        freshness="fresh",
+        source_quality="primary",
+    )
+
+
+def _runtime_qi_learning_work_item(
+    *,
+    mission: Mission,
+    work_item: WorkItem,
+    result: WorkItemResult,
+    gate: GateEvaluation | None,
+    nuo_report: NuoHealthReport | None,
+) -> WorkItem | None:
+    if work_item.owner in {"qi", "nuo"}:
+        return None
+    signals: list[str] = []
+    if result.failure_category is not None:
+        signals.append(f"failure:{result.failure_category}")
+    if result.status in {"failed", "blocked", "cancelled", "waiting_external"}:
+        signals.append(f"status:{result.status}")
+    if gate is not None and gate.north_star_verdict != "pass":
+        signals.append(f"gate:{gate.governance_signal or gate.north_star_verdict}")
+    if nuo_report is not None:
+        if nuo_report.findings:
+            signals.extend(f"nuo:{finding.code}" for finding in nuo_report.findings)
+        elif result.failure_category is not None or result.status in {"failed", "blocked"}:
+            signals.append("nuo:no_known_pollution_pattern")
+    if not signals:
+        return None
+    unique_signals = sorted(set(signals))
+    return WorkItem(
+        work_item_id=f"work-qi-runtime-learning-{_slug(work_item.work_item_id)}",
+        mission_id=mission.mission_id,
+        task_plan_version=work_item.task_plan_version,
+        type="governance",
+        owner="qi",
+        dependencies=[],
+        priority=80,
+        idempotency_key=f"qi-runtime-learning:{work_item.work_item_id}:{','.join(unique_signals)}",
+        expected_output=(
+            "Review this runtime signal and decide whether KUN should keep, merge, "
+            "modify, delete, or promote a capability. If useful, create a capability "
+            "evolution candidate with evidence, holdout/shadow/canary gates, rollback "
+            f"plan, and production eligibility. Signals: {', '.join(unique_signals)}"
+        ),
+        required_capability_refs=list(work_item.required_capability_refs),
+        external_source_refs=list(work_item.external_source_refs),
+        recovery_refs=[
+            *([gate.gate_evaluation_id] if gate is not None else []),
+            work_item.work_item_id,
+        ],
+    )
+
+
+def _runtime_validation_gate(
+    *,
+    mission: Mission,
+    work_item: WorkItem,
+    result: WorkItemResult,
+    manifest_ref: str | None,
+    artifact_refs: list[str],
+) -> GateEvaluation | None:
+    """Apply the default V6 quality gate when a runner omits its own gate."""
+
+    if result.status not in {"done", "partial"}:
+        return None
+    trace_refs = _dedupe_refs([*artifact_refs, *([manifest_ref] if manifest_ref else [])])
+    if not (result.summary or trace_refs):
+        return GateEvaluation(
+            gate_evaluation_id=f"gate-validation-{_slug(work_item.work_item_id)}",
+            mission_id=work_item.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            subject_ref=work_item.work_item_id,
+            stage="workitem",
+            task_type=mission.task_type,
+            rubric_version="kun-v6-runtime-validation-v1",
+            metric_pack_version="north-star-v6",
+            north_star_verdict="fail",
+            result_quality=0.0,
+            speed=0.5,
+            cost=0.5,
+            risk=0.7,
+            evidence_quality=0.0,
+            collaboration_quality=0.5,
+            thresholds={"result_quality": 0.8},
+            hard_gate_failures=["missing_summary_and_artifact_trace"],
+            artifact_refs=trace_refs,
+            failure_category="delivery_failure",
+            root_cause="Runner marked work complete without summary, artifacts, or manifest.",
+            responsibility_scope="kun_auto",
+            confidence=0.86,
+            next_action="needs_repair",
+            next_state="repairing",
+            learning_eligibility="candidate",
+            governance_signal="missing_runtime_delivery_trace",
+            created_by="validation-pipeline",
+        )
+
+    is_partial = result.status == "partial"
+    quality = 0.68 if is_partial else 0.82
+    verdict: Literal["pass", "partial", "fail"] = "partial" if is_partial else "pass"
+    return GateEvaluation(
+        gate_evaluation_id=f"gate-validation-{_slug(work_item.work_item_id)}",
+        mission_id=work_item.mission_id,
+        task_plan_version=work_item.task_plan_version,
+        subject_ref=work_item.work_item_id,
+        stage="workitem",
+        task_type=mission.task_type,
+        rubric_version="kun-v6-runtime-validation-v1",
+        metric_pack_version="north-star-v6",
+        north_star_verdict=verdict,
+        result_quality=quality,
+        speed=0.7,
+        cost=0.7,
+        risk=0.25 if not is_partial else 0.45,
+        evidence_quality=0.75 if trace_refs else 0.55,
+        collaboration_quality=0.7,
+        thresholds={"result_quality": 0.8},
+        artifact_refs=trace_refs,
+        evidence_refs=trace_refs,
+        confidence=0.72 if trace_refs else 0.62,
+        next_action="continue",
+        next_state="running",
+        created_by="validation-pipeline",
+    )
+
+
+def _dedupe_refs(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _hash_payload(payload: object) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _slug(value: str) -> str:
+    safe = [ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value]
+    return "".join(safe).strip("-")[:80] or "item"
 
 
 class WorkItemResult(BaseModel):
@@ -421,14 +748,82 @@ class InMemoryControlPlane:
             self.work_items[followup.work_item_id] = followup
             self._persist_work_item(followup)
 
+        runtime_artifact_refs = [artifact.artifact_id for artifact in result.artifacts]
+        runtime_gate = result.gate_evaluation
+        runtime_failure_category = result.failure_category
+        nuo_report = _diagnose_result_with_nuo(
+            mission=mission,
+            work_item=work_item,
+            result=result,
+            manifest_ref=manifest_ref,
+            contract=self.contracts.get(mission.execution_contract_ref or ""),
+        )
+        if nuo_report is not None:
+            nuo_artifact = _nuo_report_artifact(
+                mission_id=work_item.mission_id,
+                work_item_id=work_item.work_item_id,
+                report=nuo_report,
+            )
+            self.artifacts[nuo_artifact.artifact_id] = nuo_artifact
+            self._persist_artifact(nuo_artifact)
+            runtime_artifact_refs.append(nuo_artifact.artifact_id)
+            if nuo_report.findings and runtime_gate is None:
+                nuo_plan = build_nuo_recovery_plan(nuo_report, depends_on_subject=False)
+                runtime_gate = nuo_plan.gate_evaluation
+                runtime_gate = runtime_gate.model_copy(
+                    update={
+                        "artifact_refs": [*runtime_gate.artifact_refs, nuo_artifact.artifact_id]
+                    }
+                )
+                runtime_failure_category = (
+                    runtime_gate.failure_category or runtime_failure_category
+                )
+                if (
+                    nuo_plan.recovery_work_item is not None
+                    and nuo_plan.recovery_work_item.work_item_id not in self.work_items
+                ):
+                    self.work_items[nuo_plan.recovery_work_item.work_item_id] = (
+                        nuo_plan.recovery_work_item
+                    )
+                    self._persist_work_item(nuo_plan.recovery_work_item)
+
+        qi_followup = _runtime_qi_learning_work_item(
+            mission=mission,
+            work_item=work_item,
+            result=result,
+            gate=runtime_gate,
+            nuo_report=nuo_report,
+        )
+        if qi_followup is not None and qi_followup.work_item_id not in self.work_items:
+            self.work_items[qi_followup.work_item_id] = qi_followup
+            self._persist_work_item(qi_followup)
+
+        if runtime_gate is None:
+            runtime_gate = _runtime_validation_gate(
+                mission=mission,
+                work_item=work_item,
+                result=result,
+                manifest_ref=manifest_ref,
+                artifact_refs=runtime_artifact_refs,
+            )
+            if runtime_gate is not None and runtime_gate.failure_category:
+                runtime_failure_category = runtime_gate.failure_category
+
         gate_ref = None
-        if result.gate_evaluation is not None:
-            gate_ref = result.gate_evaluation.gate_evaluation_id
-            self.gate_evaluations[gate_ref] = result.gate_evaluation
-            self._persist_gate(result.gate_evaluation)
+        if runtime_gate is not None:
+            gate_ref = runtime_gate.gate_evaluation_id
+            self.gate_evaluations[gate_ref] = runtime_gate
+            self._persist_gate(runtime_gate)
 
         exit_status: RunExitStatus = (
-            "succeeded" if result.status in {"done", "partial"} else "failed"
+            "failed"
+            if (
+                runtime_failure_category is not None
+                and (runtime_gate is None or runtime_gate.north_star_verdict != "pass")
+            )
+            else "succeeded"
+            if result.status in {"done", "partial"}
+            else "failed"
         )
         if result.status in {"waiting_human", "waiting_external", "blocked"}:
             exit_status = "cancelled"
@@ -437,7 +832,7 @@ class InMemoryControlPlane:
                 **run.model_dump(),
                 "ended_at": _now(),
                 "exit_status": exit_status,
-                "failure_category": result.failure_category,
+                "failure_category": runtime_failure_category,
                 "artifact_manifest_ref": manifest_ref,
                 "gate_evaluation_ref": gate_ref,
             }
@@ -461,18 +856,18 @@ class InMemoryControlPlane:
             before={"status": work_item.status},
             after={"status": result.status},
             payload={"run_id": run_id, "summary": result.summary},
-            artifact_refs=[artifact.artifact_id for artifact in result.artifacts],
+            artifact_refs=runtime_artifact_refs,
         )
 
-        if result.gate_evaluation is not None:
-            self.apply_gate(result.gate_evaluation)
-        elif result.failure_category is not None:
-            recovery = default_recovery_for_failure(result.failure_category)
+        if runtime_gate is not None:
+            self.apply_gate(runtime_gate)
+        elif runtime_failure_category is not None:
+            recovery = default_recovery_for_failure(runtime_failure_category)
             self.transition_mission(
                 mission_id=work_item.mission_id,
                 target=recovery.next_state,
                 actor="control-plane",
-                reason=f"recovered from {result.failure_category}",
+                reason=f"recovered from {runtime_failure_category}",
                 subject_ref=work_item.work_item_id,
             )
         elif result.status == "waiting_human":
