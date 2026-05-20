@@ -119,9 +119,24 @@ def test_external_sample_runner_compares_sample_and_writes_ockham_artifacts(
     assert (output / "source-inventory.json").exists()
     assert (output / "feature-gap-matrix.md").exists()
     assert (output / "ockham-recommendations.md").exists()
+    assert (output / "qi-governance-actions.json").exists()
     inventory = json.loads((output / "source-inventory.json").read_text(encoding="utf-8"))
     assert inventory["source_signal_count"] >= 1
+    assert inventory["governance_action_count"] >= 1
     recommendations = (output / "ockham-recommendations.md").read_text(encoding="utf-8")
     assert "Qi Candidate" in recommendations
+    governance = json.loads((output / "qi-governance-actions.json").read_text(encoding="utf-8"))
+    assert governance["schema"] == "kun-external-sample-governance-plan-v1"
+    assert governance["default_runtime_allowed"] is False
+    assert governance["actions"]
+    assert all(action["default_runtime_allowed"] is False for action in governance["actions"])
+    assert any(
+        "do not copy external implementation code" in action["risk_controls"]
+        for action in governance["actions"]
+    )
     assert control_plane.work_items["work-genesis-capability-comparison"].status == "done"
     assert any("external_sample_gap_matrix" in artifact.supports for artifact in control_plane.artifacts.values())
+    assert any(
+        "external_sample_governance_plan" in artifact.supports
+        for artifact in control_plane.artifacts.values()
+    )

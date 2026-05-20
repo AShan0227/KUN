@@ -73,6 +73,8 @@ from kun.control_plane.external_sample_comparison import (
     ExternalSampleComparisonRunner,
     ExternalSampleComparisonSpec,
     ExternalSampleFeatureGap,
+    ExternalSampleGovernanceAction,
+    ExternalSampleGovernancePlan,
 )
 from kun.control_plane.file_store import FileControlPlaneStore
 from kun.control_plane.frontier50 import (
@@ -285,6 +287,8 @@ __all__ = [
     "ExternalSampleComparisonRunner",
     "ExternalSampleComparisonSpec",
     "ExternalSampleFeatureGap",
+    "ExternalSampleGovernanceAction",
+    "ExternalSampleGovernancePlan",
     "FailureCategory",
     "FailureRecovery",
     "FileControlPlaneStore",

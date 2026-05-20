@@ -82,6 +82,7 @@
 - 每个 work item 执行前必须运行受限预执行层：绑定 production capability、skill、workspace、checkpoint、rollback、外部信息信号和启/傩反馈通道。
 - 预执行 skill 失败必须生成可审计 artifact；如果启/傩 runner 可用，必须自动创建 Qi/Nuo follow-up work item，不得静默忽略，也不得直接算作 KUN 能力失败。
 - 本地测试类预执行必须绑定明确 workspace，禁止在没有工作区边界时误跑当前仓库。
+- shell、Python 等执行型 skill 必须默认限制在配置的执行根目录内，拒绝越界 cwd，并把 sandbox root、实际 cwd、sandbox_enforced 写入运行元数据；它是默认工作区隔离，不替代容器级隔离。
 - 有 workspace 的 work item 必须生成文件级沙箱快照，而不是只保存 hash manifest；快照必须排除 `.git`、依赖缓存和构建产物，并记录 capture limits。
 - rollback work item 必须能由 Control Plane 内置恢复 runner 执行，真实还原快照文件、清理快照后新增的无关文件，并写入恢复 artifact。
 - V6 runtime 事件必须桥接到 Watchtower rule engine；work item 完成/失败和 GateEvaluation 至少要形成可规则化事件。
@@ -217,6 +218,7 @@
 - 对照执行过程和工程化结构，提炼任务理解、执行习惯、状态组织、工具边界、恢复策略、多 worker 协同、上下文管理、日志/诊断、后台运行、审批恢复。
 - 将有效能力转成 KUN-native 子系统、协议、测试、CapabilityCandidate 和 CapabilityProfile。
 - 重复、复杂化或不符合奥卡姆剃刀的能力必须合并、降级或舍弃。
+- Genesis、OpenClaw、Hermes 等外部样本对比必须输出机器可读的 Qi 治理动作，包含 keep、merge、candidate、discard、测试、风险控制、回滚计划和默认运行时禁用边界；Markdown 报告不能替代治理数据。
 - 通过真实长任务 dogfood、holdout、shadow、canary 和 rollback readiness 后，才能进入 production。
 - production 能力进入默认运行时后，必须通过能力治理和 `CapabilityExecutionPolicy` 影响真实执行模块，而不是只进入档案列表。
 - GPT-5.5 监督能力对照、晋级、真实任务验证和复杂度取舍。

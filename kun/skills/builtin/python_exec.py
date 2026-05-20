@@ -4,13 +4,15 @@ Params:
   code: str (required) — Python source code
   timeout_sec: float (default 30, max 300)
   stdin: str (optional) — sent to the subprocess on stdin
+  cwd: str (optional, resolved under KUN_SKILL_EXEC_ROOTS)
 
 Returns:
   {stdout, stderr, returncode, truncated}
 
-Sandbox: subprocess uses the current Python (uv venv). It does NOT chroot
-or restrict imports — agents share the host filesystem. For untrusted code,
-swap in a container backend (Modal / Docker) by replacing this executor.
+Sandbox: subprocess execution is restricted to configured executable-skill
+roots (``KUN_SKILL_EXEC_ROOTS`` or ``KUN_SKILL_EXEC_ROOT``; default
+``/tmp/kun-skill-exec``). This is an auditable workspace boundary, not a chroot
+or container boundary.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import time
 from typing import Any
 
 from kun.skills.dispatcher import SkillResult, register
+from kun.skills.sandbox import SandboxPathError, resolve_execution_cwd, sandbox_metadata
 
 _OUTPUT_LIMIT = 65536  # 64 KiB per stream
 
@@ -32,6 +35,15 @@ async def execute(params: dict[str, Any]) -> SkillResult:
 
     timeout = max(1.0, min(300.0, float(params.get("timeout_sec") or 30)))
     stdin_data = str(params.get("stdin") or "")
+    try:
+        cwd = resolve_execution_cwd(params.get("cwd") or None)
+    except SandboxPathError as exc:
+        return SkillResult(
+            skill_id="python-exec",
+            ok=False,
+            error=str(exc),
+            duration_sec=time.perf_counter() - started,
+        )
 
     proc = await asyncio.create_subprocess_exec(
         "python3",
@@ -40,6 +52,7 @@ async def execute(params: dict[str, Any]) -> SkillResult:
         stdin=asyncio.subprocess.PIPE if stdin_data else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        cwd=str(cwd),
     )
     try:
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -76,7 +89,10 @@ async def execute(params: dict[str, Any]) -> SkillResult:
             "truncated": truncated,
         },
         duration_sec=time.perf_counter() - started,
-        metadata={"timeout_sec": timeout},
+        metadata={
+            "timeout_sec": timeout,
+            **sandbox_metadata(cwd),
+        },
     )
 
 

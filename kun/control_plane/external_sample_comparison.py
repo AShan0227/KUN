@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kun.control_plane.capability_governance import normalize_capability_governance_key
 from kun.control_plane.productization import (
     ExternalBehaviorComparisonRecord,
     ExternalBehaviorSignal,
@@ -68,6 +69,47 @@ class ExternalSampleFeatureGap(BaseModel):
     reason: str
     required_tests: list[str] = Field(default_factory=list)
     risk_controls: list[str] = Field(default_factory=list)
+
+
+class ExternalSampleGovernanceAction(BaseModel):
+    """Machine-readable Qi/Ockham action derived from one external sample gap."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action_id: str
+    decision: OckhamDecision
+    behavior: str
+    subsystem: str
+    source_ref: str
+    governance_key: str
+    qi_candidate_id: str | None = None
+    proposed_change_refs: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    required_tests: list[str] = Field(default_factory=list)
+    risk_controls: list[str] = Field(default_factory=list)
+    rollback_plan: list[str] = Field(default_factory=list)
+    default_runtime_allowed: bool = False
+    reason: str
+
+
+class ExternalSampleGovernancePlan(BaseModel):
+    """Safe adoption plan for external sample behavior."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_version: str = Field(
+        default="kun-external-sample-governance-plan-v1",
+        alias="schema",
+    )
+    source_name: str
+    mission_id: str
+    work_item_id: str
+    action_count: int
+    qi_candidate_count: int
+    merge_action_count: int
+    discard_count: int
+    default_runtime_allowed: bool = False
+    actions: list[ExternalSampleGovernanceAction] = Field(default_factory=list)
 
 
 class ExternalSampleComparisonRunner:
@@ -160,10 +202,18 @@ def _compare_external_sample(
         source_paths=source_paths,
         target_text=_bounded_join_text(target_paths, spec.target_repo_path),
     )
+    governance_plan = _governance_plan(
+        source_name=spec.source_name,
+        mission=mission,
+        work_item=work_item,
+        gaps=gaps,
+        feature_markers=feature_markers,
+    )
     spec.output_dir.mkdir(parents=True, exist_ok=True)
     inventory_path = spec.output_dir / "source-inventory.json"
     matrix_path = spec.output_dir / "feature-gap-matrix.md"
     recommendations_path = spec.output_dir / "ockham-recommendations.md"
+    governance_path = spec.output_dir / "qi-governance-actions.json"
     inventory_payload = {
         "schema": "kun-external-sample-inventory-v1",
         "mission_id": mission.mission_id,
@@ -176,6 +226,8 @@ def _compare_external_sample(
         "target_paths": target_paths,
         "source_signal_count": len(source_signals),
         "target_signal_count": len(target_signals),
+        "governance_action_count": governance_plan.action_count,
+        "qi_candidate_count": governance_plan.qi_candidate_count,
         "source_signals": [signal.model_dump(mode="json") for signal in source_signals],
         "feature_markers": feature_markers,
     }
@@ -197,6 +249,7 @@ def _compare_external_sample(
         ),
         encoding="utf-8",
     )
+    _write_json(governance_path, governance_plan.model_dump(mode="json", by_alias=True))
     artifacts = [
         _artifact(
             work_item=work_item,
@@ -222,6 +275,17 @@ def _compare_external_sample(
             supports=["external_sample_recommendations", "qi_candidate_input"],
             kind="decision",
         ),
+        _artifact(
+            work_item=work_item,
+            suffix="qi-governance-actions",
+            path=governance_path,
+            supports=[
+                "external_sample_governance_plan",
+                "qi_candidate_input",
+                "ockham_decision_plan",
+            ],
+            kind="decision",
+        ),
     ]
     manifest = ArtifactManifest(
         manifest_id=f"manifest-{_slug(work_item.mission_id)}-{_slug(work_item.work_item_id)}-external-sample-comparison",
@@ -238,11 +302,12 @@ def _compare_external_sample(
                 "source_paths": source_paths,
                 "gaps": [gap.model_dump(mode="json") for gap in gaps],
                 "feature_markers": feature_markers,
+                "governance_plan": governance_plan.model_dump(mode="json", by_alias=True),
             }
         ),
     )
-    candidate_count = sum(1 for gap in gaps if gap.decision == "candidate_for_qi")
-    merge_count = sum(1 for gap in gaps if gap.decision == "merge_into_existing")
+    candidate_count = governance_plan.qi_candidate_count
+    merge_count = governance_plan.merge_action_count
     gate = GateEvaluation(
         gate_evaluation_id=f"gate-{_slug(work_item.work_item_id)}-external-sample-comparison",
         mission_id=work_item.mission_id,
@@ -263,6 +328,7 @@ def _compare_external_sample(
             "source_coverage": min(1.0, len(source_paths) / max(1, spec.max_source_files)),
             "candidate_count": float(candidate_count),
             "merge_count": float(merge_count),
+            "governance_action_count": float(governance_plan.action_count),
         },
         thresholds={"result_quality": 0.8},
         evidence_refs=[artifacts[0].artifact_id],
@@ -271,7 +337,7 @@ def _compare_external_sample(
         confidence=0.78,
         next_action="continue",
         next_state="running",
-        learning_eligibility="candidate" if candidate_count or merge_count else "none",
+        learning_eligibility="none",
         governance_signal="external_sample_comparison_ready_for_qi_review",
         created_by=ExternalSampleComparisonRunner.runner_identity,
     )
@@ -280,12 +346,192 @@ def _compare_external_sample(
         summary=(
             f"KUN compared {spec.source_name} against current KUN: "
             f"{len(gaps)} distilled behaviors, {candidate_count} Qi candidates, "
-            f"{merge_count} merge recommendations."
+            f"{merge_count} merge recommendations, "
+            f"{governance_plan.action_count} machine-readable governance actions."
         ),
         artifacts=artifacts,
         artifact_manifest=manifest,
         gate_evaluation=gate,
     )
+
+
+def _governance_plan(
+    *,
+    source_name: str,
+    mission: Mission,
+    work_item: WorkItem,
+    gaps: list[ExternalSampleFeatureGap],
+    feature_markers: list[dict[str, str]],
+) -> ExternalSampleGovernancePlan:
+    actions: list[ExternalSampleGovernanceAction] = []
+    for gap in gaps:
+        actions.append(
+            _governance_action(
+                source_name=source_name,
+                decision=gap.decision,
+                behavior=gap.behavior,
+                subsystem=gap.subsystem,
+                source_ref=gap.source_ref,
+                reason=gap.reason,
+                required_tests=gap.required_tests,
+                risk_controls=gap.risk_controls,
+            )
+        )
+    for marker in feature_markers:
+        actions.append(
+            _governance_action(
+                source_name=source_name,
+                decision=marker["decision"],
+                behavior=marker["behavior"],
+                subsystem=_subsystem_for_marker(marker["marker_id"]),
+                source_ref=f"external-sample://{source_name}/{marker['marker_id']}",
+                reason=marker["reason"],
+                required_tests=_tests_for_marker(marker["marker_id"]),
+                risk_controls=_risk_controls_for_marker(marker["decision"]),
+            )
+        )
+    actions = _dedupe_governance_actions(actions)
+    return ExternalSampleGovernancePlan(
+        source_name=source_name,
+        mission_id=mission.mission_id,
+        work_item_id=work_item.work_item_id,
+        action_count=len(actions),
+        qi_candidate_count=len([action for action in actions if action.qi_candidate_id]),
+        merge_action_count=len(
+            [action for action in actions if action.decision == "merge_into_existing"]
+        ),
+        discard_count=len([action for action in actions if action.decision == "discard"]),
+        actions=actions,
+    )
+
+
+def _governance_action(
+    *,
+    source_name: str,
+    decision: OckhamDecision,
+    behavior: str,
+    subsystem: str,
+    source_ref: str,
+    reason: str,
+    required_tests: list[str],
+    risk_controls: list[str],
+) -> ExternalSampleGovernanceAction:
+    governance_key = normalize_capability_governance_key(behavior)
+    is_candidate = decision == "candidate_for_qi"
+    proposed_change_refs: list[str] = []
+    rollback_plan: list[str] = []
+    if decision == "merge_into_existing":
+        proposed_change_refs = [
+            f"kun-control-plane:{subsystem}",
+            f"merge-tests-or-hooks:{governance_key}",
+        ]
+        rollback_plan = [
+            "remove merged test/hook from existing subsystem",
+            "keep external sample evidence for future Qi review",
+        ]
+    elif is_candidate:
+        proposed_change_refs = [
+            f"qi-candidate:{governance_key}",
+            f"kun-control-plane:{subsystem}",
+        ]
+        rollback_plan = [
+            "delete or supersede replay/holdout candidate before production",
+            "do not expose to list_default_runtime_capabilities until promoted",
+        ]
+    elif decision == "discard":
+        rollback_plan = ["no runtime change; keep as evidence-only record"]
+    else:
+        rollback_plan = ["no runtime change; existing KUN subsystem remains canonical"]
+    return ExternalSampleGovernanceAction(
+        action_id=f"action-{_slug(source_name)}-{_slug(governance_key)}-{decision}",
+        decision=decision,
+        behavior=behavior,
+        subsystem=subsystem,
+        source_ref=source_ref,
+        governance_key=governance_key,
+        qi_candidate_id=(
+            f"candidate-external-sample-{_slug(source_name)}-{_slug(governance_key)}"
+            if is_candidate
+            else None
+        ),
+        proposed_change_refs=proposed_change_refs,
+        evidence_refs=[source_ref],
+        required_tests=required_tests or _default_required_tests(decision, subsystem),
+        risk_controls=[
+            "do not copy external implementation code",
+            "do not enable by default before Qi production promotion",
+            *risk_controls,
+        ],
+        rollback_plan=rollback_plan,
+        default_runtime_allowed=False,
+        reason=reason,
+    )
+
+
+def _dedupe_governance_actions(
+    actions: list[ExternalSampleGovernanceAction],
+) -> list[ExternalSampleGovernanceAction]:
+    by_key: dict[tuple[str, str], ExternalSampleGovernanceAction] = {}
+    for action in actions:
+        key = (action.governance_key, action.decision)
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = action
+            continue
+        by_key[key] = existing.model_copy(
+            update={
+                "evidence_refs": _dedupe([*existing.evidence_refs, *action.evidence_refs]),
+                "required_tests": _dedupe([*existing.required_tests, *action.required_tests]),
+                "risk_controls": _dedupe([*existing.risk_controls, *action.risk_controls]),
+                "rollback_plan": _dedupe([*existing.rollback_plan, *action.rollback_plan]),
+            }
+        )
+    return [by_key[key] for key in sorted(by_key)]
+
+
+def _subsystem_for_marker(marker_id: str) -> str:
+    if any(token in marker_id for token in ("sandbox", "runtime", "sleep", "concurrency")):
+        return "persistence_recovery"
+    if any(token in marker_id for token in ("memory", "hall", "learning", "ranking")):
+        return "qi_capability_evolution"
+    if "plugin" in marker_id or "mcp" in marker_id:
+        return "external_behavior_distillation"
+    if "smoke" in marker_id:
+        return "qi_ab_runner"
+    if "consult" in marker_id:
+        return "collaboration_tickets"
+    return "external_behavior_distillation"
+
+
+def _tests_for_marker(marker_id: str) -> list[str]:
+    if "sandbox" in marker_id or "runtime" in marker_id:
+        return ["sandbox escape is rejected", "authorized workspace root still runs"]
+    if "memory" in marker_id:
+        return ["candidate remains non-runtime until production", "memory retrieval improves holdout"]
+    if "concurrency" in marker_id:
+        return ["adaptive limit does not reduce quality", "stale work recovery still fires"]
+    if "smoke" in marker_id:
+        return ["smoke battery catches missing runner", "smoke battery catches polluted report"]
+    return ["replay evidence exists", "holdout and rollback plan exist before production"]
+
+
+def _risk_controls_for_marker(decision: str) -> list[str]:
+    controls = ["Ockham review before subsystem creation"]
+    if decision == "candidate_for_qi":
+        controls.append("route through replay/holdout/shadow/canary gates")
+    if decision == "discard":
+        controls.append("evidence-only; no code or runtime behavior")
+    return controls
+
+
+def _default_required_tests(decision: OckhamDecision, subsystem: str) -> list[str]:
+    if decision == "keep_existing":
+        return [f"existing {subsystem} regression remains green"]
+    if decision == "merge_into_existing":
+        return [f"{subsystem} merge hook/test covers the external behavior"]
+    if decision == "candidate_for_qi":
+        return ["Qi replay evaluation", "Qi holdout evaluation", "rollback readiness"]
+    return ["discard decision is represented as evidence-only"]
 
 
 def _feature_gaps(
@@ -716,9 +962,15 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") or "item"
 
 
+def _dedupe(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
+
+
 __all__ = [
     "KUN_EXTERNAL_SAMPLE_COMPARISON_RUNNER_OWNER",
     "ExternalSampleComparisonRunner",
     "ExternalSampleComparisonSpec",
     "ExternalSampleFeatureGap",
+    "ExternalSampleGovernanceAction",
+    "ExternalSampleGovernancePlan",
 ]
