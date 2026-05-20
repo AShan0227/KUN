@@ -178,6 +178,13 @@ from kun.control_plane.runtime_followups import (
     NuoRuntimeRepairRunner,
     QiRuntimeGovernanceRunner,
 )
+from kun.control_plane.runtime_observation import (
+    ObservationRoute,
+    ObservationSeverity,
+    RuntimeObservationItem,
+    RuntimeObservationReport,
+    build_runtime_observation_report,
+)
 from kun.control_plane.store import ControlPlaneStore, InMemoryControlPlaneStore
 from kun.control_plane.supervisor import (
     LeaseAcquisition,
@@ -340,6 +347,8 @@ __all__ = [
     "NuoRecoveryRecommendation",
     "NuoRuntimeRepairRunner",
     "NuoSeverity",
+    "ObservationRoute",
+    "ObservationSeverity",
     "ProductizationAuditReport",
     "ProductizationDogfoodAcceptanceReport",
     "ProductizationDogfoodExecutionReport",
@@ -353,6 +362,8 @@ __all__ = [
     "QiRuntimeGovernanceRunner",
     "QualityGateStatus",
     "RunRecord",
+    "RuntimeObservationItem",
+    "RuntimeObservationReport",
     "SupervisorFinding",
     "SupervisorFindingReason",
     "SupervisorLease",
@@ -402,6 +413,7 @@ __all__ = [
     "build_qi_ab_round_contract",
     "build_qi_ab_round_work_item",
     "build_recovery_bundle",
+    "build_runtime_observation_report",
     "build_task_cockpit_view",
     "build_user_progress_summary",
     "build_v6_watchtower_namespace",

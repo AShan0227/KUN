@@ -206,10 +206,39 @@ def test_daemon_tick_runs_ready_work_and_persists_progress(tmp_path) -> None:
     assert report.ran_work_item_ids == ["work-daemon"]
     assert report.no_runner_work_item_ids == []
     assert report.progress_artifact_refs == ["artifact-daemon-progress-msn-daemon-20260519T090000Z"]
+    assert report.observation_artifact_refs == [
+        "artifact-runtime-observation-msn-daemon-20260519T090000Z"
+    ]
     assert recovered.work_items["work-daemon"].status == "done"
     assert len(recovered.runs) == 1
     assert next(iter(recovered.runs.values())).exit_status == "succeeded"
     assert report.progress_artifact_refs[0] in recovered.artifacts
+    observation = recovered.artifacts[report.observation_artifact_refs[0]]
+    assert "runtime_observation" in observation.supports
+    observation_report = report.runtime_observations["msn-daemon"]
+    assert observation_report.max_severity == "high"
+    assert [item.code for item in observation_report.items] == ["delivery_manifest_missing"]
+
+
+def test_daemon_marks_missing_runner_for_external_supervision(tmp_path) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+    daemon = ControlPlaneDaemon(control_plane=control_plane, daemon_id="daemon-no-runner-test")
+
+    report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW)
+    recovered = InMemoryControlPlane(store=store)
+
+    assert report.no_runner_work_item_ids == ["work-daemon"]
+    assert report.observation_artifact_refs == [
+        "artifact-runtime-observation-msn-daemon-20260519T090000Z"
+    ]
+    observation = recovered.artifacts[report.observation_artifact_refs[0]]
+    assert "observation:runner_missing" in observation.supports
+    assert "requires_external_supervision" in observation.supports
+    assert "observation_route:qi" in observation.supports
+    observation_report = report.runtime_observations["msn-daemon"]
+    assert observation_report.requires_external_supervision is True
+    assert observation_report.items[0].code == "runner_missing"
+    assert "external_supervisor" in observation_report.items[0].routes
 
 
 def test_daemon_creates_restorable_workspace_snapshot_and_rolls_back(tmp_path) -> None:

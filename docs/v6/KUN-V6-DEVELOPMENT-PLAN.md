@@ -89,6 +89,8 @@
 - 有 workspace 的 work item 必须生成文件级沙箱快照，而不是只保存 hash manifest；快照必须排除 `.git`、依赖缓存和构建产物，并记录 capture limits。
 - rollback work item 必须能由 Control Plane 内置恢复 runner 执行，真实还原快照文件、清理快照后新增的无关文件，并写入恢复 artifact。
 - V6 runtime 事件必须桥接到 Watchtower rule engine；work item 完成/失败和 GateEvaluation 至少要形成可规则化事件。
+- daemon 每次 tick 必须生成 `RuntimeObservationReport` artifact，主动标注 runner 缺口、预执行失败、协同票据、Watchtower 触发、能力重复、production 能力未转成执行指令、交付清单缺失等观察重点。
+- observation report 必须明确路由给 KUN、启、傩、人类、Control Plane 或外部监督者；中高风险项必须支持外部监督持续检查，并能反向进入启/傩治理闭环。
 
 验收：
 
@@ -102,6 +104,7 @@
 - 信息缺口能自动变成用户可理解的协同票据。
 - workspace 快照能在测试中真实恢复文件内容并移除快照后新增文件。
 - Watchtower 规则能在 V6 gate 事件上触发，触发结果进入 daemon tick report。
+- 每个写进度的 daemon tick 都能同时产出 observation artifact；缺 runner、预执行失败、协同票据、能力重复、交付清单缺失等问题不会被埋在日志里，而会被标注为可治理观察项。
 
 ### 阶段 3：启 Qi AB Runner 接入
 

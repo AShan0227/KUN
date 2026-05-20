@@ -27,6 +27,10 @@ from kun.control_plane.capability_execution import (
 )
 from kun.control_plane.preflight import run_work_item_preflight
 from kun.control_plane.runtime import ControlPlaneRunner, InMemoryControlPlane, WorkItemResult
+from kun.control_plane.runtime_observation import (
+    RuntimeObservationReport,
+    build_runtime_observation_report,
+)
 from kun.control_plane.supervisor import MinimalSupervisor, SupervisorFinding
 from kun.control_plane.v6 import (
     ArtifactRecord,
@@ -90,6 +94,8 @@ class DaemonTickReport(BaseModel):
     final_gate_refs: list[str] = Field(default_factory=list)
     delivery_manifest_refs: list[str] = Field(default_factory=list)
     progress_artifact_refs: list[str] = Field(default_factory=list)
+    observation_artifact_refs: list[str] = Field(default_factory=list)
+    runtime_observations: dict[str, RuntimeObservationReport] = Field(default_factory=dict)
     activation_artifact_refs: list[str] = Field(default_factory=list)
     preflight_artifact_refs: list[str] = Field(default_factory=list)
     preflight_failed_skill_ids: list[str] = Field(default_factory=list)
@@ -433,6 +439,14 @@ class ControlPlaneDaemon:
 
         if write_progress:
             for mission_id in selected_mission_ids:
+                observation = self._observation_artifact(
+                    mission_id=mission_id,
+                    now=observed_at,
+                    report=report,
+                    capability_policy=capability_policy,
+                )
+                self._upsert_artifact(observation)
+                report.observation_artifact_refs.append(observation.artifact_id)
                 artifact = self._progress_artifact(
                     mission_id=mission_id,
                     now=observed_at,
@@ -1048,6 +1062,47 @@ class ControlPlaneDaemon:
             source_quality="primary",
         )
 
+    def _observation_artifact(
+        self,
+        *,
+        mission_id: str,
+        now: datetime,
+        report: DaemonTickReport,
+        capability_policy: CapabilityExecutionPolicy,
+    ) -> ArtifactRecord:
+        observation = build_runtime_observation_report(
+            control_plane=self.control_plane,
+            mission_id=mission_id,
+            tick_report=report,
+            capability_policy=capability_policy,
+        )
+        report.runtime_observations[mission_id] = observation
+        payload = observation.model_dump(mode="json")
+        supports = [
+            "runtime_observation",
+            "external_supervision",
+            "qi_nuo_iteration",
+            f"observation_severity:{observation.max_severity}",
+            *[f"observation:{item.code}" for item in observation.items],
+            *[f"observation_route:{route}" for route in _observation_routes(observation)],
+        ]
+        if observation.requires_external_supervision:
+            supports.append("requires_external_supervision")
+        return ArtifactRecord(
+            artifact_id=f"artifact-runtime-observation-{mission_id}-{_compact_time(now)}",
+            kind="report",
+            path_or_uri=(
+                f"control-plane://daemon/{self.daemon_id}/{mission_id}/"
+                f"observation/{now.isoformat()}"
+            ),
+            content_hash=_hash_payload(payload),
+            created_by=self.daemon_id,
+            mission_id=mission_id,
+            supports=supports,
+            freshness="fresh",
+            source_quality="primary",
+        )
+
     def _upsert_artifact(self, artifact: ArtifactRecord) -> None:
         self.control_plane.artifacts[artifact.artifact_id] = artifact
         if self.control_plane.store is not None:
@@ -1196,6 +1251,18 @@ def _info_gap_reason(
         "KUN must clarify missing information before producing or executing the task plan. "
         f"Mission: {mission.objective}. Missing: {missing}"
     )
+
+
+def _observation_routes(report: RuntimeObservationReport) -> list[str]:
+    seen: set[str] = set()
+    routes: list[str] = []
+    for item in report.items:
+        for route in item.routes:
+            if route in seen:
+                continue
+            seen.add(route)
+            routes.append(route)
+    return routes
 
 
 def _tick_is_idle(report: DaemonTickReport) -> bool:
