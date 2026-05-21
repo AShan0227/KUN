@@ -631,7 +631,14 @@ class ControlPlaneDaemon:
                 process_id=os.getpid(),
             )
             if not claim.accepted:
-                raise RuntimeError(claim.text)
+                return DaemonLoopReport(
+                    daemon_id=self.daemon_id,
+                    started_at=started_at,
+                    ended_at=started_at,
+                    tick_count=0,
+                    stopped_reason="idle",
+                    tick_reports=[],
+                )
         else:
             self._save_service_state(
                 state_store,

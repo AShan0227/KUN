@@ -166,6 +166,31 @@ def test_game_production_runner_creates_internal_test_ready_delivery(tmp_path: P
     )
 
 
+def test_final_delivery_requires_player_experience_gate_when_contract_demands_it(
+    tmp_path: Path,
+) -> None:
+    control_plane, project_path = _mission(tmp_path)
+    contract = control_plane.contracts["contract-game-production"].model_copy(
+        update={
+            "delivery_contract": {
+                "project_path": str(project_path),
+                "final_player_experience_required": True,
+                "final_player_experience_threshold": 0.95,
+            },
+        }
+    )
+    control_plane.contracts[contract.contract_id] = contract
+    work_item = control_plane.work_items["work-huohutu-v3-04-final-delivery"]
+    runner = GameProductionRunner(control_plane=control_plane)
+
+    result = runner.run(work_item)
+
+    assert result.status == "blocked"
+    assert result.failure_category == "delivery_failure"
+    assert "KUN self scores" in result.summary
+    assert "product-feel evidence" in result.summary
+
+
 def test_game_production_runner_owner_guard(tmp_path: Path) -> None:
     control_plane, _project_path = _mission(tmp_path)
     runner = GameProductionRunner(control_plane=control_plane)

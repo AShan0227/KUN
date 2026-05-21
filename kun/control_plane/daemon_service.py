@@ -106,6 +106,7 @@ def build_daemon_service_install_plan(
         str(resource_lock_ttl_sec),
         "--sandbox-mode",
         sandbox_mode,
+        "--keep-running-when-idle",
         "--idle-ticks-to-stop",
         str(idle_ticks_to_stop),
         "--stale-heartbeat-after-sec",
@@ -119,6 +120,10 @@ def build_daemon_service_install_plan(
         command.extend(["--ab-round-id", ab_round_id])
     env = dict(environment or {})
     if platform == "launchd":
+        log_dir = Path.home() / "Library" / "Logs" / "KUN"
+        safe_service_name = service_name.replace("/", "_")
+        resolved_stdout_path = log_dir / f"{safe_service_name}.out.log"
+        resolved_stderr_path = log_dir / f"{safe_service_name}.err.log"
         resolved_install_path = (
             Path(install_path).expanduser().resolve()
             if install_path
@@ -192,6 +197,8 @@ def materialize_daemon_service_install_plan(
     if path.exists() and not overwrite:
         raise FileExistsError(f"daemon service file already exists: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
+    Path(plan.stdout_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(plan.stderr_path).parent.mkdir(parents=True, exist_ok=True)
     path.write_text(plan.content, encoding="utf-8")
     return path
 
@@ -212,9 +219,18 @@ def _launchd_plist(
     stderr_path: Path,
     environment: Mapping[str, str],
 ) -> str:
+    # launchd is much easier to diagnose when the daemon is executed through a
+    # tiny shell boundary: it preserves the working directory contract, captures
+    # import/CLI errors in the configured log files, and avoids opaque EX_CONFIG
+    # exits from direct Python ProgramArguments on some macOS installations.
+    shell_command = (
+        "printf '[%s] launchd starting KUN V6 daemon\\n' "
+        '"$(date -u +%Y-%m-%dT%H:%M:%SZ)"; '
+        f"cd {shlex.quote(str(working_directory))} && exec {_join_command(command)}"
+    )
     payload = {
         "Label": service_name,
-        "ProgramArguments": list(command),
+        "ProgramArguments": ["/bin/sh", "-c", shell_command],
         "WorkingDirectory": str(working_directory),
         "RunAtLoad": True,
         "KeepAlive": True,

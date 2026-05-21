@@ -22,11 +22,15 @@ def test_launchd_daemon_service_plan_contains_persistent_daemon_command(tmp_path
     assert payload["Label"] == "com.kun.control-plane.test"
     assert payload["RunAtLoad"] is True
     assert payload["KeepAlive"] is True
-    assert "control-plane" in payload["ProgramArguments"]
-    assert "daemon-run" in payload["ProgramArguments"]
-    assert "--store-path" in payload["ProgramArguments"]
-    assert "--state-path" in payload["ProgramArguments"]
-    assert "--max-ticks" not in payload["ProgramArguments"]
+    assert payload["ProgramArguments"][:2] == ["/bin/sh", "-c"]
+    shell_command = payload["ProgramArguments"][2]
+    assert "control-plane daemon-run" in shell_command
+    assert "--store-path" in shell_command
+    assert "--state-path" in shell_command
+    assert "--max-ticks" not in shell_command
+    assert "--keep-running-when-idle" in shell_command
+    assert "/Library/Logs/KUN/" in payload["StandardOutPath"]
+    assert "/Library/Logs/KUN/" in payload["StandardErrorPath"]
     assert plan.start_command[:2] == ["launchctl", "bootstrap"]
     assert plan.stop_command[:2] == ["launchctl", "bootout"]
 
@@ -43,10 +47,11 @@ def test_daemon_service_plan_can_embed_ab_regression_round(tmp_path) -> None:
     )
 
     payload = plistlib.loads(plan.content.encode("utf-8"))
-    assert "--ab-round-dir" in payload["ProgramArguments"]
-    assert str(ab_round_dir) in payload["ProgramArguments"]
-    assert "--ab-round-id" in payload["ProgramArguments"]
-    assert "round-02-regression" in payload["ProgramArguments"]
+    shell_command = payload["ProgramArguments"][2]
+    assert "--ab-round-dir" in shell_command
+    assert str(ab_round_dir) in shell_command
+    assert "--ab-round-id" in shell_command
+    assert "round-02-regression" in shell_command
 
 
 def test_systemd_daemon_service_plan_uses_restart_policy(tmp_path) -> None:
@@ -84,6 +89,8 @@ def test_materialize_daemon_service_install_plan_refuses_accidental_overwrite(
 
     written = materialize_daemon_service_install_plan(plan)
     assert written.read_text(encoding="utf-8") == plan.content
+    assert (tmp_path / "kun-control-plane-v6.service").parent.exists()
+    assert (tmp_path / ".kun-local" / "logs").exists()
     with pytest.raises(FileExistsError):
         materialize_daemon_service_install_plan(plan)
     materialize_daemon_service_install_plan(plan, overwrite=True)

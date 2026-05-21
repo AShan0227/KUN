@@ -1312,6 +1312,45 @@ def test_daemon_service_store_blocks_duplicate_start_and_claims_stale_service(
     assert duplicate.state is not None
     assert duplicate.state.process_id == os.getpid()
 
+
+def test_daemon_managed_loop_exits_cleanly_when_duplicate_service_is_alive(tmp_path) -> None:
+    state_store = FileDaemonServiceStateStore(tmp_path / "daemon-service-state.json")
+    state_store.save(
+        DaemonServiceState(
+            daemon_id="daemon-service-test",
+            status="running",
+            started_at=NOW - timedelta(minutes=5),
+            updated_at=NOW - timedelta(minutes=1),
+            process_id=os.getpid(),
+            last_heartbeat_at=NOW - timedelta(minutes=1),
+        )
+    )
+    daemon = ControlPlaneDaemon(
+        control_plane=InMemoryControlPlane(),
+        daemon_id="daemon-service-test",
+        runners_by_owner={},
+    )
+
+    report = daemon.run_managed_loop(
+        config=DaemonServiceConfig(stale_heartbeat_after_sec=1800),
+        state_store=state_store,
+        mission_ids=[],
+        sleeper=lambda _seconds: None,
+        now_factory=lambda: NOW,
+    )
+    loaded = state_store.load()
+
+    assert report.tick_count == 0
+    assert report.stopped_reason == "idle"
+    assert loaded is not None
+    assert loaded.status == "running"
+    assert loaded.process_id == os.getpid()
+
+
+def test_daemon_service_store_claims_stale_service_after_duplicate_check(
+    tmp_path,
+) -> None:
+    state_store = FileDaemonServiceStateStore(tmp_path / "daemon-service-state.json")
     state_store.request_stop(daemon_id="daemon-service-test", requested_by="operator", now=NOW)
     state_store.save(
         DaemonServiceState(

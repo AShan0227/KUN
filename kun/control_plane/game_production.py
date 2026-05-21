@@ -73,6 +73,8 @@ class GameProductionSpec(BaseModel):
     benchmark_residual_required: bool = False
     benchmark_residual_threshold: float = 0.18
     user_accepts_residual: bool = False
+    final_player_experience_required: bool = False
+    final_player_experience_threshold: float = 0.95
 
 
 class GameProductionRunner:
@@ -1122,6 +1124,31 @@ class GameProductionRunner:
                 content = (spec.project_path / relative_path).read_text(encoding="utf-8") if (spec.project_path / relative_path).exists() else ""
                 if any(marker in content for marker in protected_markers):
                     failures.append(f"protected_expression_marker:{relative_path}")
+        final_experience_artifact: ArtifactRecord | None = None
+        if spec.final_player_experience_required:
+            final_experience_payload = _final_player_experience_payload(spec)
+            final_experience_path = spec.project_path / "docs" / "final-player-experience-gate.json"
+            _write_text(
+                final_experience_path,
+                json.dumps(final_experience_payload, ensure_ascii=False, indent=2) + "\n",
+            )
+            final_experience_artifact = _artifact(
+                work_item=work_item,
+                suffix="final-player-experience-gate",
+                path=final_experience_path,
+                supports=[
+                    "final_player_experience_gate",
+                    "external_product_feel_gate",
+                    "not_self_score_only",
+                ],
+                kind="review",
+            )
+            if final_experience_payload.get("pass") is not True:
+                failures.extend(
+                    f"final_player_experience:{failure}"
+                    for failure in final_experience_payload.get("failures", [])
+                    if isinstance(failure, str)
+                )
         report_path = spec.project_path / "docs" / "external-supervisor-gate.json"
         checked = [
             "word_to_world_engine",
@@ -1134,6 +1161,8 @@ class GameProductionRunner:
             "localized_child_facing_names",
             "no_mvp_language_in_play_surface",
         ]
+        if spec.final_player_experience_required:
+            checked.append("final_player_experience_not_self_score_only")
         if spec.production_mode in SCRIBBLE_PARITY_PRODUCTION_MODES:
             checked.extend(
                 [
@@ -1166,17 +1195,23 @@ class GameProductionRunner:
             ],
             kind="review",
         )
+        artifacts = [artifact]
+        if final_experience_artifact is not None:
+            artifacts.append(final_experience_artifact)
         if failures:
             return WorkItemResult(
                 status="failed",
                 summary=f"External supervisor gate failed: {', '.join(failures)}",
-                artifacts=[artifact],
+                artifacts=artifacts,
                 failure_category="delivery_failure",
             )
         return WorkItemResult(
             status="done",
-            summary="External supervisor gate passed for Scribble Spark word-to-world gameplay.",
-            artifacts=[artifact],
+            summary=(
+                "External supervisor gate passed for Scribble Spark word-to-world gameplay "
+                "and final player-experience evidence."
+            ),
+            artifacts=artifacts,
         )
 
     def _final_delivery(
@@ -1200,6 +1235,29 @@ class GameProductionRunner:
                     "Final delivery blocked by benchmark residual gate. "
                     f"Residual={residual}; threshold={spec.benchmark_residual_threshold:.2f}. "
                     "KUN must continue autonomous iteration or get explicit user acceptance."
+                ),
+                failure_category="delivery_failure",
+            )
+        final_experience_allowed, final_experience_payload = (
+            _latest_final_player_experience_allows_delivery(spec)
+        )
+        if spec.final_player_experience_required and not final_experience_allowed:
+            score = (
+                f"{float(final_experience_payload.get('score', 0.0)):.2f}"
+                if final_experience_payload
+                else "missing"
+            )
+            threshold = (
+                f"{float(final_experience_payload.get('threshold', spec.final_player_experience_threshold)):.2f}"
+                if final_experience_payload
+                else f"{spec.final_player_experience_threshold:.2f}"
+            )
+            return WorkItemResult(
+                status="blocked",
+                summary=(
+                    "Final delivery blocked by final player-experience gate. "
+                    f"Score={score}; threshold={threshold}. KUN self scores, residual pass, "
+                    "and checklist pass are not enough without product-feel evidence."
                 ),
                 failure_category="delivery_failure",
             )
@@ -1232,7 +1290,11 @@ class GameProductionRunner:
                     self.control_plane,
                     mission_id=mission.mission_id,
                     task_plan_version=work_item.task_plan_version,
-                    supports=["external_supervisor_gate", "benchmark_residual_audit"],
+                    supports=[
+                        "external_supervisor_gate",
+                        "benchmark_residual_audit",
+                        "final_player_experience_gate",
+                    ],
                 ),
             ]
         )
@@ -1274,6 +1336,11 @@ class GameProductionRunner:
                 "internal_test_gate": 0.9,
                 "child_safety_boundary": 0.84,
                 "parent_report": 0.9,
+                "final_player_experience_gate": float(
+                    final_experience_payload.get("score", 0.9)
+                    if final_experience_payload
+                    else 0.9
+                ),
             },
             thresholds={"result_quality": 0.86},
             artifact_refs=manifest_artifact_refs,
@@ -1315,6 +1382,12 @@ def _spec_from_contract(contract: ExecutionContract) -> GameProductionSpec:
     production_mode = contract.delivery_contract.get("production_mode", "gameful_playtest")
     if not isinstance(production_mode, str) or not production_mode.strip():
         production_mode = "gameful_playtest"
+    final_player_experience_required = bool(
+        contract.delivery_contract.get(
+            "final_player_experience_required",
+            "final_standard" in contract.delivery_contract,
+        )
+    )
     return GameProductionSpec(
         project_path=Path(project_path).expanduser().resolve(),
         production_mode=production_mode,
@@ -1325,6 +1398,10 @@ def _spec_from_contract(contract: ExecutionContract) -> GameProductionSpec:
             contract.delivery_contract.get("benchmark_residual_threshold", 0.18)
         ),
         user_accepts_residual=bool(contract.delivery_contract.get("user_accepts_residual", False)),
+        final_player_experience_required=final_player_experience_required,
+        final_player_experience_threshold=float(
+            contract.delivery_contract.get("final_player_experience_threshold", 0.95)
+        ),
     )
 
 
@@ -1358,7 +1435,7 @@ def _phase_from_work_item(work_item: WorkItem) -> str:
         return "spatial-playfield-iteration"
     if "fun-and-browser-retest" in item_id:
         return "internal-test"
-    if "external-supervisor-gate" in item_id:
+    if "external-supervisor-gate" in item_id or "final-player-experience-gate" in item_id:
         return "supervisor-gate"
     if "benchmark-residual-audit" in item_id or "residual-audit" in item_id:
         return "benchmark-residual-audit"
@@ -1527,11 +1604,19 @@ def _final_delivery_markdown(*, task_plan: TaskPlan, spec: GameProductionSpec) -
     criteria = "\n".join(f"- {item}" for item in task_plan.acceptance_criteria)
     title = "火火兔 Spark 可玩游戏交付包"
     residual = _read_json(spec.project_path / "docs" / "benchmark-residual-audit.json")
+    final_experience = _read_json(spec.project_path / "docs" / "final-player-experience-gate.json")
     residual_line = ""
     if residual:
         residual_line = (
             f"- 最新残差审计：overall residual {residual.get('overall_residual')}，"
             f"门禁 {residual.get('threshold')}，结果 {'通过' if residual.get('pass') else '未通过'}。"
+        )
+    final_experience_line = ""
+    if final_experience:
+        final_experience_line = (
+            f"- 最终玩家体感门禁：score {final_experience.get('score')}，"
+            f"门禁 {final_experience.get('threshold')}，"
+            f"结果 {'通过' if final_experience.get('pass') else '未通过'}。"
         )
     browser_playtest_refs = [
         path.name for path in sorted((spec.project_path / "docs").glob("browser-playtest*.json"))
@@ -1573,6 +1658,8 @@ def _final_delivery_markdown(*, task_plan: TaskPlan, spec: GameProductionSpec) -
         ]
         if residual_line:
             completed_items.append(residual_line)
+        if final_experience_line:
+            completed_items.append(final_experience_line)
         completed = "\n".join(completed_items)
     elif spec.production_mode == "scribble_spark_functional_parity_v5":
         completed_items = [
@@ -2804,6 +2891,154 @@ def _benchmark_residual_markdown(payload: dict[str, object], spec: GameProductio
 
 {actions}
 """
+
+
+def _final_player_experience_payload(spec: GameProductionSpec) -> dict[str, object]:
+    """Final product-feel gate.
+
+    This deliberately sits outside the residual score.  KUN can pass mechanics,
+    residual, and checklist gates while still feeling like a prototype, so final
+    delivery must also prove player-facing product completeness.
+    """
+
+    project = spec.project_path
+    app = _read_text(project / "src" / "App.tsx")
+    styles = _read_text(project / "src" / "styles.css")
+    parser = _read_text(project / "src" / "engine" / "wordToWorld.ts")
+    internal = _read_json(project / "docs" / "internal-test-result.json")
+    browser_static = _read_json(project / "docs" / "browser-static-playtest.json")
+    long_playtest = _read_json(project / "docs" / "long-playtest-result.json")
+    visual = _read_json(project / "docs" / "visual-product-test-result.json")
+    experience = _read_json(project / "docs" / "experience-product-test-result.json")
+    sandbox = _read_json(project / "docs" / "sandbox-product-test-result.json")
+    creative = _read_json(project / "docs" / "creative-product-test-result.json")
+    mastery = _read_json(project / "docs" / "mastery-product-test-result.json")
+    semantic = _read_json(project / "docs" / "semantic-synthesis-test-result.json")
+    spatial = _read_json(project / "docs" / "spatial-product-test-result.json")
+    provenance = _read_json(project / "docs" / "original-asset-provenance.json")
+
+    docs_dir = project / "docs"
+    latest_success_mtime = max(
+        (
+            path.stat().st_mtime
+            for path in [
+                docs_dir / "internal-test-result.json",
+                docs_dir / "external-supervisor-gate.json",
+                docs_dir / "benchmark-residual-audit.json",
+            ]
+            if path.exists()
+        ),
+        default=0.0,
+    )
+    stale_failures = [
+        path.name
+        for path in sorted(docs_dir.glob("work-*-failure.json"))
+        if path.stat().st_mtime > latest_success_mtime
+    ]
+    asset_count = (
+        len(list((project / "public" / "assets").glob("*.svg")))
+        if (project / "public" / "assets").exists()
+        else 0
+    )
+    fun_result = internal.get("npm_run_test_fun") if isinstance(internal, dict) else None
+    browser_result = (
+        internal.get("npm_run_test_browser_static") if isinstance(internal, dict) else None
+    )
+    long_result = internal.get("npm_run_test_long") if isinstance(internal, dict) else None
+
+    checks: dict[str, bool] = {
+        "visual_character_world_density": (
+            asset_count >= 16
+            and visual.get("ok") is True
+            and "companionPortrait" in app
+            and "worldBackdrop" in app
+            and "objectSprite" in app
+            and "visual-polish-ready" in app
+        ),
+        "direct_player_manipulation": (
+            experience.get("ok") is True
+            and "questDeck" in app
+            and "directManipulation" in app
+            and "objectRelationGraph" in app
+        ),
+        "sandbox_creativity_loop": (
+            sandbox.get("ok") is True
+            and creative.get("ok") is True
+            and "sandboxDynamics" in app
+            and "playerQuestLab" in app
+            and "customQuestLog" in app
+        ),
+        "mastery_feedback_and_retry": (
+            mastery.get("ok") is True
+            and "masteryCelebration" in app
+            and "failureCoach" in app
+            and "tryNextHint" in app
+        ),
+        "open_ended_word_surprise": (
+            semantic.get("ok") is True
+            and "semanticFallbackEntry" in parser
+            and "normalizedCreativeName" in parser
+            and "semanticRuleHeuristics" in parser
+        ),
+        "spatial_causal_stage": (
+            spatial.get("ok") is True
+            and "stagePhysicsOverlay" in app
+            and "objectStageStyle" in app
+            and "objectTrajectoryLabel" in app
+        ),
+        "fresh_fun_browser_long_evidence": (
+            isinstance(fun_result, dict)
+            and fun_result.get("exit_code") == 0
+            and (
+                browser_static.get("ok") is True
+                or isinstance(browser_result, dict)
+                and browser_result.get("exit_code") == 0
+            )
+            and (
+                long_playtest.get("ok") is True
+                or isinstance(long_result, dict)
+                and long_result.get("exit_code") == 0
+            )
+        ),
+        "clean_delivery_evidence": (
+            provenance.get("ok") is True
+            and not stale_failures
+            and "MVP" not in app
+            and "Maxwell" not in app
+            and "Starite" not in app
+        ),
+    }
+    score = sum(1.0 for ok in checks.values() if ok) / len(checks)
+    failures = [name for name, ok in checks.items() if not ok]
+    return {
+        "schema": "kun-final-player-experience-gate-v1",
+        "production_mode": spec.production_mode,
+        "threshold": spec.final_player_experience_threshold,
+        "score": round(score, 4),
+        "pass": score >= spec.final_player_experience_threshold and not failures,
+        "checks": checks,
+        "failures": failures,
+        "stale_failure_artifacts": stale_failures,
+        "principle": (
+            "KUN self scores, residual pass, and checklist pass are insufficient; "
+            "final delivery also needs player-facing product-feel evidence."
+        ),
+    }
+
+
+def _latest_final_player_experience_allows_delivery(
+    spec: GameProductionSpec,
+) -> tuple[bool, dict[str, object]]:
+    if not spec.final_player_experience_required:
+        return True, {}
+    payload = _read_json(spec.project_path / "docs" / "final-player-experience-gate.json")
+    if not payload:
+        return False, {}
+    return (
+        payload.get("pass") is True
+        and float(payload.get("score", 0.0)) >= spec.final_player_experience_threshold,
+        payload,
+    )
 
 
 def _latest_residual_allows_delivery(spec: GameProductionSpec) -> tuple[bool, dict[str, object]]:

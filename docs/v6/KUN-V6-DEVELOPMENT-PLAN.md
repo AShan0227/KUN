@@ -72,6 +72,7 @@
 - 常驻 supervisor / daemon 进程。
 - 自动醒来扫描 ready work item。
 - runner 注册和 lease 协议。
+- macOS launchd 服务必须使用可诊断的稳定入口，默认日志写入 `~/Library/Logs/KUN/`，不能因为 Documents/TCC 路径、重复心跳或空闲状态导致 EX_CONFIG、退出循环或无日志失败。
 - 多任务 worker pool：daemon 必须记录 worker 槽位；多 daemon / 多机器必须通过持久 resource lock 与 work item lease 避免重复领取和资源冲突。
 - resource lock 必须不只在单个调度波次内有效；需要文件、数据库或 Redis 等持久锁适配层，并能写入等待原因、持有者、过期时间和冲突对象。
 - `kun` owner 的普通 execution、research、review、test、merge work item 必须有默认 KUN runtime runner，不能只依赖产品化 runner、AB runner 或任务专用 runner。
@@ -97,6 +98,7 @@
 - observation report 必须明确路由给 KUN、启、傩、人类、Control Plane 或外部监督者；中高风险项必须支持外部监督持续检查，并能反向进入启/傩治理闭环。
 - 生产能力去重、折叠和回滚后必须自动生成启治理 work item；daemon 可以执行机械安全动作，但启必须记录保留、合并、降级或淘汰的可审计治理结论。
 - 功能激活审计必须成为默认回归工具：每个核心功能都要有一条定制化触发任务，运行后明确触发条件、依赖协同关系、证据 artifact、生成的 work item、是否激活、是否需要补触发机制。
+- 最终产品类任务必须有真实用户体感门禁。KUN 自评分、机制门禁、残差审计、自动外部门禁或 checklist 通过不能直接触发最终交付；必须验证交互、视觉、体验、长时间试玩、失败反馈、目标用户体感和交付包完整性。
 
 验收：
 
@@ -104,6 +106,7 @@
 - 超时先判环境/工具阻断，不直接算 KUN 能力失败。
 - 恢复后能继续同一任务方案或触发计划变更。
 - daemon 停止、重启、跨天恢复后能继续正确下一步。
+- launchd 常驻服务能跨至少两个 heartbeat 周期保持 running，状态文件持续更新，日志可读；重复启动不会崩溃，空闲时不会因一次性运行配置退出。
 - 多任务并行时，独立任务能公平推进，共享 workspace、mission 或 merge 资源的工作项会等待锁释放，等待原因在 tick report 和驾驶舱可见。
 - worker pool 大于 1 时，两个互不依赖且资源锁不冲突的 work item 必须能在同一 tick 中真实并发执行；测试必须证明 runner 同时处于 running，而不是只证明一轮 tick 串行跑了多个 work item。
 - 两个 daemon 使用同一 resource lock store 时，第二个 daemon 不能抢占未过期锁；锁过期或释放后能继续。
@@ -117,6 +120,7 @@
 - 每个写进度的 daemon tick 都能同时产出 observation artifact；缺 runner、预执行失败、协同票据、能力重复、交付清单缺失等问题不会被埋在日志里，而会被标注为可治理观察项。
 - 重复 production capability 被自动折叠后，启 follow-up 会被创建并执行，产出治理 artifact；重复候选只保留为证据，不进入默认 runtime。
 - `kun control-plane feature-activation-audit` 能一次性运行核心功能激活任务；报告必须覆盖信息缺口、人机协同、运行时激活、预执行、worker/resource lock、真实并发 worker pool、沙箱、启/傩、能力去重、合并冲突、快照回滚、Watchtower、外部样本学习、自主 App 开发、研究先行开发、游戏生产、AB 回归和产品化 dogfood。验收不能只看测试文件存在，必须看真实 Control Plane 任务是否拉起对应能力并留下证据。
+- 游戏、App、内容产品等最终交付必须有 final player/user experience gate；该 gate 缺失或失败时 final delivery work item 必须 blocked，而不是 awaiting_acceptance。
 
 ### 阶段 3：启 Qi AB Runner 接入
 
