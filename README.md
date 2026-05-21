@@ -8,7 +8,7 @@
 - [`PROGRESS.md`](./PROGRESS.md) — 开发进度
 - [`docs/DEPLOY.md`](./docs/DEPLOY.md) — 另一台机器如何部署 + 做 PR
 
-GitHub: https://github.com/AShan0227/KUN (private)
+GitHub: https://github.com/AShan0227/KUN (public)
 
 ## Quickstart
 
