@@ -98,6 +98,44 @@ type TaskCockpitView = {
     latest_progress_artifact_ref: string | null;
     progress_artifact_refs: string[];
   };
+  concurrency: {
+    worker_pool_size: number;
+    worker_slots: Array<{
+      slot_id: string;
+      worker_id: string;
+      machine_id: string;
+      status: string;
+      mission_id: string | null;
+      work_item_id: string | null;
+      runner_identity: string | null;
+      resource_locks: string[];
+      sandbox_ref: string | null;
+      waiting_reason: string;
+    }>;
+    waiting_on_resource_lock_count: number;
+    resource_lock_conflicts: Array<{
+      resource_ref: string;
+      waiting_work_item_id: string;
+      holder_id: string;
+      holder_work_item_id: string | null;
+      holder_daemon_id: string | null;
+      expires_at: string | null;
+      waiting_reason: string;
+    }>;
+    sandbox_specs: Array<{
+      sandbox_ref: string;
+      mission_id: string;
+      work_item_id: string;
+      mode: string;
+      workspace_ref: string | null;
+      root_refs: string[];
+      writable_refs: string[];
+      network_policy: string;
+      container_runtime: string | null;
+      text: string;
+    }>;
+    text: string;
+  };
   work_items: Array<{
     work_item_id: string;
     lane: "ready" | "running" | "waiting" | "blocked" | "queued" | "done";
@@ -450,6 +488,52 @@ export default function ControlPlaneCockpitPage() {
                     <InfoRow label="下次唤醒" value={formatDateTime(cockpit.daemon.next_wakeup_at)} />
                     <InfoRow label="停止原因" value={cockpit.daemon.stopped_reason ?? "无"} />
                   </div>
+                </section>
+
+                <section className="kun-surface p-5">
+                  <SectionTitle title="并发和隔离" />
+                  <p className="mt-3 text-sm leading-6 text-gray-600">{cockpit.concurrency.text}</p>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <Metric label="worker 槽位" value={cockpit.concurrency.worker_pool_size} />
+                    <Metric
+                      label="等资源锁"
+                      value={cockpit.concurrency.waiting_on_resource_lock_count}
+                    />
+                  </div>
+                  <div className="mt-3 grid gap-2">
+                    {cockpit.concurrency.worker_slots.slice(0, 4).map((slot) => (
+                      <div key={slot.slot_id} className="kun-surface-muted p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-sm font-semibold">{slot.worker_id}</span>
+                          <span className="kun-badge border border-gray-200 bg-white text-gray-700">
+                            {slot.status}
+                          </span>
+                        </div>
+                        {slot.waiting_reason && (
+                          <p className="mt-2 text-xs leading-5 text-amber-700">
+                            {slot.waiting_reason}
+                          </p>
+                        )}
+                        {slot.resource_locks.length > 0 && (
+                          <div className="mt-2 break-all text-xs text-gray-500">
+                            {slot.resource_locks[0]}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <ListBlock
+                    items={cockpit.concurrency.resource_lock_conflicts.map(
+                      (conflict) => `${conflict.waiting_work_item_id} 等待 ${conflict.resource_ref}`,
+                    )}
+                    empty="暂无资源锁冲突。"
+                  />
+                  <ListBlock
+                    items={cockpit.concurrency.sandbox_specs.map(
+                      (spec) => `${spec.mode}${spec.container_runtime ? ` · ${spec.container_runtime}` : ""}`,
+                    )}
+                    empty="暂无沙箱执行记录。"
+                  />
                 </section>
 
                 <section className="kun-surface p-5">

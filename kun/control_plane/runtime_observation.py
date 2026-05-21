@@ -149,6 +149,8 @@ def build_runtime_observation_report(
                 evidence_refs=list(capability_policy.capability_profile_refs),
             )
         )
+    items.extend(_failed_work_observations(control_plane, mission_id))
+    items.extend(_quality_gate_observations(control_plane, mission_id))
     items.extend(_delivery_observations(control_plane, mission_id))
     return RuntimeObservationReport(
         mission_id=mission_id,
@@ -160,6 +162,80 @@ def build_runtime_observation_report(
     )
 
 
+def _failed_work_observations(
+    control_plane: InMemoryControlPlane,
+    mission_id: str,
+) -> list[RuntimeObservationItem]:
+    failed_work = [
+        item
+        for item in control_plane.work_items.values()
+        if item.mission_id == mission_id and item.status == "failed"
+    ]
+    if not failed_work:
+        return []
+    failed_ids = [item.work_item_id for item in failed_work]
+    recovered_refs = {
+        ref
+        for item in control_plane.work_items.values()
+        if item.mission_id == mission_id and item.owner in {"qi", "nuo"}
+        for ref in item.recovery_refs
+    }
+    unrecovered = [work_id for work_id in failed_ids if work_id not in recovered_refs]
+    if not unrecovered:
+        return []
+    return [
+        RuntimeObservationItem(
+            code="failed_work_without_recovery",
+            severity="high",
+            title="失败工作项缺少恢复闭环",
+            why_watch="工作项失败后必须由 Nuo 归因、Qi 调整策略或能力，而不是留给外部监督者发现。",
+            recommended_action=(
+                "Nuo 判断工具/环境/权限/包装器问题还是真实 KUN 能力失败；Qi 决定继续迭代、"
+                "换执行路径、补 runner，或把失败沉淀成能力治理。"
+            ),
+            routes=["nuo", "qi", "external_supervisor"],
+            evidence_refs=unrecovered,
+        )
+    ]
+
+
+def _quality_gate_observations(
+    control_plane: InMemoryControlPlane,
+    mission_id: str,
+) -> list[RuntimeObservationItem]:
+    weak_gates = [
+        gate
+        for gate in control_plane.gate_evaluations.values()
+        if gate.mission_id == mission_id
+        and (
+            gate.north_star_verdict != "pass"
+            or gate.result_quality < gate.thresholds.get("result_quality", 0.8)
+            or gate.hard_gate_failures
+        )
+    ]
+    if not weak_gates:
+        return []
+    failed_refs = [gate.gate_evaluation_id for gate in weak_gates]
+    responsibility_scopes = {gate.responsibility_scope for gate in weak_gates}
+    routes: list[ObservationRoute] = ["qi", "external_supervisor"]
+    if responsibility_scopes & {"environment", "mixed", "unknown"}:
+        routes.insert(0, "nuo")
+    return [
+        RuntimeObservationItem(
+            code="quality_gate_not_passed",
+            severity="high",
+            title="结果质量门禁未通过",
+            why_watch="任务执行不好时，KUN 必须主动审核、打分、归因并重排策略，不能等待外部监督者指出。",
+            recommended_action=(
+                "Nuo 先区分系统/环境/污染与真实能力失败；Qi 再打开更优路径、调整计划、"
+                "补强验收标准并安排复测。"
+            ),
+            routes=routes,
+            evidence_refs=failed_refs,
+        )
+    ]
+
+
 def _delivery_observations(
     control_plane: InMemoryControlPlane,
     mission_id: str,
@@ -168,6 +244,25 @@ def _delivery_observations(
     if mission is None:
         return []
     work_items = [item for item in control_plane.work_items.values() if item.mission_id == mission_id]
+    if mission.current_plan_version:
+        stale_items = [
+            item.work_item_id
+            for item in work_items
+            if item.task_plan_version != mission.current_plan_version
+            and item.status not in {"done", "cancelled"}
+        ]
+        if stale_items:
+            return [
+                RuntimeObservationItem(
+                    code="superseded_work_not_retired",
+                    severity="medium",
+                    title="旧计划工作项仍未归档",
+                    why_watch="后续计划已经覆盖旧阻断，但旧 queued/blocked/failed 项继续留在活跃状态会污染驾驶舱和监督判断。",
+                    recommended_action="Control Plane 应自动取消被当前计划覆盖的旧工作项，并留下 superseded cleanup 证据。",
+                    routes=["control_plane", "qi", "external_supervisor"],
+                    evidence_refs=stale_items,
+                )
+            ]
     if work_items and all(item.status in {"done", "partial"} for item in work_items):
         delivery_manifest_refs = [
             ref
@@ -200,6 +295,33 @@ def _delivery_observations(
                 evidence_refs=[mission.mission_id],
             )
         ]
+    if mission.status in {"delivering", "awaiting_acceptance"} and mission.acceptance_ref is None:
+        delivery_manifest_refs = [
+            ref
+            for ref in mission.artifact_manifest_refs
+            if (manifest := control_plane.artifact_manifests.get(ref)) is not None
+            and manifest.kind == "delivery"
+            and manifest.supports_delivery
+        ]
+        acceptance_ticket_open = any(
+            ticket.mission_id == mission_id
+            and ticket.type in {"review", "user_decision", "approval"}
+            and ticket.status in {"open", "waiting"}
+            and (ticket.context_ref in delivery_manifest_refs or "acceptance" in ticket.ticket_id)
+            for ticket in control_plane.collaboration_tickets.values()
+        )
+        if delivery_manifest_refs and not acceptance_ticket_open:
+            return [
+                RuntimeObservationItem(
+                    code="human_acceptance_ticket_missing",
+                    severity="high",
+                    title="交付态缺少人工验收票据",
+                    why_watch="产品体验好不好不能只靠内部门禁；进入交付态后必须主动请求人类或目标用户验收。",
+                    recommended_action="自动打开 acceptance/review ticket，注明交付物、验收问题、超时和恢复策略。",
+                    routes=["human", "control_plane", "external_supervisor"],
+                    evidence_refs=delivery_manifest_refs,
+                )
+            ]
     return []
 
 

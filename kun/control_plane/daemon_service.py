@@ -26,6 +26,7 @@ class DaemonServiceInstallPlan(BaseModel):
     command: list[str]
     store_path: str
     state_path: str
+    resource_lock_path: str
     stdout_path: str
     stderr_path: str
     content: str
@@ -47,6 +48,11 @@ def build_daemon_service_install_plan(
     stderr_path: str | Path = ".kun-local/logs/v6-daemon.err.log",
     poll_interval_sec: float = 30.0,
     max_work_items_per_tick: int = 10,
+    worker_pool_size: int = 1,
+    resource_lock_path: str | Path | None = None,
+    resource_lock_ttl_sec: float = 900.0,
+    sandbox_mode: str = "workspace_snapshot",
+    container_runtime: str | None = None,
     idle_ticks_to_stop: int = 1,
     stale_heartbeat_after_sec: float = 900.0,
     ab_round_dir: str | Path | None = None,
@@ -59,6 +65,8 @@ def build_daemon_service_install_plan(
         raise ValueError("poll_interval_sec must be non-negative")
     if max_work_items_per_tick < 0:
         raise ValueError("max_work_items_per_tick must be non-negative")
+    if worker_pool_size <= 0:
+        raise ValueError("worker_pool_size must be positive")
     if idle_ticks_to_stop <= 0:
         raise ValueError("idle_ticks_to_stop must be positive")
     if stale_heartbeat_after_sec <= 0:
@@ -67,6 +75,11 @@ def build_daemon_service_install_plan(
     workdir = Path(working_directory).expanduser().resolve()
     resolved_store_path = _resolve_under_workdir(workdir, store_path)
     resolved_state_path = _resolve_under_workdir(workdir, state_path)
+    resolved_resource_lock_path = (
+        _resolve_under_workdir(workdir, resource_lock_path)
+        if resource_lock_path is not None
+        else resolved_store_path.with_name(f"{resolved_store_path.stem}.resource-locks.json")
+    )
     resolved_stdout_path = _resolve_under_workdir(workdir, stdout_path)
     resolved_stderr_path = _resolve_under_workdir(workdir, stderr_path)
     command = [
@@ -85,11 +98,21 @@ def build_daemon_service_install_plan(
         str(poll_interval_sec),
         "--max-work-items-per-tick",
         str(max_work_items_per_tick),
+        "--worker-pool-size",
+        str(worker_pool_size),
+        "--resource-lock-path",
+        str(resolved_resource_lock_path),
+        "--resource-lock-ttl-sec",
+        str(resource_lock_ttl_sec),
+        "--sandbox-mode",
+        sandbox_mode,
         "--idle-ticks-to-stop",
         str(idle_ticks_to_stop),
         "--stale-heartbeat-after-sec",
         str(stale_heartbeat_after_sec),
     ]
+    if container_runtime:
+        command.extend(["--container-runtime", container_runtime])
     if ab_round_dir is not None:
         command.extend(["--ab-round-dir", str(_resolve_under_workdir(workdir, ab_round_dir))])
     if ab_round_id:
@@ -143,6 +166,7 @@ def build_daemon_service_install_plan(
         command=command,
         store_path=str(resolved_store_path),
         state_path=str(resolved_state_path),
+        resource_lock_path=str(resolved_resource_lock_path),
         stdout_path=str(resolved_stdout_path),
         stderr_path=str(resolved_stderr_path),
         content=content,

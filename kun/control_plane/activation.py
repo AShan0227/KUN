@@ -58,6 +58,10 @@ def activate_work_item_features(
     )
 
     workspace_path = _workspace_path(contract)
+    resource_locks = _merge_unique(
+        work_item.resource_locks,
+        _resource_locks(work_item=work_item, workspace_path=workspace_path),
+    )
     checkpoint_artifact = _build_checkpoint_artifact(
         control_plane=control_plane,
         work_item=work_item,
@@ -89,6 +93,7 @@ def activate_work_item_features(
             "capability_directive_count": len(capability_policy.directives),
             "skill_refs": skill_refs,
             "external_source_refs": external_refs,
+            "resource_locks": resource_locks,
             "workspace_ref": workspace_ref,
             "sandbox_ref": sandbox_ref,
             "checkpoint_refs": checkpoint_refs,
@@ -122,6 +127,7 @@ def activate_work_item_features(
             "required_capability_refs": capability_refs,
             "skill_refs": skill_refs,
             "external_source_refs": external_refs,
+            "resource_locks": resource_locks,
             "workspace_ref": workspace_ref,
             "sandbox_ref": sandbox_ref,
             "checkpoint_refs": checkpoint_refs,
@@ -201,6 +207,22 @@ def _external_source_refs(*, task_plan: TaskPlan | None, work_item: WorkItem) ->
     ):
         refs.append(f"external-info-needed://{work_item.work_item_id}")
     return refs
+
+
+def _resource_locks(*, work_item: WorkItem, workspace_path: str | None) -> list[str]:
+    locks: list[str] = []
+    if workspace_path and work_item.type in {
+        "execution",
+        "test",
+        "merge",
+        "repair",
+        "retest",
+        "rollback",
+    }:
+        locks.append(f"workspace:{workspace_path}")
+    if work_item.type in {"merge", "rollback"}:
+        locks.append(f"mission:{work_item.mission_id}")
+    return locks
 
 
 def _workspace_path(contract: ExecutionContract | None) -> str | None:

@@ -31,12 +31,15 @@ NuoFindingCode = Literal[
     "review_count_missing",
     "review_count_insufficient",
     "comparator_unhealthy",
+    "premature_delivery_claim",
+    "subjective_playtest_missing",
 ]
 NuoFindingKind = Literal[
     "contamination",
     "environment_blocker",
     "artifact_gap",
     "governance_blocker",
+    "product_gap",
 ]
 NuoSeverity = Literal["info", "warning", "blocker"]
 NuoHealthStatus = Literal["healthy", "warning", "blocked"]
@@ -49,6 +52,8 @@ NuoRecoveryAction = Literal[
     "collect_report",
     "collect_reviews",
     "repair_comparator",
+    "continue_iteration",
+    "request_human_playtest",
     "pause",
 ]
 
@@ -100,6 +105,10 @@ class NuoObservation(BaseModel):
     expected_review_count: int = Field(default=0, ge=0)
     comparator_healthy: bool = True
     comparator_health_reason: str = ""
+    product_acceptance_claimed: bool = False
+    product_surface_gap_codes: list[str] = Field(default_factory=list)
+    human_playtest_required: bool = False
+    human_playtest_ref: str | None = None
     artifact_refs: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     test_refs: list[str] = Field(default_factory=list)
@@ -196,8 +205,10 @@ class NuoHealthReport(BaseModel):
             "fix_auth": 4,
             "collect_report": 5,
             "collect_reviews": 6,
-            "rerun": 7,
-            "pause": 8,
+            "continue_iteration": 7,
+            "request_human_playtest": 8,
+            "rerun": 9,
+            "pause": 10,
         }
         finding = min(self.findings, key=lambda item: priority[item.recommended_action])
         next_action, next_state, owner = _recovery_route(finding)
@@ -209,7 +220,7 @@ class NuoHealthReport(BaseModel):
             owner=owner,
             reason=finding.summary,
             finding_refs=[item.finding_id for item in self.findings],
-            counts_as_kun_failure=False,
+            counts_as_kun_failure=self.counts_as_kun_failure,
         )
 
     def to_gate_evaluation(
@@ -295,6 +306,7 @@ def diagnose_nuo_health(observation: NuoObservation) -> NuoHealthReport:
         *_detect_environment_blockers(observation),
         *_detect_artifact_gaps(observation),
         *_detect_governance_blockers(observation),
+        *_detect_product_delivery_gaps(observation),
     ]
     status: NuoHealthStatus
     if any(finding.severity == "blocker" for finding in findings):
@@ -459,6 +471,26 @@ def build_nuo_pollution_sample_library() -> list[NuoPollutionSample]:
             comparator_health_reason="judge quorum failed",
             expected_codes=["comparator_unhealthy"],
             expected_recovery_action="repair_comparator",
+        ),
+        _sample(
+            sample_id="premature-product-delivery",
+            description="A product task claimed delivery even though product-surface gaps remained.",
+            output_text="ready_to_deliver, but only mechanics passed and visual polish is missing",
+            product_acceptance_claimed=True,
+            product_surface_gap_codes=["mechanics_only", "visual_gap"],
+            expected_codes=["premature_delivery_claim"],
+            expected_recovery_action="continue_iteration",
+            counts_as_kun_failure=True,
+        ),
+        _sample(
+            sample_id="subjective-playtest-missing",
+            description="A user-facing product delivery needs human or target-user acceptance evidence.",
+            product_acceptance_claimed=True,
+            human_playtest_required=True,
+            human_playtest_ref=None,
+            expected_codes=["subjective_playtest_missing"],
+            expected_recovery_action="request_human_playtest",
+            counts_as_kun_failure=True,
         ),
     ]
 
@@ -692,6 +724,42 @@ def _detect_governance_blockers(observation: NuoObservation) -> list[NuoHealthFi
     ]
 
 
+def _detect_product_delivery_gaps(observation: NuoObservation) -> list[NuoHealthFinding]:
+    findings: list[NuoHealthFinding] = []
+    if observation.product_acceptance_claimed and observation.product_surface_gap_codes:
+        findings.append(
+            _finding(
+                observation,
+                code="premature_delivery_claim",
+                kind="product_gap",
+                summary=(
+                    "Product delivery was claimed while product-surface gaps remain; "
+                    "mechanism-level gates cannot be treated as final user-value acceptance."
+                ),
+                evidence=[", ".join(observation.product_surface_gap_codes)],
+                failure_category="delivery_failure",
+                recommended_action="continue_iteration",
+                counts_as_kun_failure=True,
+            )
+        )
+    if observation.human_playtest_required and not observation.human_playtest_ref:
+        findings.append(
+            _finding(
+                observation,
+                code="subjective_playtest_missing",
+                kind="product_gap",
+                summary=(
+                    "A subjective product-experience gate requires human or target-user "
+                    "playtest evidence before final closure."
+                ),
+                failure_category="evidence_failure",
+                recommended_action="request_human_playtest",
+                counts_as_kun_failure=True,
+            )
+        )
+    return findings
+
+
 def _finding(
     observation: NuoObservation,
     *,
@@ -701,6 +769,7 @@ def _finding(
     failure_category: FailureCategory,
     recommended_action: NuoRecoveryAction,
     evidence: list[str] | None = None,
+    counts_as_kun_failure: bool = False,
 ) -> NuoHealthFinding:
     return NuoHealthFinding(
         finding_id=f"nuo-{observation.subject_ref}-{code}",
@@ -709,7 +778,7 @@ def _finding(
         summary=summary,
         evidence=[item for item in evidence or [] if item],
         failure_category=failure_category,
-        counts_as_kun_failure=False,
+        counts_as_kun_failure=counts_as_kun_failure,
         invalidates_round=True,
         recommended_action=recommended_action,
     )
@@ -736,19 +805,21 @@ def _family_mismatch(observation: NuoObservation) -> bool:
 
 
 def _recovery_route(finding: NuoHealthFinding) -> tuple[NextAction, MissionStatus, str]:
-    if finding.code in {"auth_failure", "permission_denied"}:
+    if finding.code in {"auth_failure", "permission_denied", "subjective_playtest_missing"}:
         return "needs_human", "waiting_human", "operator"
     if finding.code in {"report_missing", "review_count_missing", "review_count_insufficient"}:
         return "needs_info", "info_gap", "qi"
+    if finding.code == "premature_delivery_claim":
+        return "needs_plan_change", "changing_plan", "qi"
     return "needs_repair", "repairing", "control-plane"
 
 
 def _recovery_work_item_type(action: NuoRecoveryAction) -> WorkItemType:
-    if action == "fix_auth":
+    if action in {"fix_auth", "request_human_playtest"}:
         return "collaboration"
     if action in {"collect_report", "collect_reviews"}:
         return "research"
-    if action == "pause":
+    if action in {"pause", "continue_iteration"}:
         return "governance"
     return "repair"
 
@@ -794,6 +865,18 @@ def _recovery_expected_output(
             "Repair comparator health and rerun the same subject without counting agent failure. "
             f"Nuo findings: {joined_codes}."
         )
+    if recommendation.action == "continue_iteration":
+        return (
+            "Open a stricter continuation branch before final closure: translate the product gaps "
+            "into new acceptance criteria, seek a better path, and rerun delivery gates. "
+            f"Nuo findings: {joined_codes}."
+        )
+    if recommendation.action == "request_human_playtest":
+        return (
+            "Open a human or target-user playtest/acceptance ticket with clear acceptance questions, "
+            "deadline, fallback policy, and automatic resume path. "
+            f"Nuo findings: {joined_codes}."
+        )
     return f"Pause the subject until governance resolves Nuo findings: {joined_codes}."
 
 
@@ -831,6 +914,11 @@ def _sample(
     expected_review_count: int = 45,
     comparator_healthy: bool = True,
     comparator_health_reason: str = "",
+    product_acceptance_claimed: bool = False,
+    product_surface_gap_codes: list[str] | None = None,
+    human_playtest_required: bool = False,
+    human_playtest_ref: str | None = "human-playtest-sample",
+    counts_as_kun_failure: bool = False,
 ) -> NuoPollutionSample:
     return NuoPollutionSample(
         sample_id=sample_id,
@@ -857,9 +945,14 @@ def _sample(
             expected_review_count=expected_review_count,
             comparator_healthy=comparator_healthy,
             comparator_health_reason=comparator_health_reason,
+            product_acceptance_claimed=product_acceptance_claimed,
+            product_surface_gap_codes=product_surface_gap_codes or [],
+            human_playtest_required=human_playtest_required,
+            human_playtest_ref=human_playtest_ref,
         ),
         expected_codes=expected_codes,
         expected_recovery_action=expected_recovery_action,
+        counts_as_kun_failure=counts_as_kun_failure,
     )
 
 

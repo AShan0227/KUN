@@ -13,7 +13,9 @@ import json
 import os
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -25,7 +27,18 @@ from kun.control_plane.capability_execution import (
     CapabilityExecutionPolicy,
     build_capability_execution_policy,
 )
-from kun.control_plane.preflight import run_work_item_preflight
+from kun.control_plane.concurrency import (
+    FileResourceLockStore,
+    InMemoryResourceLockStore,
+    ResourceLockConflict,
+    SandboxIsolationMode,
+    SandboxIsolationSpec,
+    WorkerPoolConfig,
+    WorkerSlotSnapshot,
+    sandbox_spec_for_work_item,
+    worker_slots,
+)
+from kun.control_plane.preflight import WorkItemPreflight, run_work_item_preflight
 from kun.control_plane.runtime import ControlPlaneRunner, InMemoryControlPlane, WorkItemResult
 from kun.control_plane.runtime_observation import (
     RuntimeObservationReport,
@@ -34,7 +47,9 @@ from kun.control_plane.runtime_observation import (
 from kun.control_plane.supervisor import MinimalSupervisor, SupervisorFinding
 from kun.control_plane.v6 import (
     ArtifactRecord,
+    CapabilityProfile,
     CollaborationTicket,
+    ExecutionContract,
     GateEvaluation,
     Mission,
     MissionStatus,
@@ -62,6 +77,8 @@ ACTIVE_DAEMON_MISSION_STATUSES: frozenset[MissionStatus] = frozenset(
         "repairing",
         "rolling_back",
         "changing_plan",
+        "delivering",
+        "awaiting_acceptance",
         "paused",
         "escalated",
     }
@@ -84,18 +101,26 @@ class DaemonTickReport(BaseModel):
     observed_at: datetime
     mission_ids: list[str] = Field(default_factory=list)
     recovered_work_item_ids: list[str] = Field(default_factory=list)
+    retired_work_item_ids: list[str] = Field(default_factory=list)
+    retired_collaboration_ticket_ids: list[str] = Field(default_factory=list)
+    retired_capability_profile_ids: list[str] = Field(default_factory=list)
     recovery_gate_refs: list[str] = Field(default_factory=list)
     created_work_item_ids: list[str] = Field(default_factory=list)
     created_collaboration_ticket_ids: list[str] = Field(default_factory=list)
     ran_work_item_ids: list[str] = Field(default_factory=list)
+    resource_lock_skipped_work_item_ids: list[str] = Field(default_factory=list)
     run_refs: list[str] = Field(default_factory=list)
     no_runner_work_item_ids: list[str] = Field(default_factory=list)
+    worker_slots: list[WorkerSlotSnapshot] = Field(default_factory=list)
+    resource_lock_conflicts: list[ResourceLockConflict] = Field(default_factory=list)
+    sandbox_specs: list[SandboxIsolationSpec] = Field(default_factory=list)
     finalized_mission_ids: list[str] = Field(default_factory=list)
     final_gate_refs: list[str] = Field(default_factory=list)
     delivery_manifest_refs: list[str] = Field(default_factory=list)
     progress_artifact_refs: list[str] = Field(default_factory=list)
     observation_artifact_refs: list[str] = Field(default_factory=list)
     runtime_observations: dict[str, RuntimeObservationReport] = Field(default_factory=dict)
+    observation_followup_ids: list[str] = Field(default_factory=list)
     activation_artifact_refs: list[str] = Field(default_factory=list)
     preflight_artifact_refs: list[str] = Field(default_factory=list)
     preflight_failed_skill_ids: list[str] = Field(default_factory=list)
@@ -126,6 +151,10 @@ class DaemonServiceConfig(BaseModel):
 
     poll_interval_sec: float = Field(default=30.0, ge=0)
     max_work_items_per_tick: int = Field(default=10, ge=0)
+    worker_pool_size: int = Field(default=1, ge=1, le=256)
+    resource_lock_ttl_sec: float = Field(default=900.0, gt=0)
+    sandbox_mode: SandboxIsolationMode = "workspace_snapshot"
+    container_runtime: str | None = None
     max_ticks: int | None = Field(default=None, ge=1)
     stop_when_idle: bool = False
     idle_ticks_to_stop: int = Field(default=1, ge=1)
@@ -151,6 +180,11 @@ class DaemonServiceState(BaseModel):
     last_tick_ran_work_item_ids: list[str] = Field(default_factory=list)
     last_tick_recovered_work_item_ids: list[str] = Field(default_factory=list)
     last_tick_progress_artifact_refs: list[str] = Field(default_factory=list)
+    worker_pool_size: int = 1
+    last_tick_worker_slots: list[WorkerSlotSnapshot] = Field(default_factory=list)
+    last_tick_resource_lock_skipped_work_item_ids: list[str] = Field(default_factory=list)
+    last_tick_resource_lock_conflicts: list[ResourceLockConflict] = Field(default_factory=list)
+    last_tick_sandbox_specs: list[SandboxIsolationSpec] = Field(default_factory=list)
     stopped_reason: DaemonServiceStoppedReason | None = None
     stopped_at: datetime | None = None
     last_error: str | None = None
@@ -175,6 +209,19 @@ class DaemonServiceClaim(BaseModel):
     state: DaemonServiceState | None = None
     stale_previous: bool = False
     text: str
+
+
+@dataclass(frozen=True)
+class _PreparedWorkItemRun:
+    """A claimed, activated work item ready for a worker thread."""
+
+    work_item: WorkItem
+    runner: ControlPlaneRunner
+    slot: WorkerSlotSnapshot
+    holder_id: str
+    preserve_mission_status: bool
+    preflight_failed_skill_ids: list[str]
+    preflight_artifact_refs: list[str]
 
 
 class DaemonServiceStopRequest(BaseModel):
@@ -329,6 +376,11 @@ class ControlPlaneDaemon:
         runners_by_type: Mapping[str, ControlPlaneRunner] | None = None,
         default_runner: ControlPlaneRunner | None = None,
         rule_engine: RuleEngine | None = None,
+        worker_pool: WorkerPoolConfig | None = None,
+        resource_lock_store: FileResourceLockStore | InMemoryResourceLockStore | None = None,
+        resource_lock_ttl_sec: float = 900.0,
+        sandbox_mode: SandboxIsolationMode = "workspace_snapshot",
+        container_runtime: str | None = None,
     ) -> None:
         self.control_plane = control_plane
         self.supervisor = supervisor or MinimalSupervisor()
@@ -337,6 +389,11 @@ class ControlPlaneDaemon:
         self.runners_by_type = dict(runners_by_type or {})
         self.default_runner = default_runner
         self.rule_engine = rule_engine
+        self.worker_pool = worker_pool or WorkerPoolConfig()
+        self.resource_lock_store = resource_lock_store or _default_resource_lock_store(control_plane)
+        self.resource_lock_ttl = timedelta(seconds=resource_lock_ttl_sec)
+        self.sandbox_mode = sandbox_mode
+        self.container_runtime = container_runtime
 
     def tick_once(
         self,
@@ -358,6 +415,12 @@ class ControlPlaneDaemon:
             daemon_id=self.daemon_id,
             observed_at=observed_at,
             mission_ids=selected_mission_ids,
+            worker_slots=worker_slots(self.worker_pool),
+        )
+        self._resolve_capability_duplicates(
+            mission_ids=selected_mission_ids,
+            observed_at=observed_at,
+            report=report,
         )
         capability_policy = build_capability_execution_policy(
             self.control_plane.list_default_runtime_capabilities(),
@@ -375,64 +438,85 @@ class ControlPlaneDaemon:
                 observed_at=observed_at,
                 report=report,
             )
+            self._ensure_delivery_acceptance_collaboration(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._retire_superseded_plan_work(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._retire_superseded_collaboration_tickets(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
 
         for mission_id in selected_mission_ids:
             self._recover_stale_work(mission_id=mission_id, report=report, now=observed_at)
 
         remaining = max_work_items
-        for mission_id in selected_mission_ids:
-            while remaining > 0:
-                work_item = self.control_plane.next_ready_work_item(mission_id)
-                if work_item is None:
+        while remaining > 0:
+            claimed_resource_locks: set[str] = set()
+            prepared_runs: list[_PreparedWorkItemRun] = []
+            batch_limit = min(remaining, max(1, self.worker_pool.worker_count))
+            while len(prepared_runs) < batch_limit:
+                selected_this_pass = False
+                for mission_id in selected_mission_ids:
+                    if len(prepared_runs) >= batch_limit:
+                        break
+                    mission = self.control_plane.missions.get(mission_id)
+                    if mission is None or mission.status not in ACTIVE_DAEMON_MISSION_STATUSES:
+                        continue
+                    delivery_state = mission.status in {"delivering", "awaiting_acceptance"}
+                    work_item = self._next_non_conflicting_ready_work_item(
+                        mission_id=mission_id,
+                        claimed_resource_locks=claimed_resource_locks,
+                        report=report,
+                    )
+                    if work_item is None:
+                        continue
+                    if delivery_state and not _is_delivery_state_followup(work_item):
+                        continue
+                    slot = _slot_for_run(report.worker_slots, len(prepared_runs))
+                    prepared = self._prepare_work_item_run(
+                        work_item=work_item,
+                        slot=slot,
+                        delivery_state=delivery_state,
+                        claimed_resource_locks=claimed_resource_locks,
+                        capability_policy=capability_policy,
+                        observed_at=observed_at,
+                        report=report,
+                    )
+                    if prepared is None:
+                        continue
+                    prepared_runs.append(prepared)
+                    claimed_resource_locks.update(
+                        _effective_resource_locks(self.control_plane, prepared.work_item)
+                    )
+                    selected_this_pass = True
+                if not selected_this_pass:
                     break
-                runner = self._runner_for(work_item)
-                if runner is None:
-                    report.no_runner_work_item_ids.append(work_item.work_item_id)
-                    break
-                activation = activate_work_item_features(
-                    control_plane=self.control_plane,
-                    work_item=work_item,
-                    capability_policy=capability_policy,
-                    actor=self.daemon_id,
-                    observed_at=observed_at,
-                )
-                self.control_plane.work_items[activation.work_item.work_item_id] = (
-                    activation.work_item
-                )
-                self._persist_work_item(activation.work_item)
-                for artifact in activation.artifacts:
-                    self._upsert_artifact(artifact)
-                    report.activation_artifact_refs.append(artifact.artifact_id)
-                preflight = run_work_item_preflight(
-                    control_plane=self.control_plane,
-                    work_item=activation.work_item,
-                    actor=self.daemon_id,
-                    observed_at=observed_at,
-                )
-                preflight_artifact_refs: list[str] = []
-                for artifact in preflight.artifacts:
-                    self._upsert_artifact(artifact)
-                    preflight_artifact_refs.append(artifact.artifact_id)
-                    report.preflight_artifact_refs.append(artifact.artifact_id)
-                report.preflight_failed_skill_ids.extend(preflight.failed_skill_ids)
-                _bind_capability_policy(runner, capability_policy)
-                run = self.control_plane.run_next_ready(mission_id=mission_id, runner=runner)
-                if run is None:
-                    break
+            if not prepared_runs:
+                break
+            completed_runs = self._run_prepared_work_items_in_parallel(prepared_runs)
+            if not completed_runs:
+                break
+            for prepared, run in completed_runs:
                 report.ran_work_item_ids.append(run.work_item_id)
                 report.run_refs.append(run.run_id)
                 fired, error_count = self._evaluate_watchtower_for_run(run)
                 report.watchtower_fired_rule_ids.extend(fired)
                 report.watchtower_error_count += error_count
                 self._queue_preflight_followups(
-                    work_item=activation.work_item,
-                    failed_skill_ids=preflight.failed_skill_ids,
-                    artifact_refs=preflight_artifact_refs,
+                    work_item=prepared.work_item,
+                    failed_skill_ids=prepared.preflight_failed_skill_ids,
+                    artifact_refs=prepared.preflight_artifact_refs,
                     report=report,
                 )
                 remaining -= 1
-                if self.control_plane.missions[mission_id].status not in {"queued", "running"}:
-                    break
 
         for mission_id in selected_mission_ids:
             self._finalize_idle_mission(mission_id=mission_id, report=report)
@@ -447,6 +531,11 @@ class ControlPlaneDaemon:
                 )
                 self._upsert_artifact(observation)
                 report.observation_artifact_refs.append(observation.artifact_id)
+                self._queue_observation_followups(
+                    mission_id=mission_id,
+                    observation_artifact_ref=observation.artifact_id,
+                    report=report,
+                )
                 artifact = self._progress_artifact(
                     mission_id=mission_id,
                     now=observed_at,
@@ -525,6 +614,12 @@ class ControlPlaneDaemon:
         """Run as a service and persist daemon heartbeat/stop state each tick."""
 
         active_config = config or DaemonServiceConfig()
+        self.worker_pool = self.worker_pool.model_copy(
+            update={"worker_count": active_config.worker_pool_size}
+        )
+        self.resource_lock_ttl = timedelta(seconds=active_config.resource_lock_ttl_sec)
+        self.sandbox_mode = active_config.sandbox_mode
+        self.container_runtime = active_config.container_runtime
         started_at = now_factory()
         tick_reports: list[DaemonTickReport] = []
         idle_ticks = 0
@@ -604,6 +699,7 @@ class ControlPlaneDaemon:
                     tick_count=len(tick_reports),
                     consecutive_idle_ticks=idle_ticks,
                     active_mission_ids=list(mission_ids or self._active_missions()),
+                    worker_pool_size=self.worker_pool.worker_count,
                     stopped_reason="error",
                     stopped_at=stopped_at,
                     last_error=f"{type(exc).__name__}: {exc}",
@@ -634,6 +730,17 @@ class ControlPlaneDaemon:
                 last_tick_progress_artifact_refs=tick_reports[-1].progress_artifact_refs
                 if tick_reports
                 else [],
+                worker_pool_size=self.worker_pool.worker_count,
+                last_tick_worker_slots=tick_reports[-1].worker_slots if tick_reports else [],
+                last_tick_resource_lock_skipped_work_item_ids=tick_reports[
+                    -1
+                ].resource_lock_skipped_work_item_ids
+                if tick_reports
+                else [],
+                last_tick_resource_lock_conflicts=tick_reports[-1].resource_lock_conflicts
+                if tick_reports
+                else [],
+                last_tick_sandbox_specs=tick_reports[-1].sandbox_specs if tick_reports else [],
                 stopped_reason=stopped_reason,
                 stopped_at=ended_at,
             ),
@@ -655,6 +762,208 @@ class ControlPlaneDaemon:
             for mission in self.control_plane.missions.values()
             if mission.status in ACTIVE_DAEMON_MISSION_STATUSES
         )
+
+    def _next_non_conflicting_ready_work_item(
+        self,
+        *,
+        mission_id: str,
+        claimed_resource_locks: set[str],
+        report: DaemonTickReport,
+    ) -> WorkItem | None:
+        for candidate in self.control_plane.ready_work_items(
+            mission_id,
+            now=report.observed_at,
+        ):
+            locks = _effective_resource_locks(self.control_plane, candidate)
+            if locks and claimed_resource_locks.intersection(locks):
+                if candidate.work_item_id not in report.resource_lock_skipped_work_item_ids:
+                    report.resource_lock_skipped_work_item_ids.append(candidate.work_item_id)
+                continue
+            return candidate
+        return None
+
+    def _prepare_work_item_run(
+        self,
+        *,
+        work_item: WorkItem,
+        slot: WorkerSlotSnapshot,
+        delivery_state: bool,
+        claimed_resource_locks: set[str],
+        capability_policy: CapabilityExecutionPolicy,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> _PreparedWorkItemRun | None:
+        runner = self._runner_for(work_item)
+        if runner is None:
+            report.no_runner_work_item_ids.append(work_item.work_item_id)
+            return None
+        locks = _effective_resource_locks(self.control_plane, work_item)
+        if locks and claimed_resource_locks.intersection(locks):
+            if work_item.work_item_id not in report.resource_lock_skipped_work_item_ids:
+                report.resource_lock_skipped_work_item_ids.append(work_item.work_item_id)
+            slot.status = "waiting_lock"
+            slot.mission_id = work_item.mission_id
+            slot.work_item_id = work_item.work_item_id
+            slot.resource_locks = sorted(locks)
+            slot.waiting_reason = "同一 tick 内已有 worker 领取了共享资源，等待下一轮。"
+            return None
+        holder_id = _lease_id(
+            daemon_id=self.daemon_id,
+            worker_id=slot.worker_id,
+            work_item_id=work_item.work_item_id,
+            observed_at=observed_at,
+        )
+        acquisition = self.resource_lock_store.acquire_many(
+            resources=sorted(locks),
+            holder_id=holder_id,
+            daemon_id=self.daemon_id,
+            worker_id=slot.worker_id,
+            work_item=work_item,
+            now=observed_at,
+            ttl=self.resource_lock_ttl,
+        )
+        if not acquisition.acquired:
+            if work_item.work_item_id not in report.resource_lock_skipped_work_item_ids:
+                report.resource_lock_skipped_work_item_ids.append(work_item.work_item_id)
+            report.resource_lock_conflicts.extend(acquisition.conflicts)
+            slot.status = "waiting_lock"
+            slot.mission_id = work_item.mission_id
+            slot.work_item_id = work_item.work_item_id
+            slot.resource_locks = sorted(locks)
+            slot.waiting_reason = "等待资源锁释放后继续。"
+            return None
+        claimed_item = self._claim_work_item_lease(
+            work_item=work_item,
+            lease=holder_id,
+            now=observed_at,
+        )
+        if claimed_item is None:
+            self.resource_lock_store.release_holder(holder_id, now=observed_at)
+            slot.status = "blocked"
+            slot.mission_id = work_item.mission_id
+            slot.work_item_id = work_item.work_item_id
+            slot.waiting_reason = "工作项已被其他 worker 领取或不再可执行。"
+            return None
+        activation = activate_work_item_features(
+            control_plane=self.control_plane,
+            work_item=claimed_item,
+            capability_policy=capability_policy,
+            actor=self.daemon_id,
+            observed_at=observed_at,
+        )
+        self.control_plane.work_items[activation.work_item.work_item_id] = activation.work_item
+        self._persist_work_item(activation.work_item)
+        for artifact in activation.artifacts:
+            self._upsert_artifact(artifact)
+            report.activation_artifact_refs.append(artifact.artifact_id)
+        sandbox_spec = sandbox_spec_for_work_item(
+            work_item=activation.work_item,
+            mode=self.sandbox_mode,
+            workspace_ref=_workspace_path_from_contract(
+                self.control_plane.contracts.get(
+                    self.control_plane.missions[
+                        activation.work_item.mission_id
+                    ].execution_contract_ref
+                    or ""
+                )
+            ),
+            container_runtime=self.container_runtime,
+        )
+        report.sandbox_specs.append(sandbox_spec)
+        active_runner = runner
+        if self.sandbox_mode == "container_required" and not getattr(
+            runner,
+            "supports_container_sandbox",
+            False,
+        ):
+            active_runner = _SandboxRequirementRunner(
+                runner_identity=runner.runner_identity,
+                sandbox_spec=sandbox_spec,
+            )
+        slot.status = "running"
+        slot.mission_id = activation.work_item.mission_id
+        slot.work_item_id = activation.work_item.work_item_id
+        slot.runner_identity = active_runner.runner_identity
+        slot.resource_locks = sorted(
+            _effective_resource_locks(self.control_plane, activation.work_item)
+        )
+        slot.sandbox_ref = sandbox_spec.sandbox_ref
+        if _should_preflight_work_item(activation.work_item):
+            preflight = run_work_item_preflight(
+                control_plane=self.control_plane,
+                work_item=activation.work_item,
+                actor=self.daemon_id,
+                observed_at=observed_at,
+            )
+        else:
+            preflight = WorkItemPreflight()
+        preflight_artifact_refs: list[str] = []
+        for artifact in preflight.artifacts:
+            self._upsert_artifact(artifact)
+            preflight_artifact_refs.append(artifact.artifact_id)
+            report.preflight_artifact_refs.append(artifact.artifact_id)
+        report.preflight_failed_skill_ids.extend(preflight.failed_skill_ids)
+        _bind_capability_policy(active_runner, capability_policy)
+        return _PreparedWorkItemRun(
+            work_item=activation.work_item,
+            runner=active_runner,
+            slot=slot,
+            holder_id=holder_id,
+            preserve_mission_status=delivery_state,
+            preflight_failed_skill_ids=list(preflight.failed_skill_ids),
+            preflight_artifact_refs=preflight_artifact_refs,
+        )
+
+    def _run_prepared_work_items_in_parallel(
+        self,
+        prepared_runs: list[_PreparedWorkItemRun],
+    ) -> list[tuple[_PreparedWorkItemRun, RunRecord]]:
+        if len(prepared_runs) == 1:
+            run = self._execute_prepared_work_item(prepared_runs[0])
+            return [(prepared_runs[0], run)] if run is not None else []
+        completed: list[tuple[_PreparedWorkItemRun, RunRecord]] = []
+        max_workers = min(len(prepared_runs), max(1, self.worker_pool.worker_count))
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix=f"{_slug(self.daemon_id)}-worker",
+        ) as executor:
+            futures = {
+                executor.submit(self._execute_prepared_work_item, prepared): prepared
+                for prepared in prepared_runs
+            }
+            for future in as_completed(futures):
+                prepared = futures[future]
+                run = future.result()
+                if run is not None:
+                    completed.append((prepared, run))
+        return sorted(completed, key=lambda pair: pair[1].started_at)
+
+    def _execute_prepared_work_item(
+        self,
+        prepared: _PreparedWorkItemRun,
+    ) -> RunRecord | None:
+        try:
+            started = self.control_plane.start_work_item_run(
+                work_item_id=prepared.work_item.work_item_id,
+                runner=prepared.runner,
+                preserve_mission_status=prepared.preserve_mission_status,
+                lease=prepared.holder_id,
+            )
+            if started is None:
+                return None
+            run, running_item = started
+            try:
+                result = prepared.runner.run(running_item)
+            except Exception:  # pragma: no cover - runner failures are normalized.
+                result = WorkItemResult(status="failed", failure_category="tool_failure")
+            return self.control_plane.finish_work_item_run(
+                run_id=run.run_id,
+                result=result,
+                preserve_mission_status=prepared.preserve_mission_status,
+            )
+        finally:
+            self.resource_lock_store.release_holder(prepared.holder_id, now=_now())
+            prepared.slot.status = "idle"
 
     def _ensure_info_gap_collaboration(
         self,
@@ -719,6 +1028,306 @@ class ControlPlaneDaemon:
                 reason="daemon opened an information-gap ticket and is waiting for input",
                 subject_ref=ticket.ticket_id,
             )
+
+    def _ensure_delivery_acceptance_collaboration(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None or mission.task_type != "product_development":
+            return
+        if mission.status not in {"delivering", "awaiting_acceptance"}:
+            return
+        if mission.acceptance_ref is not None:
+            return
+        delivery_manifest_ref = _latest_delivery_manifest_ref(self.control_plane, mission)
+        if delivery_manifest_ref is None:
+            return
+        ticket_id = (
+            f"collab-acceptance-{_slug(mission.mission_id)}-"
+            f"{_slug(delivery_manifest_ref)}"
+        )
+        if ticket_id in self.control_plane.collaboration_tickets:
+            return
+        ticket = CollaborationTicket(
+            ticket_id=ticket_id,
+            mission_id=mission.mission_id,
+            type="review",
+            role_needed=mission.owner or "mission-owner",
+            why_needed=(
+                "KUN has produced a user-facing product delivery. Automated gates can prove "
+                "build, evidence, and residual thresholds, but a human or target-user review is "
+                "needed to confirm product feel, usefulness, and acceptance."
+            ),
+            context_ref=delivery_manifest_ref,
+            risk_if_skipped=(
+                "KUN may close a product task after mechanism-level tests while subjective "
+                "experience, visual quality, or real user value remains below the user's bar."
+            ),
+            deadline=observed_at + timedelta(hours=24),
+            sla_policy={"reminder_after_hours": 6, "escalate_after_hours": 24},
+            escalation_policy={
+                "after_deadline": "continue dogfood iteration only if the risk is reversible"
+            },
+            fallback_policy={
+                "allowed": True,
+                "rule": (
+                    "if no human response arrives, keep the mission in awaiting_acceptance and "
+                    "continue only low-risk polish or evidence improvements"
+                ),
+            },
+            resume_after_response=True,
+            recommended_option="review the playable artifact and answer accept / rework / reject",
+            output_contract=(
+                "Return an acceptance decision, satisfaction score, and concrete requested "
+                "changes if the delivery is not good enough."
+            ),
+        )
+        self.control_plane.record_collaboration_ticket(ticket, actor=self.daemon_id)
+        report.created_collaboration_ticket_ids.append(ticket.ticket_id)
+        if mission.status == "delivering":
+            self.control_plane.transition_mission(
+                mission_id=mission.mission_id,
+                target="awaiting_acceptance",
+                actor=self.daemon_id,
+                reason="daemon opened a human product-acceptance ticket for subjective validation",
+                subject_ref=ticket.ticket_id,
+            )
+
+    def _resolve_capability_duplicates(
+        self,
+        *,
+        mission_ids: Sequence[str],
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        governance = self.control_plane.govern_default_runtime_capabilities()
+        if not governance.duplicate_profile_refs:
+            return
+        mission_id = mission_ids[0] if mission_ids else "control-plane"
+        artifact = ArtifactRecord(
+            artifact_id=f"artifact-capability-dedupe-{_compact_time(observed_at)}",
+            kind="report",
+            path_or_uri=(
+                f"control-plane://daemon/{self.daemon_id}/capability-dedupe/"
+                f"{observed_at.isoformat()}"
+            ),
+            content_hash=_hash_payload(governance.model_dump(mode="json")),
+            created_by=self.daemon_id,
+            mission_id=mission_id,
+            supports=[
+                "capability_duplicate_resolution",
+                "qi_capability_governance",
+                "state_hygiene",
+                *[f"kept_capability:{ref}" for ref in governance.profile_refs],
+                *[f"retired_capability:{ref}" for ref in governance.duplicate_profile_refs],
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        self._upsert_artifact(artifact)
+        retired: list[str] = []
+        for capability_id in governance.duplicate_profile_refs:
+            profile = self.control_plane.capability_profiles.get(capability_id)
+            if profile is None or not profile.runtime_enabled:
+                continue
+            updated = profile.model_copy(
+                update={
+                    "runtime_enabled": False,
+                    "rolled_back_at": observed_at,
+                    "rollback_reason": (
+                        "superseded by stronger production capability with the same governance key"
+                    ),
+                    "rollback_refs": _dedupe([*profile.rollback_refs, artifact.artifact_id]),
+                    "known_limits": _dedupe(
+                        [
+                            *profile.known_limits,
+                            "disabled by automatic capability duplicate governance",
+                        ]
+                    ),
+                }
+            )
+            self.control_plane.capability_profiles[capability_id] = updated
+            self._persist_capability_profile(updated)
+            retired.append(capability_id)
+        report.retired_capability_profile_ids.extend(retired)
+        if retired and "qi" in self.runners_by_owner:
+            mission = self.control_plane.missions.get(mission_id)
+            evidence_sig = _hash_payload(
+                {
+                    "kept": governance.profile_refs,
+                    "retired": retired,
+                    "artifact": artifact.artifact_id,
+                }
+            )[:12]
+            work_item_id = (
+                f"work-qi-capability-dedupe-{_slug(mission_id)}-{evidence_sig}"
+            )
+            if work_item_id in self.control_plane.work_items:
+                return
+            work_item = WorkItem(
+                work_item_id=work_item_id,
+                mission_id=mission_id,
+                task_plan_version=mission.current_plan_version
+                if mission is not None and mission.current_plan_version
+                else "runtime-capability-governance",
+                type="governance",
+                owner="qi",
+                priority=88,
+                idempotency_key=f"capability-dedupe:{mission_id}:{evidence_sig}",
+                expected_output=(
+                    "Audit and govern duplicate production runtime capabilities. Confirm the "
+                    "kept profile, merged/retired profiles, source versions, rollback evidence, "
+                    "and whether any retired behavior should remain as replay evidence only. "
+                    "Do not enable replay/holdout/shadow profiles as runtime defaults."
+                ),
+                recovery_refs=[
+                    artifact.artifact_id,
+                    *governance.profile_refs,
+                    *retired,
+                ],
+            )
+            self.control_plane.work_items[work_item.work_item_id] = work_item
+            self._persist_work_item(work_item)
+            report.created_work_item_ids.append(work_item.work_item_id)
+
+    def _retire_superseded_plan_work(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None or not mission.current_plan_version:
+            return
+        if mission.status not in {"delivering", "awaiting_acceptance", "closed", "partial_closed"}:
+            return
+        active_version = mission.current_plan_version
+        retired: list[str] = []
+        for work_item in list(self.control_plane.work_items.values()):
+            if work_item.mission_id != mission_id:
+                continue
+            if work_item.task_plan_version == active_version:
+                continue
+            if work_item.status in {"done", "cancelled"}:
+                continue
+            updated = work_item.model_copy(update={"status": "cancelled"})
+            self.control_plane.work_items[work_item.work_item_id] = updated
+            self._persist_work_item(updated)
+            retired.append(work_item.work_item_id)
+        if not retired:
+            return
+        artifact = ArtifactRecord(
+            artifact_id=f"artifact-superseded-work-cleanup-{mission_id}-{_compact_time(observed_at)}",
+            kind="report",
+            path_or_uri=(
+                f"control-plane://daemon/{self.daemon_id}/{mission_id}/"
+                f"superseded-work-cleanup/{observed_at.isoformat()}"
+            ),
+            content_hash=_hash_payload(
+                {
+                    "mission_id": mission_id,
+                    "active_plan_version": active_version,
+                    "retired_work_item_ids": retired,
+                }
+            ),
+            created_by=self.daemon_id,
+            mission_id=mission_id,
+            supports=[
+                "superseded_work_cleanup",
+                "state_hygiene",
+                f"active_plan:{active_version}",
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        self._upsert_artifact(artifact)
+        report.retired_work_item_ids.extend(retired)
+
+    def _retire_superseded_collaboration_tickets(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None or not mission.current_plan_version:
+            return
+        if mission.status not in {"delivering", "awaiting_acceptance", "closed", "partial_closed"}:
+            return
+
+        active_version = mission.current_plan_version
+        latest_delivery_manifest_ref = _latest_delivery_manifest_ref(self.control_plane, mission)
+        active_context_refs = {
+            ref
+            for ref in {
+                mission.working_context_ref,
+                mission.acceptance_ref,
+                latest_delivery_manifest_ref,
+            }
+            if ref
+        }
+        for plan in self.control_plane.task_plans.values():
+            if plan.mission_id == mission_id and plan.version == active_version:
+                active_context_refs.add(plan.plan_id)
+
+        retired: list[str] = []
+        for ticket in list(self.control_plane.collaboration_tickets.values()):
+            if ticket.mission_id != mission_id:
+                continue
+            if ticket.status not in {"open", "waiting", "escalated", "fallback_selected"}:
+                continue
+            if ticket.context_ref in active_context_refs:
+                continue
+            if (
+                latest_delivery_manifest_ref is not None
+                and ticket.ticket_id
+                == f"collab-acceptance-{_slug(mission_id)}-{_slug(latest_delivery_manifest_ref)}"
+            ):
+                continue
+            updated = ticket.model_copy(update={"status": "cancelled"})
+            self.control_plane.collaboration_tickets[ticket.ticket_id] = updated
+            self._persist_collaboration_ticket(updated)
+            retired.append(ticket.ticket_id)
+
+        if not retired:
+            return
+        artifact = ArtifactRecord(
+            artifact_id=(
+                f"artifact-superseded-collaboration-cleanup-"
+                f"{mission_id}-{_compact_time(observed_at)}"
+            ),
+            kind="report",
+            path_or_uri=(
+                f"control-plane://daemon/{self.daemon_id}/{mission_id}/"
+                f"superseded-collaboration-cleanup/{observed_at.isoformat()}"
+            ),
+            content_hash=_hash_payload(
+                {
+                    "mission_id": mission_id,
+                    "active_plan_version": active_version,
+                    "active_context_refs": sorted(active_context_refs),
+                    "retired_collaboration_ticket_ids": retired,
+                }
+            ),
+            created_by=self.daemon_id,
+            mission_id=mission_id,
+            supports=[
+                "superseded_collaboration_cleanup",
+                "state_hygiene",
+                "human_collaboration_hygiene",
+                f"active_plan:{active_version}",
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        self._upsert_artifact(artifact)
+        report.retired_collaboration_ticket_ids.extend(retired)
 
     def _current_task_plan(self, mission: Mission) -> TaskPlan | None:
         plans = [
@@ -869,6 +1478,49 @@ class ControlPlaneDaemon:
             return _WorkspaceRollbackRunner(self.control_plane, self.daemon_id)
         return None
 
+    def _claim_work_item_lease(
+        self,
+        *,
+        work_item: WorkItem,
+        lease: str,
+        now: datetime,
+    ) -> WorkItem | None:
+        timeout = now + self.resource_lock_ttl
+        claim = getattr(self.control_plane.store, "claim_work_item_lease", None)
+        if callable(claim):
+            claimed = claim(
+                work_item_id=work_item.work_item_id,
+                lease=lease,
+                now=now,
+                timeout=timeout,
+            )
+            if claimed is None:
+                return None
+            merged = work_item.model_copy(
+                update={
+                    "lease": claimed.lease,
+                    "heartbeat": claimed.heartbeat,
+                    "timeout": claimed.timeout,
+                }
+            )
+            self.control_plane.work_items[merged.work_item_id] = merged
+            self._persist_work_item(merged)
+            return merged
+        active_lease = (
+            work_item.lease is not None
+            and work_item.timeout is not None
+            and work_item.timeout > now
+            and work_item.lease != lease
+        )
+        if active_lease:
+            return None
+        claimed = work_item.model_copy(
+            update={"lease": lease, "heartbeat": now, "timeout": timeout}
+        )
+        self.control_plane.work_items[claimed.work_item_id] = claimed
+        self._persist_work_item(claimed)
+        return claimed
+
     def _evaluate_watchtower_for_run(self, run: RunRecord) -> tuple[list[str], int]:
         if self.rule_engine is None:
             return [], 0
@@ -940,6 +1592,10 @@ class ControlPlaneDaemon:
     ) -> None:
         if not failed_skill_ids:
             return
+        if work_item.owner in {"qi", "nuo"} or work_item.work_item_id.startswith(
+            ("work-qi-preflight-", "work-nuo-preflight-")
+        ):
+            return
         failed = ", ".join(sorted(set(failed_skill_ids)))
         for owner, item_type, prefix, expected_output in (
             (
@@ -973,7 +1629,7 @@ class ControlPlaneDaemon:
                 task_plan_version=work_item.task_plan_version,
                 type=item_type,
                 owner=owner,
-                priority=85,
+                priority=min(100, work_item.priority + 10),
                 idempotency_key=f"{prefix}:{work_item.work_item_id}:{failed}",
                 expected_output=f"{expected_output} Failed skills: {failed}.",
                 required_capability_refs=list(work_item.required_capability_refs),
@@ -984,6 +1640,126 @@ class ControlPlaneDaemon:
             self.control_plane.work_items[followup.work_item_id] = followup
             self._persist_work_item(followup)
             report.created_work_item_ids.append(followup.work_item_id)
+
+    def _queue_observation_followups(
+        self,
+        *,
+        mission_id: str,
+        observation_artifact_ref: str,
+        report: DaemonTickReport,
+    ) -> None:
+        observation = report.runtime_observations.get(mission_id)
+        if observation is None:
+            return
+        actionable = {"medium", "high", "critical"}
+        dedicated_followup_codes = {"preflight_skill_failed"}
+        for item in observation.items:
+            if item.severity not in actionable:
+                continue
+            if item.code in dedicated_followup_codes:
+                continue
+            evidence_refs = _dedupe([observation_artifact_ref, *item.evidence_refs])
+            stable_evidence_refs = list(item.evidence_refs) or [item.code]
+            evidence_sig = _hash_payload(
+                {"code": item.code, "evidence": stable_evidence_refs}
+            )[:12]
+            qi_expected_output = (
+                (
+                    "Audit, score, and optimize this failed quality gate. Continue iteration, "
+                    "find a better path, turn product gaps into stricter acceptance criteria, "
+                    "open a plan-change branch, and require clean retest evidence before final closure. "
+                    f"Observation {item.code}: {item.recommended_action}"
+                )
+                if item.code == "quality_gate_not_passed"
+                else (
+                    (
+                        "Audit this failed work item as an execution-quality incident. Continue "
+                        "iteration, find a better path, classify whether the runner/tool path "
+                        "failed, and create a strategy change or capability-governance action "
+                        f"before the mission can close. Observation {item.code}: {item.recommended_action}"
+                    )
+                    if item.code == "failed_work_without_recovery"
+                    else (
+                        (
+                        "Audit and govern duplicate runtime capabilities. Merge, dedupe, or "
+                        "discard duplicate production defaults, keep the strongest verified "
+                        f"profile, and preserve evidence. Observation {item.code}: {item.recommended_action}"
+                        )
+                        if item.code == "capability_duplicates_collapsed"
+                        else (
+                            "Audit, score, and optimize this runtime observation. Decide whether "
+                            "to merge, dedupe, discard, change plan, or open a better strategy. "
+                            f"Observation {item.code}: {item.recommended_action}"
+                        )
+                    )
+                )
+            )
+            qi_suffix = (
+                "strategy_v2-"
+                if item.code == "quality_gate_not_passed"
+                else "recovery_v1-"
+                if item.code == "failed_work_without_recovery"
+                else ""
+            )
+            if "qi" in item.routes:
+                self._queue_observation_followup(
+                    mission_id=mission_id,
+                    owner="qi",
+                    item_type="governance",
+                    work_item_id=(
+                        f"work-qi-observation-{_slug(mission_id)}-"
+                        f"{_slug(item.code)}-{qi_suffix}{evidence_sig}"
+                    ),
+                    expected_output=qi_expected_output,
+                    evidence_refs=evidence_refs,
+                    report=report,
+                )
+            if "nuo" in item.routes:
+                self._queue_observation_followup(
+                    mission_id=mission_id,
+                    owner="nuo",
+                    item_type="repair",
+                    work_item_id=f"work-nuo-observation-{_slug(mission_id)}-{_slug(item.code)}-{evidence_sig}",
+                    expected_output=(
+                        "Classify this runtime observation before agent scoring. Decide whether "
+                        "it is system pollution, environment blockage, state hygiene, or a clean "
+                        f"KUN capability failure. Observation {item.code}: {item.recommended_action}"
+                    ),
+                    evidence_refs=evidence_refs,
+                    report=report,
+                )
+
+    def _queue_observation_followup(
+        self,
+        *,
+        mission_id: str,
+        owner: str,
+        item_type: str,
+        work_item_id: str,
+        expected_output: str,
+        evidence_refs: Sequence[str],
+        report: DaemonTickReport,
+    ) -> None:
+        if owner not in self.runners_by_owner:
+            return
+        if work_item_id in self.control_plane.work_items:
+            return
+        mission = self.control_plane.missions.get(mission_id)
+        work_item = WorkItem(
+            work_item_id=work_item_id,
+            mission_id=mission_id,
+            task_plan_version=mission.current_plan_version if mission else "runtime-observation",
+            type=item_type,
+            owner=owner,
+            priority=90,
+            idempotency_key=f"runtime-observation:{owner}:{work_item_id}",
+            expected_output=expected_output,
+            recovery_refs=list(evidence_refs),
+        )
+        self.control_plane.work_items[work_item.work_item_id] = work_item
+        self._persist_work_item(work_item)
+        report.created_work_item_ids.append(work_item.work_item_id)
+        report.observation_followup_ids.append(work_item.work_item_id)
 
     def _finalize_idle_mission(self, *, mission_id: str, report: DaemonTickReport) -> None:
         """Let capable runners close mission-level delivery artifacts when ready."""
@@ -1112,6 +1888,14 @@ class ControlPlaneDaemon:
         if self.control_plane.store is not None:
             self.control_plane.store.put_work_item(work_item)
 
+    def _persist_collaboration_ticket(self, ticket: CollaborationTicket) -> None:
+        if self.control_plane.store is not None:
+            self.control_plane.store.put_collaboration_ticket(ticket)
+
+    def _persist_capability_profile(self, profile: CapabilityProfile) -> None:
+        if self.control_plane.store is not None:
+            self.control_plane.store.put_capability_profile(profile)
+
     def _save_service_state(
         self,
         state_store: FileDaemonServiceStateStore | None,
@@ -1128,6 +1912,16 @@ def _bind_capability_policy(
     bind = getattr(runner, "bind_capability_execution_policy", None)
     if callable(bind):
         bind(capability_policy)
+
+
+def _should_preflight_work_item(work_item: WorkItem) -> bool:
+    """Return whether the daemon should run skill preflight before this item."""
+
+    if work_item.owner in {"qi", "nuo"}:
+        return False
+    return not work_item.work_item_id.startswith(
+        ("work-qi-preflight-", "work-nuo-preflight-", "work-qi-runtime-learning-")
+    )
 
 
 class _WorkspaceRollbackRunner:
@@ -1193,6 +1987,59 @@ class _WorkspaceRollbackRunner:
         return None
 
 
+class _SandboxRequirementRunner:
+    runner_type: Literal["tool"] = "tool"
+
+    def __init__(self, *, runner_identity: str, sandbox_spec: SandboxIsolationSpec) -> None:
+        self.runner_identity = f"{runner_identity}:sandbox-requirement"
+        self.sandbox_spec = sandbox_spec
+
+    def run(self, work_item: WorkItem) -> WorkItemResult:
+        payload = {
+            "work_item_id": work_item.work_item_id,
+            "mission_id": work_item.mission_id,
+            "required_sandbox_mode": self.sandbox_spec.mode,
+            "container_runtime": self.sandbox_spec.container_runtime,
+            "sandbox_ref": self.sandbox_spec.sandbox_ref,
+            "reason": (
+                "The work item requires container isolation, but the selected runner "
+                "does not declare container sandbox support."
+            ),
+        }
+        artifact = ArtifactRecord(
+            artifact_id=(
+                "artifact-sandbox-required-"
+                f"{_slug(work_item.work_item_id)}-{_compact_time(_now())}"
+            ),
+            kind="report",
+            path_or_uri=(
+                f"control-plane://sandbox-required/{work_item.mission_id}/"
+                f"{work_item.work_item_id}"
+            ),
+            content_hash=_hash_payload(payload),
+            created_by=self.runner_identity,
+            mission_id=work_item.mission_id,
+            work_item_id=work_item.work_item_id,
+            supports=[
+                "container_sandbox_required",
+                "sandbox_blocked",
+                self.sandbox_spec.sandbox_ref,
+                f"sandbox_mode:{self.sandbox_spec.mode}",
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        return WorkItemResult(
+            status="failed",
+            summary=(
+                "Container sandbox is required before this work item may run; "
+                "selected runner did not declare container sandbox support."
+            ),
+            artifacts=[artifact],
+            failure_category="environment_failure",
+        )
+
+
 def _hash_payload(payload: object) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
@@ -1226,6 +2073,17 @@ def _process_is_alive(process_id: int) -> bool:
     return True
 
 
+def _dedupe(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
 def _compact_time(value: datetime) -> str:
     return value.strftime("%Y%m%dT%H%M%SZ")
 
@@ -1253,6 +2111,19 @@ def _info_gap_reason(
     )
 
 
+def _latest_delivery_manifest_ref(
+    control_plane: InMemoryControlPlane,
+    mission: Mission,
+) -> str | None:
+    for manifest_ref in reversed(mission.artifact_manifest_refs):
+        manifest = control_plane.artifact_manifests.get(manifest_ref)
+        if manifest is None:
+            continue
+        if manifest.kind == "delivery" and manifest.supports_delivery:
+            return manifest_ref
+    return None
+
+
 def _observation_routes(report: RuntimeObservationReport) -> list[str]:
     seen: set[str] = set()
     routes: list[str] = []
@@ -1268,10 +2139,15 @@ def _observation_routes(report: RuntimeObservationReport) -> list[str]:
 def _tick_is_idle(report: DaemonTickReport) -> bool:
     return not (
         report.recovered_work_item_ids
+        or report.retired_work_item_ids
+        or report.retired_collaboration_ticket_ids
+        or report.retired_capability_profile_ids
         or report.recovery_gate_refs
         or report.created_work_item_ids
+        or report.observation_followup_ids
         or report.created_collaboration_ticket_ids
         or report.ran_work_item_ids
+        or report.resource_lock_skipped_work_item_ids
         or report.run_refs
         or report.no_runner_work_item_ids
         or report.finalized_mission_ids
@@ -1279,6 +2155,97 @@ def _tick_is_idle(report: DaemonTickReport) -> bool:
         or report.delivery_manifest_refs
         or report.watchtower_fired_rule_ids
     )
+
+
+def _slot_for_run(slots: list[WorkerSlotSnapshot], run_index: int) -> WorkerSlotSnapshot:
+    if not slots:
+        raise ValueError("worker pool must contain at least one slot")
+    return slots[run_index % len(slots)]
+
+
+def _lease_id(
+    *,
+    daemon_id: str,
+    worker_id: str,
+    work_item_id: str,
+    observed_at: datetime,
+) -> str:
+    return (
+        f"lease:{_slug(daemon_id)}:{_slug(worker_id)}:"
+        f"{_slug(work_item_id)}:{_compact_time(observed_at)}"
+    )
+
+
+def _default_resource_lock_store(
+    control_plane: InMemoryControlPlane,
+) -> FileResourceLockStore | InMemoryResourceLockStore:
+    store_path = getattr(control_plane.store, "path", None)
+    if isinstance(store_path, Path):
+        return FileResourceLockStore(store_path.with_name(f"{store_path.stem}.resource-locks.json"))
+    if isinstance(store_path, str):
+        path = Path(store_path)
+        return FileResourceLockStore(path.with_name(f"{path.stem}.resource-locks.json"))
+    return InMemoryResourceLockStore()
+
+
+def _is_delivery_state_followup(work_item: WorkItem) -> bool:
+    if work_item.owner not in {"qi", "nuo", "control-plane"}:
+        return False
+    return work_item.work_item_id.startswith(
+        (
+            "work-qi-observation-",
+            "work-nuo-observation-",
+            "work-qi-preflight-",
+            "work-nuo-preflight-",
+        )
+    )
+
+
+def _effective_resource_locks(
+    control_plane: InMemoryControlPlane,
+    work_item: WorkItem,
+) -> set[str]:
+    locks = set(work_item.resource_locks)
+    if (
+        work_item.owner in {"qi", "nuo"}
+        or work_item.type in {"governance", "repair", "rollback", "merge"}
+        or "plan-change" in work_item.work_item_id
+    ):
+        locks.add(f"mission-state:{work_item.mission_id}")
+    workspace_ref = work_item.workspace_ref
+    if workspace_ref:
+        locks.add(f"workspace:{workspace_ref}")
+    mission = control_plane.missions.get(work_item.mission_id)
+    contract = control_plane.contracts.get(mission.execution_contract_ref or "") if mission else None
+    workspace_path = _workspace_path_from_contract(contract)
+    if workspace_path and work_item.type in {
+        "execution",
+        "test",
+        "merge",
+        "repair",
+        "retest",
+        "rollback",
+    }:
+        locks.add(f"workspace:{workspace_path}")
+    return locks
+
+
+def _workspace_path_from_contract(contract: ExecutionContract | None) -> str | None:
+    if contract is None:
+        return None
+    for payload in (contract.delivery_contract, contract.risk_policy, contract.rollback_policy):
+        for key in (
+            "workspace_path",
+            "project_path",
+            "repo_path",
+            "target_path",
+            "output_dir",
+            "delivery_path",
+        ):
+            value = payload.get(key) if isinstance(payload, dict) else None
+            if isinstance(value, str) and value.strip():
+                return value
+    return None
 
 
 def _merge_unique(values: Sequence[str]) -> list[str]:
@@ -1317,6 +2284,13 @@ def _service_state_from_tick(
         last_tick_ran_work_item_ids=list(report.ran_work_item_ids),
         last_tick_recovered_work_item_ids=list(report.recovered_work_item_ids),
         last_tick_progress_artifact_refs=list(report.progress_artifact_refs),
+        worker_pool_size=len(report.worker_slots) or 1,
+        last_tick_worker_slots=list(report.worker_slots),
+        last_tick_resource_lock_skipped_work_item_ids=list(
+            report.resource_lock_skipped_work_item_ids
+        ),
+        last_tick_resource_lock_conflicts=list(report.resource_lock_conflicts),
+        last_tick_sandbox_specs=list(report.sandbox_specs),
     )
 
 

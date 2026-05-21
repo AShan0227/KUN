@@ -88,6 +88,7 @@ KUN 不应在关键缺口存在时先写完整方案。
 - 总进度、当前阶段、下一步。
 - 已完成产物和交付物位置。
 - 正在执行的工作项、负责人、预计完成时间。
+- worker 槽位、资源锁冲突、等待原因、沙箱隔离等级和并发健康度。
 - 风险、阻断、失败分类和恢复动作。
 - 质量门禁、验收状态、测试状态和证据覆盖。
 - 需要用户确认的事项、截止时间和默认处理方式。
@@ -192,6 +193,7 @@ Control Plane 是 KUN 的运行中枢，负责把方案变成可持续执行的�
 - 自动醒来和自动拿任务。
 - 进程 supervisor。
 - runner 注册、lease、heartbeat、timeout、retry、cancel、resume。
+- 多任务 worker pool：同一个 daemon 内必须有 worker 槽位模型，多 daemon / 多机器必须能通过持久 resource lock 和 work item lease 协调，避免重复领取、重复写入或同时修改同一工作区。
 - 断电、重启、崩溃、跨天续跑。
 - 权限、预算、外部动作审批和审计。
 - 产物、证据、日志、账本和门禁统一管理。
@@ -203,6 +205,7 @@ Control Plane 是 KUN 的运行中枢，负责把方案变成可持续执行的�
 - 启/傩默认激活层：daemon 默认注册 Qi runtime governance runner 和 Nuo runtime repair runner。凡由预执行、运行时门禁或傩诊断生成的 Qi/Nuo follow-up work item，必须能被后台服务自动执行、生成治理 artifact、写入 gate，并保持 replay 候选不得默认启用。
 - 信息缺口主动协同层：处于 planning/info_gap 且存在 `TaskPlan.info_gaps` 的任务，daemon 必须自动生成协同票据，说明缺什么、问谁、风险、超时策略和恢复规则；任务进入等待人类输入状态，不能绕过缺口直接执行。
 - 执行型 skill 默认沙箱边界：shell、Python 等可执行 skill 必须在显式配置的执行根目录内运行；相对目录只能解析到执行根目录下，绝对目录必须落在 allowlist 根内，越界请求必须失败并可审计。它是默认工作区隔离，不宣称替代容器或系统级 chroot。
+- 容器级隔离协议：高风险或生产并发任务必须能声明 `container_required` 或 `external_container` 沙箱模式；daemon 必须把容器运行时、workspace 根、可写路径、网络策略、checkpoint 和 rollback 引用写入执行状态。没有容器 runner 时不得假装已经容器化，必须在驾驶舱和门禁中显示隔离等级。
 - 文件级沙箱快照和真实回滚：有 workspace 的 work item 执行前必须生成可恢复文件快照；rollback work item 必须能通过内置恢复 runner 还原文件、移除快照后新增的无关文件，并写入可审计恢复报告。
 - V6 Watchtower 桥接：work item 完成、失败、门禁评估等运行事件必须能进入守望规则引擎，用统一规则发现异常、触发告警、暂停、修复或治理动作。
 - 运行时观察清单：daemon 每次 tick 必须为任务生成机器可读的 observation report，标注当前最该观察的未激活能力、runner 缺口、预执行失败、协同票据、Watchtower 触发、能力重复、交付清单缺失等问题，并明确路由给 KUN、启、傩、人类、Control Plane 或外部监督者。
@@ -214,12 +217,17 @@ Control Plane 必须保证：
 - 所有外部动作可追踪。
 - 所有失败有分类和下一步。
 - 所有交付有产物、证据和验收记录。
+- 多任务并行必须先经过依赖、resource lock、work item lease 和 worker slot 分配；锁冲突必须表现为等待和自动重试，不得被记为 KUN 能力失败。
+- 当 worker pool 大于 1 且任务依赖与资源锁互不冲突时，daemon 必须把多个 work item 分配到不同 worker 并真正同时执行；`max_work_items_per_tick` 不能只表示串行批量数量。共享 workspace、mission merge lane、显式 resource lock 或同一路径写入必须进入等待、隔离或合并治理。
+- 合并多 worker 产物时必须做冲突治理：缺依赖、重复写同一文件、同一路径 artifact 冲突或互斥修改必须阻断 merge，进入修复、重排或人工协同，而不是简单拼接 artifact。
 - 沙箱、快照、回滚不是文档字段，而是执行前自动生成、执行中可引用、失败时可运行的恢复路径。
 - Watchtower 规则不是旁路仪表盘，而是能消费 V6 runtime namespace 的治理和异常检测入口。
 - 已开发能力不得长期停留在“存在但未触发”状态；若执行中发现能力无效、重复或增加复杂度，必须交给启和傩决定保留、合并、降级、删除或重新晋级。
 - 外部样本对比不能只产生人类报告；必须同时产生机器可读的启治理动作，明确 keep、merge、candidate、discard、测试、风险控制、回滚和“不得默认启用”的边界。
 - 已经进入代码的功能必须有默认触发路径或明确的显式启用开关。只有模块、测试或文档存在，不算产品能力已激活。
 - 鲲在执行真实任务时必须主动标注“需要重点观察什么”，外部监督者、启和傩消费同一份 observation report；监督结果必须能反向触发能力治理、污染修复、合并降噪、功能删改或计划变更。
+- 生产能力去重不能只由 daemon 静默处理；折叠、回滚或保留默认能力后，必须给启生成治理工作项，记录保留依据、合并/淘汰理由、证据边界和“非 production 不得默认消费”的约束。
+- 功能激活审计：KUN 必须能把每个已开发功能转成定制化 Control Plane 触发任务，实际运行后输出触发条件、依赖协同关系、证据、未激活缺口和后续修复任务；静态代码检查不能替代功能激活审计。审计范围必须覆盖通用 Control Plane 能力和实际任务 runner，包括外部样本学习、自主 App 开发、研究先行开发、游戏生产、AB 回归和产品化 dogfood，不允许“模块存在但真实任务不会走到”的隐性闲置能力。
 
 ### 6.3 知识与证据系统
 
@@ -246,8 +254,10 @@ Control Plane 必须保证：
 - 人机协同票据。
 - 专家输入和外部 worker 调度。
 - 多 worker 分发与合并。
+- worker pool、持久 resource lock、work item lease、并发等待原因和资源冲突治理。
 - 工具边界、权限边界和责任边界管理。
 - 冲突检测、依赖管理和产物合并。
+- merge conflict governance：多路代码、文档、素材或配置产物合并前必须检查重叠写入、缺失依赖、互斥 artifact 和需人工决策的冲突。
 - 超时、拒绝、无响应、返工和替代路径处理。
 - 协作者输出的信用分配和审计。
 
@@ -487,6 +497,7 @@ AB 执行规则：
 - 产物和交付包。
 - 验收状态。
 - 成本和资源。
+- worker 槽位、资源锁冲突、等待原因和沙箱隔离等级。
 - 系统健康。
 - 恢复和回滚动作。
 

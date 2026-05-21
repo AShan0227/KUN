@@ -70,6 +70,49 @@ def test_nuo_detects_contract_pollution_and_health_blockers(
     assert report.findings[0].counts_as_kun_failure is False
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected_code", "expected_action", "expected_state"),
+    [
+        (
+            {
+                "product_acceptance_claimed": True,
+                "product_surface_gap_codes": ["mechanics_only", "visual_gap"],
+            },
+            "premature_delivery_claim",
+            "continue_iteration",
+            "changing_plan",
+        ),
+        (
+            {
+                "product_acceptance_claimed": True,
+                "human_playtest_required": True,
+                "human_playtest_ref": None,
+            },
+            "subjective_playtest_missing",
+            "request_human_playtest",
+            "waiting_human",
+        ),
+    ],
+)
+def test_nuo_detects_premature_product_delivery_and_missing_subjective_playtest(
+    overrides: dict[str, object],
+    expected_code: str,
+    expected_action: str,
+    expected_state: str,
+) -> None:
+    report = diagnose_nuo_health(_observation(**overrides))
+
+    assert report.status == "blocked"
+    assert [finding.code for finding in report.findings] == [expected_code]
+    assert report.counts_as_kun_failure is True
+    recommendation = report.recovery_recommendation()
+    assert recommendation is not None
+    assert recommendation.action == expected_action
+    assert recommendation.next_state == expected_state
+    gate = report.to_gate_evaluation()
+    assert gate.responsibility_scope == "kun_auto"
+
+
 def test_nuo_marks_clean_observation_healthy_and_gate_continues() -> None:
     report = diagnose_nuo_health(_observation())
 
@@ -175,6 +218,8 @@ def test_nuo_pollution_sample_library_classifies_real_failure_families() -> None
         "reviews-missing",
         "reviews-insufficient",
         "comparator-unhealthy",
+        "premature-product-delivery",
+        "subjective-playtest-missing",
     } == {sample.sample_id for sample in samples}
 
     for sample in samples:
@@ -212,6 +257,25 @@ def test_nuo_pollution_sample_library_classifies_real_failure_families() -> None
             "repair",
             "control-plane",
             "repair_comparator",
+        ),
+        (
+            {
+                "product_acceptance_claimed": True,
+                "product_surface_gap_codes": ["mechanics_only"],
+            },
+            "governance",
+            "qi",
+            "continue_iteration",
+        ),
+        (
+            {
+                "product_acceptance_claimed": True,
+                "human_playtest_required": True,
+                "human_playtest_ref": None,
+            },
+            "collaboration",
+            "operator",
+            "request_human_playtest",
         ),
     ],
 )

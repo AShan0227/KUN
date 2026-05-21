@@ -13,6 +13,7 @@ import json
 from collections import Counter
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
+from threading import RLock
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -110,12 +111,37 @@ def _diagnose_result_with_nuo(
         report_ref=_runtime_report_ref(result=result, manifest_ref=manifest_ref),
         review_count=_runtime_review_count(result),
         expected_review_count=_expected_review_count(contract),
+        product_acceptance_claimed=_product_acceptance_claimed(
+            result=result,
+            manifest_ref=manifest_ref,
+        ),
+        product_surface_gap_codes=_product_surface_gap_codes(result=result, text=text),
+        human_playtest_required=_runtime_human_playtest_required(
+            mission=mission,
+            work_item=work_item,
+            result=result,
+            contract=contract,
+        ),
+        human_playtest_ref=_runtime_human_playtest_ref(result=result, manifest_ref=manifest_ref),
         artifact_refs=[artifact.artifact_id for artifact in result.artifacts],
         evidence_refs=_runtime_manifest_refs(result, "evidence_refs"),
         test_refs=_runtime_manifest_refs(result, "test_refs"),
         review_refs=_runtime_manifest_refs(result, "review_refs"),
     )
     return diagnose_nuo_health(observation)
+
+
+def _lease_allows_ready(
+    work_item: WorkItem,
+    *,
+    lease: str | None,
+    now: datetime,
+) -> bool:
+    if not work_item.lease:
+        return True
+    if lease is not None and work_item.lease == lease:
+        return True
+    return work_item.timeout is not None and work_item.timeout <= now
 
 
 def _should_route_to_nuo(*, work_item: WorkItem, result: WorkItemResult) -> bool:
@@ -142,6 +168,21 @@ def _should_route_to_nuo(*, work_item: WorkItem, result: WorkItemResult) -> bool
             "schema mismatch",
             "report missing",
             "review missing",
+            "mechanics only",
+            "mechanism only",
+            "visual missing",
+            "art missing",
+            "ui missing",
+            "playtest missing",
+            "human playtest required",
+            "subjective acceptance required",
+            "机制雏形",
+            "只有机制",
+            "图片不足",
+            "角色不足",
+            "真实试玩不足",
+            "需要人工试玩",
+            "需要用户验收",
         )
     ):
         return True
@@ -231,6 +272,104 @@ def _runtime_manifest_refs(result: WorkItemResult, field_name: str) -> list[str]
         return []
     value = getattr(result.artifact_manifest, field_name)
     return list(value)
+
+
+def _product_acceptance_claimed(
+    *,
+    result: WorkItemResult,
+    manifest_ref: str | None,
+) -> bool:
+    text = _result_text(result).lower()
+    if result.artifact_manifest is not None and result.artifact_manifest.kind == "delivery":
+        return True
+    if manifest_ref:
+        return True
+    return any(
+        token in text
+        for token in (
+            "ready_to_deliver",
+            "final delivery",
+            "final_delivery",
+            "directly playable",
+            "acceptance package",
+            "交付",
+            "验收",
+        )
+    )
+
+
+def _product_surface_gap_codes(*, result: WorkItemResult, text: str) -> list[str]:
+    lowered = text.lower()
+    gap_markers = {
+        "mechanics_only": ("mechanics only", "mechanism only", "机制雏形", "只有机制"),
+        "visual_gap": ("visual missing", "art missing", "ui missing", "图片不足", "角色不足", "美术不足"),
+        "interaction_gap": ("interaction gap", "交互不足", "没有游戏性质"),
+        "experience_gap": ("not fun", "unfun", "体验不足", "不好玩"),
+        "playtest_gap": ("playtest missing", "试玩缺失", "真实试玩不足"),
+    }
+    codes = [
+        code
+        for code, markers in gap_markers.items()
+        if any(marker in lowered for marker in markers)
+    ]
+    supports = {support for artifact in result.artifacts for support in artifact.supports}
+    if "directly_playable_game" in supports and "visual_product_iteration" not in supports:
+        if "visual_gap" not in codes:
+            codes.append("visual_gap")
+    return codes
+
+
+def _runtime_human_playtest_required(
+    *,
+    mission: Mission,
+    work_item: WorkItem,
+    result: WorkItemResult,
+    contract: ExecutionContract | None,
+) -> bool:
+    if mission.task_type != "product_development":
+        return False
+    policy = contract.delivery_contract if contract is not None else {}
+    if isinstance(policy, dict) and bool(
+        policy.get("human_playtest_required") or policy.get("human_acceptance_required")
+    ):
+        return True
+    text = f"{work_item.expected_output}\n{_result_text(result)}".lower()
+    return any(
+        token in text
+        for token in (
+            "human playtest required",
+            "target-user playtest required",
+            "subjective acceptance required",
+            "需要人工试玩",
+            "需要用户验收",
+        )
+    )
+
+
+def _runtime_human_playtest_ref(
+    *,
+    result: WorkItemResult,
+    manifest_ref: str | None,
+) -> str | None:
+    for artifact in result.artifacts:
+        supports = set(artifact.supports)
+        if supports.intersection(
+            {
+                "human_playtest",
+                "target_user_playtest",
+                "user_acceptance",
+                "acceptance_review",
+            }
+        ):
+            return artifact.artifact_id
+    if result.artifact_manifest is not None:
+        for ref in [*result.artifact_manifest.review_refs, *result.artifact_manifest.evidence_refs]:
+            lowered = ref.lower()
+            if "human" in lowered or "acceptance" in lowered or "playtest" in lowered:
+                return ref
+    if manifest_ref and ("acceptance" in manifest_ref.lower() or "human" in manifest_ref.lower()):
+        return manifest_ref
+    return None
 
 
 def _nuo_report_artifact(
@@ -473,6 +612,7 @@ class InMemoryControlPlane:
         self.acceptance_reviews: dict[str, AcceptanceReview] = {}
         self.capability_profiles: dict[str, CapabilityProfile] = {}
         self._ledger_sequences: Counter[str] = Counter()
+        self._lock = RLock()
         if self.store is not None:
             self._hydrate_from_store(self.store)
 
@@ -590,13 +730,14 @@ class InMemoryControlPlane:
         for item in work_items:
             self._persist_work_item(item)
 
-        updated = mission.model_copy(
-            update={
-                "current_plan_version": task_plan.version,
-                "execution_contract_ref": execution_contract.contract_id,
-                "working_context_ref": working_context.working_context_id,
-            }
-        )
+        update_payload = {
+            "current_plan_version": task_plan.version,
+            "execution_contract_ref": execution_contract.contract_id,
+            "working_context_ref": working_context.working_context_id,
+        }
+        if mission.status in {"delivering", "awaiting_acceptance"}:
+            update_payload["status"] = "changing_plan"
+        updated = mission.model_copy(update=update_payload)
         self.missions[mission_id] = updated
         self._persist_mission(updated)
         self._record_ledger_event(
@@ -613,6 +754,7 @@ class InMemoryControlPlane:
                 "plan_version": task_plan.version,
                 "execution_contract_ref": execution_contract.contract_id,
                 "working_context_ref": working_context.working_context_id,
+                "status": updated.status,
                 "queued_work_item_ids": [item.work_item_id for item in work_items],
             },
             payload={"reason": reason},
@@ -649,82 +791,170 @@ class InMemoryControlPlane:
     def next_ready_work_item(self, mission_id: str) -> WorkItem | None:
         """Return the highest-priority queued item whose dependencies are done."""
 
-        self._mission(mission_id)
-        done_ids = {
-            item.work_item_id
-            for item in self._mission_work_items(mission_id)
-            if item.status == "done"
-        }
-        ready = [
-            item
-            for item in self._mission_work_items(mission_id)
-            if item.status == "queued" and set(item.dependencies).issubset(done_ids)
-        ]
-        return max(ready, key=lambda item: (item.priority, item.work_item_id), default=None)
+        ready = self._ready_work_items(mission_id)
+        return ready[0] if ready else None
 
-    def run_next_ready(self, *, mission_id: str, runner: ControlPlaneRunner) -> RunRecord | None:
+    def ready_work_items(
+        self,
+        mission_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> list[WorkItem]:
+        """Return all ready work items in priority order for batch scheduling."""
+
+        return list(self._ready_work_items(mission_id, now=now))
+
+    def run_next_ready(
+        self,
+        *,
+        mission_id: str,
+        runner: ControlPlaneRunner,
+        preserve_mission_status: bool = False,
+    ) -> RunRecord | None:
         """Run one ready work item and apply its normalized result."""
 
         work_item = self.next_ready_work_item(mission_id)
         if work_item is None:
             return None
-        mission = self._mission(mission_id)
-        if mission.status in {"repairing", "rolling_back", "changing_plan", "paused"}:
-            self.transition_mission(
-                mission_id=mission_id,
-                target="queued",
-                actor="control-plane",
-                reason=f"resume queued work item from {mission.status}",
-                subject_ref=work_item.work_item_id,
-            )
-            mission = self._mission(mission_id)
-        if mission.status == "queued":
-            self.transition_mission(
-                mission_id=mission_id,
-                target="running",
-                actor="control-plane",
-                reason="ready work item acquired",
-                subject_ref=work_item.work_item_id,
-            )
-        elif mission.status != "running":
-            assert_transition_allowed(mission.status, "running")
-            self.transition_mission(
-                mission_id=mission_id,
-                target="running",
-                actor="control-plane",
-                reason="resume ready work item",
-                subject_ref=work_item.work_item_id,
-            )
-
-        started = _now()
-        running_item = work_item.model_copy(update={"status": "running", "heartbeat": started})
-        self.work_items[work_item.work_item_id] = running_item
-        self._persist_work_item(running_item)
-        run = RunRecord(
-            work_item_id=running_item.work_item_id,
-            runner_type=runner.runner_type,
-            runner_identity=runner.runner_identity,
-            started_at=started,
-        )
-        self.runs[run.run_id] = run
-        self._persist_run(run)
-        self._record_ledger_event(
-            mission_id=mission_id,
-            event_type="state_change",
-            actor="control-plane",
-            subject_ref=running_item.work_item_id,
-            before={"status": work_item.status},
-            after={"status": "running"},
-            payload={"run_id": run.run_id},
+        return self.run_work_item(
+            work_item_id=work_item.work_item_id,
+            runner=runner,
+            preserve_mission_status=preserve_mission_status,
         )
 
+    def run_work_item(
+        self,
+        *,
+        work_item_id: str,
+        runner: ControlPlaneRunner,
+        preserve_mission_status: bool = False,
+        lease: str | None = None,
+    ) -> RunRecord | None:
+        """Run one specific ready work item and apply its normalized result."""
+
+        started = self.start_work_item_run(
+            work_item_id=work_item_id,
+            runner=runner,
+            preserve_mission_status=preserve_mission_status,
+            lease=lease,
+        )
+        if started is None:
+            return None
+        run, running_item = started
         try:
             result = runner.run(running_item)
         except Exception:  # pragma: no cover - deterministic tests cover normalized failure.
             result = WorkItemResult(status="failed", failure_category="tool_failure")
-        return self.apply_work_item_result(run_id=run.run_id, result=result)
+        return self.finish_work_item_run(
+            run_id=run.run_id,
+            result=result,
+            preserve_mission_status=preserve_mission_status,
+        )
 
-    def apply_work_item_result(self, *, run_id: str, result: WorkItemResult) -> RunRecord:
+    def start_work_item_run(
+        self,
+        *,
+        work_item_id: str,
+        runner: ControlPlaneRunner,
+        preserve_mission_status: bool = False,
+        lease: str | None = None,
+    ) -> tuple[RunRecord, WorkItem] | None:
+        """Atomically mark a ready item running, then let callers execute outside the lock.
+
+        This is the boundary that lets the daemon run multiple already-claimed
+        work items in parallel while keeping mission/work-item state changes
+        serialized and auditable.
+        """
+
+        with self._lock:
+            work_item = self.work_items.get(work_item_id)
+            if work_item is None:
+                raise ValueError(f"unknown work item {work_item_id}")
+            if work_item.status != "queued":
+                return None
+            if work_item not in self._ready_work_items(work_item.mission_id, lease=lease):
+                return None
+            mission = self._mission(work_item.mission_id)
+            if not preserve_mission_status:
+                if mission.status in {"repairing", "rolling_back", "changing_plan", "paused"}:
+                    self.transition_mission(
+                        mission_id=work_item.mission_id,
+                        target="queued",
+                        actor="control-plane",
+                        reason=f"resume queued work item from {mission.status}",
+                        subject_ref=work_item.work_item_id,
+                    )
+                    mission = self._mission(work_item.mission_id)
+                if mission.status == "queued":
+                    self.transition_mission(
+                        mission_id=work_item.mission_id,
+                        target="running",
+                        actor="control-plane",
+                        reason="ready work item acquired",
+                        subject_ref=work_item.work_item_id,
+                    )
+                elif mission.status != "running":
+                    assert_transition_allowed(mission.status, "running")
+                    self.transition_mission(
+                        mission_id=work_item.mission_id,
+                        target="running",
+                        actor="control-plane",
+                        reason="resume ready work item",
+                        subject_ref=work_item.work_item_id,
+                    )
+
+            started = _now()
+            running_item = work_item.model_copy(
+                update={
+                    "status": "running",
+                    "heartbeat": started,
+                    "lease": lease or work_item.lease,
+                }
+            )
+            self.work_items[work_item.work_item_id] = running_item
+            self._persist_work_item(running_item)
+            run = RunRecord(
+                work_item_id=running_item.work_item_id,
+                runner_type=runner.runner_type,
+                runner_identity=runner.runner_identity,
+                started_at=started,
+            )
+            self.runs[run.run_id] = run
+            self._persist_run(run)
+            self._record_ledger_event(
+                mission_id=work_item.mission_id,
+                event_type="state_change",
+                actor="control-plane",
+                subject_ref=running_item.work_item_id,
+                before={"status": work_item.status},
+                after={"status": "running"},
+                payload={"run_id": run.run_id},
+            )
+            return run, running_item
+
+    def finish_work_item_run(
+        self,
+        *,
+        run_id: str,
+        result: WorkItemResult,
+        preserve_mission_status: bool = False,
+    ) -> RunRecord:
+        """Apply a runner result under the runtime lock."""
+
+        with self._lock:
+            return self.apply_work_item_result(
+                run_id=run_id,
+                result=result,
+                preserve_mission_status=preserve_mission_status,
+            )
+
+    def apply_work_item_result(
+        self,
+        *,
+        run_id: str,
+        result: WorkItemResult,
+        preserve_mission_status: bool = False,
+    ) -> RunRecord:
         """Persist runner output, apply gate decisions, and update mission state."""
 
         run = self.runs[run_id]
@@ -853,6 +1083,8 @@ class InMemoryControlPlane:
                 "status": result.status,
                 "artifact_manifest_ref": manifest_ref or work_item.artifact_manifest_ref,
                 "heartbeat": _now(),
+                "lease": None,
+                "timeout": None,
             }
         )
         self.work_items[work_item.work_item_id] = updated_item
@@ -868,6 +1100,15 @@ class InMemoryControlPlane:
             artifact_refs=runtime_artifact_refs,
         )
 
+        if preserve_mission_status:
+            if runtime_gate is not None:
+                current_status = self._mission(work_item.mission_id).status
+                try:
+                    assert_transition_allowed(current_status, runtime_gate.next_state)
+                except ValueError:
+                    return updated_run
+                self.apply_gate(runtime_gate)
+            return updated_run
         if runtime_gate is not None:
             self.apply_gate(runtime_gate)
         elif runtime_failure_category is not None:
@@ -1318,7 +1559,25 @@ class InMemoryControlPlane:
     def _mission_work_items(self, mission_id: str) -> list[WorkItem]:
         return [item for item in self.work_items.values() if item.mission_id == mission_id]
 
-    def _ready_work_items(self, mission_id: str) -> list[WorkItem]:
+    def _runnable_plan_work_items(self, mission: Mission) -> list[WorkItem]:
+        items = self._mission_work_items(mission.mission_id)
+        if not mission.current_plan_version:
+            return items
+        return [
+            item
+            for item in items
+            if item.task_plan_version == mission.current_plan_version
+        ]
+
+    def _ready_work_items(
+        self,
+        mission_id: str,
+        *,
+        lease: str | None = None,
+        now: datetime | None = None,
+    ) -> list[WorkItem]:
+        mission = self._mission(mission_id)
+        observed_at = now or _now()
         done_ids = {
             item.work_item_id
             for item in self._mission_work_items(mission_id)
@@ -1327,8 +1586,10 @@ class InMemoryControlPlane:
         return sorted(
             (
                 item
-                for item in self._mission_work_items(mission_id)
-                if item.status == "queued" and set(item.dependencies).issubset(done_ids)
+                for item in self._runnable_plan_work_items(mission)
+                if item.status == "queued"
+                and set(item.dependencies).issubset(done_ids)
+                and _lease_allows_ready(item, lease=lease, now=observed_at)
             ),
             key=lambda item: (-item.priority, item.work_item_id),
         )

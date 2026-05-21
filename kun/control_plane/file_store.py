@@ -11,6 +11,7 @@ import json
 import os
 import tempfile
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -45,6 +46,10 @@ class FileControlPlaneStore:
         self._lock = RLock()
         self._init_buckets()
         self._load()
+
+    @property
+    def path(self) -> Path:
+        return self._path
 
     def put_mission(self, mission: Mission) -> Mission:
         return self._put_and_persist(self._missions, mission)
@@ -92,6 +97,46 @@ class FileControlPlaneStore:
 
     def put_work_item(self, work_item: WorkItem) -> WorkItem:
         return self._put_and_persist(self._work_items, work_item)
+
+    def claim_work_item_lease(
+        self,
+        *,
+        work_item_id: str,
+        lease: str,
+        now: datetime,
+        timeout: datetime,
+    ) -> WorkItem | None:
+        """Atomically claim a queued work item lease for multi-daemon scheduling."""
+
+        with self._lock:
+            item = self._work_items.get(work_item_id)
+            if item is None or item.status != "queued":
+                return None
+            active_lease = item.lease and item.timeout is not None and item.timeout > now
+            if active_lease and item.lease != lease:
+                return None
+            claimed = item.model_copy(
+                update={
+                    "lease": lease,
+                    "heartbeat": now,
+                    "timeout": timeout,
+                }
+            )
+            stored = self._work_items.put(claimed)
+            self._persist_locked()
+            return stored
+
+    def release_work_item_lease(self, *, work_item_id: str, lease: str) -> WorkItem | None:
+        """Release a queued work item lease if it still belongs to this holder."""
+
+        with self._lock:
+            item = self._work_items.get(work_item_id)
+            if item is None or item.lease != lease:
+                return None
+            released = item.model_copy(update={"lease": None, "timeout": None})
+            stored = self._work_items.put(released)
+            self._persist_locked()
+            return stored
 
     def get_work_item(self, work_item_id: str) -> WorkItem | None:
         with self._lock:
@@ -308,6 +353,12 @@ class FileControlPlaneStore:
         if not isinstance(raw_records, list):
             raise ValueError(f"control-plane file store field {key!r} must be a list")
         for raw_record in raw_records:
+            if isinstance(raw_record, dict):
+                raw_record = {
+                    field_name: raw_record[field_name]
+                    for field_name in model.model_fields
+                    if field_name in raw_record
+                }
             bucket.put(model.model_validate(raw_record))
 
     def _put_and_persist[RecordT: BaseModel](

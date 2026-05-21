@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from kun.control_plane.concurrency import build_merge_governance_report
 from kun.control_plane.runtime import InMemoryControlPlane, WorkItemResult
 from kun.control_plane.v6 import ArtifactManifest, ArtifactRecord, GateEvaluation, WorkItem
 
@@ -64,6 +65,10 @@ class KunRuntimeTaskRunner:
                 summary="KUN runtime task runner only handles KUN-owned execution work.",
                 failure_category="tool_failure",
             )
+        if _is_strategy_optimization_work_item(work_item):
+            return _strategy_optimization_result(self.control_plane, work_item)
+        if work_item.type == "merge":
+            return _merge_work_item_result(self.control_plane, work_item)
         prompt = _prompt_for_work_item(self.control_plane, work_item)
         try:
             output = self._executor(prompt)
@@ -285,6 +290,254 @@ def _work_item_gate(
         next_state="running" if passed else "repairing",
         governance_signal="kun_runtime_task_executed",
         created_by=KunRuntimeTaskRunner.runner_identity,
+    )
+
+
+def _is_strategy_optimization_work_item(work_item: WorkItem) -> bool:
+    if work_item.owner != "kun" or work_item.type != "research":
+        return False
+    item_id = work_item.work_item_id.lower()
+    text = f"{item_id}\n{work_item.expected_output}".lower()
+    return (
+        item_id.startswith("work-kun-plan-change")
+        or item_id.startswith("work-kun-strategy")
+        or "stricter continuation plan" in text
+        or "failed quality gate" in text
+        or "clean retest evidence" in text
+    )
+
+
+def _strategy_optimization_result(
+    control_plane: InMemoryControlPlane,
+    work_item: WorkItem,
+) -> WorkItemResult:
+    mission = control_plane.missions[work_item.mission_id]
+    payload = {
+        "schema": "kun-v6-strategy-optimization-plan-v1",
+        "mission_id": work_item.mission_id,
+        "work_item_id": work_item.work_item_id,
+        "trigger_refs": list(work_item.recovery_refs),
+        "strategy": [
+            "restate the target outcome and reject mechanism-only completion",
+            "turn failed gates into explicit acceptance criteria",
+            "split the next loop into implementation, browser playtest, residual audit, and human review",
+            "require clean retest evidence before returning to delivery",
+        ],
+        "next_execution_contract": {
+            "quality_first": True,
+            "requires_browser_playtest": True,
+            "requires_residual_audit": True,
+            "requires_human_or_target_user_acceptance": mission.task_type == "product_development",
+        },
+    }
+    artifact = ArtifactRecord(
+        artifact_id=f"artifact-kun-strategy-optimization-{_slug(work_item.work_item_id)}-{_hash_payload(payload)[:12]}",
+        kind="report",
+        path_or_uri=f"control-plane://kun-runtime/{work_item.mission_id}/{work_item.work_item_id}/strategy-optimization",
+        content_hash=_hash_payload(payload),
+        created_by=KunRuntimeTaskRunner.runner_identity,
+        mission_id=work_item.mission_id,
+        work_item_id=work_item.work_item_id,
+        supports=[
+            "kun_runtime_task_output",
+            "strategy_optimization_plan",
+            "quality_gate_recovery",
+            "dynamic_best_strategy",
+            *work_item.recovery_refs,
+        ],
+        freshness="fresh",
+        source_quality="primary",
+    )
+    gate = GateEvaluation(
+        gate_evaluation_id=f"gate-kun-strategy-optimization-{_slug(work_item.work_item_id)}",
+        mission_id=work_item.mission_id,
+        task_plan_version=work_item.task_plan_version,
+        subject_ref=work_item.work_item_id,
+        stage="governance",
+        task_type=mission.task_type,
+        rubric_version="kun-v6-strategy-optimization-v1",
+        metric_pack_version="kun-v6-strategy-optimization-v1",
+        north_star_verdict="pass",
+        result_quality=0.84,
+        speed=0.78,
+        cost=0.86,
+        risk=0.2,
+        evidence_quality=0.82,
+        collaboration_quality=0.76,
+        score_breakdown={"strategy_loop_defined": 1.0, "clean_retest_required": 1.0},
+        thresholds={"result_quality": 0.8},
+        evidence_refs=[artifact.artifact_id, *work_item.recovery_refs],
+        artifact_refs=[artifact.artifact_id],
+        source_freshness="fresh",
+        responsibility_scope="kun_auto",
+        confidence=0.8,
+        next_action="needs_plan_change",
+        next_state="changing_plan",
+        governance_signal="kun_runtime_strategy_optimization_ready",
+        created_by=KunRuntimeTaskRunner.runner_identity,
+    )
+    implement_id = f"work-kun-implement-after-{_slug(work_item.work_item_id)}"
+    retest_id = f"work-kun-retest-after-{_slug(work_item.work_item_id)}"
+    merge_id = f"work-kun-merge-after-{_slug(work_item.work_item_id)}"
+    followups = [
+        WorkItem(
+            work_item_id=implement_id,
+            mission_id=work_item.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            type="execution",
+            owner="kun",
+            priority=max(0, work_item.priority - 1),
+            dependencies=[work_item.work_item_id],
+            expected_output=(
+                "Implement the stricter continuation plan. Prioritize result quality, fix the "
+                "observed product or execution gap, and record concrete changed artifacts."
+            ),
+            recovery_refs=[artifact.artifact_id, *work_item.recovery_refs],
+            resource_locks=list(work_item.resource_locks),
+        ),
+        WorkItem(
+            work_item_id=retest_id,
+            mission_id=work_item.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            type="test",
+            owner="kun",
+            priority=max(0, work_item.priority - 2),
+            dependencies=[implement_id],
+            expected_output=(
+                "Run clean retest evidence for the stricter continuation plan, including "
+                "quality gate, product residual audit, and regression checks."
+            ),
+            recovery_refs=[artifact.artifact_id, *work_item.recovery_refs],
+            resource_locks=list(work_item.resource_locks),
+        ),
+        WorkItem(
+            work_item_id=merge_id,
+            mission_id=work_item.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            type="merge",
+            owner="kun",
+            priority=max(0, work_item.priority - 3),
+            dependencies=[retest_id],
+            idempotency_key=f"merge-after-strategy:{work_item.work_item_id}",
+            expected_output=(
+                "Merge the implementation, retest evidence, and strategy artifacts into one "
+                "coherent delivery candidate with conflict notes and rollback refs."
+            ),
+            recovery_refs=[artifact.artifact_id, *work_item.recovery_refs],
+            resource_locks=[*work_item.resource_locks, f"mission:{work_item.mission_id}"],
+        ),
+    ]
+    return WorkItemResult(
+        status="done",
+        summary="KUN created a stricter continuation strategy with clean retest requirements.",
+        artifacts=[artifact],
+        gate_evaluation=gate,
+        followup_work_items=followups,
+    )
+
+
+def _merge_work_item_result(
+    control_plane: InMemoryControlPlane,
+    work_item: WorkItem,
+) -> WorkItemResult:
+    mission = control_plane.missions[work_item.mission_id]
+    dependency_refs = set(work_item.dependencies)
+    related_artifacts = [
+        artifact
+        for artifact in control_plane.artifacts.values()
+        if artifact.mission_id == work_item.mission_id
+        and (
+            artifact.work_item_id in dependency_refs
+            or any(ref in artifact.supports for ref in work_item.recovery_refs)
+        )
+    ]
+    related_artifact_refs = [artifact.artifact_id for artifact in related_artifacts]
+    merge_governance = build_merge_governance_report(
+        mission_id=work_item.mission_id,
+        work_item=work_item,
+        artifacts=related_artifacts,
+    )
+    payload = {
+        "schema": "kun-v6-merge-work-item-v1",
+        "mission_id": work_item.mission_id,
+        "work_item_id": work_item.work_item_id,
+        "dependency_refs": list(work_item.dependencies),
+        "merged_artifact_refs": related_artifact_refs,
+        "recovery_refs": list(work_item.recovery_refs),
+        "resource_locks": list(work_item.resource_locks),
+        "merge_governance": merge_governance.model_dump(mode="json"),
+        "conflict_policy": (
+            "merge is blocked if dependency artifacts are missing, multiple upstreams write "
+            "the same output, or overlapping write claims are detected."
+        ),
+    }
+    artifact = ArtifactRecord(
+        artifact_id=f"artifact-kun-merge-{_slug(work_item.work_item_id)}-{_hash_payload(payload)[:12]}",
+        kind="report",
+        path_or_uri=f"control-plane://kun-runtime/{work_item.mission_id}/{work_item.work_item_id}/merge",
+        content_hash=_hash_payload(payload),
+        created_by=KunRuntimeTaskRunner.runner_identity,
+        mission_id=work_item.mission_id,
+        work_item_id=work_item.work_item_id,
+        supports=[
+            "kun_runtime_task_output",
+            "merge_result",
+            "artifact_manifest_merge",
+            "conflict_aware_merge_governance",
+            *related_artifact_refs,
+            *work_item.recovery_refs,
+        ],
+        freshness="fresh",
+        source_quality="primary",
+    )
+    has_inputs = bool(related_artifacts or work_item.recovery_refs)
+    passed = has_inputs and merge_governance.pass_merge_gate
+    hard_gate_failures = list(merge_governance.blocking_issue_codes)
+    if not has_inputs and "merge_inputs_missing" not in hard_gate_failures:
+        hard_gate_failures.append("merge_inputs_missing")
+    gate = GateEvaluation(
+        gate_evaluation_id=f"gate-kun-merge-{_slug(work_item.work_item_id)}",
+        mission_id=work_item.mission_id,
+        task_plan_version=work_item.task_plan_version,
+        subject_ref=work_item.work_item_id,
+        stage="merge",
+        task_type=mission.task_type,
+        rubric_version="kun-v6-merge-work-item-v1",
+        metric_pack_version="kun-v6-merge-work-item-v1",
+        north_star_verdict="pass" if passed else "fail",
+        result_quality=0.84 if passed else 0.2,
+        speed=0.76,
+        cost=0.84,
+        risk=0.22 if passed else 0.7,
+        evidence_quality=0.82 if passed else 0.1,
+        collaboration_quality=0.75,
+        score_breakdown={
+            "has_merge_inputs": 1.0 if has_inputs else 0.0,
+            "conflict_free_merge": 1.0 if merge_governance.pass_merge_gate else 0.0,
+        },
+        thresholds={"result_quality": 0.8},
+        hard_gate_failures=[] if passed else hard_gate_failures,
+        evidence_refs=[artifact.artifact_id, *related_artifact_refs],
+        artifact_refs=[artifact.artifact_id],
+        source_freshness="fresh",
+        failure_category=None if passed else "delivery_failure",
+        responsibility_scope="kun_auto",
+        confidence=0.8 if passed else 0.5,
+        next_action="continue" if passed else "needs_repair",
+        next_state="running" if passed else "repairing",
+        governance_signal="kun_runtime_merge_executed",
+        created_by=KunRuntimeTaskRunner.runner_identity,
+    )
+    return WorkItemResult(
+        status="done" if passed else "failed",
+        summary=(
+            "KUN merged dependency artifacts into a coherent delivery candidate."
+            if passed
+            else "KUN blocked merge because dependency artifacts conflict or are missing."
+        ),
+        artifacts=[artifact],
+        gate_evaluation=gate,
+        failure_category=None if passed else "delivery_failure",
     )
 
 

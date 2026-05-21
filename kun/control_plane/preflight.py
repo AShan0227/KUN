@@ -14,6 +14,7 @@ import json
 import os
 import re
 import tempfile
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -57,7 +58,11 @@ def run_work_item_preflight(
     artifacts: list[ArtifactRecord] = []
     failed: list[str] = []
     for skill_id, params in skill_runs:
-        result = _run_skill(skill_id, params)
+        result = _run_skill(
+            skill_id,
+            params,
+            extra_exec_roots=_execution_roots_for_params(skill_id, params),
+        )
         if not result.ok:
             failed.append(skill_id)
         artifact = _persist_skill_result(
@@ -118,7 +123,7 @@ def _planned_skill_runs(
             )
         )
 
-    if workspace and _should_run_pytest(work_item, text):
+    if workspace and _should_run_pytest(work_item, text, workspace):
         runs.append(
             (
                 "shell-exec",
@@ -133,10 +138,65 @@ def _planned_skill_runs(
     return _dedupe_runs(runs)
 
 
-def _run_skill(skill_id: str, params: dict[str, Any]) -> SkillResult:
+def _run_skill(
+    skill_id: str,
+    params: dict[str, Any],
+    *,
+    extra_exec_roots: list[str] | None = None,
+) -> SkillResult:
     from kun.skills.dispatcher import dispatch
 
-    return _run_async(dispatch(skill_id, params))
+    with _temporary_exec_roots(extra_exec_roots or []):
+        return _run_async(dispatch(skill_id, params))
+
+
+def _execution_roots_for_params(skill_id: str, params: dict[str, Any]) -> list[str]:
+    if skill_id not in {"shell-exec", "python-exec"}:
+        return []
+    cwd = params.get("cwd")
+    if not cwd:
+        return []
+    try:
+        return [str(Path(str(cwd)).expanduser().resolve())]
+    except OSError:
+        return []
+
+
+@contextmanager
+def _temporary_exec_roots(extra_roots: list[str]):
+    if not extra_roots:
+        yield
+        return
+    previous_roots = os.getenv("KUN_SKILL_EXEC_ROOTS")
+    previous_root = os.getenv("KUN_SKILL_EXEC_ROOT")
+    configured = previous_roots or previous_root or "/tmp/kun-skill-exec"
+    roots = _dedupe_root_strings([*configured.split(":"), *extra_roots])
+    os.environ["KUN_SKILL_EXEC_ROOTS"] = ":".join(roots)
+    try:
+        yield
+    finally:
+        if previous_roots is None:
+            os.environ.pop("KUN_SKILL_EXEC_ROOTS", None)
+        else:
+            os.environ["KUN_SKILL_EXEC_ROOTS"] = previous_roots
+        if previous_root is None:
+            os.environ.pop("KUN_SKILL_EXEC_ROOT", None)
+        else:
+            os.environ["KUN_SKILL_EXEC_ROOT"] = previous_root
+
+
+def _dedupe_root_strings(roots: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for root in roots:
+        if not root.strip():
+            continue
+        normalized = str(Path(root).expanduser().resolve())
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
 
 
 def _run_async(coro: Any) -> Any:
@@ -171,7 +231,8 @@ def _persist_skill_result(
         "result": result.model_dump(mode="json"),
         "observed_at": observed_at.isoformat(),
     }
-    path = _preflight_path(control_plane, work_item, skill_id, observed_at)
+    params_hash = _hash_payload(params)[:8]
+    path = _preflight_path(control_plane, work_item, skill_id, observed_at, params_hash)
     _write_json_atomic(path, payload)
     supports = [
         "skill_preflight",
@@ -184,7 +245,7 @@ def _persist_skill_result(
     else:
         supports.append("skill_preflight_failure")
     return ArtifactRecord(
-        artifact_id=f"artifact-preflight-{_slug(work_item.work_item_id)}-{_slug(skill_id)}-{_compact_time(observed_at)}",
+        artifact_id=f"artifact-preflight-{_slug(work_item.work_item_id)}-{_slug(skill_id)}-{_compact_time(observed_at)}-{params_hash}",
         kind=_artifact_kind_for_skill(skill_id),
         path_or_uri=str(path),
         content_hash=_hash_payload(payload),
@@ -221,7 +282,6 @@ def _work_item_text(objective: str, plan: TaskPlan | None, work_item: WorkItem) 
         work_item.type,
         work_item.expected_output,
         " ".join(work_item.external_source_refs),
-        " ".join(work_item.skill_refs),
     ]
     if plan is not None:
         parts.extend(
@@ -267,9 +327,26 @@ def _should_inspect_workspace(work_item: WorkItem, text: str) -> bool:
     )
 
 
-def _should_run_pytest(work_item: WorkItem, text: str) -> bool:
+def _should_run_pytest(work_item: WorkItem, text: str, workspace: str) -> bool:
     lowered = text.lower()
-    return work_item.type in {"test", "retest"} or "pytest" in lowered
+    if "pytest" in lowered:
+        return True
+    if work_item.type not in {"test", "retest"}:
+        return False
+    return _workspace_looks_like_python_test_project(workspace)
+
+
+def _workspace_looks_like_python_test_project(workspace: str) -> bool:
+    root = Path(os.path.expanduser(workspace))
+    try:
+        if not root.exists() or not root.is_dir():
+            return False
+        if any((root / name).exists() for name in ("pytest.ini", "pyproject.toml", "setup.cfg")):
+            return True
+        tests_dir = root / "tests"
+        return tests_dir.exists() and any(tests_dir.rglob("test_*.py"))
+    except OSError:
+        return False
 
 
 def _search_query(objective: str, plan: TaskPlan | None, work_item: WorkItem) -> str:
@@ -347,6 +424,7 @@ def _preflight_path(
     work_item: WorkItem,
     skill_id: str,
     observed_at: datetime,
+    params_hash: str,
 ) -> Path:
     store = getattr(control_plane, "store", None)
     store_path = getattr(store, "_path", None)
@@ -358,7 +436,7 @@ def _preflight_path(
         base
         / work_item.mission_id
         / work_item.work_item_id
-        / f"{_slug(skill_id)}-{_compact_time(observed_at)}.json"
+        / f"{_slug(skill_id)}-{_compact_time(observed_at)}-{params_hash}.json"
     )
 
 

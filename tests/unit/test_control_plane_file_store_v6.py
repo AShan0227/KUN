@@ -302,3 +302,16 @@ def test_file_store_writes_json_snapshot_atomically_to_target_path(tmp_path: Pat
     assert payload["schema_version"] == 1
     assert payload["missions"][0]["mission_id"] == "msn-json"
     assert list(path.parent.glob("*.tmp")) == []
+
+
+def test_file_store_ignores_unknown_fields_from_older_snapshots(tmp_path: Path) -> None:
+    path = tmp_path / "control-plane.json"
+    store = _store(path)
+    store.put_work_item(_work_item("msn-migrate"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["work_items"][0]["last_error"] = "legacy daemon field from an older runtime"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    rebuilt = _store(path)
+
+    assert rebuilt.get_work_item("work-msn-migrate") == _work_item("msn-migrate")

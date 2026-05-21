@@ -14,10 +14,13 @@ from kun.control_plane import (
     GateEvaluation,
     InMemoryControlPlane,
     Mission,
+    ResourceLockConflict,
+    SandboxIsolationSpec,
     TaskPlan,
     WorkingContext,
     WorkItem,
     WorkItemResult,
+    WorkerSlotSnapshot,
     build_task_cockpit_view,
 )
 
@@ -217,7 +220,9 @@ def test_task_cockpit_view_shows_delivery_gate_artifacts_and_daemon_health() -> 
 
     cockpit = build_task_cockpit_view(runtime, "msn-cockpit-delivery")
 
-    assert cockpit.headline == "交付物已准备好验收。"
+    assert cockpit.headline == "需要人类确认后继续。"
+    assert cockpit.collaboration.human_needed is True
+    assert cockpit.collaboration.open_ticket_count == 1
     assert cockpit.quality_gate.status == "pass"
     assert cockpit.quality_gate.result_quality == 0.93
     assert cockpit.artifacts.delivery_ready is True
@@ -280,3 +285,65 @@ def test_task_cockpit_view_warns_when_daemon_service_heartbeat_is_stale() -> Non
     assert cockpit.daemon.service_status == "running"
     assert cockpit.daemon.stale is True
     assert "心跳已过期" in cockpit.daemon.text
+
+
+@pytest.mark.unit
+def test_task_cockpit_view_shows_worker_slots_locks_and_sandbox_waiting_reason() -> None:
+    runtime = _runtime_with_mission(mission_id="msn-cockpit-concurrency")
+    state = DaemonServiceState(
+        daemon_id="daemon-cockpit",
+        status="running",
+        started_at=datetime(2026, 5, 19, 9, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 5, 19, 9, 5, tzinfo=UTC),
+        process_id=1234,
+        tick_count=3,
+        active_mission_ids=["msn-cockpit-concurrency"],
+        last_heartbeat_at=datetime(2026, 5, 19, 9, 5, tzinfo=UTC),
+        worker_pool_size=2,
+        last_tick_worker_slots=[
+            WorkerSlotSnapshot(
+                slot_id="pool:1",
+                worker_id="worker-1",
+                machine_id="machine-a",
+                status="waiting_lock",
+                mission_id="msn-cockpit-concurrency",
+                work_item_id="work-msn-cockpit-concurrency",
+                resource_locks=["workspace:/repo"],
+                waiting_reason="等待资源锁释放后继续。",
+            )
+        ],
+        last_tick_resource_lock_skipped_work_item_ids=["work-msn-cockpit-concurrency"],
+        last_tick_resource_lock_conflicts=[
+            ResourceLockConflict(
+                resource_ref="workspace:/repo",
+                waiting_work_item_id="work-msn-cockpit-concurrency",
+                holder_id="lease-other",
+                holder_work_item_id="work-other",
+                holder_daemon_id="daemon-other",
+                waiting_reason="另一个 worker 正在使用同一资源。",
+            )
+        ],
+        last_tick_sandbox_specs=[
+            SandboxIsolationSpec(
+                sandbox_ref="sandbox://msn-cockpit-concurrency/work-msn-cockpit-concurrency",
+                mission_id="msn-cockpit-concurrency",
+                work_item_id="work-msn-cockpit-concurrency",
+                mode="container_required",
+                container_runtime="docker",
+                text="要求容器级隔离。",
+            )
+        ],
+    )
+
+    cockpit = build_task_cockpit_view(
+        runtime,
+        "msn-cockpit-concurrency",
+        daemon_service_state=state,
+        now=datetime(2026, 5, 19, 9, 5, tzinfo=UTC),
+    )
+
+    assert cockpit.concurrency.worker_pool_size == 2
+    assert cockpit.concurrency.waiting_on_resource_lock_count == 1
+    assert cockpit.concurrency.resource_lock_conflicts[0].holder_daemon_id == "daemon-other"
+    assert cockpit.concurrency.sandbox_specs[0].mode == "container_required"
+    assert "等待资源锁" in cockpit.concurrency.text

@@ -281,6 +281,117 @@ def test_runtime_submits_contracted_mission_and_runs_to_delivery() -> None:
     assert report.ledger_event_count >= 6
 
 
+def test_plan_change_from_delivery_reactivates_daemon_queue() -> None:
+    runtime = _submit_runtime(work_items=[_single_work_item()])
+
+    def delivery(item: WorkItem) -> WorkItemResult:
+        answer = ArtifactRecord(
+            artifact_id="artifact-v1-answer",
+            kind="answer",
+            path_or_uri="mem://answer-v1",
+            content_hash="answer-v1-hash",
+            created_by="kun",
+            mission_id=item.mission_id,
+            work_item_id=item.work_item_id,
+        )
+        manifest = ArtifactManifest(
+            manifest_id="manifest-v1-delivery",
+            mission_id=item.mission_id,
+            work_item_id=item.work_item_id,
+            kind="delivery",
+            artifact_refs=[answer.artifact_id],
+            primary_artifact_ref=answer.artifact_id,
+            evidence_refs=[answer.artifact_id],
+            created_by="kun",
+            content_hash="manifest-v1-hash",
+            supports_delivery=True,
+        )
+        return WorkItemResult(
+            status="done",
+            summary="delivery complete",
+            artifacts=[answer],
+            artifact_manifest=manifest,
+            gate_evaluation=_gate(
+                work_item=item,
+                next_action="ready_to_deliver",
+                next_state="delivering",
+                artifact_refs=manifest.artifact_refs,
+                evidence_refs=manifest.evidence_refs,
+            ),
+        )
+
+    runtime.run_next_ready(
+        mission_id="msn-v6",
+        runner=StaticRunner(delivery),
+    )
+
+    assert runtime.missions["msn-v6"].status == "delivering"
+
+    next_plan = _plan().model_copy(
+        update={"plan_id": "plan-v6-v2", "version": "v2", "objective": "Continue deeper work"}
+    )
+    next_contract = _contract().model_copy(
+        update={"contract_id": "contract-v6-v2", "task_plan_version": "v2"}
+    )
+    next_context = _context().model_copy(
+        update={"working_context_id": "ctx-v6-v2", "task_plan_version": "v2"}
+    )
+    next_item = _single_work_item(work_item_id="work-v2").model_copy(
+        update={"task_plan_version": "v2"}
+    )
+
+    runtime.record_plan_change(
+        mission_id="msn-v6",
+        task_plan=next_plan,
+        execution_contract=next_contract,
+        working_context=next_context,
+        work_items=[next_item],
+        actor="kun",
+        reason="User raised the quality target after delivery gate.",
+    )
+
+    assert runtime.missions["msn-v6"].status == "changing_plan"
+    assert runtime.progress_report("msn-v6").next_ready_work_item_ids == ["work-v2"]
+
+
+def test_ready_queue_ignores_superseded_plan_work_items() -> None:
+    runtime = InMemoryControlPlane()
+    old_item = _single_work_item(work_item_id="work-old").model_copy(update={"priority": 100})
+    runtime.submit_mission(
+        mission=_mission(),
+        task_plan=_plan(),
+        execution_contract=_contract(),
+        working_context=_context(),
+        work_items=[old_item],
+    )
+    next_plan = _plan().model_copy(
+        update={"plan_id": "plan-v6-v2", "version": "v2", "objective": "Superseded target"}
+    )
+    next_contract = _contract().model_copy(
+        update={"contract_id": "contract-v6-v2", "task_plan_version": "v2"}
+    )
+    next_context = _context().model_copy(
+        update={"working_context_id": "ctx-v6-v2", "task_plan_version": "v2"}
+    )
+    next_item = _single_work_item(work_item_id="work-v2").model_copy(
+        update={"task_plan_version": "v2", "priority": 10}
+    )
+
+    runtime.record_plan_change(
+        mission_id="msn-v6",
+        task_plan=next_plan,
+        execution_contract=next_contract,
+        working_context=next_context,
+        work_items=[next_item],
+        actor="kun",
+        reason="New plan supersedes stale queued work.",
+    )
+
+    assert runtime.next_ready_work_item("msn-v6").work_item_id == "work-v2"
+    assert runtime.progress_report("msn-v6").next_ready_work_item_ids == ["work-v2"]
+    assert runtime.work_items["work-old"].status == "queued"
+
+
 def test_runtime_rejects_plan_before_approval_or_with_info_gaps() -> None:
     runtime = InMemoryControlPlane()
 

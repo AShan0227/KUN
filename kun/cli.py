@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
+import sys
 from pathlib import Path
 
 import typer
@@ -209,6 +212,45 @@ def control_plane_daemon_status(
     console.print(table)
 
 
+@control_plane_app.command("feature-activation-audit")
+def control_plane_feature_activation_audit(
+    output_dir: Path = typer.Option(
+        Path(".kun-local/feature-activation-audit"),
+        "--output-dir",
+        help="功能激活审计输出目录",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+) -> None:
+    """运行 KUN V6 功能激活任务审计。"""
+
+    from kun.control_plane.feature_activation_audit import run_feature_activation_audit
+
+    if json_output:
+        with contextlib.redirect_stdout(sys.stderr):
+            report = run_feature_activation_audit(output_dir=output_dir)
+    else:
+        report = run_feature_activation_audit(output_dir=output_dir)
+    payload = report.model_dump(mode="json")
+    if json_output:
+        console.print_json(data=payload)
+        return
+    table = Table(title="KUN V6 Feature Activation Audit")
+    table.add_column("功能")
+    table.add_column("子系统")
+    table.add_column("状态")
+    table.add_column("触发条件")
+    for case in report.cases:
+        table.add_row(
+            case.feature_id,
+            case.subsystem,
+            "[green]已激活[/]" if case.activated else "[red]未激活[/]",
+            case.trigger_condition,
+        )
+    console.print(table)
+    console.print(f"[green]JSON[/] {report.report_json_path}")
+    console.print(f"[green]报告[/] {report.report_markdown_path}")
+
+
 @control_plane_app.command("daemon-stop")
 def control_plane_daemon_stop(
     state_path: Path = typer.Option(
@@ -263,6 +305,33 @@ def control_plane_daemon_service_plan(
     state_path: Path = typer.Option(Path(".kun-local/v6-daemon-service.json"), "--state-path"),
     poll_interval_sec: float = typer.Option(30.0, "--poll-interval-sec", min=0),
     max_work_items_per_tick: int = typer.Option(10, "--max-work-items-per-tick", min=0),
+    worker_pool_size: int = typer.Option(
+        1,
+        "--worker-pool-size",
+        min=1,
+        help="本 daemon 可调度的 worker 槽位数；多 daemon 可共享资源锁文件",
+    ),
+    resource_lock_path: Path | None = typer.Option(
+        None,
+        "--resource-lock-path",
+        help="可选共享资源锁文件；多进程/多机器 worker pool 用它协调资源",
+    ),
+    resource_lock_ttl_sec: float = typer.Option(
+        900.0,
+        "--resource-lock-ttl-sec",
+        min=1,
+        help="资源锁和 work item lease 过期时间",
+    ),
+    sandbox_mode: str = typer.Option(
+        "workspace_snapshot",
+        "--sandbox-mode",
+        help="执行隔离：workspace_snapshot、container_required 或 external_container",
+    ),
+    container_runtime: str | None = typer.Option(
+        None,
+        "--container-runtime",
+        help="容器隔离运行时，例如 docker/podman；用于驾驶舱和门禁记录",
+    ),
     ab_round_dir: Path | None = typer.Option(
         None,
         "--ab-round-dir",
@@ -292,6 +361,11 @@ def control_plane_daemon_service_plan(
         state_path=state_path,
         poll_interval_sec=poll_interval_sec,
         max_work_items_per_tick=max_work_items_per_tick,
+        worker_pool_size=worker_pool_size,
+        resource_lock_path=resource_lock_path,
+        resource_lock_ttl_sec=resource_lock_ttl_sec,
+        sandbox_mode=sandbox_mode,
+        container_runtime=container_runtime,
         ab_round_dir=ab_round_dir,
         ab_round_id=ab_round_id,
     )
@@ -320,6 +394,11 @@ def control_plane_daemon_service_install(
     install_path: Path | None = typer.Option(None, "--install-path"),
     store_path: Path = typer.Option(Path(".kun-local/v6-control-plane.json"), "--store-path"),
     state_path: Path = typer.Option(Path(".kun-local/v6-daemon-service.json"), "--state-path"),
+    worker_pool_size: int = typer.Option(1, "--worker-pool-size", min=1),
+    resource_lock_path: Path | None = typer.Option(None, "--resource-lock-path"),
+    resource_lock_ttl_sec: float = typer.Option(900.0, "--resource-lock-ttl-sec", min=1),
+    sandbox_mode: str = typer.Option("workspace_snapshot", "--sandbox-mode"),
+    container_runtime: str | None = typer.Option(None, "--container-runtime"),
     ab_round_dir: Path | None = typer.Option(
         None,
         "--ab-round-dir",
@@ -351,6 +430,11 @@ def control_plane_daemon_service_install(
         install_path=install_path,
         store_path=store_path,
         state_path=state_path,
+        worker_pool_size=worker_pool_size,
+        resource_lock_path=resource_lock_path,
+        resource_lock_ttl_sec=resource_lock_ttl_sec,
+        sandbox_mode=sandbox_mode,
+        container_runtime=container_runtime,
         ab_round_dir=ab_round_dir,
         ab_round_id=ab_round_id,
     )
@@ -391,6 +475,33 @@ def control_plane_daemon_run(
     ),
     poll_interval_sec: float = typer.Option(30.0, "--poll-interval-sec", min=0),
     max_work_items_per_tick: int = typer.Option(10, "--max-work-items-per-tick", min=0),
+    worker_pool_size: int = typer.Option(
+        1,
+        "--worker-pool-size",
+        min=1,
+        help="本 daemon 可调度的 worker 槽位数；多 daemon 可共享资源锁文件",
+    ),
+    resource_lock_path: Path | None = typer.Option(
+        None,
+        "--resource-lock-path",
+        help="可选共享资源锁文件；多进程/多机器 worker pool 用它协调资源",
+    ),
+    resource_lock_ttl_sec: float = typer.Option(
+        900.0,
+        "--resource-lock-ttl-sec",
+        min=1,
+        help="资源锁和 work item lease 过期时间",
+    ),
+    sandbox_mode: str = typer.Option(
+        "workspace_snapshot",
+        "--sandbox-mode",
+        help="执行隔离：workspace_snapshot、container_required 或 external_container",
+    ),
+    container_runtime: str | None = typer.Option(
+        None,
+        "--container-runtime",
+        help="容器隔离运行时，例如 docker/podman；用于驾驶舱和门禁记录",
+    ),
     ab_round_dir: Path | None = typer.Option(
         None,
         "--ab-round-dir",
@@ -448,13 +559,20 @@ def control_plane_daemon_run(
         DaemonServiceConfig,
         FileControlPlaneStore,
         FileDaemonServiceStateStore,
+        FileResourceLockStore,
         InMemoryControlPlane,
+        WorkerPoolConfig,
     )
     from kun.control_plane.external_sample_comparison import (
         KUN_EXTERNAL_SAMPLE_COMPARISON_RUNNER_OWNER,
         ExternalSampleComparisonRunner,
     )
     from kun.control_plane.frontier50_external import Frontier50ExternalRuntimeRunner
+    from kun.control_plane.game_production import (
+        EXTERNAL_SUPERVISOR_GATE_OWNER,
+        KUN_GAME_PRODUCTION_RUNNER_OWNER,
+        GameProductionRunner,
+    )
     from kun.control_plane.kun_runtime_runner import KunRuntimeTaskRunner
     from kun.control_plane.productization import ProductizationDogfoodRunner
     from kun.control_plane.runtime_followups import (
@@ -472,6 +590,10 @@ def control_plane_daemon_run(
     )
     control_plane = InMemoryControlPlane(store=FileControlPlaneStore(store_path))
     state_store = FileDaemonServiceStateStore(state_path)
+    if sandbox_mode not in {"workspace_snapshot", "container_required", "external_container"}:
+        raise typer.BadParameter(
+            "sandbox_mode must be workspace_snapshot, container_required, or external_container"
+        )
     productization_runner = ProductizationDogfoodRunner(
         control_plane=control_plane,
         ab_round_dir=ab_round_dir,
@@ -479,6 +601,7 @@ def control_plane_daemon_run(
     )
     external_sample_runner = ExternalSampleComparisonRunner(control_plane=control_plane)
     kun_runner = KunRuntimeTaskRunner(control_plane=control_plane)
+    game_production_runner = GameProductionRunner(control_plane=control_plane)
     qi_runners = [productization_runner]
     if frontier50_live_workdir is not None:
         qi_runners.append(
@@ -496,6 +619,8 @@ def control_plane_daemon_run(
     productization_owners = {
         "control-plane": productization_runner,
         "kun": kun_runner,
+        KUN_GAME_PRODUCTION_RUNNER_OWNER: game_production_runner,
+        EXTERNAL_SUPERVISOR_GATE_OWNER: game_production_runner,
         "qi": ChainedControlPlaneRunner(
             runner_identity="qi-control-plane-runtime-router",
             runners=qi_runners,
@@ -510,10 +635,27 @@ def control_plane_daemon_run(
         control_plane=control_plane,
         daemon_id=daemon_id,
         runners_by_owner=productization_owners,
+        worker_pool=WorkerPoolConfig(
+            pool_id=f"{daemon_id}-pool",
+            machine_id=os.uname().nodename if hasattr(os, "uname") else "local",
+            worker_count=worker_pool_size,
+        ),
+        resource_lock_store=FileResourceLockStore(
+            resource_lock_path
+            if resource_lock_path is not None
+            else store_path.with_name(f"{store_path.stem}.resource-locks.json")
+        ),
+        resource_lock_ttl_sec=resource_lock_ttl_sec,
+        sandbox_mode=sandbox_mode,  # type: ignore[arg-type]
+        container_runtime=container_runtime,
     )
     config = DaemonServiceConfig(
         poll_interval_sec=poll_interval_sec,
         max_work_items_per_tick=max_work_items_per_tick,
+        worker_pool_size=worker_pool_size,
+        resource_lock_ttl_sec=resource_lock_ttl_sec,
+        sandbox_mode=sandbox_mode,  # type: ignore[arg-type]
+        container_runtime=container_runtime,
         max_ticks=max_ticks,
         stop_when_idle=stop_when_idle,
         idle_ticks_to_stop=idle_ticks_to_stop,

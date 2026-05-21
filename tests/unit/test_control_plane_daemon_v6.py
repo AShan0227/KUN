@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -15,6 +17,8 @@ from kun.control_plane import (
     ExecutionContract,
     FileControlPlaneStore,
     FileDaemonServiceStateStore,
+    FileResourceLockStore,
+    GateEvaluation,
     InMemoryControlPlane,
     Mission,
     RunRecord,
@@ -22,6 +26,7 @@ from kun.control_plane import (
     WorkingContext,
     WorkItem,
     WorkItemResult,
+    WorkerPoolConfig,
 )
 from kun.control_plane.capability_execution import CapabilityExecutionPolicy
 from kun.control_plane.preflight import WorkItemPreflight
@@ -47,12 +52,39 @@ class StaticRunner:
         return WorkItemResult(status="done", summary="daemon executed ready work")
 
 
+class ContainerCapableRunner(StaticRunner):
+    supports_container_sandbox = True
+
+
 class PolicyAwareRunner(StaticRunner):
     def __init__(self) -> None:
         self.bound_policy: CapabilityExecutionPolicy | None = None
 
     def bind_capability_execution_policy(self, policy: CapabilityExecutionPolicy) -> None:
         self.bound_policy = policy
+
+
+class ConcurrentProbeRunner(StaticRunner):
+    runner_identity = "daemon-concurrent-probe"
+
+    def __init__(self, *, sleep_sec: float = 0.15) -> None:
+        self.sleep_sec = sleep_sec
+        self._lock = threading.Lock()
+        self.current_running = 0
+        self.max_running = 0
+        self.started_work_item_ids: list[str] = []
+
+    def run(self, work_item: WorkItem) -> WorkItemResult:
+        with self._lock:
+            self.current_running += 1
+            self.max_running = max(self.max_running, self.current_running)
+            self.started_work_item_ids.append(work_item.work_item_id)
+        try:
+            time.sleep(self.sleep_sec)
+            return WorkItemResult(status="done", summary=f"finished {work_item.work_item_id}")
+        finally:
+            with self._lock:
+                self.current_running -= 1
 
 
 def _runtime(tmp_path, *, retry_budget: int = 0):
@@ -109,6 +141,69 @@ def _runtime(tmp_path, *, retry_budget: int = 0):
         work_items=[work_item],
     )
     return control_plane, store, mission
+
+
+def _add_ready_mission(
+    control_plane: InMemoryControlPlane,
+    mission_id: str,
+    *,
+    work_item_id: str,
+    priority: int = 80,
+    resource_locks: list[str] | None = None,
+    workspace_path: str | None = None,
+) -> Mission:
+    mission = Mission(
+        mission_id=mission_id,
+        owner="kun",
+        objective=f"Run daemon-managed V6 mission {mission_id}",
+        task_type="ops_tooling",
+        status="contracted",
+    )
+    plan = TaskPlan(
+        plan_id=f"plan-{mission_id}",
+        mission_id=mission.mission_id,
+        version="v1",
+        objective=mission.objective,
+        acceptance_criteria=["ready work is executed by daemon"],
+        constraints=["state must survive restart"],
+        approval_status="approved",
+    )
+    contract = ExecutionContract(
+        contract_id=f"contract-{mission_id}",
+        mission_id=mission.mission_id,
+        task_plan_version=plan.version,
+        allowed_actions=["run local daemon tick"],
+        forbidden_actions=["drop durable state"],
+        delivery_contract={"workspace_path": workspace_path} if workspace_path else {},
+    )
+    context = WorkingContext(
+        working_context_id=f"ctx-{mission_id}",
+        mission_id=mission.mission_id,
+        task_plan_version=plan.version,
+        audience="daemon",
+        scope="daemon-test",
+        summary="Daemon test context.",
+        acceptance_criteria=plan.acceptance_criteria,
+        constraints=plan.constraints,
+    )
+    work_item = WorkItem(
+        work_item_id=work_item_id,
+        mission_id=mission.mission_id,
+        task_plan_version=plan.version,
+        type="execution",
+        owner="kun",
+        priority=priority,
+        expected_output="daemon-managed result",
+        resource_locks=resource_locks or [],
+    )
+    control_plane.submit_mission(
+        mission=mission,
+        task_plan=plan,
+        execution_contract=contract,
+        working_context=context,
+        work_items=[work_item],
+    )
+    return mission
 
 
 def _write_passing_ab_round(tmp_path):
@@ -218,6 +313,196 @@ def test_daemon_tick_runs_ready_work_and_persists_progress(tmp_path) -> None:
     observation_report = report.runtime_observations["msn-daemon"]
     assert observation_report.max_severity == "high"
     assert [item.code for item in observation_report.items] == ["delivery_manifest_missing"]
+
+
+def test_daemon_tick_fairly_runs_ready_work_across_multiple_missions(tmp_path) -> None:
+    control_plane, _store, mission = _runtime(tmp_path)
+    second_mission = _add_ready_mission(
+        control_plane,
+        "msn-daemon-b",
+        work_item_id="work-daemon-b",
+    )
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": StaticRunner()},
+        daemon_id="daemon-test",
+    )
+
+    report = daemon.tick_once(
+        mission_ids=[mission.mission_id, second_mission.mission_id],
+        now=NOW,
+        max_work_items=2,
+    )
+
+    assert report.ran_work_item_ids == ["work-daemon", "work-daemon-b"]
+    assert control_plane.work_items["work-daemon"].status == "done"
+    assert control_plane.work_items["work-daemon-b"].status == "done"
+
+
+def test_daemon_worker_pool_runs_independent_items_in_parallel(tmp_path) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+    second_item = WorkItem(
+        work_item_id="work-daemon-independent",
+        mission_id=mission.mission_id,
+        task_plan_version="v1",
+        type="execution",
+        owner="kun",
+        priority=79,
+        expected_output="independent same-mission work",
+    )
+    control_plane.work_items[second_item.work_item_id] = second_item
+    store.put_work_item(second_item)
+    runner = ConcurrentProbeRunner()
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": runner},
+        daemon_id="daemon-parallel-test",
+        worker_pool=WorkerPoolConfig(worker_count=2),
+    )
+
+    report = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        now=NOW,
+        max_work_items=2,
+    )
+
+    assert report.ran_work_item_ids == ["work-daemon", "work-daemon-independent"]
+    assert runner.max_running == 2
+    assert control_plane.work_items["work-daemon"].status == "done"
+    assert control_plane.work_items["work-daemon-independent"].status == "done"
+
+
+def test_daemon_tick_respects_resource_locks_within_one_wakeup(tmp_path) -> None:
+    control_plane, _store, mission = _runtime(tmp_path)
+    locked_a = control_plane.work_items["work-daemon"].model_copy(
+        update={"resource_locks": ["workspace:/tmp/shared-kun-workspace"], "priority": 90}
+    )
+    second_mission = _add_ready_mission(
+        control_plane,
+        "msn-daemon-b",
+        work_item_id="work-daemon-conflicting",
+        resource_locks=["workspace:/tmp/shared-kun-workspace"],
+    )
+    control_plane.work_items[locked_a.work_item_id] = locked_a
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": StaticRunner()},
+        daemon_id="daemon-test",
+        worker_pool=WorkerPoolConfig(worker_count=2),
+    )
+
+    report = daemon.tick_once(
+        mission_ids=[mission.mission_id, second_mission.mission_id],
+        now=NOW,
+        max_work_items=2,
+    )
+
+    assert report.ran_work_item_ids == ["work-daemon", "work-daemon-conflicting"]
+    assert report.resource_lock_skipped_work_item_ids == ["work-daemon-conflicting"]
+    assert control_plane.work_items["work-daemon-conflicting"].status == "done"
+
+
+def test_daemon_records_worker_pool_distributed_lock_and_sandbox_state(tmp_path) -> None:
+    control_plane, _store, mission = _runtime(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    contract = control_plane.contracts["contract-daemon"].model_copy(
+        update={"delivery_contract": {"workspace_path": str(workspace)}}
+    )
+    control_plane.contracts[contract.contract_id] = contract
+    state_store = FileDaemonServiceStateStore(tmp_path / "daemon-state.json")
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": ContainerCapableRunner()},
+        daemon_id="daemon-worker-pool-test",
+        worker_pool=WorkerPoolConfig(
+            pool_id="pool-test",
+            machine_id="machine-a",
+            worker_count=2,
+        ),
+        resource_lock_store=FileResourceLockStore(tmp_path / "resource-locks.json"),
+        sandbox_mode="container_required",
+        container_runtime="docker",
+    )
+
+    report = daemon.run_managed_loop(
+        mission_ids=[mission.mission_id],
+        config=DaemonServiceConfig(
+            max_ticks=1,
+            max_work_items_per_tick=1,
+            worker_pool_size=2,
+            sandbox_mode="container_required",
+            container_runtime="docker",
+        ),
+        state_store=state_store,
+        now_factory=lambda: NOW,
+        sleeper=lambda _seconds: None,
+    ).tick_reports[0]
+    state = state_store.load()
+
+    assert report.ran_work_item_ids == ["work-daemon"]
+    assert len(report.worker_slots) == 2
+    assert report.worker_slots[0].worker_id == "worker-1"
+    assert str(workspace) in report.worker_slots[0].resource_locks[0]
+    assert report.sandbox_specs[0].mode == "container_required"
+    assert report.sandbox_specs[0].container_runtime == "docker"
+    assert state is not None
+    assert state.worker_pool_size == 2
+    assert state.last_tick_worker_slots[0].worker_id == "worker-1"
+    assert state.last_tick_sandbox_specs[0].mode == "container_required"
+
+
+def test_daemon_blocks_container_required_when_runner_lacks_container_sandbox(
+    tmp_path,
+) -> None:
+    control_plane, _store, mission = _runtime(tmp_path)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": StaticRunner()},
+        daemon_id="daemon-container-required-test",
+        sandbox_mode="container_required",
+        container_runtime="docker",
+    )
+
+    report = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        now=NOW,
+        max_work_items=1,
+    )
+    work_item = control_plane.work_items["work-daemon"]
+    run = control_plane.runs[report.run_refs[0]]
+    artifact = next(
+        artifact
+        for artifact in control_plane.artifacts.values()
+        if "container_sandbox_required" in artifact.supports
+    )
+
+    assert report.ran_work_item_ids == ["work-daemon"]
+    assert report.sandbox_specs[0].mode == "container_required"
+    assert work_item.status == "failed"
+    assert run.failure_category == "environment_failure"
+    assert "sandbox_blocked" in artifact.supports
+
+
+def test_daemon_activation_attaches_workspace_resource_lock(tmp_path) -> None:
+    control_plane, _store, mission = _runtime(tmp_path)
+    mission = control_plane.missions[mission.mission_id]
+    contract = control_plane.contracts[mission.execution_contract_ref or ""].model_copy(
+        update={"delivery_contract": {"workspace_path": str(tmp_path / "workspace")}}
+    )
+    control_plane.contracts[contract.contract_id] = contract
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": StaticRunner()},
+        daemon_id="daemon-test",
+    )
+
+    report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW, max_work_items=1)
+
+    assert report.ran_work_item_ids == ["work-daemon"]
+    assert f"workspace:{tmp_path / 'workspace'}" in control_plane.work_items[
+        "work-daemon"
+    ].resource_locks
 
 
 def test_daemon_marks_missing_runner_for_external_supervision(tmp_path) -> None:
@@ -368,6 +653,188 @@ def test_daemon_binds_production_capabilities_to_runner_and_progress(tmp_path) -
     assert profile.capability_id in progress_artifact.supports
 
 
+def test_daemon_resolves_duplicate_production_capabilities_before_runtime(tmp_path) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+    kept = CapabilityProfile(
+        capability_id="cap-runtime-kept",
+        capability_name="Structured background runtime kept",
+        governance_key="structured-background-runtime",
+        source_refs=["external/hermes"],
+        source_versions=["hermes:v2"],
+        evidence_refs=["artifact-strong", "artifact-extra"],
+        known_limits=["KUN-native adaptation only."],
+        promotion_stage="production",
+        holdout_refs=["artifact-holdout"],
+        regression_refs=["artifact-regression"],
+        last_verified_at=NOW,
+        rollback_plan=["disable kept profile"],
+        runtime_enabled=True,
+    )
+    duplicate = CapabilityProfile(
+        capability_id="cap-runtime-duplicate",
+        capability_name="Structured background runtime duplicate",
+        governance_key="structured-background-runtime",
+        source_refs=["external/openclaw"],
+        source_versions=["openclaw:v1"],
+        evidence_refs=["artifact-weak"],
+        known_limits=["duplicate behavior"],
+        promotion_stage="production",
+        holdout_refs=["artifact-holdout"],
+        regression_refs=["artifact-regression"],
+        rollback_plan=["disable duplicate profile"],
+        runtime_enabled=True,
+    )
+    control_plane.capability_profiles[kept.capability_id] = kept
+    control_plane.capability_profiles[duplicate.capability_id] = duplicate
+    store.put_capability_profile(kept)
+    store.put_capability_profile(duplicate)
+    runner = PolicyAwareRunner()
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": runner, "qi": StaticRunner()},
+        daemon_id="daemon-capability-dedupe-test",
+    )
+
+    report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW)
+    recovered = InMemoryControlPlane(store=store)
+
+    assert report.retired_capability_profile_ids == [duplicate.capability_id]
+    assert any(
+        work_id.startswith("work-qi-capability-dedupe-msn-daemon-")
+        for work_id in report.created_work_item_ids
+    )
+    assert report.capability_profile_refs == [kept.capability_id]
+    assert runner.bound_policy is not None
+    assert runner.bound_policy.capability_profile_refs == [kept.capability_id]
+    disabled = recovered.capability_profiles[duplicate.capability_id]
+    assert disabled.runtime_enabled is False
+    assert disabled.rolled_back_at == NOW
+    assert disabled.rollback_refs == ["artifact-capability-dedupe-20260519T090000Z"]
+    assert recovered.list_default_runtime_capabilities() == [recovered.capability_profiles[kept.capability_id]]
+    assert "artifact-capability-dedupe-20260519T090000Z" in recovered.artifacts
+
+
+def test_daemon_turns_quality_gate_failure_into_qi_strategy_followup(tmp_path) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+    gate = GateEvaluation(
+        gate_evaluation_id="gate-low-quality",
+        mission_id=mission.mission_id,
+        task_plan_version="v1",
+        subject_ref="work-daemon",
+        stage="delivery",
+        task_type=mission.task_type,
+        rubric_version="test",
+        metric_pack_version="test",
+        north_star_verdict="fail",
+        result_quality=0.42,
+        speed=0.9,
+        cost=0.9,
+        risk=0.3,
+        evidence_quality=0.5,
+        collaboration_quality=0.5,
+        thresholds={"result_quality": 0.8},
+        evidence_refs=["artifact-low-quality"],
+        failure_category="model_quality_failure",
+        responsibility_scope="kun_auto",
+        confidence=0.8,
+        next_action="needs_plan_change",
+        next_state="changing_plan",
+        governance_signal="product_quality_residual",
+        created_by="external-supervisor",
+    )
+    control_plane.gate_evaluations[gate.gate_evaluation_id] = gate
+    store.put_gate_evaluation(gate)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": StaticRunner(), "qi": StaticRunner()},
+        daemon_id="daemon-quality-followup-test",
+    )
+
+    report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW)
+    recovered = InMemoryControlPlane(store=store)
+
+    assert any(
+        work_id.startswith("work-qi-observation-msn-daemon-quality_gate_not_passed-")
+        for work_id in report.observation_followup_ids
+    )
+    followup_id = next(
+        work_id
+        for work_id in report.observation_followup_ids
+        if work_id.startswith("work-qi-observation-msn-daemon-quality_gate_not_passed-")
+    )
+    followup = recovered.work_items[followup_id]
+    assert followup.owner == "qi"
+    assert followup.type == "governance"
+    assert "Audit, score, and optimize" in followup.expected_output
+    assert "gate-low-quality" in followup.recovery_refs
+
+
+def test_daemon_runs_delivery_state_governance_followup_without_leaving_acceptance(
+    tmp_path,
+) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+    mission = mission.model_copy(
+        update={
+            "status": "awaiting_acceptance",
+            "current_plan_version": "v1",
+        }
+    )
+    control_plane.missions[mission.mission_id] = mission
+    store.put_mission(mission)
+    original = control_plane.work_items["work-daemon"].model_copy(update={"status": "cancelled"})
+    control_plane.work_items[original.work_item_id] = original
+    store.put_work_item(original)
+    followup = WorkItem(
+        work_item_id="work-qi-observation-msn-daemon-quality_gate_not_passed-abc123",
+        mission_id=mission.mission_id,
+        task_plan_version="v1",
+        type="governance",
+        owner="qi",
+        status="queued",
+        expected_output="Audit, score, and optimize quality gate residuals.",
+    )
+    control_plane.work_items[followup.work_item_id] = followup
+    store.put_work_item(followup)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"qi": StaticRunner()},
+        daemon_id="daemon-acceptance-followup-test",
+    )
+
+    report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW)
+    recovered = InMemoryControlPlane(store=store)
+
+    assert report.ran_work_item_ids == [followup.work_item_id]
+    assert recovered.work_items[followup.work_item_id].status == "done"
+    assert recovered.missions[mission.mission_id].status == "awaiting_acceptance"
+
+
+def test_daemon_routes_unrecovered_failed_work_to_qi_and_nuo(tmp_path) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+    failed = control_plane.work_items["work-daemon"].model_copy(update={"status": "failed"})
+    control_plane.work_items[failed.work_item_id] = failed
+    store.put_work_item(failed)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"qi": StaticRunner(), "nuo": StaticRunner()},
+        daemon_id="daemon-failed-work-observation-test",
+    )
+
+    report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW, max_work_items=0)
+    recovered = InMemoryControlPlane(store=store)
+
+    assert sorted(report.observation_followup_ids) == [
+        "work-nuo-observation-msn-daemon-failed_work_without_recovery-f04c52eae6f4",
+        "work-qi-observation-msn-daemon-failed_work_without_recovery-recovery_v1-f04c52eae6f4",
+    ]
+    assert recovered.work_items[
+        "work-qi-observation-msn-daemon-failed_work_without_recovery-recovery_v1-f04c52eae6f4"
+    ].owner == "qi"
+    assert recovered.work_items[
+        "work-nuo-observation-msn-daemon-failed_work_without_recovery-f04c52eae6f4"
+    ].owner == "nuo"
+
+
 def test_daemon_runs_skill_preflight_for_activated_work_items(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -396,6 +863,9 @@ def test_daemon_runs_skill_preflight_for_activated_work_items(tmp_path) -> None:
     preflight_artifact = recovered.artifacts[report.preflight_artifact_refs[0]]
     assert "skill_preflight" in preflight_artifact.supports
     assert "skill:shell-exec" in preflight_artifact.supports
+    preflight_payload = json.loads(Path(preflight_artifact.path_or_uri).read_text(encoding="utf-8"))
+    assert preflight_payload["result"]["ok"] is True
+    assert str(workspace) in preflight_payload["result"]["metadata"]["sandbox_roots"]
     assert preflight_artifact.path_or_uri.endswith(".json")
     assert recovered.work_items["work-daemon"].workspace_ref == f"workspace://{workspace}"
 
@@ -451,6 +921,112 @@ def test_daemon_routes_preflight_failures_to_qi_and_nuo_when_available(
     assert "artifact-preflight-failed" in recovered.work_items[
         "work-nuo-preflight-work-daemon"
     ].recovery_refs
+
+
+def test_daemon_prioritizes_preflight_followups_before_downstream_delivery(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+    downstream = WorkItem(
+        work_item_id="work-final-delivery",
+        mission_id=mission.mission_id,
+        task_plan_version="v1",
+        type="merge",
+        owner="kun",
+        dependencies=["work-daemon"],
+        priority=85,
+        expected_output="deliver only after governance follow-ups are clear",
+    )
+    control_plane.work_items[downstream.work_item_id] = downstream
+    store.put_work_item(downstream)
+
+    def fake_preflight(*, control_plane, work_item, actor, observed_at):
+        if work_item.work_item_id != "work-daemon":
+            return WorkItemPreflight()
+        return WorkItemPreflight(
+            artifacts=[
+                ArtifactRecord(
+                    artifact_id="artifact-preflight-failed",
+                    kind="test_result",
+                    path_or_uri="mem://preflight-failed",
+                    content_hash="hash-preflight-failed",
+                    created_by=actor,
+                    mission_id=work_item.mission_id,
+                    work_item_id=work_item.work_item_id,
+                    supports=["skill_preflight_failure", "skill:shell-exec"],
+                )
+            ],
+            failed_skill_ids=["shell-exec"],
+        )
+
+    monkeypatch.setattr("kun.control_plane.daemon.run_work_item_preflight", fake_preflight)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={
+            "kun": StaticRunner(),
+            "nuo": StaticRunner(),
+            "qi": StaticRunner(),
+        },
+        daemon_id="daemon-preflight-priority-test",
+    )
+
+    report = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        now=NOW,
+        max_work_items=3,
+    )
+    recovered = InMemoryControlPlane(store=store)
+
+    assert report.ran_work_item_ids[0] == "work-daemon"
+    assert set(report.ran_work_item_ids[1:]) == {
+        "work-nuo-preflight-work-daemon",
+        "work-qi-preflight-work-daemon",
+    }
+    assert recovered.work_items["work-final-delivery"].status == "queued"
+
+
+def test_daemon_does_not_recurse_preflight_followups(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+    qi_followup = control_plane.work_items["work-daemon"].model_copy(
+        update={
+            "work_item_id": "work-qi-preflight-work-daemon",
+            "owner": "qi",
+            "type": "governance",
+        }
+    )
+    control_plane.work_items.pop("work-daemon")
+    control_plane.work_items[qi_followup.work_item_id] = qi_followup
+    store.put_work_item(qi_followup)
+
+    def fake_preflight(*, control_plane, work_item, actor, observed_at):
+        raise AssertionError("Qi/Nuo runtime follow-ups should not run skill preflight")
+
+    monkeypatch.setattr("kun.control_plane.daemon.run_work_item_preflight", fake_preflight)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"qi": StaticRunner(), "nuo": StaticRunner()},
+        daemon_id="daemon-preflight-recursion-test",
+    )
+
+    report = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        now=NOW,
+        max_work_items=1,
+    )
+    recovered = InMemoryControlPlane(store=store)
+
+    assert report.ran_work_item_ids == ["work-qi-preflight-work-daemon"]
+    assert report.preflight_failed_skill_ids == []
+    assert report.preflight_artifact_refs == []
+    assert report.created_work_item_ids == []
+    assert all(
+        not item_id.startswith("work-qi-preflight-work-qi-preflight")
+        for item_id in recovered.work_items
+    )
 
 
 def test_daemon_productization_runner_executes_canonical_work_items(tmp_path) -> None:
@@ -841,3 +1417,21 @@ def test_managed_daemon_loop_consumes_durable_stop_request(tmp_path) -> None:
     assert final_state.status == "stopped"
     assert final_state.stopped_reason == "stop_requested"
     assert state_store.stop_requested(daemon_id="daemon-service-test") is False
+
+
+def test_daemon_skips_explicit_non_active_mission_with_queued_leftovers(tmp_path) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+    delivered = control_plane.missions[mission.mission_id].model_copy(update={"status": "delivering"})
+    control_plane.missions[mission.mission_id] = delivered
+    store.put_mission(delivered)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": StaticRunner()},
+        daemon_id="daemon-delivered-leftover-test",
+    )
+
+    report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW)
+
+    assert report.ran_work_item_ids == []
+    assert control_plane.work_items["work-daemon"].status == "queued"
+    assert control_plane.missions[mission.mission_id].status == "delivering"

@@ -72,6 +72,8 @@
 - 常驻 supervisor / daemon 进程。
 - 自动醒来扫描 ready work item。
 - runner 注册和 lease 协议。
+- 多任务 worker pool：daemon 必须记录 worker 槽位；多 daemon / 多机器必须通过持久 resource lock 与 work item lease 避免重复领取和资源冲突。
+- resource lock 必须不只在单个调度波次内有效；需要文件、数据库或 Redis 等持久锁适配层，并能写入等待原因、持有者、过期时间和冲突对象。
 - `kun` owner 的普通 execution、research、review、test、merge work item 必须有默认 KUN runtime runner，不能只依赖产品化 runner、AB runner 或任务专用 runner。
 - heartbeat、timeout、retry、cancel、resume。
 - 进程崩溃恢复、断电/重启恢复、跨天续跑。
@@ -86,11 +88,15 @@
 - planning/info_gap 任务如果存在 `TaskPlan.info_gaps`，daemon 必须自动生成协同票据并转入 waiting_human，不能先执行任务方案，也不能只靠 API 抛错。
 - 本地测试类预执行必须绑定明确 workspace，禁止在没有工作区边界时误跑当前仓库。
 - shell、Python 等执行型 skill 必须默认限制在配置的执行根目录内，拒绝越界 cwd，并把 sandbox root、实际 cwd、sandbox_enforced 写入运行元数据；它是默认工作区隔离，不替代容器级隔离。
+- daemon 必须支持显式沙箱模式：`workspace_snapshot`、`container_required`、`external_container`；容器 runner 未就绪时必须显示隔离等级和阻断原因，不能把工作区快照冒充容器隔离。
 - 有 workspace 的 work item 必须生成文件级沙箱快照，而不是只保存 hash manifest；快照必须排除 `.git`、依赖缓存和构建产物，并记录 capture limits。
 - rollback work item 必须能由 Control Plane 内置恢复 runner 执行，真实还原快照文件、清理快照后新增的无关文件，并写入恢复 artifact。
+- merge work item 必须做并发合并治理：检查缺失依赖、重叠 artifact 输出、重复写入声明、互斥修改和需要人工判断的冲突；冲突不能被 artifact 拼接掩盖。
 - V6 runtime 事件必须桥接到 Watchtower rule engine；work item 完成/失败和 GateEvaluation 至少要形成可规则化事件。
 - daemon 每次 tick 必须生成 `RuntimeObservationReport` artifact，主动标注 runner 缺口、预执行失败、协同票据、Watchtower 触发、能力重复、production 能力未转成执行指令、交付清单缺失等观察重点。
 - observation report 必须明确路由给 KUN、启、傩、人类、Control Plane 或外部监督者；中高风险项必须支持外部监督持续检查，并能反向进入启/傩治理闭环。
+- 生产能力去重、折叠和回滚后必须自动生成启治理 work item；daemon 可以执行机械安全动作，但启必须记录保留、合并、降级或淘汰的可审计治理结论。
+- 功能激活审计必须成为默认回归工具：每个核心功能都要有一条定制化触发任务，运行后明确触发条件、依赖协同关系、证据 artifact、生成的 work item、是否激活、是否需要补触发机制。
 
 验收：
 
@@ -98,6 +104,10 @@
 - 超时先判环境/工具阻断，不直接算 KUN 能力失败。
 - 恢复后能继续同一任务方案或触发计划变更。
 - daemon 停止、重启、跨天恢复后能继续正确下一步。
+- 多任务并行时，独立任务能公平推进，共享 workspace、mission 或 merge 资源的工作项会等待锁释放，等待原因在 tick report 和驾驶舱可见。
+- worker pool 大于 1 时，两个互不依赖且资源锁不冲突的 work item 必须能在同一 tick 中真实并发执行；测试必须证明 runner 同时处于 running，而不是只证明一轮 tick 串行跑了多个 work item。
+- 两个 daemon 使用同一 resource lock store 时，第二个 daemon 不能抢占未过期锁；锁过期或释放后能继续。
+- 默认 merge runner 遇到重叠写入或缺失依赖会阻断并给出 GateEvaluation，而不是生成假合并。
 - 用户无需手动盯终端或手动重跑同一任务。
 - 普通真实任务 work item 能通过默认 KUN runtime runner 执行，产出 artifact，并在完成后形成 delivery manifest。
 - Qi/Nuo follow-up 在默认 daemon 路由下能自动执行，并生成治理/修复 artifact。
@@ -105,6 +115,8 @@
 - workspace 快照能在测试中真实恢复文件内容并移除快照后新增文件。
 - Watchtower 规则能在 V6 gate 事件上触发，触发结果进入 daemon tick report。
 - 每个写进度的 daemon tick 都能同时产出 observation artifact；缺 runner、预执行失败、协同票据、能力重复、交付清单缺失等问题不会被埋在日志里，而会被标注为可治理观察项。
+- 重复 production capability 被自动折叠后，启 follow-up 会被创建并执行，产出治理 artifact；重复候选只保留为证据，不进入默认 runtime。
+- `kun control-plane feature-activation-audit` 能一次性运行核心功能激活任务；报告必须覆盖信息缺口、人机协同、运行时激活、预执行、worker/resource lock、真实并发 worker pool、沙箱、启/傩、能力去重、合并冲突、快照回滚、Watchtower、外部样本学习、自主 App 开发、研究先行开发、游戏生产、AB 回归和产品化 dogfood。验收不能只看测试文件存在，必须看真实 Control Plane 任务是否拉起对应能力并留下证据。
 
 ### 阶段 3：启 Qi AB Runner 接入
 
@@ -209,6 +221,7 @@
 - 普通用户可读任务驾驶舱 UI。
 - 展示进度、风险、下一步、需不需要人确认、交付物位置、质量门禁、阻断原因、恢复动作、验收状态。
 - 展示后台 supervisor / daemon 健康、最近 heartbeat、恢复状态和等待票据。
+- 展示 worker 槽位、resource lock 冲突、等待原因、沙箱隔离等级和并发合并风险。
 - 前端或 API 输出对非技术用户友好，不能只是工程日志。
 
 验收：
@@ -325,6 +338,8 @@
 8. 任务跨重启恢复。
 9. daemon 自动醒来 -> 获取 ready work item -> 崩溃后恢复 -> 定时汇报。
 10. 任务驾驶舱 -> 普通用户看懂进度、风险、下一步、交付物和验收状态。
+10a. 多任务并行 -> worker slot 分配 -> resource lock 冲突等待 -> 锁释放后继续 -> 驾驶舱显示等待原因。
+10b. 多 worker 代码/素材合并 -> merge governance 检查重叠写入 -> 冲突阻断或安全合并 -> downstream gate。
 11. OpenClaw/Hermes 能力样本 -> 源码/行为对照 -> KUN-native 能力 -> 真实长任务验证 -> production runtime。
 12. Nuo 污染样本 -> 自动分类 -> 修复建议 -> 同题复测 -> 不计 KUN 失败。
 13. 真实长任务 dogfood -> 计划 -> 执行 -> 恢复 -> 合并 -> 交付 -> 验收 -> 学习写回。
@@ -341,6 +356,7 @@
 - Nuo 能系统化识别污染并触发修复。
 - supervisor 能监控、恢复、重试、回滚。
 - daemon 能常驻后台自动醒来、拿任务、崩溃恢复、跨天续跑和定时汇报。
+- worker pool、持久 resource lock、work item lease、沙箱隔离等级和并发合并治理进入默认执行链路，并有测试覆盖。
 - 沙箱快照和 rollback 已进入默认执行链路，不是未使用字段。
 - Watchtower 能消费 V6 runtime 事件并参与异常治理。
 - 人机协同可见、可恢复。

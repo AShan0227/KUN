@@ -62,6 +62,8 @@ def _pass_gate(
     created_by: str,
     artifact: ArtifactRecord,
     signal: str,
+    next_action: str = "continue",
+    next_state: str = "running",
 ) -> GateEvaluation:
     return GateEvaluation(
         gate_evaluation_id=f"gate-{_slug(created_by)}-{_slug(work_item.work_item_id)}",
@@ -86,8 +88,8 @@ def _pass_gate(
         source_freshness="fresh",
         responsibility_scope="kun_auto",
         confidence=0.82,
-        next_action="continue",
-        next_state="running",
+        next_action=next_action,
+        next_state=next_state,
         governance_signal=signal,
         created_by=created_by,
     )
@@ -156,13 +158,13 @@ class QiRuntimeGovernanceRunner:
         self.control_plane = control_plane
 
     def can_run(self, work_item: WorkItem) -> bool:
-        return work_item.owner == "qi" and work_item.type == "governance"
+        return work_item.owner == "qi" and work_item.type in {"governance", "research"}
 
     def run(self, work_item: WorkItem) -> WorkItemResult:
         if not self.can_run(work_item):
             return WorkItemResult(
                 status="failed",
-                summary="Qi runtime governance runner only handles Qi governance follow-up work.",
+                summary="Qi runtime governance runner only handles Qi governance/research follow-up work.",
                 failure_category="tool_failure",
             )
         decision = _qi_decision(work_item)
@@ -175,7 +177,26 @@ class QiRuntimeGovernanceRunner:
             "required_capability_refs": list(work_item.required_capability_refs),
             "runtime_default_policy": "replay_or_holdout_only_until_formal_promotion",
             "default_runtime_enabled": False,
-            "next_stage": "replay" if decision in {"candidate", "merge"} else "review_only",
+            "next_stage": "replay" if decision == "candidate" else "review_only",
+            "alternate_path_required": decision == "plan_change",
+            "alternate_path_contract": (
+                [
+                    "turn the observed product gap into stricter acceptance criteria",
+                    "open or update a plan-change branch instead of closing delivery",
+                    "re-run product, evidence, browser, and human acceptance gates",
+                ]
+                if decision == "plan_change"
+                else []
+            ),
+            "merge_contract": (
+                [
+                    "keep the strongest production profile as the default runtime input",
+                    "disable duplicate runtime defaults with rollback evidence",
+                    "preserve duplicate source refs as governed evidence instead of active noise",
+                ]
+                if decision == "merge"
+                else []
+            ),
             "rollback_plan": [
                 "do not enable by default until holdout, shadow, canary, and production gates pass",
                 "remove or supersede this profile if future clean retests do not reproduce the signal",
@@ -188,7 +209,7 @@ class QiRuntimeGovernanceRunner:
             payload=payload,
         )
         profile_ref = None
-        if decision in {"candidate", "merge"}:
+        if decision == "candidate":
             profile = CapabilityProfile(
                 capability_id=f"cap-qi-runtime-{_slug(work_item.work_item_id)}",
                 capability_name=f"Runtime learning from {work_item.work_item_id}",
@@ -213,11 +234,33 @@ class QiRuntimeGovernanceRunner:
             artifact = artifact.model_copy(
                 update={"supports": [*artifact.supports, profile.capability_id]}
             )
+        followups: list[WorkItem] = []
+        if decision == "plan_change":
+            followups.append(
+                WorkItem(
+                    work_item_id=f"work-kun-plan-change-{_slug(work_item.work_item_id)}",
+                    mission_id=work_item.mission_id,
+                    task_plan_version=work_item.task_plan_version,
+                    type="research",
+                    owner="kun",
+                    priority=min(100, work_item.priority + 5),
+                    dependencies=[work_item.work_item_id],
+                    idempotency_key=f"qi-plan-change:{work_item.work_item_id}",
+                    expected_output=(
+                        "Create or revise a stricter continuation plan from the failed quality "
+                        "gate. Add stronger acceptance criteria, assign the next implementation "
+                        "or test work, and require clean retest evidence before delivery can close."
+                    ),
+                    recovery_refs=[work_item.work_item_id, *work_item.recovery_refs],
+                )
+            )
         gate = _pass_gate(
             work_item=work_item,
             created_by=self.runner_identity,
             artifact=artifact,
             signal=f"qi_runtime_governance_{decision}",
+            next_action="needs_plan_change" if decision == "plan_change" else "continue",
+            next_state="changing_plan" if decision == "plan_change" else "running",
         )
         summary = "Qi recorded the runtime learning signal as governed evidence."
         if profile_ref:
@@ -227,6 +270,7 @@ class QiRuntimeGovernanceRunner:
             summary=summary,
             artifacts=[artifact],
             gate_evaluation=gate,
+            followup_work_items=followups,
         )
 
 
@@ -243,13 +287,27 @@ def _nuo_classification(work_item: WorkItem) -> str:
 
 def _qi_decision(work_item: WorkItem) -> str:
     text = work_item.expected_output.lower()
+    if any(token in text for token in ("merge", "dedupe", "duplicate", "合并", "去重", "重复")):
+        return "merge"
+    if any(
+        token in text
+        for token in (
+            "continue iteration",
+            "better path",
+            "stricter continuation",
+            "product gaps",
+            "acceptance criteria",
+            "继续迭代",
+            "更优路径",
+            "产品缺口",
+        )
+    ):
+        return "plan_change"
     if any(token in text for token in ("promote", "capability", "governance", "learning")):
         return "candidate"
-    if any(token in text for token in ("merge", "dedupe", "duplicate")):
-        return "merge"
     if any(token in text for token in ("delete", "remove", "discard")):
         return "discard"
-        return "keep"
+    return "keep"
 
 
 class ChainedControlPlaneRunner:

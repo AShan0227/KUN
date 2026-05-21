@@ -15,6 +15,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kun.control_plane.concurrency import (
+    ResourceLockConflict,
+    SandboxIsolationSpec,
+    WorkerSlotSnapshot,
+)
 from kun.control_plane.daemon import DaemonServiceState
 from kun.control_plane.progress import (
     QualityGateStatus,
@@ -180,6 +185,19 @@ class TaskCockpitDaemonHealth(BaseModel):
     progress_artifact_refs: list[str] = Field(default_factory=list)
 
 
+class TaskCockpitConcurrency(BaseModel):
+    """Worker pool, lock, sandbox, and merge visibility for normal users."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    worker_pool_size: int = 1
+    worker_slots: list[WorkerSlotSnapshot] = Field(default_factory=list)
+    waiting_on_resource_lock_count: int = 0
+    resource_lock_conflicts: list[ResourceLockConflict] = Field(default_factory=list)
+    sandbox_specs: list[SandboxIsolationSpec] = Field(default_factory=list)
+    text: str
+
+
 class TaskCockpitAcceptance(BaseModel):
     """Latest acceptance state, if a deliverable has been reviewed."""
 
@@ -215,6 +233,7 @@ class TaskCockpitView(BaseModel):
     collaboration: TaskCockpitCollaboration
     artifacts: TaskCockpitArtifactSummary
     daemon: TaskCockpitDaemonHealth
+    concurrency: TaskCockpitConcurrency
     work_items: list[TaskCockpitWorkItemCard] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
     recovery_actions: list[str] = Field(default_factory=list)
@@ -268,6 +287,7 @@ def build_task_cockpit_view(
         collaboration=_collaboration(tickets=tickets, human_needed=user_summary.human_needed),
         artifacts=artifacts,
         daemon=daemon,
+        concurrency=_concurrency(service_state=daemon_service_state, work_items=work_items),
         work_items=_work_item_cards(work_items, ready_ids=set(progress.next_ready_work_item_ids)),
         risks=risks,
         recovery_actions=_recovery_actions(summary=user_summary, gate=gate, work_items=work_items),
@@ -664,6 +684,43 @@ def _daemon_health(
     )
 
 
+def _concurrency(
+    *,
+    service_state: DaemonServiceState | None,
+    work_items: list[WorkItem],
+) -> TaskCockpitConcurrency:
+    if service_state is None:
+        resource_waiting = sum(1 for item in work_items if item.lease or item.resource_locks)
+        return TaskCockpitConcurrency(
+            worker_pool_size=1,
+            waiting_on_resource_lock_count=0,
+            text=(
+                "还没有后台 worker pool 心跳；KUN 会在 daemon 写入状态后显示 worker 槽位、"
+                "资源锁冲突和等待原因。"
+            )
+            if resource_waiting == 0
+            else "任务带有资源锁要求；启动 daemon 后会显示具体 worker 槽位和锁等待原因。",
+        )
+    conflicts = list(service_state.last_tick_resource_lock_conflicts)
+    skipped = list(service_state.last_tick_resource_lock_skipped_work_item_ids)
+    slots = list(service_state.last_tick_worker_slots)
+    sandbox_specs = list(service_state.last_tick_sandbox_specs)
+    if conflicts or skipped:
+        text = "部分工作正在等待资源锁释放，KUN 会自动重试，避免多 worker 同时改同一处。"
+    elif service_state.worker_pool_size > 1:
+        text = "多 worker 槽位已启用；KUN 会按任务依赖和资源锁公平推进。"
+    else:
+        text = "当前是单 worker 槽位；任务仍有资源锁和沙箱记录，可平滑升级到多 worker。"
+    return TaskCockpitConcurrency(
+        worker_pool_size=service_state.worker_pool_size,
+        worker_slots=slots,
+        waiting_on_resource_lock_count=len(skipped),
+        resource_lock_conflicts=conflicts,
+        sandbox_specs=sandbox_specs,
+        text=text,
+    )
+
+
 def _acceptance(
     control_plane: InMemoryControlPlane,
     acceptance_ref: str | None,
@@ -785,6 +842,7 @@ __all__ = [
     "TaskCockpitAcceptance",
     "TaskCockpitArtifactSummary",
     "TaskCockpitCollaboration",
+    "TaskCockpitConcurrency",
     "TaskCockpitDaemonHealth",
     "TaskCockpitDeliverable",
     "TaskCockpitPlanSummary",
