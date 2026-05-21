@@ -99,6 +99,7 @@
 - 生产能力去重、折叠和回滚后必须自动生成启治理 work item；daemon 可以执行机械安全动作，但启必须记录保留、合并、降级或淘汰的可审计治理结论。
 - 功能激活审计必须成为默认回归工具：每个核心功能都要有一条定制化触发任务，运行后明确触发条件、依赖协同关系、证据 artifact、生成的 work item、是否激活、是否需要补触发机制。
 - 最终产品类任务必须有真实用户体感门禁。KUN 自评分、机制门禁、残差审计、自动外部门禁或 checklist 通过不能直接触发最终交付；必须验证交互、视觉、体验、长时间试玩、失败反馈、目标用户体感和交付包完整性。
+- 任务模板必须强隔离：任务专用模板只能由执行合同显式选择，不能作为 runner 默认值。新任务缺少 `production_mode`、模板 profile 或等价声明时，runner 必须阻断并要求方案补齐，防止历史任务特征污染新任务。可复用经验必须沉淀为 KUN-native 能力、协议、skill、runner 或门禁，不得保留原任务角色、文案、UI、行业假设和工作路径。
 
 验收：
 
@@ -121,6 +122,7 @@
 - 重复 production capability 被自动折叠后，启 follow-up 会被创建并执行，产出治理 artifact；重复候选只保留为证据，不进入默认 runtime。
 - `kun control-plane feature-activation-audit` 能一次性运行核心功能激活任务；报告必须覆盖信息缺口、人机协同、运行时激活、预执行、worker/resource lock、真实并发 worker pool、沙箱、启/傩、能力去重、合并冲突、快照回滚、Watchtower、外部样本学习、自主 App 开发、研究先行开发、游戏生产、AB 回归和产品化 dogfood。验收不能只看测试文件存在，必须看真实 Control Plane 任务是否拉起对应能力并留下证据。
 - 游戏、App、内容产品等最终交付必须有 final player/user experience gate；该 gate 缺失或失败时 final delivery work item 必须 blocked，而不是 awaiting_acceptance。
+- 缺少显式模板/生产模式的产品开发任务必须在测试中被阻断，并且不得写入任何历史模板产物。
 
 ### 阶段 3：启 Qi AB Runner 接入
 

@@ -46,6 +46,15 @@ SCRIBBLE_PARITY_PRODUCTION_MODES = frozenset(
         "scribble_adventure_functional_parity_v1",
     }
 )
+SUPPORTED_GAME_PRODUCTION_MODES = frozenset(
+    {
+        "gameful_playtest",
+        "formal_game_v1",
+        "scribble_spark_final_v2",
+        "scribble_spark_functional_parity_v5",
+        "scribble_adventure_functional_parity_v1",
+    }
+)
 
 
 class GameProductionCommandResult(BaseModel):
@@ -67,9 +76,9 @@ class GameProductionSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     project_path: Path
-    app_name: str = "火火兔 Spark"
+    app_name: str = "KUN Game Project"
     target_version: str = "internal-playtest"
-    production_mode: str = "gameful_playtest"
+    production_mode: str
     benchmark_residual_required: bool = False
     benchmark_residual_threshold: float = 0.18
     user_accepts_residual: bool = False
@@ -1379,9 +1388,21 @@ def _spec_from_contract(contract: ExecutionContract) -> GameProductionSpec:
     project_path = contract.delivery_contract.get("project_path")
     if not isinstance(project_path, str) or not project_path.strip():
         raise ValueError("delivery_contract.project_path is required")
-    production_mode = contract.delivery_contract.get("production_mode", "gameful_playtest")
+    production_mode = contract.delivery_contract.get("production_mode")
     if not isinstance(production_mode, str) or not production_mode.strip():
-        production_mode = "gameful_playtest"
+        raise ValueError(
+            "delivery_contract.production_mode is required to prevent historical task "
+            "template leakage into new missions"
+        )
+    production_mode = production_mode.strip()
+    if production_mode not in SUPPORTED_GAME_PRODUCTION_MODES:
+        raise ValueError(
+            "unsupported delivery_contract.production_mode: "
+            f"{production_mode!r}; supported modes are {sorted(SUPPORTED_GAME_PRODUCTION_MODES)}"
+        )
+    app_name = contract.delivery_contract.get("app_name", "KUN Game Project")
+    if not isinstance(app_name, str) or not app_name.strip():
+        app_name = "KUN Game Project"
     final_player_experience_required = bool(
         contract.delivery_contract.get(
             "final_player_experience_required",
@@ -1390,6 +1411,7 @@ def _spec_from_contract(contract: ExecutionContract) -> GameProductionSpec:
     )
     return GameProductionSpec(
         project_path=Path(project_path).expanduser().resolve(),
+        app_name=app_name.strip(),
         production_mode=production_mode,
         benchmark_residual_required=bool(
             contract.delivery_contract.get("benchmark_residual_required", False)

@@ -56,7 +56,11 @@ def _mission(tmp_path: Path) -> tuple[InMemoryControlPlane, Path]:
         task_plan_version=plan.version,
         allowed_actions=["write_game_project", "install_npm_dependencies", "run_build"],
         forbidden_actions=["manual_supervisor_delivery"],
-        delivery_contract={"project_path": str(project_path)},
+        delivery_contract={
+            "project_path": str(project_path),
+            "production_mode": "gameful_playtest",
+            "app_name": "火火兔 Spark",
+        },
     )
     context = WorkingContext(
         working_context_id="ctx-game-production",
@@ -174,6 +178,8 @@ def test_final_delivery_requires_player_experience_gate_when_contract_demands_it
         update={
             "delivery_contract": {
                 "project_path": str(project_path),
+                "production_mode": "gameful_playtest",
+                "app_name": "火火兔 Spark",
                 "final_player_experience_required": True,
                 "final_player_experience_threshold": 0.95,
             },
@@ -189,6 +195,30 @@ def test_final_delivery_requires_player_experience_gate_when_contract_demands_it
     assert result.failure_category == "delivery_failure"
     assert "KUN self scores" in result.summary
     assert "product-feel evidence" in result.summary
+
+
+def test_game_production_runner_blocks_missing_production_mode_to_prevent_template_leakage(
+    tmp_path: Path,
+) -> None:
+    control_plane, project_path = _mission(tmp_path)
+    contract = control_plane.contracts["contract-game-production"].model_copy(
+        update={
+            "delivery_contract": {
+                "project_path": str(project_path),
+            },
+        }
+    )
+    control_plane.contracts[contract.contract_id] = contract
+    runner = GameProductionRunner(control_plane=control_plane)
+    work_item = control_plane.work_items["work-huohutu-v3-01-interaction-design"]
+
+    result = runner.run(work_item)
+
+    assert result.status == "failed"
+    assert result.failure_category == "tool_failure"
+    assert "production_mode is required" in result.summary
+    assert "template leakage" in result.summary
+    assert not (project_path / "docs" / "interaction-design.md").exists()
 
 
 def test_game_production_runner_owner_guard(tmp_path: Path) -> None:
