@@ -24,6 +24,8 @@
 - 每个长周期开发回合必须先回看产品方案和开发方案关键约束，防止目标漂移。
 - AB round-03 到 round-10 暂停主动推进；AB 只作为必要回归门禁。真实长任务 dogfood 是主评估路径。
 - OpenClaw/Hermes/GPT-5.5 是对照或监督对象，不得作为被优化对象修改。
+- 必须区分 KUN 自身迭代和 KUN 执行用户任务：任务执行可以产出学习证据，但能力变化只能走 `self_improvement`、Qi/Nuo governance、capability promotion 和 rollback plan；不得在用户任务路径直接改默认能力、runner 行为或生产配置。
+- 基础设施测试必须按真实语义命名：daemon refresh 只验证共享 work queue 可见性，scoped mission refresh 只验证已有 mission 追加 work item 可执行，stop request clear 只验证 daemon 生命周期控制，game write boundary 只验证任务执行隔离；不得写成 KUN self-iteration，除非测试对象确实是 Qi/Nuo/capability governance。
 
 ## 2. 子系统分工
 
@@ -32,7 +34,7 @@
 | Control Plane | 任务主线、队列、权限、状态机、账本、进程监督、门禁、回滚、进度报告 | 不承担具体 AB 评分，不直接生成能力候选 |
 | 启 Qi | AB 执行、Frontier50 round、互评、报告、gap、同题复测、replay、holdout、shadow、canary、外部项目经验吸收 | 不绕过 Control Plane 自己推进生产变更 |
 | 傩 Nuo | stub/fallback/误路由/timeout/EOF/wrapper/report/review 缺失检测，健康诊断，污染结论，风险治理 | 不当执行器，不把污染误算成 agent 能力失败 |
-| KUN Runtime | 使用通过验证的能力完成真实任务，产出交付物、证据、测试、评审 | 不在生产路径随意自改能力 |
+| KUN Runtime | 使用通过验证的能力完成真实任务，产出交付物、证据、测试、评审 | 不在用户任务执行路径自改默认能力、runner 行为或生产配置 |
 | Human / External Worker | 审批、专家输入、外部执行、人工评审 | 不被计为 KUN 自动能力，必须通过协作票据记录 |
 
 阶段性规则：

@@ -14,6 +14,7 @@ import json
 import os
 from collections.abc import Iterable
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -73,7 +74,7 @@ def activate_work_item_features(
         actor=actor,
         observed_at=observed_at,
     )
-    workspace_ref = work_item.workspace_ref
+    workspace_ref = _normalize_workspace_ref(work_item.workspace_ref)
     sandbox_ref = work_item.sandbox_ref
     checkpoint_refs = list(work_item.checkpoint_refs)
     rollback_refs = list(work_item.rollback_refs)
@@ -246,6 +247,14 @@ def _workspace_path(contract: ExecutionContract | None) -> str | None:
         if found:
             return found
     return None
+
+
+def _normalize_workspace_ref(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if value.startswith("workspace://"):
+        return value
+    return f"workspace://{Path(value).expanduser().resolve()}"
 
 
 def _find_first_path(value: Any, keys: Iterable[str]) -> str | None:

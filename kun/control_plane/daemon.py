@@ -430,8 +430,9 @@ class ControlPlaneDaemon:
         if max_work_items < 0:
             raise ValueError("max_work_items must be non-negative")
         observed_at = now or _now()
-        if mission_ids is None or any(
-            mission_id not in self.control_plane.missions for mission_id in mission_ids
+        if self._should_refresh_shared_work_queue(
+            mission_ids=mission_ids,
+            observed_at=observed_at,
         ):
             self.control_plane.refresh_from_store()
         selected_mission_ids = (
@@ -827,6 +828,44 @@ class ControlPlaneDaemon:
             for mission in self.control_plane.missions.values()
             if mission.status in ACTIVE_DAEMON_MISSION_STATUSES
         )
+
+    def _should_refresh_shared_work_queue(
+        self,
+        *,
+        mission_ids: Sequence[str] | None,
+        observed_at: datetime,
+    ) -> bool:
+        if self.control_plane.store is None:
+            return False
+        if mission_ids is None:
+            return True
+        if any(mission_id not in self.control_plane.missions for mission_id in mission_ids):
+            return True
+        reload_store = getattr(self.control_plane.store, "reload", None)
+        if callable(reload_store):
+            reload_store()
+        for mission_id in mission_ids:
+            try:
+                ready_in_memory = self.control_plane.ready_work_items(
+                    mission_id,
+                    now=observed_at,
+                )
+            except ValueError:
+                return True
+            if ready_in_memory:
+                continue
+            memory_item_ids = {
+                item.work_item_id
+                for item in self.control_plane.work_items.values()
+                if item.mission_id == mission_id
+            }
+            store_items = self.control_plane.store.list_work_items(mission_id=mission_id)
+            if any(
+                item.status == "queued" and item.work_item_id not in memory_item_ids
+                for item in store_items
+            ):
+                return True
+        return False
 
     def _next_non_conflicting_ready_work_item(
         self,

@@ -147,7 +147,9 @@ def _runtime(tmp_path, *, retry_budget: int = 0):
     return control_plane, store, mission
 
 
-def test_daemon_refreshes_file_store_before_selecting_active_missions(tmp_path) -> None:
+def test_daemon_refreshes_shared_work_queue_before_auto_selecting_active_missions(
+    tmp_path,
+) -> None:
     store_path = tmp_path / "shared-control-plane.json"
     daemon_store = FileControlPlaneStore(store_path)
     daemon_runtime = InMemoryControlPlane(store=daemon_store)
@@ -211,6 +213,37 @@ def test_daemon_refreshes_file_store_before_selecting_active_missions(tmp_path) 
     assert report.mission_ids == ["msn-shared-store"]
     assert report.ran_work_item_ids == ["work-shared-store"]
     assert recovered.work_items["work-shared-store"].status == "done"
+
+
+def test_daemon_refreshes_scoped_shared_work_queue_for_appended_work_item(tmp_path) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": StaticRunner()},
+        daemon_id="daemon-scoped-refresh-test",
+    )
+    first = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW)
+    assert first.ran_work_item_ids == ["work-daemon"]
+
+    appended = WorkItem(
+        work_item_id="work-daemon-appended",
+        mission_id=mission.mission_id,
+        task_plan_version="v1",
+        type="execution",
+        owner="kun",
+        priority=70,
+        expected_output="appended user-task work item from shared queue",
+    )
+    store.put_work_item(appended)
+
+    second = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        now=NOW + timedelta(seconds=1),
+    )
+    recovered = InMemoryControlPlane(store=store)
+
+    assert second.ran_work_item_ids == ["work-daemon-appended"]
+    assert recovered.work_items["work-daemon-appended"].status == "done"
 
 
 def _add_ready_mission(
@@ -1282,6 +1315,30 @@ def test_daemon_activation_attaches_workspace_resource_lock(tmp_path) -> None:
     assert (
         f"workspace:{tmp_path / 'workspace'}"
         in control_plane.work_items["work-daemon"].resource_locks
+    )
+
+
+def test_daemon_activation_normalizes_legacy_workspace_ref(tmp_path) -> None:
+    control_plane, _store, mission = _runtime(tmp_path)
+    mission = control_plane.missions[mission.mission_id]
+    legacy_workspace = tmp_path / "workspace"
+    contract = control_plane.contracts[mission.execution_contract_ref or ""].model_copy(
+        update={"delivery_contract": {"workspace_path": str(legacy_workspace)}}
+    )
+    control_plane.contracts[contract.contract_id] = contract
+    control_plane.work_items["work-daemon"] = control_plane.work_items["work-daemon"].model_copy(
+        update={"workspace_ref": str(legacy_workspace)}
+    )
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": StaticRunner()},
+        daemon_id="daemon-test",
+    )
+
+    daemon.tick_once(mission_ids=[mission.mission_id], now=NOW, max_work_items=1)
+
+    assert (
+        control_plane.work_items["work-daemon"].workspace_ref == f"workspace://{legacy_workspace}"
     )
 
 

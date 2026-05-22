@@ -151,6 +151,23 @@ KUN 的任务生命周期固定为：
 
 长任务恢复后，KUN 必须先重建任务方案、上下文、等待项、风险和下一步，再继续执行。
 
+### 5.1 双账本边界：用户任务与 KUN 自身迭代
+
+KUN 共享同一个 Control Plane，但必须把“执行用户任务”和“改进 KUN 自身”分成两条账本、两套门禁和两类产物。
+
+**用户任务账本**包括 mission、task plan、work item、artifact、delivery manifest、acceptance review 和用户交付包。用户任务可以产生学习信号，但这些信号只能作为候选证据进入治理链路，不能在任务执行路径里直接修改 KUN 默认能力、runner 行为、生产配置或 runtime profile。
+
+**KUN 自身迭代账本**包括 Qi/Nuo、自我修复、能力晋级、runtime profile、daemon/Control Plane 代码与配置变化。它只能进入 `self_improvement`、governance、capability candidate、promotion gate 和 rollback plan 路径。一次用户任务成功不能自动启用新能力，也不能把候选能力显示成生产默认能力。
+
+基础设施能力也必须按语义归类：
+
+- daemon refresh 是 Control Plane 基础设施能力，用来发现共享 store 里的任务队列变化；它不代表 KUN 自身能力自动进化。
+- scoped mission refresh 只验证已存在 mission 后续追加 work item 可被执行；不能写成自我迭代恢复。
+- stop request clear 是 daemon 进程生命周期控制；不是 mission cancel，也不是任务级暂停/恢复。
+- game production write boundary 是任务执行隔离门禁；不是能力晋级。
+
+命名、文档和测试必须避免混用语义。推荐使用 `daemon refreshes shared work queue`、`daemon stop request can be cleared`、`game production write phases require workspace boundary` 等基础设施/任务执行口径。只有真正测试 Qi/Nuo/capability governance 时，才允许使用 KUN self-improvement 或 self-iteration 命名。
+
 ## 6. 一级子系统
 
 KUN 由六个一级子系统构成。通信、上下文、权限、评估、预算、压缩、审计、恢复是全系统协议，不再拆成重复子系统。
