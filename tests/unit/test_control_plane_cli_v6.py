@@ -297,6 +297,85 @@ def test_control_plane_daemon_stop_and_status_show_pending_stop_request(tmp_path
     assert payload["pending_stop_request"]["reason"] == "maintenance"
 
 
+def test_control_plane_daemon_stop_clear_removes_pending_stop_request(tmp_path) -> None:
+    runner = CliRunner()
+    state_path = tmp_path / "daemon-state.json"
+    runner.invoke(
+        app,
+        [
+            "control-plane",
+            "daemon-stop",
+            "--state-path",
+            str(state_path),
+            "--daemon-id",
+            "daemon-cli-test",
+        ],
+    )
+
+    cleared = runner.invoke(
+        app,
+        [
+            "control-plane",
+            "daemon-stop",
+            "--state-path",
+            str(state_path),
+            "--daemon-id",
+            "daemon-cli-test",
+            "--clear",
+            "--json",
+        ],
+    )
+
+    assert cleared.exit_code == 0
+    payload = json.loads(cleared.output)
+    assert payload["cleared"] is True
+    assert (
+        FileDaemonServiceStateStore(state_path).stop_requested(daemon_id="daemon-cli-test") is False
+    )
+
+
+def test_control_plane_daemon_run_can_clear_stale_stop_request_before_start(tmp_path) -> None:
+    runner = CliRunner()
+    store_path = tmp_path / "control-plane.json"
+    state_path = tmp_path / "daemon-state.json"
+    _seed_control_plane_store(store_path)
+    FileDaemonServiceStateStore(state_path).request_stop(
+        daemon_id="daemon-cli-test",
+        requested_by="operator",
+        reason="previous stop",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "control-plane",
+            "daemon-run",
+            "--store-path",
+            str(store_path),
+            "--state-path",
+            str(state_path),
+            "--daemon-id",
+            "daemon-cli-test",
+            "--mission-ids",
+            "msn-cli-v6",
+            "--poll-interval-sec",
+            "0",
+            "--max-ticks",
+            "1",
+            "--clear-stop-request",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output[result.output.find("{\n") :])
+    assert payload["report"]["stopped_reason"] == "max_ticks"
+    assert payload["report"]["tick_count"] == 1
+    assert (
+        FileDaemonServiceStateStore(state_path).stop_requested(daemon_id="daemon-cli-test") is False
+    )
+
+
 def test_control_plane_daemon_service_plan_outputs_launchd_payload(tmp_path) -> None:
     runner = CliRunner()
     result = runner.invoke(

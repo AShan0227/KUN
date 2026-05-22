@@ -32,6 +32,7 @@ from kun.control_plane import (
     WorkItemResult,
 )
 from kun.control_plane.capability_execution import CapabilityExecutionPolicy
+from kun.control_plane.daemon import _acceptance_rework_plan_version
 from kun.control_plane.preflight import WorkItemPreflight
 from kun.control_plane.productization import (
     ProductizationDogfoodRunner,
@@ -144,6 +145,72 @@ def _runtime(tmp_path, *, retry_budget: int = 0):
         work_items=[work_item],
     )
     return control_plane, store, mission
+
+
+def test_daemon_refreshes_file_store_before_selecting_active_missions(tmp_path) -> None:
+    store_path = tmp_path / "shared-control-plane.json"
+    daemon_store = FileControlPlaneStore(store_path)
+    daemon_runtime = InMemoryControlPlane(store=daemon_store)
+    daemon = ControlPlaneDaemon(
+        control_plane=daemon_runtime,
+        runners_by_owner={"kun": StaticRunner()},
+        daemon_id="daemon-shared-store-test",
+    )
+
+    external_runtime = InMemoryControlPlane(store=FileControlPlaneStore(store_path))
+    mission = Mission(
+        mission_id="msn-shared-store",
+        owner="kun",
+        objective="Run a mission added after daemon startup.",
+        task_type="ops_tooling",
+        status="contracted",
+    )
+    plan = TaskPlan(
+        plan_id="plan-shared-store",
+        mission_id=mission.mission_id,
+        version="v1",
+        objective=mission.objective,
+        acceptance_criteria=["daemon sees external store writes"],
+        approval_status="approved",
+    )
+    contract = ExecutionContract(
+        contract_id="contract-shared-store",
+        mission_id=mission.mission_id,
+        task_plan_version=plan.version,
+        allowed_actions=["run queued work"],
+    )
+    context = WorkingContext(
+        working_context_id="ctx-shared-store",
+        mission_id=mission.mission_id,
+        task_plan_version=plan.version,
+        audience="daemon",
+        scope="shared-store",
+        summary="External mission context.",
+        acceptance_criteria=plan.acceptance_criteria,
+        constraints=["state refresh must not require daemon restart"],
+    )
+    work_item = WorkItem(
+        work_item_id="work-shared-store",
+        mission_id=mission.mission_id,
+        task_plan_version=plan.version,
+        type="execution",
+        owner="kun",
+        expected_output="daemon should run this after refresh",
+    )
+    external_runtime.submit_mission(
+        mission=mission,
+        task_plan=plan,
+        execution_contract=contract,
+        working_context=context,
+        work_items=[work_item],
+    )
+
+    report = daemon.tick_once(now=NOW)
+    recovered = InMemoryControlPlane(store=FileControlPlaneStore(store_path))
+
+    assert report.mission_ids == ["msn-shared-store"]
+    assert report.ran_work_item_ids == ["work-shared-store"]
+    assert recovered.work_items["work-shared-store"].status == "done"
 
 
 def _add_ready_mission(
@@ -385,6 +452,53 @@ def test_daemon_reopens_product_mission_when_acceptance_feedback_rejects_deliver
 
     assert second_report.created_work_item_ids == []
     assert control_plane.missions[mission.mission_id].status == "delivering"
+
+
+def test_acceptance_rework_plan_version_collapses_prior_rework_chain() -> None:
+    mission = Mission(
+        mission_id="msn-wordforge",
+        owner="kun",
+        objective="Ship a finished word-to-world game.",
+        task_type="product_development",
+        status="awaiting_acceptance",
+        current_plan_version=(
+            "wordforge-v27-acceptance-rework-52b36a00-acceptance-rework-5db5e55c"
+        ),
+    )
+    gate = GateEvaluation(
+        gate_evaluation_id="gate-wordforge-external-final-feel-rejected",
+        mission_id=mission.mission_id,
+        task_plan_version=mission.current_plan_version or "wordforge-v27",
+        subject_ref="external-supervisor-final-feel",
+        stage="acceptance",
+        task_type="product_development",
+        rubric_version="external-final-game-feel-v1",
+        metric_pack_version="final-player-feel-v1",
+        north_star_verdict="partial",
+        result_quality=0.9,
+        speed=0.8,
+        cost=0.8,
+        risk=0.35,
+        evidence_quality=0.86,
+        collaboration_quality=0.9,
+        thresholds={"result_quality": 0.95},
+        hard_gate_failures=["external_final_game_feel_below_95"],
+        failure_category="delivery_failure",
+        root_cause="External final-game feel review estimated completion below 95%.",
+        responsibility_scope="kun_auto",
+        confidence=0.91,
+        next_action="needs_repair",
+        next_state="repairing",
+        governance_signal="external_supervisor_final_game_feel_below_95",
+        created_by="external-supervisor",
+    )
+
+    plan_version = _acceptance_rework_plan_version(mission=mission, gate=gate)
+
+    assert plan_version.startswith("wordforge-v27-acceptance-rework-")
+    assert plan_version.count("acceptance-rework") == 1
+    assert "52b36a00" not in plan_version
+    assert "5db5e55c" not in plan_version
 
 
 def test_daemon_opens_fresh_acceptance_ticket_when_manifest_slug_collides(

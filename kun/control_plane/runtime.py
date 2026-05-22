@@ -653,6 +653,17 @@ class InMemoryControlPlane:
         if self.store is not None:
             self._hydrate_from_store(self.store)
 
+    def refresh_from_store(self) -> None:
+        """Reload all control-plane records so long-running daemons see external writes."""
+
+        if self.store is None:
+            return
+        reload_store = getattr(self.store, "reload", None)
+        with self._lock:
+            if callable(reload_store):
+                reload_store()
+            self._hydrate_from_store(self.store)
+
     def submit_mission(
         self,
         *,

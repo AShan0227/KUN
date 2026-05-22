@@ -162,6 +162,8 @@ class ControlPlaneStore(Protocol):
     def get_capability_profile(self, capability_id: str) -> CapabilityProfile | None: ...
     def list_capability_profiles(self) -> list[CapabilityProfile]: ...
 
+    def reload(self) -> None: ...
+
 
 class InMemoryControlPlaneStore:
     """Pure-memory implementation of the V6 store boundary."""
@@ -337,3 +339,6 @@ class InMemoryControlPlaneStore:
 
     def list_capability_profiles(self) -> list[CapabilityProfile]:
         return self._capability_profiles.list()
+
+    def reload(self) -> None:
+        return None

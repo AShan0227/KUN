@@ -270,6 +270,12 @@ class FileControlPlaneStore:
         with self._lock:
             return self._capability_profiles.list()
 
+    def reload(self) -> None:
+        """Refresh this process from the latest durable snapshot."""
+
+        with self._lock, self._interprocess_locked():
+            self._load_from_disk_locked()
+
     @contextmanager
     def transaction(self):
         """Batch related store writes under one interprocess lock and disk snapshot."""

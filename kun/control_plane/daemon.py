@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -87,6 +88,8 @@ ACTIVE_DAEMON_MISSION_STATUSES: frozenset[MissionStatus] = frozenset(
         "escalated",
     }
 )
+
+_ACCEPTANCE_REWORK_SUFFIX_RE = re.compile(r"(?:-acceptance-rework-[0-9a-f]{8})+$")
 
 DaemonServiceStatus = Literal["starting", "running", "idle", "stopped", "unhealthy"]
 DaemonServiceStoppedReason = Literal["idle", "max_ticks", "stop_requested", "error"]
@@ -427,6 +430,10 @@ class ControlPlaneDaemon:
         if max_work_items < 0:
             raise ValueError("max_work_items must be non-negative")
         observed_at = now or _now()
+        if mission_ids is None or any(
+            mission_id not in self.control_plane.missions for mission_id in mission_ids
+        ):
+            self.control_plane.refresh_from_store()
         selected_mission_ids = (
             list(mission_ids) if mission_ids is not None else self._active_missions()
         )
@@ -1795,16 +1802,9 @@ class ControlPlaneDaemon:
             )
             if claimed is None:
                 return None
-            merged = work_item.model_copy(
-                update={
-                    "lease": claimed.lease,
-                    "heartbeat": claimed.heartbeat,
-                    "timeout": claimed.timeout,
-                }
-            )
-            self.control_plane.work_items[merged.work_item_id] = merged
-            self._persist_work_item(merged)
-            return merged
+            self.control_plane.work_items[claimed.work_item_id] = claimed
+            self._persist_work_item(claimed)
+            return claimed
         active_lease = (
             work_item.lease is not None
             and work_item.timeout is not None
@@ -2889,8 +2889,7 @@ def _task_plan_for_version(
 
 def _acceptance_rework_plan_version(*, mission: Mission, gate: GateEvaluation) -> str:
     base = gate.task_plan_version or mission.current_plan_version or "product"
-    if base.endswith("-acceptance-rework"):
-        base = base.removesuffix("-acceptance-rework")
+    base = _base_acceptance_rework_plan_version(base)
     sig = _hash_payload(
         {
             "gate": gate.gate_evaluation_id,
@@ -2899,6 +2898,11 @@ def _acceptance_rework_plan_version(*, mission: Mission, gate: GateEvaluation) -
         }
     )[:8]
     return f"{base}-acceptance-rework-{sig}"
+
+
+def _base_acceptance_rework_plan_version(plan_version: str) -> str:
+    collapsed = _ACCEPTANCE_REWORK_SUFFIX_RE.sub("", plan_version)
+    return collapsed.removesuffix("-acceptance-rework")
 
 
 def _acceptance_rework_task_plan(

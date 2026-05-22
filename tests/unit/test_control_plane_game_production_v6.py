@@ -920,17 +920,33 @@ def test_game_production_runner_owner_guard(tmp_path: Path) -> None:
     assert runner.can_run(unassigned) is False
 
 
+def test_interaction_design_requires_workspace_sandbox_and_resource_lock(tmp_path: Path) -> None:
+    control_plane, project_path = _mission(tmp_path)
+    runner = GameProductionRunner(control_plane=control_plane)
+    work_item = control_plane.work_items["work-huohutu-v3-01-interaction-design"]
+
+    result = runner.run(work_item)
+
+    assert result.status == "failed"
+    assert result.failure_category == "permission_failure"
+    assert "workspace_ref" in result.summary
+    assert not (project_path / "docs" / "interaction-design.md").exists()
+
+
 def test_game_production_runner_classifies_permission_boundary_as_permission_failure(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    control_plane, _project_path = _mission(tmp_path)
+    control_plane, project_path = _mission(tmp_path)
     work_item = WorkItem(
         work_item_id="work-game-permission-interaction-design",
         mission_id="msn-game-production",
         task_plan_version="playable-v1",
         type="execution",
         owner=KUN_GAME_PRODUCTION_RUNNER_OWNER,
+        workspace_ref=f"workspace://{project_path}",
+        sandbox_ref="sandbox://msn-game-production/work-game-permission-interaction-design",
+        resource_locks=[f"workspace:{project_path}"],
         expected_output="interaction design",
     )
 

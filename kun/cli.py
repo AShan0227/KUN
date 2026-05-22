@@ -286,13 +286,28 @@ def control_plane_daemon_stop(
     ),
     requested_by: str = typer.Option("operator", "--requested-by", help="请求停止的人或系统"),
     reason: str = typer.Option("operator_stop", "--reason", help="停止原因"),
+    clear: bool = typer.Option(False, "--clear", help="清除已有停止请求，允许同 daemon 重启"),
     json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
 ) -> None:
     """写入持久停止请求，让后台服务安全收尾。"""
 
     from kun.control_plane import FileDaemonServiceStateStore
 
-    request = FileDaemonServiceStateStore(state_path).request_stop(
+    state_store = FileDaemonServiceStateStore(state_path)
+    if clear:
+        state_store.clear_stop_request()
+        payload = {
+            "accepted": True,
+            "cleared": True,
+            "state_path": str(state_path),
+            "pending_stop_request": None,
+        }
+        if json_output:
+            console.print_json(data=payload)
+            return
+        console.print(f"[green]stop request cleared[/] {daemon_id}")
+        return
+    request = state_store.request_stop(
         daemon_id=daemon_id,
         requested_by=requested_by,
         reason=reason,
@@ -658,6 +673,11 @@ def control_plane_daemon_run(
         min=1,
         help="多久没有心跳后允许新进程接管",
     ),
+    clear_stop_request: bool = typer.Option(
+        False,
+        "--clear-stop-request",
+        help="启动前清除同 daemon_id 的持久停止请求",
+    ),
     json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
 ) -> None:
     """以前台服务方式运行 KUN V6 Control Plane daemon。"""
@@ -700,6 +720,8 @@ def control_plane_daemon_run(
     )
     control_plane = InMemoryControlPlane(store=FileControlPlaneStore(store_path))
     state_store = FileDaemonServiceStateStore(state_path)
+    if clear_stop_request:
+        state_store.clear_stop_request()
     if sandbox_mode not in {"workspace_snapshot", "container_required", "external_container"}:
         raise typer.BadParameter(
             "sandbox_mode must be workspace_snapshot, container_required, or external_container"

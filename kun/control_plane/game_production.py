@@ -79,7 +79,7 @@ SUPPORTED_GAME_PHASES = frozenset(
         "final-delivery",
     }
 )
-COMMAND_PHASES = SUPPORTED_GAME_PHASES - {"interaction-design"}
+COMMAND_PHASES = SUPPORTED_GAME_PHASES
 SCRIBBLE_PARITY_DEFAULT_REQUIRED_TEST_SCRIPTS = (
     "test:internal",
     "test:user-sim",
