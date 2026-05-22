@@ -251,6 +251,7 @@ def test_runtime_submits_contracted_mission_and_runs_to_delivery() -> None:
             primary_artifact_ref=answer.artifact_id,
             evidence_refs=[evidence.artifact_id],
             test_refs=[test.artifact_id],
+            rollback_refs=[test.artifact_id],
             created_by="kun",
             content_hash="manifest-hash",
             supports_delivery=True,
@@ -302,6 +303,7 @@ def test_plan_change_from_delivery_reactivates_daemon_queue() -> None:
             artifact_refs=[answer.artifact_id],
             primary_artifact_ref=answer.artifact_id,
             evidence_refs=[answer.artifact_id],
+            rollback_refs=[answer.artifact_id],
             created_by="kun",
             content_hash="manifest-v1-hash",
             supports_delivery=True,
@@ -511,6 +513,130 @@ def test_runtime_routes_failed_work_to_nuo_and_qi(tmp_path) -> None:
     assert qi_item.owner == "qi"
     assert qi_item.dependencies == []
     assert "work-runtime-eof" in qi_item.recovery_refs
+
+
+def test_runtime_nuo_findings_override_runner_pass_gate() -> None:
+    runtime = _submit_runtime([_single_work_item(work_item_id="work-premature-delivery")])
+
+    def premature_delivery(item: WorkItem) -> WorkItemResult:
+        answer = ArtifactRecord(
+            artifact_id="artifact-premature-answer",
+            kind="answer",
+            path_or_uri="mem://answer",
+            content_hash="answer-hash",
+            created_by="kun",
+            mission_id=item.mission_id,
+            work_item_id=item.work_item_id,
+            supports=["directly_playable_game"],
+        )
+        manifest = ArtifactManifest(
+            manifest_id="manifest-premature-delivery",
+            mission_id=item.mission_id,
+            work_item_id=item.work_item_id,
+            kind="delivery",
+            artifact_refs=[answer.artifact_id],
+            primary_artifact_ref=answer.artifact_id,
+            evidence_refs=[answer.artifact_id],
+            rollback_refs=[answer.artifact_id],
+            created_by="kun",
+            content_hash="manifest-hash",
+            supports_delivery=True,
+        )
+        return WorkItemResult(
+            status="done",
+            summary="Final delivery ready, but mechanics only and visual missing.",
+            artifacts=[answer],
+            artifact_manifest=manifest,
+            gate_evaluation=_gate(
+                work_item=item,
+                next_action="ready_to_deliver",
+                next_state="delivering",
+                artifact_refs=manifest.artifact_refs,
+                evidence_refs=manifest.evidence_refs,
+            ),
+        )
+
+    run = runtime.run_next_ready(
+        mission_id="msn-v6",
+        runner=StaticRunner(premature_delivery),
+    )
+
+    assert run is not None
+    restored_run = runtime.runs[run.run_id]
+    assert restored_run.exit_status == "failed"
+    gate = runtime.gate_evaluations[restored_run.gate_evaluation_ref]
+    assert gate.created_by == "nuo"
+    assert gate.north_star_verdict == "fail"
+    assert "premature_delivery_claim" in gate.hard_gate_failures
+    assert runtime.missions["msn-v6"].status == "changing_plan"
+
+
+def test_runtime_forces_nuo_on_delivery_manifest_contract_visual_gap() -> None:
+    runtime = InMemoryControlPlane()
+    work_item = _single_work_item(work_item_id="work-contract-visual-delivery")
+    runtime.submit_mission(
+        mission=_mission(),
+        task_plan=_plan(),
+        execution_contract=_contract().model_copy(
+            update={
+                "delivery_contract": {
+                    "visual_product_iteration_required": True,
+                }
+            }
+        ),
+        working_context=_context(),
+        work_items=[work_item],
+    )
+
+    def delivery(item: WorkItem) -> WorkItemResult:
+        answer = ArtifactRecord(
+            artifact_id="artifact-contract-visual-answer",
+            kind="answer",
+            path_or_uri="mem://answer",
+            content_hash="answer-hash",
+            created_by="kun",
+            mission_id=item.mission_id,
+            work_item_id=item.work_item_id,
+            supports=["directly_playable_game"],
+        )
+        manifest = ArtifactManifest(
+            manifest_id="manifest-contract-visual-delivery",
+            mission_id=item.mission_id,
+            work_item_id=item.work_item_id,
+            kind="delivery",
+            artifact_refs=[answer.artifact_id],
+            primary_artifact_ref=answer.artifact_id,
+            evidence_refs=[answer.artifact_id],
+            rollback_refs=[answer.artifact_id],
+            created_by="kun",
+            content_hash="manifest-hash",
+            supports_delivery=True,
+        )
+        return WorkItemResult(
+            status="done",
+            summary="Final delivery ready.",
+            artifacts=[answer],
+            artifact_manifest=manifest,
+            gate_evaluation=_gate(
+                work_item=item,
+                next_action="ready_to_deliver",
+                next_state="delivering",
+                artifact_refs=manifest.artifact_refs,
+                evidence_refs=manifest.evidence_refs,
+            ),
+        )
+
+    run = runtime.run_next_ready(
+        mission_id="msn-v6",
+        runner=StaticRunner(delivery),
+    )
+
+    assert run is not None
+    restored_run = runtime.runs[run.run_id]
+    assert restored_run.exit_status == "failed"
+    gate = runtime.gate_evaluations[restored_run.gate_evaluation_ref]
+    assert gate.created_by == "nuo"
+    assert "premature_delivery_claim" in gate.hard_gate_failures
 
 
 def test_runtime_applies_default_validation_gate_when_runner_omits_gate() -> None:

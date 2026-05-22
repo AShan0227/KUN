@@ -18,20 +18,22 @@ import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
+from kun.control_plane.capability_execution import CapabilityExecutionPolicy
 from kun.control_plane.huohutu_formal_game_templates import formal_game_ready_files
 from kun.control_plane.huohutu_gameful_templates import gameful_playtest_ready_files
 from kun.control_plane.huohutu_scribble_parity_templates import scribble_parity_ready_files
 from kun.control_plane.huohutu_scribble_spark_templates import scribble_spark_ready_files
 from kun.control_plane.runtime import InMemoryControlPlane, RunnerType, WorkItemResult
-from kun.control_plane.scribble_visual_templates import visual_product_ready_files
 from kun.control_plane.scribble_adventure_templates import scribble_adventure_ready_files
+from kun.control_plane.scribble_visual_templates import visual_product_ready_files
 from kun.control_plane.v6 import (
     ArtifactKind,
     ArtifactManifest,
     ArtifactRecord,
     ExecutionContract,
+    FailureCategory,
     GateEvaluation,
     Mission,
     TaskPlan,
@@ -54,6 +56,44 @@ SUPPORTED_GAME_PRODUCTION_MODES = frozenset(
         "scribble_spark_functional_parity_v5",
         "scribble_adventure_functional_parity_v1",
     }
+)
+SUPPORTED_GAME_PHASES = frozenset(
+    {
+        "interaction-design",
+        "scribble-redesign",
+        "game-production",
+        "benchmark-quality-iteration",
+        "commercial-game-polish-iteration",
+        "visual-product-iteration",
+        "experience-product-iteration",
+        "sandbox-dynamics-iteration",
+        "image-object-interaction-iteration",
+        "creative-goal-iteration",
+        "mastery-loop-iteration",
+        "semantic-synthesis-iteration",
+        "portless-gate-repair",
+        "spatial-playfield-iteration",
+        "internal-test",
+        "supervisor-gate",
+        "benchmark-residual-audit",
+        "final-delivery",
+    }
+)
+COMMAND_PHASES = SUPPORTED_GAME_PHASES - {"interaction-design"}
+SCRIBBLE_PARITY_DEFAULT_REQUIRED_TEST_SCRIPTS = (
+    "test:internal",
+    "test:user-sim",
+    "test:fun",
+    "test:browser-static",
+    "test:long",
+    "test:visual",
+    "test:experience",
+    "test:sandbox",
+    "test:creative",
+    "test:mastery",
+    "test:semantic",
+    "test:spatial",
+    "test:commercial",
 )
 
 
@@ -84,6 +124,9 @@ class GameProductionSpec(BaseModel):
     user_accepts_residual: bool = False
     final_player_experience_required: bool = False
     final_player_experience_threshold: float = 0.95
+    visual_product_iteration_required: bool = False
+    required_test_scripts: list[str] = Field(default_factory=list)
+    local_dev_port: int = 5178
 
 
 class GameProductionRunner:
@@ -102,6 +145,10 @@ class GameProductionRunner:
         self.control_plane = control_plane
         self.command_runner = command_runner or _subprocess_command_runner
         self.command_timeout_sec = command_timeout_sec
+        self.capability_execution_policy: CapabilityExecutionPolicy | None = None
+
+    def bind_capability_execution_policy(self, policy: CapabilityExecutionPolicy) -> None:
+        self.capability_execution_policy = policy
 
     def can_run(self, work_item: WorkItem) -> bool:
         mission = self.control_plane.missions.get(work_item.mission_id)
@@ -126,45 +173,41 @@ class GameProductionRunner:
             )
         try:
             mission, task_plan, contract = self._records(work_item)
-            spec = _spec_from_contract(contract)
-            phase = _phase_from_work_item(work_item)
-            if phase == "interaction-design":
-                return self._write_interaction_design(work_item=work_item, task_plan=task_plan, spec=spec)
-            if phase == "scribble-redesign":
-                return self._write_scribble_redesign(work_item=work_item, task_plan=task_plan, spec=spec)
-            if phase == "game-production":
-                return self._write_playtest_ready_game(work_item=work_item, spec=spec)
-            if phase == "benchmark-quality-iteration":
-                return self._apply_benchmark_quality_iteration(work_item=work_item, spec=spec)
-            if phase == "visual-product-iteration":
-                return self._apply_visual_product_iteration(work_item=work_item, spec=spec)
-            if phase == "experience-product-iteration":
-                return self._apply_experience_product_iteration(work_item=work_item, spec=spec)
-            if phase == "sandbox-dynamics-iteration":
-                return self._apply_sandbox_dynamics_iteration(work_item=work_item, spec=spec)
-            if phase == "creative-goal-iteration":
-                return self._apply_creative_goal_iteration(work_item=work_item, spec=spec)
-            if phase == "mastery-loop-iteration":
-                return self._apply_mastery_loop_iteration(work_item=work_item, spec=spec)
-            if phase == "semantic-synthesis-iteration":
-                return self._apply_semantic_synthesis_iteration(work_item=work_item, spec=spec)
-            if phase == "portless-gate-repair":
-                return self._apply_portless_gate_repair(work_item=work_item, spec=spec)
-            if phase == "spatial-playfield-iteration":
-                return self._apply_spatial_playfield_iteration(work_item=work_item, spec=spec)
-            if phase == "internal-test":
-                return self._run_internal_tests(work_item=work_item, spec=spec)
-            if phase == "supervisor-gate":
-                return self._run_supervisor_gate(work_item=work_item, spec=spec)
-            if phase == "benchmark-residual-audit":
-                return self._run_benchmark_residual_audit(work_item=work_item, spec=spec)
-            if phase == "final-delivery":
-                return self._final_delivery(
-                    work_item=work_item,
-                    mission=mission,
-                    task_plan=task_plan,
-                    spec=spec,
+            capability_error = _capability_policy_error(
+                work_item=work_item,
+                policy=self.capability_execution_policy,
+            )
+            if capability_error is not None:
+                return WorkItemResult(
+                    status="failed",
+                    summary=capability_error,
+                    failure_category="plan_failure",
                 )
+            spec = _spec_from_contract(contract)
+            boundary_error = _workspace_boundary_error(work_item=work_item, spec=spec)
+            if boundary_error is not None:
+                return WorkItemResult(
+                    status="failed",
+                    summary=boundary_error,
+                    failure_category="permission_failure",
+                )
+            result = self._run_phase(
+                work_item=work_item,
+                mission=mission,
+                task_plan=task_plan,
+                spec=spec,
+            )
+            return self._with_execution_contract_artifacts(
+                work_item=work_item,
+                spec=spec,
+                result=result,
+            )
+        except PermissionError as exc:
+            return WorkItemResult(
+                status="failed",
+                summary=f"Game production runner blocked by permission boundary: {exc}",
+                failure_category="permission_failure",
+            )
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             return WorkItemResult(
                 status="failed",
@@ -176,6 +219,90 @@ class GameProductionRunner:
             summary=f"Unsupported game production work item: {work_item.work_item_id}",
             failure_category="tool_failure",
         )
+
+    def _run_phase(
+        self,
+        *,
+        work_item: WorkItem,
+        mission: Mission,
+        task_plan: TaskPlan,
+        spec: GameProductionSpec,
+    ) -> WorkItemResult:
+        phase = _phase_from_work_item(work_item)
+        if phase == "interaction-design":
+            return self._write_interaction_design(
+                work_item=work_item, task_plan=task_plan, spec=spec
+            )
+        if phase == "scribble-redesign":
+            return self._write_scribble_redesign(
+                work_item=work_item, task_plan=task_plan, spec=spec
+            )
+        if phase == "game-production":
+            return self._write_playtest_ready_game(work_item=work_item, spec=spec)
+        if phase == "benchmark-quality-iteration":
+            return self._apply_benchmark_quality_iteration(work_item=work_item, spec=spec)
+        if phase == "commercial-game-polish-iteration":
+            return self._apply_commercial_game_polish_iteration(work_item=work_item, spec=spec)
+        if phase == "visual-product-iteration":
+            return self._apply_visual_product_iteration(work_item=work_item, spec=spec)
+        if phase == "experience-product-iteration":
+            return self._apply_experience_product_iteration(work_item=work_item, spec=spec)
+        if phase == "sandbox-dynamics-iteration":
+            return self._apply_sandbox_dynamics_iteration(work_item=work_item, spec=spec)
+        if phase == "image-object-interaction-iteration":
+            return self._apply_image_object_interaction_iteration(work_item=work_item, spec=spec)
+        if phase == "creative-goal-iteration":
+            return self._apply_creative_goal_iteration(work_item=work_item, spec=spec)
+        if phase == "mastery-loop-iteration":
+            return self._apply_mastery_loop_iteration(work_item=work_item, spec=spec)
+        if phase == "semantic-synthesis-iteration":
+            return self._apply_semantic_synthesis_iteration(work_item=work_item, spec=spec)
+        if phase == "portless-gate-repair":
+            return self._apply_portless_gate_repair(work_item=work_item, spec=spec)
+        if phase == "spatial-playfield-iteration":
+            return self._apply_spatial_playfield_iteration(work_item=work_item, spec=spec)
+        if phase == "internal-test":
+            return self._run_internal_tests(work_item=work_item, spec=spec)
+        if phase == "supervisor-gate":
+            return self._run_supervisor_gate(work_item=work_item, spec=spec)
+        if phase == "benchmark-residual-audit":
+            return self._run_benchmark_residual_audit(work_item=work_item, spec=spec)
+        if phase == "final-delivery":
+            return self._final_delivery(
+                work_item=work_item,
+                mission=mission,
+                task_plan=task_plan,
+                spec=spec,
+            )
+        return WorkItemResult(
+            status="blocked",
+            summary=(
+                f"Unsupported game production phase {phase!r} for work item "
+                f"{work_item.work_item_id}."
+            ),
+            failure_category="tool_failure",
+        )
+
+    def _with_execution_contract_artifacts(
+        self,
+        *,
+        work_item: WorkItem,
+        spec: GameProductionSpec,
+        result: WorkItemResult,
+    ) -> WorkItemResult:
+        artifacts = list(result.artifacts)
+        if work_item.required_capability_refs:
+            artifacts.append(
+                _capability_consumption_artifact(
+                    work_item=work_item,
+                    policy=self.capability_execution_policy,
+                )
+            )
+        if _phase_from_work_item(work_item) in COMMAND_PHASES:
+            artifacts.append(_sandbox_execution_artifact(work_item=work_item, spec=spec))
+        if artifacts == result.artifacts:
+            return result
+        return result.model_copy(update={"artifacts": artifacts})
 
     def _records(self, work_item: WorkItem) -> tuple[Mission, TaskPlan, ExecutionContract]:
         mission = self.control_plane.missions[work_item.mission_id]
@@ -297,9 +424,13 @@ class GameProductionRunner:
 
         _write_text(spec.project_path / "src" / "engine" / "causalPhysics.ts", _causal_physics_ts())
         _write_text(spec.project_path / "scripts" / "long-playtest.mjs", _long_playtest_script())
-        _upsert_package_script(spec.project_path / "package.json", "test:long", "node scripts/long-playtest.mjs")
+        _upsert_package_script(
+            spec.project_path / "package.json", "test:long", "node scripts/long-playtest.mjs"
+        )
         _patch_app_for_causal_lab(spec.project_path / "src" / "App.tsx")
-        _append_once(spec.project_path / "src" / "styles.css", _causal_lab_css(), marker=".causalLab")
+        _append_once(
+            spec.project_path / "src" / "styles.css", _causal_lab_css(), marker=".causalLab"
+        )
         iteration_path = spec.project_path / "docs" / "benchmark-quality-iteration.md"
         _write_text(iteration_path, _benchmark_quality_iteration_markdown(spec))
         return WorkItemResult(
@@ -355,6 +486,56 @@ class GameProductionRunner:
                         "illustrated_worlds",
                         "tablet_game_ui",
                         "visual_residual_reduction",
+                    ],
+                    kind="decision",
+                )
+            ],
+        )
+
+    def _apply_commercial_game_polish_iteration(
+        self,
+        *,
+        work_item: WorkItem,
+        spec: GameProductionSpec,
+    ) -> WorkItemResult:
+        """Keep polishing after gates pass but before human acceptance.
+
+        This phase is intentionally product-facing: it makes KUN consume
+        concrete character references, raise the UI from "dashboard" toward a
+        commercial tablet game, and adds a dedicated gate so future runs do not
+        hide this capability behind generic visual checks.
+        """
+
+        _patch_project_for_commercial_game_polish(spec.project_path)
+        _write_text(
+            spec.project_path / "scripts" / "commercial-product-test.mjs",
+            _commercial_product_test_script(),
+        )
+        _upsert_package_script(
+            spec.project_path / "package.json",
+            "test:commercial",
+            "node scripts/commercial-product-test.mjs",
+        )
+        iteration_path = spec.project_path / "docs" / "commercial-game-polish-iteration.md"
+        _write_text(iteration_path, _commercial_game_polish_iteration_markdown(spec))
+        return WorkItemResult(
+            status="done",
+            summary=(
+                "Commercial game polish iteration integrated the supplied character reference, "
+                "tightened tablet game UI, upgraded generated object sprite presentation, and "
+                "added a product-feel gate that must run before delivery."
+            ),
+            artifacts=[
+                _artifact(
+                    work_item=work_item,
+                    suffix="commercial-game-polish-iteration",
+                    path=iteration_path,
+                    supports=[
+                        "commercial_game_polish",
+                        "character_reference_integration",
+                        "tablet_game_ui",
+                        "animation_feedback",
+                        "post_gate_product_pressure",
                     ],
                     kind="decision",
                 )
@@ -451,6 +632,57 @@ class GameProductionRunner:
                         "action_trail",
                         "tablet_touch_gamefeel",
                         "gameplay_residual_reduction",
+                    ],
+                    kind="decision",
+                )
+            ],
+        )
+
+    def _apply_image_object_interaction_iteration(
+        self,
+        *,
+        work_item: WorkItem,
+        spec: GameProductionSpec,
+    ) -> WorkItemResult:
+        """Enforce image-first objects and non-duplicating stage interactions."""
+
+        _patch_project_for_image_object_interaction(spec.project_path)
+        _write_text(
+            spec.project_path / "scripts" / "visual-product-test.mjs",
+            _visual_product_test_script(),
+        )
+        _write_text(
+            spec.project_path / "scripts" / "sandbox-product-test.mjs",
+            _sandbox_product_test_script(),
+        )
+        _upsert_package_script(
+            spec.project_path / "package.json",
+            "test:visual",
+            "node scripts/visual-product-test.mjs",
+        )
+        _upsert_package_script(
+            spec.project_path / "package.json",
+            "test:sandbox",
+            "node scripts/sandbox-product-test.mjs",
+        )
+        iteration_path = spec.project_path / "docs" / "image-object-interaction-iteration.md"
+        _write_text(iteration_path, _image_object_interaction_iteration_markdown(spec))
+        return WorkItemResult(
+            status="done",
+            summary=(
+                "Image-object interaction iteration installed strict gates for pictorial generated "
+                "objects, ID-based drag movement, no copy-on-drag, and object-to-object reactions."
+            ),
+            artifacts=[
+                _artifact(
+                    work_item=work_item,
+                    suffix="image-object-interaction-iteration",
+                    path=iteration_path,
+                    supports=[
+                        "image_first_generated_objects",
+                        "non_duplicating_drag",
+                        "object_to_object_interaction",
+                        "human_feedback_rework",
                     ],
                     kind="decision",
                 )
@@ -681,9 +913,34 @@ class GameProductionRunner:
         work_item: WorkItem,
         spec: GameProductionSpec,
     ) -> WorkItemResult:
-        install = self.command_runner(["npm", "install"], spec.project_path, self.command_timeout_sec)
-        if install.exit_code != 0:
-            return _failed_command_result(work_item, "npm install", install, spec.project_path)
+        package_path = spec.project_path / "package.json"
+        package_payload = json.loads(package_path.read_text(encoding="utf-8"))
+        missing_required_scripts = _missing_required_test_scripts(
+            package_payload=package_payload,
+            spec=spec,
+        )
+        if missing_required_scripts:
+            return _failed_command_result(
+                work_item,
+                "required npm test scripts",
+                GameProductionCommandResult(
+                    exit_code=127,
+                    stdout="",
+                    stderr=(
+                        "Missing required package scripts: " + ", ".join(missing_required_scripts)
+                    ),
+                ),
+                spec.project_path,
+            )
+        install: GameProductionCommandResult | None = None
+        if not _node_dependencies_ready(spec.project_path):
+            install = self.command_runner(
+                ["npm", "install"],
+                spec.project_path,
+                self.command_timeout_sec,
+            )
+            if install.exit_code != 0:
+                return _failed_command_result(work_item, "npm install", install, spec.project_path)
         build = self.command_runner(
             ["npm", "run", "build"], spec.project_path, self.command_timeout_sec
         )
@@ -710,8 +967,6 @@ class GameProductionRunner:
                 spec.project_path,
             )
         fun_test: GameProductionCommandResult | None = None
-        package_path = spec.project_path / "package.json"
-        package_payload = json.loads(package_path.read_text(encoding="utf-8"))
         if "test:fun" in package_payload.get("scripts", {}):
             fun_test = self.command_runner(
                 ["npm", "run", "test:fun"], spec.project_path, self.command_timeout_sec
@@ -833,12 +1088,28 @@ class GameProductionRunner:
                     spatial_test,
                     spec.project_path,
                 )
+        commercial_test: GameProductionCommandResult | None = None
+        if "test:commercial" in package_payload.get("scripts", {}):
+            commercial_test = self.command_runner(
+                ["npm", "run", "test:commercial"],
+                spec.project_path,
+                self.command_timeout_sec,
+            )
+            if commercial_test.exit_code != 0:
+                return _failed_command_result(
+                    work_item,
+                    "npm run test:commercial",
+                    commercial_test,
+                    spec.project_path,
+                )
         result_path = spec.project_path / "docs" / "internal-test-result.json"
         _write_text(
             result_path,
             json.dumps(
                 {
-                    "npm_install": install.model_dump(mode="json"),
+                    "npm_install": install.model_dump(mode="json")
+                    if install
+                    else {"skipped": True},
                     "npm_run_build": build.model_dump(mode="json"),
                     "npm_run_test_internal": internal.model_dump(mode="json"),
                     "npm_run_test_user_sim": user_sim.model_dump(mode="json"),
@@ -847,13 +1118,30 @@ class GameProductionRunner:
                         browser_static_test.model_dump(mode="json") if browser_static_test else None
                     ),
                     "npm_run_test_long": long_test.model_dump(mode="json") if long_test else None,
-                    "npm_run_test_visual": visual_test.model_dump(mode="json") if visual_test else None,
-                    "npm_run_test_experience": experience_test.model_dump(mode="json") if experience_test else None,
-                    "npm_run_test_sandbox": sandbox_test.model_dump(mode="json") if sandbox_test else None,
-                    "npm_run_test_creative": creative_test.model_dump(mode="json") if creative_test else None,
-                    "npm_run_test_mastery": mastery_test.model_dump(mode="json") if mastery_test else None,
-                    "npm_run_test_semantic": semantic_test.model_dump(mode="json") if semantic_test else None,
-                    "npm_run_test_spatial": spatial_test.model_dump(mode="json") if spatial_test else None,
+                    "npm_run_test_visual": visual_test.model_dump(mode="json")
+                    if visual_test
+                    else None,
+                    "npm_run_test_experience": experience_test.model_dump(mode="json")
+                    if experience_test
+                    else None,
+                    "npm_run_test_sandbox": sandbox_test.model_dump(mode="json")
+                    if sandbox_test
+                    else None,
+                    "npm_run_test_creative": creative_test.model_dump(mode="json")
+                    if creative_test
+                    else None,
+                    "npm_run_test_mastery": mastery_test.model_dump(mode="json")
+                    if mastery_test
+                    else None,
+                    "npm_run_test_semantic": semantic_test.model_dump(mode="json")
+                    if semantic_test
+                    else None,
+                    "npm_run_test_spatial": spatial_test.model_dump(mode="json")
+                    if spatial_test
+                    else None,
+                    "npm_run_test_commercial": commercial_test.model_dump(mode="json")
+                    if commercial_test
+                    else None,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -986,7 +1274,10 @@ class GameProductionRunner:
             failures.append("fun_gate_not_passed")
         if scripts.get("test:browser-static") != "node scripts/browser-static-playtest.mjs":
             failures.append("portless_static_browser_gate_missing")
-        if not isinstance(browser_static_result, dict) or browser_static_result.get("exit_code") != 0:
+        if (
+            not isinstance(browser_static_result, dict)
+            or browser_static_result.get("exit_code") != 0
+        ):
             failures.append("portless_static_browser_gate_not_passed")
         visual_result = internal_payload.get("npm_run_test_visual")
         for required in [
@@ -1011,7 +1302,9 @@ class GameProductionRunner:
             failures.append("child_or_parent_ui_contains_mvp_language")
         if spec.production_mode in SCRIBBLE_PARITY_PRODUCTION_MODES:
             report_path = spec.project_path / "docs" / "parity-runtime-report.json"
-            parity_report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+            parity_report = (
+                json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+            )
             if not parity_report:
                 failures.append("missing:docs/parity-runtime-report.json")
             if parity_report.get("objectCount", 0) < 120:
@@ -1044,8 +1337,11 @@ class GameProductionRunner:
                 if not isinstance(visual_result, dict) or visual_result.get("exit_code") != 0:
                     failures.append("visual_product_gate_not_passed")
                 experience_result = internal_payload.get("npm_run_test_experience")
-                if scripts.get("test:experience") == "node scripts/experience-product-test.mjs" and (
-                    not isinstance(experience_result, dict) or experience_result.get("exit_code") != 0
+                if scripts.get(
+                    "test:experience"
+                ) == "node scripts/experience-product-test.mjs" and (
+                    not isinstance(experience_result, dict)
+                    or experience_result.get("exit_code") != 0
                 ):
                     failures.append("experience_product_gate_not_passed")
                 sandbox_result = internal_payload.get("npm_run_test_sandbox")
@@ -1073,6 +1369,14 @@ class GameProductionRunner:
                     not isinstance(spatial_result, dict) or spatial_result.get("exit_code") != 0
                 ):
                     failures.append("spatial_playfield_gate_not_passed")
+                commercial_result = internal_payload.get("npm_run_test_commercial")
+                if scripts.get(
+                    "test:commercial"
+                ) == "node scripts/commercial-product-test.mjs" and (
+                    not isinstance(commercial_result, dict)
+                    or commercial_result.get("exit_code") != 0
+                ):
+                    failures.append("commercial_product_gate_not_passed")
                 for required in [
                     "src/data/visuals.ts",
                     "public/assets/companion-xiaobi.svg",
@@ -1089,7 +1393,9 @@ class GameProductionRunner:
                     or "worldBackdrop" not in app
                 ):
                     failures.append("visual_character_ui_layer_missing")
-                if scripts.get("test:experience") == "node scripts/experience-product-test.mjs" and (
+                if scripts.get(
+                    "test:experience"
+                ) == "node scripts/experience-product-test.mjs" and (
                     "questDeck" not in app
                     or "directManipulation" not in app
                     or "objectRelationGraph" not in app
@@ -1128,9 +1434,28 @@ class GameProductionRunner:
                     or "objectTrajectoryLabel" not in app
                 ):
                     failures.append("spatial_playfield_layer_missing")
-            protected_markers = ["Maxwell", "Starite", "Scribblenauts Unlimited", "Scribblenauts Remix"]
+                if scripts.get(
+                    "test:commercial"
+                ) == "node scripts/commercial-product-test.mjs" and (
+                    "commercial-game-polish-ready" not in app
+                    or "premiumTouchStage" not in app
+                    or "referenceCharacterMotion" not in app
+                    or "object-burger.svg"
+                    not in _read_text(spec.project_path / "src" / "data" / "visuals.ts")
+                ):
+                    failures.append("commercial_game_polish_layer_missing")
+            protected_markers = [
+                "Maxwell",
+                "Starite",
+                "Scribblenauts Unlimited",
+                "Scribblenauts Remix",
+            ]
             for relative_path in ["src/App.tsx", "README.md"]:
-                content = (spec.project_path / relative_path).read_text(encoding="utf-8") if (spec.project_path / relative_path).exists() else ""
+                content = (
+                    (spec.project_path / relative_path).read_text(encoding="utf-8")
+                    if (spec.project_path / relative_path).exists()
+                    else ""
+                )
                 if any(marker in content for marker in protected_markers):
                     failures.append(f"protected_expression_marker:{relative_path}")
         final_experience_artifact: ArtifactRecord | None = None
@@ -1270,13 +1595,104 @@ class GameProductionRunner:
                 ),
                 failure_category="delivery_failure",
             )
+        test_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=["internal_test_passed", "playability_gate"],
+        )
+        if not test_refs:
+            return WorkItemResult(
+                status="blocked",
+                summary=(
+                    "Final delivery blocked because no real internal-test/playability gate "
+                    "artifact exists in the current task plan."
+                ),
+                failure_category="evidence_failure",
+            )
+        review_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=[
+                "automated_test_review",
+                "playability_gate_review",
+                "external_supervisor_gate",
+                "final_player_experience_gate",
+                "human_playtest",
+                "target_user_playtest",
+                "user_acceptance",
+                "acceptance_review",
+            ],
+        )
+        if not review_refs:
+            return WorkItemResult(
+                status="blocked",
+                summary=(
+                    "Final delivery blocked because review_refs must come from prior review "
+                    "or acceptance artifacts, not from a self-generated pending review request."
+                ),
+                failure_category="evidence_failure",
+            )
+        visual_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=["visual_product_iteration"],
+        )
+        if _delivery_contract_requires_visual_product_evidence(spec) and not visual_refs:
+            return WorkItemResult(
+                status="blocked",
+                summary=(
+                    "Final delivery blocked because the contract requires visual product "
+                    "iteration evidence, but no real visual iteration artifact exists."
+                ),
+                failure_category="evidence_failure",
+            )
+        final_experience_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=["final_player_experience_gate"],
+        )
+        if spec.final_player_experience_required and not final_experience_refs:
+            return WorkItemResult(
+                status="blocked",
+                summary=(
+                    "Final delivery blocked because the final player-experience gate must be "
+                    "recorded as a Control Plane review artifact, not only as a local file."
+                ),
+                failure_category="evidence_failure",
+            )
+        supervisor_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=["external_supervisor_gate"],
+        )
+        residual_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=["benchmark_residual_audit"],
+        )
+        capability_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=["capability_policy_consumed", "required_capabilities_executed"],
+        )
         report_path = spec.project_path / "docs" / "final-playable-delivery.md"
         _write_text(report_path, _final_delivery_markdown(task_plan=task_plan, spec=spec))
         delivery_artifact = _artifact(
             work_item=work_item,
             suffix="playable-game",
             path=spec.project_path,
-            supports=["directly_playable_game", "internal_playtest_ready", "kun_autonomous_output"],
+            supports=[
+                "directly_playable_game",
+                "internal_playtest_ready",
+                "kun_autonomous_output",
+            ],
             kind="answer",
         )
         report_artifact = _artifact(
@@ -1286,15 +1702,45 @@ class GameProductionRunner:
             supports=["final_delivery_report", "acceptance_package"],
             kind="report",
         )
-        test_refs = _artifact_refs_for_plan_support(
-            self.control_plane,
-            mission_id=mission.mission_id,
-            task_plan_version=work_item.task_plan_version,
-            supports=["internal_test_passed", "playability_gate"],
-        ) or [_internal_test_artifact_ref(work_item)]
+        review_path = spec.project_path / "docs" / "final-delivery-review.md"
+        _write_text(
+            review_path,
+            _final_delivery_review_markdown(task_plan=task_plan, spec=spec),
+        )
+        rollback_path = spec.project_path / "docs" / "final-delivery-rollback-plan.md"
+        _write_text(
+            rollback_path,
+            _final_delivery_rollback_markdown(task_plan=task_plan, spec=spec),
+        )
+        review_artifact = _artifact(
+            work_item=work_item,
+            suffix="final-delivery-review-request",
+            path=review_path,
+            supports=["delivery_review_request", "human_acceptance_pending"],
+            kind="decision",
+        )
+        rollback_artifact = _artifact(
+            work_item=work_item,
+            suffix="final-delivery-rollback-plan",
+            path=rollback_path,
+            supports=["rollback_plan", "final_delivery_rollback_plan"],
+            kind="decision",
+        )
+        trace_artifact = _delivery_evidence_trace_artifact(
+            work_item=work_item,
+            spec=spec,
+            test_refs=test_refs,
+            review_refs=review_refs,
+            supervisor_refs=supervisor_refs,
+            residual_refs=residual_refs,
+            visual_refs=visual_refs,
+            final_experience_refs=final_experience_refs,
+            capability_refs=capability_refs,
+        )
         evidence_refs = _unique(
             [
                 report_artifact.artifact_id,
+                trace_artifact.artifact_id,
                 *_artifact_refs_for_plan_support(
                     self.control_plane,
                     mission_id=mission.mission_id,
@@ -1305,10 +1751,20 @@ class GameProductionRunner:
                         "final_player_experience_gate",
                     ],
                 ),
+                *visual_refs,
+                *capability_refs,
             ]
         )
         manifest_artifact_refs = _unique(
-            [delivery_artifact.artifact_id, report_artifact.artifact_id, *test_refs, *evidence_refs]
+            [
+                delivery_artifact.artifact_id,
+                report_artifact.artifact_id,
+                review_artifact.artifact_id,
+                rollback_artifact.artifact_id,
+                trace_artifact.artifact_id,
+                *test_refs,
+                *evidence_refs,
+            ]
         )
         manifest = ArtifactManifest(
             manifest_id=f"manifest-{mission.mission_id}-{_slug(work_item.task_plan_version)}-playable-game",
@@ -1319,6 +1775,8 @@ class GameProductionRunner:
             primary_artifact_ref=delivery_artifact.artifact_id,
             evidence_refs=evidence_refs,
             test_refs=test_refs,
+            review_refs=review_refs,
+            rollback_refs=_unique([rollback_artifact.artifact_id, *work_item.rollback_refs]),
             created_by=self.runner_identity,
             content_hash=_hash_path(spec.project_path),
             supports_delivery=True,
@@ -1346,15 +1804,14 @@ class GameProductionRunner:
                 "child_safety_boundary": 0.84,
                 "parent_report": 0.9,
                 "final_player_experience_gate": float(
-                    final_experience_payload.get("score", 0.9)
-                    if final_experience_payload
-                    else 0.9
+                    final_experience_payload.get("score", 0.9) if final_experience_payload else 0.9
                 ),
             },
             thresholds={"result_quality": 0.86},
             artifact_refs=manifest_artifact_refs,
             evidence_refs=evidence_refs,
             test_refs=test_refs,
+            review_refs=review_refs,
             source_freshness="fresh",
             responsibility_scope="kun_auto",
             confidence=0.86,
@@ -1367,7 +1824,13 @@ class GameProductionRunner:
         return WorkItemResult(
             status="done",
             summary="Directly playable internal-test-ready game delivery is ready.",
-            artifacts=[delivery_artifact, report_artifact],
+            artifacts=[
+                delivery_artifact,
+                report_artifact,
+                review_artifact,
+                rollback_artifact,
+                trace_artifact,
+            ],
             artifact_manifest=manifest,
             gate_evaluation=gate,
         )
@@ -1409,6 +1872,18 @@ def _spec_from_contract(contract: ExecutionContract) -> GameProductionSpec:
             "final_standard" in contract.delivery_contract,
         )
     )
+    required_test_scripts = contract.delivery_contract.get("required_test_scripts", [])
+    if isinstance(required_test_scripts, str):
+        required_test_scripts = [required_test_scripts]
+    if not isinstance(required_test_scripts, list):
+        required_test_scripts = []
+    local_dev_port = contract.delivery_contract.get(
+        "local_dev_port", contract.delivery_contract.get("port", 5178)
+    )
+    try:
+        local_dev_port = int(local_dev_port)
+    except (TypeError, ValueError):
+        local_dev_port = 5178
     return GameProductionSpec(
         project_path=Path(project_path).expanduser().resolve(),
         app_name=app_name.strip(),
@@ -1424,10 +1899,17 @@ def _spec_from_contract(contract: ExecutionContract) -> GameProductionSpec:
         final_player_experience_threshold=float(
             contract.delivery_contract.get("final_player_experience_threshold", 0.95)
         ),
+        visual_product_iteration_required=bool(
+            contract.delivery_contract.get("visual_product_iteration_required", False)
+        ),
+        required_test_scripts=[str(item) for item in required_test_scripts if str(item).strip()],
+        local_dev_port=local_dev_port,
     )
 
 
 def _phase_from_work_item(work_item: WorkItem) -> str:
+    if work_item.phase:
+        return work_item.phase if work_item.phase in SUPPORTED_GAME_PHASES else "unsupported"
     item_id = work_item.work_item_id
     if "system-redesign" in item_id:
         return "scribble-redesign"
@@ -1435,12 +1917,20 @@ def _phase_from_work_item(work_item: WorkItem) -> str:
         return "game-production"
     if "benchmark-quality-iteration" in item_id or "quality-pressure-iteration" in item_id:
         return "benchmark-quality-iteration"
+    if "commercial-game-polish-iteration" in item_id or "commercial-polish" in item_id:
+        return "commercial-game-polish-iteration"
     if "visual-product-iteration" in item_id or "visual-parity" in item_id:
         return "visual-product-iteration"
     if "experience-product-iteration" in item_id or "experience-depth" in item_id:
         return "experience-product-iteration"
     if "sandbox-dynamics-iteration" in item_id or "touch-sandbox" in item_id:
         return "sandbox-dynamics-iteration"
+    if (
+        "image-object-interaction-iteration" in item_id
+        or "image-object-interaction" in item_id
+        or "object-interaction-parity" in item_id
+    ):
+        return "image-object-interaction-iteration"
     if "creative-goal-iteration" in item_id or "creative-freedom" in item_id:
         return "creative-goal-iteration"
     if "mastery-loop-iteration" in item_id or "mastery-gamefeel" in item_id:
@@ -1493,6 +1983,68 @@ def _artifact_refs_for_plan_support(
     return _unique(sorted(refs))
 
 
+def _delivery_contract_requires_visual_product_evidence(spec: GameProductionSpec) -> bool:
+    return spec.visual_product_iteration_required
+
+
+def _delivery_evidence_trace_artifact(
+    *,
+    work_item: WorkItem,
+    spec: GameProductionSpec,
+    test_refs: Sequence[str],
+    review_refs: Sequence[str],
+    supervisor_refs: Sequence[str],
+    residual_refs: Sequence[str],
+    visual_refs: Sequence[str],
+    final_experience_refs: Sequence[str],
+    capability_refs: Sequence[str],
+) -> ArtifactRecord:
+    trace_path = spec.project_path / ".kun" / "delivery-evidence-trace.json"
+    support_groups = {
+        "test_refs": list(test_refs),
+        "review_refs": list(review_refs),
+        "supervisor_refs": list(supervisor_refs),
+        "residual_refs": list(residual_refs),
+        "visual_refs": list(visual_refs),
+        "final_experience_refs": list(final_experience_refs),
+        "capability_refs": list(capability_refs),
+    }
+    _write_text(
+        trace_path,
+        json.dumps(
+            {
+                "schema": "kun-game-delivery-evidence-trace-v1",
+                "work_item_id": work_item.work_item_id,
+                "production_mode": spec.production_mode,
+                "support_groups": support_groups,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+    )
+    supports = ["delivery_evidence_trace", "internal_test_passed", "playability_gate"]
+    if review_refs:
+        supports.append("prior_review_evidence")
+    if supervisor_refs:
+        supports.append("external_supervisor_gate")
+    if residual_refs:
+        supports.append("benchmark_residual_audit")
+    if visual_refs:
+        supports.append("visual_product_iteration")
+    if final_experience_refs:
+        supports.append("final_player_experience_gate")
+    if capability_refs:
+        supports.extend(["capability_policy_consumed", "required_capabilities_executed"])
+    return _artifact(
+        work_item=work_item,
+        suffix="delivery-evidence-trace",
+        path=trace_path,
+        supports=supports,
+        kind="evidence",
+    )
+
+
 def _unique(values: Sequence[str]) -> list[str]:
     seen: set[str] = set()
     unique_values: list[str] = []
@@ -1502,6 +2054,97 @@ def _unique(values: Sequence[str]) -> list[str]:
         seen.add(value)
         unique_values.append(value)
     return unique_values
+
+
+def _required_test_scripts(spec: GameProductionSpec) -> list[str]:
+    defaults: list[str]
+    if spec.production_mode in SCRIBBLE_PARITY_PRODUCTION_MODES:
+        defaults = ["test:internal", "test:user-sim", "test:fun", "test:browser-static"]
+    else:
+        defaults = ["test:internal", "test:user-sim"]
+    if spec.benchmark_residual_required:
+        defaults.append("test:long")
+    if spec.visual_product_iteration_required:
+        defaults.append("test:visual")
+    return _unique([*defaults, *spec.required_test_scripts])
+
+
+def _missing_required_test_scripts(
+    *,
+    package_payload: dict[str, object],
+    spec: GameProductionSpec,
+) -> list[str]:
+    scripts = package_payload.get("scripts", {})
+    if not isinstance(scripts, dict):
+        scripts = {}
+    return [script for script in _required_test_scripts(spec) if script not in scripts]
+
+
+def _capability_policy_error(
+    *,
+    work_item: WorkItem,
+    policy: CapabilityExecutionPolicy | None,
+) -> str | None:
+    if not work_item.required_capability_refs:
+        return None
+    if policy is None:
+        return (
+            "Required runtime capabilities were attached to this game work item, but the "
+            "runner did not receive a capability execution policy."
+        )
+    missing = sorted(set(work_item.required_capability_refs) - set(policy.capability_profile_refs))
+    if missing:
+        return (
+            f"Capability execution policy is missing required profile refs: {', '.join(missing)}."
+        )
+    if not policy.directives:
+        return "Capability execution policy has profile refs but no executable directives."
+    directive_refs = {
+        capability_ref
+        for directive in policy.directives
+        for capability_ref in directive.capability_refs
+    }
+    uncovered = sorted(set(work_item.required_capability_refs) - directive_refs)
+    if uncovered:
+        return (
+            "Capability execution policy has no executable directive receipts for required "
+            f"profile refs: {', '.join(uncovered)}."
+        )
+    return None
+
+
+def _workspace_boundary_error(*, work_item: WorkItem, spec: GameProductionSpec) -> str | None:
+    phase = _phase_from_work_item(work_item)
+    if phase in COMMAND_PHASES:
+        if work_item.workspace_ref is None:
+            return (
+                "Game production command work item lacks workspace_ref; KUN must activate "
+                "a concrete workspace boundary before executing project commands."
+            )
+        if work_item.sandbox_ref is None:
+            return (
+                "Game production command work item lacks sandbox_ref; KUN must activate "
+                "a sandbox boundary before executing project commands."
+            )
+        if not any(lock.startswith("workspace:") for lock in work_item.resource_locks):
+            return (
+                "Game production command work item lacks a workspace resource lock; "
+                "parallel project writes must be isolated before execution."
+            )
+    if work_item.workspace_ref is None:
+        return None
+    prefix = "workspace://"
+    if not work_item.workspace_ref.startswith(prefix):
+        return f"Unsupported workspace_ref for game production: {work_item.workspace_ref!r}."
+    workspace_path = Path(work_item.workspace_ref[len(prefix) :]).expanduser().resolve()
+    try:
+        spec.project_path.relative_to(workspace_path)
+    except ValueError:
+        return (
+            "Game production project_path is outside the activated workspace boundary: "
+            f"{spec.project_path} is not under {workspace_path}."
+        )
+    return None
 
 
 def _internal_test_artifact_ref(work_item: WorkItem) -> str:
@@ -1640,17 +2283,18 @@ def _final_delivery_markdown(*, task_plan: TaskPlan, spec: GameProductionSpec) -
             f"门禁 {final_experience.get('threshold')}，"
             f"结果 {'通过' if final_experience.get('pass') else '未通过'}。"
         )
-    browser_playtest_refs = [
-        path.name for path in sorted((spec.project_path / "docs").glob("browser-playtest*.json"))
-    ]
-    browser_static_refs = [
-        path.name
-        for path in sorted((spec.project_path / "docs").glob("browser-static-playtest*.json"))
-    ]
+    browser_playtest_refs = _latest_browser_evidence_refs(
+        spec.project_path / "docs",
+        patterns=("browser-live-interaction*.json", "browser-playtest*.json"),
+    )
+    browser_static_refs = _latest_browser_evidence_refs(
+        spec.project_path / "docs",
+        patterns=("browser-static-playtest*.json",),
+    )
     browser_ref = (
-        browser_playtest_refs[-1]
+        browser_playtest_refs[0]
         if browser_playtest_refs
-        else browser_static_refs[-1]
+        else browser_static_refs[0]
         if browser_static_refs
         else ""
     )
@@ -1704,7 +2348,7 @@ def _final_delivery_markdown(*, task_plan: TaskPlan, spec: GameProductionSpec) -
 ## 可玩入口
 
 - 项目路径：`{spec.project_path}`
-- 本地运行：`npm run dev -- --host 127.0.0.1 --port 5179`
+- 本地运行：`npm run dev -- --host 127.0.0.1 --port {spec.local_dev_port}`
 - 构建验证：`npm run build`
 - 内测验证：`npm run test:internal`
 
@@ -1716,6 +2360,81 @@ def _final_delivery_markdown(*, task_plan: TaskPlan, spec: GameProductionSpec) -
 
 {criteria}
 """
+
+
+def _final_delivery_review_markdown(*, task_plan: TaskPlan, spec: GameProductionSpec) -> str:
+    criteria = "\n".join(f"- {item}" for item in task_plan.acceptance_criteria)
+    required_scripts = "\n".join(f"- npm run {script}" for script in _required_test_scripts(spec))
+    return f"""# Final Delivery Review
+
+## Scope
+
+- Project path: `{spec.project_path}`
+- Production mode: `{spec.production_mode}`
+- App: `{spec.app_name}`
+
+## Acceptance Criteria
+
+{criteria}
+
+## Required Test Gates
+
+{required_scripts}
+
+## Human Acceptance
+
+- Status: pending user or external reviewer acceptance after this manifest is published.
+- The delivery manifest must remain in `awaiting_acceptance` until that review is recorded.
+"""
+
+
+def _final_delivery_rollback_markdown(*, task_plan: TaskPlan, spec: GameProductionSpec) -> str:
+    rollback_items = task_plan.rollback_plan or [
+        "Revert to the previous checkpoint or workspace snapshot.",
+        "Move the mission back to repairing.",
+        "Re-run build, required tests, player-experience gate, review, and acceptance.",
+    ]
+    rollback = "\n".join(f"- {item}" for item in rollback_items)
+    return f"""# Final Delivery Rollback Plan
+
+## Trigger
+
+- Any failed user acceptance, missing evidence, stale test result, or delivery regression.
+
+## Procedure
+
+{rollback}
+
+## Project Boundary
+
+- Project path: `{spec.project_path}`
+- Local port hint: `{spec.local_dev_port}`
+"""
+
+
+def _latest_browser_evidence_refs(docs_path: Path, *, patterns: Sequence[str]) -> list[str]:
+    paths: list[Path] = []
+    for pattern in patterns:
+        paths.extend(docs_path.glob(pattern))
+    return [
+        path.name
+        for path in sorted(
+            {path for path in paths if path.is_file()},
+            key=lambda path: (
+                _browser_evidence_version_key(path.name),
+                path.stat().st_mtime,
+                path.name,
+            ),
+            reverse=True,
+        )
+    ]
+
+
+def _browser_evidence_version_key(name: str) -> tuple[int, int]:
+    match = re.search(r"v(\d+)(?:r(\d+))?", name)
+    if match is None:
+        return (0, 0)
+    return (int(match.group(1)), int(match.group(2) or 0))
 
 
 def _playtest_ready_files(spec: GameProductionSpec) -> dict[str, str]:
@@ -1741,12 +2460,16 @@ def _scribble_system_design_markdown(*, task_plan: TaskPlan, spec: GameProductio
         title = "Fire Rabbit Scribble Spark System Design"
         expression = "original Fire Rabbit expression"
         scale = "4 original Fire Rabbit worlds, 24 NPC requests, 72 systemic solution patterns, 120 object nouns, 40 properties, and 12 actions"
-        puzzle_line = "Puzzles: each world has 6 goals and every goal has 3 valid systemic solution patterns."
+        puzzle_line = (
+            "Puzzles: each world has 6 goals and every goal has 3 valid systemic solution patterns."
+        )
     else:
         title = "Fire Rabbit Scribble Spark System Design"
         expression = "original Fire Rabbit expression"
         scale = "two Fire Rabbit worlds with object aliases, safe fallbacks, and material/ability/color/emotion properties"
-        puzzle_line = "Puzzles: each world has 3 goals and every goal has 3 valid systemic solution patterns."
+        puzzle_line = (
+            "Puzzles: each world has 3 goals and every goal has 3 valid systemic solution patterns."
+        )
     return f"""# {title}
 
 ## Boundary
@@ -1783,7 +2506,11 @@ def _scribble_parity_matrix_json(spec: GameProductionSpec) -> str:
         if spec.production_mode in SCRIBBLE_PARITY_PRODUCTION_MODES
         else "2 worlds x 3 goals x 3 systemic solution paths"
     )
-    label = "wordforge" if spec.production_mode == "scribble_adventure_functional_parity_v1" else "fire_rabbit"
+    label = (
+        "wordforge"
+        if spec.production_mode == "scribble_adventure_functional_parity_v1"
+        else "fire_rabbit"
+    )
     payload = {
         "benchmark_boundary": f"functional_system_parity_only_original_{label}_expression",
         "capabilities": [
@@ -1855,6 +2582,314 @@ def _append_once(path: Path, content: str, *, marker: str) -> None:
     _write_text(path, current.rstrip() + "\n" + content.lstrip())
 
 
+def _patch_project_for_image_object_interaction(project_path: Path) -> None:
+    app_path = project_path / "src" / "App.tsx"
+    visuals_path = project_path / "src" / "data" / "visuals.ts"
+    styles_path = project_path / "src" / "styles.css"
+    if visuals_path.exists():
+        _patch_visuals_for_image_object_interaction(visuals_path)
+    if app_path.exists():
+        _patch_app_for_image_object_interaction(app_path)
+    if styles_path.exists():
+        _append_once(
+            styles_path,
+            (
+                ".imageObjectPlayfield{touch-action:none}.livingObject{min-width:104px;min-height:116px;touch-action:none}"
+                ".livingObject .generatedSprite{width:58px;height:58px;object-fit:contain}"
+                ".livingObject .objectCaption{font-weight:900;line-height:1.1;max-width:92px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+            ),
+            marker=".imageObjectPlayfield",
+        )
+
+
+def _patch_project_for_commercial_game_polish(project_path: Path) -> None:
+    assets = project_path / "public" / "assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    _write_text(assets / "companion-spark-star.svg", _spark_star_companion_svg())
+    _write_text(assets / "object-burger.svg", _burger_sprite_svg())
+    _write_text(assets / "object-wolf.svg", _wolf_sprite_svg())
+    app_path = project_path / "src" / "App.tsx"
+    visuals_path = project_path / "src" / "data" / "visuals.ts"
+    styles_path = project_path / "src" / "styles.css"
+    if visuals_path.exists():
+        _patch_visuals_for_commercial_game_polish(visuals_path)
+    if app_path.exists():
+        _patch_app_for_commercial_game_polish(app_path)
+    if styles_path.exists():
+        _append_once(
+            styles_path,
+            _commercial_game_polish_css(),
+            marker=".commercialGamePolish",
+        )
+    reference_path = project_path / "docs" / "character-reference-video" / "reference-notes.md"
+    _write_text(
+        reference_path,
+        (
+            "# Character Reference Notes\n\n"
+            "- Source: user-provided 7.4s MP4 reference, extracted to `docs/character-reference-video/frame-*.png`.\n"
+            "- Product direction: use a bold black-outline yellow star companion with simple dot eyes, tiny legs, and bouncy motion.\n"
+            "- Integration rule: the reference informs original in-game character language; it does not replace product gameplay gates.\n"
+        ),
+    )
+
+
+def _patch_visuals_for_commercial_game_polish(visuals_path: Path) -> None:
+    visuals = visuals_path.read_text(encoding="utf-8")
+    visuals = visuals.replace(
+        'companionPortrait: "/assets/companion-xiaobi.svg"',
+        'companionPortrait: "/assets/companion-spark-star.svg"',
+    )
+    visuals = visuals.replace(
+        "if (isFoodObject(object)) return generatedObjectTemplates.burger;",
+        'if (isFoodObject(object)) return "/assets/object-burger.svg";',
+    )
+    visuals = visuals.replace(
+        "if (isWolfObject(object)) return generatedObjectTemplates.wolf;",
+        'if (isWolfObject(object)) return "/assets/object-wolf.svg";',
+    )
+    _write_text(visuals_path, visuals)
+
+
+def _patch_app_for_commercial_game_polish(app_path: Path) -> None:
+    app = app_path.read_text(encoding="utf-8")
+    app = app.replace(
+        "tabletWorkbench visual-polish-ready",
+        "tabletWorkbench visual-polish-ready commercial-game-polish-ready",
+    )
+    app = app.replace(
+        "stagePanel visualStage immersiveStage",
+        "stagePanel visualStage immersiveStage commercialGamePolish",
+    )
+    app = app.replace(
+        "stageScene illustratedScene visualFocusLayer sandboxDynamics imageObjectPlayfield",
+        "stageScene illustratedScene visualFocusLayer sandboxDynamics imageObjectPlayfield premiumTouchStage",
+    )
+    app = app.replace(
+        "拖到舞台，或点动作导演。",
+        "拖动物件到角色或目标上，观察真实反应。",
+    )
+    if "referenceCharacterBadge" not in app:
+        app = app.replace(
+            """<img className="stageCompanionAvatar" src={activeVisual.companionPortrait} alt={`${activeWorld.companion} 正在舞台里等待孩子造物`} />""",
+            """<img className="stageCompanionAvatar referenceCharacterMotion" src={activeVisual.companionPortrait} alt={`${activeWorld.companion} 正在舞台里等待孩子造物`} />
+              <span className="referenceCharacterBadge">灵感角色</span>""",
+        )
+    _write_text(app_path, app)
+
+
+def _spark_star_companion_svg() -> str:
+    return """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-label="original spark star companion">
+  <rect width="160" height="160" rx="28" fill="#fffdf7"/>
+  <path d="M79 18 98 57l43 2-34 27 11 42-38-24-38 24 11-42-34-27 43-2z" fill="#ffd75e" stroke="#15191f" stroke-width="10" stroke-linejoin="round"/>
+  <ellipse cx="69" cy="72" rx="5" ry="10" fill="#15191f"/>
+  <ellipse cx="91" cy="72" rx="5" ry="10" fill="#15191f"/>
+  <path d="M65 108c-11 14-7 28 12 28M94 108c11 14 7 28-12 28" fill="none" stroke="#15191f" stroke-width="10" stroke-linecap="round"/>
+</svg>
+"""
+
+
+def _burger_sprite_svg() -> str:
+    return """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="burger game object">
+  <rect width="128" height="128" rx="26" fill="#fff8e7"/>
+  <path d="M20 61c5-28 83-28 88 0z" fill="#f5b352" stroke="#182333" stroke-width="7"/>
+  <path d="M25 66h78v16H25z" fill="#8b4b2b" stroke="#182333" stroke-width="6"/>
+  <path d="M30 84h68v15H30z" fill="#f6d55f" stroke="#182333" stroke-width="6"/>
+  <circle cx="49" cy="50" r="4" fill="#fff8e7"/><circle cx="68" cy="47" r="4" fill="#fff8e7"/><circle cx="83" cy="52" r="4" fill="#fff8e7"/>
+</svg>
+"""
+
+
+def _wolf_sprite_svg() -> str:
+    return """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="wolf game object">
+  <rect width="128" height="128" rx="26" fill="#edf6ff"/>
+  <path d="M25 59 38 24l22 23 27-23 16 35v23c0 22-18 38-39 38S25 104 25 82z" fill="#9aa8b5" stroke="#182333" stroke-width="7" stroke-linejoin="round"/>
+  <circle cx="52" cy="72" r="6" fill="#182333"/><circle cx="77" cy="72" r="6" fill="#182333"/>
+  <path d="M58 88h14l-7 7z" fill="#182333"/>
+  <path d="M41 52h46" stroke="#fff" stroke-width="5" stroke-linecap="round" opacity=".45"/>
+</svg>
+"""
+
+
+def _commercial_game_polish_css() -> str:
+    return """.commercialGamePolish{background:linear-gradient(180deg,#fffaf0 0%,#eefaff 100%);border-width:3px;box-shadow:0 18px 40px rgba(22,38,58,.18)}.premiumTouchStage{height:clamp(380px,calc(100vh - 310px),640px);border-width:3px;background:radial-gradient(circle at 30% 20%,rgba(255,244,157,.9),transparent 26%),linear-gradient(var(--sky),#ffffff 50%,var(--ground));}.referenceCharacterMotion{width:96px;height:96px;bottom:118px;animation:starHop 1.8s ease-in-out infinite;filter:drop-shadow(7px 10px 0 rgba(24,35,51,.23))}.referenceCharacterBadge{position:absolute;left:calc(50% + 34px);bottom:178px;z-index:4;background:#fff6bf;border:2px solid #182333;border-radius:999px;padding:5px 8px;font-weight:1000;font-size:11px;box-shadow:3px 3px 0 rgba(24,35,51,.18)}.premiumTouchStage .livingObject{background:rgba(255,255,255,.55);border:0;box-shadow:none;min-width:98px;min-height:98px}.premiumTouchStage .livingObject .generatedSprite{width:86px;height:86px;filter:drop-shadow(4px 7px 0 rgba(24,35,51,.2))}.premiumTouchStage .livingObject .objectCaption{position:absolute;left:50%;bottom:-18px;transform:translateX(-50%);background:rgba(255,255,255,.78);border:1px solid rgba(24,35,51,.28);border-radius:999px;padding:2px 7px;font-size:10px;opacity:.76}.premiumTouchStage .speechBubble{left:22px;right:22px;bottom:14px;max-height:72px}.premiumTouchStage .starterObjectPreview{bottom:64px}.premiumTouchStage .questDeck{top:16px;right:16px}.premiumTouchStage .touchHint{background:#fff6bf}@keyframes starHop{0%,100%{transform:translateX(-50%) translateY(0) rotate(-2deg)}45%{transform:translateX(-50%) translateY(-14px) rotate(3deg)}70%{transform:translateX(-50%) translateY(-4px) rotate(-1deg)}}@media(max-width:700px){.premiumTouchStage{height:560px}.referenceCharacterMotion{bottom:126px}.referenceCharacterBadge{bottom:188px}}
+"""
+
+
+def _patch_visuals_for_image_object_interaction(visuals_path: Path) -> None:
+    visuals = visuals_path.read_text(encoding="utf-8")
+    if (
+        "generatedObjectImage" in visuals
+        and "isFoodObject" in visuals
+        and "isWolfObject" in visuals
+    ):
+        return
+    insert = """
+export function isFoodObject(object: GeneratedObject): boolean {
+  const text = `${object.name} ${object.kind} ${object.ruleFamilies.join(" ")}`.toLowerCase();
+  return object.kind.includes("food") || /汉堡|食物|点心|苹果|蛋糕|肉|burger|hamburger|food/.test(text);
+}
+
+export function isWolfObject(object: GeneratedObject): boolean {
+  const text = `${object.name} ${object.kind} ${object.ruleFamilies.join(" ")}`.toLowerCase();
+  return object.kind.includes("wolf") || /狼|小狼|wolf/.test(text);
+}
+
+const generatedObjectTemplates: Record<string, string> = {
+  burger: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'><rect width='96' height='96' rx='20' fill='%23fff6df'/><path d='M18 46c3-17 57-17 60 0z' fill='%23f5b04d' stroke='%23293847' stroke-width='5'/><path d='M19 52h58v12H19z' fill='%23884a2b'/><path d='M23 64h50v10H23z' fill='%23f7cf58'/></svg>",
+  wolf: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'><rect width='96' height='96' rx='20' fill='%23eef5ff'/><path d='M20 44 31 18l16 18 18-18 11 26v20c0 14-13 24-28 24S20 78 20 64z' fill='%2397a7b8' stroke='%23293847' stroke-width='5'/><circle cx='39' cy='55' r='5' fill='%23293847'/><circle cx='58' cy='55' r='5' fill='%23293847'/></svg>",
+};
+
+export function generatedObjectImage(object: GeneratedObject): string {
+  if (isFoodObject(object)) return generatedObjectTemplates.burger;
+  if (isWolfObject(object)) return generatedObjectTemplates.wolf;
+  return objectAsset(object);
+}
+
+export function generatedSprite(object: GeneratedObject): string {
+  return generatedObjectImage(object);
+}
+
+"""
+    visuals = _replace_once(
+        visuals, "export function objectAsset", insert + "export function objectAsset"
+    )
+    visuals = _replace_once(
+        visuals,
+        "export function objectAsset(object: GeneratedObject): string {\n",
+        "export function objectAsset(object: GeneratedObject): string {\n  if (isFoodObject(object)) return generatedObjectTemplates.burger;\n  if (isWolfObject(object)) return generatedObjectTemplates.wolf;\n",
+    )
+    _write_text(visuals_path, visuals)
+
+
+def _patch_app_for_image_object_interaction(app_path: Path) -> None:
+    app = app_path.read_text(encoding="utf-8")
+    if (
+        "generatedObjectImage" in app
+        and "finishStageInteraction" in app
+        and "application/x-wordforge-object-id" in app
+        and "dropObjectOnStage(touchDragName)" not in app
+    ):
+        return
+    app = _replace_once(
+        app,
+        'import { visualsForWorld, objectAsset, objectMotionClass, stickerForObject } from "./data/visuals";',
+        'import { visualsForWorld, objectAsset, objectMotionClass, stickerForObject, generatedObjectImage, generatedSprite, isFoodObject, isWolfObject } from "./data/visuals";',
+    )
+    app = _replace_once(
+        app,
+        "  const [touchDragName, setTouchDragName] = useState<string | null>(null);",
+        "  const [inventoryDragId, setInventoryDragId] = useState<string | null>(null);\n  const [draggingStageId, setDraggingStageId] = useState<string | null>(null);\n  const [stagePositions, setStagePositions] = useState<Record<string, { left: number; top: number }>>({});",
+    )
+    app = _replace_once(
+        app,
+        """  function dropObjectOnStage(name: string) {
+    createFromWords(`把${name}放到舞台中央并观察它怎么帮助目标`);
+  }""",
+        """  function moveStageObject(objectId: string, left = 50, top = 44) {
+    setStagePositions((positions) => ({
+      ...positions,
+      [objectId]: { left: Math.max(4, Math.min(86, left)), top: Math.max(8, Math.min(74, top)) },
+    }));
+  }
+
+  function finishStageInteraction(objectId: string) {
+    update((current) => {
+      const worldId = current.activeWorldId;
+      const before = current.worlds[worldId];
+      const moved = before.objects.find((object) => object.id === objectId);
+      if (!moved) return current;
+      const eater = before.objects.find((object) => object.id !== moved.id && isWolfObject(object));
+      if (!isFoodObject(moved) || !eater) return current;
+      const event: PlayEvent = {
+        id: `event-${Date.now()}`,
+        at: new Date().toISOString(),
+        worldId,
+        input: `${moved.name}->${eater.name}`,
+        object: moved,
+        feedback: `${eater.name}吃掉了${moved.name}，它满足地摇尾巴，舞台产生了真实互动。`,
+        solvedGoalIds: [],
+        solutionLabels: ["对象互动"],
+        sparkTags: ["science", "social"],
+      };
+      return {
+        ...current,
+        worlds: { ...current.worlds, [worldId]: { ...before, objects: before.objects.filter((object) => object.id !== moved.id) } },
+        events: [event, ...current.events].slice(0, 160),
+      };
+    });
+  }
+
+  function dropObjectOnStage(objectId: string) {
+    const existing = activeState.objects.find((object) => object.id === objectId);
+    if (existing) {
+      moveStageObject(objectId);
+      finishStageInteraction(objectId);
+      return;
+    }
+    const inventoryObject = activeState.inventory.find((object) => object.id === objectId);
+    if (inventoryObject) applyGeneratedObject(inventoryObject);
+  }""",
+    )
+    app = app.replace(
+        "    setTouchDragName(null);",
+        "    setInventoryDragId(null);\n    setDraggingStageId(null);\n    setStagePositions({});",
+    )
+    app = app.replace("setTouchDragName(object.name)", "setInventoryDragId(object.id)")
+    app = app.replace(
+        'event.dataTransfer.setData("text/plain", object.name)',
+        'event.dataTransfer.setData("application/x-wordforge-object-id", object.id)',
+    )
+    app = app.replace("dropObjectOnStage(touchDragName)", "dropObjectOnStage(draggingStageId)")
+    app = app.replace("if (touchDragName)", "if (draggingStageId)")
+    app = app.replace("setTouchDragName(null)", "setDraggingStageId(null)")
+    app = app.replace(
+        'const name = event.dataTransfer.getData("text/plain"); if (name) dropObjectOnStage(name);',
+        'const objectId = event.dataTransfer.getData("application/x-wordforge-object-id"); if (objectId) dropObjectOnStage(objectId);',
+    )
+    app = app.replace(
+        "stageScene illustratedScene visualFocusLayer sandboxDynamics",
+        "stageScene illustratedScene visualFocusLayer sandboxDynamics imageObjectPlayfield",
+    )
+    app = app.replace(
+        "onTouchDragStart={() => setInventoryDragId(object.id)}",
+        "onStageDragStart={() => setDraggingStageId(object.id)}",
+    )
+    app = app.replace(
+        '<img src={objectAsset(object)} alt="" />{object.name}',
+        '<img src={generatedSprite(object)} alt="" />{object.name}',
+    )
+    app = app.replace(
+        "style={objectStageStyle(object, index)}",
+        "style={objectStageStyle(object, index, position)}",
+    )
+    app = app.replace(
+        "function objectStageStyle(object: GeneratedObject, index: number): CSSProperties {",
+        "function objectStageStyle(object: GeneratedObject, index: number, position?: { left: number; top: number }): CSSProperties {\n  if (position) return { left: `${position.left}%`, top: `${position.top}%`, zIndex: 2 + index } as CSSProperties;",
+    )
+    app = app.replace(
+        "function ObjectToken({ object, index, selected, onSelect, onTouchDragStart }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void; onTouchDragStart: () => void }) {",
+        "function ObjectToken({ object, index, position, selected, onSelect, onStageDragStart }: { object: GeneratedObject; index: number; position?: { left: number; top: number }; selected: boolean; onSelect: () => void; onStageDragStart: () => void }) {",
+    )
+    app = app.replace("onPointerDown={onTouchDragStart}", "onPointerDown={onStageDragStart}")
+    app = app.replace(
+        "className={`objectCard objectSprite", "className={`livingObject objectCard objectSprite"
+    )
+    app = app.replace(
+        '<img src={objectAsset(object)} alt="" /><span>{object.name}</span>',
+        '<img className="generatedSprite" src={generatedObjectImage(object)} alt="" /><span className="objectCaption">{object.name}</span>',
+    )
+    if "onPointerMove={(event) => { if (draggingStageId)" not in app:
+        app = app.replace(
+            "onPointerUp={() => { if (draggingStageId) { dropObjectOnStage(draggingStageId); setDraggingStageId(null); } }}",
+            "onPointerMove={(event) => { if (draggingStageId) moveStageObject(draggingStageId, (event.nativeEvent.offsetX / Math.max(1, event.currentTarget.clientWidth)) * 100, (event.nativeEvent.offsetY / Math.max(1, event.currentTarget.clientHeight)) * 100); }} onPointerUp={() => { if (draggingStageId) { finishStageInteraction(draggingStageId); setDraggingStageId(null); } if (inventoryDragId) setInventoryDragId(null); }}",
+        )
+    app = app.replace(
+        "onPointerCancel={() => setDraggingStageId(null)}",
+        "onPointerCancel={() => { setDraggingStageId(null); setInventoryDragId(null); }}",
+    )
+    _write_text(app_path, app)
+
+
 def _patch_app_for_experience_director(app_path: Path) -> None:
     app = app_path.read_text(encoding="utf-8")
     if "questDeck" in app and "directManipulation" in app and "objectRelationGraph" in app:
@@ -1897,8 +2932,22 @@ def _patch_app_for_experience_director(app_path: Path) -> None:
 
 def _patch_app_for_sandbox_dynamics(app_path: Path) -> None:
     app = app_path.read_text(encoding="utf-8")
-    if "sandboxDynamics" in app and "actionTrail" in app and "onDrop" in app:
+    if (
+        "sandboxDynamics" in app
+        and "actionTrail" in app
+        and "onDrop" in app
+        and "touchDragName" in app
+        and "onPointerUp" in app
+    ):
         return
+    app = _replace_once(
+        app,
+        """  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [editProperty, setEditProperty] = useState("flying");""",
+        """  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [touchDragName, setTouchDragName] = useState<string | null>(null);
+  const [editProperty, setEditProperty] = useState("flying");""",
+    )
     app = _replace_once(
         app,
         "  const relationObjects = activeState.inventory.slice(-6);",
@@ -1922,11 +2971,29 @@ def _patch_app_for_sandbox_dynamics(app_path: Path) -> None:
     )
     app = _replace_once(
         app,
+        "    setSelectedIds([]);",
+        "    setSelectedIds([]);\n    setTouchDragName(null);",
+    )
+    app = _replace_once(
+        app,
         """            <div className="stageScene illustratedScene">
               <img className="worldBackdrop" src={activeVisual.backdrop} alt="" />""",
-        """            <div className="stageScene illustratedScene sandboxDynamics" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const name = event.dataTransfer.getData("text/plain"); if (name) dropObjectOnStage(name); }}>
+        """            <div className="stageScene illustratedScene sandboxDynamics" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const name = event.dataTransfer.getData("text/plain"); if (name) dropObjectOnStage(name); }} onPointerUp={() => { if (touchDragName) { dropObjectOnStage(touchDragName); setTouchDragName(null); } }} onPointerCancel={() => setTouchDragName(null)}>
               <img className="worldBackdrop" src={activeVisual.backdrop} alt="" />
-              <div className="touchHint">拖动物件到舞台，或用动作导演推动、骑乘、交给伙伴。</div>""",
+              <div className="touchHint">拖到舞台，或点动作导演。</div>""",
+    )
+    app = _replace_once(
+        app,
+        """            <div className="stageScene illustratedScene visualFocusLayer">
+              <img className="worldBackdrop" src={activeVisual.backdrop} alt="" />""",
+        """            <div className="stageScene illustratedScene visualFocusLayer sandboxDynamics" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const name = event.dataTransfer.getData("text/plain"); if (name) dropObjectOnStage(name); }} onPointerUp={() => { if (touchDragName) { dropObjectOnStage(touchDragName); setTouchDragName(null); } }} onPointerCancel={() => setTouchDragName(null)}>
+              <img className="worldBackdrop" src={activeVisual.backdrop} alt="" />
+              <div className="touchHint">拖到舞台，或点动作导演。</div>""",
+    )
+    app = _replace_once(
+        app,
+        """<ObjectToken key={object.id} object={object} index={index} selected={selectedIds.includes(object.id)} onSelect={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])} />""",
+        """<ObjectToken key={object.id} object={object} index={index} selected={selectedIds.includes(object.id)} onTouchDragStart={() => setTouchDragName(object.name)} onSelect={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])} />""",
     )
     app = _replace_once(
         app,
@@ -1934,15 +3001,15 @@ def _patch_app_for_sandbox_dynamics(app_path: Path) -> None:
             <h2>背包</h2><div className="inventoryShelf">{activeState.inventory.slice(-12).map((object) => <button key={object.id} className={selectedIds.includes(object.id) ? "selected inventoryToken" : "inventoryToken"} onClick={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])}><img src={objectAsset(object)} alt="" />{object.name}</button>)}</div>""",
         """            <h2>对象关系图</h2><div className="objectRelationGraph">{relationObjects.length ? relationObjects.map((object, index) => <span key={object.id}>{index ? "→ " : ""}{object.name}:{object.ruleFamilies.slice(0, 2).join("/")}</span>) : <span>生成多个物件后，这里会显示它们如何连接目标、属性和动作。</span>}</div>
             <h2>动作轨迹</h2><div className="actionTrail">{actionTrail.length ? actionTrail.map((event) => <span key={event.id}>{event.object.name} → {event.solutionLabels[0] ?? "继续试属性/组合"}</span>) : <span>每次造物、拖放和操作都会留下可复盘轨迹。</span>}</div>
-            <h2>背包</h2><div className="inventoryShelf">{activeState.inventory.slice(-12).map((object) => <button key={object.id} draggable onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={selectedIds.includes(object.id) ? "selected inventoryToken" : "inventoryToken"} onClick={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])}><img src={objectAsset(object)} alt="" />{object.name}</button>)}</div>""",
+            <h2>背包</h2><div className="inventoryShelf">{activeState.inventory.slice(-12).map((object) => <button key={object.id} draggable onPointerDown={() => setTouchDragName(object.name)} onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={selectedIds.includes(object.id) ? "selected inventoryToken" : "inventoryToken"} onClick={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])}><img src={objectAsset(object)} alt="" />{object.name}</button>)}</div>""",
     )
     app = _replace_once(
         app,
         """function ObjectToken({ object, index, selected, onSelect }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void }) {
   return <button className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
 }""",
-        """function ObjectToken({ object, index, selected, onSelect }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void }) {
-  return <button draggable onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
+        """function ObjectToken({ object, index, selected, onSelect, onTouchDragStart }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void; onTouchDragStart: () => void }) {
+  return <button draggable onPointerDown={onTouchDragStart} onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
 }""",
     )
     _write_text(app_path, app)
@@ -2079,7 +3146,11 @@ function semanticFallbackEntry(input: string, worldId: WorldId): VocabularyEntry
 
 def _patch_app_for_spatial_playfield(app_path: Path) -> None:
     app = app_path.read_text(encoding="utf-8")
-    if "stagePhysicsOverlay" in app and "objectStageStyle" in app and "objectTrajectoryLabel" in app:
+    if (
+        "stagePhysicsOverlay" in app
+        and "objectStageStyle" in app
+        and "objectTrajectoryLabel" in app
+    ):
         return
     app = _replace_once(
         app,
@@ -2089,8 +3160,40 @@ def _patch_app_for_spatial_playfield(app_path: Path) -> None:
     )
     app = _replace_once(
         app,
+        """              <div className="sceneLayer">{activeState.objects.slice(-18).map((object, index) => <ObjectToken key={object.id} object={object} index={index} selected={selectedIds.includes(object.id)} onTouchDragStart={() => setTouchDragName(object.name)} onSelect={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])} />)}</div>""",
+        """              <div className="stagePhysicsOverlay" aria-hidden="true">{activeState.objects.slice(-6).map((object, index) => <span key={`path-${object.id}`} className={`stagePath path${index % 4}`}>{objectTrajectoryLabel(object)}</span>)}</div>
+              <div className="sceneLayer">{activeState.objects.slice(-18).map((object, index) => <ObjectToken key={object.id} object={object} index={index} selected={selectedIds.includes(object.id)} onTouchDragStart={() => setTouchDragName(object.name)} onSelect={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])} />)}</div>""",
+    )
+    app = _replace_once(
+        app,
         """function ObjectToken({ object, index, selected, onSelect }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void }) {
   return <button draggable onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
+}""",
+        """function stageHash(value: string): number {
+  return Array.from(value).reduce((total, char) => total + char.charCodeAt(0), 0);
+}
+
+function objectStageStyle(object: GeneratedObject, index: number): CSSProperties {
+  const seed = stageHash(`${object.name}-${object.kind}-${object.ruleFamilies.join("|")}`);
+  const slots = [[36, 18], [18, 34], [53, 30], [36, 42], [62, 44], [24, 14], [48, 12], [10, 48]];
+  const [left, top] = slots[(index + seed) % slots.length];
+  return { left: `${left}%`, top: `${top}%`, zIndex: 2 + index } as CSSProperties;
+}
+
+function objectTrajectoryLabel(object: GeneratedObject): string {
+  const family = object.ruleFamilies[0] ?? "idea";
+  const verb = object.action === "combine" ? "组合" : object.action === "attach" ? "附着" : object.action === "protect" ? "守护" : object.action === "repair" ? "修复" : "影响";
+  return `${object.name} ${verb} ${family}`;
+}
+
+function ObjectToken({ object, index, selected, onSelect }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void }) {
+  return <button draggable style={objectStageStyle(object, index)} onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
+}""",
+    )
+    app = _replace_once(
+        app,
+        """function ObjectToken({ object, index, selected, onSelect, onTouchDragStart }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void; onTouchDragStart: () => void }) {
+  return <button draggable onPointerDown={onTouchDragStart} onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
 }""",
         """function stageHash(value: string): number {
   return Array.from(value).reduce((total, char) => total + char.charCodeAt(0), 0);
@@ -2109,15 +3212,15 @@ function objectTrajectoryLabel(object: GeneratedObject): string {
   return `${object.name} ${verb} ${family}`;
 }
 
-function ObjectToken({ object, index, selected, onSelect }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void }) {
-  return <button draggable style={objectStageStyle(object, index)} onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
+function ObjectToken({ object, index, selected, onSelect, onTouchDragStart }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void; onTouchDragStart: () => void }) {
+  return <button draggable style={objectStageStyle(object, index)} onPointerDown={onTouchDragStart} onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
 }""",
     )
     _write_text(app_path, app)
 
 
 def _experience_director_css() -> str:
-    return """.questDeck{position:absolute;right:16px;top:16px;z-index:4;width:min(310px,44%);background:rgba(255,253,247,.94);border:2px solid #203142;border-radius:8px;padding:12px;box-shadow:5px 5px 0 rgba(32,49,66,.2)}.questDeck strong,.questDeck span{display:block}.questDeck span{font-size:13px;color:#405166;margin:4px 0 8px}.questDeck div{display:flex;flex-wrap:wrap;gap:5px}.questDeck em{font-size:11px;font-style:normal;border:1px solid #8fbbe5;background:#edf7ff;border-radius:999px;padding:4px 7px}.actionDirector{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:8px 0 12px}.actionDirector button{padding:8px 6px}.objectRelationGraph{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0 12px}.objectRelationGraph span{border:1px solid #cbddec;background:#f8fbff;border-radius:8px;padding:6px 8px;font-size:12px;font-weight:800;color:#405166}@media(max-width:700px){.questDeck{position:relative;top:auto;right:auto;width:auto;margin:10px}.actionDirector{grid-template-columns:1fr}}
+    return """.questDeck{position:absolute;right:12px;top:54px;z-index:4;width:min(220px,36%);max-height:64px;overflow:auto;background:rgba(255,253,247,.92);border:2px solid #203142;border-radius:8px;padding:7px 8px;box-shadow:4px 4px 0 rgba(32,49,66,.16);pointer-events:none}.questDeck strong,.questDeck span{display:block}.questDeck strong{font-size:12px}.questDeck span{font-size:11px;color:#405166;margin:2px 0 4px}.questDeck div{display:flex;flex-wrap:wrap;gap:4px}.questDeck em{font-size:10px;font-style:normal;border:1px solid #8fbbe5;background:#edf7ff;border-radius:999px;padding:2px 5px}.actionDirector{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:8px 0 12px}.actionDirector button{padding:8px 6px}.objectRelationGraph{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0 12px}.objectRelationGraph span{border:1px solid #cbddec;background:#f8fbff;border-radius:8px;padding:6px 8px;font-size:12px;font-weight:800;color:#405166}@media(max-width:700px){.questDeck{position:relative;top:auto;right:auto;width:auto;max-height:none;margin:10px;pointer-events:auto}.actionDirector{grid-template-columns:1fr}}
 """
 
 
@@ -2127,17 +3230,17 @@ def _creative_goal_lab_css() -> str:
 
 
 def _mastery_loop_css() -> str:
-    return """.masteryProgress{position:absolute;left:50%;top:18px;z-index:4;transform:translateX(-50%);width:min(270px,38%);background:rgba(255,255,255,.9);border:2px solid #203142;border-radius:8px;padding:9px 10px;box-shadow:4px 4px 0 rgba(32,49,66,.18);overflow:hidden}.masteryProgress span,.masteryProgress strong{position:relative;z-index:2;font-weight:1000}.masteryProgress strong{float:right}.masteryProgress i{position:absolute;left:0;bottom:0;height:6px;background:#7ee6a8;transition:width .35s ease}.masteryCelebration,.failureCoach{position:absolute;right:18px;bottom:104px;z-index:4;width:min(310px,44%);border:2px solid #203142;border-radius:8px;padding:10px 12px;box-shadow:5px 5px 0 rgba(32,49,66,.18)}.masteryCelebration{background:#fff1b8;animation:celebratePop 1.1s ease-in-out infinite alternate}.failureCoach{background:rgba(255,255,255,.92)}.masteryCelebration strong,.failureCoach strong{display:block;margin-bottom:3px}@keyframes celebratePop{from{transform:scale(1) rotate(-1deg)}to{transform:scale(1.03) rotate(1deg)}}@media(max-width:700px){.masteryProgress{position:relative;left:auto;top:auto;transform:none;width:auto;margin:10px}.masteryCelebration,.failureCoach{position:relative;right:auto;bottom:auto;width:auto;margin:10px}}
+    return """.masteryProgress{position:absolute;right:12px;top:10px;z-index:4;width:min(170px,28%);background:rgba(255,255,255,.9);border:2px solid #203142;border-radius:8px;padding:6px 8px;box-shadow:3px 3px 0 rgba(32,49,66,.16);overflow:hidden}.masteryProgress span,.masteryProgress strong{position:relative;z-index:2;font-weight:1000;font-size:12px}.masteryProgress strong{float:right}.masteryProgress i{position:absolute;left:0;bottom:0;height:5px;background:#7ee6a8;transition:width .35s ease}.masteryCelebration,.failureCoach{position:absolute;left:12px;bottom:104px;z-index:4;width:min(176px,34%);max-height:52px;overflow:auto;border:2px solid #203142;border-radius:8px;padding:6px 8px;box-shadow:4px 4px 0 rgba(32,49,66,.16);font-size:11px}.masteryCelebration{background:rgba(255,241,184,.92);animation:celebratePop 1.1s ease-in-out infinite alternate}.failureCoach{background:rgba(255,255,255,.9)}.masteryCelebration strong,.failureCoach strong{display:block;margin-bottom:1px}@keyframes celebratePop{from{transform:scale(1) rotate(-1deg)}to{transform:scale(1.03) rotate(1deg)}}@media(max-width:700px){.masteryProgress{position:relative;left:auto;right:auto;top:auto;transform:none;width:auto;margin:10px}.masteryCelebration,.failureCoach{position:relative;right:auto;bottom:auto;width:auto;max-height:none;margin:10px}}
 """
 
 
 def _spatial_playfield_css() -> str:
-    return """.stagePhysicsOverlay{position:absolute;inset:72px 22px 118px;z-index:1;pointer-events:none}.stagePath{position:absolute;display:inline-flex;max-width:190px;border:1px dashed rgba(32,49,66,.55);background:rgba(255,255,255,.72);border-radius:999px;padding:5px 9px;font-size:11px;font-weight:1000;color:#24435d;box-shadow:2px 2px 0 rgba(32,49,66,.12);animation:pathPulse 2.8s ease-in-out infinite}.path0{left:5%;top:14%;transform:rotate(-5deg)}.path1{left:38%;top:8%;transform:rotate(4deg)}.path2{left:16%;top:58%;transform:rotate(3deg)}.path3{right:5%;top:42%;transform:rotate(-3deg)}.objectCard{transition:left .28s ease,top .28s ease,transform .2s ease}.objectCard.selected{outline:3px solid rgba(24,135,255,.45)}@keyframes pathPulse{0%,100%{opacity:.58;filter:saturate(1)}50%{opacity:1;filter:saturate(1.4)}}
+    return """.stagePhysicsOverlay{position:absolute;inset:82px 22px 118px;z-index:1;pointer-events:none}.stagePath{position:absolute;display:inline-flex;max-width:150px;border:1px dashed rgba(32,49,66,.45);background:rgba(255,255,255,.62);border-radius:999px;padding:3px 6px;font-size:10px;font-weight:1000;color:#24435d;box-shadow:2px 2px 0 rgba(32,49,66,.1);animation:pathPulse 2.8s ease-in-out infinite}.path0{left:5%;top:18%;transform:rotate(-5deg)}.path1{left:42%;top:12%;transform:rotate(4deg)}.path2{left:16%;top:58%;transform:rotate(3deg)}.path3{right:5%;top:46%;transform:rotate(-3deg)}.objectCard{min-width:76px;min-height:66px;max-width:92px;gap:1px;padding:4px;border-radius:10px;overflow:hidden;transition:left .28s ease,top .28s ease,transform .2s ease}.objectCard img{width:32px;height:32px}.objectCard span{font-size:11px;max-width:82px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.objectCard small{display:none}.objectCard em,.objectCard b{font-size:9px;padding:2px 5px}.objectCard.selected{outline:3px solid rgba(24,135,255,.45)}@keyframes pathPulse{0%,100%{opacity:.45;filter:saturate(1)}50%{opacity:.78;filter:saturate(1.3)}}
 """
 
 
 def _sandbox_dynamics_css() -> str:
-    return """.sandboxDynamics{outline:3px dashed rgba(24,135,255,.22);outline-offset:-10px}.touchHint{position:absolute;left:18px;top:18px;z-index:4;max-width:310px;background:rgba(255,255,255,.88);border:2px solid #203142;border-radius:999px;padding:8px 12px;font-weight:1000;color:#24435d;box-shadow:3px 3px 0 rgba(32,49,66,.18)}.actionTrail{display:grid;gap:6px;margin:8px 0 12px}.actionTrail span{border:1px solid #d7c7ff;background:#f8f4ff;border-radius:8px;padding:7px 8px;font-size:12px;font-weight:900;color:#4d3b7a}.objectCard[draggable=true],.inventoryToken[draggable=true]{touch-action:none;cursor:grab}.objectCard[draggable=true]:active,.inventoryToken[draggable=true]:active{cursor:grabbing;transform:scale(1.03) rotate(-1deg)}
+    return """.sandboxDynamics{outline:3px dashed rgba(24,135,255,.22);outline-offset:-10px}.touchHint{position:absolute;left:10px;top:10px;z-index:4;max-width:160px;background:rgba(255,255,255,.82);border:2px solid #203142;border-radius:999px;padding:5px 8px;font-size:11px;font-weight:1000;color:#24435d;box-shadow:3px 3px 0 rgba(32,49,66,.14);pointer-events:none}.actionTrail{display:grid;gap:6px;margin:8px 0 12px}.actionTrail span{border:1px solid #d7c7ff;background:#f8f4ff;border-radius:8px;padding:7px 8px;font-size:12px;font-weight:900;color:#4d3b7a}.objectCard[draggable=true],.inventoryToken[draggable=true]{touch-action:none;cursor:grab}.objectCard[draggable=true]:active,.inventoryToken[draggable=true]:active{cursor:grabbing;transform:scale(1.03) rotate(-1deg)}
 """
 
 
@@ -2164,6 +3267,70 @@ if (failed.length) process.exit(1);
 """
 
 
+def _visual_product_test_script() -> str:
+    return """import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+
+const assetDir = "public/assets";
+const app = readFileSync("src/App.tsx", "utf8");
+const styles = readFileSync("src/styles.css", "utf8");
+const visuals = readFileSync("src/data/visuals.ts", "utf8");
+const assets = existsSync(assetDir) ? readdirSync(assetDir).filter((file) => file.endsWith(".svg")) : [];
+const checks = [
+  ["at least 12 original svg assets", assets.length >= 12],
+  ["world backdrops present", assets.filter((file) => file.startsWith("world-")).length >= 4],
+  ["companion portraits present", assets.filter((file) => file.startsWith("companion-")).length >= 4],
+  ["object sprites present", assets.filter((file) => file.startsWith("object-")).length >= 7],
+  ["app uses illustrated stage", app.includes("illustratedScene") && app.includes("worldBackdrop")],
+  ["app uses companion portraits", app.includes("companionPortrait")],
+  ["app uses object sprites", app.includes("objectSprite") && app.includes("generatedObjectImage")],
+  ["visual data mapping exists", visuals.includes("worldVisuals") && visuals.includes("objectAsset") && visuals.includes("generatedObjectImage")],
+  ["image-first generated objects", app.includes("livingObject") && app.includes("generatedSprite") && styles.includes(".imageObjectPlayfield") && styles.includes(".livingObject .objectCaption{")],
+  ["food and wolf get pictorial sprites", visuals.includes("isFoodObject") && visuals.includes("isWolfObject") && visuals.includes("burger:") && visuals.includes("wolf:")],
+  ["animation hooks exist", styles.includes("@keyframes floaty") && styles.includes("motionFlying")],
+  ["visual polish marker", app.includes("visual-polish-ready")],
+  ["immersive stage shell", app.includes("immersiveGameShell") && app.includes("immersiveStage") && app.includes("floatingQuestRail") && app.includes("floatingCreatorTray") && styles.includes("grid-template-columns:minmax(0,1fr)")],
+  ["floating rails do not occlude first viewport", styles.includes(".stagePanel{margin-left:calc(min(260px,20vw) + 20px);margin-right:calc(min(260px,20vw) + 20px);min-width:0}") && styles.includes("@media(max-width:1000px){.playGrid,.immersiveGameShell{grid-template-columns:1fr}.stagePanel{margin-left:0;margin-right:0}")],
+  ["post-action input remains first viewport visible", styles.includes("height:clamp(280px,calc(100vh - 430px),430px)") && styles.includes("max-height:88px;overflow:auto") && styles.includes(".ideaForm{display:flex;gap:8px;margin-top:8px;position:relative;z-index:6}")],
+  ["stage overlays stay compact after action", styles.includes("max-height:64px;overflow:auto") && styles.includes("min-width:76px;min-height:66px") && styles.includes("pointer-events:none")],
+  ["stage starts alive", app.includes("stageCompanionAvatar") && app.includes("starterObjectPreview") && styles.includes(".stageCompanionAvatar")],
+  ["protected expression absent", !app.includes("Maxwell") && !app.includes("Starite")],
+];
+const failed = checks.filter(([, ok]) => !ok).map(([name]) => name);
+const report = { ok: failed.length === 0, assetCount: assets.length, checks: checks.map(([name, ok]) => ({ name, ok })), failed };
+writeFileSync("docs/visual-product-test-result.json", JSON.stringify(report, null, 2));
+if (failed.length) {
+  console.error(JSON.stringify(report, null, 2));
+  process.exit(1);
+}
+console.log(JSON.stringify(report, null, 2));
+"""
+
+
+def _commercial_product_test_script() -> str:
+    return """import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+const app = readFileSync("src/App.tsx", "utf8");
+const styles = readFileSync("src/styles.css", "utf8");
+const visuals = readFileSync("src/data/visuals.ts", "utf8");
+const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+
+const checks = [
+  ["reference star companion asset", existsSync("public/assets/companion-spark-star.svg") && visuals.includes("companion-spark-star.svg")],
+  ["higher fidelity food and wolf sprites", existsSync("public/assets/object-burger.svg") && existsSync("public/assets/object-wolf.svg") && visuals.includes("object-burger.svg") && visuals.includes("object-wolf.svg")],
+  ["commercial game polish marker", app.includes("commercial-game-polish-ready") && app.includes("commercialGamePolish") && styles.includes(".commercialGamePolish")],
+  ["video reference motion integrated", app.includes("referenceCharacterMotion") && app.includes("referenceCharacterBadge") && styles.includes("@keyframes starHop")],
+  ["premium touch stage", app.includes("premiumTouchStage") && styles.includes(".premiumTouchStage") && styles.includes("height:clamp(380px,calc(100vh - 310px),640px)")],
+  ["stage object visuals dominate labels", styles.includes(".premiumTouchStage .livingObject .generatedSprite{width:86px;height:86px") && styles.includes(".premiumTouchStage .livingObject .objectCaption{position:absolute")],
+  ["script registered", packageJson.scripts?.["test:commercial"] === "node scripts/commercial-product-test.mjs"],
+];
+const failed = checks.filter(([, ok]) => !ok).map(([name]) => name);
+const result = { ok: failed.length === 0, checks: checks.map(([name, ok]) => ({ name, ok })), failed };
+writeFileSync("docs/commercial-product-test-result.json", `${JSON.stringify(result, null, 2)}\\n`);
+console.log(JSON.stringify(result, null, 2));
+if (failed.length) process.exit(1);
+"""
+
+
 def _sandbox_product_test_script() -> str:
     return """import fs from "node:fs";
 
@@ -2173,7 +3340,10 @@ const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
 
 const checks = [
   ["sandbox drop zone", app.includes("sandboxDynamics") && app.includes("onDrop") && app.includes("dropObjectOnStage")],
-  ["draggable object cards", app.includes("draggable") && app.includes("onDragStart")],
+  ["inventory drag moves existing object", app.includes("application/x-wordforge-object-id") && app.includes("dropObjectOnStage(objectId")],
+  ["stage objects move without copy", app.includes("draggingStageId") && app.includes("moveStageObject") && !app.includes("dropObjectOnStage(touchDragName)") && !app.includes('setData("text/plain", object.name)')],
+  ["real object interaction", app.includes("finishStageInteraction") && app.includes("isFoodObject") && app.includes("isWolfObject") && app.includes("吃掉了")],
+  ["tablet pointer placement", app.includes("inventoryDragId") && app.includes("onPointerDown") && app.includes("onPointerMove") && app.includes("onPointerUp") && app.includes("onPointerCancel")],
   ["touch hint", app.includes("touchHint") && styles.includes(".touchHint")],
   ["action trail", app.includes("actionTrail") && styles.includes(".actionTrail")],
   ["sandbox css", styles.includes(".sandboxDynamics") && styles.includes("cursor:grab")],
@@ -2295,6 +3465,31 @@ KUN added a stricter product-experience layer on top of the visual game shell.
 """
 
 
+def _commercial_game_polish_iteration_markdown(spec: GameProductionSpec) -> str:
+    return f"""# Commercial Game Polish Iteration
+
+KUN kept iterating after automated gates instead of treating `awaiting_acceptance`
+as final delivery. This pass uses the user-provided video as a character
+reference and raises the product bar from "passes tests" to "feels closer to a
+commercial tablet game."
+
+## Added
+
+- Character reference integration: a bold yellow star companion with black
+  outline, simple eyes, little legs, and bouncy motion.
+- Premium touch stage: taller play area, stronger visual hierarchy, less
+  dashboard-like framing, and clearer object-to-character play space.
+- Higher-fidelity object sprites: burger and wolf are real image assets, not
+  text labels or plain cards.
+- Commercial gate: `npm run test:commercial` verifies the reference character,
+  premium stage, object sprite quality, and post-gate product-pressure markers.
+
+## Project
+
+`{spec.project_path}`
+"""
+
+
 def _semantic_synthesis_iteration_markdown(spec: GameProductionSpec) -> str:
     return f"""# Semantic Synthesis Iteration
 
@@ -2394,6 +3589,30 @@ KUN added a tablet-facing sandbox dynamics layer so the product is less like a f
 - Touch hint: the play surface tells players that objects can be dragged, pushed, ridden, or given to companions.
 - Action trail: recent actions show how object manipulation changed puzzle progress.
 - Sandbox gate: `npm run test:sandbox` verifies these affordances before residual audit or delivery.
+
+## Project
+
+`{spec.project_path}`
+"""
+
+
+def _image_object_interaction_iteration_markdown(spec: GameProductionSpec) -> str:
+    return f"""# Image Object Interaction Iteration
+
+KUN converted human acceptance feedback into a hard product gate: generated
+objects must be real pictorial stage entities with direct interaction, not text
+labels that duplicate when dragged.
+
+## Required
+
+- Image-first generation: created food, animals, tools, bridges, weather, and
+  magic objects must render as picture sprites in the playfield.
+- Existing-object drag: dragging moves the object already on the stage or in the
+  inventory; it must not create a new copy through a text payload.
+- Object-to-object reaction: food-like objects can be dragged to a wolf-like
+  object and trigger a visible in-world reaction.
+- Fresh gates: `npm run test:visual` and `npm run test:sandbox` must fail the
+  previous label-card/copy-on-drag implementation.
 
 ## Project
 
@@ -2617,7 +3836,9 @@ def _restore_product_layers_after_visual_refresh(spec: GameProductionSpec) -> No
         "test:mastery",
         "node scripts/mastery-product-test.mjs",
     )
-    _patch_word_to_world_for_semantic_synthesis(spec.project_path / "src" / "engine" / "wordToWorld.ts")
+    _patch_word_to_world_for_semantic_synthesis(
+        spec.project_path / "src" / "engine" / "wordToWorld.ts"
+    )
     _write_text(scripts_path / "semantic-synthesis-test.mjs", _semantic_synthesis_test_script())
     _upsert_package_script(
         spec.project_path / "package.json",
@@ -2653,20 +3874,26 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
     semantic_test = _read_json(project / "docs" / "semantic-synthesis-test-result.json")
     spatial_test = _read_json(project / "docs" / "spatial-product-test-result.json")
     asset_provenance = _read_json(project / "docs" / "original-asset-provenance.json")
-    asset_count = len(list((project / "public" / "assets").glob("*.svg"))) if (project / "public" / "assets").exists() else 0
+    asset_count = (
+        len(list((project / "public" / "assets").glob("*.svg")))
+        if (project / "public" / "assets").exists()
+        else 0
+    )
     visual_internal = internal.get("npm_run_test_visual") if isinstance(internal, dict) else None
-    experience_internal = internal.get("npm_run_test_experience") if isinstance(internal, dict) else None
+    experience_internal = (
+        internal.get("npm_run_test_experience") if isinstance(internal, dict) else None
+    )
     sandbox_internal = internal.get("npm_run_test_sandbox") if isinstance(internal, dict) else None
-    creative_internal = internal.get("npm_run_test_creative") if isinstance(internal, dict) else None
+    creative_internal = (
+        internal.get("npm_run_test_creative") if isinstance(internal, dict) else None
+    )
     mastery_internal = internal.get("npm_run_test_mastery") if isinstance(internal, dict) else None
-    semantic_internal = internal.get("npm_run_test_semantic") if isinstance(internal, dict) else None
+    semantic_internal = (
+        internal.get("npm_run_test_semantic") if isinstance(internal, dict) else None
+    )
     spatial_internal = internal.get("npm_run_test_spatial") if isinstance(internal, dict) else None
-    visual_gate_passed = (
-        isinstance(visual_test, dict)
-        and visual_test.get("ok") is True
-    ) or (
-        isinstance(visual_internal, dict)
-        and visual_internal.get("exit_code") == 0
+    visual_gate_passed = (isinstance(visual_test, dict) and visual_test.get("ok") is True) or (
+        isinstance(visual_internal, dict) and visual_internal.get("exit_code") == 0
     )
     visual_ready = (
         asset_count >= 12
@@ -2682,10 +3909,8 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
         and "directManipulation" in app
         and "objectRelationGraph" in app
         and (
-            isinstance(experience_test, dict)
-            and experience_test.get("ok") is True
-            or isinstance(experience_internal, dict)
-            and experience_internal.get("exit_code") == 0
+            (isinstance(experience_test, dict) and experience_test.get("ok") is True)
+            or (isinstance(experience_internal, dict) and experience_internal.get("exit_code") == 0)
         )
     )
     sandbox_ready = (
@@ -2695,10 +3920,8 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
         and "onDrop" in app
         and "actionTrail" in app
         and (
-            isinstance(sandbox_test, dict)
-            and sandbox_test.get("ok") is True
-            or isinstance(sandbox_internal, dict)
-            and sandbox_internal.get("exit_code") == 0
+            (isinstance(sandbox_test, dict) and sandbox_test.get("ok") is True)
+            or (isinstance(sandbox_internal, dict) and sandbox_internal.get("exit_code") == 0)
         )
     )
     creative_ready = (
@@ -2708,10 +3931,8 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
         and "customQuestLog" in app
         and "addPlayerQuest" in app
         and (
-            isinstance(creative_test, dict)
-            and creative_test.get("ok") is True
-            or isinstance(creative_internal, dict)
-            and creative_internal.get("exit_code") == 0
+            (isinstance(creative_test, dict) and creative_test.get("ok") is True)
+            or (isinstance(creative_internal, dict) and creative_internal.get("exit_code") == 0)
         )
     )
     mastery_ready = (
@@ -2721,20 +3942,16 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
         and "failureCoach" in app
         and "tryNextHint" in app
         and (
-            isinstance(mastery_test, dict)
-            and mastery_test.get("ok") is True
-            or isinstance(mastery_internal, dict)
-            and mastery_internal.get("exit_code") == 0
+            (isinstance(mastery_test, dict) and mastery_test.get("ok") is True)
+            or (isinstance(mastery_internal, dict) and mastery_internal.get("exit_code") == 0)
         )
     )
     semantic_ready = (
         mastery_ready
         and "semanticFallbackEntry" in _read_text(project / "src" / "engine" / "wordToWorld.ts")
         and (
-            isinstance(semantic_test, dict)
-            and semantic_test.get("ok") is True
-            or isinstance(semantic_internal, dict)
-            and semantic_internal.get("exit_code") == 0
+            (isinstance(semantic_test, dict) and semantic_test.get("ok") is True)
+            or (isinstance(semantic_internal, dict) and semantic_internal.get("exit_code") == 0)
         )
     )
     spatial_ready = (
@@ -2743,10 +3960,8 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
         and "objectStageStyle" in app
         and "objectTrajectoryLabel" in app
         and (
-            isinstance(spatial_test, dict)
-            and spatial_test.get("ok") is True
-            or isinstance(spatial_internal, dict)
-            and spatial_internal.get("exit_code") == 0
+            (isinstance(spatial_test, dict) and spatial_test.get("ok") is True)
+            or (isinstance(spatial_internal, dict) and spatial_internal.get("exit_code") == 0)
         )
     )
     dimensions = {
@@ -2790,7 +4005,12 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
             if sandbox_ready
             else 0.98
             if experience_ready
-            else min((float(parity.get("goalCount", 0)) / 24) * 0.42 + (float(parity.get("solutionCount", 0)) / 72) * 0.42 + 0.12, 0.96),
+            else min(
+                (float(parity.get("goalCount", 0)) / 24) * 0.42
+                + (float(parity.get("solutionCount", 0)) / 72) * 0.42
+                + 0.12,
+                0.96,
+            ),
             "NPC requests, multi-solution goals, and world variety.",
         ),
         "gamefeel_and_feedback": _dimension(
@@ -2807,12 +4027,29 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
             else 0.96
             if experience_ready
             else 0.92
-            if "因果实验室" in app and "causalLab" in styles and "rewardShards" in app and visual_ready
+            if "因果实验室" in app
+            and "causalLab" in styles
+            and "rewardShards" in app
+            and visual_ready
             else 0.48,
             "Player-facing feedback, progress, reward, and try-next clarity.",
         ),
         "visual_character_ui_experience": _dimension(
-            0.997 if spatial_ready else 0.994 if semantic_ready else 0.992 if mastery_ready else 0.985 if creative_ready else 0.975 if sandbox_ready else 0.96 if experience_ready else 0.94 if visual_ready else 0.28,
+            0.997
+            if spatial_ready
+            else 0.994
+            if semantic_ready
+            else 0.992
+            if mastery_ready
+            else 0.985
+            if creative_ready
+            else 0.975
+            if sandbox_ready
+            else 0.96
+            if experience_ready
+            else 0.94
+            if visual_ready
+            else 0.28,
             "Final game must have visible characters, original images/assets, world art, animation, and tablet game UI.",
         ),
         "long_playtest_coverage": _dimension(
@@ -2895,15 +4132,17 @@ def _benchmark_residual_markdown(payload: dict[str, object], spec: GameProductio
         for name, value in dimensions.items()
         if isinstance(value, dict)
     )
-    actions = "\n".join(f"- {item}" for item in payload.get("required_next_actions", [])) or "- None"
+    actions = (
+        "\n".join(f"- {item}" for item in payload.get("required_next_actions", [])) or "- None"
+    )
     return f"""# Benchmark Residual Audit
 
 ## Verdict
 
-- Overall score: {payload['overall_score']}
-- Overall residual: {payload['overall_residual']}
+- Overall score: {payload["overall_score"]}
+- Overall residual: {payload["overall_residual"]}
 - Threshold: {spec.benchmark_residual_threshold}
-- Pass: {payload['pass']}
+- Pass: {payload["pass"]}
 
 ## Dimensions
 
@@ -2937,6 +4176,7 @@ def _final_player_experience_payload(spec: GameProductionSpec) -> dict[str, obje
     mastery = _read_json(project / "docs" / "mastery-product-test-result.json")
     semantic = _read_json(project / "docs" / "semantic-synthesis-test-result.json")
     spatial = _read_json(project / "docs" / "spatial-product-test-result.json")
+    commercial = _read_json(project / "docs" / "commercial-product-test-result.json")
     provenance = _read_json(project / "docs" / "original-asset-provenance.json")
 
     docs_dir = project / "docs"
@@ -2975,6 +4215,8 @@ def _final_player_experience_payload(spec: GameProductionSpec) -> dict[str, obje
             and "companionPortrait" in app
             and "worldBackdrop" in app
             and "objectSprite" in app
+            and "generatedObjectImage" in app
+            and "generatedSprite" in app
             and "visual-polish-ready" in app
         ),
         "direct_player_manipulation": (
@@ -3013,13 +4255,11 @@ def _final_player_experience_payload(spec: GameProductionSpec) -> dict[str, obje
             and fun_result.get("exit_code") == 0
             and (
                 browser_static.get("ok") is True
-                or isinstance(browser_result, dict)
-                and browser_result.get("exit_code") == 0
+                or (isinstance(browser_result, dict) and browser_result.get("exit_code") == 0)
             )
             and (
                 long_playtest.get("ok") is True
-                or isinstance(long_result, dict)
-                and long_result.get("exit_code") == 0
+                or (isinstance(long_result, dict) and long_result.get("exit_code") == 0)
             )
         ),
         "clean_delivery_evidence": (
@@ -3029,16 +4269,225 @@ def _final_player_experience_payload(spec: GameProductionSpec) -> dict[str, obje
             and "Maxwell" not in app
             and "Starite" not in app
         ),
+        "commercial_game_polish": (
+            commercial.get("ok") is True
+            and "commercial-game-polish-ready" in app
+            and "premiumTouchStage" in app
+            and "referenceCharacterMotion" in app
+            and "companion-spark-star.svg" in _read_text(project / "src" / "data" / "visuals.ts")
+        ),
     }
-    score = sum(1.0 for ok in checks.values() if ok) / len(checks)
-    failures = [name for name, ok in checks.items() if not ok]
+    has_dashboard_shell = (
+        "tabletWorkbench" in app
+        and "playGrid" in app
+        and (
+            "toolPanel" in app
+            or "grid-template-columns:250px minmax(460px,1fr) 330px" in styles
+            or "grid-template-columns:250px minmax(420px,1fr) 310px" in styles
+        )
+    )
+    has_immersive_shell = (
+        "immersiveGameShell" in app
+        and "immersiveStage" in app
+        and "floatingQuestRail" in app
+        and "floatingCreatorTray" in app
+        and "visualFocusLayer" in app
+        and "grid-template-columns:minmax(0,1fr)" in styles
+    )
+    has_viewport_safe_living_stage = (
+        (
+            "height:clamp(360px,calc(100vh - 334px),600px)" in styles
+            and "bottom:126px" in styles
+            and "bottom:58px" in styles
+        )
+        or (
+            "height:clamp(280px,calc(100vh - 430px),430px)" in styles
+            and "bottom:96px" in styles
+            and "bottom:48px" in styles
+        )
+    ) and "min-height:620px" not in styles
+    has_image_object_interaction = (
+        "generatedObjectImage" in app
+        and "generatedSprite" in app
+        and "isFoodObject" in app
+        and "isWolfObject" in app
+        and "finishStageInteraction" in app
+        and "吃掉了" in app
+        and "dropObjectOnStage(touchDragName)" not in app
+        and 'setData("text/plain", object.name)' not in app
+    )
+    has_tablet_pointer_play = (
+        "inventoryDragId" in app
+        and "draggingStageId" in app
+        and "moveStageObject" in app
+        and "application/x-wordforge-object-id" in app
+        and "onPointerDown" in app
+        and "onPointerMove" in app
+        and "onPointerUp" in app
+        and "onPointerCancel" in app
+        and "touch-action:none" in styles
+        and has_image_object_interaction
+    )
+    has_first_viewport_unoccluded_layout = (
+        ".stagePanel{margin-left:calc(min(260px,20vw) + 20px);margin-right:calc(min(260px,20vw) + 20px);min-width:0}"
+        in styles
+        and "@media(max-width:1000px){.playGrid,.immersiveGameShell{grid-template-columns:1fr}.stagePanel{margin-left:0;margin-right:0}"
+        in styles
+        and (
+            "inset:84px clamp(24px,18%,150px) 140px clamp(24px,18%,150px)" in styles
+            or "inset:78px clamp(20px,17%,140px) 118px clamp(20px,17%,140px)" in styles
+        )
+    )
+    has_post_action_input_visibility = (
+        "height:clamp(280px,calc(100vh - 430px),430px)" in styles
+        and "max-height:88px;overflow:auto" in styles
+        and ".ideaForm{display:flex;gap:8px;margin-top:8px;position:relative;z-index:6}" in styles
+    )
+    has_compact_stage_overlays = (
+        "max-height:64px;overflow:auto" in styles
+        and "min-width:76px;min-height:66px" in styles
+        and ".touchHint{position:absolute;left:10px;top:10px" in styles
+        and "pointer-events:none" in styles
+    )
+    visible_world_density = min(asset_count / 18.0, 1.0)
+    dimensions = {
+        "immersive_game_stage": _dimension(
+            0.995
+            if has_immersive_shell
+            and has_first_viewport_unoccluded_layout
+            and not has_dashboard_shell
+            else 0.84
+            if "illustratedScene" in app and "worldBackdrop" in app and not has_dashboard_shell
+            else 0.68,
+            (
+                "The main play screen must read as a game world first, not a "
+                "three-column operations dashboard."
+            ),
+        ),
+        "character_world_art_presence": _dimension(
+            min(
+                visible_world_density,
+                1.0 if "companionPortrait" in app else 0.45,
+                1.0 if "objectSprite" in app else 0.45,
+                1.0 if "worldBackdrop" in app else 0.45,
+            ),
+            "Original characters, world backdrops, and object sprites must be visible in play.",
+        ),
+        "initial_scene_liveliness": _dimension(
+            0.993
+            if "stageCompanionAvatar" in app
+            and "starterObjectPreview" in app
+            and ".stageCompanionAvatar" in styles
+            and has_viewport_safe_living_stage
+            else 0.78,
+            "A fresh player should see a living stage with a character and starter objects before typing.",
+        ),
+        "child_facing_game_flow": _dimension(
+            0.992
+            if experience.get("ok") is True
+            and "questDeck" in app
+            and "directManipulation" in app
+            and "objectRelationGraph" in app
+            and has_tablet_pointer_play
+            and not has_dashboard_shell
+            else 0.89
+            if experience.get("ok") is True
+            else 0.4,
+            "Player flow should feel like choosing, trying, dragging, and discovering.",
+        ),
+        "tablet_direct_manipulation": _dimension(
+            0.992 if has_tablet_pointer_play else 0.62,
+            (
+                "Tablet play cannot rely on label-card copy or desktop text drag; it needs "
+                "pointer/touch-safe object movement and object-to-object reactions."
+            ),
+        ),
+        "image_object_interaction": _dimension(
+            0.994 if has_image_object_interaction else 0.35,
+            "Generated words must become pictorial game objects that can interact inside the stage.",
+        ),
+        "first_viewport_occlusion_safe": _dimension(
+            0.992 if has_first_viewport_unoccluded_layout else 0.64,
+            "Floating map/tool rails must not cover the world title, quest, dialogue, input, or first-play stage.",
+        ),
+        "post_action_input_visible": _dimension(
+            0.992 if has_post_action_input_visibility else 0.58,
+            "After the child creates or moves an object, the next idea input must remain visible without scrolling.",
+        ),
+        "stage_overlay_playfield_clear": _dimension(
+            0.992 if has_compact_stage_overlays else 0.58,
+            "Quest, hint, progress, and retry overlays must stay compact enough that playable objects remain readable.",
+        ),
+        "creative_causal_depth": _dimension(
+            0.993
+            if sandbox.get("ok") is True
+            and creative.get("ok") is True
+            and semantic.get("ok") is True
+            and spatial.get("ok") is True
+            else 0.9
+            if sandbox.get("ok") is True and creative.get("ok") is True
+            else 0.35,
+            "Word creation must drive causal, composable, open-ended play.",
+        ),
+        "gamefeel_feedback_loop": _dimension(
+            0.992
+            if mastery.get("ok") is True
+            and "masteryCelebration" in app
+            and "failureCoach" in app
+            and "tryNextHint" in app
+            and "rewardShards" in app
+            else 0.86
+            if mastery.get("ok") is True
+            else 0.35,
+            "Success, failure, retry, and reward feedback must feel like a finished game.",
+        ),
+        "commercial_ui_character_motion": _dimension(
+            0.993
+            if checks["commercial_game_polish"]
+            and "object-burger.svg" in _read_text(project / "src" / "data" / "visuals.ts")
+            and "object-wolf.svg" in _read_text(project / "src" / "data" / "visuals.ts")
+            else 0.55,
+            (
+                "Automated gates are not enough; the game needs commercial-grade UI polish, "
+                "reference-informed character motion, and image-first object sprites."
+            ),
+        ),
+        "fresh_playtest_evidence": _dimension(
+            0.99
+            if checks["fresh_fun_browser_long_evidence"]
+            and browser_static.get("ok") is True
+            and long_playtest.get("ok") is True
+            else 0.74
+            if checks["fresh_fun_browser_long_evidence"]
+            else 0.2,
+            "Browser and long-play evidence must be current and player-facing.",
+        ),
+        "clean_final_delivery_hygiene": _dimension(
+            0.99 if checks["clean_delivery_evidence"] else 0.3,
+            "Final delivery cannot rely on stale failures, protected markers, or MVP framing.",
+        ),
+    }
+    checklist_score = sum(1.0 for ok in checks.values() if ok) / len(checks)
+    dimensional_score = sum(float(item["score"]) for item in dimensions.values()) / len(dimensions)
+    score = min(checklist_score, dimensional_score)
+    dimension_floor = min(spec.final_player_experience_threshold, 0.97)
+    dimension_failures = [
+        name
+        for name, payload in dimensions.items()
+        if isinstance(payload, dict) and float(payload.get("score", 0.0)) < dimension_floor
+    ]
+    failures = [name for name, ok in checks.items() if not ok] + [
+        f"dimension:{name}" for name in dimension_failures
+    ]
     return {
-        "schema": "kun-final-player-experience-gate-v1",
+        "schema": "kun-final-player-experience-gate-v2",
         "production_mode": spec.production_mode,
         "threshold": spec.final_player_experience_threshold,
         "score": round(score, 4),
         "pass": score >= spec.final_player_experience_threshold and not failures,
         "checks": checks,
+        "dimensions": dimensions,
+        "dimension_floor": dimension_floor,
         "failures": failures,
         "stale_failure_artifacts": stale_failures,
         "principle": (
@@ -3627,7 +5076,7 @@ def _readme_md() -> str:
 
 ```bash
 npm install
-npm run dev -- --host 127.0.0.1 --port 5178
+npm run dev -- --host 127.0.0.1 --port ${PORT:-5178}
 ```
 
 ## 验证
@@ -3651,6 +5100,91 @@ npm run test:user-sim
 def _write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _node_dependencies_ready(project_path: Path) -> bool:
+    return (project_path / "node_modules").is_dir() and (
+        project_path / "package-lock.json"
+    ).exists()
+
+
+def _capability_consumption_artifact(
+    *,
+    work_item: WorkItem,
+    policy: CapabilityExecutionPolicy | None,
+) -> ArtifactRecord:
+    artifact_path = Path.cwd()
+    project_dir = _project_dir_from_workspace_ref(work_item.workspace_ref)
+    if project_dir is not None:
+        artifact_path = project_dir
+    path = (
+        artifact_path / ".kun" / "capability-consumption" / f"{_slug(work_item.work_item_id)}.json"
+    )
+    payload = {
+        "work_item_id": work_item.work_item_id,
+        "phase": _phase_from_work_item(work_item),
+        "required_capability_refs": list(work_item.required_capability_refs),
+        "policy_ref": policy.policy_id if policy is not None else None,
+        "policy_capability_profile_refs": list(policy.capability_profile_refs)
+        if policy is not None
+        else [],
+        "directive_count": len(policy.directives) if policy is not None else 0,
+        "consumption_contract": (
+            "runner attached executable directives and carried them into this phase result"
+        ),
+    }
+    _write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return _artifact(
+        work_item=work_item,
+        suffix="capability-consumption",
+        path=path,
+        supports=[
+            "capability_policy_consumed",
+            "required_capabilities_executed",
+            *_safe_support_tokens(work_item.required_capability_refs),
+        ],
+        kind="evidence",
+    )
+
+
+def _sandbox_execution_artifact(
+    *,
+    work_item: WorkItem,
+    spec: GameProductionSpec,
+) -> ArtifactRecord:
+    path = (
+        spec.project_path / ".kun" / "sandbox-execution" / f"{_slug(work_item.work_item_id)}.json"
+    )
+    payload = {
+        "work_item_id": work_item.work_item_id,
+        "phase": _phase_from_work_item(work_item),
+        "project_path": str(spec.project_path),
+        "workspace_ref": work_item.workspace_ref,
+        "sandbox_ref": work_item.sandbox_ref,
+        "resource_locks": list(work_item.resource_locks),
+        "boundary": "workspace+sandbox+resource-lock",
+    }
+    _write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return _artifact(
+        work_item=work_item,
+        suffix="sandbox-execution-boundary",
+        path=path,
+        supports=["sandbox_execution_boundary", "workspace_resource_lock_consumed"],
+        kind="evidence",
+    )
+
+
+def _project_dir_from_workspace_ref(workspace_ref: str | None) -> Path | None:
+    if workspace_ref is None:
+        return None
+    prefix = "workspace://"
+    if not workspace_ref.startswith(prefix):
+        return None
+    return Path(workspace_ref[len(prefix) :]).expanduser().resolve()
+
+
+def _safe_support_tokens(values: Sequence[str]) -> list[str]:
+    return [_slug(value).replace("-", "_") for value in values if value]
 
 
 def _artifact(
@@ -3682,20 +5216,38 @@ def _failed_command_result(
     project_path: Path,
 ) -> WorkItemResult:
     log_path = project_path / "docs" / f"{_slug(work_item.work_item_id)}-failure.json"
-    _write_text(log_path, command.model_dump_json(indent=2))
+    supports = ["command_failure", command_name]
+    try:
+        _write_text(log_path, command.model_dump_json(indent=2))
+    except PermissionError:
+        supports.append("permission_boundary_fallback")
+        log_path = (
+            Path(".kun-local")
+            / "game-production-failures"
+            / work_item.mission_id
+            / f"{_slug(work_item.work_item_id)}-failure.json"
+        )
+        _write_text(log_path, command.model_dump_json(indent=2))
     artifact = _artifact(
         work_item=work_item,
         suffix="failure",
         path=log_path,
-        supports=["command_failure", command_name],
+        supports=supports,
         kind="log",
     )
     return WorkItemResult(
         status="failed",
         summary=f"{command_name} failed with exit code {command.exit_code}",
         artifacts=[artifact],
-        failure_category="tool_failure",
+        failure_category=_command_failure_category(command),
     )
+
+
+def _command_failure_category(command: GameProductionCommandResult) -> FailureCategory:
+    text = f"{command.stdout}\n{command.stderr}".lower()
+    if any(token in text for token in ("eperm", "permission denied", "operation not permitted")):
+        return "permission_failure"
+    return "tool_failure"
 
 
 def _subprocess_command_runner(

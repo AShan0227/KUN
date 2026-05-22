@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from kun.cli import app
 from kun.control_plane import (
+    DaemonServiceState,
     ExecutionContract,
     FileControlPlaneStore,
+    FileDaemonServiceStateStore,
     InMemoryControlPlane,
     Mission,
     TaskPlan,
@@ -140,7 +142,44 @@ def test_control_plane_daemon_status_reports_empty_state(tmp_path) -> None:
     payload = json.loads(result.output[result.output.find("{\n") :])
     assert payload["status"] == "stopped"
     assert payload["state"] is None
+    assert payload["healthy"] is False
+    assert payload["stale"] is False
     assert payload["pending_stop_request"] is None
+
+
+def test_control_plane_daemon_status_flags_stale_heartbeat(tmp_path) -> None:
+    runner = CliRunner()
+    state_path = tmp_path / "daemon-state.json"
+    FileDaemonServiceStateStore(state_path).save(
+        DaemonServiceState(
+            daemon_id="daemon-cli-stale",
+            status="idle",
+            started_at=datetime.now(UTC) - timedelta(hours=2),
+            updated_at=datetime.now(UTC) - timedelta(hours=1),
+            process_id=1234,
+            last_heartbeat_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "control-plane",
+            "daemon-status",
+            "--state-path",
+            str(state_path),
+            "--stale-heartbeat-after-sec",
+            "60",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "unhealthy"
+    assert payload["healthy"] is False
+    assert payload["stale"] is True
+    assert payload["state"]["status"] == "idle"
 
 
 def test_control_plane_daemon_run_persists_service_state_and_progress(tmp_path) -> None:

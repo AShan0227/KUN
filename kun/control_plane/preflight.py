@@ -14,8 +14,8 @@ import json
 import os
 import re
 import tempfile
-from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -92,16 +92,27 @@ def _planned_skill_runs(
     runs: list[tuple[str, dict[str, Any]]] = []
     executable_refs = _executable_skill_refs(work_item.skill_refs)
 
-    if _needs_external_info(work_item, text) and _network_preflight_enabled():
-        runs.append(
-            (
-                "web-search",
-                {
-                    "query": _search_query(mission.objective, plan, work_item),
-                    "max_results": 3,
-                },
+    if _needs_external_info(work_item, text):
+        if _network_preflight_enabled():
+            runs.append(
+                (
+                    "web-search",
+                    {
+                        "query": _search_query(mission.objective, plan, work_item),
+                        "max_results": 3,
+                    },
+                )
             )
-        )
+        elif work_item.external_source_refs and _network_preflight_required():
+            runs.append(
+                (
+                    "web-search-disabled",
+                    {
+                        "query": _search_query(mission.objective, plan, work_item),
+                        "reason": "KUN_CONTROL_PLANE_NETWORK_PREFLIGHT is not enabled",
+                    },
+                )
+            )
 
     csv_path = _first_path_with_suffix(text, ".csv")
     if csv_path and "csv-query" in executable_refs:
@@ -169,7 +180,9 @@ def _temporary_exec_roots(extra_roots: list[str]):
         return
     previous_roots = os.getenv("KUN_SKILL_EXEC_ROOTS")
     previous_root = os.getenv("KUN_SKILL_EXEC_ROOT")
-    configured = previous_roots or previous_root or "/tmp/kun-skill-exec"
+    configured = (
+        previous_roots or previous_root or str(Path(tempfile.gettempdir()) / "kun-skill-exec")
+    )
     roots = _dedupe_root_strings([*configured.split(":"), *extra_roots])
     os.environ["KUN_SKILL_EXEC_ROOTS"] = ":".join(roots)
     try:
@@ -297,26 +310,34 @@ def _work_item_text(objective: str, plan: TaskPlan | None, work_item: WorkItem) 
 
 def _needs_external_info(work_item: WorkItem, text: str) -> bool:
     lowered = text.lower()
-    return bool(work_item.external_source_refs) or work_item.type == "research" or any(
-        token in lowered
-        for token in (
-            "latest",
-            "recent",
-            "source",
-            "research",
-            "benchmark",
-            "external",
-            "调研",
-            "资料",
-            "搜索",
-            "引用",
-            "最新",
+    return (
+        bool(work_item.external_source_refs)
+        or work_item.type == "research"
+        or any(
+            token in lowered
+            for token in (
+                "latest",
+                "recent",
+                "source",
+                "research",
+                "benchmark",
+                "external",
+                "调研",
+                "资料",
+                "搜索",
+                "引用",
+                "最新",
+            )
         )
     )
 
 
 def _network_preflight_enabled() -> bool:
     return os.getenv("KUN_CONTROL_PLANE_NETWORK_PREFLIGHT", "0") == "1"
+
+
+def _network_preflight_required() -> bool:
+    return os.getenv("KUN_CONTROL_PLANE_REQUIRE_NETWORK_PREFLIGHT", "0") == "1"
 
 
 def _should_inspect_workspace(work_item: WorkItem, text: str) -> bool:

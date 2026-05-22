@@ -135,7 +135,10 @@ def test_external_sample_runner_compares_sample_and_writes_ockham_artifacts(
         for action in governance["actions"]
     )
     assert control_plane.work_items["work-genesis-capability-comparison"].status == "done"
-    assert any("external_sample_gap_matrix" in artifact.supports for artifact in control_plane.artifacts.values())
+    assert any(
+        "external_sample_gap_matrix" in artifact.supports
+        for artifact in control_plane.artifacts.values()
+    )
     assert any(
         "external_sample_governance_plan" in artifact.supports
         for artifact in control_plane.artifacts.values()

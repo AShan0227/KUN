@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -18,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from kun.control_plane.capability_execution import CapabilityExecutionPolicy
+from kun.control_plane.concurrency import normalize_resource_lock_ref
 from kun.control_plane.v6 import ArtifactRecord, ExecutionContract, TaskPlan, WorkItem
 from kun.control_plane.workspace_snapshot import create_workspace_snapshot
 
@@ -51,7 +53,9 @@ def activate_work_item_features(
         work_item.required_capability_refs,
         capability_policy.capability_profile_refs,
     )
-    skill_refs = _merge_unique(work_item.skill_refs, _match_skill_refs(mission.objective, task_plan, work_item))
+    skill_refs = _merge_unique(
+        work_item.skill_refs, _match_skill_refs(mission.objective, task_plan, work_item)
+    )
     external_refs = _merge_unique(
         work_item.external_source_refs,
         _external_source_refs(task_plan=task_plan, work_item=work_item),
@@ -74,12 +78,13 @@ def activate_work_item_features(
     checkpoint_refs = list(work_item.checkpoint_refs)
     rollback_refs = list(work_item.rollback_refs)
     artifacts: list[ArtifactRecord] = []
+    if workspace_path:
+        workspace_ref = workspace_ref or f"workspace://{workspace_path}"
+        sandbox_ref = sandbox_ref or f"sandbox://{work_item.mission_id}/{work_item.work_item_id}"
     if checkpoint_artifact is not None:
         artifacts.append(checkpoint_artifact)
         checkpoint_refs = _merge_unique(checkpoint_refs, [checkpoint_artifact.artifact_id])
         rollback_refs = _merge_unique(rollback_refs, [checkpoint_artifact.artifact_id])
-        workspace_ref = workspace_ref or f"workspace://{workspace_path}"
-        sandbox_ref = sandbox_ref or f"sandbox://{work_item.mission_id}/{work_item.work_item_id}"
 
     activation_artifact = _activation_artifact(
         work_item=work_item,
@@ -183,7 +188,9 @@ def _match_skill_refs(
             refs.append("writing-markdown")
         return _merge_unique(refs)
     except Exception:
-        return []
+        if os.getenv("KUN_CONTROL_PLANE_STRICT_SKILL_REGISTRY", "0") == "1":
+            raise
+        return ["skill-registry-unavailable"]
 
 
 def _external_source_refs(*, task_plan: TaskPlan | None, work_item: WorkItem) -> list[str]:
@@ -211,15 +218,8 @@ def _external_source_refs(*, task_plan: TaskPlan | None, work_item: WorkItem) ->
 
 def _resource_locks(*, work_item: WorkItem, workspace_path: str | None) -> list[str]:
     locks: list[str] = []
-    if workspace_path and work_item.type in {
-        "execution",
-        "test",
-        "merge",
-        "repair",
-        "retest",
-        "rollback",
-    }:
-        locks.append(f"workspace:{workspace_path}")
+    if workspace_path:
+        locks.append(normalize_resource_lock_ref(f"workspace:{workspace_path}"))
     if work_item.type in {"merge", "rollback"}:
         locks.append(f"mission:{work_item.mission_id}")
     return locks

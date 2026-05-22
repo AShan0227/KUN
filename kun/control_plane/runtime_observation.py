@@ -1,8 +1,8 @@
 """Runtime observation priorities for KUN V6 dogfood supervision.
 
-Observation items are not blockers by themselves.  They are the shared watchlist
-that KUN, Qi, Nuo, and an external supervisor use to decide what to inspect
-while real long tasks run.
+Observation items are the shared KUN/Qi/Nuo/external supervision signal.
+High and critical observations are also delivery blockers unless the daemon
+knows the blocked action is the action required to clear the observation.
 """
 
 from __future__ import annotations
@@ -174,39 +174,70 @@ def _failed_work_observations(
     if not failed_work:
         return []
     failed_ids = [item.work_item_id for item in failed_work]
-    recovered_refs = {
-        ref
+    recovery_items = [
+        item
         for item in control_plane.work_items.values()
         if item.mission_id == mission_id and item.owner in {"qi", "nuo"}
+    ]
+    recovered_refs = {
+        ref
+        for item in recovery_items
+        if item.status in {"done", "partial"}
+        for ref in item.recovery_refs
+    }
+    pending_recovery_refs = {
+        ref
+        for item in recovery_items
+        if item.status not in {"done", "partial", "cancelled", "failed"}
         for ref in item.recovery_refs
     }
     unrecovered = [work_id for work_id in failed_ids if work_id not in recovered_refs]
+    incomplete = [work_id for work_id in unrecovered if work_id in pending_recovery_refs]
+    missing = [work_id for work_id in unrecovered if work_id not in pending_recovery_refs]
     if not unrecovered:
         return []
-    return [
-        RuntimeObservationItem(
-            code="failed_work_without_recovery",
-            severity="high",
-            title="失败工作项缺少恢复闭环",
-            why_watch="工作项失败后必须由 Nuo 归因、Qi 调整策略或能力，而不是留给外部监督者发现。",
-            recommended_action=(
-                "Nuo 判断工具/环境/权限/包装器问题还是真实 KUN 能力失败；Qi 决定继续迭代、"
-                "换执行路径、补 runner，或把失败沉淀成能力治理。"
-            ),
-            routes=["nuo", "qi", "external_supervisor"],
-            evidence_refs=unrecovered,
+    observations: list[RuntimeObservationItem] = []
+    if incomplete:
+        observations.append(
+            RuntimeObservationItem(
+                code="failed_work_recovery_incomplete",
+                severity="high",
+                title="失败工作项恢复闭环尚未完成",
+                why_watch="Qi/Nuo 已经接手失败项，但恢复任务还没有完成或通过复测。",
+                recommended_action="阻断交付，直到恢复工作完成并产生干净复测或治理证据。",
+                routes=["nuo", "qi", "external_supervisor"],
+                evidence_refs=incomplete,
+            )
         )
-    ]
+    if missing:
+        observations.append(
+            RuntimeObservationItem(
+                code="failed_work_without_recovery",
+                severity="high",
+                title="失败工作项缺少恢复闭环",
+                why_watch="工作项失败后必须由 Nuo 归因、Qi 调整策略或能力，而不是留给外部监督者发现。",
+                recommended_action=(
+                    "Nuo 判断工具/环境/权限/包装器问题还是真实 KUN 能力失败；Qi 决定继续迭代、"
+                    "换执行路径、补 runner，或把失败沉淀成能力治理。"
+                ),
+                routes=["nuo", "qi", "external_supervisor"],
+                evidence_refs=missing,
+            )
+        )
+    return observations
 
 
 def _quality_gate_observations(
     control_plane: InMemoryControlPlane,
     mission_id: str,
 ) -> list[RuntimeObservationItem]:
+    mission = control_plane.missions.get(mission_id)
+    current_plan_version = mission.current_plan_version if mission is not None else None
     weak_gates = [
         gate
         for gate in control_plane.gate_evaluations.values()
         if gate.mission_id == mission_id
+        and (not current_plan_version or gate.task_plan_version == current_plan_version)
         and (
             gate.north_star_verdict != "pass"
             or gate.result_quality < gate.thresholds.get("result_quality", 0.8)
@@ -243,7 +274,9 @@ def _delivery_observations(
     mission = control_plane.missions.get(mission_id)
     if mission is None:
         return []
-    work_items = [item for item in control_plane.work_items.values() if item.mission_id == mission_id]
+    work_items = [
+        item for item in control_plane.work_items.values() if item.mission_id == mission_id
+    ]
     if mission.current_plan_version:
         stale_items = [
             item.work_item_id
@@ -271,7 +304,11 @@ def _delivery_observations(
             and manifest.kind == "delivery"
             and manifest.supports_delivery
         ]
-        if not delivery_manifest_refs and mission.status not in {"delivering", "awaiting_acceptance", "closed"}:
+        if not delivery_manifest_refs and mission.status not in {
+            "delivering",
+            "awaiting_acceptance",
+            "closed",
+        }:
             return [
                 RuntimeObservationItem(
                     code="delivery_manifest_missing",
@@ -283,7 +320,10 @@ def _delivery_observations(
                     evidence_refs=[item.work_item_id for item in work_items],
                 )
             ]
-    if mission.status in {"delivering", "awaiting_acceptance"} and not mission.artifact_manifest_refs:
+    if (
+        mission.status in {"delivering", "awaiting_acceptance"}
+        and not mission.artifact_manifest_refs
+    ):
         return [
             RuntimeObservationItem(
                 code="delivering_without_manifest",

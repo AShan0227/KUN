@@ -12,6 +12,7 @@ import hashlib
 import json
 from collections import Counter
 from collections.abc import Iterable
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from threading import RLock
 from typing import TYPE_CHECKING, Literal, Protocol
@@ -107,7 +108,9 @@ def _diagnose_result_with_nuo(
         network_eof="unexpected eof" in text.lower() or "network eof" in text.lower(),
         wrapper_missing="wrapper missing" in text.lower() or "wrapper not found" in text.lower(),
         auth_failure="unauthorized" in text.lower() or "invalid api key" in text.lower(),
-        report_required=_runtime_report_required(work_item=work_item, result=result, contract=contract),
+        report_required=_runtime_report_required(
+            work_item=work_item, result=result, contract=contract
+        ),
         report_ref=_runtime_report_ref(result=result, manifest_ref=manifest_ref),
         review_count=_runtime_review_count(result),
         expected_review_count=_expected_review_count(contract),
@@ -115,7 +118,11 @@ def _diagnose_result_with_nuo(
             result=result,
             manifest_ref=manifest_ref,
         ),
-        product_surface_gap_codes=_product_surface_gap_codes(result=result, text=text),
+        product_surface_gap_codes=_product_surface_gap_codes(
+            result=result,
+            text=text,
+            contract=contract,
+        ),
         human_playtest_required=_runtime_human_playtest_required(
             mission=mission,
             work_item=work_item,
@@ -127,6 +134,7 @@ def _diagnose_result_with_nuo(
         evidence_refs=_runtime_manifest_refs(result, "evidence_refs"),
         test_refs=_runtime_manifest_refs(result, "test_refs"),
         review_refs=_runtime_manifest_refs(result, "review_refs"),
+        rollback_refs=_runtime_manifest_refs(result, "rollback_refs"),
     )
     return diagnose_nuo_health(observation)
 
@@ -145,6 +153,13 @@ def _lease_allows_ready(
 
 
 def _should_route_to_nuo(*, work_item: WorkItem, result: WorkItemResult) -> bool:
+    if result.artifact_manifest is not None and result.artifact_manifest.kind == "delivery":
+        return True
+    if (
+        result.gate_evaluation is not None
+        and result.gate_evaluation.next_action == "ready_to_deliver"
+    ):
+        return True
     if result.failure_category is not None:
         return True
     if result.status in {"failed", "blocked", "cancelled", "waiting_external"}:
@@ -298,11 +313,23 @@ def _product_acceptance_claimed(
     )
 
 
-def _product_surface_gap_codes(*, result: WorkItemResult, text: str) -> list[str]:
+def _product_surface_gap_codes(
+    *,
+    result: WorkItemResult,
+    text: str,
+    contract: ExecutionContract | None,
+) -> list[str]:
     lowered = text.lower()
     gap_markers = {
         "mechanics_only": ("mechanics only", "mechanism only", "机制雏形", "只有机制"),
-        "visual_gap": ("visual missing", "art missing", "ui missing", "图片不足", "角色不足", "美术不足"),
+        "visual_gap": (
+            "visual missing",
+            "art missing",
+            "ui missing",
+            "图片不足",
+            "角色不足",
+            "美术不足",
+        ),
         "interaction_gap": ("interaction gap", "交互不足", "没有游戏性质"),
         "experience_gap": ("not fun", "unfun", "体验不足", "不好玩"),
         "playtest_gap": ("playtest missing", "试玩缺失", "真实试玩不足"),
@@ -313,10 +340,20 @@ def _product_surface_gap_codes(*, result: WorkItemResult, text: str) -> list[str
         if any(marker in lowered for marker in markers)
     ]
     supports = {support for artifact in result.artifacts for support in artifact.supports}
-    if "directly_playable_game" in supports and "visual_product_iteration" not in supports:
-        if "visual_gap" not in codes:
-            codes.append("visual_gap")
+    if (
+        "directly_playable_game" in supports
+        and _contract_requires_visual_product_evidence(contract)
+        and "visual_product_iteration" not in supports
+        and "visual_gap" not in codes
+    ):
+        codes.append("visual_gap")
     return codes
+
+
+def _contract_requires_visual_product_evidence(contract: ExecutionContract | None) -> bool:
+    if contract is None or not isinstance(contract.delivery_contract, dict):
+        return False
+    return bool(contract.delivery_contract.get("visual_product_iteration_required", False))
 
 
 def _runtime_human_playtest_required(
@@ -942,11 +979,14 @@ class InMemoryControlPlane:
         """Apply a runner result under the runtime lock."""
 
         with self._lock:
-            return self.apply_work_item_result(
-                run_id=run_id,
-                result=result,
-                preserve_mission_status=preserve_mission_status,
-            )
+            store_transaction = getattr(self.store, "transaction", None)
+            context = store_transaction() if callable(store_transaction) else nullcontext()
+            with context:
+                return self.apply_work_item_result(
+                    run_id=run_id,
+                    result=result,
+                    preserve_mission_status=preserve_mission_status,
+                )
 
     def apply_work_item_result(
         self,
@@ -968,14 +1008,10 @@ class InMemoryControlPlane:
             manifest_ref = result.artifact_manifest.manifest_id
             self.artifact_manifests[manifest_ref] = result.artifact_manifest
             self._persist_artifact_manifest(result.artifact_manifest)
-            mission = mission.model_copy(
-                update={
-                    "artifact_manifest_refs": [
-                        *mission.artifact_manifest_refs,
-                        result.artifact_manifest.manifest_id,
-                    ]
-                }
+            manifest_refs = _dedupe_refs(
+                [*mission.artifact_manifest_refs, result.artifact_manifest.manifest_id]
             )
+            mission = mission.model_copy(update={"artifact_manifest_refs": manifest_refs})
             self.missions[mission.mission_id] = mission
             self._persist_mission(mission)
         for ticket in result.collaboration_tickets:
@@ -1006,17 +1042,56 @@ class InMemoryControlPlane:
             self.artifacts[nuo_artifact.artifact_id] = nuo_artifact
             self._persist_artifact(nuo_artifact)
             runtime_artifact_refs.append(nuo_artifact.artifact_id)
-            if nuo_report.findings and runtime_gate is None:
+            if nuo_report.findings:
                 nuo_plan = build_nuo_recovery_plan(nuo_report, depends_on_subject=False)
                 runtime_gate = nuo_plan.gate_evaluation
                 runtime_gate = runtime_gate.model_copy(
                     update={
-                        "artifact_refs": [*runtime_gate.artifact_refs, nuo_artifact.artifact_id]
+                        "artifact_refs": _dedupe_refs(
+                            [
+                                *(
+                                    result.gate_evaluation.artifact_refs
+                                    if result.gate_evaluation
+                                    else []
+                                ),
+                                *runtime_gate.artifact_refs,
+                                nuo_artifact.artifact_id,
+                            ]
+                        ),
+                        "evidence_refs": _dedupe_refs(
+                            [
+                                *(
+                                    result.gate_evaluation.evidence_refs
+                                    if result.gate_evaluation
+                                    else []
+                                ),
+                                *runtime_gate.evidence_refs,
+                                nuo_artifact.artifact_id,
+                            ]
+                        ),
+                        "test_refs": _dedupe_refs(
+                            [
+                                *(
+                                    result.gate_evaluation.test_refs
+                                    if result.gate_evaluation
+                                    else []
+                                ),
+                                *runtime_gate.test_refs,
+                            ]
+                        ),
+                        "review_refs": _dedupe_refs(
+                            [
+                                *(
+                                    result.gate_evaluation.review_refs
+                                    if result.gate_evaluation
+                                    else []
+                                ),
+                                *runtime_gate.review_refs,
+                            ]
+                        ),
                     }
                 )
-                runtime_failure_category = (
-                    runtime_gate.failure_category or runtime_failure_category
-                )
+                runtime_failure_category = runtime_gate.failure_category or runtime_failure_category
                 if (
                     nuo_plan.recovery_work_item is not None
                     and nuo_plan.recovery_work_item.work_item_id not in self.work_items
@@ -1563,11 +1638,7 @@ class InMemoryControlPlane:
         items = self._mission_work_items(mission.mission_id)
         if not mission.current_plan_version:
             return items
-        return [
-            item
-            for item in items
-            if item.task_plan_version == mission.current_plan_version
-        ]
+        return [item for item in items if item.task_plan_version == mission.current_plan_version]
 
     def _ready_work_items(
         self,

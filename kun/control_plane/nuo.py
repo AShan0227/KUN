@@ -28,6 +28,7 @@ NuoFindingCode = Literal[
     "auth_failure",
     "permission_denied",
     "report_missing",
+    "rollback_refs_missing",
     "review_count_missing",
     "review_count_insufficient",
     "comparator_unhealthy",
@@ -113,6 +114,7 @@ class NuoObservation(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list)
     test_refs: list[str] = Field(default_factory=list)
     review_refs: list[str] = Field(default_factory=list)
+    rollback_refs: list[str] = Field(default_factory=list)
 
 
 class NuoPollutionSample(BaseModel):
@@ -203,10 +205,10 @@ class NuoHealthReport(BaseModel):
             "repair_comparator": 2,
             "fix_wrapper": 3,
             "fix_auth": 4,
-            "collect_report": 5,
-            "collect_reviews": 6,
-            "continue_iteration": 7,
-            "request_human_playtest": 8,
+            "continue_iteration": 5,
+            "request_human_playtest": 6,
+            "collect_report": 7,
+            "collect_reviews": 8,
             "rerun": 9,
             "pause": 10,
         }
@@ -673,6 +675,24 @@ def _detect_artifact_gaps(observation: NuoObservation) -> list[NuoHealthFinding]
                 recommended_action="collect_report",
             )
         )
+    stronger_product_gap_exists = bool(observation.product_surface_gap_codes) or (
+        observation.human_playtest_required and not observation.human_playtest_ref
+    )
+    if (
+        observation.product_acceptance_claimed
+        and not observation.rollback_refs
+        and not stronger_product_gap_exists
+    ):
+        findings.append(
+            _finding(
+                observation,
+                code="rollback_refs_missing",
+                kind="artifact_gap",
+                summary="Delivery claim is missing rollback references.",
+                failure_category="evidence_failure",
+                recommended_action="collect_report",
+            )
+        )
     if observation.expected_review_count > 0 and observation.review_count is None:
         findings.append(
             _finding(
@@ -912,6 +932,7 @@ def _sample(
     report_ref: str | None = "report-sample",
     review_count: int | None = 45,
     expected_review_count: int = 45,
+    rollback_refs: list[str] | None = None,
     comparator_healthy: bool = True,
     comparator_health_reason: str = "",
     product_acceptance_claimed: bool = False,
@@ -943,6 +964,7 @@ def _sample(
             report_ref=report_ref,
             review_count=review_count,
             expected_review_count=expected_review_count,
+            rollback_refs=rollback_refs or ["rollback-sample"],
             comparator_healthy=comparator_healthy,
             comparator_health_reason=comparator_health_reason,
             product_acceptance_claimed=product_acceptance_claimed,

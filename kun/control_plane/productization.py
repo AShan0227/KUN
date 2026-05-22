@@ -1504,6 +1504,9 @@ def finalize_productization_dogfood_delivery(
         primary_artifact_ref=artifact.artifact_id,
         evidence_refs=evidence_refs or [artifact.artifact_id],
         review_refs=list(audit.recovery_bundle.open_ticket_ids),
+        rollback_refs=(
+            list(audit.recovery_bundle.artifact_manifest_refs) or [artifact.artifact_id]
+        ),
         created_by=actor,
         content_hash=_hash_payload(
             {
@@ -1516,7 +1519,11 @@ def finalize_productization_dogfood_delivery(
     )
     _upsert_artifact_manifest(control_plane, manifest)
     mission = mission.model_copy(
-        update={"artifact_manifest_refs": [*mission.artifact_manifest_refs, manifest.manifest_id]}
+        update={
+            "artifact_manifest_refs": list(
+                dict.fromkeys([*mission.artifact_manifest_refs, manifest.manifest_id])
+            )
+        }
     )
     control_plane.missions[mission_id] = mission
     if control_plane.store is not None:
@@ -2393,6 +2400,7 @@ def _successful_dogfood_work_item_result(
         artifact_refs=[artifact.artifact_id],
         primary_artifact_ref=artifact.artifact_id,
         evidence_refs=[artifact.artifact_id],
+        rollback_refs=[artifact.artifact_id],
         created_by=work_item.owner,
         content_hash=_hash_payload({"artifact": artifact.artifact_id, "subsystem": subsystem}),
     )

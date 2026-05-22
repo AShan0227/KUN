@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 
 from kun.control_plane import (
     ArtifactRecord,
+    CapabilityExecutionDirective,
+    CapabilityExecutionPolicy,
     ControlPlaneDaemon,
     ExecutionContract,
     InMemoryControlPlane,
@@ -101,9 +103,64 @@ def test_kun_runtime_runner_executes_and_finalizes_real_task_work_item() -> None
     assert control_plane.work_items["work-real-task"].status == "done"
     assert control_plane.missions[mission.mission_id].status == "delivering"
     assert any(
-        "real_task_execution" in artifact.supports
-        for artifact in control_plane.artifacts.values()
+        "real_task_execution" in artifact.supports for artifact in control_plane.artifacts.values()
     )
+    manifest = control_plane.artifact_manifests["manifest-kun-runtime-delivery-msn-real-task"]
+    assert manifest.review_refs
+    assert manifest.rollback_refs
+
+
+def test_kun_runtime_runner_blocks_required_capability_without_bound_policy() -> None:
+    control_plane, _mission = _runtime()
+    work = control_plane.work_items["work-real-task"].model_copy(
+        update={"required_capability_refs": ["cap-production-required"]}
+    )
+    control_plane.work_items[work.work_item_id] = work
+
+    def fake_executor(_prompt: str) -> KunTaskExecutionOutput:
+        raise AssertionError("runner must stop before executing without a bound policy")
+
+    runner = KunRuntimeTaskRunner(control_plane=control_plane, executor=fake_executor)
+
+    result = runner.run(work)
+
+    assert result.status == "failed"
+    assert result.failure_category == "plan_failure"
+    assert "capability execution policy" in result.summary.lower()
+
+
+def test_kun_runtime_runner_blocks_required_capability_without_directive_receipt() -> None:
+    control_plane, _mission = _runtime()
+    work = control_plane.work_items["work-real-task"].model_copy(
+        update={"required_capability_refs": ["cap-production-required"]}
+    )
+    control_plane.work_items[work.work_item_id] = work
+    policy = CapabilityExecutionPolicy(
+        policy_id="policy-test",
+        built_at=NOW,
+        capability_profile_refs=["cap-production-required"],
+        directives=[
+            CapabilityExecutionDirective(
+                directive_id="directive-runner-other-capability",
+                category="runner",
+                capability_refs=["cap-other"],
+                summary="Carry another capability into runtime output.",
+                runtime_hooks=["artifact_record"],
+            )
+        ],
+    )
+
+    def fake_executor(_prompt: str) -> KunTaskExecutionOutput:
+        raise AssertionError("runner must stop before executing uncovered capabilities")
+
+    runner = KunRuntimeTaskRunner(control_plane=control_plane, executor=fake_executor)
+    runner.bind_capability_execution_policy(policy)
+
+    result = runner.run(work)
+
+    assert result.status == "failed"
+    assert result.failure_category == "plan_failure"
+    assert "no executable directive receipts" in result.summary
 
 
 def test_kun_runtime_runner_handles_strategy_optimization_without_external_executor() -> None:
@@ -188,6 +245,48 @@ def test_kun_runtime_runner_does_not_recurse_strategy_followups() -> None:
         not work_id.startswith("work-kun-implement-after-work-kun-implement-after")
         for work_id in control_plane.work_items
     )
+
+
+def test_kun_runtime_runner_handles_control_plane_supervisor_recovery_without_external_executor() -> (
+    None
+):
+    control_plane, mission = _runtime()
+    recovery = control_plane.work_items["work-real-task"].model_copy(
+        update={
+            "work_item_id": "work-supervisor-recovery",
+            "type": "repair",
+            "owner": "control-plane-supervisor",
+            "expected_output": "Recover work-real-task after environment_failure; next action: needs_repair",
+            "dependencies": [],
+        }
+    )
+    control_plane.work_items = {recovery.work_item_id: recovery}
+    control_plane.missions[mission.mission_id] = control_plane.missions[
+        mission.mission_id
+    ].model_copy(update={"status": "repairing"})
+
+    def failing_executor(_prompt: str) -> KunTaskExecutionOutput:
+        raise AssertionError("supervisor recovery should not need the external executor")
+
+    runner = KunRuntimeTaskRunner(control_plane=control_plane, executor=failing_executor)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"control-plane-supervisor": runner},
+        daemon_id="daemon-supervisor-recovery-test",
+    )
+
+    report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW, max_work_items=1)
+
+    assert report.no_runner_work_item_ids == []
+    assert report.ran_work_item_ids == [recovery.work_item_id]
+    assert control_plane.work_items[recovery.work_item_id].status == "done"
+    assert any(
+        "control_plane_supervisor_recovery" in artifact.supports
+        for artifact in control_plane.artifacts.values()
+    )
+    gate = control_plane.gate_evaluations["gate-control-plane-supervisor-work-supervisor-recovery"]
+    assert gate.next_action == "continue"
+    assert gate.next_state == "running"
 
 
 def test_kun_runtime_merge_blocks_overlapping_artifact_outputs() -> None:

@@ -11,6 +11,7 @@ import json
 import os
 import tempfile
 from collections.abc import Sequence
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
@@ -35,6 +36,11 @@ from kun.control_plane.v6 import (
     WorkItem,
 )
 
+try:  # pragma: no cover - available on macOS/Linux.
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
+
 _SCHEMA_VERSION = 1
 
 
@@ -43,7 +49,9 @@ class FileControlPlaneStore:
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
+        self._lock_path = self._path.with_name(f"{self._path.name}.lock")
         self._lock = RLock()
+        self._transaction_depth = 0
         self._init_buckets()
         self._load()
 
@@ -108,35 +116,55 @@ class FileControlPlaneStore:
     ) -> WorkItem | None:
         """Atomically claim a queued work item lease for multi-daemon scheduling."""
 
-        with self._lock:
-            item = self._work_items.get(work_item_id)
-            if item is None or item.status != "queued":
-                return None
-            active_lease = item.lease and item.timeout is not None and item.timeout > now
-            if active_lease and item.lease != lease:
-                return None
-            claimed = item.model_copy(
-                update={
-                    "lease": lease,
-                    "heartbeat": now,
-                    "timeout": timeout,
-                }
+        with self._lock, self._interprocess_locked():
+            self._load_from_disk_locked()
+            return self._claim_work_item_lease_locked(
+                work_item_id=work_item_id,
+                lease=lease,
+                now=now,
+                timeout=timeout,
             )
-            stored = self._work_items.put(claimed)
-            self._persist_locked()
-            return stored
+
+    def _claim_work_item_lease_locked(
+        self,
+        *,
+        work_item_id: str,
+        lease: str,
+        now: datetime,
+        timeout: datetime,
+    ) -> WorkItem | None:
+        item = self._work_items.get(work_item_id)
+        if item is None or item.status != "queued":
+            return None
+        active_lease = item.lease and item.timeout is not None and item.timeout > now
+        if active_lease and item.lease != lease:
+            return None
+        claimed = item.model_copy(
+            update={
+                "lease": lease,
+                "heartbeat": now,
+                "timeout": timeout,
+            }
+        )
+        stored = self._work_items.put(claimed)
+        self._persist_unlocked()
+        return stored
 
     def release_work_item_lease(self, *, work_item_id: str, lease: str) -> WorkItem | None:
         """Release a queued work item lease if it still belongs to this holder."""
 
-        with self._lock:
-            item = self._work_items.get(work_item_id)
-            if item is None or item.lease != lease:
-                return None
-            released = item.model_copy(update={"lease": None, "timeout": None})
-            stored = self._work_items.put(released)
-            self._persist_locked()
-            return stored
+        with self._lock, self._interprocess_locked():
+            self._load_from_disk_locked()
+            return self._release_work_item_lease_locked(work_item_id=work_item_id, lease=lease)
+
+    def _release_work_item_lease_locked(self, *, work_item_id: str, lease: str) -> WorkItem | None:
+        item = self._work_items.get(work_item_id)
+        if item is None or item.lease != lease:
+            return None
+        released = item.model_copy(update={"lease": None, "timeout": None})
+        stored = self._work_items.put(released)
+        self._persist_unlocked()
+        return stored
 
     def get_work_item(self, work_item_id: str) -> WorkItem | None:
         with self._lock:
@@ -242,6 +270,27 @@ class FileControlPlaneStore:
         with self._lock:
             return self._capability_profiles.list()
 
+    @contextmanager
+    def transaction(self):
+        """Batch related store writes under one interprocess lock and disk snapshot."""
+
+        with self._lock:
+            if self._transaction_depth:
+                self._transaction_depth += 1
+                try:
+                    yield self
+                finally:
+                    self._transaction_depth -= 1
+                return
+            with self._interprocess_locked():
+                self._load_from_disk_locked()
+                self._transaction_depth = 1
+                try:
+                    yield self
+                    self._persist_unlocked()
+                finally:
+                    self._transaction_depth = 0
+
     def _init_buckets(self) -> None:
         self._missions = _RecordBucket[Mission](lambda record: record.mission_id)
         self._task_plans = _RecordBucket[TaskPlan](
@@ -292,6 +341,11 @@ class FileControlPlaneStore:
         )
 
     def _load(self) -> None:
+        with self._interprocess_locked():
+            self._load_from_disk_locked()
+
+    def _load_from_disk_locked(self) -> None:
+        self._init_buckets()
         if not self._path.exists():
             return
 
@@ -359,6 +413,7 @@ class FileControlPlaneStore:
                     for field_name in model.model_fields
                     if field_name in raw_record
                 }
+                raw_record = _migrate_legacy_record(key, raw_record)
             bucket.put(model.model_validate(raw_record))
 
     def _put_and_persist[RecordT: BaseModel](
@@ -367,11 +422,22 @@ class FileControlPlaneStore:
         record: RecordT,
     ) -> RecordT:
         with self._lock:
-            stored = bucket.put(record)
-            self._persist_locked()
-            return stored
+            if self._transaction_depth:
+                stored = bucket.put(record)
+                return stored
+            bucket_name = self._bucket_name(bucket)
+            with self._interprocess_locked():
+                self._load_from_disk_locked()
+                active_bucket = getattr(self, bucket_name)
+                stored = active_bucket.put(record)
+                self._persist_unlocked()
+                return stored
 
     def _persist_locked(self) -> None:
+        with self._interprocess_locked():
+            self._persist_unlocked()
+
+    def _persist_unlocked(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = self._snapshot_locked()
         fd, temp_name = tempfile.mkstemp(
@@ -392,6 +458,38 @@ class FileControlPlaneStore:
         except Exception:
             temp_path.unlink(missing_ok=True)
             raise
+
+    def _bucket_name(self, bucket: _RecordBucket[Any]) -> str:
+        for name in (
+            "_missions",
+            "_task_plans",
+            "_execution_contracts",
+            "_working_contexts",
+            "_work_items",
+            "_run_records",
+            "_artifact_records",
+            "_artifact_manifests",
+            "_ledger_events",
+            "_gate_evaluations",
+            "_collaboration_tickets",
+            "_acceptance_reviews",
+            "_capability_profiles",
+        ):
+            if getattr(self, name) is bucket:
+                return name
+        raise ValueError("unknown control-plane store bucket")
+
+    @contextmanager
+    def _interprocess_locked(self):
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock_path.open("a+", encoding="utf-8") as lock_file:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _snapshot_locked(self) -> dict[str, Any]:
         return {
@@ -422,3 +520,24 @@ class FileControlPlaneStore:
             os.fsync(parent_fd)
         finally:
             os.close(parent_fd)
+
+
+def _migrate_legacy_record(key: str, raw_record: dict[str, Any]) -> dict[str, Any]:
+    if key != "artifact_manifests":
+        return raw_record
+    if raw_record.get("kind") != "delivery":
+        return raw_record
+    if raw_record.get("rollback_refs"):
+        return raw_record
+    fallback_refs: list[str] = []
+    for field_name in ("primary_artifact_ref", "review_refs", "test_refs", "evidence_refs"):
+        value = raw_record.get(field_name)
+        if isinstance(value, str) and value:
+            fallback_refs.append(value)
+        elif isinstance(value, list):
+            fallback_refs.extend(str(item) for item in value if str(item))
+    if not fallback_refs:
+        return raw_record
+    migrated = dict(raw_record)
+    migrated["rollback_refs"] = list(dict.fromkeys(fallback_refs))
+    return migrated

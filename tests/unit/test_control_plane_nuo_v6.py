@@ -23,6 +23,7 @@ def _observation(**overrides: object) -> NuoObservation:
         "report_ref": "report-1",
         "review_count": 45,
         "expected_review_count": 45,
+        "rollback_refs": ["rollback-1"],
         "comparator_healthy": True,
     }
     payload.update(overrides)

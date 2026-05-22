@@ -195,6 +195,7 @@ Control Plane 是 KUN 的运行中枢，负责把方案变成可持续执行的�
 - 进程 supervisor。
 - runner 注册、lease、heartbeat、timeout、retry、cancel、resume。
 - 多任务 worker pool：同一个 daemon 内必须有 worker 槽位模型，多 daemon / 多机器必须能通过持久 resource lock 和 work item lease 协调，避免重复领取、重复写入或同时修改同一工作区。
+- 本机多进程 worker pool：Control Plane 必须能生成多个 daemon 服务实例，每个实例有独立 heartbeat/state，但共享同一任务队列和 SQLite/file resource lock；这是单机 7x24 并发的默认生产路径。跨机器 worker pool 必须走 Redis/数据库级 resource lock 适配层。
 - 断电、重启、崩溃、跨天续跑。
 - 权限、预算、外部动作审批和审计。
 - 产物、证据、日志、账本和门禁统一管理。
@@ -220,6 +221,7 @@ Control Plane 必须保证：
 - 所有失败有分类和下一步。
 - 所有交付有产物、证据和验收记录。
 - 多任务并行必须先经过依赖、resource lock、work item lease 和 worker slot 分配；锁冲突必须表现为等待和自动重试，不得被记为 KUN 能力失败。
+- execution/test/merge/repair/retest/rollback 等可能写入工作区的 work item 如果没有显式 workspace/worktree/project/repo 锁，必须自动退回 mission-workspace 锁，宁可降低并发，也不能让多个 worker 在未知边界下同时写同一任务。
 - 当 worker pool 大于 1 且任务依赖与资源锁互不冲突时，daemon 必须把多个 work item 分配到不同 worker 并真正同时执行；`max_work_items_per_tick` 不能只表示串行批量数量。共享 workspace、mission merge lane、显式 resource lock 或同一路径写入必须进入等待、隔离或合并治理。
 - 合并多 worker 产物时必须做冲突治理：缺依赖、重复写同一文件、同一路径 artifact 冲突或互斥修改必须阻断 merge，进入修复、重排或人工协同，而不是简单拼接 artifact。
 - 沙箱、快照、回滚不是文档字段，而是执行前自动生成、执行中可引用、失败时可运行的恢复路径。
@@ -257,6 +259,7 @@ Control Plane 必须保证：
 - 专家输入和外部 worker 调度。
 - 多 worker 分发与合并。
 - worker pool、持久 resource lock、work item lease、并发等待原因和资源冲突治理。
+- 多进程 daemon fleet：多个后台进程可以共享同一 Control Plane store 和 SQLite resource lock；跨机器 worker 可以共享 Redis resource lock。每个进程必须有独立状态文件，驾驶舱和审计能区分 holder daemon、worker、等待原因和锁过期时间。
 - 工具边界、权限边界和责任边界管理。
 - 冲突检测、依赖管理和产物合并。
 - merge conflict governance：多路代码、文档、素材或配置产物合并前必须检查重叠写入、缺失依赖、互斥 artifact 和需人工决策的冲突。

@@ -111,8 +111,10 @@ class Frontier50ExternalRoundRunner:
 
     def can_run(self, work_item: WorkItem) -> bool:
         text = f"{work_item.work_item_id}\n{work_item.expected_output}".lower()
-        return work_item.owner == "qi" and work_item.type == "test" and (
-            "frontier50" in text or "ab" in text
+        return (
+            work_item.owner == "qi"
+            and work_item.type == "test"
+            and ("frontier50" in text or "ab" in text)
         )
 
     def run(self, work_item: WorkItem) -> WorkItemResult:
@@ -208,8 +210,10 @@ class Frontier50ExternalRuntimeRunner:
 
     def can_run(self, work_item: WorkItem) -> bool:
         text = f"{work_item.work_item_id}\n{work_item.expected_output}".lower()
-        return work_item.owner == "qi" and work_item.type == "test" and (
-            "frontier50" in text or "ab" in text
+        return (
+            work_item.owner == "qi"
+            and work_item.type == "test"
+            and ("frontier50" in text or "ab" in text)
         )
 
     def run(self, work_item: WorkItem) -> WorkItemResult:

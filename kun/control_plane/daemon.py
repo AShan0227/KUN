@@ -13,8 +13,8 @@ import json
 import os
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -30,11 +30,15 @@ from kun.control_plane.capability_execution import (
 from kun.control_plane.concurrency import (
     FileResourceLockStore,
     InMemoryResourceLockStore,
+    RedisResourceLockStore,
+    ResourceLockBackend,
     ResourceLockConflict,
     SandboxIsolationMode,
     SandboxIsolationSpec,
+    SQLiteResourceLockStore,
     WorkerPoolConfig,
     WorkerSlotSnapshot,
+    normalize_resource_lock_ref,
     sandbox_spec_for_work_item,
     worker_slots,
 )
@@ -152,6 +156,8 @@ class DaemonServiceConfig(BaseModel):
     poll_interval_sec: float = Field(default=30.0, ge=0)
     max_work_items_per_tick: int = Field(default=10, ge=0)
     worker_pool_size: int = Field(default=1, ge=1, le=256)
+    resource_lock_backend: ResourceLockBackend = "file"
+    resource_lock_redis_url: str | None = None
     resource_lock_ttl_sec: float = Field(default=900.0, gt=0)
     sandbox_mode: SandboxIsolationMode = "workspace_snapshot"
     container_runtime: str | None = None
@@ -181,6 +187,7 @@ class DaemonServiceState(BaseModel):
     last_tick_recovered_work_item_ids: list[str] = Field(default_factory=list)
     last_tick_progress_artifact_refs: list[str] = Field(default_factory=list)
     worker_pool_size: int = 1
+    resource_lock_backend: ResourceLockBackend = "file"
     last_tick_worker_slots: list[WorkerSlotSnapshot] = Field(default_factory=list)
     last_tick_resource_lock_skipped_work_item_ids: list[str] = Field(default_factory=list)
     last_tick_resource_lock_conflicts: list[ResourceLockConflict] = Field(default_factory=list)
@@ -280,7 +287,7 @@ class FileDaemonServiceStateStore:
         return request
 
     def clear_stop_request(self) -> None:
-        """Clear a consumed stop request."""
+        """Clear a stop request after an operator explicitly allows restart."""
 
         self.stop_request_path.unlink(missing_ok=True)
 
@@ -343,8 +350,9 @@ class FileDaemonServiceStateStore:
             process_id=process_id or os.getpid(),
             active_mission_ids=list(previous.active_mission_ids) if previous else [],
             last_heartbeat_at=observed_at,
+            worker_pool_size=active_config.worker_pool_size,
+            resource_lock_backend=active_config.resource_lock_backend,
         )
-        self.clear_stop_request()
         self.save(starting_state)
         text = (
             "上一次后台监督心跳已过期，已接管服务并准备恢复执行。"
@@ -377,7 +385,13 @@ class ControlPlaneDaemon:
         default_runner: ControlPlaneRunner | None = None,
         rule_engine: RuleEngine | None = None,
         worker_pool: WorkerPoolConfig | None = None,
-        resource_lock_store: FileResourceLockStore | InMemoryResourceLockStore | None = None,
+        resource_lock_store: (
+            FileResourceLockStore
+            | SQLiteResourceLockStore
+            | RedisResourceLockStore
+            | InMemoryResourceLockStore
+            | None
+        ) = None,
         resource_lock_ttl_sec: float = 900.0,
         sandbox_mode: SandboxIsolationMode = "workspace_snapshot",
         container_runtime: str | None = None,
@@ -390,7 +404,12 @@ class ControlPlaneDaemon:
         self.default_runner = default_runner
         self.rule_engine = rule_engine
         self.worker_pool = worker_pool or WorkerPoolConfig()
-        self.resource_lock_store = resource_lock_store or _default_resource_lock_store(control_plane)
+        self.resource_lock_store = resource_lock_store or _default_resource_lock_store(
+            control_plane
+        )
+        self.resource_lock_backend: ResourceLockBackend = _resource_lock_backend(
+            self.resource_lock_store
+        )
         self.resource_lock_ttl = timedelta(seconds=resource_lock_ttl_sec)
         self.sandbox_mode = sandbox_mode
         self.container_runtime = container_runtime
@@ -439,6 +458,16 @@ class ControlPlaneDaemon:
                 report=report,
             )
             self._ensure_delivery_acceptance_collaboration(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._ensure_open_acceptance_keeps_product_pressure(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._ensure_acceptance_rework_from_feedback(
                 mission_id=mission_id,
                 observed_at=observed_at,
                 report=report,
@@ -519,7 +548,11 @@ class ControlPlaneDaemon:
                 remaining -= 1
 
         for mission_id in selected_mission_ids:
-            self._finalize_idle_mission(mission_id=mission_id, report=report)
+            self._finalize_idle_mission(
+                mission_id=mission_id,
+                report=report,
+                capability_policy=capability_policy,
+            )
 
         if write_progress:
             for mission_id in selected_mission_ids:
@@ -617,6 +650,21 @@ class ControlPlaneDaemon:
         self.worker_pool = self.worker_pool.model_copy(
             update={"worker_count": active_config.worker_pool_size}
         )
+        if active_config.resource_lock_backend == "redis":
+            if active_config.resource_lock_redis_url:
+                self.resource_lock_store = RedisResourceLockStore(
+                    active_config.resource_lock_redis_url
+                )
+            elif not isinstance(self.resource_lock_store, RedisResourceLockStore):
+                raise ValueError("resource_lock_redis_url is required for redis lock backend")
+        elif active_config.resource_lock_backend != _resource_lock_backend(
+            self.resource_lock_store
+        ):
+            self.resource_lock_store = _default_resource_lock_store(
+                self.control_plane,
+                backend=active_config.resource_lock_backend,
+            )
+        self.resource_lock_backend = _resource_lock_backend(self.resource_lock_store)
         self.resource_lock_ttl = timedelta(seconds=active_config.resource_lock_ttl_sec)
         self.sandbox_mode = active_config.sandbox_mode
         self.container_runtime = active_config.container_runtime
@@ -648,6 +696,8 @@ class ControlPlaneDaemon:
                     started_at=started_at,
                     updated_at=started_at,
                     process_id=os.getpid(),
+                    worker_pool_size=self.worker_pool.worker_count,
+                    resource_lock_backend=self.resource_lock_backend,
                 ),
             )
         stopped_reason: DaemonServiceStoppedReason = "max_ticks"
@@ -681,6 +731,7 @@ class ControlPlaneDaemon:
                         tick_count=len(tick_reports),
                         consecutive_idle_ticks=idle_ticks,
                         next_wakeup_at=next_wakeup,
+                        resource_lock_backend=self.resource_lock_backend,
                     ),
                 )
                 if active_config.stop_when_idle and idle_ticks >= active_config.idle_ticks_to_stop:
@@ -707,6 +758,7 @@ class ControlPlaneDaemon:
                     consecutive_idle_ticks=idle_ticks,
                     active_mission_ids=list(mission_ids or self._active_missions()),
                     worker_pool_size=self.worker_pool.worker_count,
+                    resource_lock_backend=self.resource_lock_backend,
                     stopped_reason="error",
                     stopped_at=stopped_at,
                     last_error=f"{type(exc).__name__}: {exc}",
@@ -738,6 +790,7 @@ class ControlPlaneDaemon:
                 if tick_reports
                 else [],
                 worker_pool_size=self.worker_pool.worker_count,
+                resource_lock_backend=self.resource_lock_backend,
                 last_tick_worker_slots=tick_reports[-1].worker_slots if tick_reports else [],
                 last_tick_resource_lock_skipped_work_item_ids=tick_reports[
                     -1
@@ -752,8 +805,6 @@ class ControlPlaneDaemon:
                 stopped_at=ended_at,
             ),
         )
-        if stopped_reason == "stop_requested" and state_store is not None:
-            state_store.clear_stop_request()
         return DaemonLoopReport(
             daemon_id=self.daemon_id,
             started_at=started_at,
@@ -910,6 +961,12 @@ class ControlPlaneDaemon:
             preflight_artifact_refs.append(artifact.artifact_id)
             report.preflight_artifact_refs.append(artifact.artifact_id)
         report.preflight_failed_skill_ids.extend(preflight.failed_skill_ids)
+        if preflight.failed_skill_ids:
+            active_runner = _PreflightBlockedRunner(
+                runner_identity=active_runner.runner_identity,
+                failed_skill_ids=preflight.failed_skill_ids,
+                artifact_refs=preflight_artifact_refs,
+            )
         _bind_capability_policy(active_runner, capability_policy)
         return _PreparedWorkItemRun(
             work_item=activation.work_item,
@@ -1046,18 +1103,26 @@ class ControlPlaneDaemon:
         mission = self.control_plane.missions.get(mission_id)
         if mission is None or mission.task_type != "product_development":
             return
-        if mission.status not in {"delivering", "awaiting_acceptance"}:
-            return
         if mission.acceptance_ref is not None:
             return
         delivery_manifest_ref = _latest_delivery_manifest_ref(self.control_plane, mission)
         if delivery_manifest_ref is None:
             return
-        ticket_id = (
-            f"collab-acceptance-{_slug(mission.mission_id)}-"
-            f"{_slug(delivery_manifest_ref)}"
-        )
+        if mission.status not in {"delivering", "awaiting_acceptance"} and not (
+            mission.status == "running"
+            and not _has_ready_or_active_current_plan_work(self.control_plane, mission)
+        ):
+            return
+        ticket_id = _acceptance_ticket_id(mission.mission_id, delivery_manifest_ref)
         if ticket_id in self.control_plane.collaboration_tickets:
+            if mission.status in {"running", "delivering"}:
+                _transition_product_delivery_to_awaiting_acceptance(
+                    self.control_plane,
+                    mission_id=mission.mission_id,
+                    actor=self.daemon_id,
+                    reason="daemon found completed product delivery waiting for existing acceptance ticket",
+                    subject_ref=ticket_id,
+                )
             return
         ticket = CollaborationTicket(
             ticket_id=ticket_id,
@@ -1095,14 +1160,223 @@ class ControlPlaneDaemon:
         )
         self.control_plane.record_collaboration_ticket(ticket, actor=self.daemon_id)
         report.created_collaboration_ticket_ids.append(ticket.ticket_id)
-        if mission.status == "delivering":
-            self.control_plane.transition_mission(
+        if mission.status in {"delivering", "running"}:
+            _transition_product_delivery_to_awaiting_acceptance(
+                self.control_plane,
                 mission_id=mission.mission_id,
-                target="awaiting_acceptance",
                 actor=self.daemon_id,
                 reason="daemon opened a human product-acceptance ticket for subjective validation",
                 subject_ref=ticket.ticket_id,
             )
+
+    def _ensure_open_acceptance_keeps_product_pressure(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        """Do not let product dogfood stop just because automated gates passed.
+
+        A product mission may need explicit human acceptance, but an open
+        acceptance ticket is not permission to idle forever.  For high-polish
+        dogfood contracts, the daemon converts "awaiting acceptance without a
+        human accept" into the next low-risk product-pressure iteration.  This
+        makes the behavior KUN-native instead of relying on an external
+        supervisor to keep nudging the mission.
+        """
+
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None or mission.task_type != "product_development":
+            return
+        if mission.status != "awaiting_acceptance":
+            return
+        if mission.acceptance_ref is not None:
+            return
+        contract = self.control_plane.contracts.get(mission.execution_contract_ref or "")
+        if not _should_continue_product_pressure_while_awaiting_acceptance(contract):
+            return
+        ticket = _latest_open_acceptance_ticket(self.control_plane, mission)
+        if ticket is None:
+            return
+        if _has_ready_or_active_current_plan_work(self.control_plane, mission):
+            return
+        if _latest_product_pressure_evidence_allows_waiting(contract):
+            return
+        gate_id = _open_acceptance_pressure_gate_id(
+            mission_id=mission.mission_id,
+            task_plan_version=mission.current_plan_version or "product",
+            ticket_id=ticket.ticket_id,
+            context_ref=ticket.context_ref,
+        )
+        if gate_id in self.control_plane.gate_evaluations:
+            return
+        gate = GateEvaluation(
+            gate_evaluation_id=gate_id,
+            mission_id=mission.mission_id,
+            task_plan_version=mission.current_plan_version or "product",
+            subject_ref=ticket.ticket_id,
+            stage="acceptance",
+            task_type="product_development",
+            rubric_version="kun-open-acceptance-product-pressure-v1",
+            metric_pack_version="kun-v6-north-star-v1",
+            north_star_verdict="partial",
+            result_quality=0.72,
+            speed=0.7,
+            cost=0.76,
+            risk=0.42,
+            evidence_quality=0.72,
+            collaboration_quality=0.8,
+            score_breakdown={
+                "human_acceptance_missing": 1.0,
+                "automated_gates_not_final_acceptance": 1.0,
+                "commercial_product_polish_pressure": 1.0,
+            },
+            thresholds={"result_quality": 0.95},
+            hard_gate_failures=[
+                "human_acceptance_missing",
+                "automated_gate_pass_is_not_final_acceptance",
+                "commercial_game_polish_required",
+                "character_animation_ui_reference_iteration_required",
+            ],
+            failure_category="delivery_failure",
+            root_cause=(
+                "The latest product delivery has automated evidence but no human acceptance. "
+                "KUN must keep improving product feel, commercial UI polish, character animation, "
+                "touch manipulation, and causal interaction depth instead of idling in awaiting_acceptance."
+            ),
+            responsibility_scope="kun_auto",
+            confidence=0.88,
+            next_action="needs_repair",
+            next_state="repairing",
+            governance_signal="open_acceptance_requires_continued_product_pressure",
+            created_by=self.daemon_id,
+        )
+        self.control_plane.gate_evaluations[gate.gate_evaluation_id] = gate
+        self.control_plane._persist_gate(gate)
+        report.recovery_gate_refs.append(gate.gate_evaluation_id)
+
+    def _ensure_acceptance_rework_from_feedback(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        """Turn rejected product acceptance feedback into new executable work.
+
+        Product tasks must not stop just because internal gates passed.  If a
+        human/user acceptance gate says the product feel is not good enough,
+        the daemon opens the next iteration itself and leaves
+        ``awaiting_acceptance`` so KUN-owned runners can keep working.
+        """
+
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None or mission.task_type != "product_development":
+            return
+        if mission.status not in {"delivering", "awaiting_acceptance"}:
+            return
+        gate = _latest_acceptance_rework_gate(self.control_plane, mission)
+        if gate is None:
+            return
+        contract = self.control_plane.contracts.get(mission.execution_contract_ref or "")
+        if (
+            gate.governance_signal == "open_acceptance_requires_continued_product_pressure"
+            and _latest_product_pressure_evidence_allows_waiting(contract)
+        ):
+            return
+        plan_version = _acceptance_rework_plan_version(mission=mission, gate=gate)
+        if any(
+            item.mission_id == mission_id
+            and item.task_plan_version == plan_version
+            and item.status not in {"cancelled"}
+            for item in self.control_plane.work_items.values()
+        ):
+            if mission.current_plan_version != plan_version:
+                self._set_mission_plan_version(
+                    mission_id=mission_id,
+                    plan_version=plan_version,
+                    subject_ref=gate.gate_evaluation_id,
+                )
+            self._move_feedback_rework_to_queue(
+                mission_id=mission_id,
+                subject_ref=gate.gate_evaluation_id,
+            )
+            return
+
+        base_plan = _task_plan_for_version(
+            self.control_plane,
+            mission_id=mission_id,
+            plan_version=gate.task_plan_version,
+        )
+        plan = _acceptance_rework_task_plan(
+            mission=mission,
+            gate=gate,
+            base_plan=base_plan,
+            plan_version=plan_version,
+        )
+        self.control_plane.task_plans[plan.plan_id] = plan
+        if self.control_plane.store is not None:
+            self.control_plane.store.put_task_plan(plan)
+
+        work_items = _acceptance_rework_work_items(
+            mission=mission,
+            gate=gate,
+            plan_version=plan_version,
+            contract=contract,
+        )
+        for work_item in work_items:
+            self.control_plane.work_items[work_item.work_item_id] = work_item
+            self._persist_work_item(work_item)
+            report.created_work_item_ids.append(work_item.work_item_id)
+
+        self._set_mission_plan_version(
+            mission_id=mission_id,
+            plan_version=plan_version,
+            subject_ref=gate.gate_evaluation_id,
+        )
+        self._move_feedback_rework_to_queue(
+            mission_id=mission_id,
+            subject_ref=gate.gate_evaluation_id,
+        )
+        report.recovery_gate_refs.append(gate.gate_evaluation_id)
+
+    def _set_mission_plan_version(
+        self,
+        *,
+        mission_id: str,
+        plan_version: str,
+        subject_ref: str,
+    ) -> None:
+        mission = self.control_plane.missions[mission_id]
+        if mission.current_plan_version == plan_version:
+            return
+        updated = mission.model_copy(update={"current_plan_version": plan_version})
+        self.control_plane.missions[mission_id] = updated
+        if self.control_plane.store is not None:
+            self.control_plane.store.put_mission(updated)
+        self.control_plane._record_ledger_event(
+            mission_id=mission_id,
+            event_type="plan_change",
+            actor=self.daemon_id,
+            subject_ref=subject_ref,
+            before={"current_plan_version": mission.current_plan_version},
+            after={"current_plan_version": plan_version},
+            payload={"reason": "human/product acceptance feedback required another iteration"},
+        )
+
+    def _move_feedback_rework_to_queue(self, *, mission_id: str, subject_ref: str) -> None:
+        mission = self.control_plane.missions[mission_id]
+        if mission.status in {"delivering", "awaiting_acceptance"}:
+            target = "repairing" if mission.status == "awaiting_acceptance" else "changing_plan"
+            self.control_plane.transition_mission(
+                mission_id=mission_id,
+                target=target,
+                actor=self.daemon_id,
+                reason="product acceptance feedback rejected final delivery; reopen automatic rework",
+                subject_ref=subject_ref,
+            )
+        self._transition_to_queued(mission_id, subject_ref=subject_ref)
 
     def _resolve_capability_duplicates(
         self,
@@ -1170,9 +1444,7 @@ class ControlPlaneDaemon:
                     "artifact": artifact.artifact_id,
                 }
             )[:12]
-            work_item_id = (
-                f"work-qi-capability-dedupe-{_slug(mission_id)}-{evidence_sig}"
-            )
+            work_item_id = f"work-qi-capability-dedupe-{_slug(mission_id)}-{evidence_sig}"
             if work_item_id in self.control_plane.work_items:
                 return
             work_item = WorkItem(
@@ -1211,7 +1483,17 @@ class ControlPlaneDaemon:
         mission = self.control_plane.missions.get(mission_id)
         if mission is None or not mission.current_plan_version:
             return
-        if mission.status not in {"delivering", "awaiting_acceptance", "closed", "partial_closed"}:
+        if mission.status not in {
+            "queued",
+            "running",
+            "blocked",
+            "repairing",
+            "changing_plan",
+            "delivering",
+            "awaiting_acceptance",
+            "closed",
+            "partial_closed",
+        }:
             return
         active_version = mission.current_plan_version
         retired: list[str] = []
@@ -1265,7 +1547,17 @@ class ControlPlaneDaemon:
         mission = self.control_plane.missions.get(mission_id)
         if mission is None or not mission.current_plan_version:
             return
-        if mission.status not in {"delivering", "awaiting_acceptance", "closed", "partial_closed"}:
+        if mission.status not in {
+            "queued",
+            "running",
+            "blocked",
+            "repairing",
+            "changing_plan",
+            "delivering",
+            "awaiting_acceptance",
+            "closed",
+            "partial_closed",
+        }:
             return
 
         active_version = mission.current_plan_version
@@ -1294,7 +1586,7 @@ class ControlPlaneDaemon:
             if (
                 latest_delivery_manifest_ref is not None
                 and ticket.ticket_id
-                == f"collab-acceptance-{_slug(mission_id)}-{_slug(latest_delivery_manifest_ref)}"
+                == _acceptance_ticket_id(mission_id, latest_delivery_manifest_ref)
             ):
                 continue
             updated = ticket.model_copy(update={"status": "cancelled"})
@@ -1625,8 +1917,6 @@ class ControlPlaneDaemon:
                 ),
             ),
         ):
-            if owner not in self.runners_by_owner:
-                continue
             followup_id = f"{prefix}-{_slug(work_item.work_item_id)}"
             if followup_id in self.control_plane.work_items:
                 continue
@@ -1644,6 +1934,15 @@ class ControlPlaneDaemon:
                 recovery_refs=[work_item.work_item_id, *artifact_refs],
                 rollback_refs=list(work_item.rollback_refs),
             )
+            if self._runner_for(followup) is None:
+                self._queue_unrunnable_followup_ticket(
+                    mission_id=work_item.mission_id,
+                    work_item_id=followup.work_item_id,
+                    owner=owner,
+                    item_type=item_type,
+                    report=report,
+                )
+                continue
             self.control_plane.work_items[followup.work_item_id] = followup
             self._persist_work_item(followup)
             report.created_work_item_ids.append(followup.work_item_id)
@@ -1667,9 +1966,7 @@ class ControlPlaneDaemon:
                 continue
             evidence_refs = _dedupe([observation_artifact_ref, *item.evidence_refs])
             stable_evidence_refs = list(item.evidence_refs) or [item.code]
-            evidence_sig = _hash_payload(
-                {"code": item.code, "evidence": stable_evidence_refs}
-            )[:12]
+            evidence_sig = _hash_payload({"code": item.code, "evidence": stable_evidence_refs})[:12]
             qi_expected_output = (
                 (
                     "Audit, score, and optimize this failed quality gate. Continue iteration, "
@@ -1688,9 +1985,9 @@ class ControlPlaneDaemon:
                     if item.code == "failed_work_without_recovery"
                     else (
                         (
-                        "Audit and govern duplicate runtime capabilities. Merge, dedupe, or "
-                        "discard duplicate production defaults, keep the strongest verified "
-                        f"profile, and preserve evidence. Observation {item.code}: {item.recommended_action}"
+                            "Audit and govern duplicate runtime capabilities. Merge, dedupe, or "
+                            "discard duplicate production defaults, keep the strongest verified "
+                            f"profile, and preserve evidence. Observation {item.code}: {item.recommended_action}"
                         )
                         if item.code == "capability_duplicates_collapsed"
                         else (
@@ -1747,8 +2044,6 @@ class ControlPlaneDaemon:
         evidence_refs: Sequence[str],
         report: DaemonTickReport,
     ) -> None:
-        if owner not in self.runners_by_owner:
-            return
         if work_item_id in self.control_plane.work_items:
             return
         mission = self.control_plane.missions.get(mission_id)
@@ -1763,13 +2058,87 @@ class ControlPlaneDaemon:
             expected_output=expected_output,
             recovery_refs=list(evidence_refs),
         )
+        if self._runner_for(work_item) is None:
+            return
         self.control_plane.work_items[work_item.work_item_id] = work_item
         self._persist_work_item(work_item)
         report.created_work_item_ids.append(work_item.work_item_id)
         report.observation_followup_ids.append(work_item.work_item_id)
 
-    def _finalize_idle_mission(self, *, mission_id: str, report: DaemonTickReport) -> None:
+    def _queue_unrunnable_followup_ticket(
+        self,
+        *,
+        mission_id: str,
+        work_item_id: str,
+        owner: str,
+        item_type: str,
+        report: DaemonTickReport,
+    ) -> None:
+        ticket_id = f"collab-runner-needed-{_slug(work_item_id)}"
+        if ticket_id in self.control_plane.collaboration_tickets:
+            return
+        mission = self.control_plane.missions.get(mission_id)
+        ticket = CollaborationTicket(
+            ticket_id=ticket_id,
+            mission_id=mission_id,
+            type="operator_action",
+            role_needed="operator",
+            why_needed=(
+                "KUN identified a necessary automatic follow-up, but no runner is registered "
+                f"for owner={owner!r}, type={item_type!r}. It will not enqueue work that cannot run."
+            ),
+            context_ref=work_item_id,
+            risk_if_skipped=(
+                "The mission may appear to have a recovery path while the follow-up is actually "
+                "unexecutable."
+            ),
+            deadline=report.observed_at + timedelta(hours=4),
+            sla_policy={"reminder_after_hours": 1, "escalate_after_hours": 4},
+            escalation_policy={
+                "after_deadline": "block_mission_until_runner_or_plan_change_exists"
+            },
+            fallback_policy={"allowed": False, "rule": "register a runner or change the plan"},
+            resume_after_response=True,
+            output_contract="Register a runner, add an executable fallback, or approve plan change.",
+        )
+        self.control_plane.record_collaboration_ticket(ticket, actor=self.daemon_id)
+        report.created_collaboration_ticket_ids.append(ticket.ticket_id)
+        if mission is not None and mission.status not in {"blocked", "completed", "cancelled"}:
+            try:
+                self.control_plane.transition_mission(
+                    mission_id=mission_id,
+                    target="blocked",
+                    actor=self.daemon_id,
+                    reason="automatic follow-up has no executable runner",
+                    subject_ref=ticket.ticket_id,
+                )
+            except ValueError:
+                return
+
+    def _finalize_idle_mission(
+        self,
+        *,
+        mission_id: str,
+        report: DaemonTickReport,
+        capability_policy: CapabilityExecutionPolicy,
+    ) -> None:
         """Let capable runners close mission-level delivery artifacts when ready."""
+
+        observation = build_runtime_observation_report(
+            control_plane=self.control_plane,
+            mission_id=mission_id,
+            tick_report=report,
+            capability_policy=capability_policy,
+        )
+        report.runtime_observations[mission_id] = observation
+        blocking_items = [
+            item
+            for item in observation.items
+            if item.severity in {"high", "critical"}
+            and item.code not in {"delivery_manifest_missing"}
+        ]
+        if blocking_items:
+            return
 
         seen_runner_ids: set[int] = set()
         for runner in (
@@ -2015,13 +2384,11 @@ class _SandboxRequirementRunner:
         }
         artifact = ArtifactRecord(
             artifact_id=(
-                "artifact-sandbox-required-"
-                f"{_slug(work_item.work_item_id)}-{_compact_time(_now())}"
+                f"artifact-sandbox-required-{_slug(work_item.work_item_id)}-{_compact_time(_now())}"
             ),
             kind="report",
             path_or_uri=(
-                f"control-plane://sandbox-required/{work_item.mission_id}/"
-                f"{work_item.work_item_id}"
+                f"control-plane://sandbox-required/{work_item.mission_id}/{work_item.work_item_id}"
             ),
             content_hash=_hash_payload(payload),
             created_by=self.runner_identity,
@@ -2041,6 +2408,65 @@ class _SandboxRequirementRunner:
             summary=(
                 "Container sandbox is required before this work item may run; "
                 "selected runner did not declare container sandbox support."
+            ),
+            artifacts=[artifact],
+            failure_category="environment_failure",
+        )
+
+
+class _PreflightBlockedRunner:
+    runner_type: Literal["tool"] = "tool"
+
+    def __init__(
+        self,
+        *,
+        runner_identity: str,
+        failed_skill_ids: Sequence[str],
+        artifact_refs: Sequence[str],
+    ) -> None:
+        self.runner_identity = f"{runner_identity}:preflight-blocked"
+        self.failed_skill_ids = sorted(set(failed_skill_ids))
+        self.artifact_refs = list(artifact_refs)
+
+    def run(self, work_item: WorkItem) -> WorkItemResult:
+        payload = {
+            "work_item_id": work_item.work_item_id,
+            "mission_id": work_item.mission_id,
+            "failed_skill_ids": self.failed_skill_ids,
+            "preflight_artifact_refs": self.artifact_refs,
+            "reason": (
+                "Required preflight skill or external information check failed; "
+                "KUN must repair the environment, tool, network, or skill route before "
+                "scoring this as agent execution."
+            ),
+        }
+        artifact = ArtifactRecord(
+            artifact_id=(
+                f"artifact-preflight-blocked-{_slug(work_item.work_item_id)}-"
+                f"{_compact_time(_now())}"
+            ),
+            kind="report",
+            path_or_uri=(
+                f"control-plane://preflight-blocked/{work_item.mission_id}/{work_item.work_item_id}"
+            ),
+            content_hash=_hash_payload(payload),
+            created_by=self.runner_identity,
+            mission_id=work_item.mission_id,
+            work_item_id=work_item.work_item_id,
+            supports=[
+                "preflight_blocked",
+                "required_skill_failed",
+                "external_info_or_skill_not_silent",
+                *[f"failed_skill:{skill_id}" for skill_id in self.failed_skill_ids],
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        return WorkItemResult(
+            status="failed",
+            summary=(
+                "Preflight blocked execution because required skill/external-info checks failed: "
+                + ", ".join(self.failed_skill_ids)
             ),
             artifacts=[artifact],
             failure_category="environment_failure",
@@ -2131,6 +2557,20 @@ def _latest_delivery_manifest_ref(
     return None
 
 
+def _acceptance_ticket_id(mission_id: str, delivery_manifest_ref: str) -> str:
+    """Build a stable, collision-resistant ticket ID for a delivery manifest.
+
+    Manifest IDs can be very long and often share a long common prefix across
+    iterations.  A hash suffix prevents a fresh delivery from being hidden by
+    an older open acceptance ticket with the same truncated slug.
+    """
+
+    digest = _hash_payload(
+        {"mission_id": mission_id, "delivery_manifest_ref": delivery_manifest_ref}
+    )[:12]
+    return f"collab-acceptance-{_slug(mission_id)}-{_slug(delivery_manifest_ref)}-{digest}"
+
+
 def _observation_routes(report: RuntimeObservationReport) -> list[str]:
     seen: set[str] = set()
     routes: list[str] = []
@@ -2185,14 +2625,46 @@ def _lease_id(
 
 def _default_resource_lock_store(
     control_plane: InMemoryControlPlane,
-) -> FileResourceLockStore | InMemoryResourceLockStore:
+    *,
+    backend: ResourceLockBackend = "file",
+) -> FileResourceLockStore | SQLiteResourceLockStore | InMemoryResourceLockStore:
+    if backend == "redis":
+        raise ValueError("redis resource lock backend requires an explicit RedisResourceLockStore")
     store_path = getattr(control_plane.store, "path", None)
     if isinstance(store_path, Path):
+        if backend == "sqlite":
+            return SQLiteResourceLockStore(
+                store_path.with_name(f"{store_path.stem}.resource-locks.sqlite3")
+            )
         return FileResourceLockStore(store_path.with_name(f"{store_path.stem}.resource-locks.json"))
     if isinstance(store_path, str):
         path = Path(store_path)
+        if backend == "sqlite":
+            return SQLiteResourceLockStore(path.with_name(f"{path.stem}.resource-locks.sqlite3"))
         return FileResourceLockStore(path.with_name(f"{path.stem}.resource-locks.json"))
+    if backend == "sqlite":
+        return SQLiteResourceLockStore(
+            Path(tempfile.gettempdir())
+            / f"kun-control-plane-{id(control_plane)}.resource-locks.sqlite3"
+        )
     return InMemoryResourceLockStore()
+
+
+def _resource_lock_backend(
+    store: (
+        FileResourceLockStore
+        | SQLiteResourceLockStore
+        | RedisResourceLockStore
+        | InMemoryResourceLockStore
+    ),
+) -> ResourceLockBackend:
+    if isinstance(store, RedisResourceLockStore):
+        return "redis"
+    if isinstance(store, SQLiteResourceLockStore):
+        return "sqlite"
+    if isinstance(store, FileResourceLockStore):
+        return "file"
+    return "memory"
 
 
 def _is_delivery_state_followup(work_item: WorkItem) -> bool:
@@ -2201,6 +2673,7 @@ def _is_delivery_state_followup(work_item: WorkItem) -> bool:
     return work_item.work_item_id.startswith(
         (
             "work-qi-observation-",
+            "work-qi-runtime-learning-",
             "work-nuo-observation-",
             "work-qi-preflight-",
             "work-nuo-preflight-",
@@ -2208,11 +2681,530 @@ def _is_delivery_state_followup(work_item: WorkItem) -> bool:
     )
 
 
+def _should_continue_product_pressure_while_awaiting_acceptance(
+    contract: ExecutionContract | None,
+) -> bool:
+    if contract is None:
+        return False
+    delivery_policy = contract.delivery_contract
+    if delivery_policy.get("auto_continue_until_human_acceptance") is True:
+        return True
+    production_mode = delivery_policy.get("production_mode")
+    return production_mode == "scribble_adventure_functional_parity_v1"
+
+
+def _latest_product_pressure_evidence_allows_waiting(
+    contract: ExecutionContract | None,
+) -> bool:
+    """Return true when fresh external product-feel evidence is strong enough to wait.
+
+    Human acceptance is still required to close a product mission, but a passed
+    final-player-experience gate should not itself create infinite rework.
+    """
+
+    if contract is None or not isinstance(contract.delivery_contract, dict):
+        return False
+    delivery_policy = contract.delivery_contract
+    project_path = _workspace_path_from_contract(contract)
+    if not project_path:
+        return False
+    docs_path = Path(project_path).expanduser() / "docs"
+    final_payload = _read_json_file(docs_path / "final-player-experience-gate.json")
+    production_mode = delivery_policy.get("production_mode")
+    final_required = bool(
+        delivery_policy.get("final_player_experience_required")
+        or production_mode == "scribble_adventure_functional_parity_v1"
+    )
+    if final_required:
+        if not final_payload:
+            return False
+        final_threshold = float(
+            final_payload.get(
+                "threshold",
+                delivery_policy.get("final_player_experience_threshold", 0.95),
+            )
+        )
+        if final_payload.get("pass") is not True:
+            return False
+        if float(final_payload.get("score", 0.0)) < final_threshold:
+            return False
+        dimensions = final_payload.get("dimensions")
+        dimension_floor = final_payload.get("dimension_floor")
+        if isinstance(dimensions, dict) and dimension_floor is not None:
+            floor = float(dimension_floor)
+            for value in dimensions.values():
+                if isinstance(value, dict) and float(value.get("score", 0.0)) < floor:
+                    return False
+
+    residual_payload = _read_json_file(docs_path / "benchmark-residual-audit.json")
+    residual_required = bool(delivery_policy.get("benchmark_residual_required") or residual_payload)
+    if residual_required:
+        if not residual_payload:
+            return False
+        residual_threshold = float(
+            residual_payload.get(
+                "threshold",
+                delivery_policy.get("benchmark_residual_threshold", 0.003),
+            )
+        )
+        if residual_payload.get("pass") is not True:
+            return False
+        if float(residual_payload.get("overall_residual", 1.0)) > residual_threshold:
+            return False
+
+    return final_required or residual_required
+
+
+def _transition_product_delivery_to_awaiting_acceptance(
+    control_plane: InMemoryControlPlane,
+    *,
+    mission_id: str,
+    actor: str,
+    reason: str,
+    subject_ref: str,
+) -> None:
+    mission = control_plane.missions[mission_id]
+    if mission.status == "awaiting_acceptance":
+        return
+    if mission.status == "running":
+        control_plane.transition_mission(
+            mission_id=mission_id,
+            target="delivering",
+            actor=actor,
+            reason=f"{reason}; mark completed product delivery as delivering first",
+            subject_ref=subject_ref,
+        )
+    control_plane.transition_mission(
+        mission_id=mission_id,
+        target="awaiting_acceptance",
+        actor=actor,
+        reason=reason,
+        subject_ref=subject_ref,
+    )
+
+
+def _latest_open_acceptance_ticket(
+    control_plane: InMemoryControlPlane,
+    mission: Mission,
+) -> CollaborationTicket | None:
+    latest_manifest_ref = _latest_delivery_manifest_ref(control_plane, mission)
+    candidates = [
+        ticket
+        for ticket in control_plane.collaboration_tickets.values()
+        if ticket.mission_id == mission.mission_id
+        and ticket.type == "review"
+        and ticket.status == "open"
+        and (
+            latest_manifest_ref is None
+            or ticket.context_ref == latest_manifest_ref
+            or ticket.ticket_id == _acceptance_ticket_id(mission.mission_id, latest_manifest_ref)
+        )
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda ticket: ticket.ticket_id)[-1]
+
+
+def _has_ready_or_active_current_plan_work(
+    control_plane: InMemoryControlPlane,
+    mission: Mission,
+) -> bool:
+    return any(
+        work_item.mission_id == mission.mission_id
+        and work_item.task_plan_version == mission.current_plan_version
+        and work_item.status
+        in {
+            "queued",
+            "running",
+            "waiting_human",
+            "waiting_external",
+            "blocked",
+            "retrying",
+            "repairing",
+            "rolling_back",
+            "changing_plan",
+            "merging",
+            "partial",
+        }
+        for work_item in control_plane.work_items.values()
+    )
+
+
+def _open_acceptance_pressure_gate_id(
+    *,
+    mission_id: str,
+    task_plan_version: str,
+    ticket_id: str,
+    context_ref: str,
+) -> str:
+    digest = _hash_payload(
+        {
+            "mission_id": mission_id,
+            "task_plan_version": task_plan_version,
+            "ticket_id": ticket_id,
+            "context_ref": context_ref,
+        }
+    )[:12]
+    return f"gate-{_slug(mission_id)}-{_slug(task_plan_version)}-open-acceptance-pressure-{digest}"
+
+
+def _latest_acceptance_rework_gate(
+    control_plane: InMemoryControlPlane,
+    mission: Mission,
+) -> GateEvaluation | None:
+    rework_actions = {"rejected", "needs_plan_change", "needs_repair"}
+    candidates = [
+        gate
+        for gate in control_plane.gate_evaluations.values()
+        if gate.mission_id == mission.mission_id
+        and gate.stage == "acceptance"
+        and (
+            mission.current_plan_version is None
+            or gate.task_plan_version == mission.current_plan_version
+        )
+        and (
+            gate.next_action in rework_actions
+            or gate.north_star_verdict != "pass"
+            or gate.hard_gate_failures
+            or "human_product_feedback" in gate.governance_signal
+            or "user_feedback" in gate.governance_signal
+        )
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda gate: gate.gate_evaluation_id)[-1]
+
+
+def _task_plan_for_version(
+    control_plane: InMemoryControlPlane,
+    *,
+    mission_id: str,
+    plan_version: str,
+) -> TaskPlan | None:
+    for plan in control_plane.task_plans.values():
+        if plan.mission_id == mission_id and plan.version == plan_version:
+            return plan
+    return None
+
+
+def _acceptance_rework_plan_version(*, mission: Mission, gate: GateEvaluation) -> str:
+    base = gate.task_plan_version or mission.current_plan_version or "product"
+    if base.endswith("-acceptance-rework"):
+        base = base.removesuffix("-acceptance-rework")
+    sig = _hash_payload(
+        {
+            "gate": gate.gate_evaluation_id,
+            "subject": gate.subject_ref,
+            "hard_gate_failures": gate.hard_gate_failures,
+        }
+    )[:8]
+    return f"{base}-acceptance-rework-{sig}"
+
+
+def _acceptance_rework_task_plan(
+    *,
+    mission: Mission,
+    gate: GateEvaluation,
+    base_plan: TaskPlan | None,
+    plan_version: str,
+) -> TaskPlan:
+    base_acceptance = list(base_plan.acceptance_criteria) if base_plan else []
+    base_constraints = list(base_plan.constraints) if base_plan else []
+    feedback_constraints = [
+        "KUN self-score, residual pass, and one internal gate pass are not final acceptance.",
+        "If the user says the product is not close enough, treat it as a hard product gate failure.",
+        "Rework must produce fresh browser/playtest evidence before returning to acceptance.",
+    ]
+    if any("image" in failure or "interaction" in failure for failure in gate.hard_gate_failures):
+        feedback_constraints.append(
+            "Generated objects must be pictorial, movable stage entities, not text-label cards."
+        )
+        feedback_constraints.append(
+            "Dragging an existing object must move it and trigger object-to-object interactions without duplicating it."
+        )
+    if _is_full_product_parity_feedback(gate):
+        feedback_constraints.append(
+            "Do not treat mechanism parity as product parity; UI, character, world art, animation, and player feel are hard gates."
+        )
+        feedback_constraints.append(
+            "KUN must keep iterating until the delivery is a polished playable game, not a dashboard or prototype shell."
+        )
+    return TaskPlan(
+        plan_id=f"plan-{_slug(mission.mission_id)}-{_slug(plan_version)}",
+        mission_id=mission.mission_id,
+        version=plan_version,
+        objective=mission.objective,
+        known_facts=[
+            *(base_plan.known_facts if base_plan else []),
+            "Human/product acceptance feedback rejected the previous delivery.",
+            gate.root_cause or "The delivered artifact did not meet final player/product feel.",
+        ],
+        acceptance_criteria=_dedupe(
+            [
+                *base_acceptance,
+                "User feedback has been converted into executable product gates.",
+                "The next delivery demonstrates the rejected behavior has been repaired.",
+                "Fresh build, browser/playtest, product residual, and final-player-experience gates pass.",
+                "The mission returns to awaiting acceptance only after real product evidence is refreshed.",
+            ]
+        ),
+        constraints=_dedupe([*base_constraints, *feedback_constraints]),
+        risk_register=[
+            *(base_plan.risk_register if base_plan else []),
+            "Premature closure risk: internal gates can miss subjective game feel and UI parity gaps.",
+        ],
+        evidence_plan=[
+            *(base_plan.evidence_plan if base_plan else []),
+            "Capture the acceptance-rework gate, fresh tests, browser evidence, and final player experience gate.",
+        ],
+        decomposition=[
+            "Reopen the product plan from acceptance feedback.",
+            "Repair the concrete rejected interaction/experience gap.",
+            "Run fresh internal, browser, residual, and final-player-experience gates.",
+            "Deliver again only after evidence proves the new version is closer to the user's target.",
+        ],
+        worker_plan=[
+            "KUN-owned product runner performs the implementation.",
+            "External supervisor gate reviews final player experience; it does not replace human acceptance.",
+        ],
+        merge_plan=[
+            "Merge only after tests and gates pass; keep previous delivery evidence as superseded history.",
+        ],
+        test_plan=[
+            "Run build and internal tests.",
+            "Run visual/sandbox/fun/browser/static/long gates when available.",
+            "Run benchmark residual and final-player-experience gates before acceptance.",
+        ],
+        rollback_plan=[
+            "If the rework worsens playability, roll back to the last passing product snapshot and reopen Qi/Nuo analysis.",
+        ],
+        human_confirmation_points=[
+            "Only request final acceptance when KUN has fresh evidence and no known rejected product gap remains.",
+        ],
+        change_log=[
+            f"Reopened from acceptance feedback gate {gate.gate_evaluation_id}.",
+        ],
+        approval_status="approved_with_limits",
+    )
+
+
+def _acceptance_rework_work_items(
+    *,
+    mission: Mission,
+    gate: GateEvaluation,
+    plan_version: str,
+    contract: ExecutionContract | None,
+) -> list[WorkItem]:
+    workspace_path = _workspace_path_from_contract(contract)
+    workspace_ref = f"workspace://{workspace_path}" if workspace_path else None
+    resource_locks = [f"workspace:{workspace_path}"] if workspace_path else []
+    prefix = f"work-{_slug(mission.mission_id)}-{_slug(plan_version)}"
+    delivery_policy = contract.delivery_contract if contract is not None else {}
+    production_mode = (
+        delivery_policy.get("production_mode") if isinstance(delivery_policy, dict) else None
+    )
+    game_mode = production_mode == "scribble_adventure_functional_parity_v1"
+    full_parity_feedback = _is_full_product_parity_feedback(gate)
+    if game_mode and full_parity_feedback:
+        specs = [
+            (
+                "01-visual-product-iteration",
+                "execution",
+                "kun-game-production-runner",
+                [],
+                (
+                    "Repair rejected final-game parity gap: world visuals, character presentation, "
+                    "object imagery, animation feedback, and UI game feel must read as a playable "
+                    "Scribblenauts-style game rather than a tagged prototype."
+                ),
+            ),
+            (
+                "02-experience-product-iteration",
+                "execution",
+                "kun-game-production-runner",
+                [f"{prefix}-01-visual-product-iteration"],
+                (
+                    "Deepen the player loop, level requests, feedback, reward cadence, and tablet "
+                    "interaction so the game feels like a finished creative puzzle sandbox."
+                ),
+            ),
+            (
+                "03-sandbox-dynamics-iteration",
+                "execution",
+                "kun-game-production-runner",
+                [f"{prefix}-02-experience-product-iteration"],
+                (
+                    "Strengthen object physics, cause/effect, object-to-object reactions, and "
+                    "multi-solution sandbox behavior."
+                ),
+            ),
+            (
+                "04-image-object-interaction-iteration",
+                "execution",
+                "kun-game-production-runner",
+                [f"{prefix}-03-sandbox-dynamics-iteration"],
+                (
+                    "Ensure generated words become pictorial movable game entities, not text labels; "
+                    "dragging an existing object moves it and can trigger reactions such as food eaten by NPCs."
+                ),
+            ),
+            (
+                "05-commercial-game-polish-iteration",
+                "execution",
+                "kun-game-production-runner",
+                [f"{prefix}-04-image-object-interaction-iteration"],
+                (
+                    "Continue product-pressure after automated gates: upgrade commercial game UI, "
+                    "character reference integration, animation, touch feel, object sprite quality, "
+                    "and richer causal reactions before asking for acceptance again."
+                ),
+            ),
+            (
+                "06-fun-and-browser-retest",
+                "test",
+                "kun-game-production-runner",
+                [f"{prefix}-05-commercial-game-polish-iteration"],
+                "Run fresh build, fun, visual, sandbox, browser, and long-play evidence.",
+            ),
+            (
+                "07-final-player-experience-gate",
+                "review",
+                "external-supervisor-gpt5.5",
+                [f"{prefix}-06-fun-and-browser-retest"],
+                "Review product feel against the final game standard; KUN self-score is insufficient.",
+            ),
+            (
+                "08-benchmark-residual-audit",
+                "review",
+                "kun-game-production-runner",
+                [f"{prefix}-07-final-player-experience-gate"],
+                "Recompute benchmark residual with visual, UI, interaction, and player-feel gaps included.",
+            ),
+            (
+                "09-final-delivery",
+                "merge",
+                "kun-game-production-runner",
+                [f"{prefix}-08-benchmark-residual-audit"],
+                "Deliver again only if the fresh final-player-experience and residual gates pass.",
+            ),
+        ]
+    elif game_mode:
+        specs = [
+            (
+                "01-image-object-interaction-iteration",
+                "execution",
+                "kun-game-production-runner",
+                [],
+                (
+                    "Repair rejected Scribblenauts parity gap: generated objects must render as "
+                    "pictorial game entities, stage drag must move existing objects, and object-to-object "
+                    "interactions such as burger feeding wolf must work without duplicate copies."
+                ),
+            ),
+            (
+                "02-fun-and-browser-retest",
+                "test",
+                "kun-game-production-runner",
+                [f"{prefix}-01-image-object-interaction-iteration"],
+                "Run fresh build, fun, visual, sandbox, browser, and long-play evidence.",
+            ),
+            (
+                "03-final-player-experience-gate",
+                "review",
+                "external-supervisor-gpt5.5",
+                [f"{prefix}-02-fun-and-browser-retest"],
+                "Review product feel against the final game standard; KUN self-score is insufficient.",
+            ),
+            (
+                "04-benchmark-residual-audit",
+                "review",
+                "kun-game-production-runner",
+                [f"{prefix}-03-final-player-experience-gate"],
+                "Recompute benchmark residual with visual, UI, interaction, and player-feel gaps included.",
+            ),
+            (
+                "05-final-delivery",
+                "merge",
+                "kun-game-production-runner",
+                [f"{prefix}-04-benchmark-residual-audit"],
+                "Deliver again only if the fresh final-player-experience and residual gates pass.",
+            ),
+        ]
+    else:
+        specs = [
+            (
+                "01-acceptance-feedback-repair",
+                "repair",
+                "kun",
+                [],
+                "Repair the rejected product delivery according to human/product feedback.",
+            ),
+            (
+                "02-acceptance-feedback-retest",
+                "retest",
+                "kun",
+                [f"{prefix}-01-acceptance-feedback-repair"],
+                "Retest the repaired product against the user-facing acceptance criteria.",
+            ),
+        ]
+    items: list[WorkItem] = []
+    for suffix, item_type, owner, dependencies, expected_output in specs:
+        work_item_id = f"{prefix}-{suffix}"
+        items.append(
+            WorkItem(
+                work_item_id=work_item_id,
+                mission_id=mission.mission_id,
+                task_plan_version=plan_version,
+                type=item_type,
+                owner=owner,
+                dependencies=dependencies,
+                priority=96 if suffix.startswith("01") else 92,
+                resource_locks=list(resource_locks),
+                idempotency_key=f"acceptance-rework:{gate.gate_evaluation_id}:{work_item_id}",
+                expected_output=expected_output,
+                workspace_ref=workspace_ref,
+                recovery_refs=[gate.gate_evaluation_id],
+            )
+        )
+    return items
+
+
+def _is_full_product_parity_feedback(gate: GateEvaluation) -> bool:
+    text = " ".join(
+        [
+            gate.root_cause,
+            gate.governance_signal,
+            *gate.hard_gate_failures,
+        ]
+    ).lower()
+    return any(
+        marker in text
+        for marker in [
+            "full_parity",
+            "final_game",
+            "gamefeel",
+            "player_feel",
+            "ui",
+            "visual",
+            "world",
+            "character",
+            "animation",
+            "scribblenauts",
+            "涂鸦",
+            "完全一致",
+        ]
+    )
+
+
 def _effective_resource_locks(
     control_plane: InMemoryControlPlane,
     work_item: WorkItem,
 ) -> set[str]:
-    locks = set(work_item.resource_locks)
+    locks = {
+        normalized
+        for value in work_item.resource_locks
+        if (normalized := normalize_resource_lock_ref(value))
+    }
     if (
         work_item.owner in {"qi", "nuo"}
         or work_item.type in {"governance", "repair", "rollback", "merge"}
@@ -2221,9 +3213,11 @@ def _effective_resource_locks(
         locks.add(f"mission-state:{work_item.mission_id}")
     workspace_ref = work_item.workspace_ref
     if workspace_ref:
-        locks.add(f"workspace:{workspace_ref}")
+        locks.add(normalize_resource_lock_ref(f"workspace:{workspace_ref}"))
     mission = control_plane.missions.get(work_item.mission_id)
-    contract = control_plane.contracts.get(mission.execution_contract_ref or "") if mission else None
+    contract = (
+        control_plane.contracts.get(mission.execution_contract_ref or "") if mission else None
+    )
     workspace_path = _workspace_path_from_contract(contract)
     if workspace_path and work_item.type in {
         "execution",
@@ -2233,8 +3227,24 @@ def _effective_resource_locks(
         "retest",
         "rollback",
     }:
-        locks.add(f"workspace:{workspace_path}")
+        locks.add(normalize_resource_lock_ref(f"workspace:{workspace_path}"))
+    if work_item.type in {
+        "execution",
+        "test",
+        "merge",
+        "repair",
+        "retest",
+        "rollback",
+    } and not _has_workspace_boundary_lock(locks):
+        locks.add(f"mission-workspace:{work_item.mission_id}")
     return locks
+
+
+def _has_workspace_boundary_lock(locks: set[str]) -> bool:
+    return any(
+        lock.startswith(("workspace:", "worktree:", "project:", "repo:", "mission-workspace:"))
+        for lock in locks
+    )
 
 
 def _workspace_path_from_contract(contract: ExecutionContract | None) -> str | None:
@@ -2253,6 +3263,14 @@ def _workspace_path_from_contract(contract: ExecutionContract | None) -> str | N
             if isinstance(value, str) and value.strip():
                 return value
     return None
+
+
+def _read_json_file(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _merge_unique(values: Sequence[str]) -> list[str]:
@@ -2275,6 +3293,7 @@ def _service_state_from_tick(
     tick_count: int,
     consecutive_idle_ticks: int,
     next_wakeup_at: datetime,
+    resource_lock_backend: ResourceLockBackend,
 ) -> DaemonServiceState:
     return DaemonServiceState(
         daemon_id=daemon_id,
@@ -2292,6 +3311,7 @@ def _service_state_from_tick(
         last_tick_recovered_work_item_ids=list(report.recovered_work_item_ids),
         last_tick_progress_artifact_refs=list(report.progress_artifact_refs),
         worker_pool_size=len(report.worker_slots) or 1,
+        resource_lock_backend=resource_lock_backend,
         last_tick_worker_slots=list(report.worker_slots),
         last_tick_resource_lock_skipped_work_item_ids=list(
             report.resource_lock_skipped_work_item_ids

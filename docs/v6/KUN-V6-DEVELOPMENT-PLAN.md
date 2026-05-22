@@ -74,7 +74,9 @@
 - runner 注册和 lease 协议。
 - macOS launchd 服务必须使用可诊断的稳定入口，默认日志写入 `~/Library/Logs/KUN/`，不能因为 Documents/TCC 路径、重复心跳或空闲状态导致 EX_CONFIG、退出循环或无日志失败。
 - 多任务 worker pool：daemon 必须记录 worker 槽位；多 daemon / 多机器必须通过持久 resource lock 与 work item lease 避免重复领取和资源冲突。
-- resource lock 必须不只在单个调度波次内有效；需要文件、数据库或 Redis 等持久锁适配层，并能写入等待原因、持有者、过期时间和冲突对象。
+- resource lock 必须不只在单个调度波次内有效；默认提供 file、SQLite 和 Redis 持久锁适配层，并能写入等待原因、持有者、过期时间和冲突对象。单机多进程 worker pool 推荐 SQLite；跨机器部署使用 Redis/数据库锁。
+- 多进程 worker pool 必须能生成多个 daemon 服务计划：共享 Control Plane store 和 resource lock，每个 daemon 独立 state/heartbeat/log，防止单状态文件互相覆盖。
+- 对可能写入工作区的 work item，如果没有明确 workspace/worktree/project/repo 锁，daemon 必须自动加 mission-workspace 锁，避免未知写边界下并发污染。
 - `kun` owner 的普通 execution、research、review、test、merge work item 必须有默认 KUN runtime runner，不能只依赖产品化 runner、AB runner 或任务专用 runner。
 - heartbeat、timeout、retry、cancel、resume。
 - 进程崩溃恢复、断电/重启恢复、跨天续跑。
@@ -363,6 +365,7 @@
 - supervisor 能监控、恢复、重试、回滚。
 - daemon 能常驻后台自动醒来、拿任务、崩溃恢复、跨天续跑和定时汇报。
 - worker pool、持久 resource lock、work item lease、沙箱隔离等级和并发合并治理进入默认执行链路，并有测试覆盖。
+- SQLite 多进程 resource lock、Redis 分布式 resource lock、daemon worker-pool service plan、安全默认 mission-workspace 锁和驾驶舱 lock backend 展示进入默认执行链路，并有测试覆盖。
 - 沙箱快照和 rollback 已进入默认执行链路，不是未使用字段。
 - Watchtower 能消费 V6 runtime 事件并参与异常治理。
 - 人机协同可见、可恢复。

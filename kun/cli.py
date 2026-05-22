@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import typer
@@ -178,6 +179,12 @@ def control_plane_daemon_status(
         "--state-path",
         help="后台服务心跳状态文件",
     ),
+    stale_heartbeat_after_sec: float = typer.Option(
+        900.0,
+        "--stale-heartbeat-after-sec",
+        min=1.0,
+        help="超过该秒数没有心跳时标记为 stale/unhealthy",
+    ),
     json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
 ) -> None:
     """查看 KUN V6 Control Plane 后台服务心跳和停止请求。"""
@@ -187,9 +194,21 @@ def control_plane_daemon_status(
     state_store = FileDaemonServiceStateStore(state_path)
     state = state_store.load()
     stop_request = state_store.load_stop_request()
+    stale = (
+        state.is_stale(
+            now=datetime.now(UTC),
+            stale_after=timedelta(seconds=stale_heartbeat_after_sec),
+        )
+        if state is not None
+        else False
+    )
+    healthy = state is not None and state.status not in {"stopped", "unhealthy"} and not stale
+    status = "unhealthy" if stale else state.status if state is not None else "stopped"
     payload = {
         "state_path": str(state_path),
-        "status": state.status if state is not None else "stopped",
+        "status": status,
+        "healthy": healthy,
+        "stale": stale,
         "state": state.model_dump(mode="json") if state is not None else None,
         "pending_stop_request": stop_request.model_dump(mode="json")
         if stop_request is not None
@@ -202,6 +221,8 @@ def control_plane_daemon_status(
     table.add_column("字段")
     table.add_column("值")
     table.add_row("状态", str(payload["status"]))
+    table.add_row("健康", "yes" if healthy else "no")
+    table.add_row("心跳过期", "yes" if stale else "no")
     table.add_row("状态文件", str(state_path))
     table.add_row("最近心跳", str(state.last_heartbeat_at if state is not None else "-"))
     table.add_row(
@@ -316,6 +337,12 @@ def control_plane_daemon_service_plan(
         "--resource-lock-path",
         help="可选共享资源锁文件；多进程/多机器 worker pool 用它协调资源",
     ),
+    resource_lock_backend: str = typer.Option(
+        "file",
+        "--resource-lock-backend",
+        help="资源锁后端：file、sqlite 或 redis；多进程推荐 sqlite，跨机器推荐 redis",
+    ),
+    resource_lock_redis_url: str | None = typer.Option(None, "--resource-lock-redis-url"),
     resource_lock_ttl_sec: float = typer.Option(
         900.0,
         "--resource-lock-ttl-sec",
@@ -352,6 +379,10 @@ def control_plane_daemon_service_plan(
 
     if platform not in {"launchd", "systemd"}:
         raise typer.BadParameter("platform must be launchd or systemd")
+    if resource_lock_backend not in {"file", "sqlite", "redis"}:
+        raise typer.BadParameter("resource_lock_backend must be file, sqlite, or redis")
+    if resource_lock_backend == "redis" and not resource_lock_redis_url:
+        raise typer.BadParameter("resource_lock_redis_url is required for redis backend")
     plan = build_daemon_service_install_plan(
         platform=platform,  # type: ignore[arg-type]
         service_name=service_name,
@@ -363,6 +394,8 @@ def control_plane_daemon_service_plan(
         max_work_items_per_tick=max_work_items_per_tick,
         worker_pool_size=worker_pool_size,
         resource_lock_path=resource_lock_path,
+        resource_lock_backend=resource_lock_backend,
+        resource_lock_redis_url=resource_lock_redis_url,
         resource_lock_ttl_sec=resource_lock_ttl_sec,
         sandbox_mode=sandbox_mode,
         container_runtime=container_runtime,
@@ -396,6 +429,8 @@ def control_plane_daemon_service_install(
     state_path: Path = typer.Option(Path(".kun-local/v6-daemon-service.json"), "--state-path"),
     worker_pool_size: int = typer.Option(1, "--worker-pool-size", min=1),
     resource_lock_path: Path | None = typer.Option(None, "--resource-lock-path"),
+    resource_lock_backend: str = typer.Option("file", "--resource-lock-backend"),
+    resource_lock_redis_url: str | None = typer.Option(None, "--resource-lock-redis-url"),
     resource_lock_ttl_sec: float = typer.Option(900.0, "--resource-lock-ttl-sec", min=1),
     sandbox_mode: str = typer.Option("workspace_snapshot", "--sandbox-mode"),
     container_runtime: str | None = typer.Option(None, "--container-runtime"),
@@ -423,6 +458,10 @@ def control_plane_daemon_service_install(
 
     if platform not in {"launchd", "systemd"}:
         raise typer.BadParameter("platform must be launchd or systemd")
+    if resource_lock_backend not in {"file", "sqlite", "redis"}:
+        raise typer.BadParameter("resource_lock_backend must be file, sqlite, or redis")
+    if resource_lock_backend == "redis" and not resource_lock_redis_url:
+        raise typer.BadParameter("resource_lock_redis_url is required for redis backend")
     plan = build_daemon_service_install_plan(
         platform=platform,  # type: ignore[arg-type]
         service_name=service_name,
@@ -432,6 +471,8 @@ def control_plane_daemon_service_install(
         state_path=state_path,
         worker_pool_size=worker_pool_size,
         resource_lock_path=resource_lock_path,
+        resource_lock_backend=resource_lock_backend,
+        resource_lock_redis_url=resource_lock_redis_url,
         resource_lock_ttl_sec=resource_lock_ttl_sec,
         sandbox_mode=sandbox_mode,
         container_runtime=container_runtime,
@@ -449,6 +490,67 @@ def control_plane_daemon_service_install(
     console.print(f"[green]service file written[/] {written_path}")
     console.print("[green]start[/] " + " ".join(plan.start_command))
     console.print("[yellow]stop[/] " + " ".join(plan.stop_command))
+
+
+@control_plane_app.command("daemon-worker-pool-plan")
+def control_plane_daemon_worker_pool_plan(
+    platform: str = typer.Option("launchd", "--platform"),
+    fleet_id: str = typer.Option("kun-control-plane-worker-pool", "--fleet-id"),
+    service_name: str = typer.Option("com.kun.control-plane.v6", "--service-name"),
+    replica_count: int = typer.Option(2, "--replica-count", min=1),
+    per_process_worker_pool_size: int = typer.Option(
+        1,
+        "--per-process-worker-pool-size",
+        min=1,
+        help="每个 daemon 进程内部 worker 槽位数",
+    ),
+    working_directory: Path = typer.Option(Path("."), "--working-directory"),
+    store_path: Path = typer.Option(Path(".kun-local/v6-control-plane.json"), "--store-path"),
+    state_path: Path = typer.Option(Path(".kun-local/v6-daemon-service.json"), "--state-path"),
+    resource_lock_path: Path | None = typer.Option(None, "--resource-lock-path"),
+    resource_lock_backend: str = typer.Option("sqlite", "--resource-lock-backend"),
+    resource_lock_redis_url: str | None = typer.Option(None, "--resource-lock-redis-url"),
+    sandbox_mode: str = typer.Option("workspace_snapshot", "--sandbox-mode"),
+    container_runtime: str | None = typer.Option(None, "--container-runtime"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """生成多进程 worker pool 服务计划，共享同一任务队列和资源锁。"""
+
+    from kun.control_plane import build_daemon_worker_pool_service_install_plans
+
+    if platform not in {"launchd", "systemd"}:
+        raise typer.BadParameter("platform must be launchd or systemd")
+    if resource_lock_backend not in {"file", "sqlite", "redis"}:
+        raise typer.BadParameter("resource_lock_backend must be file, sqlite, or redis")
+    if resource_lock_backend == "redis" and not resource_lock_redis_url:
+        raise typer.BadParameter("resource_lock_redis_url is required for redis backend")
+    plan = build_daemon_worker_pool_service_install_plans(
+        platform=platform,  # type: ignore[arg-type]
+        fleet_id=fleet_id,
+        service_name=service_name,
+        replica_count=replica_count,
+        per_process_worker_pool_size=per_process_worker_pool_size,
+        working_directory=working_directory,
+        store_path=store_path,
+        state_path=state_path,
+        resource_lock_path=resource_lock_path,
+        resource_lock_backend=resource_lock_backend,
+        resource_lock_redis_url=resource_lock_redis_url,
+        sandbox_mode=sandbox_mode,
+        container_runtime=container_runtime,
+    )
+    if json_output:
+        console.print_json(data=plan.model_dump(mode="json"))
+        return
+    table = Table(title="KUN V6 daemon worker pool")
+    table.add_column("daemon")
+    table.add_column("state")
+    table.add_column("lock")
+    for replica in plan.plans:
+        table.add_row(replica.service_name, replica.state_path, replica.resource_lock_path)
+    console.print(table)
+    console.print(f"[green]replicas[/] {plan.replica_count}")
+    console.print(f"[green]shared store[/] {plan.shared_store_path}")
 
 
 @control_plane_app.command("daemon-run")
@@ -486,6 +588,12 @@ def control_plane_daemon_run(
         "--resource-lock-path",
         help="可选共享资源锁文件；多进程/多机器 worker pool 用它协调资源",
     ),
+    resource_lock_backend: str = typer.Option(
+        "file",
+        "--resource-lock-backend",
+        help="资源锁后端：file、sqlite 或 redis；多进程推荐 sqlite，跨机器推荐 redis",
+    ),
+    resource_lock_redis_url: str | None = typer.Option(None, "--resource-lock-redis-url"),
     resource_lock_ttl_sec: float = typer.Option(
         900.0,
         "--resource-lock-ttl-sec",
@@ -561,6 +669,8 @@ def control_plane_daemon_run(
         FileDaemonServiceStateStore,
         FileResourceLockStore,
         InMemoryControlPlane,
+        RedisResourceLockStore,
+        SQLiteResourceLockStore,
         WorkerPoolConfig,
     )
     from kun.control_plane.external_sample_comparison import (
@@ -594,6 +704,10 @@ def control_plane_daemon_run(
         raise typer.BadParameter(
             "sandbox_mode must be workspace_snapshot, container_required, or external_container"
         )
+    if resource_lock_backend not in {"file", "sqlite", "redis"}:
+        raise typer.BadParameter("resource_lock_backend must be file, sqlite, or redis")
+    if resource_lock_backend == "redis" and not resource_lock_redis_url:
+        raise typer.BadParameter("resource_lock_redis_url is required for redis backend")
     productization_runner = ProductizationDogfoodRunner(
         control_plane=control_plane,
         ab_round_dir=ab_round_dir,
@@ -618,6 +732,7 @@ def control_plane_daemon_run(
     ]
     productization_owners = {
         "control-plane": productization_runner,
+        "control-plane-supervisor": kun_runner,
         "kun": kun_runner,
         KUN_GAME_PRODUCTION_RUNNER_OWNER: game_production_runner,
         EXTERNAL_SUPERVISOR_GATE_OWNER: game_production_runner,
@@ -640,10 +755,20 @@ def control_plane_daemon_run(
             machine_id=os.uname().nodename if hasattr(os, "uname") else "local",
             worker_count=worker_pool_size,
         ),
-        resource_lock_store=FileResourceLockStore(
-            resource_lock_path
-            if resource_lock_path is not None
-            else store_path.with_name(f"{store_path.stem}.resource-locks.json")
+        resource_lock_store=(
+            RedisResourceLockStore(resource_lock_redis_url)
+            if resource_lock_backend == "redis"
+            else SQLiteResourceLockStore(
+                resource_lock_path
+                if resource_lock_path is not None
+                else store_path.with_name(f"{store_path.stem}.resource-locks.sqlite3")
+            )
+            if resource_lock_backend == "sqlite"
+            else FileResourceLockStore(
+                resource_lock_path
+                if resource_lock_path is not None
+                else store_path.with_name(f"{store_path.stem}.resource-locks.json")
+            )
         ),
         resource_lock_ttl_sec=resource_lock_ttl_sec,
         sandbox_mode=sandbox_mode,  # type: ignore[arg-type]
@@ -653,6 +778,8 @@ def control_plane_daemon_run(
         poll_interval_sec=poll_interval_sec,
         max_work_items_per_tick=max_work_items_per_tick,
         worker_pool_size=worker_pool_size,
+        resource_lock_backend=resource_lock_backend,  # type: ignore[arg-type]
+        resource_lock_redis_url=resource_lock_redis_url,
         resource_lock_ttl_sec=resource_lock_ttl_sec,
         sandbox_mode=sandbox_mode,  # type: ignore[arg-type]
         container_runtime=container_runtime,

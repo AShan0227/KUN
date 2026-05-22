@@ -64,6 +64,11 @@ def _pass_gate(
     signal: str,
     next_action: str = "continue",
     next_state: str = "running",
+    verdict: str = "pass",
+    result_quality: float = 0.86,
+    risk: float = 0.18,
+    hard_gate_failures: list[str] | None = None,
+    failure_category: str | None = None,
 ) -> GateEvaluation:
     return GateEvaluation(
         gate_evaluation_id=f"gate-{_slug(created_by)}-{_slug(work_item.work_item_id)}",
@@ -74,18 +79,20 @@ def _pass_gate(
         task_type="self_improvement",
         rubric_version="kun-v6-runtime-followup-v1",
         metric_pack_version="kun-v6-runtime-followup-v1",
-        north_star_verdict="pass",
-        result_quality=0.86,
+        north_star_verdict=verdict,
+        result_quality=result_quality,
         speed=0.72,
         cost=0.84,
-        risk=0.18,
+        risk=risk,
         evidence_quality=0.82,
         collaboration_quality=0.78,
         score_breakdown={"runtime_followup_executed": 1.0},
         thresholds={"result_quality": 0.8},
+        hard_gate_failures=hard_gate_failures or [],
         evidence_refs=[artifact.artifact_id],
         artifact_refs=[artifact.artifact_id],
         source_freshness="fresh",
+        failure_category=failure_category,
         responsibility_scope="kun_auto",
         confidence=0.82,
         next_action=next_action,
@@ -126,6 +133,7 @@ class NuoRuntimeRepairRunner:
                 "kept recovery evidence attached for replay and rerun",
                 "left original KUN capability judgment unpenalized until clean retest evidence exists",
             ],
+            "closure_status": "diagnosed_not_repaired",
             "rerun_policy": "eligible_after_environment_or_wrapper_repair",
             "default_agent_failure_counted": False,
         }
@@ -136,14 +144,24 @@ class NuoRuntimeRepairRunner:
             payload=payload,
         )
         return WorkItemResult(
-            status="done",
-            summary="Nuo classified the runtime/preflight condition and preserved a clean retest path.",
+            status="partial",
+            summary=(
+                "Nuo classified the runtime/preflight condition and preserved a clean retest "
+                "path; repair is not closed until rerun or retest evidence passes."
+            ),
             artifacts=[artifact],
             gate_evaluation=_pass_gate(
                 work_item=work_item,
                 created_by=self.runner_identity,
                 artifact=artifact,
                 signal="nuo_runtime_repair_executed",
+                next_action="needs_repair",
+                next_state="repairing",
+                verdict="partial",
+                result_quality=0.72,
+                risk=0.42,
+                hard_gate_failures=["nuo_repair_requires_clean_retest"],
+                failure_category="environment_failure",
             ),
         )
 

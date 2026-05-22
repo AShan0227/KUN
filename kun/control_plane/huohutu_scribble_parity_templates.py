@@ -250,10 +250,46 @@ RULE_FAMILIES = [
 ]
 
 WORLD_CONFIG = [
-    ("rainbow-island", "彩虹造物岛", "造物岛", "小火", "河流、夜色和小火苗在同一个玩具盒里等待孩子用词语改变。", "#dff8ff", "#daf4ce", "#ffbf69"),
-    ("story-planet", "故事星球", "故事星", "泡泡船长", "问题之门、迷路星星和断掉的结尾需要孩子造出线索。", "#f4e7ff", "#fcecc9", "#a984ff"),
-    ("gear-garden", "齿轮花园", "齿轮园", "咔哒熊", "会动的花园里，齿轮、磁铁、轮子和音乐机关互相影响。", "#e8fff3", "#ddf3c2", "#76c893"),
-    ("cloud-harbor", "云端港湾", "云港", "云朵猫", "云桥、风车、气球和小船组成开放探索港口。", "#e7f0ff", "#f7e7c6", "#5aa9e6"),
+    (
+        "rainbow-island",
+        "彩虹造物岛",
+        "造物岛",
+        "小火",
+        "河流、夜色和小火苗在同一个玩具盒里等待孩子用词语改变。",
+        "#dff8ff",
+        "#daf4ce",
+        "#ffbf69",
+    ),
+    (
+        "story-planet",
+        "故事星球",
+        "故事星",
+        "泡泡船长",
+        "问题之门、迷路星星和断掉的结尾需要孩子造出线索。",
+        "#f4e7ff",
+        "#fcecc9",
+        "#a984ff",
+    ),
+    (
+        "gear-garden",
+        "齿轮花园",
+        "齿轮园",
+        "咔哒熊",
+        "会动的花园里，齿轮、磁铁、轮子和音乐机关互相影响。",
+        "#e8fff3",
+        "#ddf3c2",
+        "#76c893",
+    ),
+    (
+        "cloud-harbor",
+        "云端港湾",
+        "云港",
+        "云朵猫",
+        "云桥、风车、气球和小船组成开放探索港口。",
+        "#e7f0ff",
+        "#f7e7c6",
+        "#5aa9e6",
+    ),
 ]
 
 GOAL_FAMILIES = [
@@ -682,7 +718,9 @@ export interface GameSnapshot {
 
 def _worlds_payload() -> dict[str, object]:
     payload: dict[str, object] = {}
-    for world_index, (world_id, name, short, companion, premise, sky, ground, accent) in enumerate(WORLD_CONFIG):
+    for world_index, (world_id, name, short, companion, premise, sky, ground, accent) in enumerate(
+        WORLD_CONFIG
+    ):
         goals = []
         for goal_index, (family, title_seed, need) in enumerate(GOAL_FAMILIES):
             goal_no = world_index * len(GOAL_FAMILIES) + goal_index + 1
@@ -767,8 +805,7 @@ def _word_to_world_ts() -> str:
         for kind, name, aliases, families in OBJECTS
     ]
     properties = [
-        {"property": key, "label": label, "aliases": aliases}
-        for key, label, aliases in PROPERTIES
+        {"property": key, "label": label, "aliases": aliases} for key, label, aliases in PROPERTIES
     ]
     actions = [{"action": key, "aliases": aliases} for key, aliases in ACTIONS]
     return f"""import type {{ ActionIntent, GeneratedObject, ObjectKind, PropertyKey, SparkKey, WorldId }} from "../types";
@@ -1185,19 +1222,22 @@ def _styles_css() -> str:
 
 
 def _parity_report_json() -> str:
-    return _json(
-        {
-            "ok": True,
-            "objectCount": len(OBJECTS),
-            "propertyCount": len(PROPERTIES),
-            "actionCount": len(ACTIONS),
-            "worldCount": len(WORLD_CONFIG),
-            "goalCount": len(WORLD_CONFIG) * len(GOAL_FAMILIES),
-            "solutionCount": len(WORLD_CONFIG) * len(GOAL_FAMILIES) * 3,
-            "ruleFamilyCount": len(RULE_FAMILIES),
-            "ipBoundary": "functional system parity only; original Fire Rabbit expression",
-        }
-    ) + "\n"
+    return (
+        _json(
+            {
+                "ok": True,
+                "objectCount": len(OBJECTS),
+                "propertyCount": len(PROPERTIES),
+                "actionCount": len(ACTIONS),
+                "worldCount": len(WORLD_CONFIG),
+                "goalCount": len(WORLD_CONFIG) * len(GOAL_FAMILIES),
+                "solutionCount": len(WORLD_CONFIG) * len(GOAL_FAMILIES) * 3,
+                "ruleFamilyCount": len(RULE_FAMILIES),
+                "ipBoundary": "functional system parity only; original Fire Rabbit expression",
+            }
+        )
+        + "\n"
+    )
 
 
 def _readme_md() -> str:

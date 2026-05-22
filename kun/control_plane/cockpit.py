@@ -191,6 +191,7 @@ class TaskCockpitConcurrency(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     worker_pool_size: int = 1
+    resource_lock_backend: str = "unknown"
     worker_slots: list[WorkerSlotSnapshot] = Field(default_factory=list)
     waiting_on_resource_lock_count: int = 0
     resource_lock_conflicts: list[ResourceLockConflict] = Field(default_factory=list)
@@ -693,6 +694,7 @@ def _concurrency(
         resource_waiting = sum(1 for item in work_items if item.lease or item.resource_locks)
         return TaskCockpitConcurrency(
             worker_pool_size=1,
+            resource_lock_backend="unknown",
             waiting_on_resource_lock_count=0,
             text=(
                 "还没有后台 worker pool 心跳；KUN 会在 daemon 写入状态后显示 worker 槽位、"
@@ -711,8 +713,13 @@ def _concurrency(
         text = "多 worker 槽位已启用；KUN 会按任务依赖和资源锁公平推进。"
     else:
         text = "当前是单 worker 槽位；任务仍有资源锁和沙箱记录，可平滑升级到多 worker。"
+    if service_state.resource_lock_backend == "sqlite":
+        text += " SQLite 持久锁已启用，可支撑本机多进程 daemon 协同。"
+    elif service_state.resource_lock_backend == "redis":
+        text += " Redis 分布式锁已启用，可支撑跨机器 worker 协同。"
     return TaskCockpitConcurrency(
         worker_pool_size=service_state.worker_pool_size,
+        resource_lock_backend=service_state.resource_lock_backend,
         worker_slots=slots,
         waiting_on_resource_lock_count=len(skipped),
         resource_lock_conflicts=conflicts,

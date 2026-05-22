@@ -217,7 +217,9 @@ def restore_workspace_snapshot(snapshot_artifact: ArtifactRecord) -> WorkspaceRe
         shutil.copy2(source, target)
         restored += 1
     if not complete_restore:
-        warnings.append("Snapshot hit capture limits; rollback restored copied files without deleting extras.")
+        warnings.append(
+            "Snapshot hit capture limits; rollback restored copied files without deleting extras."
+        )
     return WorkspaceRestoreResult(
         workspace=str(workspace),
         snapshot_artifact_id=snapshot_artifact.artifact_id,

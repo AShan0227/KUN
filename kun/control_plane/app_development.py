@@ -55,9 +55,7 @@ class AppProjectSpec(BaseModel):
     project_name: str = "huohutu-spark-mvp"
     app_name: str = "火火兔 Spark"
     platform: str = "tablet_app_pwa_capacitor_ready"
-    first_worlds: list[str] = Field(
-        default_factory=lambda: ["彩虹造物岛", "故事星球"]
-    )
+    first_worlds: list[str] = Field(default_factory=lambda: ["彩虹造物岛", "故事星球"])
 
 
 class AutonomousAppDevelopmentRunner:
@@ -244,7 +242,9 @@ class AutonomousAppDevelopmentRunner:
         task_plan: TaskPlan,
         spec: AppProjectSpec,
     ) -> WorkItemResult:
-        install = self.command_runner(["npm", "install"], spec.project_path, self.command_timeout_sec)
+        install = self.command_runner(
+            ["npm", "install"], spec.project_path, self.command_timeout_sec
+        )
         if install.exit_code != 0:
             return _failed_command_result(work_item, "npm install", install, spec.project_path)
         build = self.command_runner(
@@ -301,6 +301,7 @@ class AutonomousAppDevelopmentRunner:
             primary_artifact_ref=delivery_artifact.artifact_id,
             test_refs=[test_artifact.artifact_id],
             evidence_refs=[report_artifact.artifact_id],
+            rollback_refs=list(work_item.rollback_refs) or [report_artifact.artifact_id],
             created_by=self.runner_identity,
             content_hash=_hash_path(spec.project_path),
             supports_delivery=True,
@@ -372,6 +373,8 @@ def _spec_from_contract(contract: ExecutionContract) -> AppProjectSpec:
 
 
 def _phase_from_work_item(work_item: WorkItem) -> str:
+    if work_item.phase:
+        return work_item.phase
     item_id = work_item.work_item_id
     if "runner-activation" in item_id:
         return "activation"
@@ -521,13 +524,7 @@ def _hash_path(path: Path) -> str:
 
 
 def _slug(value: str) -> str:
-    return (
-        value.replace("_", "-")
-        .replace("/", "-")
-        .replace(":", "-")
-        .replace(".", "-")
-        .lower()
-    )
+    return value.replace("_", "-").replace("/", "-").replace(":", "-").replace(".", "-").lower()
 
 
 def _scope_markdown(*, task_plan: TaskPlan, spec: AppProjectSpec) -> str:

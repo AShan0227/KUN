@@ -11,11 +11,13 @@ attaching artifacts.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import sqlite3
 import tempfile
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -32,6 +34,7 @@ except ImportError:  # pragma: no cover
 WorkerSlotStatus = Literal["idle", "running", "waiting_lock", "blocked", "unavailable"]
 SandboxIsolationMode = Literal["workspace_snapshot", "container_required", "external_container"]
 MergeConflictSeverity = Literal["info", "warning", "blocking"]
+ResourceLockBackend = Literal["file", "sqlite", "redis", "memory"]
 
 
 class WorkerPoolConfig(BaseModel):
@@ -107,6 +110,26 @@ class ResourceLockAcquisition(BaseModel):
     conflicts: list[ResourceLockConflict] = Field(default_factory=list)
 
 
+def normalize_resource_lock_ref(value: str) -> str:
+    """Canonicalize resource-lock keys before scheduling or persisting leases."""
+
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if not raw.startswith("workspace:"):
+        return raw
+    workspace_value = raw.removeprefix("workspace:")
+    if workspace_value.startswith("workspace://"):
+        workspace_value = workspace_value.removeprefix("workspace://")
+    if not workspace_value:
+        return "workspace:"
+    try:
+        workspace_value = str(Path(workspace_value).expanduser().resolve())
+    except (OSError, RuntimeError):
+        workspace_value = str(Path(workspace_value).expanduser())
+    return f"workspace:{workspace_value}"
+
+
 class SandboxIsolationSpec(BaseModel):
     """The sandbox mode actually requested for a work item."""
 
@@ -179,7 +202,7 @@ class FileResourceLockStore:
         now: datetime,
         ttl: timedelta,
     ) -> ResourceLockAcquisition:
-        unique_resources = _dedupe(resources)
+        unique_resources = _dedupe_resource_refs(resources)
         if not unique_resources:
             return ResourceLockAcquisition(acquired=True, holder_id=holder_id)
         with self._locked():
@@ -231,12 +254,8 @@ class FileResourceLockStore:
     def release_holder(self, holder_id: str, *, now: datetime) -> list[ResourceLockLease]:
         with self._locked():
             leases = self._load_unlocked(now=now)
-            released = [
-                lease for lease in leases.values() if lease.holder_id == holder_id
-            ]
-            remaining = [
-                lease for lease in leases.values() if lease.holder_id != holder_id
-            ]
+            released = [lease for lease in leases.values() if lease.holder_id == holder_id]
+            remaining = [lease for lease in leases.values() if lease.holder_id != holder_id]
             self._persist_unlocked(remaining)
             return released
 
@@ -295,6 +314,306 @@ class FileResourceLockStore:
             raise
 
 
+class SQLiteResourceLockStore:
+    """SQLite-backed lock store for local multi-process worker pools.
+
+    This is the durable default for a single machine running multiple daemon
+    processes.  It uses SQLite's write transaction as the atomic boundary, so
+    independently started daemon processes cannot double-claim the same
+    workspace, mission merge lane, or other resource.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+
+    def acquire_many(
+        self,
+        *,
+        resources: list[str],
+        holder_id: str,
+        daemon_id: str,
+        worker_id: str,
+        work_item: WorkItem,
+        now: datetime,
+        ttl: timedelta,
+    ) -> ResourceLockAcquisition:
+        unique_resources = _dedupe_resource_refs(resources)
+        if not unique_resources:
+            return ResourceLockAcquisition(acquired=True, holder_id=holder_id)
+        with self._transaction() as conn:
+            self._prune_expired(conn, now=now)
+            conflicts: list[ResourceLockConflict] = []
+            for resource_ref in unique_resources:
+                held = self._load_one(conn, resource_ref=resource_ref)
+                if held is None or held.holder_id == holder_id:
+                    continue
+                conflicts.append(
+                    ResourceLockConflict(
+                        resource_ref=resource_ref,
+                        waiting_work_item_id=work_item.work_item_id,
+                        holder_id=held.holder_id,
+                        holder_work_item_id=held.work_item_id,
+                        holder_daemon_id=held.daemon_id,
+                        expires_at=held.expires_at,
+                        waiting_reason=(
+                            "另一个 daemon/worker 正在使用同一资源，KUN 会等待锁释放或过期后继续。"
+                        ),
+                    )
+                )
+            if conflicts:
+                return ResourceLockAcquisition(
+                    acquired=False,
+                    holder_id=holder_id,
+                    conflicts=conflicts,
+                )
+            acquired = [
+                ResourceLockLease(
+                    lease_id=f"lease-{_slug(holder_id)}-{_slug(resource_ref)}",
+                    resource_ref=resource_ref,
+                    holder_id=holder_id,
+                    daemon_id=daemon_id,
+                    worker_id=worker_id,
+                    mission_id=work_item.mission_id,
+                    work_item_id=work_item.work_item_id,
+                    acquired_at=now,
+                    expires_at=now + ttl,
+                    heartbeat_at=now,
+                )
+                for resource_ref in unique_resources
+            ]
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO resource_locks
+                    (resource_ref, holder_id, lease_json, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (
+                        lease.resource_ref,
+                        lease.holder_id,
+                        lease.model_dump_json(),
+                        lease.expires_at.isoformat(),
+                    )
+                    for lease in acquired
+                ],
+            )
+            return ResourceLockAcquisition(acquired=True, holder_id=holder_id, leases=acquired)
+
+    def release_holder(self, holder_id: str, *, now: datetime) -> list[ResourceLockLease]:
+        with self._transaction() as conn:
+            self._prune_expired(conn, now=now)
+            rows = conn.execute(
+                "SELECT lease_json FROM resource_locks WHERE holder_id = ?",
+                (holder_id,),
+            ).fetchall()
+            released = [ResourceLockLease.model_validate_json(str(row[0])) for row in rows]
+            conn.execute(
+                "DELETE FROM resource_locks WHERE holder_id = ?",
+                (holder_id,),
+            )
+            return released
+
+    def list_active(self, *, now: datetime) -> list[ResourceLockLease]:
+        with self._transaction() as conn:
+            self._prune_expired(conn, now=now)
+            rows = conn.execute(
+                "SELECT lease_json FROM resource_locks ORDER BY resource_ref"
+            ).fetchall()
+            return [ResourceLockLease.model_validate_json(str(row[0])) for row in rows]
+
+    @contextmanager
+    def _transaction(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS resource_locks (
+                resource_ref TEXT PRIMARY KEY,
+                holder_id TEXT NOT NULL,
+                lease_json TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            )
+            """
+        )
+        columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(resource_locks)").fetchall()
+        }
+        if "holder_id" not in columns:
+            conn.execute("ALTER TABLE resource_locks ADD COLUMN holder_id TEXT NOT NULL DEFAULT ''")
+            rows = conn.execute("SELECT resource_ref, lease_json FROM resource_locks").fetchall()
+            for resource_ref, lease_json in rows:
+                lease = ResourceLockLease.model_validate_json(str(lease_json))
+                conn.execute(
+                    "UPDATE resource_locks SET holder_id = ? WHERE resource_ref = ?",
+                    (lease.holder_id, resource_ref),
+                )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _load_one(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        resource_ref: str,
+    ) -> ResourceLockLease | None:
+        row = conn.execute(
+            "SELECT lease_json FROM resource_locks WHERE resource_ref = ?",
+            (resource_ref,),
+        ).fetchone()
+        if row is None:
+            return None
+        return ResourceLockLease.model_validate_json(str(row[0]))
+
+    def _prune_expired(self, conn: sqlite3.Connection, *, now: datetime) -> None:
+        conn.execute(
+            "DELETE FROM resource_locks WHERE expires_at <= ?",
+            (now.isoformat(),),
+        )
+
+
+class RedisResourceLockStore:
+    """Redis-backed distributed lock store for cross-machine worker pools."""
+
+    def __init__(
+        self,
+        redis_url: str | None = None,
+        *,
+        client: object | None = None,
+        key_prefix: str = "kun:v6:resource-lock",
+    ) -> None:
+        if client is None:
+            if redis_url is None:
+                raise ValueError("redis_url is required when client is not provided")
+            import redis
+
+            client = redis.Redis.from_url(redis_url, decode_responses=True)
+        self.client = client
+        self.key_prefix = key_prefix.rstrip(":")
+
+    def acquire_many(
+        self,
+        *,
+        resources: list[str],
+        holder_id: str,
+        daemon_id: str,
+        worker_id: str,
+        work_item: WorkItem,
+        now: datetime,
+        ttl: timedelta,
+    ) -> ResourceLockAcquisition:
+        unique_resources = _dedupe_resource_refs(resources)
+        if not unique_resources:
+            return ResourceLockAcquisition(acquired=True, holder_id=holder_id)
+        keys = [self._key(resource_ref) for resource_ref in unique_resources]
+        ttl_ms = max(1, int(ttl.total_seconds() * 1000))
+        while True:
+            with self.client.pipeline() as pipe:  # type: ignore[attr-defined]
+                try:
+                    pipe.watch(*keys)
+                    raw_values = pipe.mget(keys)
+                    conflicts: list[ResourceLockConflict] = []
+                    for resource_ref, raw_value in zip(
+                        unique_resources,
+                        raw_values,
+                        strict=True,
+                    ):
+                        if not raw_value:
+                            continue
+                        held = ResourceLockLease.model_validate_json(str(raw_value))
+                        if not held.active(now=now) or held.holder_id == holder_id:
+                            continue
+                        conflicts.append(
+                            ResourceLockConflict(
+                                resource_ref=resource_ref,
+                                waiting_work_item_id=work_item.work_item_id,
+                                holder_id=held.holder_id,
+                                holder_work_item_id=held.work_item_id,
+                                holder_daemon_id=held.daemon_id,
+                                expires_at=held.expires_at,
+                                waiting_reason=(
+                                    "Redis 分布式锁显示其他机器/worker 正在使用同一资源。"
+                                ),
+                            )
+                        )
+                    if conflicts:
+                        pipe.unwatch()
+                        return ResourceLockAcquisition(
+                            acquired=False,
+                            holder_id=holder_id,
+                            conflicts=conflicts,
+                        )
+                    acquired = [
+                        ResourceLockLease(
+                            lease_id=f"lease-{_slug(holder_id)}-{_slug(resource_ref)}",
+                            resource_ref=resource_ref,
+                            holder_id=holder_id,
+                            daemon_id=daemon_id,
+                            worker_id=worker_id,
+                            mission_id=work_item.mission_id,
+                            work_item_id=work_item.work_item_id,
+                            acquired_at=now,
+                            expires_at=now + ttl,
+                            heartbeat_at=now,
+                        )
+                        for resource_ref in unique_resources
+                    ]
+                    pipe.multi()
+                    for key, lease in zip(keys, acquired, strict=True):
+                        pipe.set(key, lease.model_dump_json(), px=ttl_ms)
+                    pipe.execute()
+                    return ResourceLockAcquisition(
+                        acquired=True,
+                        holder_id=holder_id,
+                        leases=acquired,
+                    )
+                except Exception as exc:
+                    if exc.__class__.__name__ == "WatchError":
+                        continue
+                    raise
+
+    def release_holder(self, holder_id: str, *, now: datetime) -> list[ResourceLockLease]:
+        released: list[ResourceLockLease] = []
+        for key in list(self.client.scan_iter(f"{self.key_prefix}:*")):  # type: ignore[attr-defined]
+            raw_value = self.client.get(key)  # type: ignore[attr-defined]
+            if not raw_value:
+                continue
+            lease = ResourceLockLease.model_validate_json(str(raw_value))
+            if not lease.active(now=now):
+                self.client.delete(key)  # type: ignore[attr-defined]
+                continue
+            if lease.holder_id != holder_id:
+                continue
+            released.append(lease)
+            self.client.delete(key)  # type: ignore[attr-defined]
+        return sorted(released, key=lambda lease: (lease.resource_ref, lease.holder_id))
+
+    def list_active(self, *, now: datetime) -> list[ResourceLockLease]:
+        leases: list[ResourceLockLease] = []
+        for key in list(self.client.scan_iter(f"{self.key_prefix}:*")):  # type: ignore[attr-defined]
+            raw_value = self.client.get(key)  # type: ignore[attr-defined]
+            if not raw_value:
+                continue
+            lease = ResourceLockLease.model_validate_json(str(raw_value))
+            if not lease.active(now=now):
+                self.client.delete(key)  # type: ignore[attr-defined]
+                continue
+            leases.append(lease)
+        return sorted(leases, key=lambda lease: (lease.resource_ref, lease.holder_id))
+
+    def _key(self, resource_ref: str) -> str:
+        digest = hashlib.sha256(resource_ref.encode("utf-8")).hexdigest()
+        return f"{self.key_prefix}:{digest}"
+
+
 class InMemoryResourceLockStore:
     """Process-local lock store for unit tests and pure in-memory runtimes."""
 
@@ -318,7 +637,7 @@ class InMemoryResourceLockStore:
             if lease.active(now=now)
         }
         conflicts: list[ResourceLockConflict] = []
-        for resource_ref in _dedupe(resources):
+        for resource_ref in _dedupe_resource_refs(resources):
             held = active.get(resource_ref)
             if held is None or held.holder_id == holder_id:
                 continue
@@ -349,7 +668,7 @@ class InMemoryResourceLockStore:
                 expires_at=now + ttl,
                 heartbeat_at=now,
             )
-            for resource_ref in _dedupe(resources)
+            for resource_ref in _dedupe_resource_refs(resources)
         ]
         for lease in leases:
             active[lease.resource_ref] = lease
@@ -376,7 +695,9 @@ class InMemoryResourceLockStore:
             for resource_ref, lease in self._leases.items()
             if lease.active(now=now)
         }
-        return sorted(self._leases.values(), key=lambda lease: (lease.resource_ref, lease.holder_id))
+        return sorted(
+            self._leases.values(), key=lambda lease: (lease.resource_ref, lease.holder_id)
+        )
 
 
 def worker_slots(config: WorkerPoolConfig) -> list[WorkerSlotSnapshot]:
@@ -406,7 +727,8 @@ def sandbox_spec_for_work_item(
     else:
         text = "使用外部容器或远端 worker 提供的隔离环境。"
     return SandboxIsolationSpec(
-        sandbox_ref=work_item.sandbox_ref or f"sandbox://{work_item.mission_id}/{work_item.work_item_id}",
+        sandbox_ref=work_item.sandbox_ref
+        or f"sandbox://{work_item.mission_id}/{work_item.work_item_id}",
         mission_id=work_item.mission_id,
         work_item_id=work_item.work_item_id,
         mode=mode,
@@ -500,6 +822,10 @@ def _dedupe(values: list[str]) -> list[str]:
     return result
 
 
+def _dedupe_resource_refs(values: list[str]) -> list[str]:
+    return _dedupe([normalize_resource_lock_ref(value) for value in values])
+
+
 def _slug(value: str) -> str:
     safe = [ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value]
     return "".join(safe).strip("-")[:96] or "item"
@@ -510,15 +836,19 @@ __all__ = [
     "InMemoryResourceLockStore",
     "MergeConflictIssue",
     "MergeGovernanceReport",
+    "RedisResourceLockStore",
     "ResourceLockAcquisition",
+    "ResourceLockBackend",
     "ResourceLockConflict",
     "ResourceLockLease",
+    "SQLiteResourceLockStore",
     "SandboxIsolationMode",
     "SandboxIsolationSpec",
     "WorkerPoolConfig",
     "WorkerSlotSnapshot",
     "WorkerSlotStatus",
     "build_merge_governance_report",
+    "normalize_resource_lock_ref",
     "sandbox_spec_for_work_item",
     "worker_slots",
 ]

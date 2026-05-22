@@ -17,10 +17,10 @@ from kun.control_plane import (
     ResourceLockConflict,
     SandboxIsolationSpec,
     TaskPlan,
+    WorkerSlotSnapshot,
     WorkingContext,
     WorkItem,
     WorkItemResult,
-    WorkerSlotSnapshot,
     build_task_cockpit_view,
 )
 
@@ -126,6 +126,7 @@ class DeliveryRunner:
             artifact_refs=[artifact.artifact_id],
             primary_artifact_ref=artifact.artifact_id,
             evidence_refs=[artifact.artifact_id],
+            rollback_refs=[artifact.artifact_id],
             created_by="kun",
             content_hash="manifest-hash",
             supports_delivery=True,

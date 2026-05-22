@@ -6,6 +6,7 @@ from kun.control_plane import (
     ArtifactManifest,
     CollaborationTicket,
     ControlPlaneDaemon,
+    GateEvaluation,
     InMemoryControlPlane,
     Mission,
     NuoRuntimeRepairRunner,
@@ -13,6 +14,8 @@ from kun.control_plane import (
     TaskPlan,
     WorkItem,
 )
+from kun.control_plane.capability_execution import CapabilityExecutionPolicy
+from kun.control_plane.runtime_observation import build_runtime_observation_report
 
 NOW = datetime(2026, 5, 20, 9, 30, tzinfo=UTC)
 
@@ -150,11 +153,77 @@ def test_nuo_runtime_repair_runner_classifies_system_condition() -> None:
 
     result = runner.run(work_item)
 
-    assert result.status == "done"
+    assert result.status == "partial"
     assert result.failure_category is None
     assert result.artifacts[0].supports[0] == "nuo_runtime_repair_report"
     assert result.gate_evaluation is not None
+    assert result.gate_evaluation.north_star_verdict == "partial"
+    assert result.gate_evaluation.next_action == "needs_repair"
+    assert "nuo_repair_requires_clean_retest" in result.gate_evaluation.hard_gate_failures
     assert result.gate_evaluation.score_breakdown["runtime_followup_executed"] == 1.0
+
+
+def test_runtime_observation_ignores_superseded_quality_gates() -> None:
+    control_plane = InMemoryControlPlane()
+    mission = Mission(
+        mission_id="msn-runtime-observation",
+        owner="product-owner",
+        objective="Deliver a long-running product task",
+        task_type="product_development",
+        status="awaiting_acceptance",
+        current_plan_version="v2",
+    )
+    control_plane.missions[mission.mission_id] = mission
+    control_plane.gate_evaluations["gate-v1-fail"] = GateEvaluation(
+        gate_evaluation_id="gate-v1-fail",
+        mission_id=mission.mission_id,
+        task_plan_version="v1",
+        subject_ref="work-old",
+        stage="delivery",
+        task_type="product_development",
+        rubric_version="rubric-v1",
+        metric_pack_version="metrics-v1",
+        north_star_verdict="fail",
+        result_quality=0.2,
+        speed=0.8,
+        cost=0.8,
+        risk=0.5,
+        evidence_quality=0.3,
+        collaboration_quality=0.7,
+        hard_gate_failures=["stale_browser_evidence"],
+        next_action="needs_plan_change",
+        next_state="changing_plan",
+        created_by="test",
+    )
+    control_plane.gate_evaluations["gate-v2-pass"] = GateEvaluation(
+        gate_evaluation_id="gate-v2-pass",
+        mission_id=mission.mission_id,
+        task_plan_version="v2",
+        subject_ref="work-current",
+        stage="delivery",
+        task_type="product_development",
+        rubric_version="rubric-v1",
+        metric_pack_version="metrics-v1",
+        north_star_verdict="pass",
+        result_quality=0.98,
+        speed=0.8,
+        cost=0.8,
+        risk=0.1,
+        evidence_quality=0.98,
+        collaboration_quality=0.9,
+        next_action="continue",
+        next_state="running",
+        created_by="test",
+    )
+
+    report = build_runtime_observation_report(
+        control_plane=control_plane,
+        mission_id=mission.mission_id,
+        tick_report=object(),
+        capability_policy=CapabilityExecutionPolicy(policy_id="policy-test", built_at=NOW),
+    )
+
+    assert "quality_gate_not_passed" not in [item.code for item in report.items]
 
 
 def test_daemon_opens_info_gap_ticket_before_execution() -> None:
@@ -219,6 +288,7 @@ def test_daemon_opens_acceptance_ticket_and_retires_superseded_work() -> None:
         artifact_refs=["artifact-game"],
         primary_artifact_ref="artifact-game",
         evidence_refs=["artifact-gate"],
+        rollback_refs=["artifact-rollback"],
         created_by="kun",
         content_hash="hash",
         supports_delivery=True,
@@ -269,20 +339,16 @@ def test_daemon_opens_acceptance_ticket_and_retires_superseded_work() -> None:
         write_progress=True,
     )
 
-    assert report.created_collaboration_ticket_ids == [
-        "collab-acceptance-msn-product-delivery-manifest-v2-delivery"
-    ]
-    ticket = control_plane.collaboration_tickets[
-        "collab-acceptance-msn-product-delivery-manifest-v2-delivery"
-    ]
+    assert len(report.created_collaboration_ticket_ids) == 1
+    ticket_id = report.created_collaboration_ticket_ids[0]
+    assert ticket_id.startswith("collab-acceptance-msn-product-delivery-manifest-v2-delivery-")
+    ticket = control_plane.collaboration_tickets[ticket_id]
     assert ticket.type == "review"
     assert ticket.context_ref == manifest.manifest_id
     assert control_plane.missions[mission.mission_id].status == "awaiting_acceptance"
     assert report.retired_work_item_ids == ["work-old-blocked"]
     assert control_plane.work_items["work-old-blocked"].status == "cancelled"
-    assert report.retired_collaboration_ticket_ids == [
-        "collab-info-gap-msn-product-delivery-v1"
-    ]
+    assert report.retired_collaboration_ticket_ids == ["collab-info-gap-msn-product-delivery-v1"]
     assert (
         control_plane.collaboration_tickets["collab-info-gap-msn-product-delivery-v1"].status
         == "cancelled"

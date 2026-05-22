@@ -353,6 +353,7 @@ class WorkItem(BaseModel):
     retry_budget: int = Field(default=0, ge=0)
     idempotency_key: str | None = None
     expected_output: str = ""
+    phase: str | None = None
     artifact_manifest_ref: str | None = None
     sandbox_ref: str | None = None
     workspace_ref: str | None = None

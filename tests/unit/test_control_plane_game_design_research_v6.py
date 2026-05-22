@@ -170,9 +170,7 @@ def test_game_design_runner_research_gate_queues_app_runner_and_builds_mvp(
     assert commands == [["npm", "install"], ["npm", "run", "build"]]
     assert (final_project_path / "docs" / "delivery-report.md").exists()
     assert (tmp_path / "huohutu-research" / "docs" / "game-design-spec.md").exists()
-    assert control_plane.missions["msn-game-design"].current_plan_version == (
-        "mvp-v2-design-gated"
-    )
+    assert control_plane.missions["msn-game-design"].current_plan_version == ("mvp-v2-design-gated")
     assert control_plane.missions["msn-game-design"].status == "delivering"
     assert control_plane.contracts[
         "contract-msn-game-design-mvp-v2-design-gated"
