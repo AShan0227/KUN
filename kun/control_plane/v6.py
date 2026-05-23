@@ -545,6 +545,8 @@ class CollaborationTicket(BaseModel):
     fallback_policy: dict[str, Any] = Field(default_factory=dict)
     resume_after_response: bool = True
     output_contract: str = Field(min_length=1)
+    auto_resolvable_by: list[str] = Field(default_factory=list)
+    resolution_refs: list[str] = Field(default_factory=list)
     status: CollaborationTicketStatus = "open"
 
     @model_validator(mode="after")

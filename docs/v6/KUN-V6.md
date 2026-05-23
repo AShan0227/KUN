@@ -159,6 +159,8 @@ KUN 共享同一个 Control Plane，但必须把“执行用户任务”和“�
 
 **KUN 自身迭代账本**包括 Qi/Nuo、自我修复、能力晋级、runtime profile、daemon/Control Plane 代码与配置变化。它只能进入 `self_improvement`、governance、capability candidate、promotion gate 和 rollback plan 路径。一次用户任务成功不能自动启用新能力，也不能把候选能力显示成生产默认能力。
 
+运行时必须执行这个边界：任何会让 `CapabilityProfile(runtime_enabled=true)` 进入 production 默认运行时的 promotion，都必须绑定已注册的 `self_improvement` mission 和 learning-stage gate。普通 `product_development`、`ops_tooling` 或外部用户任务的学习结果只能写入 learning signal、artifact 或 Qi/Nuo follow-up，不能直接修改 runner 默认行为、runtime profile 或生产配置。
+
 基础设施能力也必须按语义归类：
 
 - daemon refresh 是 Control Plane 基础设施能力，用来发现共享 store 里的任务队列变化；它不代表 KUN 自身能力自动进化。
@@ -249,6 +251,30 @@ Control Plane 必须保证：
 - 鲲在执行真实任务时必须主动标注“需要重点观察什么”，外部监督者、启和傩消费同一份 observation report；监督结果必须能反向触发能力治理、污染修复、合并降噪、功能删改或计划变更。
 - 生产能力去重不能只由 daemon 静默处理；折叠、回滚或保留默认能力后，必须给启生成治理工作项，记录保留依据、合并/淘汰理由、证据边界和“非 production 不得默认消费”的约束。
 - 功能激活审计：KUN 必须能把每个已开发功能转成定制化 Control Plane 触发任务，实际运行后输出触发条件、依赖协同关系、证据、未激活缺口和后续修复任务；静态代码检查不能替代功能激活审计。审计范围必须覆盖通用 Control Plane 能力和实际任务 runner，包括外部样本学习、自主 App 开发、研究先行开发、游戏生产、AB 回归和产品化 dogfood，不允许“模块存在但真实任务不会走到”的隐性闲置能力。
+
+功能激活必须按证据层级判断：
+
+1. **代码存在**：模块、类、API、字段或文档已经存在。
+2. **触发器存在**：真实任务状态能触发该功能，而不是只能人工调用。
+3. **runner 可执行**：触发后有明确 runner、工具或人机协同路径承接。
+4. **真实消费**：runner 实际消费 capability、skill、外部信息、沙箱、锁、回滚或监督指令，并产出 receipt / artifact。
+5. **闭环通过**：修复、复测、回滚、验收或能力晋级完成，状态从“已诊断”进入“已恢复/已沉淀/已关闭”。
+6. **真实 mission 端到端**：至少一个真实长任务证明该功能不是 fixture 或合成场景。
+
+KUN 的驾驶舱和审计报告必须把这六层分开展示。`fixture`、`synthetic`、`static_probe` 只能证明触发器或 runner 可用，不能等同于真实长任务协同通过。任何功能长期停在第 1-3 层，必须进入启/傩治理：保留、补触发、补 runner、合并、降级或删除。
+
+默认执行链路还必须遵守以下激活约束：
+
+- capability 不得只登记到 work item 或 artifact。每个真实 runner 要么消费 `CapabilityExecutionPolicy` 并产出 directive receipt，要么显式声明本 runner 不需要消费，并由门禁记录原因。
+- 外部信息信号不得只登记。任务合同、证据计划或 work item 声明 required external info 时，必须执行检索/读取/引用预检；网络、权限或工具不可用时必须阻断或开人机协同票据。
+- 启/傩 follow-up 不得只生成待办。创建 follow-up 前必须确认有 runner；没有 runner 时必须阻断并开 operator ticket，不能静默跳过。
+- 傩的“已诊断”和“已修复”必须分账本。污染、EOF、timeout、auth、wrapper、报告缺失、互评缺失等分类报告只能关闭诊断阶段；只有 clean retest、rerun、replay 或 rollback 证据通过，才能关闭恢复阶段。
+- 傩的 clean retest 必须能改变执行状态。若复测证明权限、写入、workspace、wrapper 或环境阻断已经解除，系统必须自动关闭对应阻断票据并恢复任务队列；只有复测仍失败时，才允许进入人机协同或继续等待外部修复。
+- 启的“候选能力”和“生产能力”必须分账本。真实任务可以写学习信号，但不能直接修改 KUN 默认 runtime；能力变化必须走 replay、holdout、shadow、canary、production 和 rollback。
+- 策略优化不能只等单一路径失败后改计划。高风险或高价值任务必须支持多策略候选、低成本试跑、结果比较和最优路径选择；启负责保留有效路径、合并重复路径、淘汰噪音路径。
+- 启的策略复盘必须成为可执行工作流，而不是只写结论。遇到用户否定、产品体验残差、门禁失败、反复返工或任务理解不足时，启必须创建 Qi-owned 的 strategy replay / shadow rerun / process audit 工作项，复跑同一任务切片，比较旧策略和新策略，再把更优路径交给 KUN 执行。该复盘只能进入 `self_improvement` 账本和 replay 候选证据，不能直接修改生产默认能力。
+- AB adapter、Frontier50 live executor、真实任务 runner 必须在驾驶舱中分开展示。adapter summary 不能被显示成 live AB 已执行。
+- 任务专用模板只能作为显式 production mode、模板包或插件启用；通用 KUN 任务不得携带历史项目角色、行业、文案、美术、UI 或工作方式。
 
 ### 6.3 知识与证据系统
 
@@ -346,6 +372,7 @@ Observation -> Candidate -> Replay -> Holdout -> Shadow -> Canary -> Production 
 - 能力库必须去重、合并、标记来源、标记适用范围和淘汰重复候选。
 - 傩 benchmark、真实任务结果、用户验收和外部样本对比结果必须写入 capability card，供启、路由层和运行时策略消费。
 - 模型路由和 worker 分发必须读取生产能力与 capability card 数据；有真实能力分时用能力分选择候选，无数据时保持冷启动策略。
+- 启必须把“重复执行后发现更优策略”拆成三类产物：strategy replay report、process audit、capability candidate。strategy replay report 证明重新跑过；process audit 说明原链路哪里浅、哪里错、哪里该问人；capability candidate 只记录可复用改进，不进入默认运行时，除非通过完整晋级链路。
 - 速度和成本提升不能掩盖结果质量下降。
 
 ## 7. 全系统运行协议

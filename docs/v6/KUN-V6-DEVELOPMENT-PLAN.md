@@ -25,6 +25,7 @@
 - AB round-03 到 round-10 暂停主动推进；AB 只作为必要回归门禁。真实长任务 dogfood 是主评估路径。
 - OpenClaw/Hermes/GPT-5.5 是对照或监督对象，不得作为被优化对象修改。
 - 必须区分 KUN 自身迭代和 KUN 执行用户任务：任务执行可以产出学习证据，但能力变化只能走 `self_improvement`、Qi/Nuo governance、capability promotion 和 rollback plan；不得在用户任务路径直接改默认能力、runner 行为或生产配置。
+- 运行时必须硬校验这条边界：production `CapabilityProfile(runtime_enabled=true)` 只能由已注册的 `self_improvement` mission 和 learning-stage promotion gate 启用；普通用户任务只能产出 artifact、delivery、acceptance、learning signal 或 Qi/Nuo follow-up。
 - 基础设施测试必须按真实语义命名：daemon refresh 只验证共享 work queue 可见性，scoped mission refresh 只验证已有 mission 追加 work item 可执行，stop request clear 只验证 daemon 生命周期控制，game write boundary 只验证任务执行隔离；不得写成 KUN self-iteration，除非测试对象确实是 Qi/Nuo/capability governance。
 
 ## 2. 子系统分工
@@ -102,6 +103,14 @@
 - observation report 必须明确路由给 KUN、启、傩、人类、Control Plane 或外部监督者；中高风险项必须支持外部监督持续检查，并能反向进入启/傩治理闭环。
 - 生产能力去重、折叠和回滚后必须自动生成启治理 work item；daemon 可以执行机械安全动作，但启必须记录保留、合并、降级或淘汰的可审计治理结论。
 - 功能激活审计必须成为默认回归工具：每个核心功能都要有一条定制化触发任务，运行后明确触发条件、依赖协同关系、证据 artifact、生成的 work item、是否激活、是否需要补触发机制。
+- 功能激活审计必须按证据层级输出：代码存在、触发器存在、runner 可执行、真实消费、闭环通过、真实 mission 端到端。fixture、synthetic、static probe 只能算触发/runner 证据，不能算真实长任务协同通过。
+- 每个真实 runner 必须对 `CapabilityExecutionPolicy` 给出消费结论：已消费并产出 directive receipt，或显式声明本 runner 不需要消费。没有消费结论的 runner 不能被算作能力激活完成。
+- required external info 不能只登记到 `external_source_refs`。任务合同或 evidence plan 声明必须查外部信息时，daemon 必须执行 web/file/repo/doc 预检；网络、权限、auth 或工具不可用时进入阻断或人机协同，而不是静默降级。
+- Qi/Nuo follow-up 创建前必须检查 runner 可用；无 runner 时必须开 operator collaboration ticket 并阻断任务，不能只跳过。
+- Nuo 诊断和修复必须分阶段：classification artifact 只代表“已诊断”，必须有 clean retest / rerun / replay / rollback 证据后，才允许标为“已修复”或关闭恢复链路。
+- Nuo clean retest 必须参与状态协调：权限、写入、workspace、wrapper 或环境阻断被复测为已清除时，Control Plane 自动关闭对应人工阻断票据并恢复任务队列；复测失败才保持 waiting_human / waiting_external / repairing。
+- Qi 策略优化必须从单一路径修复升级为多策略搜索：对高价值或长期任务，自动生成候选路径、小规模验证、比较结果质量/风险/成本，再选最优路径推进；失败候选进入治理或淘汰。
+- Qi 遇到产品缺口、用户否定、任务理解不足、质量门禁失败或反复返工时，必须先创建 Qi-owned 的 strategy replay / shadow rerun / process audit 工作项，复跑同一任务切片并比较旧策略与新策略。复盘输出只能进入 `self_improvement` 和 replay 候选证据；KUN 执行用户任务的路径只能消费“计划变更/验收标准/测试要求”，不得直接启用新 runtime 能力。
 - 最终产品类任务必须有真实用户体感门禁。KUN 自评分、机制门禁、残差审计、自动外部门禁或 checklist 通过不能直接触发最终交付；必须验证交互、视觉、体验、长时间试玩、失败反馈、目标用户体感和交付包完整性。
 - 任务模板必须强隔离：任务专用模板只能由执行合同显式选择，不能作为 runner 默认值。新任务缺少 `production_mode`、模板 profile 或等价声明时，runner 必须阻断并要求方案补齐，防止历史任务特征污染新任务。可复用经验必须沉淀为 KUN-native 能力、协议、skill、runner 或门禁，不得保留原任务角色、文案、UI、行业假设和工作路径。
 
@@ -125,6 +134,8 @@
 - 每个写进度的 daemon tick 都能同时产出 observation artifact；缺 runner、预执行失败、协同票据、能力重复、交付清单缺失等问题不会被埋在日志里，而会被标注为可治理观察项。
 - 重复 production capability 被自动折叠后，启 follow-up 会被创建并执行，产出治理 artifact；重复候选只保留为证据，不进入默认 runtime。
 - `kun control-plane feature-activation-audit` 能一次性运行核心功能激活任务；报告必须覆盖信息缺口、人机协同、运行时激活、预执行、worker/resource lock、真实并发 worker pool、沙箱、启/傩、能力去重、合并冲突、快照回滚、Watchtower、外部样本学习、自主 App 开发、研究先行开发、游戏生产、AB 回归和产品化 dogfood。验收不能只看测试文件存在，必须看真实 Control Plane 任务是否拉起对应能力并留下证据。
+- feature activation audit 的总览必须显示真实 mission e2e 数量；如果真实 mission evidence 为 0，报告必须明确标成“触发器/fixture 通过，真实协同未验证”，不得显示成全部产品化完成。
+- 至少一条真实长任务必须覆盖：外部信息获取、Qi/Nuo follow-up、能力策略消费、工作区隔离、资源锁、回滚、人工验收、策略重排和驾驶舱展示。没有覆盖到的功能必须进入“真实任务重点观察清单”。
 - 游戏、App、内容产品等最终交付必须有 final player/user experience gate；该 gate 缺失或失败时 final delivery work item 必须 blocked，而不是 awaiting_acceptance。
 - 缺少显式模板/生产模式的产品开发任务必须在测试中被阻断，并且不得写入任何历史模板产物。
 
@@ -198,6 +209,10 @@
 - `runtime_enabled=true` 只对 production 有效；review_only、replay、holdout、shadow、canary 都不能显示成默认启用能力。
 - 默认 runtime profile 必须先治理去重；重复 OpenClaw/Hermes 样本必须合并、降级或作为证据保留。
 - production profile 必须生成可审计 `CapabilityExecutionPolicy`，并在执行路径中产生 capability policy binding artifact。
+- capability consumption 不只看 policy binding artifact，还必须看 runner 产出的 directive receipt 或 no-consumption declaration。缺少 receipt 时，能力只能算“已绑定”，不能算“已使用”。
+- 启必须维护能力合并/淘汰队列。重复、低价值、负迁移或长期无人真实消费的能力，必须被合并、降级为证据或删除；不能让 runtime profile 越来越吵。
+- 策略优化结果必须反写能力治理：成功路径形成候选能力，失败路径形成 known limit 或 discard 记录，所有记录都不得默认启用。
+- Qi strategy replay 必须产生三类证据：`strategy_replay_report`、`process_audit`、`capability_candidate/replay_profile`。缺任一证据时只能算“启已诊断”，不能算“启已沉淀”。通过测试也只能进入 replay/holdout，不能跳过 shadow/canary/production。
 - GPT-5.5 或等价监督者对晋级结果、负迁移和复杂度给出评审记录。
 
 ### 阶段 6：人机协同和外部人员调度
@@ -356,6 +371,28 @@
 14. production capability -> 能力治理去重 -> CapabilityExecutionPolicy -> daemon/runner/supervisor 绑定 -> progress artifact 可审计。
 15. workspace 执行 -> 文件级快照 -> 文件被破坏 -> rollback work item -> 内置恢复 runner 还原 -> 恢复 artifact 可审计。
 16. V6 work item/gate 事件 -> Watchtower rule engine -> 规则触发 -> daemon tick report 可见。
+17. required external info -> 预检检索/读取 -> 证据 artifact -> runner 引用证据；工具不可用 -> Nuo 分类 + 人机协同或环境修复。
+18. runtime observation -> Qi/Nuo/KUN/human 路由 -> 可执行 follow-up 或 operator ticket -> clean retest / replay 后关闭。
+19. 策略失败 -> 生成多条候选路径 -> 小规模试跑 -> 选择最优路径 -> 淘汰低效路径 -> 记录能力治理。
+20. 功能激活审计 -> fixture 通过但真实 e2e 缺失 -> 写入真实任务重点观察清单 -> 下一个 dogfood 强制覆盖。
+
+## 5.1 真实任务重点观察清单
+
+以下能力在静态检查或 fixture 中可以证明触发器存在，但必须等真实复杂任务继续观察，不能提前宣称完全产品化：
+
+| 观察项 | 当前设计状态 | 真实任务中必须观察什么 | 触发后处理 |
+| --- | --- | --- | --- |
+| 功能激活真实 e2e | 有 feature activation audit，但可能仍是 fixture/synthetic | 真实 mission 是否实际触发、执行、复测并关闭 | 未覆盖则生成观察项和补测 work item |
+| capability 真实消费 | 已有 `CapabilityExecutionPolicy` 和部分 runner receipt | 每个 runner 是否真的改变计划、执行、监督或诊断行为 | 无 receipt 则阻断或降级为“已绑定未使用” |
+| 外部信息获取 | 有 external info signal 和 preflight | 需要外部资料时是否真的查、读、筛、引用 | 工具/网络失败交 Nuo，人类输入走协同票据 |
+| Qi/Nuo 闭环 | 有诊断、治理和 follow-up runner | 诊断后是否有 clean retest / replay / rerun | 只有分类报告不得关闭恢复 |
+| 动态最佳策略 | 有 plan_change 和治理候选 | 是否生成多策略、比较结果、选择最优 | 失败路径进入 known limit / discard |
+| follow-up 可执行性 | 预检 follow-up 会查 runner | runtime observation follow-up 是否也不静默跳过 | 无 runner 开 operator ticket 并阻断 |
+| 并发与锁 | 有 worker pool、SQLite/Redis 锁和驾驶舱字段 | 多任务是否真并行，锁冲突是否等待而非失败 | 冲突进入等待/重排/合并治理 |
+| 沙箱隔离 | 有 workspace snapshot / container_required 协议 | 当前隔离等级是否真实显示，是否误报容器化 | 无容器 runner 时阻断或标明降级 |
+| AB 执行 | adapter 与 live runner 都存在 | 驾驶舱是否区分 adapter summary 和 live executor | 未挂 live runner 不得显示为真实 AB 已跑 |
+| 历史模板污染 | 有 production_mode 阻断 | 新任务是否带入火火兔、WordForge、AB 等历史特征 | 未显式选择模板则阻断并要求补方案 |
+| 驾驶舱可读性 | 有进度、锁、沙箱、风险展示 | 普通用户是否看得出哪些功能没真正用上 | 增加“已绑定/已使用/真实验证”视图 |
 
 ## 6. 完成定义
 

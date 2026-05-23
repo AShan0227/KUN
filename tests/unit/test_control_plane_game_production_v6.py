@@ -8,6 +8,7 @@ import kun.control_plane.game_production as game_production_module
 from kun.control_plane import (
     EXTERNAL_SUPERVISOR_GATE_OWNER,
     KUN_GAME_PRODUCTION_RUNNER_OWNER,
+    ArtifactRecord,
     ControlPlaneDaemon,
     ExecutionContract,
     FileControlPlaneStore,
@@ -308,6 +309,52 @@ def test_game_production_runner_prefers_explicit_work_item_phase(tmp_path: Path)
     ]
 
 
+def test_game_production_runner_normalizes_supervisor_plan_phase_aliases(
+    tmp_path: Path,
+) -> None:
+    control_plane, _project_path = _mission(tmp_path)
+    base = control_plane.work_items["work-huohutu-v3-03-internal-test"]
+
+    assert (
+        game_production_module._phase_from_work_item(
+            base.model_copy(update={"phase": "commercial_first_screen_rebuild"})
+        )
+        == "commercial-game-polish-iteration"
+    )
+    assert (
+        game_production_module._phase_from_work_item(
+            base.model_copy(update={"phase": "image_object_causal_interaction"})
+        )
+        == "image-object-interaction-iteration"
+    )
+    assert (
+        game_production_module._phase_from_work_item(
+            base.model_copy(update={"phase": "browser_long_player_simulation"})
+        )
+        == "internal-test"
+    )
+    assert (
+        game_production_module._phase_from_work_item(
+            base.model_copy(update={"phase": "external_final_player_feel_gate"})
+        )
+        == "supervisor-gate"
+    )
+    assert (
+        game_production_module._phase_from_work_item(
+            base.model_copy(update={"phase": "delivery_only_after_human_grade_gate"})
+        )
+        == "final-delivery"
+    )
+    assert (
+        game_production_module._phase_from_work_item(
+            base.model_copy(
+                update={"phase": None, "work_item_id": "work-benchmark-understanding-review"}
+            )
+        )
+        == "benchmark-understanding-review"
+    )
+
+
 def test_game_production_runner_installs_commercial_game_polish_iteration(
     tmp_path: Path,
 ) -> None:
@@ -395,6 +442,20 @@ export function generatedObjectImage(object: GeneratedObject): string {
     assert (project_path / "docs" / "character-reference-video" / "reference-notes.md").exists()
 
 
+def test_game_production_write_text_recovers_existing_read_only_file(tmp_path: Path) -> None:
+    target = tmp_path / "public" / "assets" / "companion-spark-star.svg"
+    target.parent.mkdir(parents=True)
+    target.write_text("old", encoding="utf-8")
+    target.chmod(0o400)
+
+    try:
+        game_production_module._write_text(target, "new")
+    finally:
+        target.chmod(0o600)
+
+    assert target.read_text(encoding="utf-8") == "new"
+
+
 def test_final_delivery_requires_player_experience_gate_when_contract_demands_it(
     tmp_path: Path,
 ) -> None:
@@ -477,6 +538,71 @@ def test_final_delivery_requires_control_plane_player_experience_artifact(
     assert result.status == "blocked"
     assert result.failure_category == "evidence_failure"
     assert "Control Plane review artifact" in result.summary
+
+
+def test_final_delivery_requires_browser_interaction_evidence_for_player_experience(
+    tmp_path: Path,
+) -> None:
+    control_plane, project_path = _mission(tmp_path)
+    docs_path = project_path / "docs"
+    docs_path.mkdir(parents=True)
+    (docs_path / "final-player-experience-gate.json").write_text(
+        json.dumps({"score": 0.92, "threshold": 0.75, "pass": True}),
+        encoding="utf-8",
+    )
+    contract = control_plane.contracts["contract-game-production"].model_copy(
+        update={
+            "delivery_contract": {
+                "project_path": str(project_path),
+                "production_mode": "gameful_playtest",
+                "app_name": "火火兔 Spark",
+                "final_player_experience_required": True,
+                "final_player_experience_threshold": 0.75,
+            },
+        }
+    )
+    control_plane.contracts[contract.contract_id] = contract
+    test_work_id = "work-huohutu-v3-03-internal-test"
+    artifact_defs = [
+        (
+            "artifact-internal-test",
+            "test_result",
+            ["internal_test_passed", "playability_gate"],
+        ),
+        (
+            "artifact-internal-review",
+            "review",
+            ["automated_test_review", "playability_gate_review"],
+        ),
+        (
+            "artifact-final-player-experience",
+            "review",
+            ["final_player_experience_gate", "not_self_score_only"],
+        ),
+    ]
+    for artifact_id, kind, supports in artifact_defs:
+        control_plane.artifacts[artifact_id] = ArtifactRecord(
+            artifact_id=artifact_id,
+            kind=kind,
+            path_or_uri=f"mem://{artifact_id}",
+            content_hash=f"hash-{artifact_id}",
+            created_by="test",
+            mission_id="msn-game-production",
+            work_item_id=test_work_id,
+            supports=supports,
+        )
+    _activate_project_boundary(
+        control_plane,
+        work_item_id="work-huohutu-v3-04-final-delivery",
+        project_path=project_path,
+    )
+    runner = GameProductionRunner(control_plane=control_plane)
+
+    result = runner.run(control_plane.work_items["work-huohutu-v3-04-final-delivery"])
+
+    assert result.status == "blocked"
+    assert result.failure_category == "evidence_failure"
+    assert "browser interaction evidence" in result.summary
 
 
 def test_final_delivery_blocks_when_visual_evidence_is_contract_required(

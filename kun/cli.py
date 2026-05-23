@@ -189,7 +189,7 @@ def control_plane_daemon_status(
 ) -> None:
     """查看 KUN V6 Control Plane 后台服务心跳和停止请求。"""
 
-    from kun.control_plane import FileDaemonServiceStateStore
+    from kun.control_plane import FileDaemonServiceStateStore, daemon_service_process_is_alive
 
     state_store = FileDaemonServiceStateStore(state_path)
     state = state_store.load()
@@ -202,13 +202,27 @@ def control_plane_daemon_status(
         if state is not None
         else False
     )
-    healthy = state is not None and state.status not in {"stopped", "unhealthy"} and not stale
-    status = "unhealthy" if stale else state.status if state is not None else "stopped"
+    process_alive = (
+        daemon_service_process_is_alive(state.process_id)
+        if state is not None and state.status not in {"stopped", "unhealthy"}
+        else None
+    )
+    dead_process = process_alive is False and not stale
+    healthy = (
+        state is not None
+        and state.status not in {"stopped", "unhealthy"}
+        and not stale
+        and not dead_process
+    )
+    status = (
+        "unhealthy" if stale or dead_process else state.status if state is not None else "stopped"
+    )
     payload = {
         "state_path": str(state_path),
         "status": status,
         "healthy": healthy,
         "stale": stale,
+        "process_alive": process_alive,
         "state": state.model_dump(mode="json") if state is not None else None,
         "pending_stop_request": stop_request.model_dump(mode="json")
         if stop_request is not None
@@ -223,6 +237,7 @@ def control_plane_daemon_status(
     table.add_row("状态", str(payload["status"]))
     table.add_row("健康", "yes" if healthy else "no")
     table.add_row("心跳过期", "yes" if stale else "no")
+    table.add_row("进程存在", "-" if process_alive is None else "yes" if process_alive else "no")
     table.add_row("状态文件", str(state_path))
     table.add_row("最近心跳", str(state.last_heartbeat_at if state is not None else "-"))
     table.add_row(
@@ -295,17 +310,22 @@ def control_plane_daemon_stop(
 
     state_store = FileDaemonServiceStateStore(state_path)
     if clear:
-        state_store.clear_stop_request()
+        cleared = state_store.clear_stop_request(daemon_id=daemon_id)
+        pending = state_store.load_stop_request()
         payload = {
             "accepted": True,
-            "cleared": True,
+            "cleared": cleared,
+            "mismatch": bool(pending is not None and not cleared),
             "state_path": str(state_path),
-            "pending_stop_request": None,
+            "pending_stop_request": pending.model_dump(mode="json") if pending else None,
         }
         if json_output:
             console.print_json(data=payload)
             return
-        console.print(f"[green]stop request cleared[/] {daemon_id}")
+        if cleared:
+            console.print(f"[green]stop request cleared[/] {daemon_id}")
+        else:
+            console.print(f"[yellow]no matching stop request to clear[/] {daemon_id}")
         return
     request = state_store.request_stop(
         daemon_id=daemon_id,
@@ -721,7 +741,7 @@ def control_plane_daemon_run(
     control_plane = InMemoryControlPlane(store=FileControlPlaneStore(store_path))
     state_store = FileDaemonServiceStateStore(state_path)
     if clear_stop_request:
-        state_store.clear_stop_request()
+        state_store.clear_stop_request(daemon_id=daemon_id)
     if sandbox_mode not in {"workspace_snapshot", "container_required", "external_container"}:
         raise typer.BadParameter(
             "sandbox_mode must be workspace_snapshot, container_required, or external_container"

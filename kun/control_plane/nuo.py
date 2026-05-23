@@ -544,12 +544,13 @@ def _detect_output_contamination(observation: NuoObservation) -> list[NuoHealthF
 
 def _detect_environment_blockers(observation: NuoObservation) -> list[NuoHealthFinding]:
     text = f"{observation.error_text}\n{observation.output_text}".lower()
+    error_text = observation.error_text.lower()
     findings: list[NuoHealthFinding] = []
     if (
         observation.timed_out
-        or "timed out" in text
-        or "timeout" in text
-        or "deadline exceeded" in text
+        or "timed out" in error_text
+        or "timeout" in error_text
+        or "deadline exceeded" in error_text
     ):
         findings.append(
             _finding(
@@ -825,10 +826,10 @@ def _family_mismatch(observation: NuoObservation) -> bool:
 
 
 def _recovery_route(finding: NuoHealthFinding) -> tuple[NextAction, MissionStatus, str]:
+    if finding.recommended_action in {"collect_report", "collect_reviews"}:
+        return "needs_info", "info_gap", "qi"
     if finding.code in {"auth_failure", "permission_denied", "subjective_playtest_missing"}:
         return "needs_human", "waiting_human", "operator"
-    if finding.code in {"report_missing", "review_count_missing", "review_count_insufficient"}:
-        return "needs_info", "info_gap", "qi"
     if finding.code == "premature_delivery_claim":
         return "needs_plan_change", "changing_plan", "qi"
     return "needs_repair", "repairing", "control-plane"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -156,7 +157,7 @@ def test_control_plane_daemon_status_flags_stale_heartbeat(tmp_path) -> None:
             status="idle",
             started_at=datetime.now(UTC) - timedelta(hours=2),
             updated_at=datetime.now(UTC) - timedelta(hours=1),
-            process_id=1234,
+            process_id=999_999_999,
             last_heartbeat_at=datetime.now(UTC) - timedelta(hours=1),
         )
     )
@@ -180,6 +181,76 @@ def test_control_plane_daemon_status_flags_stale_heartbeat(tmp_path) -> None:
     assert payload["healthy"] is False
     assert payload["stale"] is True
     assert payload["state"]["status"] == "idle"
+    assert payload["process_alive"] is False
+
+
+def test_control_plane_daemon_status_flags_missing_live_process(tmp_path) -> None:
+    runner = CliRunner()
+    state_path = tmp_path / "daemon-state.json"
+    FileDaemonServiceStateStore(state_path).save(
+        DaemonServiceState(
+            daemon_id="daemon-cli-missing-process",
+            status="idle",
+            started_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            process_id=999_999_999,
+            last_heartbeat_at=datetime.now(UTC),
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "control-plane",
+            "daemon-status",
+            "--state-path",
+            str(state_path),
+            "--stale-heartbeat-after-sec",
+            "60",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "unhealthy"
+    assert payload["healthy"] is False
+    assert payload["stale"] is False
+    assert payload["process_alive"] is False
+
+
+def test_control_plane_daemon_status_accepts_live_process(tmp_path) -> None:
+    runner = CliRunner()
+    state_path = tmp_path / "daemon-state.json"
+    FileDaemonServiceStateStore(state_path).save(
+        DaemonServiceState(
+            daemon_id="daemon-cli-live-process",
+            status="idle",
+            started_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            process_id=os.getpid(),
+            last_heartbeat_at=datetime.now(UTC),
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "control-plane",
+            "daemon-status",
+            "--state-path",
+            str(state_path),
+            "--stale-heartbeat-after-sec",
+            "60",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "idle"
+    assert payload["healthy"] is True
+    assert payload["process_alive"] is True
 
 
 def test_control_plane_daemon_run_persists_service_state_and_progress(tmp_path) -> None:
@@ -332,6 +403,38 @@ def test_control_plane_daemon_stop_clear_removes_pending_stop_request(tmp_path) 
     assert (
         FileDaemonServiceStateStore(state_path).stop_requested(daemon_id="daemon-cli-test") is False
     )
+
+
+def test_control_plane_daemon_stop_clear_keeps_other_daemon_stop_request(tmp_path) -> None:
+    runner = CliRunner()
+    state_path = tmp_path / "daemon-state.json"
+    FileDaemonServiceStateStore(state_path).request_stop(
+        daemon_id="daemon-a",
+        requested_by="operator",
+        reason="maintenance",
+    )
+
+    cleared = runner.invoke(
+        app,
+        [
+            "control-plane",
+            "daemon-stop",
+            "--state-path",
+            str(state_path),
+            "--daemon-id",
+            "daemon-b",
+            "--clear",
+            "--json",
+        ],
+    )
+
+    assert cleared.exit_code == 0
+    payload = json.loads(cleared.output)
+    assert payload["cleared"] is False
+    assert payload["mismatch"] is True
+    assert payload["pending_stop_request"]["daemon_id"] == "daemon-a"
+    assert FileDaemonServiceStateStore(state_path).stop_requested(daemon_id="daemon-a") is True
+    assert FileDaemonServiceStateStore(state_path).stop_requested(daemon_id="daemon-b") is False
 
 
 def test_control_plane_daemon_run_can_clear_stale_stop_request_before_start(tmp_path) -> None:

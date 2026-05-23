@@ -124,8 +124,21 @@ class KunRuntimeTaskRunner:
             capability_supports = [
                 "capability_policy_consumed",
                 "required_capabilities_executed",
+                "capability_behavior_receipt",
                 *work_item.required_capability_refs,
             ]
+            if self.capability_execution_policy is not None:
+                payload["capability_execution_receipt"] = {
+                    "policy_id": self.capability_execution_policy.policy_id,
+                    "directive_ids": [
+                        directive.directive_id
+                        for directive in self.capability_execution_policy.directives
+                    ],
+                    "behavioral_contract": (
+                        "required production capabilities were converted into executable "
+                        "directives and included in the runtime prompt before execution"
+                    ),
+                }
         artifact = ArtifactRecord(
             artifact_id=f"artifact-kun-runtime-{_slug(work_item.work_item_id)}-{_hash_payload(payload)[:12]}",
             kind="answer" if work_item.type != "test" else "test_result",
@@ -424,7 +437,10 @@ def _runtime_work_item_failures(
         failures.append("runtime_task_status_not_done")
     if not output.answer.strip():
         failures.append("runtime_task_output_missing")
-    if work_item.required_capability_refs and "capability_policy_consumed" not in artifact.supports:
+    if (
+        work_item.required_capability_refs
+        and "capability_behavior_receipt" not in artifact.supports
+    ):
         failures.append("capability_not_consumed_by_runner")
     if work_item.expected_output and not _expected_output_addressed(
         expected_output=work_item.expected_output,

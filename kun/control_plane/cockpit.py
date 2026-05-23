@@ -20,7 +20,7 @@ from kun.control_plane.concurrency import (
     SandboxIsolationSpec,
     WorkerSlotSnapshot,
 )
-from kun.control_plane.daemon import DaemonServiceState
+from kun.control_plane.daemon import DaemonServiceState, daemon_service_process_is_alive
 from kun.control_plane.progress import (
     QualityGateStatus,
     UserProgressSummary,
@@ -181,6 +181,7 @@ class TaskCockpitDaemonHealth(BaseModel):
     next_wakeup_at: datetime | None = None
     stopped_reason: str | None = None
     stale: bool = False
+    process_alive: bool | None = None
     latest_progress_artifact_ref: str | None = None
     progress_artifact_refs: list[str] = Field(default_factory=list)
 
@@ -629,6 +630,7 @@ def _daemon_health(
                 next_wakeup_at=service_state.next_wakeup_at,
                 stopped_reason=service_state.stopped_reason,
                 stale=True,
+                process_alive=daemon_service_process_is_alive(service_state.process_id),
                 latest_progress_artifact_ref=latest_ref,
                 progress_artifact_refs=refs,
             )
@@ -641,6 +643,7 @@ def _daemon_health(
                 last_heartbeat_at=service_state.last_heartbeat_at,
                 next_wakeup_at=service_state.next_wakeup_at,
                 stopped_reason=service_state.stopped_reason,
+                process_alive=False,
                 latest_progress_artifact_ref=latest_ref,
                 progress_artifact_refs=refs,
             )
@@ -658,6 +661,20 @@ def _daemon_health(
                 last_heartbeat_at=service_state.last_heartbeat_at,
                 next_wakeup_at=service_state.next_wakeup_at,
                 stopped_reason=service_state.stopped_reason,
+                process_alive=None,
+                latest_progress_artifact_ref=latest_ref,
+                progress_artifact_refs=refs,
+            )
+        process_alive = daemon_service_process_is_alive(service_state.process_id)
+        if not process_alive:
+            return TaskCockpitDaemonHealth(
+                healthy=False,
+                text="后台监督心跳状态仍新鲜，但记录的进程已经不存在；需要重启 daemon。",
+                service_status=service_state.status,
+                last_heartbeat_at=service_state.last_heartbeat_at,
+                next_wakeup_at=service_state.next_wakeup_at,
+                stopped_reason=service_state.stopped_reason,
+                process_alive=False,
                 latest_progress_artifact_ref=latest_ref,
                 progress_artifact_refs=refs,
             )
@@ -668,6 +685,7 @@ def _daemon_health(
             last_heartbeat_at=service_state.last_heartbeat_at,
             next_wakeup_at=service_state.next_wakeup_at,
             stopped_reason=service_state.stopped_reason,
+            process_alive=True,
             latest_progress_artifact_ref=latest_ref,
             progress_artifact_refs=refs,
         )

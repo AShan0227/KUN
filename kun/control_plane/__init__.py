@@ -88,6 +88,7 @@ from kun.control_plane.daemon import (
     DaemonServiceStopRequest,
     DaemonTickReport,
     FileDaemonServiceStateStore,
+    daemon_service_process_is_alive,
 )
 from kun.control_plane.daemon_service import (
     DaemonServiceInstallPlan,
@@ -499,6 +500,7 @@ __all__ = [
     "close_productization_collaboration_loop",
     "compare_external_behavior_signals",
     "create_workspace_snapshot",
+    "daemon_service_process_is_alive",
     "default_recovery_for_failure",
     "diagnose_nuo_health",
     "discover_external_behavior_source_paths",

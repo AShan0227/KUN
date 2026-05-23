@@ -998,6 +998,42 @@ def test_daemon_waits_for_acceptance_when_final_product_pressure_evidence_passes
     assert control_plane.missions[mission.mission_id].current_plan_version == plan.version
     assert second_report.created_work_item_ids == []
 
+    hard_contract = contract.model_copy(
+        update={
+            "delivery_contract": {
+                **contract.delivery_contract,
+                "hard_user_constraint": "continue_until_final_game_complete",
+            }
+        }
+    )
+    control_plane.contracts[hard_contract.contract_id] = hard_contract
+    store.put_execution_contract(hard_contract)
+
+    third_report = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        now=NOW + timedelta(minutes=2),
+        max_work_items=0,
+        write_progress=False,
+    )
+
+    assert control_plane.missions[mission.mission_id].status == "queued"
+    assert "acceptance-rework" in (
+        control_plane.missions[mission.mission_id].current_plan_version or ""
+    )
+    assert any("open-acceptance-pressure" in gate for gate in third_report.recovery_gate_refs)
+    assert any(
+        "commercial-game-polish-iteration" in item_id
+        for item_id in third_report.created_work_item_ids
+    )
+    created_items = [
+        control_plane.work_items[item_id]
+        for item_id in third_report.created_work_item_ids
+        if item_id in control_plane.work_items
+    ]
+    assert any(item.phase == "visual-product-iteration" for item in created_items)
+    assert any(item.phase == "internal-test" for item in created_items)
+    assert any(item.phase == "supervisor-gate" for item in created_items)
+
 
 def _prepare_productization_closures(control_plane, mission_id: str) -> None:
     signals = distill_external_behavior_signals(
@@ -1350,6 +1386,7 @@ def test_daemon_marks_missing_runner_for_external_supervision(tmp_path) -> None:
     recovered = InMemoryControlPlane(store=store)
 
     assert report.no_runner_work_item_ids == ["work-daemon"]
+    assert len(report.created_collaboration_ticket_ids) == 1
     assert report.observation_artifact_refs == [
         "artifact-runtime-observation-msn-daemon-20260519T090000Z"
     ]
@@ -1360,6 +1397,9 @@ def test_daemon_marks_missing_runner_for_external_supervision(tmp_path) -> None:
     observation_report = report.runtime_observations["msn-daemon"]
     assert observation_report.requires_external_supervision is True
     assert observation_report.items[0].code == "runner_missing"
+    assert recovered.collaboration_tickets[report.created_collaboration_ticket_ids[0]].type == (
+        "operator_action"
+    )
     assert "external_supervisor" in observation_report.items[0].routes
 
 
@@ -1646,6 +1686,31 @@ def test_daemon_runs_delivery_state_governance_followup_without_leaving_acceptan
     assert report.ran_work_item_ids == [followup.work_item_id]
     assert recovered.work_items[followup.work_item_id].status == "done"
     assert recovered.missions[mission.mission_id].status == "awaiting_acceptance"
+
+
+def test_daemon_refreshes_existing_work_item_requeued_by_external_process(tmp_path) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+    original = control_plane.work_items["work-daemon"]
+    blocked = original.model_copy(update={"status": "blocked"})
+    control_plane.work_items[blocked.work_item_id] = blocked
+    store.put_work_item(blocked)
+    external_store = FileControlPlaneStore(store.path)
+    external_store.put_work_item(blocked.model_copy(update={"status": "queued"}))
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": StaticRunner()},
+        daemon_id="daemon-refresh-requeued-test",
+    )
+
+    report = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        now=NOW,
+        max_work_items=1,
+    )
+    recovered = InMemoryControlPlane(store=store)
+
+    assert report.ran_work_item_ids == ["work-daemon"]
+    assert recovered.work_items["work-daemon"].status == "done"
 
 
 def test_daemon_runs_runtime_learning_followup_while_awaiting_acceptance(tmp_path) -> None:
@@ -2023,7 +2088,9 @@ def test_daemon_productization_runner_finalizes_delivery_when_queue_done(tmp_pat
     )
     after_second_tick = InMemoryControlPlane(store=store)
 
-    assert len(report.ran_work_item_ids) == 7
+    assert len(report.ran_work_item_ids) == 6
+    assert "work-v6-collaboration-tickets" not in report.ran_work_item_ids
+    assert recovered.work_items["work-v6-collaboration-tickets"].status == "done"
     assert report.finalized_mission_ids == [mission.mission_id]
     assert report.delivery_manifest_refs == ["manifest-msn-daemon-productization-delivery"]
     assert report.final_gate_refs == ["gate-msn-daemon-productization-delivery"]
@@ -2059,6 +2126,31 @@ def test_daemon_runner_can_run_guard_prevents_misrouting_generic_qi_work(
 
     assert report.no_runner_work_item_ids == ["work-generic-qi"]
     assert report.ran_work_item_ids == []
+
+
+def test_daemon_skips_no_runner_item_within_tick_and_runs_next_ready_work(tmp_path) -> None:
+    control_plane, store, mission = _runtime(tmp_path)
+    no_runner_work = WorkItem(
+        work_item_id="work-control-plane-report-gap",
+        mission_id=mission.mission_id,
+        task_plan_version="v1",
+        type="research",
+        owner="control-plane",
+        priority=100,
+        expected_output="Collect a missing report artifact.",
+    )
+    control_plane.work_items[no_runner_work.work_item_id] = no_runner_work
+    store.put_work_item(no_runner_work)
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={"kun": StaticRunner()},
+        daemon_id="daemon-no-runner-skip-test",
+    )
+
+    report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW, max_work_items=2)
+
+    assert report.no_runner_work_item_ids == ["work-control-plane-report-gap"]
+    assert report.ran_work_item_ids == ["work-daemon"]
 
 
 def test_daemon_recovers_stale_running_work_after_restart(tmp_path) -> None:
@@ -2098,7 +2190,7 @@ def test_daemon_recovers_stale_running_work_after_restart(tmp_path) -> None:
     assert report.recovered_work_item_ids == ["work-daemon"]
     assert report.recovery_gate_refs
     assert report.no_runner_work_item_ids == ["work-daemon"]
-    assert after.missions[mission.mission_id].status == "queued"
+    assert after.missions[mission.mission_id].status == "blocked"
     assert after.work_items["work-daemon"].status == "queued"
     assert after.work_items["work-daemon"].retry_budget == 0
     assert after.work_items["work-daemon"].lease is None

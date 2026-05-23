@@ -289,10 +289,16 @@ class FileDaemonServiceStateStore:
         _write_json_atomic(self.stop_request_path, request.model_dump_json(indent=2))
         return request
 
-    def clear_stop_request(self) -> None:
+    def clear_stop_request(self, *, daemon_id: str | None = None) -> bool:
         """Clear a stop request after an operator explicitly allows restart."""
 
+        request = self.load_stop_request()
+        if request is None:
+            return False
+        if daemon_id is not None and request.daemon_id != daemon_id:
+            return False
         self.stop_request_path.unlink(missing_ok=True)
+        return True
 
     def stop_requested(self, *, daemon_id: str | None = None) -> bool:
         """Return whether a pending stop request applies to this daemon."""
@@ -528,6 +534,8 @@ class ControlPlaneDaemon:
                         report=report,
                     )
                     if prepared is None:
+                        if work_item.work_item_id in report.no_runner_work_item_ids:
+                            selected_this_pass = True
                         continue
                     prepared_runs.append(prepared)
                     claimed_resource_locks.update(
@@ -861,7 +869,11 @@ class ControlPlaneDaemon:
             }
             store_items = self.control_plane.store.list_work_items(mission_id=mission_id)
             if any(
-                item.status == "queued" and item.work_item_id not in memory_item_ids
+                item.status == "queued"
+                and (
+                    item.work_item_id not in memory_item_ids
+                    or self.control_plane.work_items[item.work_item_id].status != "queued"
+                )
                 for item in store_items
             ):
                 return True
@@ -878,6 +890,8 @@ class ControlPlaneDaemon:
             mission_id,
             now=report.observed_at,
         ):
+            if candidate.work_item_id in report.no_runner_work_item_ids:
+                continue
             locks = _effective_resource_locks(self.control_plane, candidate)
             if locks and claimed_resource_locks.intersection(locks):
                 if candidate.work_item_id not in report.resource_lock_skipped_work_item_ids:
@@ -899,7 +913,8 @@ class ControlPlaneDaemon:
     ) -> _PreparedWorkItemRun | None:
         runner = self._runner_for(work_item)
         if runner is None:
-            report.no_runner_work_item_ids.append(work_item.work_item_id)
+            if work_item.work_item_id not in report.no_runner_work_item_ids:
+                report.no_runner_work_item_ids.append(work_item.work_item_id)
             return None
         locks = _effective_resource_locks(self.control_plane, work_item)
         if locks and claimed_resource_locks.intersection(locks):
@@ -2055,6 +2070,7 @@ class ControlPlaneDaemon:
                     ),
                     expected_output=qi_expected_output,
                     evidence_refs=evidence_refs,
+                    required=item.severity in {"high", "critical"},
                     report=report,
                 )
             if "nuo" in item.routes:
@@ -2069,6 +2085,7 @@ class ControlPlaneDaemon:
                         f"KUN capability failure. Observation {item.code}: {item.recommended_action}"
                     ),
                     evidence_refs=evidence_refs,
+                    required=item.severity in {"high", "critical"},
                     report=report,
                 )
 
@@ -2081,6 +2098,7 @@ class ControlPlaneDaemon:
         work_item_id: str,
         expected_output: str,
         evidence_refs: Sequence[str],
+        required: bool,
         report: DaemonTickReport,
     ) -> None:
         if work_item_id in self.control_plane.work_items:
@@ -2098,6 +2116,15 @@ class ControlPlaneDaemon:
             recovery_refs=list(evidence_refs),
         )
         if self._runner_for(work_item) is None:
+            if not required:
+                return
+            self._queue_unrunnable_followup_ticket(
+                mission_id=mission_id,
+                work_item_id=work_item.work_item_id,
+                owner=owner,
+                item_type=item_type,
+                report=report,
+            )
             return
         self.control_plane.work_items[work_item.work_item_id] = work_item
         self._persist_work_item(work_item)
@@ -2545,6 +2572,12 @@ def _process_is_alive(process_id: int) -> bool:
     return True
 
 
+def daemon_service_process_is_alive(process_id: int) -> bool:
+    """Return whether a recorded daemon service PID still appears alive."""
+
+    return _process_is_alive(process_id)
+
+
 def _dedupe(values: Sequence[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -2744,6 +2777,12 @@ def _latest_product_pressure_evidence_allows_waiting(
     if contract is None or not isinstance(contract.delivery_contract, dict):
         return False
     delivery_policy = contract.delivery_contract
+    hard_user_constraint = str(delivery_policy.get("hard_user_constraint") or "").lower()
+    if (
+        delivery_policy.get("auto_continue_until_human_acceptance") is True
+        or "continue_until_final_game_complete" in hard_user_constraint
+    ):
+        return False
     project_path = _workspace_path_from_contract(contract)
     if not project_path:
         return False
@@ -3200,6 +3239,7 @@ def _acceptance_rework_work_items(
                 task_plan_version=plan_version,
                 type=item_type,
                 owner=owner,
+                phase=_acceptance_rework_phase(owner=owner, suffix=suffix),
                 dependencies=dependencies,
                 priority=96 if suffix.startswith("01") else 92,
                 resource_locks=list(resource_locks),
@@ -3210,6 +3250,16 @@ def _acceptance_rework_work_items(
             )
         )
     return items
+
+
+def _acceptance_rework_phase(*, owner: str, suffix: str) -> str | None:
+    if owner not in {"kun-game-production-runner", "external-supervisor-gpt5.5"}:
+        return None
+    phase = suffix.split("-", 1)[1] if "-" in suffix else suffix
+    return {
+        "fun-and-browser-retest": "internal-test",
+        "final-player-experience-gate": "supervisor-gate",
+    }.get(phase, phase)
 
 
 def _is_full_product_parity_feedback(gate: GateEvaluation) -> bool:

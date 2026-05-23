@@ -163,6 +163,46 @@ def test_kun_runtime_runner_blocks_required_capability_without_directive_receipt
     assert "no executable directive receipts" in result.summary
 
 
+def test_kun_runtime_runner_records_capability_behavior_receipt() -> None:
+    control_plane, _mission = _runtime()
+    work = control_plane.work_items["work-real-task"].model_copy(
+        update={"required_capability_refs": ["cap-production-required"]}
+    )
+    control_plane.work_items[work.work_item_id] = work
+    policy = CapabilityExecutionPolicy(
+        policy_id="policy-test",
+        built_at=NOW,
+        capability_profile_refs=["cap-production-required"],
+        directives=[
+            CapabilityExecutionDirective(
+                directive_id="directive-runner-required-capability",
+                category="runner",
+                capability_refs=["cap-production-required"],
+                summary="Carry the required capability into runtime execution.",
+                runtime_hooks=["prompt", "artifact_record"],
+            )
+        ],
+    )
+
+    runner = KunRuntimeTaskRunner(
+        control_plane=control_plane,
+        executor=lambda _prompt: KunTaskExecutionOutput(
+            status="done",
+            answer="Concrete audited result delivered with capability behavior.",
+            raw={"source": "fake-real-task-executor"},
+        ),
+    )
+    runner.bind_capability_execution_policy(policy)
+
+    result = runner.run(work)
+
+    assert result.status == "done"
+    assert result.artifacts
+    artifact = result.artifacts[0]
+    assert "capability_policy_consumed" in artifact.supports
+    assert "capability_behavior_receipt" in artifact.supports
+
+
 def test_kun_runtime_runner_handles_strategy_optimization_without_external_executor() -> None:
     control_plane, mission = _runtime()
     work = control_plane.work_items["work-real-task"].model_copy(

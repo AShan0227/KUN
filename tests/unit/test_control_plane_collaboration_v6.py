@@ -9,6 +9,7 @@ from kun.control_plane import (
     InMemoryCollaborationQueue,
     InMemoryControlPlane,
     Mission,
+    WorkItem,
 )
 
 
@@ -106,3 +107,52 @@ def test_control_plane_emits_due_collaboration_sla_reminder_once() -> None:
     assert second == []
     assert first[0].payload["intent"] == "collaboration_reminder"
     assert first[0].payload["receiver"] == "customer"
+
+
+@pytest.mark.unit
+def test_collaboration_response_completes_matching_human_work_item() -> None:
+    runtime = InMemoryControlPlane()
+    runtime.missions["msn-v6"] = Mission(
+        mission_id="msn-v6",
+        owner="kun",
+        objective="Resume product work after operator confirms workspace access.",
+        task_type="product_development",
+        status="waiting_human",
+    )
+    runtime.work_items["work-permission-preflight"] = WorkItem(
+        work_item_id="work-permission-preflight",
+        mission_id="msn-v6",
+        task_plan_version="plan-v1",
+        type="collaboration",
+        owner="human-operator",
+        phase="permission_preflight",
+        status="waiting_human",
+        expected_output="Operator resolves writable workspace boundary before implementation.",
+    )
+    runtime.record_collaboration_ticket(
+        CollaborationTicket(
+            ticket_id="ticket-workspace-access",
+            mission_id="msn-v6",
+            type="operator_action",
+            role_needed="workspace operator / user",
+            why_needed="Workspace must be writable before KUN resumes product work.",
+            context_ref="workspace://project",
+            risk_if_skipped="The daemon would keep creating runner_missing observations.",
+            deadline=datetime.now(UTC) + timedelta(hours=1),
+            output_contract="Writable workspace confirmation.",
+        ),
+        actor="kun",
+    )
+
+    runtime.record_collaboration_response(
+        CollaborationResponse(
+            ticket_id="ticket-workspace-access",
+            responder="operator",
+            answer="Workspace write access verified.",
+            resume_allowed=True,
+        ),
+        actor="operator",
+    )
+
+    assert runtime.work_items["work-permission-preflight"].status == "done"
+    assert runtime.missions["msn-v6"].status == "queued"

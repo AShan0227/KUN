@@ -639,6 +639,56 @@ def test_runtime_forces_nuo_on_delivery_manifest_contract_visual_gap() -> None:
     assert "premature_delivery_claim" in gate.hard_gate_failures
 
 
+def test_runtime_nuo_does_not_treat_capability_name_timeout_as_environment_timeout() -> None:
+    runtime = InMemoryControlPlane()
+    work_item = _single_work_item(work_item_id="work-blocked-visual-delivery")
+    runtime.submit_mission(
+        mission=_mission().model_copy(update={"task_type": "product_development"}),
+        task_plan=_plan(),
+        execution_contract=_contract().model_copy(
+            update={"delivery_contract": {"visual_product_iteration_required": True}}
+        ),
+        working_context=_context(),
+        work_items=[work_item],
+    )
+
+    def blocked_delivery(item: WorkItem) -> WorkItemResult:
+        capability_receipt = ArtifactRecord(
+            artifact_id="artifact-capability-timeout-name",
+            kind="evidence",
+            path_or_uri="mem://capability-timeout-name",
+            content_hash="capability-hash",
+            created_by="kun",
+            mission_id=item.mission_id,
+            work_item_id=item.work_item_id,
+            supports=[
+                "capability_policy_consumed",
+                "cap_comparison_hermes_activity_based_long_run_timeout_instead_of_wall_clock_kill",
+            ],
+        )
+        return WorkItemResult(
+            status="blocked",
+            summary=(
+                "Final delivery blocked because the contract requires visual product iteration "
+                "evidence, but no real visual iteration artifact exists."
+            ),
+            artifacts=[capability_receipt],
+            failure_category="evidence_failure",
+        )
+
+    run = runtime.run_next_ready(
+        mission_id="msn-v6",
+        runner=StaticRunner(blocked_delivery),
+    )
+
+    assert run is not None
+    gate = runtime.gate_evaluations[runtime.runs[run.run_id].gate_evaluation_ref]
+    assert "premature_delivery_claim" in gate.hard_gate_failures
+    assert "timeout" not in gate.hard_gate_failures
+    assert gate.next_action == "needs_plan_change"
+    assert runtime.missions["msn-v6"].status == "changing_plan"
+
+
 def test_runtime_applies_default_validation_gate_when_runner_omits_gate() -> None:
     runtime = _submit_runtime([_single_work_item(work_item_id="work-validation")])
 
@@ -723,3 +773,78 @@ def test_runtime_routes_human_wait_to_collaboration_queue() -> None:
     assert report.status == "waiting_human"
     assert report.open_collaboration_ticket_ids == ["ticket-approval"]
     assert report.next_ready_work_item_ids == []
+
+
+def test_nuo_clean_retest_closes_only_explicitly_bound_human_ticket() -> None:
+    work_item = WorkItem(
+        work_item_id="work-permission-clean-retest",
+        mission_id="msn-v6",
+        task_plan_version="v1",
+        type="retest",
+        owner="nuo",
+        expected_output="Clean retest proves workspace write permission is restored.",
+        recovery_refs=["ticket-write-permission"],
+        workspace_ref="workspace:///tmp/product",
+        resource_locks=["workspace:/tmp/product"],
+    )
+    runtime = _submit_runtime([work_item])
+    permission_ticket = CollaborationTicket(
+        ticket_id="ticket-write-permission",
+        mission_id="msn-v6",
+        type="operator_action",
+        role_needed="operator",
+        why_needed="Approve or restore workspace write access.",
+        context_ref=work_item.work_item_id,
+        risk_if_skipped="KUN cannot write the product workspace.",
+        deadline=datetime.now(UTC) + timedelta(hours=1),
+        output_contract="Confirm workspace is writable.",
+        auto_resolvable_by=[work_item.work_item_id],
+    )
+    direction_ticket = CollaborationTicket(
+        ticket_id="ticket-product-direction",
+        mission_id="msn-v6",
+        type="user_decision",
+        role_needed="customer",
+        why_needed="Choose whether the product direction should change before continuing.",
+        decision_options=["continue", "change_direction"],
+        recommended_option="continue",
+        context_ref="ctx-product-direction",
+        risk_if_skipped="KUN may bypass the user's product intent.",
+        deadline=datetime.now(UTC) + timedelta(hours=1),
+        output_contract="Product direction decision.",
+    )
+    runtime.record_collaboration_ticket(permission_ticket)
+    runtime.record_collaboration_ticket(direction_ticket)
+    gate = _gate(
+        work_item=work_item,
+        next_action="continue",
+        next_state="running",
+        artifact_refs=["artifact-clean-retest"],
+    ).model_copy(
+        update={
+            "created_by": "nuo-runtime-repair-runner",
+            "governance_signal": "nuo_clean_retest_passed",
+        }
+    )
+
+    runtime.run_next_ready(
+        mission_id="msn-v6",
+        runner=StaticRunner(
+            lambda _item: WorkItemResult(
+                status="done",
+                summary="workspace write clean retest passed",
+                gate_evaluation=gate,
+            )
+        ),
+    )
+
+    assert runtime.collaboration_tickets["ticket-write-permission"].status == "closed"
+    assert (
+        work_item.work_item_id
+        in runtime.collaboration_tickets["ticket-write-permission"].resolution_refs
+    )
+    assert any(
+        ref.startswith("gate-")
+        for ref in runtime.collaboration_tickets["ticket-write-permission"].resolution_refs
+    )
+    assert runtime.collaboration_tickets["ticket-product-direction"].status == "open"

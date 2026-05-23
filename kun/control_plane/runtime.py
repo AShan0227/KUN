@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from threading import RLock
@@ -96,15 +96,19 @@ def _diagnose_result_with_nuo(
     if not _should_route_to_nuo(work_item=work_item, result=result):
         return None
     text = _result_text(result)
+    failed_text = _failure_text_for_nuo(result)
     observation = NuoObservation(
         mission_id=work_item.mission_id,
         task_plan_version=work_item.task_plan_version,
         subject_ref=work_item.work_item_id,
         task_type=mission.task_type,
         output_text=text,
-        error_text=text if result.status in {"failed", "blocked", "cancelled"} else "",
+        error_text=failed_text,
         fallback_engaged=_mentions_fallback_pollution(text),
-        timed_out="timeout" in text.lower() or "timed out" in text.lower(),
+        timed_out=(
+            bool(failed_text)
+            and ("timeout" in failed_text.lower() or "timed out" in failed_text.lower())
+        ),
         network_eof="unexpected eof" in text.lower() or "network eof" in text.lower(),
         wrapper_missing="wrapper missing" in text.lower() or "wrapper not found" in text.lower(),
         auth_failure="unauthorized" in text.lower() or "invalid api key" in text.lower(),
@@ -225,6 +229,12 @@ def _result_text(result: WorkItemResult) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def _failure_text_for_nuo(result: WorkItemResult) -> str:
+    if result.status not in {"failed", "blocked", "cancelled"}:
+        return ""
+    return "\n".join(part for part in [result.summary, result.failure_category or ""] if part)
+
+
 def _runtime_report_required(
     *,
     work_item: WorkItem,
@@ -326,6 +336,9 @@ def _product_surface_gap_codes(
             "visual missing",
             "art missing",
             "ui missing",
+            "visual product iteration evidence",
+            "visual iteration artifact",
+            "no real visual iteration artifact",
             "图片不足",
             "角色不足",
             "美术不足",
@@ -565,6 +578,26 @@ def _dedupe_refs(values: Iterable[str]) -> list[str]:
         seen.add(value)
         result.append(value)
     return result
+
+
+def _ticket_matches_clean_retest_blocker(ticket: CollaborationTicket, work_item: WorkItem) -> bool:
+    if ticket.type not in {"operator_action", "approval", "external_action", "user_decision"}:
+        return False
+    if work_item.work_item_id in ticket.auto_resolvable_by:
+        return True
+    explicit_refs = {
+        work_item.work_item_id,
+        *work_item.recovery_refs,
+        *work_item.checkpoint_refs,
+        *work_item.external_source_refs,
+    }
+    explicit_refs = {ref for ref in explicit_refs if ref}
+    if set(ticket.resolution_refs).intersection(explicit_refs):
+        return True
+    if ticket.context_ref in explicit_refs or ticket.ticket_id in explicit_refs:
+        return True
+    idempotency_key = work_item.idempotency_key or ""
+    return ticket.ticket_id in idempotency_key or ticket.context_ref in idempotency_key
 
 
 def _hash_payload(payload: object) -> str:
@@ -1139,6 +1172,12 @@ class InMemoryControlPlane:
             gate_ref = runtime_gate.gate_evaluation_id
             self.gate_evaluations[gate_ref] = runtime_gate
             self._persist_gate(runtime_gate)
+            self._resolve_clean_retest_coordination(
+                mission_id=work_item.mission_id,
+                work_item=work_item,
+                gate=runtime_gate,
+                artifact_refs=runtime_artifact_refs,
+            )
 
         exit_status: RunExitStatus = (
             "failed"
@@ -1231,6 +1270,67 @@ class InMemoryControlPlane:
                 subject_ref=work_item.work_item_id,
             )
         return updated_run
+
+    def _resolve_clean_retest_coordination(
+        self,
+        *,
+        mission_id: str,
+        work_item: WorkItem,
+        gate: GateEvaluation,
+        artifact_refs: list[str],
+    ) -> None:
+        """Close stale human blocker tickets once Nuo proves the blocker is gone.
+
+        This is the coordination boundary between Nuo diagnostics and the main
+        execution queue: a clean retest must not remain a passive report.  When
+        it proves that a workspace/permission blocker is cleared, KUN retires
+        the stale operator ticket and lets the gate resume the mission.
+        """
+
+        if gate.created_by != "nuo-runtime-repair-runner":
+            return
+        if gate.governance_signal != "nuo_clean_retest_passed":
+            return
+        if gate.north_star_verdict != "pass":
+            return
+        retired: list[str] = []
+        for ticket in list(self.collaboration_tickets.values()):
+            if ticket.mission_id != mission_id:
+                continue
+            if ticket.status not in {"open", "waiting", "escalated", "fallback_selected"}:
+                continue
+            if not _ticket_matches_clean_retest_blocker(ticket, work_item):
+                continue
+            updated = ticket.model_copy(
+                update={
+                    "status": "closed",
+                    "resolution_refs": _dedupe_refs(
+                        [
+                            *ticket.resolution_refs,
+                            gate.gate_evaluation_id,
+                            *artifact_refs,
+                            work_item.work_item_id,
+                        ]
+                    ),
+                }
+            )
+            self.collaboration_tickets[ticket.ticket_id] = updated
+            self._persist_collaboration_ticket(updated)
+            retired.append(ticket.ticket_id)
+        if not retired:
+            return
+        self._record_ledger_event(
+            mission_id=mission_id,
+            event_type="governance",
+            actor=gate.created_by,
+            subject_ref=work_item.work_item_id,
+            payload={
+                "reason": "Nuo clean retest proved the blocker was stale; closed related human tickets.",
+                "closed_collaboration_ticket_ids": retired,
+                "gate_evaluation_id": gate.gate_evaluation_id,
+            },
+            artifact_refs=artifact_refs,
+        )
 
     def record_collaboration_ticket(
         self,
@@ -1376,6 +1476,11 @@ class InMemoryControlPlane:
                 "answer": response.answer,
             },
         )
+        self._complete_collaboration_work_items_for_response(
+            ticket=updated,
+            response=response,
+            actor=actor,
+        )
         if response.resume_allowed and ticket.resume_after_response:
             self._resume_after_collaboration(ticket.mission_id)
         return updated
@@ -1457,9 +1562,10 @@ class InMemoryControlPlane:
         """
 
         gate = promotion.gate_evaluation
+        profile = promotion.capability_profile
+        self._validate_capability_promotion_boundary(promotion)
         self.gate_evaluations[gate.gate_evaluation_id] = gate
         self._persist_gate(gate)
-        profile = promotion.capability_profile
         if promotion.decision == "approved" and profile is not None:
             self.capability_profiles[profile.capability_id] = profile
             self._persist_capability_profile(profile)
@@ -1482,6 +1588,32 @@ class InMemoryControlPlane:
             artifact_refs=promotion.evidence_refs,
         )
         return profile
+
+    def _validate_capability_promotion_boundary(self, promotion: CapabilityPromotion) -> None:
+        """Keep user-task learning evidence out of KUN production runtime defaults."""
+
+        profile = promotion.capability_profile
+        if (
+            promotion.decision != "approved"
+            or profile is None
+            or profile.promotion_stage != "production"
+            or not profile.runtime_enabled
+        ):
+            return
+        gate = promotion.gate_evaluation
+        mission = self.missions.get(gate.mission_id)
+        if mission is None:
+            raise ValueError(
+                "production capability promotions require a registered self_improvement mission"
+            )
+        if mission.task_type != "self_improvement" or gate.task_type != "self_improvement":
+            raise ValueError(
+                "production capability promotions are only allowed from self_improvement "
+                "Qi/Nuo governance missions; user task learning must stay a learning_signal "
+                "or governance follow-up"
+            )
+        if gate.stage != "learning":
+            raise ValueError("production capability promotions require a learning-stage gate")
 
     def list_default_runtime_capabilities(self) -> list[CapabilityProfile]:
         """Return governed production-stage capabilities for KUN Runtime default use."""
@@ -1635,6 +1767,105 @@ class InMemoryControlPlane:
                 actor="control-plane",
                 reason="collaboration response recorded; mission can resume",
             )
+
+    def _complete_collaboration_work_items_for_response(
+        self,
+        *,
+        ticket: CollaborationTicket,
+        response: CollaborationResponse,
+        actor: str,
+    ) -> None:
+        """Close matching human/operator work items after their ticket is resolved.
+
+        Human collaboration work items are not daemon-runnable work. Once the
+        associated ticket has an answer, leaving the item queued creates a
+        runner_missing loop and blocks the actual product work behind it.
+        """
+
+        if response.status not in {"answered", "fallback_selected", "cancelled", "closed"}:
+            return
+        candidates = [
+            item
+            for item in self._mission_work_items(ticket.mission_id)
+            if item.type == "collaboration"
+            and item.status in {"queued", "waiting_human", "waiting_external", "blocked"}
+        ]
+        if not candidates:
+            return
+        matching = [
+            item
+            for item in candidates
+            if self._collaboration_work_item_matches_ticket(
+                item=item,
+                ticket=ticket,
+                all_candidates=candidates,
+            )
+        ]
+        target_status = (
+            "done" if response.status in {"answered", "fallback_selected"} else "cancelled"
+        )
+        for item in matching:
+            updated = item.model_copy(update={"status": target_status})
+            self.work_items[item.work_item_id] = updated
+            self._persist_work_item(updated)
+            run = RunRecord(
+                work_item_id=item.work_item_id,
+                runner_type="human",
+                runner_identity=response.responder or actor,
+                started_at=response.received_at,
+                ended_at=response.received_at,
+                exit_status="succeeded" if target_status == "done" else "cancelled",
+            )
+            self.runs[run.run_id] = run
+            self._persist_run(run)
+            self._record_ledger_event(
+                mission_id=ticket.mission_id,
+                event_type="state_change",
+                actor=actor,
+                subject_ref=item.work_item_id,
+                payload={
+                    "status": target_status,
+                    "reason": f"collaboration ticket {ticket.ticket_id} resolved",
+                    "ticket_id": ticket.ticket_id,
+                    "response_status": response.status,
+                },
+            )
+
+    @staticmethod
+    def _collaboration_work_item_matches_ticket(
+        *,
+        item: WorkItem,
+        ticket: CollaborationTicket,
+        all_candidates: Sequence[WorkItem],
+    ) -> bool:
+        haystack = " ".join(
+            [
+                item.work_item_id,
+                item.owner,
+                item.phase or "",
+                item.expected_output,
+                " ".join(item.recovery_refs),
+                " ".join(item.checkpoint_refs),
+            ]
+        ).lower()
+        if ticket.ticket_id.lower() in haystack or ticket.context_ref.lower() in haystack:
+            return True
+        if len(all_candidates) == 1:
+            return True
+        if ticket.type == "operator_action":
+            return any(
+                token in haystack
+                for token in (
+                    "operator",
+                    "permission",
+                    "preflight",
+                    "workspace boundary",
+                    "writable workspace",
+                )
+            )
+        if ticket.type in {"review", "acceptance_check"}:
+            return any(token in haystack for token in ("review", "acceptance", "playtest"))
+        return False
 
     def _mission(self, mission_id: str) -> Mission:
         try:

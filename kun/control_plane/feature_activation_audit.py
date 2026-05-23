@@ -24,6 +24,11 @@ from kun.control_plane.app_development import (
     AppCommandResult,
     AutonomousAppDevelopmentRunner,
 )
+from kun.control_plane.capability_evolution import (
+    CapabilityCandidate,
+    CapabilityEvaluation,
+    build_capability_promotion,
+)
 from kun.control_plane.capability_execution import CapabilityExecutionPolicy
 from kun.control_plane.concurrency import (
     FileResourceLockStore,
@@ -66,6 +71,7 @@ from kun.control_plane.runtime_followups import (
     NuoRuntimeRepairRunner,
     QiRuntimeGovernanceRunner,
 )
+from kun.control_plane.runtime_observation import build_runtime_observation_report
 from kun.control_plane.v6 import (
     ArtifactManifest,
     ArtifactRecord,
@@ -850,6 +856,89 @@ def _case_qi_nuo_observation_strategy_loop(root: Path, now: datetime) -> Feature
     )
 
 
+def _case_runtime_observation_hardening(root: Path, now: datetime) -> FeatureActivationCase:
+    control_plane, _store, mission = _runtime(
+        root / "runtime-observation-hardening.json",
+        mission_id="msn-activation-runtime-observation-hardening",
+        workspace=root / "runtime-observation-hardening-workspace",
+    )
+    work_item = control_plane.work_items[
+        "work-msn-activation-runtime-observation-hardening"
+    ].model_copy(
+        update={
+            "status": "done",
+            "required_capability_refs": ["cap-observation-required"],
+            "expected_output": "Capability must produce a behavior receipt.",
+        }
+    )
+    control_plane.work_items[work_item.work_item_id] = work_item
+    for index in range(2):
+        gate = GateEvaluation(
+            gate_evaluation_id=f"gate-observation-pressure-{index}",
+            mission_id=mission.mission_id,
+            task_plan_version=f"v1-acceptance-rework-{index}",
+            subject_ref=f"ticket-observation-acceptance-{index}",
+            stage="delivery",
+            task_type="self_improvement",
+            rubric_version="kun-runtime-observation-hardening-v1",
+            metric_pack_version="north-star-v6",
+            north_star_verdict="partial",
+            result_quality=0.72,
+            speed=0.8,
+            cost=0.8,
+            risk=0.42,
+            evidence_quality=0.7,
+            collaboration_quality=0.75,
+            hard_gate_failures=["human_acceptance_missing"],
+            next_action="needs_plan_change",
+            next_state="changing_plan",
+            governance_signal="open_acceptance_requires_continued_product_pressure",
+            created_by="feature-activation-audit",
+        )
+        control_plane.gate_evaluations[gate.gate_evaluation_id] = gate
+    report = build_runtime_observation_report(
+        control_plane=control_plane,
+        mission_id=mission.mission_id,
+        tick_report=object(),
+        capability_policy=CapabilityExecutionPolicy(policy_id="policy-empty", built_at=now),
+    )
+    codes = {item.code for item in report.items}
+    activated = {
+        "capability_consumption_unproven",
+        "mechanical_acceptance_rework_loop",
+    }.issubset(codes)
+    evidence_refs = [
+        ref
+        for item in report.items
+        if item.code in {"capability_consumption_unproven", "mechanical_acceptance_rework_loop"}
+        for ref in item.evidence_refs
+    ]
+    return FeatureActivationCase(
+        feature_id="runtime_observation_hardening",
+        subsystem="runtime_observation",
+        trigger_condition=(
+            "A mission has required-capability work without behavior receipt and repeated "
+            "acceptance rework pressure."
+        ),
+        dependencies=[
+            "capability_behavior_receipt observation",
+            "mechanical acceptance rework loop observation",
+            "Qi/Nuo/external-supervisor routing",
+        ],
+        activated=activated,
+        evidence_refs=evidence_refs,
+        trigger_status="observed" if activated else "gap",
+        notes=[
+            "This verifies KUN can surface metadata-only capability activation and mechanical "
+            "rework loops before external supervision discovers them manually."
+        ],
+        gaps=[]
+        if activated
+        else ["runtime observation did not flag capability receipt and rework-loop gaps"],
+        evidence_scope="static_probe",
+    )
+
+
 def _case_capability_dedupe_qi_governance(root: Path, now: datetime) -> FeatureActivationCase:
     control_plane, _store, mission = _runtime(
         root / "capability-dedupe-runtime.json",
@@ -912,6 +1001,92 @@ def _case_capability_dedupe_qi_governance(root: Path, now: datetime) -> FeatureA
         trigger_status="activated" if activated else "gap",
         notes=["Daemon may do the safety retirement, but Qi must record the governance decision."],
     )
+
+
+def _case_task_vs_self_improvement_boundary(root: Path, now: datetime) -> FeatureActivationCase:
+    control_plane, _store, mission = _domain_runtime(
+        root / "task-vs-self-improvement-runtime.json",
+        mission_id="msn-activation-task-boundary",
+        owner="kun",
+        workspace=root / "task-boundary-workspace",
+        work_ids=["work-task-boundary-user-delivery"],
+    )
+    candidate = CapabilityCandidate(
+        candidate_id="cand-user-task-runtime-pollution",
+        capability_name="User task must not enable KUN runtime defaults",
+        source="real_task_review",
+        source_ref=mission.mission_id,
+        hypothesis=(
+            "User mission learning can become a learning signal, but cannot directly "
+            "enable a production runtime capability."
+        ),
+        target_task_types=["product_development"],
+        evidence_refs=["artifact-user-task-learning-signal"],
+        known_limits=["Only Qi/Nuo self_improvement governance can promote production defaults."],
+        created_by="kun",
+    )
+    promotion = build_capability_promotion(
+        candidate,
+        [
+            _capability_boundary_evaluation(stage, mission_id=mission.mission_id)
+            for stage in ["replay", "holdout", "shadow", "canary", "production"]
+        ],
+        target_stage="production",
+        capability_id="cap-user-task-runtime-pollution",
+    )
+    blocked = False
+    try:
+        control_plane.apply_capability_promotion(promotion, actor="kun")
+    except ValueError as exc:
+        blocked = "only allowed from self_improvement" in str(exc)
+    activated = blocked and not control_plane.list_default_runtime_capabilities()
+    return FeatureActivationCase(
+        feature_id="task_vs_self_improvement_boundary",
+        subsystem="qi_capability_governance",
+        trigger_condition=(
+            "A product_development user mission attempts to enable a production CapabilityProfile."
+        ),
+        dependencies=[
+            "apply_capability_promotion boundary guard",
+            "CapabilityProfile runtime_enabled production profile",
+            "mission.task_type self_improvement requirement",
+        ],
+        activated=activated,
+        evidence_refs=[promotion.promotion_id, promotion.gate_evaluation.gate_evaluation_id],
+        generated_work_item_ids=[],
+        trigger_status="blocked" if activated else "gap",
+        notes=[
+            "User task learning remains evidence for Qi/Nuo governance; it cannot mutate KUN "
+            "production defaults directly."
+        ],
+        gaps=[] if activated else ["user task production capability promotion was not blocked"],
+        evidence_scope="static_probe",
+    )
+
+
+def _capability_boundary_evaluation(stage: str, *, mission_id: str) -> CapabilityEvaluation:
+    payload: dict[str, object] = {
+        "evaluation_id": f"eval-task-boundary-{stage}",
+        "candidate_id": "cand-user-task-runtime-pollution",
+        "stage": stage,
+        "mission_id": mission_id,
+        "task_plan_version": "v1",
+        "subject_ref": f"work-task-boundary-{stage}",
+        "passed": True,
+        "result_quality": 0.91,
+        "speed": 0.75,
+        "cost": 0.7,
+        "risk": 0.2,
+        "evidence_refs": [f"artifact-task-boundary-evidence-{stage}"],
+        "artifact_refs": [f"artifact-task-boundary-report-{stage}"],
+        "review_refs": [f"artifact-task-boundary-review-{stage}"],
+    }
+    if stage in {"holdout", "canary", "production"}:
+        payload["holdout_refs"] = ["artifact-task-boundary-holdout"]
+    if stage in {"canary", "production"}:
+        payload["regression_refs"] = ["artifact-task-boundary-regression"]
+        payload["rollback_plan"] = ["disable rejected user-task runtime profile"]
+    return CapabilityEvaluation.model_validate(payload)
 
 
 def _case_merge_conflict_governance(root: Path, now: datetime) -> FeatureActivationCase:
@@ -1495,7 +1670,9 @@ _CASE_FUNCTIONS: list[Callable[[Path, datetime], FeatureActivationCase]] = [
     _case_redis_distributed_resource_lock_adapter,
     _case_container_required_gate,
     _case_qi_nuo_observation_strategy_loop,
+    _case_runtime_observation_hardening,
     _case_capability_dedupe_qi_governance,
+    _case_task_vs_self_improvement_boundary,
     _case_merge_conflict_governance,
     _case_workspace_rollback,
     _case_watchtower_bridge,

@@ -149,9 +149,11 @@ def build_runtime_observation_report(
                 evidence_refs=list(capability_policy.capability_profile_refs),
             )
         )
+    items.extend(_capability_consumption_observations(control_plane, mission_id))
     items.extend(_failed_work_observations(control_plane, mission_id))
     items.extend(_quality_gate_observations(control_plane, mission_id))
     items.extend(_delivery_observations(control_plane, mission_id))
+    items.extend(_acceptance_rework_loop_observations(control_plane, mission_id))
     return RuntimeObservationReport(
         mission_id=mission_id,
         items=items,
@@ -160,6 +162,44 @@ def build_runtime_observation_report(
             for item in items
         ),
     )
+
+
+def _capability_consumption_observations(
+    control_plane: InMemoryControlPlane,
+    mission_id: str,
+) -> list[RuntimeObservationItem]:
+    missing_receipt_ids: list[str] = []
+    for work_item in control_plane.work_items.values():
+        if work_item.mission_id != mission_id:
+            continue
+        if work_item.status not in {"done", "partial"}:
+            continue
+        if not work_item.required_capability_refs:
+            continue
+        has_behavior_receipt = any(
+            artifact.mission_id == mission_id
+            and artifact.work_item_id == work_item.work_item_id
+            and "capability_behavior_receipt" in artifact.supports
+            for artifact in control_plane.artifacts.values()
+        )
+        if not has_behavior_receipt:
+            missing_receipt_ids.append(work_item.work_item_id)
+    if not missing_receipt_ids:
+        return []
+    return [
+        RuntimeObservationItem(
+            code="capability_consumption_unproven",
+            severity="high",
+            title="生产能力缺少行为消费证明",
+            why_watch="能力只登记到 work item 或 artifact 里，不等于 planner/runner 真的按能力改变了执行行为。",
+            recommended_action=(
+                "阻断交付或晋级；要求对应 runner 产出 capability_behavior_receipt，"
+                "说明哪些 executable directive 被执行、影响了哪个阶段。"
+            ),
+            routes=["qi", "control_plane", "external_supervisor"],
+            evidence_refs=missing_receipt_ids,
+        )
+    ]
 
 
 def _failed_work_observations(
@@ -180,15 +220,12 @@ def _failed_work_observations(
         if item.mission_id == mission_id and item.owner in {"qi", "nuo"}
     ]
     recovered_refs = {
-        ref
-        for item in recovery_items
-        if item.status in {"done", "partial"}
-        for ref in item.recovery_refs
+        ref for item in recovery_items if item.status == "done" for ref in item.recovery_refs
     }
     pending_recovery_refs = {
         ref
         for item in recovery_items
-        if item.status not in {"done", "partial", "cancelled", "failed"}
+        if item.status not in {"done", "cancelled", "failed"}
         for ref in item.recovery_refs
     }
     unrecovered = [work_id for work_id in failed_ids if work_id not in recovered_refs]
@@ -263,6 +300,47 @@ def _quality_gate_observations(
             ),
             routes=routes,
             evidence_refs=failed_refs,
+        )
+    ]
+
+
+def _acceptance_rework_loop_observations(
+    control_plane: InMemoryControlPlane,
+    mission_id: str,
+) -> list[RuntimeObservationItem]:
+    mission = control_plane.missions.get(mission_id)
+    if mission is None:
+        return []
+    pressure_gates = [
+        gate
+        for gate in control_plane.gate_evaluations.values()
+        if gate.mission_id == mission_id
+        and gate.governance_signal == "open_acceptance_requires_continued_product_pressure"
+    ]
+    rework_versions = {
+        item.task_plan_version
+        for item in control_plane.work_items.values()
+        if item.mission_id == mission_id and "acceptance-rework" in item.task_plan_version
+    }
+    if len(pressure_gates) < 2 and len(rework_versions) < 2:
+        return []
+    refs = [
+        gate.gate_evaluation_id
+        for gate in sorted(pressure_gates, key=lambda gate: gate.gate_evaluation_id)
+    ]
+    refs.extend(sorted(rework_versions))
+    return [
+        RuntimeObservationItem(
+            code="mechanical_acceptance_rework_loop",
+            severity="high",
+            title="验收返工可能在机械循环",
+            why_watch="同一任务反复从交付态被压回返工，说明门禁可能只驱动流程重跑，没有证明产品体验有新的有效增量。",
+            recommended_action=(
+                "Qi 必须重新审查策略并提出更优路径；Nuo 检查是否是门禁/状态污染；"
+                "外部监督只确认真实产品变化和玩家体感，不接受单纯测试重复通过。"
+            ),
+            routes=["qi", "nuo", "external_supervisor"],
+            evidence_refs=refs,
         )
     ]
 

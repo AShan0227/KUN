@@ -252,6 +252,12 @@ def test_nuo_pollution_sample_library_classifies_real_failure_families() -> None
         ),
         ({"auth_failure": True}, "collaboration", "operator", "fix_auth"),
         ({"report_ref": None}, "research", "qi", "collect_report"),
+        (
+            {"product_acceptance_claimed": True, "rollback_refs": []},
+            "research",
+            "qi",
+            "collect_report",
+        ),
         ({"review_count": None}, "research", "qi", "collect_reviews"),
         (
             {"comparator_healthy": False, "comparator_health_reason": "judge quorum failed"},

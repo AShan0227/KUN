@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -241,7 +242,7 @@ def test_task_cockpit_view_uses_daemon_service_state_for_background_health() -> 
         status="running",
         started_at=datetime(2026, 5, 19, 9, 0, tzinfo=UTC),
         updated_at=datetime(2026, 5, 19, 9, 5, tzinfo=UTC),
-        process_id=1234,
+        process_id=os.getpid(),
         tick_count=3,
         active_mission_ids=["msn-cockpit-daemon-state"],
         last_heartbeat_at=datetime(2026, 5, 19, 9, 5, tzinfo=UTC),
@@ -260,7 +261,33 @@ def test_task_cockpit_view_uses_daemon_service_state_for_background_health() -> 
     assert cockpit.daemon.last_heartbeat_at == datetime(2026, 5, 19, 9, 5, tzinfo=UTC)
     assert cockpit.daemon.next_wakeup_at == datetime(2026, 5, 19, 9, 6, tzinfo=UTC)
     assert cockpit.daemon.stale is False
+    assert cockpit.daemon.process_alive is True
     assert "心跳正常" in cockpit.daemon.text
+
+
+@pytest.mark.unit
+def test_task_cockpit_view_warns_when_daemon_process_is_missing() -> None:
+    runtime = _runtime_with_mission(mission_id="msn-cockpit-daemon-missing-process")
+    state = DaemonServiceState(
+        daemon_id="daemon-cockpit",
+        status="running",
+        started_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        process_id=999_999_999,
+        last_heartbeat_at=datetime.now(UTC),
+    )
+
+    cockpit = build_task_cockpit_view(
+        runtime,
+        "msn-cockpit-daemon-missing-process",
+        daemon_service_state=state,
+        now=datetime.now(UTC),
+    )
+
+    assert cockpit.daemon.healthy is False
+    assert cockpit.daemon.stale is False
+    assert cockpit.daemon.process_alive is False
+    assert "进程已经不存在" in cockpit.daemon.text
 
 
 @pytest.mark.unit
