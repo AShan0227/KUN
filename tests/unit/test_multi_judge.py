@@ -6,8 +6,8 @@ import asyncio
 from collections.abc import Iterable
 
 import pytest
-from kun.engineering.multi_judge import jury_evaluate
-from kun.engineering.validation import MultiJudge
+from kun.agents.tester.multi_judge import jury_evaluate
+from kun.agents.tester.validation import MultiJudge
 from kun.interface.llm import LLMRequest, LLMResponse, LLMRouter
 from kun.interface.llm.base import UsageInfo
 from kun.interface.llm.stub_provider import StubProvider

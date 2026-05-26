@@ -2,7 +2,7 @@
 
 import pytest
 from kun.datamodel.task import Owner, TaskMeta
-from kun.engineering.validation import pick_tier
+from kun.agents.tester.validation import pick_tier
 
 
 def _mk(risk: str, complexity: float) -> TaskMeta:

@@ -19,7 +19,7 @@ from typing import Any, cast
 from kun.core.logging import get_logger
 from kun.interface.llm import LLMMessage, LLMRequest, LLMRouter
 
-log = get_logger("kun.engineering.multi_judge")
+log = get_logger("kun.agents.tester.multi_judge")
 
 _JUDGE_SYSTEM = """你是 KUN 的独立评估判官。
 请只输出 JSON:

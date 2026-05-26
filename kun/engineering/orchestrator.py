@@ -50,7 +50,7 @@ from kun.engineering.concurrency import (
     pending_actions_for,
     scan_pre_conflicts,
 )
-from kun.engineering.validation import ValidationPipeline, pick_tier
+from kun.agents.tester.validation import ValidationPipeline, pick_tier
 from kun.interface.adapters import translate_for
 from kun.interface.llm import (
     LLMMessage,

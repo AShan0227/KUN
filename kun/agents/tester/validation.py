@@ -20,10 +20,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from kun.core.logging import get_logger
 from kun.core.scoring import ScoreDescriptor
 from kun.datamodel.task import TaskMeta
-from kun.engineering.multi_judge import jury_evaluate
+from kun.agents.tester.multi_judge import jury_evaluate
 from kun.interface.llm import LLMMessage, LLMRequest, LLMRouter, get_router
 
-log = get_logger("kun.engineering.validation")
+log = get_logger("kun.agents.tester.validation")
 
 ValidationTier = Literal["tier0", "tier1", "tier2", "tier3"]
 ValidatorKind = Literal[
