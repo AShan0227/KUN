@@ -82,9 +82,9 @@
 
 ### 计划任务
 
-- [ ] Supervisor service 真做：事件流订阅 + 异常阈值 + 写 strategy_search_request
-- [ ] Input Classifier 6 类（Director 持有）
-- [ ] Periodic Plan Review Heartbeat（每 3 步 / 5 分钟）
+- [x] **L2.1** Supervisor service 真做：事件流订阅 + 异常阈值 + 写 strategy_search_request（commit 67b960c）
+- [x] **L2.2** Input Classifier 6 类（Director 持有）（commit pending）
+- [ ] **L2.3** Periodic Plan Review Heartbeat（每 3 步 / 5 分钟）
 - [ ] External Supervisor 独立进程化（docker-compose 加 service）
 - [ ] LocalLLMProvider 接入（ollama / llama.cpp）
 - [ ] External Supervisor Mode A 同步监管 + Mode B 任务尾复盘

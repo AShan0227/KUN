@@ -11,6 +11,11 @@ TaskPlanner + TaskRouter + GoalAnchor 生成 + Input Classification).
 
 from kun.agents.director.anchor import GoalAnchor
 from kun.agents.director.base import Director
+from kun.agents.director.input_classifier import (
+    InputCategory,
+    InputClassification,
+    classify_input,
+)
 from kun.agents.director.intent import IntentInterpreter
 from kun.agents.director.planner import ExecutionPlan, PlanStep, TaskPlanner
 from kun.agents.director.role_router import RouteChoice, TaskRouter
@@ -19,9 +24,12 @@ __all__ = [
     "Director",
     "ExecutionPlan",
     "GoalAnchor",
+    "InputCategory",
+    "InputClassification",
     "IntentInterpreter",
     "PlanStep",
     "RouteChoice",
     "TaskPlanner",
     "TaskRouter",
+    "classify_input",
 ]
