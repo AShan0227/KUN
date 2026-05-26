@@ -49,3 +49,29 @@
 **13 个新单测**覆盖：interrupt 中英文 / pivot / clarification 中英文 / off_topic_noise / scope_expansion 中英文 / on_topic_progress / out_of_scope 显式禁区 / 空输入 / 无 goal_anchor 兜底。789/789 unit tests pass，ruff clean。
 
 **为下一步**：L2.3 Periodic Plan Review Heartbeat — Supervisor 每 N 步 / N 秒注入"现在停下来回看：是否还在 anchor 上"。
+
+---
+
+## L2.3 · Plan Review Heartbeat 长任务防漂心跳
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/agents/supervisor/plan_review_heartbeat.py`：`PlanReviewHeartbeat(step_interval=3, time_interval_sec=300, emitter=...)`
+- 两个入口：`on_step_completed(...)` 推进 step 计数 + 双阈值检查；`on_idle_tick(...)` 只检查时间阈值（Executor 卡住时也能注入）
+- `_TaskCounter` per-task in-memory 状态：`steps_since_last_review` / `last_review_at` / `total_steps` / `total_reviews`，`asyncio.Lock` 保证并发安全
+- `evaluate_executor_self_report` 工程化规则评判：4 条规则（scope_creep_detected / on_anchor=False / goal_token 零命中 / criteria_done 回退）→ aligned / drifting / off_track
+- `derive_action` 顺序映射：aligned→continue / drifting→pause_for_anchor_recheck / off_track→trigger_rcdh_level_0
+- `ReviewTrigger` dataclass(frozen)：review_id（`new_id("plan_review")`）+ payload 含 verdict / drift_evidence / action_taken / trigger_reasons / total_steps
+- `__init__.py` export `PlanReviewHeartbeat` / `ReviewTrigger` / `derive_action` / `evaluate_executor_self_report`
+
+**关键决策**：
+- **双阈值 OR 触发**：单一 step 阈值在"长 step 慢思考"任务（每步 30 分钟）下太迟；单一时间阈值在"密集小 step"任务下重复触发。两者并列才覆盖真实分布
+- **`on_idle_tick` 单独 API**：长任务执行卡住时（等外部 IO / 等 LLM 慢响应），不会有 `step_completed`，但还是要按时间触发 plan review。这是"心跳"语义而不仅是"计步器"
+- **engineering verdict 不调 LLM**：4 条规则是来自 ADR-022 §Layer 4 的具体 drift 信号清单。一条 = 轻度（pause 重对 anchor），两条 = 重度（直接走 RCDH L0）。LLM 兜底放 L3 闭环
+- **`derive_action` 显式分级而不是 verdict 直接当 action**：让"verdict 怎么转 action"在一个地方改，不散落 — 后续若 anchor 类型不同需要不同动作策略，verdict 不动，只改 derive
+- **emitter 异常吞掉 + log.warning**：心跳本身是旁路信号，不该把 Executor 主路径打挂。异常进 log 由 RSI 闭环（L2.7）自我修复
+
+**18 个新单测**覆盖：4 条 verdict 规则 / derive_action mapping / step 阈值首次触发 / step 阈值 reset 后再次触发 / time 阈值触发 / idle_tick 只查时间 / emitter 调用 / emitter 异常吞 / off_track triggers_rcdh / 多任务隔离 / reset 清计数 / 非法参数拒绝 / 并发 asyncio.gather 5 路。807/807 unit tests pass，ruff clean。
+
+**为下一步**：L2.4 External Supervisor 独立进程化 — docker-compose 加 service + `LocalLLMProvider`（ollama）让监督走本地模型。
