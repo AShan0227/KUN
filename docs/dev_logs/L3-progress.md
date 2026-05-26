@@ -86,3 +86,35 @@
 **14 个新单测**覆盖：direction 6 case（无 history / 空 / disabled / 近期 enabled / 太老 / ISO 字符串 / 无 tzinfo ISO）/ backward candidate 形状 / propose 路由 4 case（backward / forward 无 reader / forward 空 history / reader 异常）/ backward emitter 调用 / backward + self-referential 仍人审。961/961 unit tests pass，ruff clean。
 
 **为下一步**：L3.4 监督线三级阈值（weak / mid / strong）+ 4 级升级路径（role / task / gate / human）真接 — 把 Supervisor 异常按 severity 推到不同层。
+
+---
+
+## L3.4 · 监督线三级阈值 + 4 级升级路径真接
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/agents/supervisor/escalation.py`：
+  - `Severity` Literal: `weak / mid / strong`
+  - `EscalationLevel` Literal: `role / task / gate / human`
+  - `compute_severity(priority, repeat_count, failure_rate, sample_size)` engineering rules: priority=high + repeat≥2 OR failure_rate≥0.8 → strong；priority=medium + repeat≥2 OR failure_rate≥0.5 → mid；priority=high 单次 → mid；repeat≥3 强制 strong；其他 → weak
+  - `escalation_path_for(severity, is_self_referential)`：weak→[role] / mid→[role, task] / strong→[role, task, gate]，自指任意严重度追加 human
+  - `_is_self_referential(target_module)` 复用与 Strategist 同源逻辑（4 种命名形式 5 个角色前缀）
+  - `decide_escalation(...)` → `EscalationDecision` frozen dataclass（severity / path / rationale / is_self_referential / target_module / contributing_signals）
+- `SupervisorAnomalyState` 增 `repeat_counts: dict[dedup_key, int]` 跨 dedup_ttl 累计
+- `SupervisorService._build_request` 调 `decide_escalation` → 输出 `strategy_search_request` 携带 4 个新字段：`severity` / `escalation_path` / `is_self_referential` / `repeat_count`
+- 从 evidence 提 failure_rate / sample_size 喂给 severity 决策
+- `__init__.py` export 6 个新名字
+
+**关键决策**：
+- **repeat_count 跨 dedup_ttl 累计而非每 TTL 重置**：dedup 是"窗口去重"，repeat 是"长期跟踪"。同一 dedup_key 第 1/2/3 次触发应该看到 repeat=1/2/3，让 severity 自然升级；TTL 是为了不把同 1 小时窗口的多次嗯触发当多次
+- **`repeat_count >= 3` 强制 strong 不论 priority**：与 RCDH 强制升级（重复 ≥ 3 → 强制 L0 redesign）同源原则。系统重复出问题不能再 "weak/留痕"
+- **escalation_path 是 list 而非单 level**：path 累加（mid 不替代 role 而是 role+task），让下游可以分阶段消费。L4 (human) 是独立追加，可能与 strong 并存
+- **failure_rate 直接进 severity 决策**：第 1 次出现但失败率 80%+ 也应 strong；与 sample_size 协同避免低样本误判
+- **escalation 是 pure module 而非 SupervisorService method**：让 LLM Strategist 或 Gate 等其他 caller 也能用 `decide_escalation` 不耦合 Supervisor 内部
+- **`is_self_referential` 字段独立暴露**：让 Gate (L2.8) 后续直接读 `request.is_self_referential` 不需重新算
+- **import escalation 在 `_build_request` 内（局部 import）**：避免循环依赖风险（escalation 不依赖 service，反之亦然），同时减少全局命名空间污染
+
+**22 个新单测**覆盖：compute_severity 8 case（priority/repeat/failure_rate 组合 + 强制升级）/ escalation_path_for 4 case / _is_self_referential 拒绝其他 / decide_escalation 4 case / SupervisorService 4 个集成 case（字段透传 / repeat 累加 / strong path 含 gate / failure_rate 升 strong）。983/983 unit tests pass，ruff clean。
+
+**为下一步**：L3.5 自指限制强化 — Strategist 改自己（target_module 命中监督角色）当前是 `requires_human_review=True`，要加：L4 升级时直接写 `promotion_queue.requires_human_review=True` + Gate 强制拒绝 auto-admit。

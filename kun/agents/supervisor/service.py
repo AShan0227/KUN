@@ -59,6 +59,8 @@ class SupervisorAnomalyState:
     events: list[_EventRecord] = field(default_factory=list)
     recent_search_requests: dict[str, datetime] = field(default_factory=dict)
     """dedup_key → last_emitted_at"""
+    repeat_counts: dict[str, int] = field(default_factory=dict)
+    """dedup_key → 累计出现次数 (跨 dedup_ttl 也计, 给 escalation 升级用 L3.4)"""
 
     fallback_threshold: int = _DEFAULT_FALLBACK_THRESHOLD
     failure_threshold: int = _DEFAULT_FAILURE_THRESHOLD
@@ -379,10 +381,14 @@ class SupervisorService:
         evidence: list[dict[str, Any]],
         priority: str,
     ) -> dict[str, Any] | None:
-        """构造 strategy_search_request payload, 处理 dedup."""
+        """构造 strategy_search_request payload, 处理 dedup + 升级决策 (L3.4)."""
+        from kun.agents.supervisor.escalation import decide_escalation
+
         dedup_key = f"{state.tenant_id}:{target_module}:{anomaly_kind}"
         now = datetime.now(UTC)
         last_at = state.recent_search_requests.get(dedup_key)
+        # 计数 dedup_key 的 repeat: 累积同 anomaly 出现次数
+        repeat_count = state.repeat_counts.get(dedup_key, 0)
         if last_at is not None and (now - last_at).total_seconds() < self._dedup_ttl_sec:
             log.debug(
                 "supervisor.dedup_skip",
@@ -391,6 +397,24 @@ class SupervisorService:
             )
             return None
         state.recent_search_requests[dedup_key] = now
+        state.repeat_counts[dedup_key] = repeat_count + 1
+
+        # 从 evidence 取 failure_rate / sample_size 给 severity 判断
+        failure_rate = None
+        sample_size = 0
+        for ev in evidence:
+            if "failure_rate" in ev:
+                failure_rate = float(ev["failure_rate"])
+            if "sample_size" in ev:
+                sample_size = int(ev["sample_size"])
+
+        escalation = decide_escalation(
+            priority=priority,
+            target_module=target_module,
+            repeat_count=repeat_count + 1,
+            failure_rate=failure_rate,
+            sample_size=sample_size,
+        )
 
         return {
             "request_id": new_id("strategy_search"),
@@ -403,6 +427,10 @@ class SupervisorService:
             "status": "open",
             "created_at": now,
             "anomaly_kind": anomaly_kind,
+            "severity": escalation.severity,
+            "escalation_path": list(escalation.escalation_path),
+            "is_self_referential": escalation.is_self_referential,
+            "repeat_count": repeat_count + 1,
         }
 
 
