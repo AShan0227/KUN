@@ -14,12 +14,26 @@ L2.4: 工厂 + service 骨架 + 独立 runner (本提交)
 L2.5: Mode A / Mode B / 自嗨检测真实现
 """
 
+from kun.external_supervisor.modes import (
+    DebriefRecord,
+    GateAdvisory,
+    SelfAggrandizementCheck,
+    check_self_aggrandizement,
+    mode_a_gate_review,
+    mode_b_task_debrief,
+)
 from kun.external_supervisor.service import (
     ExternalSupervisorObservation,
     ExternalSupervisorService,
 )
 
 __all__ = [
+    "DebriefRecord",
     "ExternalSupervisorObservation",
     "ExternalSupervisorService",
+    "GateAdvisory",
+    "SelfAggrandizementCheck",
+    "check_self_aggrandizement",
+    "mode_a_gate_review",
+    "mode_b_task_debrief",
 ]

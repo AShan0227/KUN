@@ -122,3 +122,35 @@
 **25 个新单测**（8 provider + 14 service + 3 runner）。832/832 unit tests pass，ruff clean。
 
 **为下一步**：L2.5 把 service 接进主线 —— Mode A（Director gate 前 sync 复核）+ Mode B（task done 后 debrief 写 evidence_ledger）+ 自嗨检测每次必跑。
+
+---
+
+## L2.5 · Mode A + Mode B + 自嗨检测
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/external_supervisor/modes.py`：
+  - `GateAdvisory` (frozen dataclass) · Mode A 输出 (verdict: approve/escalate/block + recommended_action)
+  - `DebriefRecord` (frozen dataclass) · Mode B 输出 (verdict + evidence_quality_score + capability_writeback)
+  - `SelfAggrandizementCheck` (frozen dataclass) · 自嗨检测输出 (is_self_aggrandizing + engineering_signals + llm_verdict)
+- `mode_a_gate_review(service, *, anchor, gate_evidence, …)` → 调 service.analyze_observation(obs_kind="gate_review")，把 ok/concerning/alarming 映射到 approve/escalate/block；保留 LLM 提供的 recommended_action 优先
+- `mode_b_task_debrief(service, *, anchor, task_summary, artifacts, …)` → 先工程化 `_compute_evidence_quality_score(artifacts)` 算 [0,1] 质量分（test_report+0.4 / artifact_link+0.2 / decision+0.1 / kind 多样性 + artifact 数量加成），再 LLM verdict；alarming → writeback.promotion_block_reason
+- `check_self_aggrandizement(service, *, anchor, executor_self_report, evidence_artifacts, always_call_llm=False)`：
+  - 5 条工程化规则（claims_all_done_but_no_test_report / evidence_count_zero / fallback_triggered_but_self_report_clean / rationale_too_short_vs_complexity / unverified_path:*）
+  - 0 signal + always_call_llm=False → 跳过 LLM 调用（省 token）
+  - ≥1 signal 或 always_call_llm=True → LLM 二次复核
+  - 判定 `is_self_aggrandizing` = (engineering_signals ≥ 2) OR (LLM verdict == "alarming")
+- `__init__.py` export 三个 dataclass + 三个 wrapper
+
+**关键决策**：
+- **engineering-first + LLM second**：自嗨检测是高频调用 —— 每个任务结束都跑。工程化规则覆盖 80% 明显作弊（claim done 无 test_report），LLM 只为模糊案例烧 token。0 signal 默认跳过 LLM 是关键省成本路径
+- **单工程化 signal 不足以判自嗨**：一个 signal 在真实场景里噪声大（artifact_link 没 test_report kind 可能是任务类型决定的）。要么 ≥2 个 signal，要么 LLM 明确 alarming。低 noise floor 保证 Gate 不会被噪声卡住
+- **`GateAdvisory.recommended_action` 优先 LLM 提供值**：LLM 给的具体 action（"request_more_evidence"）通常比 mapping 表的默认更精确。默认只在 LLM 没给时兜底
+- **`DebriefRecord.recommended_capability_writeback` 是 dict 不是结构化对象**：L2.8 Gate 要消费它写 `runtime_capabilities` —— dict 让 schema 演化时 Gate 端不需要同步更新。仅约定 keys（supervisor_verdict / evidence_quality_score / promotion_block_reason）
+- **evidence_quality_score 工程化打分**：不调 LLM 也能给 capability 升降级一个量化信号。test_report 权重 0.4 是因为它是最难造假的（要有真测试输出 + 通过/失败计数）。Multi-source（kind diversity）加成防止"只贴 1 个 artifact_link 假装完整"
+- **L2.5 不接 NATS / 不写 evidence_ledger 表**：sync API 让主线直接调即可，async + 落库的部分进 L3 (NATS 订阅 + 异步消费)
+
+**19 个新单测**覆盖：Mode A 三档 verdict 映射 + LLM action 优先 / quality_score 三档 / Mode B writeback 含 quality / alarming 加 promotion_block / 5 条工程化 signal / 0 signal 跳 LLM / 单 signal 不判自嗨 / always_call_llm flag 强制调 LLM / 多 signal + LLM alarming 判定。851/851 unit tests pass，ruff clean。
+
+**为下一步**：L2.6 RCDH 4 级诊断 + diagnostic_records 写入 + narrow_scope ≤5 模块工具。
