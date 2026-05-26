@@ -161,6 +161,22 @@ services:
       - loki
       - jaeger
 
+  # External Supervisor 本地推理引擎 (ADR-023). 默认关闭 — 启动加
+  # --profile external-supervisor 才拉起 (qwen2.5:32b ≈ 20GB).
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["external-supervisor"]
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
 volumes:
   postgres_data:
   redis_data:
@@ -170,3 +186,4 @@ volumes:
   prometheus_data:
   grafana_data:
   loki_data:
+  ollama_data:

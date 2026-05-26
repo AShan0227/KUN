@@ -75,3 +75,50 @@
 **18 个新单测**覆盖：4 条 verdict 规则 / derive_action mapping / step 阈值首次触发 / step 阈值 reset 后再次触发 / time 阈值触发 / idle_tick 只查时间 / emitter 调用 / emitter 异常吞 / off_track triggers_rcdh / 多任务隔离 / reset 清计数 / 非法参数拒绝 / 并发 asyncio.gather 5 路。807/807 unit tests pass，ruff clean。
 
 **为下一步**：L2.4 External Supervisor 独立进程化 — docker-compose 加 service + `LocalLLMProvider`（ollama）让监督走本地模型。
+
+---
+
+## L2.4 · External Supervisor + LocalLLMProvider (3 commit 串行)
+
+**完成**：2026-05-27 / commits 5bbf486 + 6330d6e + (本提交)
+
+### L2.4a (commit 5bbf486) — `LocalLLMProvider`
+
+- 新建 `kun/interface/llm/local_provider.py`：thin adapter over `AsyncOpenAI`，默认指向 ollama (`http://localhost:11434/v1`, `qwen2.5:32b`)
+- `cost = 0` / `supports_tools = False`（多数本地模型 OpenAI-compat tool calling 不稳）/ `tier = "cheap"`
+- 通过构造参数可换 `llama.cpp` / `vLLM` / `TGI` endpoint，timeout 默认 120s
+- 8 个新单测覆盖 defaults / custom endpoint / invoke happy path / stop words / length finish / 异常传播 / health_check 双向
+
+### L2.4b (commit 6330d6e) — External Supervisor module
+
+- 新建 `kun/external_supervisor/`：
+  - `service.py` · `ExternalSupervisorService.analyze_observation(obs_kind, payload, anchor=…)`
+    - 系统 prompt 顶部 pin "═══ EXTERNAL SUPERVISOR ═══" + GoalAnchor + observation
+    - 调本地 LLM 出 JSON `{verdict, rationale, recommended_action}`
+    - JSON-first 解析（含 embedded-in-prose 提取）+ 文本启发式兜底
+    - `_coerce_verdict` 把 critical/warn/pass 等别名归一到 ok / concerning / alarming 三档
+    - `asyncio.Semaphore` 限并发（本地推理慢，不能让 caller queue 炸）
+  - `runner.py` · `python -m kun.external_supervisor` 入口：settings gating + 健康检查 + SIGTERM 优雅退出
+  - `__init__.py` export 顶层 API
+- `kun/core/config.py` 加 6 项 `KUN_EXTERNAL_SUPERVISOR_*` settings（enabled / model_id / base_url / api_key / timeout / max_concurrent）
+- 17 个新单测（14 service + 3 runner）
+
+### L2.4c (本提交) — docker-compose service
+
+- `docker-compose.dev.yml` 加 `ollama` service：
+  - 用 `profiles: ["external-supervisor"]` — 默认不拉起（qwen2.5:32b 镜像 ≈ 20GB）
+  - 启用方式：`docker compose --profile external-supervisor up`
+  - 健康检查 + 持久 `ollama_data` volume
+
+**关键决策**：
+- **三个 sub-commit 串行**：strictly 单 commit ≤ 5 文件 — provider / service / compose 三层物理分离，git history 也分离
+- **`tier="cheap"` 不是 "local" 新档**：避免引入新 ModelTier literal 牵连多处 router 代码。本地模型 cost=0 但能力中档 → cheap 档语义最贴
+- **`supports_tools=False`**：本地模型 tool calling 实测不稳，先关掉避免 silent error；Mode A/B（L2.5）用 prompt + JSON 解析模拟工具调用
+- **JSON-first 解析 + 文本兜底**：本地模型不一定守 JSON 格式 — 启发式 fallback 保证 verdict 永远有值（即使是 "concerning" 默认）
+- **`asyncio.Semaphore(2)` 默认**：本地推理慢（qwen2.5:32b ≈ 5-10s/请求），让 4 个并发 caller queue 就把 supervisor 拖死。L4 多实例时再调
+- **`profiles: ["external-supervisor"]`**：默认 `docker compose up` 不拉 ollama — 没有人本地 dev 都想为 20GB 镜像付出 RAM
+- **`KUN_EXTERNAL_SUPERVISOR_ENABLED=false` 默认**：runner 自检 + 优雅 disabled exit。production 显式开启避免误启
+
+**25 个新单测**（8 provider + 14 service + 3 runner）。832/832 unit tests pass，ruff clean。
+
+**为下一步**：L2.5 把 service 接进主线 —— Mode A（Director gate 前 sync 复核）+ Mode B（task done 后 debrief 写 evidence_ledger）+ 自嗨检测每次必跑。
