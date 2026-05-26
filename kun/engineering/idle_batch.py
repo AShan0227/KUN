@@ -4,7 +4,7 @@
   - health_report             : ✅ 真实 — 读 tasks/outbox/cost 计数器, 给 NUO 用
   - task_replay               : ⚠️  STUB — 只数失败任务, 没回放
   - consistency_test          : ⚠️  STUB — 只数低 reliability 卡片
-  - methodology_distill       : ⚠️  STUB — 只数学习事件
+  - methodology_distill       : ✅ L2.9 真做 — 扫 dev_logs → 输出 novel candidates
   - knowledge_conflict        : ⚠️  STUB — 只数冲突事件
   - ab_decision_roll_up       : ⚠️  STUB — 只数 promotion/rollback
   - route_rule_mining         : ⚠️  STUB — 只数 fallback 事件
@@ -188,41 +188,27 @@ class ConsistencyTestStep(IdleBatchStep):
 
 
 class MethodologyDistillStep(IdleBatchStep):
-    """情节记忆 → 语义方法论 蒸馏 — STUB: only counts learning events."""
+    """情节记忆 → 语义方法论 蒸馏 (ADR-025).
+
+    L2.9 实装: 扫 docs/dev_logs/*.md → 抽"关键决策" bullets → 与已有
+    seeds/methodologies/*.yaml 去重 → 输出 novel candidates.
+    """
 
     step_id = "methodology_distill"
-    stub = True
+    stub = False
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        from sqlalchemy import func, select
+        from kun.engineering.methodology_distill import distill
 
-        from kun.core.db import session_scope
-        from kun.core.orm import EventRow
-
-        async with session_scope(tenant_id=tenant_id) as s:
-            learning_events = (
-                await s.execute(
-                    select(func.count())
-                    .select_from(EventRow)
-                    .where(EventRow.tenant_id == tenant_id)
-                    .where(
-                        EventRow.event_type.in_(
-                            [
-                                "gate_evaluation",
-                                "acceptance",
-                                "promotion",
-                                "rollback",
-                                "proactive.trigger_promoted",
-                            ]
-                        )
-                    )
-                )
-            ).scalar_one()
+        report = distill()
         return {
-            "learning_events": int(learning_events),
-            "distillation_candidates": int(learning_events),
-            "next_action": "distill_methodology_candidates"
-            if learning_events
+            "total_scanned": report.total_scanned,
+            "novel_candidates": len(report.novel_candidates),
+            "duplicates_skipped": report.duplicates_skipped,
+            "candidate_titles": [c.title for c in report.novel_candidates[:10]],
+            "sources_scanned": len(report.sources),
+            "next_action": "review_novel_candidates"
+            if report.novel_candidates
             else "no_distillation_action",
         }
 

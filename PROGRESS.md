@@ -89,7 +89,8 @@
 - [x] **L2.5** External Supervisor Mode A 同步监管 + Mode B 任务尾复盘 + 自嗨检测（commit 92a258e）
 - [x] **L2.6** RCDH 诊断层级 + diagnostic_records 表 + narrow_scope 工具（commit ea8d8fb）
 - [x] **L2.7** Strategist on-demand + 第一次 RSI 实例（LLM 路由优化）（commit a2bd5fd）
-- [x] **L2.8** Gate 准入门禁：读 TestReport + RCDH report + Debrief，写 runtime_capabilities（commit pending）
+- [x] **L2.8** Gate 准入门禁：读 TestReport + RCDH report + Debrief，写 runtime_capabilities（commit 15a537f）
+- [x] **L2.9** methodology_distill step 真实现（commit pending）
 
 ---
 

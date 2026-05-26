@@ -252,3 +252,36 @@
 **20 个新单测**覆盖：approve happy path / R1 缺失 + 低 pass_rate + counts 反推 / R2 fix 缺 diag + 接受 + 缺 id / R3 alarming + low quality + concerning OK + no debrief / R4 self-referential 标人审 / writer 调用 + reject 不调 + writer 异常吞 / enable flip + writer 调用 + writer 异常 raise / promotion_deadline 默认 14 + configurable。908/908 unit tests pass，ruff clean。
 
 **为下一步**：L2.9 methodology_distill step 真实现 —— 扫 dev_logs + seeds 生成 LayeredAsset，让 KUN 自己蒸馏开发过程产出新方法论卡片。
+
+---
+
+## L2.9 · methodology_distill 真实现 (ADR-025)
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/engineering/methodology_distill.py`：
+  - `MethodologyCandidate` (frozen) — topic_slug / title / rationale / source_file / source_section / confidence / evidence_pointers
+  - `DistillReport` (frozen) — total_scanned / novel_candidates / duplicates_skipped / sources
+  - `scan_dev_logs(root)` — 扫 `L*-progress.md` / `L*-retrospective.md` / `phase-*-*.md`；正则识别 `**关键决策**:` / `**Key Decisions:**` / `**Methodology Card Candidates**` / `## Methodology Card Candidates` / `### 关键决策` 五种 header 形式
+  - `_BULLET_RE` 抽 `-` / `*` / 编号列表；`_SECTION_END_RE` 三种边界（`##` 标题 / `---` / 下一个 `**...**:` 段落）
+  - `existing_seed_topics(seeds_root)` 读所有 `*.yaml` 抽 `topic:` 字段，错误的 YAML 仅 log warning 不让蒸馏崩
+  - `_candidate_overlaps_existing` 双层去重：slug 直接命中 OR ≥2 token 共现（基于 underscore split）
+  - `distill(...)` 主入口 — 扫 + 去重 + 报告
+- 改 `kun/engineering/idle_batch.MethodologyDistillStep` 调真 distill：`stub=False` + 输出 `total_scanned / novel_candidates / duplicates_skipped / candidate_titles / sources_scanned / next_action`
+- 改 idle_batch module docstring 把 methodology_distill 从 STUB 标记移到 ✅
+- 实战 smoke：跑 `distill()` 对真 dev_logs → 87 候选 / 73 novel / 14 dup / 4 文件源；3 个已有 seed YAML 解析失败仅 warning（pre-existing YAML 格式问题，蒸馏器 graceful skip）
+
+**关键决策**：
+- **engineering-first 抽取，不调 LLM**：dev_log 里"关键决策"段是高密度信号，正则就够。LLM 在 L3+ 闭环把 candidate 整理成完整 YAML 模板（带 rationale / evidence / applicability / do_not_apply）；L2 阶段只识别 candidates
+- **title 切 `: : — --` 之前部分**：bullet 习惯写成 `title — rationale` 或 `title: rationale`，前半通常是 1-3 词的浓缩 idea，正好作 title
+- **只剥 `**`/`*`/`` ` ``，保留下划线**：标识符 `card_one` 必须留作完整 token。早期 `re.sub(r"[*` _]+")` 把内部下划线也剥了 → `card_one` → `cardone`。Fix 用 `re.sub(r"\*\*|\*|`", "")`
+- **`**...**:` 段落算 section_end**：早期只看 `##` / `---`，结果 `**关键决策**:` body 一直伸到 `**为下一步**:` 把下方 bullets 全吃。加 `**header**:` 作边界后干净
+- **header 兼容 colon 在 `**` 内或外**：`**Key Decisions:**` vs `**Key Decisions**:` 都常见，regex `\*\*Key Decisions[：:]?\*\*[：:]?` 两种都收
+- **dedup 单 token 共现不算重叠**：`foo_anchor_xyz` 和 `anchor_pinning_at_prompt_top` 只有 `anchor` 共现，意思可能完全不同。要 ≥ 2 token 才视为同主题
+- **YAML 解析失败仅 warning，不让 distill 崩**：seed yaml 是社区/历史产物，可能格式不规范，蒸馏器不能因为单个文件挂掉就停整体；漏掉的 dedup 留一个 false-positive novel candidate 比 distill 整体失败可接受多了
+- **idle_batch step 的 stub→真做切换**：用 `stub=False` 显式声明状态变更，下游统计逻辑（counts、status）能正确识别这是真信号而不是占位
+
+**20 个新单测**覆盖：slug normalize 英文 + markdown 剥 + 中文 fallback / 空目录 / 简单 section 抽 2 candidates / `title — rationale` 切分 / 多 section（含 `---`）/ 英文 header / `## Methodology Card Candidates` 形式 / 跳过非决策 bullets / seed loading + 缺目录 + 坏 YAML 容错 / overlap 直接 slug + 双 token + 单 token / end-to-end with dedup / 无 seed dir / 同 candidate 在两文件去重 / IdleBatchStep wrapper non-stub。928/928 unit tests pass，ruff clean。
+
+**为下一步**：L2.10 验收 + L2 retrospective + ≥3 份新 methodology seeds（蒸馏结果实际归档）。
