@@ -93,3 +93,6 @@ frontend/.turbo/
 *.pid
 *.sock
 .kun-local/
+
+# Claude Code local state (loop locks, scheduled tasks)
+.claude/
