@@ -7,6 +7,7 @@
   - escalation.py              · 三级阈值 + 4 级升级路径 (L3.4)
   - pool.py                    · 多实例 Pool 按 audit 维度分流 (L4.2)
   - anomaly_cluster.py         · 异常聚类 → 自创 RSI 请求 (L5.1)
+  - self_created_request.py    · cluster + RCDH 综合 → rich request (L5.4)
 """
 
 from kun.agents.supervisor.anomaly_cluster import (
@@ -31,6 +32,10 @@ from kun.agents.supervisor.plan_review_heartbeat import (
     evaluate_executor_self_report,
 )
 from kun.agents.supervisor.pool import SupervisorPool, SupervisorPoolConfig
+from kun.agents.supervisor.self_created_request import (
+    build_self_created_request,
+    enrich_with_diagnostic,
+)
 from kun.agents.supervisor.service import SupervisorAnomalyState, SupervisorService
 
 __all__ = [
@@ -46,11 +51,13 @@ __all__ = [
     "SupervisorPool",
     "SupervisorPoolConfig",
     "SupervisorService",
+    "build_self_created_request",
     "cluster_anomalies",
     "cluster_to_search_request",
     "compute_severity",
     "decide_escalation",
     "derive_action",
+    "enrich_with_diagnostic",
     "escalation_path_for",
     "evaluate_executor_self_report",
 ]

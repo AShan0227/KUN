@@ -103,3 +103,32 @@
 **18 个新单测**覆盖：classify 7 case (cluster urgent / promotion_expired urgent / promotion_stale high / 3 个 base priority 透传 / missing priority 默认 medium) / is_high_priority_channel 4 case / prioritize empty + urgent 优先 + FIFO + 全 4 tier 顺序 + 缺 created_at 容错 / split_by_tier 桶 + 空桶。1144/1144 unit tests pass，ruff clean。
 
 **为下一步**：L5.4 自创 RSI 请求生成 — cluster + RCDH diagnostic 综合产生 rich strategy_search_request, 给 Strategist 更丰富 evidence 帮它选 candidate。
+
+---
+
+## L5.4 · 自创 RSI 请求生成 (cluster + RCDH 综合)
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/agents/supervisor/self_created_request.py`：`enrich_with_diagnostic(request, diagnostic)` 与 `build_self_created_request(cluster_payload, diagnostic)` 两个 pure 函数
+- `_ACTION_TO_LEVEL_HINT` 映射 RCDH `recommended_action` → Strategist 应选 `target_level`:
+  - `redesign` → 0 (设计层) / `activate` → 1 (激活层) / `module_rsi` → 2 (模块层) / `code_fix` → 3 (代码层)
+- `_ACTION_TO_EXPLORER_HINT` 映射 → 推荐 Explorer mode:
+  - `redesign` → aggressive / `activate` → conservative / `module_rsi` → conservative / `code_fix` → performance
+- enrich 输出字段：`diagnostic_id` / `rcdh_root_cause_level` / `rcdh_recommended_action` / `rcdh_scope_modules` / `target_level_hint` / `explorer_mode_hint`
+- 只追加 `is_root_cause=True` 的 RCDH evidence，带 `_from_rcdh_level` 和 `_from_diagnostic_id` 追溯标签
+- `recommended_action` 缺时, fallback 用 `root_cause_level` 作 `target_level_hint`（不出 `explorer_mode_hint`，由 Strategist 决定）
+- 不 mutate 入参 — 原 request / diagnostic dict 不被修改
+
+**关键决策**：
+- **enrich 是 pure 函数**：不依赖 SupervisorService instance / DB / LLM. 调用方在拿到 cluster + diagnostic 后调一次, 输出新 dict 直接喂 Strategist
+- **`target_level_hint` 字段而非直接改 priority/severity**：Strategist 看到 hint 可以决定要不要 follow（e.g. 已有更精确的 candidate generator 可能忽略 hint）。**不强制结合下游决策**
+- **`explorer_mode_hint` 是 hint 不是 constraint**：与 L4.1 ExplorerPoolConfig 配合 — Strategist 可优先 hint mode, 但 Pool config 仍可决定哪些 mode 启用
+- **`_ACTION_TO_LEVEL_HINT` 字典就近 module-level**：让映射规则可单独 grep 改, 不藏在 function body
+- **只追加 is_root_cause=True 的 evidence**：noise filter — L0/L2/L3 各有 evidence 但只 root_cause 那一层的有意义。如果都追加, Strategist 接到 evidence 一长串大部分无关
+- **不 mutate input dict**：dict(payload) 浅拷贝 + 追加. 让 caller 可同时持有"原 cluster request"（log 用）和"enriched request"（Strategist 喂）
+
+**11 个新单测**覆盖：enrich 没 diagnostic 返 copy / 添 rcdh fields / 4 action 映射 target_level / 3 action 映射 explorer_mode / fallback to root_level / evidence 带 source tag / 非 root_cause level evidence 不追加 / 不 mutate input / build_self_created_request 包装行为 / 保留 cluster member ids。1155/1155 unit tests pass，ruff clean。
+
+**为下一步**：L5.5 End-to-end wiring — 让 SupervisorService.observe 接 RCDH 调用, 自动产 enrich 后的请求 + 用 Priority Channel 排序。
