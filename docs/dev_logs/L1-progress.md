@@ -125,5 +125,47 @@
 
 **为下一步**：L1.4 + L1.5 都是清理性收尾。下一步 L1.6 接 `capability_router` 进 `LLMRouter.decide()` — 这是 L1 中"建了但没接"的最大案例，接进去**立刻产生第一条真闭环**（任务结果 → capability card → 下次路由调整）。
 
+---
+
+## L1.6 · 接 capability_router 进 LLMRouter — 第一条真闭环
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 在 `LLMRouter.invoke()` 加新方法 `_apply_capability_adjustment(decision, request, purpose)`：拿到 `decide()` 输出后，**异步**查 capability_card 历史 → 强信号时微调 tier
+- 在 `decide()` 输出之后、provider lookup 之前调用，使 capability data 真正影响路由决策
+- 加 helper `_upgrade_tier(tier)`：cheap → strong → top → top
+- 加 2 个单测验证闭环：`test_capability_adjustment_upgrades_low_reliability_tier`（强信号触发升级）+ `test_capability_adjustment_keeps_tier_when_signal_weak`（cold start 不动）
+
+**调整算法（保守，只动强信号）**：
+- `sample_size >= 10 + score < 0.4` → 升级一档（cheap → strong → top）
+- `sample_size >= 20 + score > 0.85` → 标 "high confidence"（不动 tier，只记日志）
+- 否则不调整
+
+**保护边界**：
+- `KUN_CAPABILITY_ROUTER_ENABLED=0` env var 一键关闭
+- 只对 `top/strong/cheap` 三档调整，`coding/fallback` 是显式选项不动
+- `risk_level=critical` 已被 `decide()` pin 到 top，不被反向调整
+- capability_router 查询失败 / cold start (sample < 10) → 不调整，保留 `decide()` 默认
+
+**这是 L1 中"建了没接"的最大案例修复**：
+- `capability_router.py` 写了 1 年+，只在 `_select_by_capability` 单纯 tier 内候选选择被调用
+- 没有真正被 `decide()` 用来调整 tier
+- 现在 capability data 影响 tier 决策，**形成"任务执行 → capability_writeback 写卡 → 下次 decide() 读卡 → 调整 tier"完整闭环**
+
+**关键决策**：
+- **不改 `decide()` 改 `invoke()`**：`decide()` 是同步纯函数（design contract），引入 async DB 查询会破坏契约。`invoke()` 已是 async，加调整层无侵入
+- **保守阈值**：sample_size >= 10 + score < 0.4 才动，避免少量样本误升级。这跟 capability_router 内部的 cold-start damping (sample/30 weight) 一致
+- **`_apply_capability_adjustment` 是私有方法**：将来扩展 anti-drift 调整 / RSI 实验 override 等，都接入这个调整层
+
+**踩坑**：
+- 第一次写测试时用 `("default", model, task_type)` 作 cache key — 实际 `_tenant_id_for_capability_routing()` 在 dev 模式返回 `"u-sylvan"` (fallback to `default_tenant_id()` setting)。fix: cache key 用 `"u-sylvan"`
+- 启发式：**测试 capability_router 内部 cache 时，cache key 第一位必须是 `_tenant_id_for_capability_routing()` 实际返回值**（dev 用 "u-sylvan"，env 设了 KUN_TENANT_ID 用 env，否则 "default"）
+
+**验证**：762/762 unit tests pass（新加 2 个），ruff clean。
+
+**意义**：L1 阶段第一条**真闭环**激活。任务跑完写能力卡（已工作）→ 下次同类任务到 router 时，强证据下自动升级 tier。鲲已经开始"学习"——虽然现在只是 router 这一处，是 RSI 闭环的微缩版。
+
+
 
 

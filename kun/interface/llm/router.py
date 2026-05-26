@@ -256,6 +256,11 @@ class LLMRouter:
         tracer = trace.get_tracer("kun.interface.llm.router")
         with tracer.start_as_current_span("kun.router.invoke") as span:
             decision = self.decide(purpose, request.profile, request=request)
+            # L1.6 · capability-aware tier adjustment (ADR-024 闭环关键一环)
+            # 任务跑完 → capability_writeback 写卡 → 下次同类任务到这里 →
+            # 拿历史 reliability → 强信号 (sample ≥ 10, 显著偏离 0.5) 时微调 tier.
+            # 这是 "执行 → 能力卡 → 路由" 真闭环的接通点.
+            decision = await self._apply_capability_adjustment(decision, request, purpose)
             span.set_attribute("kun.purpose", str(purpose))
             span.set_attribute("kun.primary_tier", str(decision.primary_tier))
             span.set_attribute("kun.fallback_tier", str(decision.fallback_tier))
@@ -375,6 +380,99 @@ class LLMRouter:
             span.set_attribute("kun.final_provider", fallback.name)
             span.set_attribute("kun.cost_usd_equivalent", result.cost_usd_equivalent)
             return result
+
+    # ---------- L1.6 · capability-aware tier adjustment ----------
+
+    async def _apply_capability_adjustment(
+        self,
+        decision: RouteDecision,
+        request: LLMRequest,
+        purpose: TaskPurpose,
+    ) -> RouteDecision:
+        """读能力卡历史 → 强信号时微调 tier (ADR-024 闭环接通).
+
+        规则 (保守, 只动强信号):
+          - sample_size >= 10 + score < 0.4  → 升级一档 (cheap→strong, strong→top)
+          - sample_size >= 20 + score > 0.85 → 标 "high confidence" 不动 tier
+          - 否则不调整
+        critical risk 任务永不下调 (已 pin to top); fallback / coding tier 不调整.
+        capability_router 查询失败 / cold start → 不调整.
+        """
+        if os.getenv("KUN_CAPABILITY_ROUTER_ENABLED", "1") == "0":
+            return decision
+        # 只对 top/strong/cheap 链路做调整 — coding/fallback 是显式选项不动
+        if decision.primary_tier not in {"top", "strong", "cheap"}:
+            return decision
+        # critical 任务已被 decide() pin 到 top, 不动
+        if request.profile and request.profile.risk_level == "critical":
+            return decision
+
+        provider = self.providers.get(decision.primary_tier)
+        if provider is None:
+            return decision
+
+        task_type = _task_type_for_request(request, purpose)
+        tenant_id = _tenant_id_for_capability_routing()
+
+        try:
+            score = await get_capability_router().score_for(
+                tenant_id=tenant_id,
+                model_id=provider.model_id,
+                task_type=task_type,
+            )
+        except Exception as e:
+            log.debug("router.capability_adjust_skipped", error=str(e))
+            return decision
+
+        # Cold start: 无数据 → 不动
+        if score.is_cold_start or score.sample_size < 10:
+            return decision
+
+        # 强弱信号:
+        if score.sample_size >= 10 and score.score < 0.4:
+            new_tier = _upgrade_tier(decision.primary_tier)
+            if new_tier != decision.primary_tier and new_tier in self.providers:
+                log.info(
+                    "router.capability_upgrade",
+                    from_tier=decision.primary_tier,
+                    to_tier=new_tier,
+                    task_type=task_type,
+                    model_id=provider.model_id,
+                    score=score.score,
+                    sample_size=score.sample_size,
+                )
+                return RouteDecision(
+                    purpose=decision.purpose,
+                    primary_tier=new_tier,
+                    fallback_tier=decision.fallback_tier,
+                    rationale=(
+                        f"{decision.rationale} | capability_upgrade:"
+                        f"{decision.primary_tier}→{new_tier}"
+                        f"(score={score.score:.2f}, n={score.sample_size})"
+                    ),
+                )
+
+        if score.sample_size >= 20 and score.score > 0.85:
+            log.debug(
+                "router.capability_high_confidence",
+                tier=decision.primary_tier,
+                task_type=task_type,
+                model_id=provider.model_id,
+                score=score.score,
+                sample_size=score.sample_size,
+            )
+
+        return decision
+
+
+def _upgrade_tier(tier: ModelTier) -> ModelTier:
+    """cheap → strong → top → top (top 已封顶不再升)."""
+    chain: dict[ModelTier, ModelTier] = {
+        "cheap": "strong",
+        "strong": "top",
+        "top": "top",
+    }
+    return chain.get(tier, tier)
 
 
 async def _select_by_capability(

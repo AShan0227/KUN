@@ -147,3 +147,113 @@ async def test_fallback_path_records_fallback_tier():
     before_fb = get_tracker().usage("fallback")
     await router.invoke(req, purpose="execution")
     assert get_tracker().usage("fallback") == before_fb + 1
+
+
+# ---------- L1.6 · capability-aware tier adjustment (ADR-024 闭环) ----------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_capability_adjustment_upgrades_low_reliability_tier():
+    """L1.6: capability_card 显示当前 tier 的代表模型 score < 0.4 + sample >= 10
+    → 自动升级 tier (cheap → strong). 这是"执行→能力卡→路由"真闭环."""
+    import time
+
+    from kun.interface.llm.capability_router import (
+        CapabilityScore,
+        get_capability_router,
+        reset_capability_router,
+    )
+
+    reset_capability_router()
+    cap_router = get_capability_router()
+
+    # Pre-populate cache: cheap 档代表模型 在 classification 任务上有差证据
+    cap_router._cache[("u-sylvan", "cheap-model", "classification")] = (
+        time.monotonic() + 1000,  # not expired
+        CapabilityScore(
+            model_id="cheap-model",
+            task_type="classification",
+            reliability=0.3,
+            sample_size=20,
+            score=0.3,
+            is_cold_start=False,
+        ),
+    )
+
+    router = LLMRouter(
+        providers={
+            "top": StubProvider(model_id="top-model", tier="top"),
+            "strong": StubProvider(model_id="strong-model", tier="strong"),
+            "cheap": StubProvider(model_id="cheap-model", tier="cheap"),
+            "fallback": StubProvider(model_id="fb", tier="fallback"),
+        }
+    )
+
+    response = await router.invoke(
+        LLMRequest(
+            messages=[LLMMessage(role="user", content="classify this")],
+            profile=TaskProfile(task_type="classification"),
+        ),
+        purpose="classification",  # → 默认 cheap, 但应被升级到 strong
+    )
+
+    # 升级后用了 strong (strong-model)
+    assert response.tier == "strong", (
+        f"expected upgrade to strong, got {response.tier} ({response.model})"
+    )
+    assert response.model == "strong-model"
+
+    reset_capability_router()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_capability_adjustment_keeps_tier_when_signal_weak():
+    """L1.6: cold start (sample < 10) → 不调整 tier, 保留 decide() 的默认结果."""
+    import time
+
+    from kun.interface.llm.capability_router import (
+        CapabilityScore,
+        get_capability_router,
+        reset_capability_router,
+    )
+
+    reset_capability_router()
+    cap_router = get_capability_router()
+
+    # 弱信号: sample 只有 3, 即使 score 低也不应触发升级
+    cap_router._cache[("u-sylvan", "cheap-model", "classification")] = (
+        time.monotonic() + 1000,
+        CapabilityScore(
+            model_id="cheap-model",
+            task_type="classification",
+            reliability=0.2,
+            sample_size=3,
+            score=0.2,
+            is_cold_start=False,
+        ),
+    )
+
+    router = LLMRouter(
+        providers={
+            "top": StubProvider(model_id="top-model", tier="top"),
+            "strong": StubProvider(model_id="strong-model", tier="strong"),
+            "cheap": StubProvider(model_id="cheap-model", tier="cheap"),
+            "fallback": StubProvider(model_id="fb", tier="fallback"),
+        }
+    )
+
+    response = await router.invoke(
+        LLMRequest(
+            messages=[LLMMessage(role="user", content="quick")],
+            profile=TaskProfile(task_type="classification"),
+        ),
+        purpose="classification",
+    )
+
+    # 信号弱 → 不升级, 保持 cheap
+    assert response.tier == "cheap"
+    assert response.model == "cheap-model"
+
+    reset_capability_router()
