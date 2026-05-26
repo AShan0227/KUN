@@ -100,6 +100,12 @@ NotificationSender = Callable[[dict[str, Any]], Awaitable[None]]
 (ADR-018 §16.3 第 2 个 NotificationLayer caller). 测试用 fake."""
 
 
+DiagnosticRunner = Callable[[str, str, list[dict[str, Any]]], Awaitable[dict[str, Any] | None]]
+"""L5.5: RCDH 诊断 runner 注入 — (symptom, target_module, evidence) → diagnostic dict.
+当 cluster 触发时被调, 输出用 enrich_with_diagnostic 合并到 cluster request.
+测试用 fake; production 接 kun.governance.rcdh.run_diagnostic."""
+
+
 class SupervisorService:
     """Supervisor 常驻 service. 工程化阈值检测 + 写 strategy_search_requests.
 
@@ -117,11 +123,13 @@ class SupervisorService:
         *,
         emitter: SearchRequestEmitter | None = None,
         notification_sender: NotificationSender | None = None,
+        diagnostic_runner: DiagnosticRunner | None = None,
         dedup_ttl_sec: int = DEDUP_TTL_SEC,
     ) -> None:
         self._states: dict[str, SupervisorAnomalyState] = {}
         self._emitter = emitter
         self._notification_sender = notification_sender
+        self._diagnostic_runner = diagnostic_runner
         self._dedup_ttl_sec = dedup_ttl_sec
         self._lock = asyncio.Lock()
 
@@ -187,6 +195,11 @@ class SupervisorService:
             # L5.1: 聚类检查 — 如果窗口内已积累 ≥ 2 个 request, 跑 cluster
             # cluster 触发 → 额外 emit 1 个 "cluster search_request" 给 Strategist
             cluster_requests = self._maybe_cluster(state, triggered)
+            # L5.5: 若注入 diagnostic_runner, enrich cluster requests with RCDH
+            if cluster_requests and self._diagnostic_runner is not None:
+                cluster_requests = await self._enrich_cluster_requests(
+                    cluster_requests
+                )
             triggered.extend(cluster_requests)
 
             # 异步写 (emitter 兜底)
@@ -332,6 +345,40 @@ class SupervisorService:
             ],
             priority="low",
         )
+
+    async def _enrich_cluster_requests(
+        self,
+        cluster_requests: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """L5.5: 对每个 cluster request 跑 RCDH 诊断 + enrich.
+
+        诊断失败时 fallback 到原 cluster request, 不阻塞 emit.
+        """
+        from kun.agents.supervisor.self_created_request import (
+            enrich_with_diagnostic,
+        )
+
+        enriched: list[dict[str, Any]] = []
+        for req in cluster_requests:
+            symptom = (
+                f"{req.get('anomaly_kind', 'cluster')} on "
+                f"{req.get('target_module', 'unknown')}"
+            )
+            target_module = req.get("target_module", "unknown")
+            evidence = req.get("evidence") or []
+            try:
+                diagnostic = await self._diagnostic_runner(  # type: ignore[misc]
+                    symptom, target_module, evidence
+                )
+            except Exception as e:
+                log.warning(
+                    "supervisor.diagnostic_runner_failed",
+                    error=str(e),
+                    request_id=req.get("request_id"),
+                )
+                diagnostic = None
+            enriched.append(enrich_with_diagnostic(req, diagnostic))
+        return enriched
 
     def _maybe_cluster(
         self,

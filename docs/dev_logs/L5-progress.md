@@ -132,3 +132,33 @@
 **11 个新单测**覆盖：enrich 没 diagnostic 返 copy / 添 rcdh fields / 4 action 映射 target_level / 3 action 映射 explorer_mode / fallback to root_level / evidence 带 source tag / 非 root_cause level evidence 不追加 / 不 mutate input / build_self_created_request 包装行为 / 保留 cluster member ids。1155/1155 unit tests pass，ruff clean。
 
 **为下一步**：L5.5 End-to-end wiring — 让 SupervisorService.observe 接 RCDH 调用, 自动产 enrich 后的请求 + 用 Priority Channel 排序。
+
+---
+
+## L5.5 · End-to-end wiring (Supervisor + RCDH + Priority Channel)
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- `SupervisorService` 增 `diagnostic_runner: DiagnosticRunner | None = None` 参数（与 emitter / notification_sender 同样依赖注入模式）
+- `DiagnosticRunner` type: `Callable[[symptom, target_module, evidence], Awaitable[dict | None]]`
+- `_enrich_cluster_requests`：cluster 触发时对每个 cluster request 调 `diagnostic_runner(symptom, target_module, evidence)` → 通过 `enrich_with_diagnostic` 合并到 cluster request
+- 在 `observe()` 流程中 `_maybe_cluster` 输出后调 `_enrich_cluster_requests`（仅当 diagnostic_runner 注入时）
+- diagnostic_runner 异常 → log warning + fallback 到原 cluster request, 不阻塞 emit
+- 5 个新单测 e2e wiring + Priority Channel 集成：
+  - diagnostic_runner 被调 + RCDH 字段进 cluster request
+  - diagnostic_runner 抛异常 → fallback 无 enrich (graceful)
+  - 无 diagnostic_runner → 原 cluster request 不变 (backward-compat)
+  - cluster request 在 Priority Channel 中 classify 为 urgent
+  - prioritize_requests 排序: urgent 严格在 non-urgent 之前
+
+**关键决策**：
+- **diagnostic_runner 默认 None**：不强制 Supervisor 接 RCDH —— 测试环境 / 早期阶段可以纯 cluster 不 enrich
+- **fail-graceful in `_enrich_cluster_requests`**：diagnostic_runner 异常 → 用原 cluster request fallback。RCDH 本身可能 unreliable (新模块 / 数据少 / LLM 抖), 不应让它阻塞主路径
+- **每个 cluster request 独立 diagnose**：批 cluster_requests 中可能有不同 target_module/anomaly_kind, 不能一次 diagnose 应用所有. 逐条调
+- **symptom 由 anomaly_kind + target_module 拼装**：让 RCDH 的 keyword matching 有上下文; 避免空 symptom 走 RCDH 默认 narrow_scope
+- **不在 propose_candidates 也接 RCDH**：Strategist 接到的 request 已经 enriched, 不需要它再调 RCDH（避免重复诊断）
+
+**5 个新单测**覆盖：diagnostic_runner 调 + enrich / diagnostic_runner 异常 fallback / 无 runner backward-compat / cluster urgent classification / prioritize ordering。1160/1160 unit tests pass，ruff clean。
+
+**为下一步**：L5.6 L5 验收 + retrospective + 3 新 methodology seeds.
