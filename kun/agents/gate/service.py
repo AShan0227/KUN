@@ -106,11 +106,22 @@ def _check_debrief(
 
 
 def _check_self_referential(experiment: dict[str, Any] | None) -> tuple[bool, str]:
-    """experiment.requires_human_review=True → 不自动启用."""
+    """L3.5 强化: 两条独立检查 →
+      1. experiment.requires_human_review 字段
+      2. experiment.target_module 命中监督角色前缀 (即使 caller 忘了标 flag)
+
+    任一命中 → 转 awaiting_human_review.
+    """
+    from kun.governance.self_referential import is_self_referential
+
     if experiment is None:
         return True, "no_experiment"
     if experiment.get("requires_human_review"):
         return False, "self_referential_requires_human_review"
+    # L3.5 独立 target_module 检查 — 防 caller 漏标 flag
+    target_module = experiment.get("target_module")
+    if isinstance(target_module, str) and is_self_referential(target_module):
+        return False, f"self_referential_target_module={target_module}"
     return True, "auto_admit_ok"
 
 
@@ -195,15 +206,57 @@ class GateService:
 
         # All engineering rules pass — decide auto-admit vs human review
         if self_referential:
+            # L3.5 强化: 即使 verdict=awaiting_human_review, 也写一条
+            # promotion_state=awaiting_human_review 的 capability row
+            # 给 promotion_queue 跟踪 (人审完成后 caller 可 enable_capability)
+            capability_id = new_id("capability_promo")
+            now = datetime.now(UTC)
+            deadline = now + timedelta(days=self._promotion_deadline_days)
+            row_payload: dict[str, Any] = {
+                "tenant_id": tenant_id,
+                "capability_id": capability_id,
+                "target_module": (experiment or {}).get("target_module", "unknown"),
+                "change_summary": str(
+                    (experiment or {}).get("rationale")
+                    or "self-referential change awaiting human review"
+                ),
+                "enabled": False,
+                "promotion_state": "awaiting_human_review",
+                "promotion_started_at": now,
+                "promotion_deadline": deadline,
+                "rollback_on": (experiment or {}).get("rollback_on", []),
+                "sampling_rate": 0.0,  # 人审前不 sample 任何流量
+                "metadata": {
+                    "experiment_id": (experiment or {}).get("experiment_id"),
+                    "promotion_block_self_referential": True,
+                    "self_referential_reason": next(
+                        (
+                            r
+                            for r in reasons
+                            if "self_referential" in r
+                        ),
+                        "self_referential",
+                    ),
+                },
+            }
             decision = GateDecision(
-                decision_id=new_id("capability_promo"),
+                decision_id=capability_id,
                 verdict="awaiting_human_review",
                 reasons=reasons,
-                capability_id=None,
-                capability_row_payload=None,
+                capability_id=capability_id,
+                capability_row_payload=row_payload,
                 promotion_state="awaiting_human_review",
                 rule_results=rule_results,
             )
+            if self._writer is not None:
+                try:
+                    await self._writer(row_payload)
+                except Exception as e:
+                    log.warning(
+                        "gate.self_referential_write_failed",
+                        error=str(e),
+                        capability_id=capability_id,
+                    )
             log.info(
                 "gate.awaiting_human_review",
                 decision_id=decision.decision_id,
@@ -279,11 +332,38 @@ class GateService:
         *,
         tenant_id: str = "default",
         capability_state_writer: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        human_approval_token: str | None = None,
+        metadata_lookup: Callable[[str], Awaitable[dict[str, Any] | None]] | None = None,
     ) -> dict[str, Any]:
         """capability 晋级 ready → enabled (promotion_queue 走完时调).
 
+        L3.5 强化: 若 capability metadata 标
+        `promotion_block_self_referential=True`, 必须传 human_approval_token
+        才允许 flip enabled=True. 没有 token → raise PermissionError.
+
+        metadata_lookup: 异步查询 capability metadata; 测试用 fake.
+
         返回 update payload (调用方决定怎么落库).
         """
+        # L3.5: 自指 capability 强 gate
+        if metadata_lookup is not None:
+            metadata = await metadata_lookup(capability_id)
+            if metadata and metadata.get("promotion_block_self_referential"):
+                if not human_approval_token:
+                    log.warning(
+                        "gate.enable_self_referential_blocked",
+                        capability_id=capability_id,
+                    )
+                    raise PermissionError(
+                        f"capability {capability_id} is self-referential — "
+                        f"require human_approval_token to enable"
+                    )
+                log.info(
+                    "gate.enable_self_referential_with_human_approval",
+                    capability_id=capability_id,
+                    token_hint=human_approval_token[:8],
+                )
+
         payload = {
             "tenant_id": tenant_id,
             "capability_id": capability_id,

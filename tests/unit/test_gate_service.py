@@ -195,6 +195,8 @@ async def test_admit_no_debrief_allowed() -> None:
 
 @pytest.mark.asyncio
 async def test_admit_self_referential_marked_for_human_review() -> None:
+    """L3.5 强化: 自指 capability 仍写一行 row (promotion_state=awaiting_human_review)
+    + metadata.promotion_block_self_referential=True, 供 promotion_queue 跟踪."""
     svc = GateService()
     exp = _ok_experiment()
     exp["requires_human_review"] = True
@@ -205,8 +207,14 @@ async def test_admit_self_referential_marked_for_human_review() -> None:
     )
     assert decision.verdict == "awaiting_human_review"
     assert decision.promotion_state == "awaiting_human_review"
-    assert decision.capability_row_payload is None
     assert decision.rule_results["R4_self_referential"] is False
+    # L3.5: 写 row 但 enabled=False + promotion_block 标记
+    assert decision.capability_row_payload is not None
+    row = decision.capability_row_payload
+    assert row["enabled"] is False
+    assert row["promotion_state"] == "awaiting_human_review"
+    assert row["sampling_rate"] == 0.0
+    assert row["metadata"]["promotion_block_self_referential"] is True
 
 
 # ---- writer ----

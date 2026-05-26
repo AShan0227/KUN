@@ -118,3 +118,30 @@
 **22 个新单测**覆盖：compute_severity 8 case（priority/repeat/failure_rate 组合 + 强制升级）/ escalation_path_for 4 case / _is_self_referential 拒绝其他 / decide_escalation 4 case / SupervisorService 4 个集成 case（字段透传 / repeat 累加 / strong path 含 gate / failure_rate 升 strong）。983/983 unit tests pass，ruff clean。
 
 **为下一步**：L3.5 自指限制强化 — Strategist 改自己（target_module 命中监督角色）当前是 `requires_human_review=True`，要加：L4 升级时直接写 `promotion_queue.requires_human_review=True` + Gate 强制拒绝 auto-admit。
+
+---
+
+## L3.5 · 自指限制强化
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/governance/self_referential.py` 集中 source of truth：`SELF_REFERENTIAL_PREFIXES` 常量 + `is_self_referential(target_module)` 函数。处理 None / 空字符串容错。前两个调用方（`strategist/service.py` + `supervisor/escalation.py`）保留各自 `_is_self_referential` thin wrapper，body 改为 import + delegate
+- Strategist 自指 candidate 强化：`_emit_and_adjust` 不仅设 `requires_human_review=True` + `status=awaiting_human_review`，**强制 `target_level=0`**（改自己属于设计层决策，不能让人误以为是简单的 module-level fix）。rationale 改为 `[SELF-REFERENTIAL: forced target_level=0 design-level human review]`
+- Gate `_check_self_referential` 双层独立检查：除了 `experiment.requires_human_review` flag 之外，**还独立检查 `experiment.target_module` 是否命中前缀**——防 caller 漏标 flag 时仍被 Gate 抓住
+- Gate `admit` 在 self-referential 通过 R1-R3 时**仍写一行 capability row**（promotion_state=awaiting_human_review / enabled=False / sampling_rate=0.0 / metadata.promotion_block_self_referential=True / metadata.self_referential_reason=...）→ 给 promotion_queue 跟踪人审进度。之前是 `capability_row_payload=None` 直接 reject
+- Gate `enable_capability` 增 `metadata_lookup` + `human_approval_token` 参数：若 capability metadata 含 `promotion_block_self_referential=True` 且没传 token，**直接 `raise PermissionError`**。promote 自指 capability 必须显式 human approval
+- `kun/governance/__init__.py` 导出 `SELF_REFERENTIAL_PREFIXES` + `is_self_referential` 给跨模块使用
+
+**关键决策**：
+- **集中 source of truth 是 L3.5 的核心**：之前 `_SELF_REFERENTIAL_PREFIXES` 在 strategist + escalation 各定义一次，未来再加调用方就有 3 份。governance 模块是合适的归宿——所有 RSI / RCDH / Gate 相关 governance 逻辑都在这里
+- **保留 thin wrapper 而非 grep 替换调用点**：模块内部的 `_is_self_referential` 函数还在，body 改为 delegate。这样 strategist test 直接 import `_is_self_referential` 不破，新 caller 用 governance 模块 import。最小 blast radius
+- **强制 `target_level=0` 是真正的"强化"**：之前自指仅标 flag，但 Strategist 可能仍输出 level=2 candidate。Gate 后续 promotion_queue 看到 level=2 + requires_human_review 容易困惑。统一升 level=0 让所有下游知道这是"重新设计"而不是"模块改一改"
+- **写 row 而非 reject**：`promotion_state="awaiting_human_review"` + sampling=0.0 让 promotion_queue 仍能跟踪——人审 + token 后才走 enable。如果不写 row，所有"待人审"的自指改动就消失在日志里，promotion_queue 看不到，无法管理
+- **`human_approval_token` 不验签只透传到 log**：实际人审 token 验证是更上层（auth service）的责任。Gate 只确保 flow 走过人审环节，token 是 "human in the loop" 的痕迹。L4+ 可以加签名验证
+- **`metadata_lookup` 可选注入**：backward-compat — 老 caller 不传也能用（不做自指 gate）；新 caller 注入实际 ORM query。同 emitter 风格
+- **R4 reason 区分两种命中**：`self_referential_requires_human_review` (flag 标了) vs `self_referential_target_module=X` (caller 漏标但 target 命中) — 让审计知道 caller 是否 follow contract
+
+**13 个新单测**（governance 模块 4 / Strategist 强化 2 / Gate target 检查 + row 写入 2 / enable gate 4 / 集成 1）+ 修 1 个旧 test 适配新行为。996/996 unit tests pass，ruff clean。
+
+**为下一步**：L3.6 ADR-018 半合并补齐 —— ValidationPipeline / NotificationLayer / GuardPolicy / GuardRule 各检查 ≥3 调用方并完成真正合并。
