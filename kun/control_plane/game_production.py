@@ -22,13 +22,13 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from kun.control_plane.capability_execution import CapabilityExecutionPolicy
-from kun.control_plane.huohutu_formal_game_templates import formal_game_ready_files
-from kun.control_plane.huohutu_gameful_templates import gameful_playtest_ready_files
-from kun.control_plane.huohutu_scribble_parity_templates import scribble_parity_ready_files
-from kun.control_plane.huohutu_scribble_spark_templates import scribble_spark_ready_files
 from kun.control_plane.runtime import InMemoryControlPlane, RunnerType, WorkItemResult
-from kun.control_plane.scribble_adventure_templates import scribble_adventure_ready_files
-from kun.control_plane.scribble_visual_templates import visual_product_ready_files
+from kun.control_plane.templates.huohutu_formal_game import formal_game_ready_files
+from kun.control_plane.templates.huohutu_gameful import gameful_playtest_ready_files
+from kun.control_plane.templates.huohutu_scribble_parity import scribble_parity_ready_files
+from kun.control_plane.templates.huohutu_scribble_spark import scribble_spark_ready_files
+from kun.control_plane.templates.scribble_adventure import scribble_adventure_ready_files
+from kun.control_plane.templates.scribble_visual import visual_product_ready_files
 from kun.control_plane.v6 import (
     ArtifactKind,
     ArtifactManifest,

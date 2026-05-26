@@ -7,7 +7,7 @@ uses original names, worlds, UI copy, package identifiers, and delivery docs.
 
 from __future__ import annotations
 
-from kun.control_plane.huohutu_scribble_parity_templates import scribble_parity_ready_files
+from kun.control_plane.templates.huohutu_scribble_parity import scribble_parity_ready_files
 
 
 def scribble_adventure_ready_files() -> dict[str, str]:
