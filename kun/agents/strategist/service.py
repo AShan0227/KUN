@@ -27,6 +27,7 @@ from kun.core.logging import get_logger
 
 if TYPE_CHECKING:
     from kun.agents.strategist.explorer_pool import ExplorerPoolConfig
+    from kun.governance.exploration_penalty import ExplorationPenalty
     from kun.governance.resource_quota import ResourceQuota
 
 log = get_logger("kun.agents.strategist.service")
@@ -599,6 +600,7 @@ class StrategistService:
         capability_history_reader: CapabilityHistoryReader | None = None,
         explorer_pool_config: ExplorerPoolConfig | None = None,
         resource_quota: ResourceQuota | None = None,
+        exploration_penalty: ExplorationPenalty | None = None,
     ) -> None:
         from kun.agents.strategist.explorer_pool import (
             load_explorer_pool_config,
@@ -610,6 +612,7 @@ class StrategistService:
             explorer_pool_config or load_explorer_pool_config()
         )
         self._resource_quota = resource_quota
+        self._exploration_penalty = exploration_penalty
 
     async def propose_candidates(
         self,
@@ -707,6 +710,13 @@ class StrategistService:
                 )
             else:
                 adjusted.append(c)
+
+        # L4.6 Exploration Penalty — 失败 signature 短期内不重复
+        if self._exploration_penalty is not None and adjusted:
+            tenant_id = "default"
+            adjusted = await self._exploration_penalty.filter_candidates(
+                tenant_id=tenant_id, candidates=adjusted
+            )
 
         # L4.5 Resource Quota 检查 — 按 tenant 限流 experiment 总数
         if self._resource_quota is not None and adjusted:

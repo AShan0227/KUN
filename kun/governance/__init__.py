@@ -12,6 +12,11 @@
 这些模块在 L1.2 (拆 orchestrator) + L1.3 (alembic 0011) 阶段获得真实现.
 """
 
+from kun.governance.exploration_penalty import (
+    ExplorationPenalty,
+    PenaltyCheckResult,
+    candidate_signature_key,
+)
 from kun.governance.resource_quota import (
     QuotaCheckResult,
     ResourceQuota,
@@ -23,7 +28,10 @@ from kun.governance.self_referential import (
 
 __all__ = [
     "SELF_REFERENTIAL_PREFIXES",
+    "ExplorationPenalty",
+    "PenaltyCheckResult",
     "QuotaCheckResult",
     "ResourceQuota",
+    "candidate_signature_key",
     "is_self_referential",
 ]
