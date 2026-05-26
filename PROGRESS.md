@@ -58,18 +58,17 @@
 - [ ] KUN-V1.md v2（修订章节 + 退役标记）
 - [ ] PROGRESS.md L0-L6（本文件，本次更新）
 
-### Phase 1 · 工程化（10 改动）
+### Phase 1 · 工程化（10 改动 — 全部完成 ✅）
 
-- [ ] 目录重组：建 `kun/agents/<role>/` × 7 + `kun/governance/` × 5 文件
-- [ ] 拆 `orchestrator.py` (1524 LOC) 到 Director + Executor + Tester
-- [ ] alembic 0011：6 张数据脊柱表 + evidence_ledger 加 3 字段
-- [ ] ConcurrencySafety 真合并：删 `kun/control_plane/concurrency.py` 副本
-- [ ] 删 KnowledgePrecipitation 抽象（0 调用方，ADR-024 替代）
-- [ ] 接 `capability_router` 进 `LLMRouter.decide()`（写了 1 年没用，最大形式化案例）
-- [ ] Director 输出 complexity + priority_profile + GoalAnchor + Input Classification
-- [ ] Long-task mode 探测 + GoalAnchor 顶部 pinning
-- [ ] Anti-sycophancy system prompt 加进 Executor
-- [ ] L1 验收：跑测试 + 验证清单
+- [x] **L1.1** 目录重组：`kun/agents/<role>/` × 7 + `kun/governance/` × 5（commit 80c5c34）
+- [x] **L1.2** 拆 `orchestrator.py` — 5 个 commit A-E 串行迁移（intent / planner / role_router / validation+multi_judge / capability_writeback）
+- [x] **L1.3** alembic 0011：**7 张**数据脊柱表 + ORM Row 类 + RLS + 部分索引（commit d4806c2）
+- [x] **L1.4** ConcurrencySafety 解歧义：`control_plane/concurrency.py` → `work_item_governance.py`（commit cf3fc1f）
+- [x] **L1.5** 删 KnowledgePrecipitation 抽象注释引用（commit cf3fc1f）
+- [x] **L1.6** **接 `capability_router` 进 `LLMRouter.invoke()`** — **第一条真闭环激活**（commit 42f57a5）
+- [x] **L1.7** Director 输出 complexity + priority_profile + estimated_steps + GoalAnchor（commit 39d9333）
+- [x] **L1.8 + L1.9** Long-task mode + GoalAnchor 顶部 pinning + Anti-sycophancy system prompt（commit 25d7d06）
+- [x] **L1.10** L1 验收：768/768 unit tests pass + ruff clean + `L1-retrospective.md`（9 段）+ 4 份新 methodology seeds 蒸馏
 
 ---
 
