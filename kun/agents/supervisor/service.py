@@ -38,6 +38,8 @@ _DEFAULT_DURATION_OUTLIER_RATIO = 3.0  # 任务时长 > 3x 该 task_type 平均
 _DEFAULT_WINDOW_SEC = 60  # 滑动窗口
 _DEFAULT_CONTEXT_OVERSIZED_INPUT_TOKENS = 80_000  # 单次 LLM call input_tokens 阈值
 _DEFAULT_CONTEXT_OVERSIZED_THRESHOLD = 3  # 窗口内超阈值次数 ≥ N → spike (L3.1)
+_DEFAULT_SKILL_MISMATCH_RATE = 0.5  # 同 (task_type, skill_id) 失败率 ≥ 50% 触发 (L3.2)
+_DEFAULT_SKILL_MISMATCH_MIN_SAMPLES = 4  # 至少 N 个样本才信号 (cold-start)
 
 
 @dataclass
@@ -65,6 +67,8 @@ class SupervisorAnomalyState:
     window_sec: int = _DEFAULT_WINDOW_SEC
     context_oversized_input_tokens: int = _DEFAULT_CONTEXT_OVERSIZED_INPUT_TOKENS
     context_oversized_threshold: int = _DEFAULT_CONTEXT_OVERSIZED_THRESHOLD
+    skill_mismatch_rate: float = _DEFAULT_SKILL_MISMATCH_RATE
+    skill_mismatch_min_samples: int = _DEFAULT_SKILL_MISMATCH_MIN_SAMPLES
 
     def _purge_old(self, now: datetime) -> None:
         """滑动窗口 — 丢掉超过 window_sec 的旧事件."""
@@ -147,6 +151,11 @@ class SupervisorService:
 
             elif event_type == "llm.invoke.completed":
                 req = self._check_context_oversized(state, payload)
+                if req:
+                    triggered.append(req)
+
+            elif event_type == "skill.invocation.completed":
+                req = self._check_skill_mismatch(state, payload)
                 if req:
                     triggered.append(req)
 
@@ -309,6 +318,56 @@ class SupervisorService:
                 }
             ],
             priority="medium",
+        )
+
+    def _check_skill_mismatch(
+        self,
+        state: SupervisorAnomalyState,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """L3.2 第三条 RSI 实例: skill 选择启发式.
+
+        同 (task_type, skill_id) 对在窗口内失败率 ≥ skill_mismatch_rate
+        且样本数 ≥ skill_mismatch_min_samples → spike.
+
+        样本不足 → 静默 (conservative_sample_threshold methodology).
+        """
+        task_type = payload.get("task_type")
+        skill_id = payload.get("skill_id")
+        if not task_type or not skill_id:
+            return None
+        # 同 (task_type, skill_id) 的窗口内事件
+        same_pair = [
+            e
+            for e in state.events
+            if e.event_type == "skill.invocation.completed"
+            and e.payload.get("task_type") == task_type
+            and e.payload.get("skill_id") == skill_id
+        ]
+        sample_size = len(same_pair)
+        if sample_size < state.skill_mismatch_min_samples:
+            return None
+        failures = sum(1 for e in same_pair if e.payload.get("outcome") == "failure")
+        failure_rate = failures / sample_size
+        if failure_rate < state.skill_mismatch_rate:
+            return None
+        return self._build_request(
+            state=state,
+            anomaly_kind="skill_mismatch_spike",
+            target_module=f"skill.{skill_id}",
+            evidence=[
+                {
+                    "type": "skill_mismatch_rate",
+                    "task_type": task_type,
+                    "skill_id": skill_id,
+                    "sample_size": sample_size,
+                    "failure_count": failures,
+                    "failure_rate": round(failure_rate, 3),
+                    "window_sec": state.window_sec,
+                    "threshold_rate": state.skill_mismatch_rate,
+                }
+            ],
+            priority="medium" if failure_rate < 0.8 else "high",
         )
 
     def _build_request(

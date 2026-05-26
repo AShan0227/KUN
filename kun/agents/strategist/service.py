@@ -358,12 +358,127 @@ def _candidates_for_context_oversized_spike(
     return candidates
 
 
+def _candidates_for_skill_mismatch_spike(
+    request: dict[str, Any],
+) -> list[StrategyExperiment]:
+    """L3.2 第三条 RSI 实例: skill 选择启发式.
+
+    anomaly_kind=skill_mismatch_spike → 3 个候选 (Explorer Pool):
+      Conservative — alternative skill 替换 (skill_id_swap), canary 30%
+      Aggressive   — task_type split (细分 sub-types), 长期方案
+      Performance  — capability_card 加权 (调小 cold-start damping)
+    """
+    target_module = str(request.get("target_module") or "skill.unknown")
+    evidence = request.get("evidence") or []
+    task_type = "unknown"
+    skill_id = "unknown"
+    failure_rate = 0.0
+    sample_size = 0
+    for ev in evidence:
+        if ev.get("task_type"):
+            task_type = ev["task_type"]
+        if ev.get("skill_id"):
+            skill_id = ev["skill_id"]
+        if ev.get("failure_rate"):
+            failure_rate = float(ev["failure_rate"])
+        if ev.get("sample_size"):
+            sample_size = int(ev["sample_size"])
+
+    candidates: list[StrategyExperiment] = []
+
+    # Conservative — alternative skill 替换
+    candidates.append(
+        StrategyExperiment(
+            experiment_id=new_id("experiment_run"),
+            target_module=target_module,
+            target_level=1,  # activation 层 — 改 skill 路由
+            change_spec={
+                "kind": "skill_id_swap",
+                "task_type": task_type,
+                "old_skill_id": skill_id,
+                "selection_strategy": "next_best_by_capability_card",
+            },
+            rollout_mode="canary",
+            sampling_rate=0.3,
+            success_metric="skill_task_success_rate",
+            acceptance_threshold=1.0 - failure_rate * 0.5,  # 目标至少减半失败
+            rollback_on=[
+                {"metric": "skill_task_success_rate", "operator": "<", "value": 0.6},
+            ],
+            explorer_mode="conservative",
+            rationale=(
+                f"({task_type}, {skill_id}) 失败率 {failure_rate:.0%} "
+                f"(n={sample_size}) → 换 next_best capability_card 推荐."
+            ),
+        )
+    )
+
+    # Aggressive — task_type 拆分
+    candidates.append(
+        StrategyExperiment(
+            experiment_id=new_id("experiment_run"),
+            target_module=target_module,
+            target_level=0,  # 设计层 — task_type 分类是产品决策
+            change_spec={
+                "kind": "task_type_split",
+                "task_type": task_type,
+                "split_rationale": (
+                    "frequent failure suggests task_type is too coarse — split"
+                ),
+                "requires_director_assistance": True,
+            },
+            rollout_mode="shadow",
+            sampling_rate=1.0,
+            success_metric="skill_task_success_rate",
+            acceptance_threshold=0.85,
+            rollback_on=[
+                {"metric": "skill_task_success_rate", "operator": "<", "value": 0.7},
+            ],
+            explorer_mode="aggressive",
+            rationale=(
+                f"({task_type}) 类型可能太粗 → 拆 sub-types 各配 skill. "
+                f"shadow 验证, Director 协助拆分定义."
+            ),
+        )
+    )
+
+    # Performance — capability_card 加权 (调 damping)
+    candidates.append(
+        StrategyExperiment(
+            experiment_id=new_id("experiment_run"),
+            target_module="kun/interface/llm/capability_router",
+            target_level=2,  # 模块层 — 改路由 damping 参数
+            change_spec={
+                "kind": "capability_damping_tweak",
+                "from_damping_denominator": 30,
+                "to_damping_denominator": 15,  # damping 更弱, 让历史信号更快显现
+                "applies_to_skill": skill_id,
+            },
+            rollout_mode="canary",
+            sampling_rate=0.2,
+            success_metric="skill_routing_change_lag_calls",
+            acceptance_threshold=10.0,  # 路由改变需要 ≤ 10 次 calls 显现
+            rollback_on=[
+                {"metric": "skill_task_success_rate", "operator": "<", "value": 0.6},
+            ],
+            explorer_mode="performance",
+            rationale=(
+                f"capability_card cold-start damping (n/30) 太慢, "
+                f"调到 n/15 让 ({skill_id}) 失败信号更快反映到路由."
+            ),
+        )
+    )
+
+    return candidates
+
+
 _CANDIDATE_GENERATORS: dict[
     str, Callable[[dict[str, Any]], list[StrategyExperiment]]
 ] = {
     "llm_fallback_spike": _candidates_for_llm_fallback_spike,
     "task_failure_spike": _candidates_for_task_failure_spike,
     "context_oversized_spike": _candidates_for_context_oversized_spike,
+    "skill_mismatch_spike": _candidates_for_skill_mismatch_spike,
 }
 
 
