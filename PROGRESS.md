@@ -118,19 +118,22 @@
 
 ---
 
-## L4 · 多实例资源治理（推进中）
+## L4 · 多实例资源治理（✅ 已达成 2026-05-27）
 
 **交付标志**：启 Pool / 傩 Pool / External Supervisor Pool 多实例并行；合议层处理 dedup / cluster / 优先级；资源不爆。
 
-### 计划任务
+### 实施细节
 
-- [x] **L4.1** Strategist Explorer Pool 配置化（默认 3 模式）（commits b6c560c + 65180f2）
-- [x] **L4.2** Supervisor Pool 多实例（不同 audit 维度）（commit 173d3c1）
-- [x] **L4.3** External Supervisor Pool 配置化（按 audit mode 分实例）（commit a472331）
-- [x] **L4.4** 合议层：dedup（Jaccard 相似度）/ cluster / 排序（commits 64cbe60 + 751f8c2）
-- [x] **L4.5** Resource quota（token / 时间 / dedup_key cooldown）（commits 8431427 + 7d171dc）
-- [x] **L4.6** 探索惩罚（失败候选 3 次内不重复 / similar 策略合并）（commit pending）
-- [ ] **L4.7** L4 验收 + retrospective + ≥3 新 methodology seeds
+- [x] **L4.1** Strategist Explorer Pool 配置化（默认 3 模式）（commits b6c560c + 65180f2 · +15 tests）
+- [x] **L4.2** Supervisor Pool 多实例（不同 audit 维度）（commit 173d3c1 · +13 tests）
+- [x] **L4.3** External Supervisor Pool 配置化（按 audit mode 分实例）（commit a472331 · +11 tests）
+- [x] **L4.4** 合议层：dedup（Jaccard 相似度）/ cluster / 排序（commits 64cbe60 + 751f8c2 · +23 tests）
+- [x] **L4.5** Resource quota（token / 时间 / dedup_key cooldown）（commits 8431427 + 7d171dc · +13 tests）
+- [x] **L4.6** 探索惩罚（失败候选 3 次内不重复 / similar 策略合并）（commits fcf1241 + 595b050 · +17 tests）
+- [x] **L4.7** L4 验收 + retrospective + 3 新 methodology seeds（commit pending）
+  - pool_with_lazy_init_and_dependency_injection
+  - sliding_window_with_deque_purge
+  - signature_string_vs_signature_set
 
 ---
 

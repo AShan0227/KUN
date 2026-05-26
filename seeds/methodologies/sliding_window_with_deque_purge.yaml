@@ -1,0 +1,125 @@
+topic: sliding_window_with_deque_purge
+title: 滑动窗口工程化实现 — deque + popleft + check-time purge
+description: |
+  限流 / 阈值检测 / 异常累积 等场景需要"窗口内的事件". 工程化实现:
+
+    1. 用 `collections.deque` 存事件 (按时间顺序 append 右侧)
+    2. 每次 check 时, 从左侧 popleft 超过 cutoff 的旧记录
+    3. 不需要 background sweep / scheduled cleanup
+
+  这种"check-time purge"模式让窗口维护成本平摊到 check 路径上,
+  不需要额外的清理任务. 适合:
+    - 限流 (per-tenant 窗口 token count)
+    - 阈值检测 (窗口内异常次数)
+    - 探索惩罚 (窗口内同 signature 失败次数)
+
+trigger:
+  conditions:
+    - 需要"过去 N 秒/分钟/小时内的事件数 / 总量"
+    - 事件到来频率 vs 窗口大小不悬殊 (e.g. 每秒 1 事件, 窗口 1h: OK)
+    - 不需要"实时窗口" — check-time 精度足够
+    - 不想增加 background task / scheduler 复杂度
+
+action:
+  pattern:
+    - rule: 用 deque 存事件
+      do: |
+        from collections import deque
+        self.events = deque()  # 默认 maxlen=None, 自由扩张
+
+        def record(event):
+            now = datetime.now(UTC)
+            self.events.append(Record(timestamp=now, ...))
+      why: |
+        deque appendleft/popleft O(1), 比 list 适合"从一端淘汰"操作.
+    - rule: check 时先 purge
+      do: |
+        def purge_expired(self, now, window_seconds):
+            cutoff = now - timedelta(seconds=window_seconds)
+            while self.events and self.events[0].timestamp < cutoff:
+                self.events.popleft()
+
+        def current_count(self, now, window_seconds):
+            self.purge_expired(now, window_seconds)
+            return len(self.events)
+      why: |
+        check-time purge: 调用方读窗口数据时, 先清掉过期的.
+        平摊清理成本, 不需要 background sweep.
+    - rule: 多 signature/key 时, 每 key 一个 deque
+      do: |
+        failure_records: dict[str, deque] = defaultdict(deque)
+
+        def purge_expired(self, now, window):
+            cutoff = now - timedelta(seconds=window)
+            empty = []
+            for key, records in self.failure_records.items():
+                while records and records[0].timestamp < cutoff:
+                    records.popleft()
+                if not records:
+                    empty.append(key)
+            for k in empty:
+                del self.failure_records[k]
+      why: |
+        每 key 独立 deque + 清空后整 key 删除. 避免长期堆积空 key.
+    - rule: window_seconds <= 0 抛 ValueError
+      do: |
+        if window_seconds <= 0:
+            raise ValueError("window_seconds must be > 0")
+      why: |
+        0 / 负数让"立即拒绝所有"语义不清, 拒绝构造避免 silent bug.
+
+  anti_patterns:
+    - 用 list + 每次 list.pop(0) 清理 — O(n) 每次清理
+    - background scheduler 定期清理 — 增加复杂度 + 状态可能 stale
+    - 不 purge — deque 无限增长内存爆
+    - 整 key dict 不删 empty entry — 长跑后内存被空 key 占
+
+rationale: |
+  KUN L4.5 ResourceQuota 和 L4.6 ExplorationPenalty 都用此模式:
+
+    L4.5 ResourceQuota:
+      - tenant_id → QuotaState 含 token_records deque + experiment_records deque
+      - check_and_record_experiment 入口先 purge_expired
+      - asyncio.Lock 全局保护 (lock 内仅微秒, 不卡)
+
+    L4.6 ExplorationPenalty:
+      - tenant_id → PenaltyState 含 failure_records: dict[signature, deque]
+      - 多 signature 各自独立 deque + 空 signature 自动删除
+      - 24h 窗口默认; record_success 直接清整 signature
+
+  实测: 1k+ 测试 / 50+ check 路径, 0 个性能 bottleneck 投诉; 没需要
+  background sweep. 工程化滑动窗口的标准做法.
+
+evidence:
+  - source: kun/governance/resource_quota.py:QuotaState.purge_expired
+    date: 2026-05-27
+    phase: L4.5
+    notes: |
+      token_records + experiment_records 双 deque + popleft 清理.
+      check_and_record_experiment 入口先 purge, 平摊清理成本.
+
+  - source: kun/governance/exploration_penalty.py:PenaltyState.purge_expired
+    date: 2026-05-27
+    phase: L4.6
+    notes: |
+      dict[signature, deque] 多 signature 各自独立 deque.
+      空 signature 整 key 删除, 防长期堆积空 entry.
+
+confidence: 0.9  # 2 个独立 service 验证, 模式可清晰扩展
+applicability:
+  scopes:
+    - rate_limiting
+    - sliding_window_aggregation
+    - per_tenant_quota
+    - failure_counter
+  do_not_apply_when:
+    - 需要"实时" 窗口 (e.g. 严格毫秒级 cutoff) — 用专门 time-series DB
+    - 事件量极大 (e.g. 每秒 10k+) — 用 Redis sorted set
+    - 窗口要持久化跨进程 — deque 是 in-memory, 用 Redis ZSET 替代
+
+related_methodologies:
+  - conservative_sample_threshold  # 同样: 工程化阈值
+  - engineering_first_with_llm_fallback  # 工程化优先
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

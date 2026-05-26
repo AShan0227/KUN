@@ -1,0 +1,140 @@
+topic: signature_string_vs_signature_set
+title: 候选签名双形态 — string for 精确 lookup, set for Jaccard 模糊匹配
+description: |
+  候选/事件签名两种用途, 各自最优数据结构不同, 应该共存而非二选一:
+
+    1. **signature_set (set[str])**: 用于"模糊相似度"比较
+       - Jaccard / overlap_ratio / cosine 等指标计算
+       - 同批多候选两两比对 (dedup, cluster)
+       - 优势: 相似度可量化, 灵活换 threshold
+
+    2. **signature_string (str)**: 用于"精确 lookup"
+       - 跨时间记忆 (是不是同一个曾失败过的)
+       - dict key 存储 + 直接相等比较
+       - 优势: 精确, 稳定, 可作 dict key, 便于 log/audit
+
+  二者**互补**不冲突. 同 candidate 应该同时支持两种 signature 形态.
+
+trigger:
+  conditions:
+    - 系统需要"候选/事件"两两比较相似度 (dedup, cluster)
+    - 同时需要"跨时间记忆"是否同一个 (失败 retry tracking)
+    - 不希望引入 embedding 依赖 (engineering-first)
+
+action:
+  pattern:
+    - rule: 同 candidate 两个 signature 函数共存
+      do: |
+        # in deliberation.py (Jaccard 用):
+        def _candidate_signature(c) -> set[str]:
+            return {
+                f"target:{c.target_module}",
+                f"kind:{c.kind}",
+                ...
+            }
+
+        # in exploration_penalty.py (lookup 用):
+        def candidate_signature_key(c) -> str:
+            parts = [
+                f"target={c.target_module}",
+                f"kind={c.kind}",
+                ...
+            ]
+            return "|".join(sorted(parts))
+      why: |
+        set 用于 Jaccard / overlap, string 用于精确 dict lookup.
+        两个函数共享同一组字段, 但输出形态不同.
+    - rule: "set 形态 — 字段名 + 值的 token"
+      do: |
+        f"target:{c.target_module}"
+        f"level:{c.target_level}"
+        f"mode:{c.explorer_mode}"
+      why: |
+        每条目独立 token, 让 Jaccard 命中数能算 (a ∩ b / a ∪ b).
+        前缀 "target:" 防 collision (e.g. "tier_upgrade" 字符串
+        在不同字段不该交叉命中).
+    - rule: "string 形态 — sorted + delimiter join"
+      do: |
+        parts = sorted([f"k={v}" for k, v in fields])
+        return "|".join(parts)
+      why: |
+        sorted 保 cross-process 稳定 (dict iteration order 不确定).
+        | 分隔避免值含字段名导致 collision.
+    - rule: "只取 scalar 字段 (string 形态)"
+      do: |
+        extras = sorted(
+            f"{k}={v}"
+            for k, v in spec.items()
+            if not isinstance(v, dict | list)
+        )
+      why: |
+        嵌套结构序列化不稳 (dict order / list 顺序). string signature
+        必须 stable, 跨 run 跨 process 一致. dict/list 字段交给 set 形态.
+    - rule: "限长 (top-N keys)"
+      do: |
+        parts.extend(extras[:5])
+      why: |
+        signature 不应过长 (log 噪音 + lookup 慢). top 5 字段已足
+        够区分主要差异.
+
+  anti_patterns:
+    - "把 dict / list 直接 str() — 顺序不稳, signature drift"
+    - "signature set 加完整 dict literal — 整条字符串无 token 拆分"
+    - "signature string 不 sorted — dict iteration order 让 string 漂移"
+    - "只实现一种 signature 形态 — Jaccard 算不出, 或 lookup 用集合 比较慢"
+    - "signature 含时间戳 / id — 每次都不同, 无法跨时间比较"
+
+rationale: |
+  KUN L4.4 deliberation + L4.6 exploration_penalty 实测两形态共存:
+
+    L4.4: _candidate_signature(c) → set[str]
+      用于 Jaccard 相似度计算; deduplicate 同批合并
+
+    L4.6: candidate_signature_key(c) → str
+      用于 failure_records dict 精确 lookup; 跨时间记忆
+
+  两个函数共享同一组字段 (target/level/kind/mode/rollout), 但输出形态
+  不同 — 不重复定义字段, 不冲突. **同 candidate 两个 signature
+  可以同时存在, 各司其职**.
+
+  embedding-based similarity 留 L5+ 闭环再上 — engineering-first 已经
+  覆盖大多数场景, embedding 额外 cost + 依赖不值.
+
+evidence:
+  - source: kun/agents/strategist/deliberation.py:_candidate_signature
+    date: 2026-05-27
+    phase: L4.4
+    notes: |
+      set[str] 形态, "field:value" 前缀防 collision. 用于 Jaccard 计算.
+
+  - source: kun/governance/exploration_penalty.py:candidate_signature_key
+    date: 2026-05-27
+    phase: L4.6
+    notes: |
+      str 形态, sorted + | join. 只取 scalar 字段保 cross-process stable.
+      top-5 keys 防 signature 过长.
+
+  - source: tests/unit/test_l4_exploration_penalty.py::test_signature_key_*
+    date: 2026-05-27
+    phase: L4.6
+    notes: |
+      4 个 signature 稳定性测试: stable across calls / 不同 kind 区分
+      / 不同 target 区分 / 不 dump 完整 dict literal.
+
+confidence: 0.88  # 2 个 service 验证, 两形态各自独立测试
+applicability:
+  scopes:
+    - candidate_dedup
+    - failure_tracking
+    - cross_time_memory
+    - similarity_matching
+  do_not_apply_when:
+    - 只需要其中一种 lookup (e.g. 只 dedup 不 retry tracking) — 单形态足够
+    - 候选字段全部是嵌套 dict — 难抽 stable scalar, 考虑用 hash(json.dumps(sort_keys=True))
+
+related_methodologies:
+  - engineering_first_with_llm_fallback
+  - frozen_dataclass_agent_io_contract
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27
