@@ -154,3 +154,37 @@
 **19 个新单测**覆盖：Mode A 三档 verdict 映射 + LLM action 优先 / quality_score 三档 / Mode B writeback 含 quality / alarming 加 promotion_block / 5 条工程化 signal / 0 signal 跳 LLM / 单 signal 不判自嗨 / always_call_llm flag 强制调 LLM / 多 signal + LLM alarming 判定。851/851 unit tests pass，ruff clean。
 
 **为下一步**：L2.6 RCDH 4 级诊断 + diagnostic_records 写入 + narrow_scope ≤5 模块工具。
+
+---
+
+## L2.6 · RCDH 4 级诊断 + narrow_scope 工程化实装
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 实装 `kun/governance/diagnosis_scope.narrow_scope(symptom, evidence)` —— 之前是骨架：
+  - 三层优先级 (evidence 显式 module × 10 / symptom 中 `kun/foo/bar` 路径 × 5 / 已知模块根关键词 × 1) + `Counter.most_common(5)` 自动截断
+  - 28 个已知 KUN 模块根（director / executor / supervisor / strategist / external_supervisor / router / anchor / input_classifier / rcdh / plan_review / orchestrator / outbox 等）
+  - `_PATH_RE` + `_DOTTED_RE` 分别匹配 `kun/foo/bar` 与 `kun.foo.bar` 形式，统一归一化到斜杠路径
+- 实装 `kun/governance/rcdh.run_diagnostic(...)` —— 之前 stub：
+  - 自动调 narrow_scope 圈定模块（caller 未提供时）
+  - 4 个独立 `_check_level_N_*` 函数 engineering-first（无 LLM）：
+    - L0: `_L0_DESIGN_KEYWORDS` 9 个 + cross_module_impact (`≥3` 不同模块出现在 evidence)
+    - L1: `_L1_ACTIVATION_KEYWORDS` 10 个 + `capability_state` 字典查询 (传入时检查 evidence 提到的 capability 是否 disabled)
+    - L2: `1-3` 个 scope_modules → `narrow_scope_module_focus`；同一 module 在 evidence 重复 ≥2 → `module_repeat_in_evidence`
+    - L3: stack trace regex (`Traceback|File "..."|line ...`) + evidence kind=stack_trace + file+line 字段
+  - 所有 4 级独立跑 → 留全 evidence，再按 0→3 取第一个 `is_root_cause=True` 为 `root_cause_level`
+  - 强制升级：`repeat_history_count >= REPEAT_FORCE_ESCALATION_THRESHOLD (3)` 且 root_cause 落 L2/L3 → 强制改 L0 + recommended_action=redesign + 追加 `force_escalation` evidence
+- `recommended_action` 自动映射：L0→redesign / L1→activate / L2→module_rsi / L3→code_fix
+
+**关键决策**：
+- **engineering-first L2 范围, LLM 兜底放 L3+**：4 级 keyword + 工程化规则覆盖明显模式（stack trace / module 重复 / 跨模块影响）；模糊案例进 L3 闭环交给 LLM Diagnostician 升级版做
+- **`re.search(pattern, text)` 加 `\b` 强制 word boundary**：第一版用 `if kw in text` 子串匹配，结果 "module-specific bug" 命中 "spec"（L0 关键词），L0 误判 → L2 永远跑不到。修复用 `\b`：词边界精确匹配
+- **L0 keywords 不含原子 "spec"**：常规英文很容易撞（specific/specification/specs）。只保留 "specification"（精确）+ "design decision" 这类多词短语
+- **`narrow_scope` 权重 evidence > path > keyword**：evidence 中的 module 字段是上游模块自报，最可靠；symptom 中嵌入的 `kun/foo` 路径是 stack trace 通常很准；关键词命中（裸 token "executor"）噪声最大。权重 10/5/1 体现可靠度
+- **`narrow_scope_module_focus` 只在 1-3 个模块时触发**：4-5 个模块虽未超上限，但说明问题分散 → 不算 module-level root cause，让 L0 cross_module_impact 抓
+- **强制升级不降级 L0/L1**：repeat ≥ 3 时只把 L2/L3 升到 L0；如果已经是 L1（feature flag disabled），保持 L1 — 反复出现的激活问题不需要重新设计
+
+**23 个新单测**覆盖：narrow_scope 7 种路径 / L0 keyword + cross-module / L1 keyword + capability_state / L2 single + repeat / L3 stack trace + file+line / 强制升级 3 种边界 / scope_modules 上限 / 自动 narrow / 无信号兜底 / LevelCheckResult 默认。874/874 unit tests pass，ruff clean。
+
+**为下一步**：L2.7 第一条 RSI 实例 —— Strategist on-demand 用 LLM router 优化为例：异常 → Strategist 提候选 → Executor 跑实验 → Tester 评估 → Gate 启用 → 下次任务用新路由。
