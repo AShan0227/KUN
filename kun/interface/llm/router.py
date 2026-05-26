@@ -553,6 +553,7 @@ def get_router() -> LLMRouter:
 
     cli_disabled = os.getenv("KUN_DISABLE_CLI_OAUTH") == "1"
     codex_disabled = os.getenv("KUN_DISABLE_CODEX_CLI") == "1"
+    codex_only = os.getenv("KUN_CODEX_ONLY") == "1"
     has_claude_cli = ClaudeCodeProvider.available() and not cli_disabled
     # Prefer MCP (works with ChatGPT accounts via gpt-5.3-codex-spark);
     # fall back to exec CLI only when the user has an OpenAI API key account.
@@ -562,6 +563,23 @@ def get_router() -> LLMRouter:
     has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY"))
     has_openai = bool(os.getenv("OPENAI_API_KEY"))
     has_minimax = bool(os.getenv("MINIMAX_API_KEY"))
+
+    # ---- KUN_CODEX_ONLY: pin every tier to a single Codex MCP instance ----
+    if codex_only:
+        if not has_codex_mcp:
+            raise RuntimeError(
+                "KUN_CODEX_ONLY=1 but codex MCP unavailable "
+                "(codex CLI missing, not logged in, or KUN_DISABLE_CODEX_CLI=1)"
+            )
+        log.info(
+            "router.codex_only",
+            hint="single Codex MCP provider for all tiers (gpt-5.5)",
+        )
+        codex_provider = CodexMcpProvider(tier="coding")
+        for tier_name in ("top", "strong", "cheap", "coding", "fallback"):
+            providers[cast_tier(tier_name)] = codex_provider
+        _router = LLMRouter(providers)
+        return _router
 
     # ---- top / strong / cheap ----
     if has_claude_cli:

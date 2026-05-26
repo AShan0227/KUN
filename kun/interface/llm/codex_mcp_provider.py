@@ -265,6 +265,7 @@ class CodexMcpProvider(LLMProvider):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env={**os.environ, "NO_COLOR": "1"},
+                cwd=self._cwd,
                 limit=self._stream_limit,
             )
             self._reader_task = asyncio.create_task(self._read_loop())
