@@ -220,3 +220,35 @@
 **14 个新单测**覆盖：自指 4 种命名形式 + 拒绝其他模块 / llm_fallback 三 mode / fallback_provider 缺失跳 aggressive / acceptance + rollback 强制配齐 / task_failure 单 candidate / 自指标 human review / 非自指不标 / unknown kind 空 list / missing kind 空 list / emitter 调用 / emitter 异常吞 / to_row_payload 形状 / experiment_as_dict 转换。888/888 unit tests pass，ruff clean。
 
 **为下一步**：L2.8 Gate 准入门禁 —— 读 TestReport + DiagnosticRecord + DebriefRecord，决定是否把 experiment 写进 `runtime_capabilities` 让下次任务真用上。
+
+---
+
+## L2.8 · Gate 准入门禁 + runtime_capabilities 写入
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/agents/gate/service.py`：
+  - `GateService.admit(experiment, *, test_report, diagnostic_record=None, debrief=None, is_fix=False, tenant_id="default")`
+  - 4 条工程化规则独立检查：
+    - **R1** test_report.pass_rate ≥ `min_pass_rate` (默认 0.9)；缺 test_report 直接拒；可从 passed_count/total_count 反推 pass_rate
+    - **R2** is_fix=True 必须带 `diagnostic_record.diagnostic_id`（ADR-021 拒绝裸修）
+    - **R3** debrief.verdict ≠ "alarming"；evidence_quality_score ≥ `min_evidence_quality` (默认 0.5)
+    - **R4** experiment.requires_human_review=True → 不自动启用，转 `awaiting_human_review`（不当 reject）
+  - 所有规则通过 → 准备 `RuntimeCapability` row payload：enabled=False / promotion_state="merged" / 14 天 deadline / 把 experiment.rollback_on 和 sampling_rate 透传 / metadata 携带 experiment_id / explorer_mode / test_pass_rate / debrief_verdict / evidence_quality_score / diagnostic_id 全套证据
+  - `capability_writer` 异步注入；写库失败仅 log（不打挂主路径）
+- `GateService.enable_capability(capability_id, ...)`：promotion_queue 走完后调，flip enabled=True + state="enabled"。`capability_state_writer` 失败时 raise（与 admit 不同——这里写库失败一定要 caller 知道）
+- `GateDecision` frozen dataclass：decision_id / verdict / reasons / capability_id / capability_row_payload / promotion_state / rule_results dict
+- `__init__.py` export `GateService` / `GateDecision` / `CapabilityWriter` / `decision_as_dict`
+
+**关键决策**：
+- **4 条独立 rule_results 而不是单一 bool**：调用方可以单独审视哪条命中，方便后续 LLM Gate（L3+）做差异化兜底。`rule_results` 字典出现在 GateDecision，让审计直接看每条 pass/fail
+- **R4 self-referential 不是 reject 而是 awaiting_human_review**：自指改动可能本身就是合理的（比如 Strategist 学到自己路由有 bug），不应直接拒，而是抬人手。reject + awaiting_human_review 两种不同 verdict 让 promotion_queue 知道这条不进自动晋级流
+- **`enabled=False` + `promotion_state="merged"` 是新生 capability 的默认**：Gate 只签字"合并"，但实际让 capability_router 用上要等 promotion_queue 走完 replay → shadow → canary → ready 4 阶段（promotion_queue 是后续任务）
+- **`debrief.verdict == "concerning"` 不算 reject**：concerning 是"建议关注"，alarming 才是否决权。R3 设计了三档区分
+- **`capability_writer` 失败吞掉 vs `capability_state_writer` 失败 raise**：admit 写新 capability 失败可重试（capability 还没生效）；enable_capability 失败必须 caller 知道（promotion_queue 状态机会卡住）。两种失败模式区别对待
+- **`promotion_deadline` 14 天默认**：来自 ADR-024 与已存在的 conservative_sample_threshold methodology — capability 需要足够采样窗口（replay + shadow + canary）才能拿到统计显著信号
+
+**20 个新单测**覆盖：approve happy path / R1 缺失 + 低 pass_rate + counts 反推 / R2 fix 缺 diag + 接受 + 缺 id / R3 alarming + low quality + concerning OK + no debrief / R4 self-referential 标人审 / writer 调用 + reject 不调 + writer 异常吞 / enable flip + writer 调用 + writer 异常 raise / promotion_deadline 默认 14 + configurable。908/908 unit tests pass，ruff clean。
+
+**为下一步**：L2.9 methodology_distill step 真实现 —— 扫 dev_logs + seeds 生成 LayeredAsset，让 KUN 自己蒸馏开发过程产出新方法论卡片。
