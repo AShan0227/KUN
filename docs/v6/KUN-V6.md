@@ -170,6 +170,33 @@ KUN 共享同一个 Control Plane，但必须把“执行用户任务”和“�
 
 命名、文档和测试必须避免混用语义。推荐使用 `daemon refreshes shared work queue`、`daemon stop request can be cleared`、`game production write phases require workspace boundary` 等基础设施/任务执行口径。只有真正测试 Qi/Nuo/capability governance 时，才允许使用 KUN self-improvement 或 self-iteration 命名。
 
+### 5.2 工程化自我进化闭环
+
+KUN 采用 RSI-inspired engineering loop，而不是无边界递归自我改写。人类仍定义目标、安全边界和最终授权；KUN 可以自动审计自身、提出候选改进、在沙箱实现、复测、生成晋级证据。
+
+闭环职责：
+
+- Nuo 定期或事件触发地审计 KUN 自身：代码功能、runner 消费证据、历史任务评分、重复失败、干净复测缺失、能力晋级边界和协同效率。
+- Qi 对 Nuo gap 做多策略搜索：每个重要 gap 至少给出多个候选方案，比较质量、风险、成本和回滚复杂度，选择候选路径。
+- Mission Director 判断这些候选是否符合用户目标和系统边界，避免把机械门禁通过误判成真实完成。
+- KUN runner 只能在 `self_improvement` / governance 路径里实现候选，并必须绑定 sandbox、resource lock、rollback、测试和 replay 证据。
+- capability profile 默认仍保持 `runtime_enabled=false`，直到 replay、holdout、shadow、canary、rollback 和 production promotion gate 全部通过。
+
+标准流：
+
+```text
+Nuo self-audit
+→ self_improvement gap report
+→ Qi multi-strategy candidates
+→ selected replay-stage capability candidate
+→ KUN sandbox implementation
+→ tests / historical replay / dogfood / clean retest
+→ promotion gate
+→ governance-approved runtime profile
+```
+
+用户任务中发现的问题只能进入 learning signal 或 Nuo/Qi follow-up；真正改变 KUN 默认能力、runner 行为或生产配置，必须从这条自我改进闭环晋级。
+
 ## 6. 一级子系统
 
 KUN 由六个一级子系统构成。通信、上下文、权限、评估、预算、压缩、审计、恢复是全系统协议，不再拆成重复子系统。

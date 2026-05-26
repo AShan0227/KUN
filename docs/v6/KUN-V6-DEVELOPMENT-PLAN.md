@@ -113,6 +113,8 @@
 - Nuo clean retest 必须参与状态协调：权限、写入、workspace、wrapper 或环境阻断被复测为已清除时，Control Plane 自动关闭对应人工阻断票据并恢复任务队列；复测失败才保持 waiting_human / waiting_external / repairing。
 - Qi 策略优化必须从单一路径修复升级为多策略搜索：对高价值或长期任务，自动生成候选路径、小规模验证、比较结果质量/风险/成本，再选最优路径推进；失败候选进入治理或淘汰。
 - Qi 遇到产品缺口、用户否定、任务理解不足、质量门禁失败或反复返工时，必须先创建 Qi-owned 的 strategy replay / shadow rerun / process audit 工作项，复跑同一任务切片并比较旧策略与新策略。复盘输出只能进入 `self_improvement` 和 replay 候选证据；KUN 执行用户任务的路径只能消费“计划变更/验收标准/测试要求”，不得直接启用新 runtime 能力。
+- 新增工程化自我进化闭环：daemon 在发现能力消费缺证、Nuo recovery 未闭环、生产能力晋级边界异常、重复失败、机械返工或交付验收误判时，必须创建 Nuo self-improvement audit work item；Nuo 产出 gap report 后，Qi 必须生成多策略候选，胜出方案只能进入 replay-stage capability candidate 和 KUN-owned sandbox implementation work item。
+- Nuo self-improvement audit 不得直接修改生产能力；Qi strategy search 不得直接启用 runtime profile；KUN implementation 必须经过测试、历史 replay、dogfood、clean retest、rollback plan 和 promotion gate，才能进入 production 默认能力。
 - 最终产品类任务必须有真实用户体感门禁。KUN 自评分、机制门禁、残差审计、自动外部门禁或 checklist 通过不能直接触发最终交付；必须验证交互、视觉、体验、长时间试玩、失败反馈、目标用户体感和交付包完整性。
 - 任务模板必须强隔离：任务专用模板只能由执行合同显式选择，不能作为 runner 默认值。新任务缺少 `production_mode`、模板 profile 或等价声明时，runner 必须阻断并要求方案补齐，防止历史任务特征污染新任务。可复用经验必须沉淀为 KUN-native 能力、协议、skill、runner 或门禁，不得保留原任务角色、文案、UI、行业假设和工作路径。
 

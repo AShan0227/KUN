@@ -57,6 +57,11 @@ from kun.control_plane.runtime_observation import (
     RuntimeObservationReport,
     build_runtime_observation_report,
 )
+from kun.control_plane.self_improvement import (
+    SELF_IMPROVEMENT_AUDIT_SUPPORT,
+    build_self_improvement_audit_work_item,
+    self_improvement_audit_signature,
+)
 from kun.control_plane.supervisor import MinimalSupervisor, SupervisorFinding
 from kun.control_plane.v6 import (
     ArtifactRecord,
@@ -528,6 +533,11 @@ class ControlPlaneDaemon:
                 report=report,
             )
             self._ensure_mission_director_review(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._ensure_self_improvement_audit(
                 mission_id=mission_id,
                 observed_at=observed_at,
                 report=report,
@@ -2290,6 +2300,111 @@ class ControlPlaneDaemon:
             and gate.task_plan_version == mission.current_plan_version
             and gate.created_by == MISSION_DIRECTOR_OWNER
             for gate in self.control_plane.gate_evaluations.values()
+        )
+
+    def _ensure_self_improvement_audit(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        """Queue a governed Nuo self-audit when task evidence exposes KUN gaps."""
+
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None:
+            return
+        nuo_runner = self.runners_by_owner.get("nuo")
+        if nuo_runner is None:
+            return
+        if not self._mission_has_self_improvement_audit_signal(mission):
+            return
+        signature = self_improvement_audit_signature(self.control_plane, mission_id=mission_id)
+        work_item = build_self_improvement_audit_work_item(
+            mission=mission,
+            signature=signature,
+        )
+        can_run = getattr(nuo_runner, "can_run", None)
+        if callable(can_run) and not can_run(work_item):
+            return
+        if self._self_improvement_audit_already_seen(work_item):
+            return
+        self.control_plane.work_items[work_item.work_item_id] = work_item
+        self._persist_work_item(work_item)
+        report.created_work_item_ids.append(work_item.work_item_id)
+        self._transition_to_queued(mission_id, subject_ref=work_item.work_item_id)
+        artifact = ArtifactRecord(
+            artifact_id=f"artifact-self-improvement-audit-queued-{_slug(mission_id)}-{signature}",
+            kind="decision",
+            path_or_uri=(
+                f"control-plane://daemon/{self.daemon_id}/self-improvement-audit/"
+                f"{mission_id}/{signature}"
+            ),
+            content_hash=_hash_payload(
+                {
+                    "mission_id": mission_id,
+                    "signature": signature,
+                    "work_item_id": work_item.work_item_id,
+                    "observed_at": observed_at.isoformat(),
+                }
+            ),
+            created_by=self.daemon_id,
+            mission_id=mission_id,
+            work_item_id=work_item.work_item_id,
+            supports=[
+                "self_improvement_audit_queued",
+                SELF_IMPROVEMENT_AUDIT_SUPPORT,
+                f"self_improvement_audit_signature:{signature}",
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        self._upsert_artifact(artifact)
+
+    def _mission_has_self_improvement_audit_signal(self, mission: Mission) -> bool:
+        mission_items = [
+            item
+            for item in self.control_plane.work_items.values()
+            if item.mission_id == mission.mission_id
+        ]
+        if any(
+            item.required_capability_refs and item.status in {"done", "partial"}
+            for item in mission_items
+        ):
+            return True
+        if any(
+            item.owner in {"qi", "nuo", MISSION_DIRECTOR_OWNER}
+            and item.status in {"blocked", "failed", "partial"}
+            for item in mission_items
+        ):
+            return True
+        if mission.status in {"delivering", "awaiting_acceptance", "blocked", "repairing"}:
+            return True
+        if mission.task_type == "self_improvement" and any(
+            item.status in {"failed", "blocked", "partial"} for item in mission_items
+        ):
+            return True
+        return any(
+            profile.runtime_enabled
+            and (
+                profile.promotion_stage != "production"
+                or not profile.evidence_refs
+                or not profile.rollback_plan
+            )
+            for profile in self.control_plane.capability_profiles.values()
+        )
+
+    def _self_improvement_audit_already_seen(self, work_item: WorkItem) -> bool:
+        if any(
+            item.idempotency_key == work_item.idempotency_key
+            and item.status in {"queued", "running", "retrying", "done", "partial"}
+            for item in self.control_plane.work_items.values()
+        ):
+            return True
+        return any(
+            artifact.work_item_id == work_item.work_item_id
+            and SELF_IMPROVEMENT_AUDIT_SUPPORT in artifact.supports
+            for artifact in self.control_plane.artifacts.values()
         )
 
     def _resolve_capability_duplicates(

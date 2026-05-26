@@ -73,6 +73,10 @@ from kun.control_plane.runtime_followups import (
     QiRuntimeGovernanceRunner,
 )
 from kun.control_plane.runtime_observation import build_runtime_observation_report
+from kun.control_plane.self_improvement import (
+    NuoSelfImprovementAuditRunner,
+    QiSelfImprovementStrategyRunner,
+)
 from kun.control_plane.v6 import (
     ArtifactManifest,
     ArtifactRecord,
@@ -1948,11 +1952,17 @@ def _default_owner_runners(control_plane: InMemoryControlPlane) -> dict[str, obj
         "kun": KunRuntimeTaskRunner(control_plane=control_plane, executor=_executor),
         "qi": ChainedControlPlaneRunner(
             runner_identity="feature-activation-qi-router",
-            runners=[QiRuntimeGovernanceRunner(control_plane=control_plane)],
+            runners=[
+                QiSelfImprovementStrategyRunner(control_plane=control_plane),
+                QiRuntimeGovernanceRunner(control_plane=control_plane),
+            ],
         ),
         "nuo": ChainedControlPlaneRunner(
             runner_identity="feature-activation-nuo-router",
-            runners=[NuoRuntimeRepairRunner(control_plane=control_plane)],
+            runners=[
+                NuoSelfImprovementAuditRunner(control_plane=control_plane),
+                NuoRuntimeRepairRunner(control_plane=control_plane),
+            ],
         ),
     }
 

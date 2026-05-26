@@ -1674,6 +1674,10 @@ def control_plane_daemon_run(
         NuoRuntimeRepairRunner,
         QiRuntimeGovernanceRunner,
     )
+    from kun.control_plane.self_improvement import (
+        NuoSelfImprovementAuditRunner,
+        QiSelfImprovementStrategyRunner,
+    )
 
     store_path = _resolve_cli_local_state_path(store_path)
     state_path = _resolve_cli_local_state_path(state_path)
@@ -1727,13 +1731,20 @@ def control_plane_daemon_run(
                 command_timeout_sec=frontier50_live_command_timeout_sec,
             )
         )
-    qi_runners.append(QiRuntimeGovernanceRunner(control_plane=control_plane))
+    qi_runners.extend(
+        [
+            QiSelfImprovementStrategyRunner(control_plane=control_plane),
+            QiRuntimeGovernanceRunner(control_plane=control_plane),
+        ]
+    )
     nuo_runners = [
         productization_runner,
+        NuoSelfImprovementAuditRunner(control_plane=control_plane),
         NuoRuntimeRepairRunner(control_plane=control_plane),
     ]
     control_plane_runners = [
         productization_runner,
+        NuoSelfImprovementAuditRunner(control_plane=control_plane),
         NuoRuntimeRepairRunner(control_plane=control_plane),
     ]
     productization_owners = {
