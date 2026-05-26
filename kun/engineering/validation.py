@@ -325,13 +325,22 @@ class ValidationPipeline:
 
     @staticmethod
     def aggregate(results: list[ValidationResult]) -> ValidationResult | None:
-        """Aggregate multiple validator outputs — 'all_pass' policy by default."""
+        """Aggregate multiple validator outputs — 'all_pass' policy by default.
+
+        Returns None on empty list — caller must distinguish "no validators
+        configured" from "all validators failed to run" (which should be a hard
+        infrastructure error, not a silent pass).
+        """
         if not results:
             return None
         all_pass = all(r.pass_ for r in results)
         avg = sum(r.score.value for r in results) / len(results)
+        kinds = [r.validator_kind for r in results]
         return ValidationResult(
-            validator_kind=results[0].validator_kind,
+            # Use "ensemble" when more than one validator participated, so
+            # downstream code that switches on validator_kind doesn't think a
+            # tier-3 debate result was actually a single multi-judge run.
+            validator_kind=kinds[0] if len(set(kinds)) == 1 else "ensemble",
             pass_=all_pass,
             score=ScoreDescriptor(
                 kind="rubric",
@@ -340,5 +349,8 @@ class ValidationPipeline:
                 weights={f"v_{i}": 1.0 / len(results) for i in range(len(results))},
             ),
             reason="all_pass" if all_pass else "at_least_one_failed",
-            details={"validators": [r.model_dump() for r in results]},
+            details={
+                "validators": [r.model_dump() for r in results],
+                "validator_kinds": kinds,
+            },
         )

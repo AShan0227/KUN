@@ -951,6 +951,36 @@ class Orchestrator:
                                     "reason": aggregated.reason,
                                 },
                             )
+                            # Push a side-channel alert so the user sees this in
+                            # NUO — answer still returned (status="done") but
+                            # marked as unverified. Best-effort: notification
+                            # failure must not break the task pipeline.
+                            try:
+                                from kun.datamodel.notification import Notification
+                                from kun.engineering.notifications import (
+                                    push as push_notification,
+                                )
+
+                                await push_notification(
+                                    Notification(
+                                        tenant_id=tenant.tenant_id,
+                                        kind="alert",
+                                        severity="medium",
+                                        channel="side",
+                                        title="任务通过但未通过验证",
+                                        body=(
+                                            f"validation tier={tier} score={validation_score:.2f} "
+                                            f"reason={aggregated.reason}"
+                                        ),
+                                        task_ref=task_ref.meta.task_id,
+                                    )
+                                )
+                            except Exception as e:
+                                log.warning(
+                                    "validation.notification_failed",
+                                    error=str(e),
+                                    task_id=task_ref.meta.task_id,
+                                )
                         else:
                             yield OrchestratorEvent(
                                 kind="insight",
@@ -962,7 +992,17 @@ class Orchestrator:
                                 },
                             )
                 except Exception as e:
-                    log.warning("validation.failed", error=str(e))
+                    # Validation infrastructure failure — don't silently treat
+                    # as pass. Flip the outcome to "partial" so capability
+                    # writeback sees something happened, and log at ERROR.
+                    log.error(
+                        "validation.infrastructure_failure",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        task_id=task_ref.meta.task_id,
+                        tier=tier,
+                    )
+                    validation_outcome = "partial"
 
         # 7.5 Capability card writeback (ADR-018 §16.4 KnowledgePrecipitation)
         outcome: Outcome = validation_outcome
@@ -1510,13 +1550,29 @@ def _compute_surprise_score(meta: TaskMeta, runtime: RuntimeState) -> float:
     """ADR-015 formula:
     surprise = 0.35*cost_dev + 0.20*step_dev + 0.25*path_novelty + 0.20*quality_dev.
     Walking skeleton: path_novelty and quality_dev = 0 (we don't have baselines yet).
+
+    When meta has no estimate (estimated_cost_usd <= 0 or total_planned_steps <= 0)
+    the corresponding deviation contributes 0 — log a warning so we know the
+    score is partial, instead of silently masking missing estimates as "no
+    surprise". The score itself is bounded to [0, 1].
     """
     cost_dev = 0.0
+    step_dev = 0.0
+    missing: list[str] = []
     if meta.estimated_cost_usd > 0:
         cost_dev = max(0.0, runtime.accumulated_cost_usd_equivalent / meta.estimated_cost_usd - 1.0)
-    step_dev = 0.0
+    else:
+        missing.append("estimated_cost_usd")
     if runtime.total_planned_steps > 0:
         step_dev = max(0.0, runtime.current_step / runtime.total_planned_steps - 1.0)
+    else:
+        missing.append("total_planned_steps")
+    if missing:
+        log.warning(
+            "surprise_score.partial",
+            task_id=meta.task_id,
+            missing=missing,
+        )
     score = 0.35 * cost_dev + 0.20 * step_dev
     return min(1.0, score)
 
