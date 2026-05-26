@@ -1,0 +1,76 @@
+topic: paired_commit
+title: 配对 commit — 内容关联的多文件改动打包
+description: |
+  多个文件 / 多个改动属于同一概念主题时，配对 commit 而非单文件单 commit。
+  比独立 commit 节省 review 开销 + git log 噪音；比 mega commit 仍然可审。
+
+trigger:
+  conditions:
+    - 多个改动属于同一概念（如配对 ADR / 同一抽象的多个实施细节）
+    - 单一改动跨 2-3 个文件
+    - 改动之间有强 review 依赖（看 A 必须知道 B）
+  signals_from:
+    - 当前 todo 中的子任务有 ≥ 2 个紧邻 status 一起完成
+    - commit 时发现 git status 显示 2-3 个相关文件
+
+action:
+  rules:
+    - rule: file_count
+      sweet_spot: 1-2 个文件
+      limit: 3 个文件以内 — 超过强制拆
+    - rule: line_count
+      sweet_spot: 100-300 行 diff
+      limit: 500 行以内 — 超过强制拆
+    - rule: subject_topic
+      requirement: 所有文件都关于同一主题（同一 ADR / 同一抽象 / 同一 bug）
+      if_violated: 拆 commit
+
+  commit_message_structure:
+    subject: "<主题>：<动词> <对象>"
+    body:
+      - 列每个文件的具体改动（不只是文件名，要说改了什么）
+      - 如果是机制类改动，列出关键设计点
+      - 引用相关 ADR / Issue（如有）
+    co_author_line: "Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+
+anti_patterns:
+  - 单文件单 commit — git log 噪音过大
+  - mega commit 包 5+ 文件 / 1000+ 行 — review 不能
+  - 主题混合（ADR + bug fix + 测试） — rollback 时切不开
+  - commit message 只写文件名 / 行数，不写改了什么逻辑
+
+rationale: |
+  Review 体验由"信息密度"决定 — 一 commit 包多少改动让 reviewer 还能
+  在头脑里 hold 住。1-2 个相关文件 + 100-300 行是大脑工作记忆的舒适区。
+  独立 commit 节省 commit 数量但每次都要切换上下文；mega commit 让 reviewer
+  失去主线。配对是中间最优。
+
+evidence:
+  - source: Phase 0 commit history
+    date: 2026-05-26
+    outcome: success
+    notes: |
+      5 个 commit 包 8 份文档（4 个配对 + 1 个单独 PROGRESS）。
+      平均每 commit 1.6 个文件 / 200 行 diff。后续 review 友好。
+
+  - source: commits 0e11335 / 9bf2dfa / 3d5e702
+    pattern: 每 commit 包 2 份相关 ADR (019+020 / 021+022 / 023+024)
+    outcome: success
+    notes: |
+      配对原则：同 commit 内的 ADR 主题相关（架构基础 / 机制 / 实施）。
+      不强行把不相关的 ADR 凑一对。
+
+confidence: 0.7
+applicability:
+  scopes: [git_workflow, version_control]
+  do_not_apply_when:
+    - 改动属于不同主题 — 强制拆
+    - 单文件改动超过 500 行 — 该文件需要内部拆分
+    - 改动是紧急 hotfix — 优先速度，单 commit OK
+
+related_methodologies:
+  - large_design_refactor
+  - adr_authoring
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-26

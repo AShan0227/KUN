@@ -961,4 +961,116 @@ class RuntimeCapability(BaseModel):
 
 ---
 
+## ADR-025：工程能力冷启动 — 通过开发日志蒸馏 Claude/Codex 的工程思维到 KUN
+
+- **状态**：accepted (2026-05-26)
+- **背景**：当前 KUN 有 0 条工程类 capability card / methodology。即使 RSI 闭环跑起来（ADR-024），从零样本起步发展工程能力要数百个任务周期。**更快路径**：捕获当前 AI 开发者（Claude / Codex CLI 等）的真实开发过程，蒸馏成 KUN 的 starter 工程能力，让 KUN 上来就有"过来人的手感"而不是从零摸索。
+- **决策**：建立 **开发日志（dev log）→ methodology cards** 的捕获 + 蒸馏管道，作为 KUN 工程能力的冷启动来源。
+
+### 捕获机制
+
+每个**有意义的工作单元**完成后必须写 dev log：
+
+| 工作粒度 | 日志类型 | 文件路径 |
+|---|---|---|
+| 单子任务（L1.1 等） | 微日志（3-5 句话） | `docs/dev_logs/L<N>-progress.md`（追加式） |
+| L 里程碑（L1 / L2 等） | 完整回顾 | `docs/dev_logs/L<N>-retrospective.md`（一份独立） |
+| 事故 / 失败 | 失败分析 | `docs/dev_logs/incident-<date>-<topic>.md` |
+
+dev log 不是可选 — **是 commit 后强制动作**（写进 ADR-025 的工程约束）。
+
+### Dev log 结构（强制模板）
+
+每份 retrospective 必须包含 9 段：
+
+```markdown
+# Dev Log: <Task Name>
+
+**Date / Phase / Duration / Commits**
+
+## Goal           — 实际目标
+## Approach       — 具体走法
+## Key Decisions  — 决策 + 为什么
+## Constraints Applied  — RCDH 走到哪级 / anti-drift 状态 / Forward 还是 Backward
+## Patterns Used  — 可识别的工程模式
+## What Failed    — 失败 + 根因 + 恢复
+## What Worked    — 成功模式 + 复用条件
+## Heuristics Extracted  — 可蒸馏的规则
+## Methodology Card Candidates  — 给 KUN 蒸馏管道的输入
+```
+
+最后一段 **Methodology Card Candidates** 是 KUN 蒸馏的入口 — 必须是结构化的：
+
+```yaml
+- topic: <area>          # e.g. large_design_refactor
+  trigger: <when>        # 什么场景适用
+  action: <what to do>   # 具体做法
+  rationale: <why>       # 原因 / 取舍
+```
+
+### 蒸馏管道（实施 L3）
+
+KUN 的 idle-batch `methodology_distill` step（当前 stub）在 L3 阶段获得真实现：
+
+```python
+async def methodology_distill_real_impl(tenant_id: str) -> dict:
+    """
+    1. 扫 docs/dev_logs/*.md → 解析 Methodology Card Candidates 段
+    2. 扫 seeds/methodologies/*.yaml → 现有 cards
+    3. 对比：新 candidates vs 现有 cards 做 embedding 相似度
+       - similarity > 0.85 → 合并（更新现有 card 的 evidence count）
+       - similarity ≤ 0.85 → 写入新 card
+    4. 写入 Context 子系统 (LayeredAsset, kind="methodology")
+    5. emit event: methodology.card_distilled
+    6. 返回统计：新增 N, 合并 M, 总数 T
+    """
+```
+
+蒸馏出的 methodology cards 通过 ContextPacker + ImportanceScorer 被以下 agent 自动检索消费：
+
+- **Director** 拆任务时（complexity ≥ medium）→ 检索相关 methodology 注入 GoalAnchor 的 `invariants`
+- **Executor** 卡住时（连续 2 步无进展）→ 检索相关 methodology 注入 system prompt
+- **Supervisor** 走 RCDH 时 → 检索相关 methodology 帮助归因
+- **Strategist** 提候选策略时 → 检索 methodology 限制策略空间
+
+### Seed methodology cards
+
+`seeds/methodologies/*.yaml` 是冷启动种子，KUN 启动时加载。本 ADR 落地时随附 3-5 份种子（提取自 Phase 0 retrospective）。
+
+后续 L1-L5 每完成一个里程碑，至少新增 3-5 份种子。
+
+### 工程约束
+
+1. **每个 commit 前必查 dev log** — 当前 L 阶段的 progress.md 是否同步更新（git pre-commit hook 可加，但当前阶段靠纪律）
+2. **每个 L 里程碑结束必写 retrospective** — 没写 retrospective 不算完成
+3. **失败必写 incident** — 任何被审计 / 自审发现的失败都要 incident 文件
+4. **Methodology Card Candidates 必须可解析** — YAML 结构化，不允许散文式描述
+
+### 与其他 ADR 的关系
+
+- **ADR-018 §16.4 KnowledgePrecipitation 退役**：本 ADR 用具体的 dev log → methodology distill 管道替代抽象的"统一结果转知识"
+- **ADR-022 Anti-drift**：methodology cards 可注入 GoalAnchor 的 invariants，帮长任务保持工程纪律
+- **ADR-021 RCDH**：methodology cards 包含 "诊断 → 归因" 的样板，给 RCDH 提供启发式
+- **ADR-020 Director / Supervisor / Strategist 角色对接**：上述 3 个 agent 在 L3 起读取 methodology cards
+- **KUN-V1.md §1.3 "学习放每一面"原则**：这是该原则的第一个真实落地（之前全 stub）
+
+### 影响
+
+- 新建目录 `docs/dev_logs/` + `seeds/methodologies/`
+- 新建 `docs/dev_logs/README.md`（模板 + 工作流）
+- 每次 commit 必须配 dev log 同步更新（先靠纪律 + ADR 约束，后期可加 pre-commit hook）
+- idle-batch `methodology_distill` step 在 L3 阶段从 stub=True 转为真实现
+- Context 子系统加 `methodology` 资产类目（已在 AssetKind 中预留）
+- ImportanceScorer / ContextPacker 接入 methodology 检索（L3 / L4 阶段）
+
+### 北极星价值
+
+- 短期（当前 /loop 自主推进期）：每个里程碑后产生 retrospective + 3-5 份 methodology seed → 半年后 KUN 自动启动时已有数十份"过来人手感"
+- 中期（L3 蒸馏管道实装后）：KUN 不止读 seed，还读它自己的 dev log（任务回放产生的）→ 自我迭代工程能力
+- 长期（L5 自创任务）：KUN 通过 RSI 发现 methodology 之间的差距 → 自动提任务补 methodology
+
+> **关键认识**：让 KUN 完美的不是它独立从零学会一切，是它**站在 Claude / Codex CLI 这些当前最强 AI 开发者的工程肩膀上**起步。dev log → methodology distill 是这个肩膀的承接机制。
+
+---
+
 *ADR 记录自 2026-04-23 起，追加式维护。*

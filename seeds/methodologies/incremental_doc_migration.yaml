@@ -1,0 +1,81 @@
+topic: incremental_doc_migration
+title: 大文档增量修订 — 不完全重写
+description: |
+  大文档（> 1000 行）需要修订，但完全重写代价过大、原文档也有保留价值时，
+  采用增量修订模式：加 §0 修订摘要 + 关键章节顶部退役标记。
+
+trigger:
+  conditions:
+    - 文档 ≥ 1000 行
+    - 修订涉及 ≥ 5 个章节
+    - 原文档作为设计参考 / 历史依据有保留价值
+    - 完全重写预估超过 1 小时
+  signals_from:
+    - mission_director: estimated_duration > 1h on doc edit
+    - human directive: "修订" (vs "重写")
+
+action:
+  steps:
+    - step: 1
+      do: 在文档**顶部**加新 §0 修订摘要章节（不在末尾）
+      why: 新读者第一眼看到，老读者也能快速找到入口
+    - step: 2
+      do: §0 包含三部分
+      structure:
+        - 退役章节清单 — 表格形式（原章节 / 退役原因 / 替代依据）
+        - 新增机制清单 — 表格形式（机制 / 决策出处 ADR）
+        - 阅读建议 — 新读者路径 + 历史参考路径 + 冲突解决规则
+    - step: 3
+      do: 在每个被退役 / 修订的关键章节**顶部**加标记
+      markers:
+        - "🔁" — 章节修订或部分退役
+        - "❌" — 章节抽象删除
+      content: |
+        > 🔁 自 YYYY-MM-DD 起：<具体改了什么> — 见 ADR-XXX
+    - step: 4
+      do: 主体内容**保留**供历史引用 — 不删
+      why: 6 个月后想看历史决策依据时还能找到
+
+anti_patterns:
+  - 完全重写大文档（成本 > 收益）
+  - 把修订摘要放文档末尾（读者发现不了）
+  - 删除被退役的章节（丢失历史）
+  - 没有指向新 ADR / 新章节的明确链接
+  - "TODO 补充" / "待整理" 之类的占位标记（要么写完要么不写）
+
+rationale: |
+  大文档常带"过去理由" — 即使部分内容已过期，那些理由对后人理解
+  当前架构有价值。删除会丢失这些理由，但保留又会让读者读错版本。
+  §0 摘要 + 章节标记是导航解 — 不删历史 + 让读者快速看到当前版本。
+
+evidence:
+  - source: KUN-V1.md commit f743474
+    date: 2026-05-26
+    phase: Phase_0
+    outcome: success
+    notes: |
+      1945 行的 KUN-V1.md 加 106 行修订（§0 摘要 + 6 处退役标记）
+      = 5.5% 文档改动，达到完全重写的导航效果。
+      预估完全重写 ≈ 3-5 小时；实际增量修订 ≈ 20 分钟。
+
+  - source: 反例 PROGRESS.md (commit b943cb5)
+    date: 2026-05-26
+    outcome: success
+    notes: |
+      145 行的 PROGRESS.md 完全重写 — 因为它是小文档 + 全部章节都要改。
+      边界：< 200 行 + 改动 > 50% 时全量重写更清晰。
+
+confidence: 0.7  # cold start, 含正例 + 反例 + 边界
+applicability:
+  scopes: [documentation, design_doc_maintenance]
+  do_not_apply_when:
+    - 文档 < 200 行 + 改动 > 50% — 全量重写更清晰
+    - 修订只是 typo / 小修 — 直接 inline 改
+    - 文档已经分裂成多文件（用版本化目录管理）
+
+related_methodologies:
+  - large_design_refactor
+  - adr_authoring
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-26
