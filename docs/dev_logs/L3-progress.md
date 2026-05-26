@@ -145,3 +145,32 @@
 **13 个新单测**（governance 模块 4 / Strategist 强化 2 / Gate target 检查 + row 写入 2 / enable gate 4 / 集成 1）+ 修 1 个旧 test 适配新行为。996/996 unit tests pass，ruff clean。
 
 **为下一步**：L3.6 ADR-018 半合并补齐 —— ValidationPipeline / NotificationLayer / GuardPolicy / GuardRule 各检查 ≥3 调用方并完成真正合并。
+
+---
+
+## L3.6 · ADR-018 半合并补齐
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `docs/adr-018-audit.md`：对 4 个 ADR-018 §16 半合并项做实际 caller 审计
+  - **ValidationPipeline (§16.2)**：orchestrator + tests + Tester Protocol — 通过依赖注入接口已"by interface 真合并"，维持
+  - **NotificationLayer (§16.3)**：原仅 orchestrator 1 caller → L3.6 加 Gate 自指 + Supervisor L4 = **3 真 caller**
+  - **GuardRule (§16.8)**：watchtower engine + feature_activation_audit + tests = ≥2 prod caller + 测试覆盖，维持
+  - **GuardPolicy**：grep 0 命中，从未实施 → **永久退役**（不再追求；若 L4+ 需要新 ADR 重新设计）
+- `kun/agents/gate/service.py` 加 `notification_sender: NotificationSender | None` 参数 + `_safe_notify` helper；自指 awaiting_human_review 路径推 `alert` notification（含 capability_id / target_module / reasons）
+- `kun/agents/supervisor/service.py` 加同样的 `notification_sender` 参数；observe 后若 `escalation_path` 含 `human` → 推 `alert`（含 anomaly_kind / severity / evidence）
+- Notification 签名统一 `Callable[[dict[str, Any]], Awaitable[None]]` —— Service 端不 import `kun.engineering.notifications.push`，让 prod 接 DB writer / tests fake / 未来 webhook 零侵入
+- 7 个新单测覆盖：Gate 自指推送 + 非自指不推 + sender 异常吞 / Supervisor L4 推送 + 非 human path 不推 + sender 异常吞 / 3 caller 共用同一签名集成测试
+
+**关键决策**：
+- **不"为达到 ≥3 而硬塞 caller"**：审计明确反对 KPI 化 "≥3 caller" 这条规则。GuardPolicy 没自然 caller 就退役，不假装实施；ValidationPipeline 主线接口已成熟就标"by interface 真合并"
+- **NotificationLayer 用 dict-shape 而非 Notification 对象**：Service 不 import datamodel — 让接口最瘦。dict payload 在 sender 端转 Notification model + 落库。**减小 Service ↔ datamodel 耦合**
+- **`_safe_notify` 独立 helper**：每个 Service 内一个小函数，失败吞 + log；不让 notification 失败打挂 admit/observe 主路径。同 emitter 失败语义
+- **Gate notification 在 awaiting_human_review 推, 不在 reject 推**：reject 已经在 log 充分覆盖，notification 应该是"需要人介入"的明确信号 — 自指必须 NUO 看到（人审），普通 reject 是机器闭环
+- **Supervisor 触发条件用 `"human" in escalation_path`**：L3.4 已经把自指追加 human 到 path，复用 path 而非 is_self_referential 字段 — 让未来 LLM Supervisor 显式标"need_human" 也能触发，不绑死自指
+- **GuardPolicy 退役 = 减少未来困惑**：留着这个名字不实施，比把它真删除更糟（每个新人都会查它是什么）。明文归档决策更清晰
+
+**7 个新单测**覆盖完整 L3.6 wiring + 3 caller 同签名集成。1003/1003 unit tests pass，ruff clean。
+
+**为下一步**：L3.7 — L3 全 6 个子任务完成回顾 + retrospective (9 段 + Methodology Card Candidates) + 蒸馏 ≥3 份新 methodology seeds。

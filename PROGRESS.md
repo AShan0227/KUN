@@ -109,8 +109,8 @@
 - [x] **L3.2** 第 3 条 RSI 实例：skill 选择启发式（commit 0476315）
 - [x] **L3.3** Forward / Backward 双修复策略（Strategist auto-select）（commit 5276801）
 - [x] **L3.4** 监督线三级阈值 + 4 级升级路径真接（commit 0c8bc9a）
-- [x] **L3.5** 自指限制强化（Strategist 改自己强制 L4 人审）（commit pending）
-- [ ] **L3.6** ADR-018 半合并补齐：ValidationPipeline / NotificationLayer / GuardPolicy / GuardRule
+- [x] **L3.5** 自指限制强化（Strategist 改自己强制 L4 人审）（commits a496a9f + 5d30395）
+- [x] **L3.6** ADR-018 半合并补齐：ValidationPipeline / NotificationLayer / GuardPolicy / GuardRule（commit pending）
 - [ ] **L3.7** L3 验收 + retrospective + ≥3 新 methodology seeds
 
 ---
