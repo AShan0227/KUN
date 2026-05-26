@@ -74,6 +74,8 @@ from kun.control_plane.runtime_followups import (
 )
 from kun.control_plane.runtime_observation import build_runtime_observation_report
 from kun.control_plane.self_improvement import (
+    SELF_IMPROVEMENT_AUDIT_SUPPORT,
+    SELF_IMPROVEMENT_STRATEGY_SUPPORT,
     NuoSelfImprovementAuditRunner,
     QiSelfImprovementStrategyRunner,
 )
@@ -1261,6 +1263,105 @@ def _case_task_vs_self_improvement_boundary(root: Path, now: datetime) -> Featur
     )
 
 
+def _case_governed_self_improvement_loop(root: Path, now: datetime) -> FeatureActivationCase:
+    control_plane, store, mission = _runtime(
+        root / "governed-self-improvement-runtime.json",
+        mission_id="msn-activation-governed-self-improvement",
+        workspace=root / "governed-self-improvement-workspace",
+    )
+    seed_work = control_plane.work_items[f"work-{mission.mission_id}"].model_copy(
+        update={
+            "status": "done",
+            "required_capability_refs": ["cap-activation-strategy"],
+            "expected_output": (
+                "Use the activated strategy capability and produce a behavior receipt."
+            ),
+        }
+    )
+    control_plane.work_items[seed_work.work_item_id] = seed_work
+    store.put_work_item(seed_work)
+    control_plane.missions[mission.mission_id] = mission.model_copy(
+        update={"status": "running", "current_plan_version": "v1"}
+    )
+    store.put_mission(control_plane.missions[mission.mission_id])
+
+    runners = {
+        "nuo": ChainedControlPlaneRunner(
+            runner_identity="activation-self-improvement-nuo-router",
+            runners=[NuoSelfImprovementAuditRunner(control_plane=control_plane)],
+        ),
+        "qi": ChainedControlPlaneRunner(
+            runner_identity="activation-self-improvement-qi-router",
+            runners=[QiSelfImprovementStrategyRunner(control_plane=control_plane)],
+        ),
+    }
+    first = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner=runners,
+        daemon_id="activation-governed-self-improvement-1",
+    ).tick_once(mission_ids=[mission.mission_id], now=now, max_work_items=1)
+    second = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner=runners,
+        daemon_id="activation-governed-self-improvement-2",
+    ).tick_once(mission_ids=[mission.mission_id], now=now + timedelta(seconds=1), max_work_items=1)
+
+    audit_artifacts = [
+        artifact.artifact_id
+        for artifact in control_plane.artifacts.values()
+        if SELF_IMPROVEMENT_AUDIT_SUPPORT in artifact.supports
+    ]
+    strategy_artifacts = [
+        artifact.artifact_id
+        for artifact in control_plane.artifacts.values()
+        if SELF_IMPROVEMENT_STRATEGY_SUPPORT in artifact.supports
+    ]
+    replay_profiles = [
+        profile.capability_id
+        for profile in control_plane.capability_profiles.values()
+        if profile.capability_id.startswith("cap-self-improvement-")
+        and profile.promotion_stage == "replay"
+        and not profile.runtime_enabled
+    ]
+    kun_followups = [
+        item.work_item_id
+        for item in control_plane.work_items.values()
+        if item.work_item_id.startswith("work-kun-self-improvement-implementation-")
+    ]
+    activated = bool(audit_artifacts and strategy_artifacts and replay_profiles and kun_followups)
+    return FeatureActivationCase(
+        feature_id="governed_self_improvement_loop",
+        subsystem="qi_nuo_self_iteration",
+        trigger_condition=(
+            "A done KUN work item used required capabilities but has no behavior receipt."
+        ),
+        dependencies=[
+            "NuoSelfImprovementAuditRunner",
+            "QiSelfImprovementStrategyRunner",
+            "daemon self-improvement audit scheduling",
+            "runtime_enabled=false replay capability profile",
+        ],
+        activated=activated,
+        evidence_refs=[*audit_artifacts, *strategy_artifacts, *replay_profiles],
+        generated_work_item_ids=[
+            *first.created_work_item_ids,
+            *first.ran_work_item_ids,
+            *second.created_work_item_ids,
+            *second.ran_work_item_ids,
+            *kun_followups,
+        ],
+        trigger_status="activated" if activated else "gap",
+        notes=[
+            "This proves Nuo can audit a KUN capability-consumption gap, Qi can generate "
+            "strategy candidates, and the selected candidate stays replay-only."
+        ],
+        gaps=[]
+        if activated
+        else ["governed self-improvement audit/strategy/replay candidate chain did not complete"],
+        evidence_scope="fixture",
+    )
+
+
 def _capability_boundary_evaluation(stage: str, *, mission_id: str) -> CapabilityEvaluation:
     payload: dict[str, object] = {
         "evaluation_id": f"eval-task-boundary-{stage}",
@@ -1871,6 +1972,7 @@ _CASE_FUNCTIONS: list[Callable[[Path, datetime], FeatureActivationCase]] = [
     _case_runtime_observation_hardening,
     _case_capability_dedupe_qi_governance,
     _case_task_vs_self_improvement_boundary,
+    _case_governed_self_improvement_loop,
     _case_merge_conflict_governance,
     _case_workspace_rollback,
     _case_watchtower_bridge,

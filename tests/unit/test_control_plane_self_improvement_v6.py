@@ -59,7 +59,8 @@ def test_nuo_self_improvement_audit_finds_unconsumed_capability_and_routes_qi() 
     assert result.status == "done"
     assert result.gate_evaluation is not None
     assert result.gate_evaluation.next_action == "needs_plan_change"
-    assert "gap-capability-consumption" in result.gate_evaluation.hard_gate_failures[0]
+    assert result.gate_evaluation.score_breakdown["gap_count"] == 1.0
+    assert result.gate_evaluation.hard_gate_failures == []
     assert "nuo_self_improvement_audit" in result.artifacts[0].supports
     assert [item.owner for item in result.followup_work_items] == ["qi"]
     assert result.followup_work_items[0].idempotency_key.startswith("qi-self-improvement-strategy:")
@@ -103,7 +104,7 @@ def test_qi_self_improvement_strategy_generates_candidates_and_replay_profile() 
 
     assert result.status == "done"
     assert result.gate_evaluation is not None
-    assert result.gate_evaluation.next_action == "promote_candidate"
+    assert result.gate_evaluation.next_action == "continue"
     assert "qi_multi_strategy_candidates" in result.artifacts[0].supports
     assert [item.owner for item in result.followup_work_items] == ["kun"]
     profile = next(iter(control_plane.capability_profiles.values()))

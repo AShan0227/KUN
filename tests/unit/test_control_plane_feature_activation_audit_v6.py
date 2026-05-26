@@ -23,6 +23,7 @@ def test_feature_activation_audit_runs_trigger_tasks_for_all_core_features(tmp_p
         "qi_nuo_observation_strategy_loop",
         "capability_dedupe_routes_to_qi",
         "task_vs_self_improvement_boundary",
+        "governed_self_improvement_loop",
         "merge_conflict_governance",
         "workspace_snapshot_and_rollback",
         "watchtower_runtime_bridge",
