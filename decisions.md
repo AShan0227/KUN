@@ -254,12 +254,156 @@
 
 ---
 
-## 需要后续补充的决策（占位，开发中定）
+## ADR-019：Auth posture（短期 / 中期 / 长期）
 
-- ADR-019：日志格式 / 结构化字段 / 敏感数据屏蔽策略
-- ADR-020：秘钥管理（本地 dev / 生产期）
-- ADR-021：前端状态管理方案（Zustand / Redux / Context API）
-- ADR-022：测试数据 fixture 构造方式
+- **状态**：accepted (2026-05-26)
+- **背景**：2026-05-26 审计发现 DB 层 (ADR-007 RLS + kun_app 角色 + tenant_id 主键) 做到产品级硬背书；但 API 层完全没 auth — HTTP 读 `X-Tenant-Id` header 不验签、WS 读 query param 不验签。审计后已加 `KUN_WS_REQUIRE_AUTH_HEADER` fail-closed 闸门和 production 拒启动 dev 默认 (commit f78df22)，但仍不是真 auth。
+- **决策**：分三阶段补齐，不强行一步到位。
+
+### 阶段 1 · 短期（当前阶段，鲲对鲲）
+
+- 单机部署，`KUN_ENV=dev`，跳过真 auth
+- production 启动检查（已实现）拒绝 dev 默认凭证、拒绝 `default_tenant_id` 未清空、CORS 拒绝 `*`
+- WS 加 `KUN_WS_REQUIRE_AUTH_HEADER=1` 闸门（已实现），生产模式不允许 query 参数租户
+- **状态**：✅ 已落地
+
+### 阶段 2 · 中期（多用户进入前）
+
+- 部署反向代理（Caddy / nginx / Cloudflare Access）做 OAuth proxy
+- Proxy 在 verified session 后注入：
+  - `X-Forwarded-User`（用户身份）
+  - `X-Forwarded-Tenant`（用户所属租户）
+  - `X-Forwarded-Signature`（HMAC-SHA256 签名，KUN middleware 验签）
+- KUN middleware：
+  - 不再信任 `X-Tenant-Id`（旧 header 仅 dev 模式允许）
+  - 改信任 `X-Forwarded-Tenant`，前提是签名通过
+  - WS 同样改走 proxy 注入的 cookie / signed header，不再走 query
+- 签名 secret 通过 `KUN_FORWARD_AUTH_SECRET` 环境变量配置
+- 触发条件：用户数 ≥ 2 或非本地部署
+
+### 阶段 3 · 长期（真 SaaS）
+
+- 完整 OAuth2 / OIDC + JWT Bearer
+- RBAC（基于 capability card 的角色权限）
+- 审计日志（每次身份验证写 audit_log）
+- 多因素认证（敏感操作）
+- 触发条件：商业化（Phase 2 L6）
+
+### 实施约束
+
+- 阶段切换时**不允许跳级**（短期 → 中期 → 长期），避免半套 auth
+- 阶段 2 上线前必须有 ADR-019 修订记录确定 proxy 选型 + secret 管理方案
+- 任何阶段都**不允许**禁用 production 启动检查（ADR-019 阶段 1 已实现的 `_production_safety`）
+
+### 影响
+
+- 短期对 RSI 闭环开发不阻断（用户 = 1，鲲自跑）
+- 阶段 2 启动时需补一份 ADR-019 续篇，定 proxy 具体选型
+- 阶段 2 触发后，所有 API endpoints 加 `require_signed_tenant()` middleware
+
+---
+
+## ADR-020：五层架构 + 7 个 agent 角色 + 主线/监督线双线
+
+- **状态**：accepted (2026-05-26)
+- **背景**：2026-05-26 全盘审计发现 KUN-V1.md §2 "三元要素 + 两个大脑" 描述与实现存在 10 处内在矛盾（守望大脑实际是空壳；agent 是隐式实体但 control_plane/ 22k LOC 在管 agent；多个 ADR-018 合并是壳；"学习放每一面" 7 个 step 中 6 个 stub）。需要明确一套自洽的架构作为后续 L1-L6 实施基准。
+- **决策**：KUN 采用**五层架构 + 主线/监督线双线 + 7 个 agent 角色（按需扩展）**。
+
+### 五层架构
+
+| 层 | 回答什么 | 内容 |
+|---|---|---|
+| L1 · 架构层 | KUN 由什么构成 | 三元要素：Context / 接入层 / 工程化子系统 |
+| L2 · 运行层 | 执行与监督如何并行 | 主线 + 监督线双线 |
+| L3 · 实例层 | 谁干活 | 7 个 agent 角色（按需扩展） |
+| L4 · 升级层 | 异常往哪儿升 | 4 级自治（角色 / 任务 / 监督线 / 人） |
+| L5 · 治理层 | 改进如何沉淀为能力 | RSI 闭环 + RCDH（ADR-021）+ Anti-drift（ADR-022） |
+
+每层只回答该层问题，**不越界**。
+
+### 主线 / 监督线双线
+
+```
+主线 (串行 5 阶段):
+   用户目标 → Director (拆解) → Executor (执行) → Tester (验证) → Gate (准入)
+                                       ↕
+监督线 (与主线并行旁路):
+   Supervisor (傩观察 / 归因)
+   Strategist (启 on-demand 策略搜索)
+   External Supervisor (独立进程 + 本地模型, 见 ADR-023)
+```
+
+两线唯一交互：监督线发现问题 → 沿 L4 四级升级路径触发动作。
+
+### 7 个 Agent 角色
+
+| 角色 | 类型 | 线 | 模型 | 主要职责 | 闭哪个环 |
+|------|------|----|------|---------|---------|
+| Director | 常驻 service | 主线入口 | 远程 (gpt-5.5) | 拆解任务 + 输出 TaskSpec + GoalAnchor + complexity + priority_profile + input classification | 主线起点；接 anti-drift |
+| Executor | task-bound | 主线主体 | 远程 (gpt-5.5) | 执行任务 + 写 capability card + 读 runtime_experiments / runtime_capabilities | 路由 → 能力卡 → 路由 |
+| Tester | task-bound | 主线尾 | 远程 (gpt-5.5) | 跑 ValidationPipeline + 输出 TestReport | Gate 准入证据 |
+| Gate | 常驻 service | 主线出口 | 远程 (gpt-5.5) | 治理决策 + 写 runtime_capabilities + 维护 evidence_ledger + promotion_queue | capability 晋级 → 实际启用 |
+| Supervisor | 常驻 service | 监督线 | 远程 (gpt-5.5) | 订阅 event stream + 异常归因 + 走 RCDH + 写 strategy_search_request | RSI 触发起点 |
+| Strategist | on-demand | 监督线 | 远程 + 本地（Explorer Pool 3 模式）| 候选策略生成 + 实验设计 + 写 StrategyExperiment | 实验 → runtime_experiments → 启用 |
+| External Supervisor | **独立进程** | 监督线 | **本地模型** | Mode A 同步监管 + Mode B 任务尾复盘 + 自嗨/假通过检测必跑 | Gate 入门禁；详见 ADR-023 |
+
+**扩展规则**：当前 7 个不是上限。若发现需要 Memory Curator / Skill Sourcer / Adapter Monitor，按"闭哪个环 / 谁读它 / 删了断什么"三连问通过即可加。**任何不能闭环的角色不允许新增**。
+
+### 目录组织
+
+L1 工程化阶段重组为：
+
+```
+kun/
+├── core/                 # 共享底层（不变）
+├── context/              # Context 子系统（L1）
+├── interface/            # 接入层（L1）
+│   └── llm/local_provider.py  # 新增本地模型接入
+├── agents/               # 7 个角色（L3）
+│   ├── director/
+│   ├── executor/
+│   ├── tester/
+│   ├── gate/
+│   ├── supervisor/
+│   ├── strategist/
+│   └── external_supervisor/
+├── governance/           # L5 治理层
+│   ├── rsi_loop.py
+│   ├── rcdh.py
+│   ├── evidence_ledger.py
+│   ├── promotion_queue.py
+│   └── diagnosis_scope.py
+├── domains/              # Phase 2 业务模块
+└── api/                  # FastAPI + WS + NUO
+```
+
+`kun/control_plane/` `kun/brain/` `kun/engineering/orchestrator.py` 三处现有目录/文件**在 L1 阶段重组后消失**，功能分散到上面对应位置。
+
+### 退役
+
+以下 KUN-V1.md 原表述自本 ADR 起退役（文档不删、但不再作为现行架构依据）：
+
+- 「两个大脑」二元概念 → 改"主线 + 监督线"双线
+- 「守望子系统是系统隐藏大脑」 → 改"监督线由多 agent 协作组成"
+- 「不存在管理 agent」原则 → 改"agent 是显式实体，按需扩展"
+- 「黑板组件化」 → 黑板只作心智模型，不建 BlackboardView 组件
+- 「冷启动上来就是完整版」承诺 → 改"骨架完整，跑 N 任务后展示能力"
+- M1-M5 里程碑命名 → 改 L0-L6（见 PROGRESS.md）
+
+### 影响
+
+1. ADR-001 的 M1-M5 命名继续保留为历史引用，但实际开发按 L0-L6 推进
+2. ADR-018 的 8 项合并按 "≥3 调用方真合并" 原则重新定调（KnowledgePrecipitation 删；ConcurrencySafety L1 真合并；其他半合并待补）
+3. 后续 ADR-021 / 022 / 023 / 024 基于本 ADR 的架构展开
+4. 任何与本 ADR 矛盾的旧文档段落，以本 ADR 为准
+
+### 引用
+
+- ADR-018 §16（保留方向，合并执行调整）
+- ADR-021 RCDH 强制诊断（运行机制）
+- ADR-022 Anti-drift（运行机制）
+- ADR-023 External Supervisor（角色实现）
+- ADR-024 RSI 闭环 + 数据脊柱（治理层落地）
 
 ---
 
