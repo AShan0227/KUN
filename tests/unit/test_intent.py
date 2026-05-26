@@ -1,7 +1,7 @@
 """Intent interpreter — JSON parsing robustness."""
 
 import pytest
-from kun.brain.intent import IntentInterpreter
+from kun.agents.director.intent import IntentInterpreter
 from kun.datamodel.task import Owner
 from kun.interface.llm import LLMRouter
 from kun.interface.llm.base import LLMResponse, UsageInfo

@@ -25,7 +25,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
-from kun.brain.intent import IntentInterpreter
+from kun.agents.director.intent import IntentInterpreter
 from kun.brain.planner import TaskPlanner
 from kun.brain.router import TaskRouter
 from kun.context.packer import ContextPacker
