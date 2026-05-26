@@ -72,3 +72,34 @@
 **16 个新单测**覆盖：fresh 不 expired/stale / past deadline expired / stale after threshold / ready advance / ready+stale 仍 advance / ISO 字符串 / 无 tzinfo / days_in_state 计算 / sweeper empty list / 标 expired + emit / 仅 stale 推 reaudit 不动 state / 混合 capabilities / reader 异常 / state_writer 异常吞 / search_emitter 异常吞 / dataclass 字段。1126/1126 unit tests pass，ruff clean。
 
 **为下一步**：L5.3 监督线高优触发通道 —— Supervisor cluster (L5.1) + promotion_timeout (L5.2) 通过专门通道直接推 Strategist, 跳过普通 search_request 队列, 优先消费。
+
+---
+
+## L5.3 · Priority Channel (高优触发通道)
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/governance/priority_channel.py`：`PriorityTier` Literal + `PriorityClassification` frozen dataclass + 4 个 pure 函数
+- `classify_request_priority(request)` 静态规则:
+  - `triggered_by="anomaly_cluster"` → `urgent` (boosted) — L5.1 cluster 系统性问题
+  - `triggered_by="promotion_timeout"` + `anomaly_kind="promotion_expired"` → `urgent` (boosted) — L5.2 capability 卡死
+  - `triggered_by="promotion_timeout"` + `anomaly_kind="promotion_stale"` → `high` (boosted)
+  - `triggered_by="anomaly_threshold"` → 跟随 base priority (high/medium/low)
+- `prioritize_requests(requests)` pure 函数: 返回 `[(request, classification), ...]` 按 (tier, created_at) 排序; urgent 在前, 同 tier 内 FIFO
+- `split_by_tier(requests)` 4 桶分流; 空 list 也保留 4 个空桶 — 让 Strategist 可批量按桶取
+- `is_high_priority_channel(request)` 便捷 predicate (urgent/high → True)
+- `__init__.py` export 全部 6 个名字
+
+**关键决策**：
+- **纯 pure functions + classification dataclass**：不引入 async queue / 持久化层 — 入参 list of requests 出 sorted/bucketed 结果, 让 Strategist / DB consumer 任意接。**最小依赖, 最大灵活性**
+- **`urgent` 不分 cluster vs expired**：两者都 "影响 RSI 闭环" 一档 — cluster 是系统性多 anomaly 同时出现, expired 是 capability 完全卡死. 都需要 Strategist 第一个处理
+- **`promotion_stale` 在 `high` 而非 `urgent`**：stale 是"卡但未死", 可以继续 try; expired 才是"完全没希望了"
+- **同 tier 内 FIFO 而非 LIFO**：先来的 request 先处理 — 防 starvation. 同 tier 都是同等紧急, 不应该让"今天到达的"插队"昨天到达的"
+- **`boosted` 字段在 classification**：让 audit / log 能看出"这条 request 是因为 systemic 信号被提升的"vs "本来就是 high priority"，方便追溯
+- **`split_by_tier` 4 桶都返回 (即使空)**：consumer 可以做"先看 urgent 桶有没有, 再看 high 桶..." 而不需要先 check key 存在
+- **不在 `prioritize_requests` 输出里去重**：dedup 是 Supervisor 端的责任 (dedup_key); Priority Channel 只负责排序
+
+**18 个新单测**覆盖：classify 7 case (cluster urgent / promotion_expired urgent / promotion_stale high / 3 个 base priority 透传 / missing priority 默认 medium) / is_high_priority_channel 4 case / prioritize empty + urgent 优先 + FIFO + 全 4 tier 顺序 + 缺 created_at 容错 / split_by_tier 桶 + 空桶。1144/1144 unit tests pass，ruff clean。
+
+**为下一步**：L5.4 自创 RSI 请求生成 — cluster + RCDH diagnostic 综合产生 rich strategy_search_request, 给 Strategist 更丰富 evidence 帮它选 candidate。

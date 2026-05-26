@@ -17,6 +17,14 @@ from kun.governance.exploration_penalty import (
     PenaltyCheckResult,
     candidate_signature_key,
 )
+from kun.governance.priority_channel import (
+    PriorityClassification,
+    PriorityTier,
+    classify_request_priority,
+    is_high_priority_channel,
+    prioritize_requests,
+    split_by_tier,
+)
 from kun.governance.resource_quota import (
     QuotaCheckResult,
     ResourceQuota,
@@ -30,8 +38,14 @@ __all__ = [
     "SELF_REFERENTIAL_PREFIXES",
     "ExplorationPenalty",
     "PenaltyCheckResult",
+    "PriorityClassification",
+    "PriorityTier",
     "QuotaCheckResult",
     "ResourceQuota",
     "candidate_signature_key",
+    "classify_request_priority",
+    "is_high_priority_channel",
     "is_self_referential",
+    "prioritize_requests",
+    "split_by_tier",
 ]
