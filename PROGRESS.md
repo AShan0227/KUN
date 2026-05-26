@@ -118,18 +118,19 @@
 
 ---
 
-## L4 · 多实例资源治理（待启动）
+## L4 · 多实例资源治理（推进中）
 
 **交付标志**：启 Pool / 傩 Pool / External Supervisor Pool 多实例并行；合议层处理 dedup / cluster / 优先级；资源不爆。
 
 ### 计划任务
 
-- [ ] Strategist Explorer Pool 配置化（默认 3 模式）
-- [ ] Supervisor Pool 多实例（不同 audit 维度）
-- [ ] External Supervisor Pool 配置化（按 audit mode 分实例）
-- [ ] 合议层：dedup（embedding 相似度 > 0.85 合并）/ cluster / 排序
-- [ ] Resource quota（token / 时间 / dedup_key cooldown）
-- [ ] 探索惩罚（失败候选 3 次内不重复 / similar 策略合并）
+- [x] **L4.1** Strategist Explorer Pool 配置化（默认 3 模式）（commit pending）
+- [ ] **L4.2** Supervisor Pool 多实例（不同 audit 维度）
+- [ ] **L4.3** External Supervisor Pool 配置化（按 audit mode 分实例）
+- [ ] **L4.4** 合议层：dedup（embedding 相似度 > 0.85 合并）/ cluster / 排序
+- [ ] **L4.5** Resource quota（token / 时间 / dedup_key cooldown）
+- [ ] **L4.6** 探索惩罚（失败候选 3 次内不重复 / similar 策略合并）
+- [ ] **L4.7** L4 验收 + retrospective + ≥3 新 methodology seeds
 
 ---
 
