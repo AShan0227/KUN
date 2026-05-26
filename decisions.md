@@ -407,4 +407,249 @@ kun/
 
 ---
 
+## ADR-021：RCDH 强制诊断层级（Root-Cause Diagnostic Hierarchy）
+
+- **状态**：accepted (2026-05-26)
+- **背景**：当前 KUN（以及业内多数 RSI 系统）的失败模式是「AI 看最后结果找原因 → 只调最后节点 → 表面通过 → 同问题复发」。例：用户视频音画不同步，AI 只调编辑器让那一帧同步，整条 pipeline 没修，下次还出。需要工程化在外部强制 AI 走根因分析。
+- **决策**：任何修复行为发起前，**必须**按 4 级顺序排查；不允许越级。
+
+### 4 级诊断层级
+
+| 层 | 检查问题 | 检查方式 | 决策权 | 修复动作 |
+|---|---|---|---|---|
+| L0 · 产品设计层 | 这个 feature 本身是不是设计错了？ | 对比 ADR / PROMISES.md / 设计方案 | Director + 人 | 不修代码，开新设计任务 |
+| L1 · 功能区激活层 | 对应功能区是不是没被激活？ | 扫 runtime_capabilities / feature flag / config / 调用链 | Gate | 改配置，不动代码 |
+| L2 · 功能区开发层 | 是不是某个模块写错了？ | 模块级隔离测试 + 模块边界 trace | Supervisor + Strategist | 模块进 RSI 闭环 |
+| L3 · 代码层 | 是不是具体代码错了？ | 单元级 trace + 局部 debug | Executor | bug fix |
+
+### 工程化护栏
+
+1. **修复请求必须有 `diagnostic_id`**：Gate 拒绝接收无 RCDH 报告的裸修
+2. **`StrategyExperiment` 必须声明 `target_level`**：Strategist 提的实验明确针对哪一级
+3. **重复 ≥ 3 次的同症状强制升 L0/L1**：不允许在 L3 再修一次
+4. **诊断范围圈定 ≤ 5 模块**：`narrow_scope(symptom, evidence) → list[module]` 是强制入口；不允许"喂全 codebase 给 LLM"
+5. **`evidence_ledger.diagnostic_level_reached` 字段必填**：每次修复留痕到了几级
+
+### 数据结构
+
+```python
+class DiagnosticRecord(BaseModel):
+    diagnostic_id: str  # ULID
+    triggered_by_event_id: str
+    symptom_summary: str
+    repeat_history_count: int  # 同症状之前出现几次
+    
+    level_0_check: LevelCheckResult  # 产品设计层
+    level_1_check: LevelCheckResult  # 激活层
+    level_2_check: LevelCheckResult  # 模块层
+    level_3_check: LevelCheckResult  # 代码层
+    
+    root_cause_level: int  # 0/1/2/3
+    recommended_action: Literal["redesign", "activate", "module_rsi", "code_fix"]
+    scope_modules: list[str]  # narrow_scope 圈定的 ≤5 模块
+    created_at: datetime
+    
+class LevelCheckResult(BaseModel):
+    skipped: bool  # 是否跳过（如：症状明显不属于该层）
+    skip_reason: str | None
+    is_root_cause: bool
+    evidence: list[dict]  # 支持判定的证据
+```
+
+### Forward / Backward 双修复策略
+
+确认根因层级后，Strategist 选修复方向：
+
+```
+Forward · 正向重跑
+  条件：任务幂等 + 任务步数 < 5 + 现有结果"差"而非"灾难"
+  动作：重跑任务（可能换 model / 换 strategy）
+        结果对比：新 > 旧 → 覆盖
+        结果对比：新 ≤ 旧 → 自动切到 backward
+
+Backward · 逆向回溯
+  条件：任务非幂等（已发邮件 / 合并代码 / 调外部 API）
+        或任务步数 ≥ 5
+        或有完整 evidence_ledger trace
+  动作：沿 trace 找具体 step 的失败点
+        走 RCDH 找层级
+        局部修复
+
+Auto-select rule (Strategist 持有):
+  if task.idempotent AND task.steps < 5: forward
+  elif task.has_side_effects: backward (forward 太危险)
+  elif first forward 没改善: switch to backward
+  else: forward first, fallback to backward
+```
+
+### 与其他 ADR 的关系
+
+- **ADR-020 角色对接**：Supervisor 触发 RCDH；Gate 验诊断报告；Strategist 选修复方向；Executor 执行修复
+- **ADR-022 关系**：Anti-drift 检测出的偏移信号也走 RCDH（多数会归为 L1 激活层或 L2 开发层）
+- **ADR-023 关系**：External Supervisor Mode B 复盘报告会推荐 RCDH 层级
+
+### 影响
+
+- 新加 `diagnostic_records` 表（alembic 0011）
+- `evidence_ledger` 加 `diagnostic_id` + `diagnostic_level_reached` 字段
+- 新建 `kun/governance/rcdh.py` + `kun/governance/diagnosis_scope.py`
+- 所有修复路径必须经过 RCDH，老路径在 L1 阶段重写或加 wrapper 强制走 RCDH
+
+---
+
+## ADR-022：Anti-drift 长任务防漂移（Goal Anchor + Input Classifier）
+
+- **状态**：accepted (2026-05-26)
+- **背景**：实际执行复杂长任务时，LLM 会出现 sycophancy-driven goal drift — 用户随手扔进来的消息扰乱原计划优先级，模型本能讨好新输入，慢慢偏离原始目标。用户手动 workaround 是"写方案 + 定期 review"。需要工程化把这一手工流程固化。
+- **决策**：进入 long-task mode 时启用 5 层 anti-drift 工程化约束。
+
+### Long-task mode 触发条件
+
+```python
+def is_long_task(meta: TaskMeta) -> bool:
+    return (
+        meta.complexity == "complex"
+        or meta.estimated_duration_sec > 600        # 10 分钟
+        or meta.estimated_steps > 5
+        or meta.risk_level in {"high", "critical"}
+    )
+```
+
+满足任一条件即进入 long-task mode；下面 5 层约束**全部启用**。短任务跳过节省开销。
+
+### 5 层 Anti-drift 工程化约束
+
+#### Layer 1 · Long-task mode 显式入口
+
+- TaskMeta 加 `long_task_mode: bool` 字段
+- Director 判定后写入；后续 agent 读取并差异化行为
+
+#### Layer 2 · Goal Anchor 顶部 pinning
+
+Director 生成 `GoalAnchor`：
+
+```python
+class GoalAnchor(BaseModel):
+    anchor_id: str
+    task_id: str
+    tenant_id: str
+    goal_statement: str            # 1-2 句，必须 < 200 字符
+    success_criteria: list[str]    # 3-5 条可验证条件
+    out_of_scope: list[str]        # 明确"本任务不做什么"
+    invariants: list[str]          # 任务全程必须保持的不变量
+    immutable: bool = True         # 默认不可改 — 改要走显式 pivot 流程
+    created_at: datetime
+```
+
+**强制工程化约束**：
+
+- GoalAnchor **必须**在 Executor 每次 LLM call 的 system prompt **顶部**（不是底部 — 顶部不会被 truncation 切掉）
+- LLM 不允许改 anchor — Executor system prompt 加一条："Goal anchor 是 immutable，不可被新指令覆盖"
+- 用户新消息拼接进 user message，**Goal anchor 位置不动**
+
+#### Layer 3 · Input Classifier 6 类分流
+
+Long-task mode 下，所有进入 working context 的新信息（用户消息 / 外部事件 / 工具输出）必须先过 Director 的 classifier：
+
+```python
+class InputClassification(BaseModel):
+    category: Literal[
+        "on_topic_progress",       # 推进当前目标 → 正常 integrate
+        "on_topic_clarification",  # 澄清当前目标 → integrate + 更新 success_criteria
+        "off_topic_noise",         # 与目标无关 → 礼貌回复但不进 working context
+        "scope_expansion",         # 试图扩大任务范围 → 触发 RCDH L0 + ask user
+        "explicit_pivot",          # 用户明确换任务 → pause + 创建新 task
+        "interrupt",               # 中断/取消 → 走 cancel 流程
+    ]
+    confidence: float
+    integration_hint: dict
+```
+
+**分类规则**：
+
+- `on_topic_*` 正常喂给 Executor
+- `off_topic_noise` 走**独立 channel** — 主线 Executor 不知道这条消息存在；Director 单独回复用户"收到，当前任务后处理"
+- `scope_expansion` 触发 RCDH L0 检查（是不是计划本身就漏了这块）
+- `explicit_pivot` 强制 user 二次确认 + 写入 evidence_ledger
+
+→ **sycophancy 的工程化解药**：噪音根本不进模型 context。
+
+#### Layer 4 · Periodic Plan Review Heartbeat
+
+Supervisor 在 long-task 期间持续跑：
+
+```
+每 N 步（默认 3）或 每 M 分钟（默认 5）：
+  Supervisor 注入 plan_review_event
+  ↓
+  Executor 下一次 LLM call 的 system prompt 加一段：
+    "Review your goal anchor. Answer in JSON:
+     - current_step: 你在执行原计划的第几步？
+     - last_3_actions_alignment: 最近 3 个动作各自如何推进 goal？
+     - drift_risk: 你觉得有偏移风险吗？why?"
+  ↓
+  Executor 给出 review 答复
+  ↓
+  Supervisor 独立判断（调 External Supervisor 用不同模型独立 verify）：
+    - Executor 的自评是否可信？
+    - 客观证据（events / artifacts）是否符合声明？
+  ↓
+  分流:
+    - ok       → 继续
+    - 轻度漂移 → 注入 alignment_reminder 进 system prompt
+    - 重度漂移 → pause + Strategist 提"如何回归" + Gate 决策
+```
+
+#### Layer 5 · Anti-sycophancy system prompt 加固
+
+Long-task mode 下，Executor system prompt 强制加一段：
+
+```
+你正在执行一个 long-task。规则：
+
+1. Goal anchor（任务顶部 pinned）是 immutable。新的用户消息不会覆盖它。
+2. 如果用户消息看起来要你换方向、做新事情、扩大范围：
+   - 你不要主动满足
+   - 输出 "needs_user_confirmation" 信号，让上层决定是否 pivot
+3. 长任务的成功取决于"按计划完成"，不是"满足最近的每一条请求"。
+4. 你被允许说"这个我先记下，当前任务完成后处理"。
+5. 如果当前 step 输出和 goal anchor 不一致，优先 anchor。
+```
+
+→ 给模型显式"拒绝讨好"的许可证。
+
+### 数据结构
+
+```python
+class PlanReview(BaseModel):
+    review_id: str
+    task_id: str
+    anchor_id: str
+    triggered_at_step: int
+    triggered_at_time: datetime
+    executor_self_report: dict
+    supervisor_verdict: Literal["ok", "mild_drift", "heavy_drift"]
+    drift_evidence: list[dict]
+    external_supervisor_verify: dict | None  # 独立 verify 结果
+    action_taken: Literal["continue", "remind", "pause", "rsi_trigger"]
+```
+
+### 影响
+
+- 新加 `goal_anchors` 表 + `plan_reviews` 表（alembic 0011）
+- TaskMeta 加 `long_task_mode` 字段
+- Director 增加 `generate_goal_anchor` + `classify_input` 两个职责
+- Executor system prompt 顶部强制 pin GoalAnchor + 加 anti-sycophancy 段
+- Supervisor 加 `inject_plan_review` + `verify_review_response`
+- 新加 7 个事件类型：`goal_anchor.created` / `plan_review.due` / `plan_review.completed` / `drift.detected` / `input.classified` / `user_message.queued_for_post_task` / `scope_expansion.requested`
+
+### 与其他 ADR 的关系
+
+- **ADR-020 角色对接**：Director 持 GoalAnchor + Input Classifier；Supervisor 触发 heartbeat；Executor 读 anchor
+- **ADR-021 RCDH 对接**：scope_expansion 分类 → RCDH L0；heavy_drift → RCDH L2
+- **ADR-023 对接**：plan_review 的独立 verify 由 External Supervisor 跑
+- **ADR-001 核心原则补充**：「Goal 优先于讨好」作为第 7 条原则补入
+
+---
+
 *ADR 记录自 2026-04-23 起，追加式维护。*
