@@ -21,7 +21,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-RuleKind = Literal["guard", "validation", "ci", "anomaly", "cache"]
+RuleKind = Literal["guard", "anomaly"]
 Severity = Literal["info", "low", "medium", "high", "critical"]
 
 

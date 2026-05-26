@@ -6,12 +6,13 @@ KUN 的 LLM 主动性不够 — 工具描述塞进 prompt, 模型大概率直接
 web-search 已经查到的结果, 请基于它回答".
 
 四层机制:
-  层 1: 关键词触发器 (本文件 DEFAULT_TRIGGERS)         — fallback
-  层 2: yaml 规则可配置 (rules/proactive/triggers.yaml) — 守望加载, 可热改, 后续可学习
-  层 3: SKILL.md auto_trigger_when                    — 每 skill 自己声明
-  层 4: capability_card 失败回看                       — evaluator 升级"强制用工具"
+  层 1: 关键词触发器 (本文件 DEFAULT_TRIGGERS)                       — fallback
+  层 2: yaml 规则可配置 (kun/engineering/config/proactive_triggers.yaml) — orchestrator 加载, 可热改
+  层 3: SKILL.md auto_trigger_when                                — 每 skill 自己声明
+  层 4: capability_card 失败回看                                     — evaluator 升级"强制用工具"
 
-主流程: load_triggers_from_yaml() 优先加载 yaml; 没找到 / 解析失败时回退 DEFAULT_TRIGGERS.
+主流程: load_triggers_from_yaml() 优先加载 yaml; 文件不存在时回退 DEFAULT_TRIGGERS;
+yaml 存在但语法/内容错误时 raise — 静默 fallback 会让用户以为改动生效其实没生效.
 """
 
 from __future__ import annotations
@@ -125,7 +126,7 @@ def _extract_csv_path(match: re.Match[str], _prompt: str) -> dict[str, Any] | No
 # ============== Yaml-driven triggers (layer 2) ==============
 
 
-_DEFAULT_YAML_PATH = Path(__file__).resolve().parents[2] / "rules" / "proactive" / "triggers.yaml"
+_DEFAULT_YAML_PATH = Path(__file__).resolve().parent / "config" / "proactive_triggers.yaml"
 
 
 def _make_extract_callable(extract_cfg: dict[str, Any]) -> Any:
@@ -188,10 +189,10 @@ def _make_extract_callable(extract_cfg: dict[str, Any]) -> Any:
 
 
 def load_triggers_from_yaml(path: Path | str | None = None) -> list[ToolTrigger]:
-    """Load triggers from yaml. Empty / missing / malformed → empty list.
+    """Load triggers from yaml.
 
-    Caller is expected to fall back to DEFAULT_TRIGGERS on empty result.
-    Catches everything intentionally — observability never breaks routing.
+    Missing file → empty list (caller falls back to DEFAULT_TRIGGERS).
+    Malformed YAML or invalid triggers → raise; the operator should know.
     """
     target = Path(path) if path else _DEFAULT_YAML_PATH
     if not target.exists():
@@ -201,11 +202,12 @@ def load_triggers_from_yaml(path: Path | str | None = None) -> list[ToolTrigger]
         with target.open(encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
     except (OSError, yaml.YAMLError) as e:
-        log.warning("proactive.yaml_load_failed", path=str(target), error=str(e))
-        return []
+        log.error("proactive.yaml_load_failed", path=str(target), error=str(e))
+        raise
 
     raw_entries = data.get("triggers") or []
     out: list[ToolTrigger] = []
+    dropped: list[dict[str, Any]] = []
     for entry in raw_entries:
         try:
             pattern = re.compile(entry["pattern"], re.IGNORECASE | re.MULTILINE)
@@ -220,8 +222,10 @@ def load_triggers_from_yaml(path: Path | str | None = None) -> list[ToolTrigger]
                 )
             )
         except (KeyError, re.error, TypeError) as e:
-            log.warning("proactive.trigger_invalid", entry=entry, error=str(e))
-            continue
+            dropped.append({"entry": entry, "error": str(e)})
+    if dropped:
+        log.error("proactive.trigger_invalid", count=len(dropped), dropped=dropped)
+        raise ValueError(f"proactive triggers: {len(dropped)} invalid entries in {target}")
     log.info("proactive.yaml_loaded", path=str(target), count=len(out))
     return out
 

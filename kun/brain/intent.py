@@ -98,9 +98,15 @@ class IntentInterpreter:
             response = await self.router.invoke(request, purpose="intent")
             span.set_attribute("kun.cost_usd_equivalent", response.cost_usd_equivalent)
 
-        parsed = self._parse_json(response.content)
-
         fingerprint = TaskMeta.compute_fingerprint(user_message, owner)
+        parsed = self._parse_json(response.content)
+        if not parsed:
+            log.error(
+                "intent.parse_failed_using_defaults",
+                tenant_id=owner.tenant_id,
+                fingerprint=fingerprint,
+                provider_response_sample=response.content[:200] if response.content else "",
+            )
         meta = TaskMeta(
             fingerprint=fingerprint,
             task_type=parsed.get("task_type", "general.default"),

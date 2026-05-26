@@ -1,17 +1,18 @@
 """idle-batch 调度器 (§6.4) — 用户闲置时批处理.
 
-统一承载所有离线学习 / 评估 / 进化:
-  - 任务回放 (task_replay)
-  - 多样本一致性测试 (consistency_test)
-  - 方法论蒸馏 (methodology_distill)
-  - 知识冲突解决 (knowledge_conflict)
-  - AB 决策汇总 (ab_decision_roll_up)
-  - 健康报告生成 (health_report)
-  - 路由规律涌现发现 (route_rule_mining)
+当前实现状态:
+  - health_report             : ✅ 真实 — 读 tasks/outbox/cost 计数器, 给 NUO 用
+  - task_replay               : ⚠️  STUB — 只数失败任务, 没回放
+  - consistency_test          : ⚠️  STUB — 只数低 reliability 卡片
+  - methodology_distill       : ⚠️  STUB — 只数学习事件
+  - knowledge_conflict        : ⚠️  STUB — 只数冲突事件
+  - ab_decision_roll_up       : ⚠️  STUB — 只数 promotion/rollback
+  - route_rule_mining         : ⚠️  STUB — 只数 fallback 事件
+
+STUB step 上报 status="stub"; 真实 step 上报 status="ok". run_all 会把两者
+区分给 dashboard, 别误以为自演化在跑.
 
 每项都是一个 `IdleBatchStep`, 可独立开关 (ADR "用户可关").
-
-Walking skeleton: 注册 6 类 step 的占位实现, 实际逻辑由 follow-on commits 填.
 """
 
 from __future__ import annotations
@@ -39,9 +40,15 @@ class StepReport:
 
 
 class IdleBatchStep(ABC):
-    """A single step run during idle-batch."""
+    """A single step run during idle-batch.
+
+    `stub=True` means the step's run() only reads counters / probes — it does
+    not perform the action implied by its name. Stub steps report status="stub"
+    so dashboards and tests don't mistake them for completed work.
+    """
 
     step_id: str
+    stub: bool = False
 
     @abstractmethod
     async def run(self, tenant_id: str) -> dict[str, Any]: ...
@@ -88,7 +95,7 @@ async def run_all(
                         step_id=name,
                         started_at=started,
                         finished_at=datetime.now(UTC),
-                        status="ok",
+                        status="stub" if getattr(step, "stub", False) else "ok",
                         summary=summary,
                     )
                 )
@@ -111,9 +118,10 @@ async def run_all(
 
 
 class TaskReplayStep(IdleBatchStep):
-    """Replay recent historical tasks with the current router + skills, compare outputs."""
+    """Replay recent historical tasks — STUB: only counts failed tasks, doesn't replay."""
 
     step_id = "task_replay"
+    stub = True
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from sqlalchemy import func, select
@@ -145,9 +153,10 @@ class TaskReplayStep(IdleBatchStep):
 
 
 class ConsistencyTestStep(IdleBatchStep):
-    """Triple-perturbation (temperature / rewording / model) consistency check."""
+    """Triple-perturbation consistency check — STUB: only counts weak cards."""
 
     step_id = "consistency_test"
+    stub = True
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from sqlalchemy import func, select
@@ -179,9 +188,10 @@ class ConsistencyTestStep(IdleBatchStep):
 
 
 class MethodologyDistillStep(IdleBatchStep):
-    """情节记忆 → 语义方法论 蒸馏."""
+    """情节记忆 → 语义方法论 蒸馏 — STUB: only counts learning events."""
 
     step_id = "methodology_distill"
+    stub = True
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from sqlalchemy import func, select
@@ -218,9 +228,10 @@ class MethodologyDistillStep(IdleBatchStep):
 
 
 class KnowledgeConflictStep(IdleBatchStep):
-    """Resolve conflicting memories in the asset pool."""
+    """Resolve conflicting memories — STUB: only counts conflict events."""
 
     step_id = "knowledge_conflict"
+    stub = True
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from sqlalchemy import func, select
@@ -244,9 +255,10 @@ class KnowledgeConflictStep(IdleBatchStep):
 
 
 class ABDecisionRollupStep(IdleBatchStep):
-    """Collect AB-experiment results, promote/demote based on guardrails."""
+    """Collect AB-experiment results — STUB: only counts promotions/rollbacks."""
 
     step_id = "ab_decision_roll_up"
+    stub = True
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from sqlalchemy import func, select
@@ -323,9 +335,10 @@ class HealthReportStep(IdleBatchStep):
 
 
 class RouteRuleMiningStep(IdleBatchStep):
-    """Cluster + association-rule mining over routing logs to surface new route patterns."""
+    """Route-rule mining — STUB: only counts fallback events."""
 
     step_id = "route_rule_mining"
+    stub = True
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from sqlalchemy import func, select

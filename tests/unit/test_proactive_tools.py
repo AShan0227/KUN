@@ -134,8 +134,8 @@ def test_load_triggers_from_yaml_missing_file_returns_empty(tmp_path: Path) -> N
 
 
 @pytest.mark.unit
-def test_load_triggers_from_yaml_skips_invalid_entries(tmp_path: Path) -> None:
-    """单条坏规则不能拖垮整份 yaml — 好的还能加载."""
+def test_load_triggers_from_yaml_raises_on_invalid_entry(tmp_path: Path) -> None:
+    """坏规则 raise — 静默丢条目会让用户改了 yaml 以为生效其实没生效."""
     bad_yaml = tmp_path / "triggers.yaml"
     bad_yaml.write_text(
         """
@@ -154,17 +154,19 @@ triggers:
 """,
         encoding="utf-8",
     )
-    triggers = load_triggers_from_yaml(bad_yaml)
-    assert len(triggers) == 1
-    assert triggers[0].skill_id == "web-search"
+    with pytest.raises(ValueError, match="invalid entries"):
+        load_triggers_from_yaml(bad_yaml)
 
 
 @pytest.mark.unit
-def test_load_triggers_from_yaml_garbage_returns_empty(tmp_path: Path) -> None:
-    """彻底坏的 yaml 不能让进程崩 — 返回空, 由调用方走 DEFAULT_TRIGGERS."""
+def test_load_triggers_from_yaml_raises_on_garbage(tmp_path: Path) -> None:
+    """彻底坏的 yaml raise — 让操作员立即看到, 不静默 fallback."""
+    import yaml as _yaml
+
     junk = tmp_path / "junk.yaml"
     junk.write_text(":\n  - this is: : not yaml\n  - [", encoding="utf-8")
-    assert load_triggers_from_yaml(junk) == []
+    with pytest.raises(_yaml.YAMLError):
+        load_triggers_from_yaml(junk)
 
 
 # ============== Layer 3: SKILL.md auto_trigger_when ==============

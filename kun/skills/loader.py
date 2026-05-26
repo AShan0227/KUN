@@ -57,7 +57,7 @@ class SkillManifest(BaseModel):
     denied_patterns: list[str] = Field(default_factory=list)
     denied_domains: list[str] = Field(default_factory=list)
     # 主动用工具 layer 3: 每个 skill 自带的"看到这种 prompt 就触发我"声明.
-    # 元素跟 rules/proactive/triggers.yaml 的 trigger 同形:
+    # 元素跟 kun/engineering/config/proactive_triggers.yaml 的 trigger 同形:
     #   - pattern: 正则
     #   - extract: {kind, param_name, min_len, max_len, extra_params}
     # 例子: [{pattern: '\\.csv\\b', extract: {kind: match_group_0, param_name: path}}]

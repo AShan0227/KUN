@@ -477,12 +477,13 @@ def _command_env(cwd: Path) -> dict[str, str]:
     """Build a stable tool PATH for daemon-launched app QA commands."""
 
     repo_root = Path(__file__).resolve().parents[2]
-    path_candidates = [
+    daemon_safe_npm = repo_root / ".kun-local" / "npm-tool" / "bin"
+    optional_candidates = [
         Path.home() / ".local" / "bin",
         Path("/Applications/Codex.app/Contents/Resources"),
-        repo_root / ".kun-local" / "npm-tool" / "bin",
     ]
-    existing = [str(path) for path in path_candidates if path.exists()]
+    existing = [str(path) for path in optional_candidates if path.exists()]
+    existing.append(str(daemon_safe_npm))
     current_path = os.environ.get("PATH", "")
     path = os.pathsep.join([*existing, current_path] if current_path else existing)
     env = dict(os.environ)
