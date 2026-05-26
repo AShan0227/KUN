@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -76,8 +77,21 @@ def _is_correction(text: str) -> bool:
 
 @ws_router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket) -> None:
+    # SECURITY: There is no real authentication on the WS endpoint — any client
+    # that knows a tenant_id can claim it. Until a Bearer/HMAC scheme is wired,
+    # we at minimum (a) refuse to fall through to a default tenant in production
+    # (resolve_tenant_id handles that) and (b) optionally refuse query-param
+    # tenant entirely so the only way in is via a real session cookie / header
+    # set by an external auth proxy.
+    raw_tenant = ws.query_params.get("tenant_id")
+    if os.getenv("KUN_WS_REQUIRE_AUTH_HEADER") == "1" and raw_tenant:
+        # Configured for strict mode: WS must come via authenticated reverse
+        # proxy that sets tenant from a verified session, not from query.
+        log.warning("ws.rejected_query_tenant_in_strict_mode")
+        await ws.close(code=1008, reason="WS auth required")
+        return
     try:
-        tenant_id = resolve_tenant_id(ws.query_params.get("tenant_id"))
+        tenant_id = resolve_tenant_id(raw_tenant)
     except MissingTenantContextError:
         await ws.close(code=1008, reason="tenant_id required")
         return

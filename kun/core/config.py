@@ -5,8 +5,18 @@ from __future__ import annotations
 from functools import cache
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# Defaults we tolerate in dev but must NEVER reach production.
+_DEV_DEFAULT_PG_ADMIN_DSN = "postgresql+asyncpg://kun:kun@localhost:55432/kun"
+_DEV_DEFAULT_S3_ACCESS_KEY = "minio"
+_DEV_DEFAULT_S3_SECRET_KEY = "minio123"
+
+
+class InsecureProductionConfigError(RuntimeError):
+    """Raised at startup when production config still uses dev defaults."""
 
 
 class Settings(BaseSettings):
@@ -33,7 +43,7 @@ class Settings(BaseSettings):
 
     # Postgres
     pg_dsn: str = "postgresql+asyncpg://kun_app:kun_app@localhost:55432/kun"
-    pg_admin_dsn: str = "postgresql+asyncpg://kun:kun@localhost:55432/kun"
+    pg_admin_dsn: str = _DEV_DEFAULT_PG_ADMIN_DSN
     pg_pool_size: int = 10
 
     # Redis
@@ -48,8 +58,8 @@ class Settings(BaseSettings):
 
     # S3 / MinIO
     s3_endpoint: str = "http://localhost:19000"
-    s3_access_key: str = "minio"
-    s3_secret_key: str = "minio123"
+    s3_access_key: str = _DEV_DEFAULT_S3_ACCESS_KEY
+    s3_secret_key: str = _DEV_DEFAULT_S3_SECRET_KEY
     s3_bucket: str = "kun-artifacts"
     s3_region: str = "us-east-1"
 
@@ -83,6 +93,42 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     api_cors_origins: str = "http://localhost:3000"
+
+    @field_validator("api_cors_origins")
+    @classmethod
+    def _validate_cors_origins(cls, v: str) -> str:
+        """Reject wildcard with credentials enabled (CSRF foothold)."""
+        origins = [o.strip() for o in v.split(",") if o.strip()]
+        if "*" in origins:
+            raise ValueError(
+                "api_cors_origins must not contain '*' — combined with "
+                "allow_credentials=True this would enable CSRF. List exact origins."
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _production_safety(self) -> Settings:
+        """In production refuse to start with dev defaults still in place."""
+        if self.env != "production":
+            return self
+        violations: list[str] = []
+        if self.pg_admin_dsn == _DEV_DEFAULT_PG_ADMIN_DSN:
+            violations.append("KUN_PG_ADMIN_DSN is the dev default 'kun:kun@...'")
+        if self.s3_access_key == _DEV_DEFAULT_S3_ACCESS_KEY:
+            violations.append("KUN_S3_ACCESS_KEY is the dev default 'minio'")
+        if self.s3_secret_key == _DEV_DEFAULT_S3_SECRET_KEY:
+            violations.append("KUN_S3_SECRET_KEY is the dev default 'minio123'")
+        if self.default_tenant_id is not None:
+            violations.append(
+                f"KUN_DEFAULT_TENANT_ID={self.default_tenant_id!r} — must be unset "
+                "in production so missing X-Tenant-Id fails closed"
+            )
+        if violations:
+            joined = "\n  - ".join(violations)
+            raise InsecureProductionConfigError(
+                f"KUN_ENV=production but insecure defaults remain:\n  - {joined}"
+            )
+        return self
 
 
 @cache
