@@ -28,14 +28,8 @@ from kun.core.logging import get_logger
 log = get_logger("kun.agents.strategist.service")
 
 
-_SELF_REFERENTIAL_PREFIXES = (
-    "strategist",
-    "supervisor",
-    "gate",
-    "director",
-    "external_supervisor",
-)
-"""自指限制 (ADR-024 §约束 1): 改这些 agent 自己 → 强制人审."""
+"""自指限制 (ADR-024 §约束 1): 改 5 个监督角色之一 → 强制人审.
+统一定义在 kun/governance/self_referential.py — L3.5 集中."""
 
 
 @dataclass(frozen=True)
@@ -100,18 +94,14 @@ _BACKWARD_LOOKBACK_HOURS = 24
 
 
 def _is_self_referential(target_module: str) -> bool:
-    """target_module 命中 5 个监督角色之一 → self-referential."""
-    lowered = target_module.lower()
-    for prefix in _SELF_REFERENTIAL_PREFIXES:
-        if (
-            lowered == prefix
-            or lowered.startswith(f"{prefix}.")
-            or lowered.startswith(f"{prefix}/")
-            or lowered.startswith(f"kun/agents/{prefix}")
-            or lowered.startswith(f"kun.agents.{prefix}")
-        ):
-            return True
-    return False
+    """target_module 命中 5 个监督角色之一 → self-referential.
+
+    Wrapper around kun.governance.self_referential.is_self_referential 保持
+    本模块 backward-compat (test 直接 import); 真逻辑统一在 governance 模块.
+    """
+    from kun.governance.self_referential import is_self_referential
+
+    return is_self_referential(target_module)
 
 
 # ---- 第一条 RSI 实例: llm_fallback_spike ----
@@ -670,7 +660,14 @@ class StrategistService:
         candidates: list[StrategyExperiment],
         anomaly_kind: str,
     ) -> list[StrategyExperiment]:
-        """共用: 自指标 human review + emit 落库."""
+        """共用: 自指标 human review + 强制 target_level=0 + emit 落库.
+
+        L3.5 自指限制强化:
+          - requires_human_review=True (Gate 不 auto-admit)
+          - status='awaiting_human_review'
+          - target_level=0 (设计层 — 改自己属于设计决策)
+          - rationale 标 [SELF-REFERENTIAL: forced design-level review]
+        """
         from dataclasses import replace
 
         adjusted: list[StrategyExperiment] = []
@@ -681,7 +678,11 @@ class StrategistService:
                         c,
                         requires_human_review=True,
                         status="awaiting_human_review",
-                        rationale=c.rationale + " [SELF-REFERENTIAL: human review required]",
+                        target_level=0,  # L3.5: 强制设计层
+                        rationale=(
+                            c.rationale
+                            + " [SELF-REFERENTIAL: forced target_level=0 design-level human review]"
+                        ),
                     )
                 )
             else:

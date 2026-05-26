@@ -29,15 +29,6 @@ Severity = Literal["weak", "mid", "strong"]
 EscalationLevel = Literal["role", "task", "gate", "human"]
 
 
-_SELF_REFERENTIAL_PREFIXES = (
-    "strategist",
-    "supervisor",
-    "gate",
-    "director",
-    "external_supervisor",
-)
-
-
 @dataclass(frozen=True)
 class EscalationDecision:
     """单次升级决策 — Supervisor 输出, 给上层调度路由."""
@@ -53,19 +44,12 @@ class EscalationDecision:
 def _is_self_referential(target_module: str) -> bool:
     """target_module 命中 5 个监督角色之一 → self-referential.
 
-    与 Strategist `_is_self_referential` 同源逻辑 (4 种命名形式).
+    Wrapper around kun.governance.self_referential.is_self_referential —
+    L3.5 集中, 此处保留以兼容 import.
     """
-    lowered = target_module.lower()
-    for prefix in _SELF_REFERENTIAL_PREFIXES:
-        if (
-            lowered == prefix
-            or lowered.startswith(f"{prefix}.")
-            or lowered.startswith(f"{prefix}/")
-            or lowered.startswith(f"kun/agents/{prefix}")
-            or lowered.startswith(f"kun.agents.{prefix}")
-        ):
-            return True
-    return False
+    from kun.governance.self_referential import is_self_referential
+
+    return is_self_referential(target_module)
 
 
 def compute_severity(
