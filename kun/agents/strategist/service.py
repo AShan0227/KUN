@@ -20,10 +20,13 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kun.core.ids import new_id
 from kun.core.logging import get_logger
+
+if TYPE_CHECKING:
+    from kun.agents.strategist.explorer_pool import ExplorerPoolConfig
 
 log = get_logger("kun.agents.strategist.service")
 
@@ -593,9 +596,17 @@ class StrategistService:
         *,
         emitter: ExperimentEmitter | None = None,
         capability_history_reader: CapabilityHistoryReader | None = None,
+        explorer_pool_config: ExplorerPoolConfig | None = None,
     ) -> None:
+        from kun.agents.strategist.explorer_pool import (
+            load_explorer_pool_config,
+        )
+
         self._emitter = emitter
         self._history_reader = capability_history_reader
+        self._explorer_pool: ExplorerPoolConfig = (
+            explorer_pool_config or load_explorer_pool_config()
+        )
 
     async def propose_candidates(
         self,
@@ -653,6 +664,8 @@ class StrategistService:
             return []
 
         candidates = generator(request)
+        # L4.1 Explorer Pool 过滤 — 仅保留 enabled forward modes
+        candidates = self._explorer_pool.filter_candidates(candidates)
         return await self._emit_and_adjust(candidates, anomaly_kind)
 
     async def _emit_and_adjust(

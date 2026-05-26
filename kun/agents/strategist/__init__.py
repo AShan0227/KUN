@@ -5,6 +5,11 @@
 """
 
 from kun.agents.strategist.base import Strategist
+from kun.agents.strategist.explorer_pool import (
+    ExplorerMode,
+    ExplorerPoolConfig,
+    load_explorer_pool_config,
+)
 from kun.agents.strategist.service import (
     CapabilityHistoryReader,
     ExperimentEmitter,
@@ -17,9 +22,12 @@ from kun.agents.strategist.service import (
 __all__ = [
     "CapabilityHistoryReader",
     "ExperimentEmitter",
+    "ExplorerMode",
+    "ExplorerPoolConfig",
     "Strategist",
     "StrategistService",
     "StrategyExperiment",
     "experiment_as_dict",
+    "load_explorer_pool_config",
     "select_repair_direction",
 ]
