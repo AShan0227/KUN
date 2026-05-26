@@ -40,7 +40,18 @@ def _observation(**overrides: object) -> NuoObservation:
         ({"timed_out": True}, "timeout"),
         ({"error_text": "deadline exceeded while waiting for runner"}, "timeout"),
         ({"error_text": "Unexpected EOF from upstream"}, "network_eof"),
+        ({"error_text": "tls handshake eof; stream disconnected"}, "network_eof"),
         ({"error_text": "connection reset by peer"}, "network_blocked"),
+        ({"error_text": "OSError: connect call failed ('127.0.0.1', 55432)"}, "network_blocked"),
+        (
+            {
+                "error_text": (
+                    "ProcessPoolExecutor failed: PermissionError: [Errno 1] "
+                    "Operation not permitted in os.sysconf('SC_SEM_NSEMS_MAX')"
+                )
+            },
+            "sandbox_permission_blocked",
+        ),
         ({"error_text": "wrapper not found: codex-msg"}, "wrapper_missing"),
         (
             {"error_text": "tool schema mismatch: unexpected argument --task-family"},
@@ -201,6 +212,44 @@ def test_nuo_authorized_fallback_is_not_pollution() -> None:
     assert report.contamination_detected is False
 
 
+def test_nuo_does_not_block_successful_isolated_workspace_output_fallback() -> None:
+    report = diagnose_nuo_health(
+        _observation(
+            output_text=(
+                "Output directory used: /workspace/outputs/adflow-extreme-attempt. "
+                "The requested sibling output root was sandbox-blocked with "
+                "Operation not permitted, so a fresh unique output directory was created "
+                "inside the isolated workspace instead. What was verified: rendered MP4, "
+                "human simulation accepted, and targeted tests passed."
+            ),
+            artifact_refs=[
+                "artifact-kun-runtime-local-evidence-work-rainflow-player-evidence-abc123",
+                "artifact-kun-runtime-local-evidence-work-rainflow-manifest-def456",
+            ],
+        )
+    )
+
+    assert report.status == "healthy"
+    assert report.findings == []
+
+
+def test_nuo_does_not_treat_historical_environment_text_as_current_blocker() -> None:
+    report = diagnose_nuo_health(
+        _observation(
+            output_text=(
+                "Current product artifact passed. Historical recovery evidence mentions "
+                "ProcessPoolExecutor PermissionError: Operation not permitted and "
+                "sandbox_permission_blocked from a superseded run."
+            ),
+            report_ref="current-report",
+            artifact_refs=["artifact-current-product-pass"],
+        )
+    )
+
+    assert report.status == "healthy"
+    assert report.findings == []
+
+
 def test_nuo_pollution_sample_library_classifies_real_failure_families() -> None:
     samples = build_nuo_pollution_sample_library()
 
@@ -210,9 +259,11 @@ def test_nuo_pollution_sample_library_classifies_real_failure_families() -> None
         "family-routing-mismatch",
         "runner-timeout",
         "network-eof",
+        "transport-stream-disconnected",
         "network-blocked",
         "auth-failure",
         "permission-denied",
+        "sandbox-process-pool-permission",
         "wrapper-missing",
         "wrapper-contract-change",
         "report-missing",
@@ -246,6 +297,17 @@ def test_nuo_pollution_sample_library_classifies_real_failure_families() -> None
         ),
         (
             {"error_text": "tool schema mismatch: unexpected argument --run-tag"},
+            "repair",
+            "control-plane",
+            "fix_wrapper",
+        ),
+        (
+            {
+                "error_text": (
+                    "ProcessPoolExecutor failed: PermissionError: [Errno 1] "
+                    "Operation not permitted in os.sysconf('SC_SEM_NSEMS_MAX')"
+                )
+            },
             "repair",
             "control-plane",
             "fix_wrapper",

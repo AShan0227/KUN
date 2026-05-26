@@ -20,7 +20,12 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from kun.control_plane.capability_execution import CapabilityExecutionPolicy
-from kun.control_plane.concurrency import normalize_resource_lock_ref
+from kun.control_plane.concurrency import (
+    is_pure_governance_work_item,
+    is_workspace_resource_lock_ref,
+    normalize_resource_lock_ref,
+    work_item_requires_workspace_boundary,
+)
 from kun.control_plane.v6 import ArtifactRecord, ExecutionContract, TaskPlan, WorkItem
 from kun.control_plane.workspace_snapshot import create_workspace_snapshot
 
@@ -63,14 +68,16 @@ def activate_work_item_features(
     )
 
     workspace_path = _workspace_path(contract)
+    needs_workspace_boundary = work_item_requires_workspace_boundary(work_item)
+    existing_resource_locks = _activation_resource_locks(work_item)
     resource_locks = _merge_unique(
-        work_item.resource_locks,
+        existing_resource_locks,
         _resource_locks(work_item=work_item, workspace_path=workspace_path),
     )
     checkpoint_artifact = _build_checkpoint_artifact(
         control_plane=control_plane,
         work_item=work_item,
-        workspace_path=workspace_path,
+        workspace_path=workspace_path if needs_workspace_boundary else None,
         actor=actor,
         observed_at=observed_at,
     )
@@ -79,7 +86,7 @@ def activate_work_item_features(
     checkpoint_refs = list(work_item.checkpoint_refs)
     rollback_refs = list(work_item.rollback_refs)
     artifacts: list[ArtifactRecord] = []
-    if workspace_path:
+    if workspace_path and needs_workspace_boundary:
         workspace_ref = workspace_ref or f"workspace://{workspace_path}"
         sandbox_ref = sandbox_ref or f"sandbox://{work_item.mission_id}/{work_item.work_item_id}"
     if checkpoint_artifact is not None:
@@ -219,11 +226,23 @@ def _external_source_refs(*, task_plan: TaskPlan | None, work_item: WorkItem) ->
 
 def _resource_locks(*, work_item: WorkItem, workspace_path: str | None) -> list[str]:
     locks: list[str] = []
-    if workspace_path:
+    if workspace_path and work_item_requires_workspace_boundary(work_item):
         locks.append(normalize_resource_lock_ref(f"workspace:{workspace_path}"))
     if work_item.type in {"merge", "rollback"}:
         locks.append(f"mission:{work_item.mission_id}")
     return locks
+
+
+def _activation_resource_locks(work_item: WorkItem) -> list[str]:
+    locks: list[str] = []
+    for value in work_item.resource_locks:
+        normalized = normalize_resource_lock_ref(value)
+        if not normalized:
+            continue
+        if is_pure_governance_work_item(work_item) and is_workspace_resource_lock_ref(normalized):
+            continue
+        locks.append(normalized)
+    return _merge_unique(locks)
 
 
 def _workspace_path(contract: ExecutionContract | None) -> str | None:

@@ -27,6 +27,7 @@ NuoFindingCode = Literal[
     "wrapper_contract_mismatch",
     "auth_failure",
     "permission_denied",
+    "sandbox_permission_blocked",
     "report_missing",
     "rollback_refs_missing",
     "review_count_missing",
@@ -67,6 +68,7 @@ _ENVIRONMENT_FINDINGS: frozenset[NuoFindingCode] = frozenset(
         "wrapper_contract_mismatch",
         "auth_failure",
         "permission_denied",
+        "sandbox_permission_blocked",
     }
 )
 _CONTAMINATION_FINDINGS: frozenset[NuoFindingCode] = frozenset(
@@ -411,6 +413,13 @@ def build_nuo_pollution_sample_library() -> list[NuoPollutionSample]:
             expected_recovery_action="rerun",
         ),
         _sample(
+            sample_id="transport-stream-disconnected",
+            description="Model/comparator transport stream disconnected after retry.",
+            error_text="tls handshake eof; stream disconnected during http/request failed retry",
+            expected_codes=["network_eof", "network_blocked"],
+            expected_recovery_action="rerun",
+        ),
+        _sample(
             sample_id="network-blocked",
             description="Network transport was blocked before the run could be trusted.",
             error_text="connection reset by peer during comparator call",
@@ -430,6 +439,16 @@ def build_nuo_pollution_sample_library() -> list[NuoPollutionSample]:
             error_text="403 forbidden: permission denied",
             expected_codes=["permission_denied"],
             expected_recovery_action="fix_auth",
+        ),
+        _sample(
+            sample_id="sandbox-process-pool-permission",
+            description="Sandbox denied multiprocessing semaphore access.",
+            error_text=(
+                "ProcessPoolExecutor failed: PermissionError: [Errno 1] Operation not permitted "
+                "while reading os.sysconf('SC_SEM_NSEMS_MAX')"
+            ),
+            expected_codes=["sandbox_permission_blocked"],
+            expected_recovery_action="fix_wrapper",
         ),
         _sample(
             sample_id="wrapper-missing",
@@ -543,8 +562,12 @@ def _detect_output_contamination(observation: NuoObservation) -> list[NuoHealthF
 
 
 def _detect_environment_blockers(observation: NuoObservation) -> list[NuoHealthFinding]:
-    text = f"{observation.error_text}\n{observation.output_text}".lower()
     error_text = observation.error_text.lower()
+    text = error_text
+    isolated_workspace_fallback_succeeded = _isolated_workspace_output_fallback_succeeded(
+        observation,
+        text=f"{observation.error_text}\n{observation.output_text}".lower(),
+    )
     findings: list[NuoHealthFinding] = []
     if (
         observation.timed_out
@@ -563,7 +586,16 @@ def _detect_environment_blockers(observation: NuoObservation) -> list[NuoHealthF
                 recommended_action="rerun",
             )
         )
-    if observation.network_eof or "network eof" in text or "unexpected eof" in text:
+    if observation.network_eof or any(
+        pattern in text
+        for pattern in (
+            "network eof",
+            "unexpected eof",
+            "tls handshake eof",
+            "stream disconnected",
+            "remote disconnected",
+        )
+    ):
         findings.append(
             _finding(
                 observation,
@@ -580,8 +612,16 @@ def _detect_environment_blockers(observation: NuoObservation) -> list[NuoHealthF
         for pattern in (
             "connection reset",
             "connection refused",
+            "connect call failed",
             "network unreachable",
             "tls handshake timeout",
+            "failed to connect to websocket",
+            "http/request failed",
+            "dns error",
+            "transport error",
+            "could not connect to server",
+            "database is unavailable",
+            "temporary failure in name resolution",
         )
     ):
         findings.append(
@@ -648,7 +688,35 @@ def _detect_environment_blockers(observation: NuoObservation) -> list[NuoHealthF
                 recommended_action="fix_auth",
             )
         )
-    if any(pattern in text for pattern in ("permission denied", "access denied", "forbidden")):
+    if not isolated_workspace_fallback_succeeded and any(
+        pattern in text
+        for pattern in (
+            "operation not permitted",
+            "errno 1",
+            "sc_sem_nsems_max",
+            "processpoolexecutor",
+            "multiprocessing.synchronize",
+            "sem_open",
+            "semaphore",
+        )
+    ):
+        findings.append(
+            _finding(
+                observation,
+                code="sandbox_permission_blocked",
+                kind="environment_blocker",
+                summary=(
+                    "Sandbox or process-pool permissions blocked execution before the run "
+                    "could be trusted."
+                ),
+                evidence=[_clip(observation.error_text or observation.output_text)],
+                failure_category="environment_failure",
+                recommended_action="fix_wrapper",
+            )
+        )
+    if not isolated_workspace_fallback_succeeded and any(
+        pattern in text for pattern in ("permission denied", "access denied", "forbidden")
+    ):
         findings.append(
             _finding(
                 observation,
@@ -661,6 +729,58 @@ def _detect_environment_blockers(observation: NuoObservation) -> list[NuoHealthF
             )
         )
     return findings
+
+
+def _isolated_workspace_output_fallback_succeeded(
+    observation: NuoObservation,
+    *,
+    text: str,
+) -> bool:
+    """Do not block a successful isolated-output fallback as sandbox failure."""
+
+    if observation.error_text.strip():
+        return False
+    refs = [
+        *observation.artifact_refs,
+        *observation.evidence_refs,
+        *observation.test_refs,
+        *observation.review_refs,
+    ]
+    if not any("local-evidence" in ref or "local_runtime_evidence" in ref for ref in refs):
+        return False
+    if not any(
+        phrase in text
+        for phrase in (
+            "isolated workspace",
+            "workspace output path",
+            "workspace outputs",
+            "inside the workspace",
+            "under the workspace",
+        )
+    ):
+        return False
+    if not any(
+        phrase in text
+        for phrase in (
+            "output directory used",
+            "fresh unique output directory",
+            "new unique output directory",
+            "created a fresh unique output directory",
+            "used a new unique directory",
+        )
+    ):
+        return False
+    return any(
+        phrase in text
+        for phrase in (
+            "requested sibling output root",
+            "outside requested output root",
+            "sandbox-blocked",
+            "sandbox blocked",
+            "permission",
+            "operation not permitted",
+        )
+    )
 
 
 def _detect_artifact_gaps(observation: NuoObservation) -> list[NuoHealthFinding]:

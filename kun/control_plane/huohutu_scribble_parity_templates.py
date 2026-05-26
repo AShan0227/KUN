@@ -596,6 +596,7 @@ const checks = [
   ["compiled parent firebook", jsBundle.includes("Spark traces") && jsBundle.includes("云端队列")],
   ["compiled safety redirect", jsBundle.includes("安全重定向")],
   ["compiled stage styles", cssBundle.includes("stageScene") || sourceStyles.includes(".stageScene")],
+  ["first viewport input remains visible", sourceApp.includes("productGamefeelV35") && sourceStyles.includes(".productGamefeelV35 .ideaForm{position:fixed;left:50%;bottom:14px") && sourceStyles.includes(".productGamefeelV35 .stageScene{height:calc(100vh - 220px)")],
   ["parity report already passed", docsReport.ok === true],
 ];
 for (const [name, ok] of checks) {
@@ -927,6 +928,7 @@ export function attachObjects(base: GeneratedObject, attachment: GeneratedObject
 def _world_rules_ts() -> str:
     return f"""import {{ worlds }} from "../data/worlds";
 import type {{ GeneratedObject, RuleResult, SparkKey, WorldId, WorldState, SolutionPattern }} from "../types";
+import {{ parseChildInput }} from "./wordToWorld";
 
 export const ruleFamilies = {_json([{"ruleFamily": family} for family in RULE_FAMILIES])};
 
@@ -942,8 +944,27 @@ export function solutionMatches(object: GeneratedObject, solution: SolutionPatte
   return familyMatch && (propertyMatch || nonCreateActionMatch);
 }}
 
-export function createInitialWorldState(): WorldState {{
-  return {{ objects: [], inventory: [], solvedGoalIds: [], activeTags: [], rewardShards: 0, comfort: 0, light: 0, access: 0, story: [] }};
+export function freshStarterObjects(worldId: WorldId): GeneratedObject[] {{
+  const world = worlds[worldId] ?? Object.values(worlds)[0];
+  return world.starterIdeas.slice(0, 3).map((idea, index) => ({{
+    ...parseChildInput(idea, world.id),
+    id: `starter-${{world.id}}-${{index + 1}}`,
+  }}));
+}}
+
+export function createInitialWorldState(worldId?: WorldId): WorldState {{
+  const starterObjects = worldId ? freshStarterObjects(worldId) : [];
+  return {{
+    objects: starterObjects,
+    inventory: starterObjects,
+    solvedGoalIds: [],
+    activeTags: Array.from(new Set(starterObjects.flatMap((object) => object.ruleFamilies))).slice(0, 8),
+    rewardShards: 0,
+    comfort: 0,
+    light: starterObjects.some((object) => object.ruleFamilies.includes("light")) ? 1 : 0,
+    access: 0,
+    story: starterObjects.length ? ["舞台已经摆好几个可拖动的开局物件。"] : [],
+  }};
 }}
 
 export function applyObjectToWorld(worldId: WorldId, before: WorldState, object: GeneratedObject): RuleResult {{
@@ -1039,15 +1060,15 @@ import { createInitialWorldState } from "./worldRules";
 
 const storageKey = "huohutu-scribble-parity-v5";
 
-function worldStates(): Record<string, WorldState> {
-  return Object.fromEntries(Object.keys(worlds).map((worldId) => [worldId, createInitialWorldState()]));
+function worldStatesWithStarterObjects(): Record<string, WorldState> {
+  return Object.fromEntries(Object.keys(worlds).map((worldId) => [worldId, createInitialWorldState(worldId)]));
 }
 
 export function createInitialSnapshot(): GameSnapshot {
   return {
     activeWorldId: Object.keys(worlds)[0],
     ageBand: "5-6",
-    worlds: worldStates(),
+    worlds: worldStatesWithStarterObjects(),
     events: [],
     undoStack: [],
     replayLog: [],

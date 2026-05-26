@@ -30,6 +30,7 @@ from kun.control_plane.nuo import (
     build_nuo_recovery_plan,
     diagnose_nuo_health,
 )
+from kun.control_plane.rainflow_ad_mission import RAINFLOW_AD_PRODUCTION_MODE
 from kun.control_plane.store import ControlPlaneStore
 from kun.control_plane.v6 import (
     AcceptanceReview,
@@ -96,7 +97,7 @@ def _diagnose_result_with_nuo(
     if not _should_route_to_nuo(work_item=work_item, result=result):
         return None
     text = _result_text(result)
-    failed_text = _failure_text_for_nuo(result)
+    failed_text = _failure_text_for_nuo(result) or _environment_blocker_text_for_nuo(text)
     observation = NuoObservation(
         mission_id=work_item.mission_id,
         task_plan_version=work_item.task_plan_version,
@@ -109,7 +110,7 @@ def _diagnose_result_with_nuo(
             bool(failed_text)
             and ("timeout" in failed_text.lower() or "timed out" in failed_text.lower())
         ),
-        network_eof="unexpected eof" in text.lower() or "network eof" in text.lower(),
+        network_eof=_network_transport_interrupted(text),
         wrapper_missing="wrapper missing" in text.lower() or "wrapper not found" in text.lower(),
         auth_failure="unauthorized" in text.lower() or "invalid api key" in text.lower(),
         report_required=_runtime_report_required(
@@ -133,12 +134,16 @@ def _diagnose_result_with_nuo(
             result=result,
             contract=contract,
         ),
-        human_playtest_ref=_runtime_human_playtest_ref(result=result, manifest_ref=manifest_ref),
+        human_playtest_ref=_runtime_human_playtest_ref(
+            result=result,
+            manifest_ref=manifest_ref,
+            work_item=work_item,
+        ),
         artifact_refs=[artifact.artifact_id for artifact in result.artifacts],
         evidence_refs=_runtime_manifest_refs(result, "evidence_refs"),
         test_refs=_runtime_manifest_refs(result, "test_refs"),
         review_refs=_runtime_manifest_refs(result, "review_refs"),
-        rollback_refs=_runtime_manifest_refs(result, "rollback_refs"),
+        rollback_refs=_runtime_rollback_refs(result=result, work_item=work_item),
     )
     return diagnose_nuo_health(observation)
 
@@ -168,7 +173,7 @@ def _should_route_to_nuo(*, work_item: WorkItem, result: WorkItemResult) -> bool
         return True
     if result.status in {"failed", "blocked", "cancelled", "waiting_external"}:
         return True
-    text = _result_text(result).lower()
+    text = _route_trigger_text_for_nuo(result).lower()
     if any(
         token in text
         for token in (
@@ -180,7 +185,15 @@ def _should_route_to_nuo(*, work_item: WorkItem, result: WorkItemResult) -> bool
             "timed out",
             "unexpected eof",
             "network eof",
+            "tls handshake eof",
+            "stream disconnected",
+            "failed to connect to websocket",
+            "http/request failed",
+            "dns error",
             "connection reset",
+            "operation not permitted",
+            "sc_sem_nsems_max",
+            "processpoolexecutor",
             "unauthorized",
             "permission denied",
             "wrapper missing",
@@ -229,10 +242,50 @@ def _result_text(result: WorkItemResult) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def _route_trigger_text_for_nuo(result: WorkItemResult) -> str:
+    """Only route clean work to Nuo for explicit output claims, not evidence labels."""
+
+    return "\n".join(part for part in [result.summary, result.failure_category or ""] if part)
+
+
 def _failure_text_for_nuo(result: WorkItemResult) -> str:
     if result.status not in {"failed", "blocked", "cancelled"}:
         return ""
     return "\n".join(part for part in [result.summary, result.failure_category or ""] if part)
+
+
+def _environment_blocker_text_for_nuo(text: str) -> str:
+    lowered = text.lower()
+    if any(
+        token in lowered
+        for token in (
+            "operation not permitted",
+            "sc_sem_nsems_max",
+            "processpoolexecutor",
+            "permission denied",
+            "access denied",
+            "forbidden",
+        )
+    ):
+        return text
+    return ""
+
+
+def _network_transport_interrupted(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        token in lowered
+        for token in (
+            "unexpected eof",
+            "network eof",
+            "tls handshake eof",
+            "stream disconnected",
+            "connection reset by peer",
+            "failed to connect to websocket",
+            "http/request failed",
+            "dns error",
+        )
+    )
 
 
 def _runtime_report_required(
@@ -299,6 +352,18 @@ def _runtime_manifest_refs(result: WorkItemResult, field_name: str) -> list[str]
     return list(value)
 
 
+def _runtime_rollback_refs(*, result: WorkItemResult, work_item: WorkItem) -> list[str]:
+    refs = [*work_item.rollback_refs, *_runtime_manifest_refs(result, "rollback_refs")]
+    refs.extend(
+        artifact.artifact_id
+        for artifact in result.artifacts
+        if artifact.kind == "rollback"
+        or artifact.kind == "checkpoint"
+        or any("rollback" in support or "checkpoint" in support for support in artifact.supports)
+    )
+    return _dedupe_refs(refs)
+
+
 def _product_acceptance_claimed(
     *,
     result: WorkItemResult,
@@ -309,16 +374,34 @@ def _product_acceptance_claimed(
         return True
     if manifest_ref:
         return True
+    if result.status == "blocked" and any(
+        token in text
+        for token in (
+            "final delivery blocked",
+            "delivery blocked",
+            "交付被阻断",
+            "交付阻断",
+        )
+    ):
+        return False
     return any(
         token in text
         for token in (
             "ready_to_deliver",
+            "ready to deliver",
+            "ready for delivery",
             "final delivery",
             "final_delivery",
-            "directly playable",
+            "delivery_manifest",
+            "supports_delivery",
+            "delivery ready",
+            "client-deliverable approved",
             "acceptance package",
-            "交付",
-            "验收",
+            "验收通过",
+            "交付就绪",
+            "可以交付",
+            "可交付",
+            "完成交付",
         )
     )
 
@@ -360,6 +443,18 @@ def _product_surface_gap_codes(
         and "visual_gap" not in codes
     ):
         codes.append("visual_gap")
+    if (
+        result.status == "blocked"
+        and "final delivery blocked by mission director" in lowered
+        and (
+            "action=needs_plan_change" in lowered
+            or "needs_plan_change" in lowered
+            or "continue_iteration" in lowered
+            or "continue iteration" in lowered
+        )
+        and "mission_director_plan_change" not in codes
+    ):
+        codes.append("mission_director_plan_change")
     return codes
 
 
@@ -378,20 +473,80 @@ def _runtime_human_playtest_required(
 ) -> bool:
     if mission.task_type != "product_development":
         return False
+    if work_item.owner in {"qi", "nuo"} or work_item.type == "governance":
+        return False
     policy = contract.delivery_contract if contract is not None else {}
     if isinstance(policy, dict) and bool(
         policy.get("human_playtest_required") or policy.get("human_acceptance_required")
     ):
-        return True
+        manifest_ref = (
+            result.artifact_manifest.manifest_id if result.artifact_manifest is not None else None
+        )
+        if _product_acceptance_claimed(result=result, manifest_ref=manifest_ref) or (
+            _work_item_targets_product_acceptance(work_item)
+            and result.status in {"done", "partial", "blocked"}
+        ):
+            return True
     text = f"{work_item.expected_output}\n{_result_text(result)}".lower()
-    return any(
+    explicit_human_playtest_request = any(
         token in text
         for token in (
+            "action=needs_human",
             "human playtest required",
             "target-user playtest required",
             "subjective acceptance required",
+            "human/player-experience evidence",
+            "human player-experience evidence",
             "需要人工试玩",
             "需要用户验收",
+        )
+    )
+    if not explicit_human_playtest_request:
+        return False
+    manifest_ref = (
+        result.artifact_manifest.manifest_id if result.artifact_manifest is not None else None
+    )
+    return _product_acceptance_claimed(
+        result=result,
+        manifest_ref=manifest_ref,
+    ) or _work_item_targets_product_acceptance(work_item)
+
+
+def _work_item_targets_product_acceptance(work_item: WorkItem) -> bool:
+    text = f"{work_item.work_item_id}\n{work_item.type}\n{work_item.phase or ''}\n{work_item.expected_output}".lower()
+    phase = (work_item.phase or "").lower().strip()
+    if work_item.type == "test" and phase in {
+        "internal-test",
+        "build-test",
+        "browser-test",
+        "visual-test",
+        "regression-gates",
+        "fun-and-browser-retest",
+        "player-experience-retest",
+    }:
+        return False
+    return any(
+        token in text
+        for token in (
+            "final_delivery",
+            "final delivery",
+            "delivery_gate",
+            "delivery gate",
+            "human_acceptance",
+            "human acceptance",
+            "human-simulated",
+            "user acceptance",
+            "target-user",
+            "target user",
+            "target_user",
+            "final_player",
+            "final player",
+            "human_playtest",
+            "human playtest",
+            "phase1_acceptance",
+            "acceptance review",
+            "验收",
+            "人工试玩",
         )
     )
 
@@ -400,6 +555,7 @@ def _runtime_human_playtest_ref(
     *,
     result: WorkItemResult,
     manifest_ref: str | None,
+    work_item: WorkItem | None = None,
 ) -> str | None:
     for artifact in result.artifacts:
         supports = set(artifact.supports)
@@ -419,6 +575,21 @@ def _runtime_human_playtest_ref(
                 return ref
     if manifest_ref and ("acceptance" in manifest_ref.lower() or "human" in manifest_ref.lower()):
         return manifest_ref
+    if work_item is not None:
+        for ref in [
+            *work_item.recovery_refs,
+            *work_item.external_source_refs,
+            *work_item.checkpoint_refs,
+        ]:
+            lowered = ref.lower()
+            if (
+                "human" in lowered
+                or "playtest" in lowered
+                or "target-user" in lowered
+                or "target_user" in lowered
+                or "user_acceptance" in lowered
+            ):
+                return ref
     return None
 
 
@@ -457,6 +628,12 @@ def _runtime_qi_learning_work_item(
 ) -> WorkItem | None:
     if work_item.owner in {"qi", "nuo"}:
         return None
+    if work_item.owner == "external-supervisor-gpt5.5":
+        return None
+    if _runtime_signal_is_mission_director_supervision(work_item=work_item, gate=gate):
+        return None
+    if _runtime_signal_is_collaboration_only(work_item=work_item, gate=gate):
+        return None
     signals: list[str] = []
     if result.failure_category is not None:
         signals.append(f"failure:{result.failure_category}")
@@ -494,6 +671,46 @@ def _runtime_qi_learning_work_item(
             work_item.work_item_id,
         ],
     )
+
+
+def _runtime_signal_is_mission_director_supervision(
+    *,
+    work_item: WorkItem,
+    gate: GateEvaluation | None,
+) -> bool:
+    """Mission Director emits its own targeted Qi/KUN follow-ups.
+
+    Re-wrapping the same supervision gate as generic runtime-learning creates
+    duplicate governance work after product runs complete, which can keep long
+    daemons busy without producing product change.
+    """
+
+    return (
+        work_item.owner == "mission-director"
+        and gate is not None
+        and gate.governance_signal == "mission_director_supervision"
+    )
+
+
+def _runtime_signal_is_collaboration_only(
+    *,
+    work_item: WorkItem,
+    gate: GateEvaluation | None,
+) -> bool:
+    """Avoid turning pure human-acceptance supervision into Qi churn."""
+
+    if work_item.owner != "mission-director" or gate is None:
+        return False
+    if gate.next_action != "needs_human":
+        return False
+    collaboration_failures = {
+        "human_or_target_user_acceptance_missing",
+        "human_acceptance_missing",
+        "player_perception_evidence_missing",
+        "target_user_playtest_missing",
+    }
+    failures = set(gate.hard_gate_failures)
+    return not failures or failures.issubset(collaboration_failures)
 
 
 def _runtime_validation_gate(
@@ -569,6 +786,30 @@ def _runtime_validation_gate(
     )
 
 
+def _coerce_gate_for_current_mission_state(
+    *,
+    mission: Mission,
+    gate: GateEvaluation,
+) -> GateEvaluation:
+    """Keep stricter plan-change state when concurrent follow-ups race.
+
+    Qi and Nuo follow-up work can be prepared from the same `running` mission and
+    then finish in either order. If a Qi governance result already advanced the
+    mission to `changing_plan`, a later Nuo repair gate must not try to force the
+    mission back into `repairing`, which is both a less strict outcome and an
+    invalid transition in the state graph.
+    """
+
+    if mission.status == "changing_plan" and gate.next_state == "repairing":
+        return gate.model_copy(
+            update={
+                "next_action": "needs_plan_change",
+                "next_state": "changing_plan",
+            }
+        )
+    return gate
+
+
 def _dedupe_refs(values: Iterable[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -606,9 +847,152 @@ def _hash_payload(payload: object) -> str:
     ).hexdigest()
 
 
+def _is_rainflow_contract(contract: ExecutionContract | None) -> bool:
+    if contract is None or not isinstance(contract.delivery_contract, dict):
+        return False
+    return contract.delivery_contract.get("production_mode") == RAINFLOW_AD_PRODUCTION_MODE
+
+
+def _is_rainflow_context(*, mission: Mission, contract: ExecutionContract | None) -> bool:
+    if _is_rainflow_contract(contract):
+        return True
+    payloads: list[object] = []
+    if contract is not None:
+        payloads.extend(
+            [contract.delivery_contract, contract.risk_policy, contract.rollback_policy]
+        )
+    text = " ".join(
+        [
+            mission.mission_id,
+            mission.objective,
+            mission.current_plan_version or "",
+            *[json.dumps(payload, sort_keys=True, ensure_ascii=False) for payload in payloads],
+        ]
+    ).lower()
+    return any(
+        token in text
+        for token in (
+            "rainflow",
+            "information-flow ad",
+            "information_flow_ad",
+            "adflow",
+            "phase1_mixed_edit",
+        )
+    )
+
+
+def _rainflow_required_gate_tokens(work_item_id: str) -> tuple[str, ...]:
+    if "stage1-transition" in work_item_id:
+        return ("phase1-acceptance-review",)
+    if "stage2-regeneration" in work_item_id:
+        return ("stage1-retest-and-gate", "stage1-acceptance-review")
+    if "stage3-advanced-creative" in work_item_id:
+        return ("stage2-retest-and-gate", "stage2-acceptance-review")
+    return ()
+
+
+def _rainflow_stage_gate_passes_cleanly(
+    *,
+    gates: Sequence[GateEvaluation],
+    required_gate_tokens: Sequence[str],
+) -> bool:
+    latest_by_subject: dict[str, GateEvaluation] = {}
+    for gate in gates:
+        if any(
+            token in gate.subject_ref or token in gate.gate_evaluation_id
+            for token in required_gate_tokens
+        ):
+            latest_by_subject[gate.subject_ref] = gate
+    relevant = list(latest_by_subject.values())
+    blockers = [
+        gate
+        for gate in relevant
+        if gate.north_star_verdict != "pass"
+        or gate.hard_gate_failures
+        or gate.next_action
+        in {
+            "needs_info",
+            "needs_human",
+            "needs_repair",
+            "needs_rollback",
+            "needs_plan_change",
+            "rejected",
+        }
+    ]
+    passes = [
+        gate
+        for gate in relevant
+        if gate.north_star_verdict == "pass"
+        and not gate.hard_gate_failures
+        and gate.result_quality >= gate.thresholds.get("result_quality", 0.8)
+    ]
+    return bool(passes) and not blockers
+
+
 def _slug(value: str) -> str:
-    safe = [ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value]
-    return "".join(safe).strip("-")[:80] or "item"
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value).strip("-")
+    if not safe:
+        return "item"
+    if len(safe) <= 80:
+        return safe
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    return f"{safe[:67].rstrip('-_')}-{digest}"
+
+
+def _acceptance_decision_from_collaboration_response(
+    response: CollaborationResponse,
+) -> Literal["accepted", "partial_accepted", "rework_required", "rejected"] | None:
+    selected = (response.selected_option or "").strip().lower()
+    answer = response.answer.strip().lower()
+    if selected in {"accepted", "accept", "approve", "approved"}:
+        return "accepted"
+    if selected in {"partial_accepted", "partial", "accept_with_caveats"}:
+        return "partial_accepted"
+    if selected in {"rework_required", "rework", "iterate", "request_rework"}:
+        return "rework_required"
+    if selected in {"rejected", "reject"}:
+        return "rejected"
+    if not answer:
+        return None
+    if any(token in answer for token in ("rework required", "needs rework", "request rework")):
+        return "rework_required"
+    if any(token in answer for token in ("reject", "rejected")):
+        return "rejected"
+    if any(token in answer for token in ("partial accept", "partially accepted")):
+        return "partial_accepted"
+    if any(token in answer for token in ("accept", "accepted", "approve", "approved")):
+        return "accepted"
+    return None
+
+
+def _acceptance_satisfaction_for_decision(
+    decision: Literal["accepted", "partial_accepted", "rework_required", "rejected"],
+) -> float:
+    if decision == "accepted":
+        return 0.9
+    if decision == "partial_accepted":
+        return 0.65
+    if decision == "rework_required":
+        return 0.4
+    return 0.2
+
+
+def _latest_delivery_gate_for_manifest(
+    gates: Iterable[GateEvaluation],
+    *,
+    mission_id: str,
+    manifest_ref: str,
+) -> GateEvaluation | None:
+    matches = [
+        gate
+        for gate in gates
+        if gate.mission_id == mission_id
+        and gate.stage == "delivery"
+        and gate.subject_ref == manifest_ref
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda gate: gate.gate_evaluation_id)
 
 
 class WorkItemResult(BaseModel):
@@ -818,6 +1202,8 @@ class InMemoryControlPlane:
         }
         if mission.status in {"delivering", "awaiting_acceptance"}:
             update_payload["status"] = "changing_plan"
+        elif mission.status in {"waiting_human", "waiting_external", "paused"}:
+            update_payload["status"] = "queued"
         updated = mission.model_copy(update=update_payload)
         self.missions[mission_id] = updated
         self._persist_mission(updated)
@@ -993,24 +1379,27 @@ class InMemoryControlPlane:
                 }
             )
             self.work_items[work_item.work_item_id] = running_item
-            self._persist_work_item(running_item)
-            run = RunRecord(
-                work_item_id=running_item.work_item_id,
-                runner_type=runner.runner_type,
-                runner_identity=runner.runner_identity,
-                started_at=started,
-            )
-            self.runs[run.run_id] = run
-            self._persist_run(run)
-            self._record_ledger_event(
-                mission_id=work_item.mission_id,
-                event_type="state_change",
-                actor="control-plane",
-                subject_ref=running_item.work_item_id,
-                before={"status": work_item.status},
-                after={"status": "running"},
-                payload={"run_id": run.run_id},
-            )
+            store_transaction = getattr(self.store, "transaction", None)
+            context = store_transaction() if callable(store_transaction) else nullcontext()
+            with context:
+                self._persist_work_item(running_item)
+                run = RunRecord(
+                    work_item_id=running_item.work_item_id,
+                    runner_type=runner.runner_type,
+                    runner_identity=runner.runner_identity,
+                    started_at=started,
+                )
+                self.runs[run.run_id] = run
+                self._persist_run(run)
+                self._record_ledger_event(
+                    mission_id=work_item.mission_id,
+                    event_type="state_change",
+                    actor="control-plane",
+                    subject_ref=running_item.work_item_id,
+                    before={"status": work_item.status},
+                    after={"status": "running"},
+                    payload={"run_id": run.run_id},
+                )
             return run, running_item
 
     def finish_work_item_run(
@@ -1064,12 +1453,80 @@ class InMemoryControlPlane:
         for followup in result.followup_work_items:
             if followup.mission_id != work_item.mission_id:
                 raise ValueError(f"followup work item {followup.work_item_id} mission_id mismatch")
+            existing_followup = self.work_items.get(followup.work_item_id)
+            if existing_followup is not None:
+                should_requeue_existing = (
+                    existing_followup.status in {"failed", "blocked"}
+                    and followup.status == "queued"
+                    and followup.work_item_id == existing_followup.work_item_id
+                )
+                merged_followup = existing_followup.model_copy(
+                    update={
+                        "status": "queued" if should_requeue_existing else existing_followup.status,
+                        "lease": None if should_requeue_existing else existing_followup.lease,
+                        "heartbeat": None
+                        if should_requeue_existing
+                        else existing_followup.heartbeat,
+                        "timeout": None if should_requeue_existing else existing_followup.timeout,
+                        "priority": max(existing_followup.priority, followup.priority),
+                        "expected_output": (
+                            followup.expected_output
+                            if existing_followup.status in {"queued", "retrying"}
+                            or should_requeue_existing
+                            else existing_followup.expected_output
+                        ),
+                        "dependencies": _dedupe_refs(
+                            [*existing_followup.dependencies, *followup.dependencies]
+                        ),
+                        "required_capability_refs": _dedupe_refs(
+                            [
+                                *existing_followup.required_capability_refs,
+                                *followup.required_capability_refs,
+                            ]
+                        ),
+                        "skill_refs": _dedupe_refs(
+                            [*existing_followup.skill_refs, *followup.skill_refs]
+                        ),
+                        "external_source_refs": _dedupe_refs(
+                            [
+                                *existing_followup.external_source_refs,
+                                *followup.external_source_refs,
+                            ]
+                        ),
+                        "recovery_refs": _dedupe_refs(
+                            [*existing_followup.recovery_refs, *followup.recovery_refs]
+                        ),
+                        "checkpoint_refs": _dedupe_refs(
+                            [*existing_followup.checkpoint_refs, *followup.checkpoint_refs]
+                        ),
+                        "rollback_refs": _dedupe_refs(
+                            [*existing_followup.rollback_refs, *followup.rollback_refs]
+                        ),
+                        "resource_locks": _dedupe_refs(
+                            [*existing_followup.resource_locks, *followup.resource_locks]
+                        ),
+                    }
+                )
+                self.work_items[merged_followup.work_item_id] = merged_followup
+                self._persist_work_item(merged_followup)
+                continue
             self.work_items[followup.work_item_id] = followup
             self._persist_work_item(followup)
 
         runtime_artifact_refs = [artifact.artifact_id for artifact in result.artifacts]
         runtime_gate = result.gate_evaluation
         runtime_failure_category = result.failure_category
+        if runtime_gate is not None:
+            if runtime_gate.failure_category:
+                runtime_failure_category = runtime_gate.failure_category
+            elif (
+                runtime_gate.north_star_verdict != "pass"
+                and not _runtime_signal_is_collaboration_only(
+                    work_item=work_item,
+                    gate=runtime_gate,
+                )
+            ):
+                runtime_failure_category = runtime_failure_category or "delivery_failure"
         nuo_report = _diagnose_result_with_nuo(
             mission=mission,
             work_item=work_item,
@@ -1179,18 +1636,21 @@ class InMemoryControlPlane:
                 artifact_refs=runtime_artifact_refs,
             )
 
+        gate_failed = runtime_failure_category is not None and (
+            runtime_gate is None or runtime_gate.north_star_verdict != "pass"
+        )
         exit_status: RunExitStatus = (
             "failed"
-            if (
-                runtime_failure_category is not None
-                and (runtime_gate is None or runtime_gate.north_star_verdict != "pass")
-            )
+            if (gate_failed and result.status != "partial")
             else "succeeded"
             if result.status in {"done", "partial"}
             else "failed"
         )
         if result.status in {"waiting_human", "waiting_external", "blocked"}:
             exit_status = "cancelled"
+        work_item_status = result.status
+        if exit_status == "failed" and work_item_status == "done":
+            work_item_status = "failed"
         updated_run = RunRecord.model_validate(
             {
                 **run.model_dump(),
@@ -1205,7 +1665,7 @@ class InMemoryControlPlane:
         self._persist_run(updated_run)
         updated_item = work_item.model_copy(
             update={
-                "status": result.status,
+                "status": work_item_status,
                 "artifact_manifest_ref": manifest_ref or work_item.artifact_manifest_ref,
                 "heartbeat": _now(),
                 "lease": None,
@@ -1220,14 +1680,31 @@ class InMemoryControlPlane:
             actor="control-plane",
             subject_ref=work_item.work_item_id,
             before={"status": work_item.status},
-            after={"status": result.status},
+            after={"status": work_item_status},
             payload={"run_id": run_id, "summary": result.summary},
             artifact_refs=runtime_artifact_refs,
         )
 
         if preserve_mission_status:
             if runtime_gate is not None:
-                current_status = self._mission(work_item.mission_id).status
+                current_mission = self._mission(work_item.mission_id)
+                runtime_gate = _coerce_gate_for_current_mission_state(
+                    mission=current_mission,
+                    gate=runtime_gate,
+                )
+                current_status = current_mission.status
+                if runtime_gate.next_state == "running" and current_status in {
+                    "info_gap",
+                    "waiting_human",
+                    "waiting_external",
+                }:
+                    open_tickets = any(
+                        ticket.mission_id == work_item.mission_id
+                        and ticket.status in {"open", "waiting", "escalated"}
+                        for ticket in self.collaboration_tickets.values()
+                    )
+                    if open_tickets:
+                        return updated_run
                 try:
                     assert_transition_allowed(current_status, runtime_gate.next_state)
                 except ValueError:
@@ -1235,6 +1712,10 @@ class InMemoryControlPlane:
                 self.apply_gate(runtime_gate)
             return updated_run
         if runtime_gate is not None:
+            runtime_gate = _coerce_gate_for_current_mission_state(
+                mission=self._mission(work_item.mission_id),
+                gate=runtime_gate,
+            )
             self.apply_gate(runtime_gate)
         elif runtime_failure_category is not None:
             recovery = default_recovery_for_failure(runtime_failure_category)
@@ -1481,9 +1962,61 @@ class InMemoryControlPlane:
             response=response,
             actor=actor,
         )
+        self._record_acceptance_review_from_collaboration_response(
+            ticket=updated,
+            response=response,
+            actor=actor,
+        )
         if response.resume_allowed and ticket.resume_after_response:
             self._resume_after_collaboration(ticket.mission_id)
         return updated
+
+    def _record_acceptance_review_from_collaboration_response(
+        self,
+        *,
+        ticket: CollaborationTicket,
+        response: CollaborationResponse,
+        actor: str,
+    ) -> None:
+        """Turn an answered delivery-review ticket into durable acceptance state."""
+
+        if response.status != "answered" or ticket.type != "review":
+            return
+        mission = self._mission(ticket.mission_id)
+        if mission.acceptance_ref is not None or mission.status != "awaiting_acceptance":
+            return
+        manifest = self.artifact_manifests.get(ticket.context_ref)
+        if manifest is None or manifest.kind != "delivery":
+            return
+        decision = _acceptance_decision_from_collaboration_response(response)
+        if decision is None:
+            return
+        latest_delivery_gate = _latest_delivery_gate_for_manifest(
+            self.gate_evaluations.values(),
+            mission_id=ticket.mission_id,
+            manifest_ref=manifest.manifest_id,
+        )
+        if latest_delivery_gate is None:
+            return
+        requested_changes = []
+        if decision in {"rework_required", "rejected"}:
+            requested_changes = [response.answer or "Human review requested product rework."]
+        review = AcceptanceReview(
+            acceptance_id=f"accept-{_slug(ticket.ticket_id)}",
+            mission_id=ticket.mission_id,
+            task_plan_version=mission.current_plan_version or manifest.work_item_id or "unknown",
+            delivery_manifest_ref=manifest.manifest_id,
+            gate_evaluation_ref=latest_delivery_gate.gate_evaluation_id,
+            reviewer=response.responder or actor,
+            decision=decision,
+            satisfaction=_acceptance_satisfaction_for_decision(decision),
+            reason=response.answer,
+            requested_changes=requested_changes,
+            new_info_or_constraints=[
+                f"Recorded from collaboration ticket {ticket.ticket_id}.",
+            ],
+        )
+        self.record_acceptance_review(review, actor=actor)
 
     def apply_gate(self, gate: GateEvaluation) -> Mission:
         """Apply a unified V6 gate to mission state."""
@@ -1841,28 +2374,25 @@ class InMemoryControlPlane:
         haystack = " ".join(
             [
                 item.work_item_id,
-                item.owner,
                 item.phase or "",
                 item.expected_output,
                 " ".join(item.recovery_refs),
                 " ".join(item.checkpoint_refs),
+                " ".join(item.external_source_refs),
             ]
         ).lower()
-        if ticket.ticket_id.lower() in haystack or ticket.context_ref.lower() in haystack:
+        explicit_ticket_refs = {
+            ticket.ticket_id,
+            ticket.context_ref,
+            *ticket.auto_resolvable_by,
+            *ticket.resolution_refs,
+        }
+        if any(ref and ref.lower() in haystack for ref in explicit_ticket_refs):
             return True
         if len(all_candidates) == 1:
             return True
         if ticket.type == "operator_action":
-            return any(
-                token in haystack
-                for token in (
-                    "operator",
-                    "permission",
-                    "preflight",
-                    "workspace boundary",
-                    "writable workspace",
-                )
-            )
+            return False
         if ticket.type in {"review", "acceptance_check"}:
             return any(token in haystack for token in ("review", "acceptance", "playtest"))
         return False
@@ -1902,9 +2432,27 @@ class InMemoryControlPlane:
                 for item in self._runnable_plan_work_items(mission)
                 if item.status == "queued"
                 and set(item.dependencies).issubset(done_ids)
+                and self._stage_gate_allows_ready(mission=mission, work_item=item)
                 and _lease_allows_ready(item, lease=lease, now=observed_at)
             ),
             key=lambda item: (-item.priority, item.work_item_id),
+        )
+
+    def _stage_gate_allows_ready(self, *, mission: Mission, work_item: WorkItem) -> bool:
+        contract = self.contracts.get(mission.execution_contract_ref or "")
+        if not _is_rainflow_context(mission=mission, contract=contract):
+            return True
+        required_gate_tokens = _rainflow_required_gate_tokens(work_item.work_item_id)
+        if not required_gate_tokens:
+            return True
+        return _rainflow_stage_gate_passes_cleanly(
+            gates=[
+                gate
+                for gate in self.gate_evaluations.values()
+                if gate.mission_id == mission.mission_id
+                and gate.task_plan_version == work_item.task_plan_version
+            ],
+            required_gate_tokens=required_gate_tokens,
         )
 
     def _latest_gate(self, mission_id: str) -> GateEvaluation | None:

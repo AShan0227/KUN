@@ -71,6 +71,12 @@ _PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
 
 _PROTOCOL_VERSION = "2025-06-18"
 
+# Codex MCP can return a single JSON-RPC line with a large final answer.  The
+# asyncio subprocess default stream limit is 64 KiB, which is too small for
+# long planning/review tasks and raises "Separator is found, but chunk is longer
+# than limit" before the provider can parse the result.
+_DEFAULT_STREAM_LIMIT_BYTES = 16 * 1024 * 1024
+
 
 class CodexMcpProvider(LLMProvider):
     """Subprocess MCP-client adapter for `codex mcp-server`."""
@@ -94,6 +100,7 @@ class CodexMcpProvider(LLMProvider):
         reasoning_effort: str | None = None,
         timeout_sec: int = 180,
         run_cwd: str | None = None,
+        sandbox: str | None = None,
     ) -> None:
         self.tier = tier
         self.model_id = model_id or os.getenv("KUN_CODEX_MCP_MODEL") or _DEFAULT_MODEL
@@ -102,7 +109,12 @@ class CodexMcpProvider(LLMProvider):
         )
         self._cli = cli_path or shutil.which("codex") or "codex"
         self._timeout = timeout_sec
-        self._cwd = run_cwd or _DEFAULT_CWD
+        self._stream_limit = _env_int(
+            "KUN_CODEX_MCP_STREAM_LIMIT_BYTES",
+            _DEFAULT_STREAM_LIMIT_BYTES,
+        )
+        self._cwd = run_cwd or os.getenv("KUN_CODEX_MCP_CWD") or _DEFAULT_CWD
+        self._sandbox = sandbox or os.getenv("KUN_CODEX_MCP_SANDBOX", "read-only")
         os.makedirs(self._cwd, exist_ok=True)  # bare sandbox dir
 
         pin, pout = _PRICING_PER_MTOK.get(self.model_id, (10.0, 40.0))
@@ -141,7 +153,7 @@ class CodexMcpProvider(LLMProvider):
                     "prompt": prompt,
                     "model": self.model_id,
                     "approval-policy": "never",
-                    "sandbox": "read-only",
+                    "sandbox": self._sandbox,
                     "cwd": self._cwd,
                     # Keep codex stateless: minimal agent system prompt, no
                     # AGENTS.md pickup. Codex 0.125+ requires non-empty
@@ -170,6 +182,7 @@ class CodexMcpProvider(LLMProvider):
             raise RuntimeError(f"codex mcp-server timed out after {self._timeout}s") from None
         except Exception:
             self._pending.pop(req_id, None)
+            await self._kill()
             raise
 
         latency_ms = (time.perf_counter() - started) * 1000
@@ -252,6 +265,7 @@ class CodexMcpProvider(LLMProvider):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env={**os.environ, "NO_COLOR": "1"},
+                limit=self._stream_limit,
             )
             self._reader_task = asyncio.create_task(self._read_loop())
             self._stderr_task = asyncio.create_task(self._drain_stderr())
@@ -337,6 +351,12 @@ class CodexMcpProvider(LLMProvider):
             raise
         except Exception as e:
             log.warning("codex_mcp.read_loop_error", error=str(e))
+            self._initialized = False
+            error = RuntimeError(f"codex mcp-server read loop failed: {e}")
+            for fut in list(self._pending.values()):
+                if not fut.done():
+                    fut.set_exception(error)
+            self._pending.clear()
 
     async def _drain_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
@@ -371,3 +391,14 @@ class CodexMcpProvider(LLMProvider):
             elif m.role == "tool":
                 parts.append(f"# Tool result\n{m.content}")
         return "\n\n".join(parts) or "(empty)"
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default

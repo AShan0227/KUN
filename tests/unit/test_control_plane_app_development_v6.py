@@ -168,7 +168,7 @@ def test_autonomous_app_runner_materializes_playable_project_and_delivery_gate(
     assert (project_path / "src" / "App.tsx").exists()
     assert (project_path / "src" / "engine" / "mockAi.ts").exists()
     assert (project_path / "docs" / "delivery-report.md").exists()
-    assert control_plane.missions["msn-app-dev"].status == "delivering"
+    assert control_plane.missions["msn-app-dev"].status == "awaiting_acceptance"
     assert (
         "manifest-msn-app-dev-mvp-v1-huohutu-mvp-delivery"
         in control_plane.missions["msn-app-dev"].artifact_manifest_refs
@@ -176,6 +176,14 @@ def test_autonomous_app_runner_materializes_playable_project_and_delivery_gate(
     assert control_plane.artifact_manifests[
         "manifest-msn-app-dev-mvp-v1-huohutu-mvp-delivery"
     ].supports_delivery
+    acceptance_tickets = [
+        ticket
+        for ticket in control_plane.collaboration_tickets.values()
+        if ticket.context_ref == "manifest-msn-app-dev-mvp-v1-huohutu-mvp-delivery"
+    ]
+    assert len(acceptance_tickets) == 1
+    assert acceptance_tickets[0].status == "open"
+    assert acceptance_tickets[0].type == "review"
 
 
 def test_autonomous_app_runner_can_run_only_assigned_product_work(tmp_path: Path) -> None:

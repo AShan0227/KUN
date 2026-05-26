@@ -13,6 +13,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,6 +28,7 @@ from kun.control_plane.activation import activate_work_item_features
 from kun.control_plane.capability_execution import (
     CapabilityExecutionPolicy,
     build_capability_execution_policy,
+    ensure_policy_covers_required_capabilities,
 )
 from kun.control_plane.concurrency import (
     FileResourceLockStore,
@@ -39,13 +41,19 @@ from kun.control_plane.concurrency import (
     SQLiteResourceLockStore,
     WorkerPoolConfig,
     WorkerSlotSnapshot,
+    is_pure_governance_work_item,
+    is_workspace_resource_lock_ref,
     normalize_resource_lock_ref,
     sandbox_spec_for_work_item,
+    work_item_requires_workspace_boundary,
     worker_slots,
 )
+from kun.control_plane.mission_director import MISSION_DIRECTOR_OWNER
 from kun.control_plane.preflight import WorkItemPreflight, run_work_item_preflight
+from kun.control_plane.rainflow_ad_mission import RAINFLOW_AD_PRODUCTION_MODE
 from kun.control_plane.runtime import ControlPlaneRunner, InMemoryControlPlane, WorkItemResult
 from kun.control_plane.runtime_observation import (
+    RuntimeObservationItem,
     RuntimeObservationReport,
     build_runtime_observation_report,
 )
@@ -90,6 +98,7 @@ ACTIVE_DAEMON_MISSION_STATUSES: frozenset[MissionStatus] = frozenset(
 )
 
 _ACCEPTANCE_REWORK_SUFFIX_RE = re.compile(r"(?:-acceptance-rework-[0-9a-f]{8})+$")
+_GAME_REWORK_BRANCH_RE = re.compile(r"^work-game-rework-.+-([0-9a-f]{12})-\d{2}-")
 
 DaemonServiceStatus = Literal["starting", "running", "idle", "stopped", "unhealthy"]
 DaemonServiceStoppedReason = Literal["idle", "max_ticks", "stop_requested", "error"]
@@ -168,6 +177,7 @@ class DaemonServiceConfig(BaseModel):
     stop_when_idle: bool = False
     idle_ticks_to_stop: int = Field(default=1, ge=1)
     stale_heartbeat_after_sec: float = Field(default=900.0, gt=0)
+    worker_heartbeat_interval_sec: float = Field(default=30.0, gt=0)
 
 
 class DaemonServiceState(BaseModel):
@@ -422,6 +432,22 @@ class ControlPlaneDaemon:
         self.resource_lock_ttl = timedelta(seconds=resource_lock_ttl_sec)
         self.sandbox_mode = sandbox_mode
         self.container_runtime = container_runtime
+        # Track the store state seen at construction.  Subsequent ticks refresh
+        # only when another process changes the shared store, which preserves
+        # in-memory mission/contract edits made by the current process before
+        # the first wakeup.
+        self._store_refresh_signature: tuple[str, int, int] | None = (
+            getattr(self.control_plane.store, "loaded_signature", None)
+            or self._current_store_signature()
+        )
+        self._service_state_store: FileDaemonServiceStateStore | None = None
+        self._service_started_at: datetime | None = None
+        self._service_tick_count = 0
+        self._service_consecutive_idle_ticks = 0
+        self._service_active_mission_ids: list[str] = []
+        self._service_worker_slots: dict[str, WorkerSlotSnapshot] = {}
+        self._service_worker_heartbeat_interval_sec = 30.0
+        self._service_state_lock = threading.RLock()
 
     def tick_once(
         self,
@@ -441,6 +467,7 @@ class ControlPlaneDaemon:
             observed_at=observed_at,
         ):
             self.control_plane.refresh_from_store()
+            self._store_refresh_signature = self._current_store_signature()
         selected_mission_ids = (
             list(mission_ids) if mission_ids is not None else self._active_missions()
         )
@@ -464,6 +491,7 @@ class ControlPlaneDaemon:
             report.capability_policy_ref = capability_policy.policy_id
             report.capability_profile_refs = list(capability_policy.capability_profile_refs)
             report.capability_directive_count = len(capability_policy.directives)
+        self._release_orphaned_resource_locks(now=observed_at)
 
         for mission_id in selected_mission_ids:
             self._ensure_info_gap_collaboration(
@@ -471,7 +499,20 @@ class ControlPlaneDaemon:
                 observed_at=observed_at,
                 report=report,
             )
+            self._resume_stale_info_gap_mission(
+                mission_id=mission_id,
+                observed_at=observed_at,
+            )
+            self._resume_waiting_product_mission_with_ready_current_work(
+                mission_id=mission_id,
+                observed_at=observed_at,
+            )
             self._ensure_delivery_acceptance_collaboration(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._ensure_player_review_collaboration_from_gate(
                 mission_id=mission_id,
                 observed_at=observed_at,
                 report=report,
@@ -486,7 +527,42 @@ class ControlPlaneDaemon:
                 observed_at=observed_at,
                 report=report,
             )
+            self._ensure_mission_director_review(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._retire_superseded_mission_director_work(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._retire_terminal_followup_only_work(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._restore_cancelled_rainflow_phase1_acceptance_reviews(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
             self._retire_superseded_plan_work(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._retire_superseded_product_gate_work(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._retire_downstream_product_work_after_failed_gate(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._retire_downstream_product_work_after_cancelled_dependency(
                 mission_id=mission_id,
                 observed_at=observed_at,
                 report=report,
@@ -500,9 +576,26 @@ class ControlPlaneDaemon:
         for mission_id in selected_mission_ids:
             self._recover_stale_work(mission_id=mission_id, report=report, now=observed_at)
 
+        for mission_id in selected_mission_ids:
+            self._retire_stale_quality_followups_before_running(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+
+        for mission_id in selected_mission_ids:
+            observation = build_runtime_observation_report(
+                control_plane=self.control_plane,
+                mission_id=mission_id,
+                tick_report=report,
+                capability_policy=capability_policy,
+            )
+            report.runtime_observations[mission_id] = observation
+
         remaining = max_work_items
         while remaining > 0:
             claimed_resource_locks: set[str] = set()
+            deferred_work_item_ids: set[str] = set()
             prepared_runs: list[_PreparedWorkItemRun] = []
             batch_limit = min(remaining, max(1, self.worker_pool.worker_count))
             while len(prepared_runs) < batch_limit:
@@ -513,28 +606,51 @@ class ControlPlaneDaemon:
                     mission = self.control_plane.missions.get(mission_id)
                     if mission is None or mission.status not in ACTIVE_DAEMON_MISSION_STATUSES:
                         continue
-                    delivery_state = mission.status in {"delivering", "awaiting_acceptance"}
+                    mission_state_requires_followup = _mission_state_requires_followup_only_work(
+                        mission.status
+                    )
+                    if (
+                        mission.status == "waiting_human"
+                        and mission_state_requires_followup
+                        and not _has_ready_state_preserving_followup(
+                            self.control_plane,
+                            mission.mission_id,
+                            now=report.observed_at,
+                        )
+                        and _has_ready_current_plan_product_work(
+                            self.control_plane,
+                            mission,
+                            now=report.observed_at,
+                        )
+                    ):
+                        mission_state_requires_followup = False
                     work_item = self._next_non_conflicting_ready_work_item(
                         mission_id=mission_id,
                         claimed_resource_locks=claimed_resource_locks,
+                        excluded_work_item_ids=deferred_work_item_ids,
+                        followup_only_state=mission_state_requires_followup,
                         report=report,
                     )
                     if work_item is None:
                         continue
-                    if delivery_state and not _is_delivery_state_followup(work_item):
-                        continue
                     slot = _slot_for_run(report.worker_slots, len(prepared_runs))
+                    created_ticket_count = len(report.created_collaboration_ticket_ids)
                     prepared = self._prepare_work_item_run(
                         work_item=work_item,
                         slot=slot,
-                        delivery_state=delivery_state,
+                        preserve_mission_status=mission_state_requires_followup,
                         claimed_resource_locks=claimed_resource_locks,
                         capability_policy=capability_policy,
                         observed_at=observed_at,
                         report=report,
                     )
                     if prepared is None:
-                        if work_item.work_item_id in report.no_runner_work_item_ids:
+                        deferred_work_item_ids.add(work_item.work_item_id)
+                        if (
+                            work_item.work_item_id in report.no_runner_work_item_ids
+                            or len(report.created_collaboration_ticket_ids) > created_ticket_count
+                            or _is_human_collaboration_work_item(work_item)
+                        ):
                             selected_this_pass = True
                         continue
                     prepared_runs.append(prepared)
@@ -570,29 +686,142 @@ class ControlPlaneDaemon:
                 capability_policy=capability_policy,
             )
 
+        for mission_id in selected_mission_ids:
+            mission = self.control_plane.missions.get(mission_id)
+            contract = (
+                self.control_plane.contracts.get(mission.execution_contract_ref or "")
+                if mission is not None
+                else None
+            )
+            self._ensure_delivery_acceptance_collaboration(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._ensure_player_review_collaboration_from_gate(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._retire_superseded_plan_work(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._retire_downstream_product_work_after_failed_gate(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._retire_downstream_product_work_after_cancelled_dependency(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            if not _should_continue_product_pressure_while_awaiting_acceptance(contract):
+                continue
+            self._ensure_open_acceptance_keeps_product_pressure(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._ensure_acceptance_rework_from_feedback(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._retire_superseded_plan_work(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._retire_superseded_product_gate_work(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._retire_downstream_product_work_after_failed_gate(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+            self._retire_downstream_product_work_after_cancelled_dependency(
+                mission_id=mission_id,
+                observed_at=observed_at,
+                report=report,
+            )
+
         if write_progress:
-            for mission_id in selected_mission_ids:
-                observation = self._observation_artifact(
-                    mission_id=mission_id,
-                    now=observed_at,
+            store = self.control_plane.store
+            if store is None:
+                self._write_progress_artifacts(
+                    mission_ids=selected_mission_ids,
+                    observed_at=observed_at,
                     report=report,
                     capability_policy=capability_policy,
                 )
-                self._upsert_artifact(observation)
-                report.observation_artifact_refs.append(observation.artifact_id)
-                self._queue_observation_followups(
-                    mission_id=mission_id,
-                    observation_artifact_ref=observation.artifact_id,
-                    report=report,
-                )
-                artifact = self._progress_artifact(
-                    mission_id=mission_id,
-                    now=observed_at,
-                    capability_policy=capability_policy,
-                )
-                self._upsert_artifact(artifact)
-                report.progress_artifact_refs.append(artifact.artifact_id)
+            else:
+                with store.transaction():
+                    self._write_progress_artifacts(
+                        mission_ids=selected_mission_ids,
+                        observed_at=observed_at,
+                        report=report,
+                        capability_policy=capability_policy,
+                    )
+        self._store_refresh_signature = self._current_store_signature()
         return report
+
+    def _write_progress_artifacts(
+        self,
+        *,
+        mission_ids: Sequence[str],
+        observed_at: datetime,
+        report: DaemonTickReport,
+        capability_policy: CapabilityExecutionPolicy,
+    ) -> None:
+        """Persist per-tick progress under one store transaction when available."""
+
+        for mission_id in mission_ids:
+            observation = self._observation_artifact(
+                mission_id=mission_id,
+                now=observed_at,
+                report=report,
+                capability_policy=capability_policy,
+            )
+            self._upsert_artifact(observation)
+            report.observation_artifact_refs.append(observation.artifact_id)
+            self._retire_resolved_observation_followups(
+                mission_id=mission_id,
+                observation=report.runtime_observations[mission_id],
+                observed_at=observed_at,
+                report=report,
+            )
+            self._queue_observation_followups(
+                mission_id=mission_id,
+                observation_artifact_ref=observation.artifact_id,
+                report=report,
+            )
+            self._recover_stale_waiting_human_nuo_clean_retests(
+                mission_id=mission_id,
+                report=report,
+            )
+            self._queue_nuo_clean_retests_for_partial_recoveries(
+                mission_id=mission_id,
+                observation_artifact_ref=observation.artifact_id,
+                report=report,
+            )
+            self._queue_nuo_clean_retests_for_blocked_current_plan_work(
+                mission_id=mission_id,
+                observation_artifact_ref=observation.artifact_id,
+                report=report,
+            )
+            artifact = self._progress_artifact(
+                mission_id=mission_id,
+                now=observed_at,
+                capability_policy=capability_policy,
+            )
+            self._upsert_artifact(artifact)
+            report.progress_artifact_refs.append(artifact.artifact_id)
 
     def run_loop(
         self,
@@ -703,18 +932,24 @@ class ControlPlaneDaemon:
                     stopped_reason="idle",
                     tick_reports=[],
                 )
-        else:
-            self._save_service_state(
-                state_store,
-                DaemonServiceState(
-                    daemon_id=self.daemon_id,
-                    status="starting",
-                    started_at=started_at,
-                    updated_at=started_at,
-                    process_id=os.getpid(),
-                    worker_pool_size=self.worker_pool.worker_count,
-                    resource_lock_backend=self.resource_lock_backend,
-                ),
+            else:
+                self._save_service_state(
+                    state_store,
+                    DaemonServiceState(
+                        daemon_id=self.daemon_id,
+                        status="starting",
+                        started_at=started_at,
+                        updated_at=started_at,
+                        process_id=os.getpid(),
+                        worker_pool_size=self.worker_pool.worker_count,
+                        resource_lock_backend=self.resource_lock_backend,
+                    ),
+                )
+            self._bind_managed_service_context(
+                state_store=state_store,
+                started_at=started_at,
+                mission_ids=list(mission_ids or self._active_missions()),
+                worker_heartbeat_interval_sec=active_config.worker_heartbeat_interval_sec,
             )
         stopped_reason: DaemonServiceStoppedReason = "max_ticks"
         try:
@@ -722,9 +957,17 @@ class ControlPlaneDaemon:
                 if stop_requested is not None and stop_requested():
                     stopped_reason = "stop_requested"
                     break
+                observed_at = now_factory()
+                self._service_tick_count = len(tick_reports) + 1
+                self._save_managed_service_heartbeat(
+                    status="running",
+                    observed_at=observed_at,
+                    tick_count=self._service_tick_count,
+                    consecutive_idle_ticks=idle_ticks,
+                )
                 report = self.tick_once(
                     mission_ids=mission_ids,
-                    now=now_factory(),
+                    now=observed_at,
                     max_work_items=active_config.max_work_items_per_tick,
                 )
                 tick_reports.append(report)
@@ -750,6 +993,8 @@ class ControlPlaneDaemon:
                         resource_lock_backend=self.resource_lock_backend,
                     ),
                 )
+                self._service_tick_count = len(tick_reports)
+                self._service_consecutive_idle_ticks = idle_ticks
                 if active_config.stop_when_idle and idle_ticks >= active_config.idle_ticks_to_stop:
                     stopped_reason = "idle"
                     break
@@ -780,6 +1025,7 @@ class ControlPlaneDaemon:
                     last_error=f"{type(exc).__name__}: {exc}",
                 ),
             )
+            self._clear_managed_service_context()
             raise
 
         ended_at = now_factory()
@@ -794,7 +1040,7 @@ class ControlPlaneDaemon:
                 tick_count=len(tick_reports),
                 consecutive_idle_ticks=idle_ticks,
                 active_mission_ids=list(mission_ids or self._active_missions()),
-                last_heartbeat_at=tick_reports[-1].observed_at if tick_reports else None,
+                last_heartbeat_at=ended_at,
                 last_tick_observed_at=tick_reports[-1].observed_at if tick_reports else None,
                 last_tick_ran_work_item_ids=tick_reports[-1].ran_work_item_ids
                 if tick_reports
@@ -821,6 +1067,7 @@ class ControlPlaneDaemon:
                 stopped_at=ended_at,
             ),
         )
+        self._clear_managed_service_context()
         return DaemonLoopReport(
             daemon_id=self.daemon_id,
             started_at=started_at,
@@ -845,52 +1092,50 @@ class ControlPlaneDaemon:
     ) -> bool:
         if self.control_plane.store is None:
             return False
-        if mission_ids is None:
+        _ = (mission_ids, observed_at)
+        signature = self._current_store_signature()
+        if signature is None:
             return True
-        if any(mission_id not in self.control_plane.missions for mission_id in mission_ids):
-            return True
-        reload_store = getattr(self.control_plane.store, "reload", None)
-        if callable(reload_store):
-            reload_store()
-        for mission_id in mission_ids:
-            try:
-                ready_in_memory = self.control_plane.ready_work_items(
-                    mission_id,
-                    now=observed_at,
-                )
-            except ValueError:
-                return True
-            if ready_in_memory:
-                continue
-            memory_item_ids = {
-                item.work_item_id
-                for item in self.control_plane.work_items.values()
-                if item.mission_id == mission_id
-            }
-            store_items = self.control_plane.store.list_work_items(mission_id=mission_id)
-            if any(
-                item.status == "queued"
-                and (
-                    item.work_item_id not in memory_item_ids
-                    or self.control_plane.work_items[item.work_item_id].status != "queued"
-                )
-                for item in store_items
-            ):
-                return True
-        return False
+        return signature != self._store_refresh_signature
+
+    def _current_store_signature(self) -> tuple[str, int, int] | None:
+        store = self.control_plane.store
+        if store is None:
+            return None
+        path = getattr(store, "path", None)
+        if path is None:
+            return None
+        store_path = Path(path)
+        try:
+            stat = store_path.stat()
+        except OSError:
+            return (str(store_path), -1, -1)
+        return (str(store_path), stat.st_mtime_ns, stat.st_size)
 
     def _next_non_conflicting_ready_work_item(
         self,
         *,
         mission_id: str,
         claimed_resource_locks: set[str],
+        excluded_work_item_ids: set[str] | None = None,
+        followup_only_state: bool = False,
         report: DaemonTickReport,
     ) -> WorkItem | None:
-        for candidate in self.control_plane.ready_work_items(
-            mission_id,
-            now=report.observed_at,
-        ):
+        excluded = excluded_work_item_ids or set()
+        ready_items = _prioritize_ready_work_items_for_daemon(
+            self.control_plane,
+            mission_id=mission_id,
+            ready_items=self.control_plane.ready_work_items(
+                mission_id,
+                now=report.observed_at,
+            ),
+        )
+        for candidate in ready_items:
+            if candidate.work_item_id in excluded:
+                continue
             if candidate.work_item_id in report.no_runner_work_item_ids:
+                continue
+            if followup_only_state and not _is_state_preserving_followup(candidate):
                 continue
             locks = _effective_resource_locks(self.control_plane, candidate)
             if locks and claimed_resource_locks.intersection(locks):
@@ -905,7 +1150,7 @@ class ControlPlaneDaemon:
         *,
         work_item: WorkItem,
         slot: WorkerSlotSnapshot,
-        delivery_state: bool,
+        preserve_mission_status: bool,
         claimed_resource_locks: set[str],
         capability_policy: CapabilityExecutionPolicy,
         observed_at: datetime,
@@ -913,6 +1158,13 @@ class ControlPlaneDaemon:
     ) -> _PreparedWorkItemRun | None:
         runner = self._runner_for(work_item)
         if runner is None:
+            if _is_human_collaboration_work_item(work_item):
+                self._ensure_collaboration_ticket_for_work_item(
+                    work_item=work_item,
+                    observed_at=observed_at,
+                    report=report,
+                )
+                return None
             if work_item.work_item_id not in report.no_runner_work_item_ids:
                 report.no_runner_work_item_ids.append(work_item.work_item_id)
             return None
@@ -963,10 +1215,15 @@ class ControlPlaneDaemon:
             slot.work_item_id = work_item.work_item_id
             slot.waiting_reason = "工作项已被其他 worker 领取或不再可执行。"
             return None
+        work_item_capability_policy = ensure_policy_covers_required_capabilities(
+            capability_policy,
+            claimed_item.required_capability_refs,
+            work_item_id=claimed_item.work_item_id,
+        )
         activation = activate_work_item_features(
             control_plane=self.control_plane,
             work_item=claimed_item,
-            capability_policy=capability_policy,
+            capability_policy=work_item_capability_policy,
             actor=self.daemon_id,
             observed_at=observed_at,
         )
@@ -1028,13 +1285,14 @@ class ControlPlaneDaemon:
                 failed_skill_ids=preflight.failed_skill_ids,
                 artifact_refs=preflight_artifact_refs,
             )
-        _bind_capability_policy(active_runner, capability_policy)
+        _bind_capability_policy(active_runner, work_item_capability_policy)
         return _PreparedWorkItemRun(
             work_item=activation.work_item,
             runner=active_runner,
             slot=slot,
             holder_id=holder_id,
-            preserve_mission_status=delivery_state,
+            preserve_mission_status=preserve_mission_status
+            and _is_state_preserving_followup(activation.work_item),
             preflight_failed_skill_ids=list(preflight.failed_skill_ids),
             preflight_artifact_refs=preflight_artifact_refs,
         )
@@ -1058,7 +1316,16 @@ class ControlPlaneDaemon:
             }
             for future in as_completed(futures):
                 prepared = futures[future]
-                run = future.result()
+                try:
+                    run = future.result()
+                except Exception:  # pragma: no cover - defensive worker isolation.
+                    self._release_claimed_work_item_lease(
+                        work_item_id=prepared.work_item.work_item_id,
+                        lease=prepared.holder_id,
+                    )
+                    self.resource_lock_store.release_holder(prepared.holder_id, now=_now())
+                    prepared.slot.status = "idle"
+                    continue
                 if run is not None:
                     completed.append((prepared, run))
         return sorted(completed, key=lambda pair: pair[1].started_at)
@@ -1067,16 +1334,29 @@ class ControlPlaneDaemon:
         self,
         prepared: _PreparedWorkItemRun,
     ) -> RunRecord | None:
+        stop_worker_heartbeat: Callable[[], None] | None = None
         try:
-            started = self.control_plane.start_work_item_run(
-                work_item_id=prepared.work_item.work_item_id,
-                runner=prepared.runner,
-                preserve_mission_status=prepared.preserve_mission_status,
-                lease=prepared.holder_id,
-            )
+            try:
+                started = self.control_plane.start_work_item_run(
+                    work_item_id=prepared.work_item.work_item_id,
+                    runner=prepared.runner,
+                    preserve_mission_status=prepared.preserve_mission_status,
+                    lease=prepared.holder_id,
+                )
+            except Exception:
+                self._release_claimed_work_item_lease(
+                    work_item_id=prepared.work_item.work_item_id,
+                    lease=prepared.holder_id,
+                )
+                return None
             if started is None:
+                self._release_claimed_work_item_lease(
+                    work_item_id=prepared.work_item.work_item_id,
+                    lease=prepared.holder_id,
+                )
                 return None
             run, running_item = started
+            stop_worker_heartbeat = self._start_managed_worker_heartbeat(prepared.slot)
             try:
                 result = prepared.runner.run(running_item)
             except Exception:  # pragma: no cover - runner failures are normalized.
@@ -1087,8 +1367,24 @@ class ControlPlaneDaemon:
                 preserve_mission_status=prepared.preserve_mission_status,
             )
         finally:
+            if stop_worker_heartbeat is not None:
+                stop_worker_heartbeat()
             self.resource_lock_store.release_holder(prepared.holder_id, now=_now())
             prepared.slot.status = "idle"
+
+    def _release_claimed_work_item_lease(self, *, work_item_id: str, lease: str) -> None:
+        release = getattr(self.control_plane.store, "release_work_item_lease", None)
+        if callable(release):
+            released = release(work_item_id=work_item_id, lease=lease)
+            if released is not None:
+                self.control_plane.work_items[released.work_item_id] = released
+            return
+        work_item = self.control_plane.work_items.get(work_item_id)
+        if work_item is None or work_item.lease != lease or work_item.status != "queued":
+            return
+        released = work_item.model_copy(update={"lease": None, "heartbeat": None, "timeout": None})
+        self.control_plane.work_items[released.work_item_id] = released
+        self._persist_work_item(released)
 
     def _ensure_info_gap_collaboration(
         self,
@@ -1101,8 +1397,8 @@ class ControlPlaneDaemon:
         if mission is None:
             return
         plan = self._current_task_plan(mission)
-        info_gaps = list(plan.info_gaps) if plan is not None else []
-        if not info_gaps and mission.status != "info_gap":
+        info_gaps = list(plan.info_gaps or plan.unknowns) if plan is not None else []
+        if not info_gaps:
             return
         ticket_id = (
             f"collab-info-gap-{_slug(mission.mission_id)}-"
@@ -1154,6 +1450,81 @@ class ControlPlaneDaemon:
                 subject_ref=ticket.ticket_id,
             )
 
+    def _resume_stale_info_gap_mission(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+    ) -> None:
+        """Resume execution when an old info-gap state no longer has a real blocker."""
+
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None or mission.status != "info_gap":
+            return
+        plan = self._current_task_plan(mission)
+        info_gaps = list(plan.info_gaps or plan.unknowns) if plan is not None else []
+        if info_gaps:
+            return
+        has_open_ticket = any(
+            ticket.mission_id == mission_id and ticket.status in {"open", "waiting", "escalated"}
+            for ticket in self.control_plane.collaboration_tickets.values()
+        )
+        if has_open_ticket:
+            return
+        ready_items = self.control_plane.ready_work_items(mission_id, now=observed_at)
+        has_state_preserving_followup = any(
+            _is_state_preserving_followup(item) for item in ready_items
+        )
+        if has_state_preserving_followup:
+            return
+        has_product_work = any(not _is_state_preserving_followup(item) for item in ready_items)
+        if not has_product_work:
+            return
+        self.control_plane.transition_mission(
+            mission_id=mission_id,
+            target="changing_plan",
+            actor=self.daemon_id,
+            reason="daemon resumed stale info_gap state after tickets and plan gaps were cleared",
+            subject_ref=plan.plan_id if plan is not None else mission_id,
+        )
+        self.control_plane.transition_mission(
+            mission_id=mission_id,
+            target="queued",
+            actor=self.daemon_id,
+            reason="daemon queued cleared info-gap mission so ready work can continue",
+            subject_ref=plan.plan_id if plan is not None else mission_id,
+        )
+
+    def _resume_waiting_product_mission_with_ready_current_work(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+    ) -> None:
+        """Do not let a human-wait state hide unfinished current-plan product work."""
+
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None or mission.task_type != "product_development":
+            return
+        if mission.status not in {"awaiting_acceptance", "waiting_human"}:
+            return
+        if mission.acceptance_ref is not None:
+            return
+        ready_product_work = _ready_current_plan_product_work(
+            self.control_plane,
+            mission,
+            now=observed_at,
+        )
+        if not ready_product_work:
+            return
+        ready_items = self.control_plane.ready_work_items(mission_id, now=observed_at)
+        if any(_is_state_preserving_followup(item) for item in ready_items):
+            return
+        self._transition_to_queued(
+            mission_id,
+            subject_ref=ready_product_work[0].work_item_id,
+        )
+
     def _ensure_delivery_acceptance_collaboration(
         self,
         *,
@@ -1174,14 +1545,37 @@ class ControlPlaneDaemon:
             and not _has_ready_or_active_current_plan_work(self.control_plane, mission)
         ):
             return
-        ticket_id = _acceptance_ticket_id(mission.mission_id, delivery_manifest_ref)
-        if ticket_id in self.control_plane.collaboration_tickets:
+        existing_open_ticket = _latest_open_acceptance_ticket(self.control_plane, mission)
+        if existing_open_ticket is not None:
             if mission.status in {"running", "delivering"}:
                 _transition_product_delivery_to_awaiting_acceptance(
                     self.control_plane,
                     mission_id=mission.mission_id,
                     actor=self.daemon_id,
                     reason="daemon found completed product delivery waiting for existing acceptance ticket",
+                    subject_ref=existing_open_ticket.ticket_id,
+                )
+            return
+        delivery_iteration_ref = _delivery_acceptance_iteration_ref(
+            self.control_plane,
+            mission=mission,
+            delivery_manifest_ref=delivery_manifest_ref,
+        )
+        ticket_id = _acceptance_ticket_id(
+            mission.mission_id,
+            delivery_manifest_ref,
+            delivery_iteration_ref=delivery_iteration_ref,
+        )
+        if ticket_id in self.control_plane.collaboration_tickets:
+            if mission.status in {"running", "delivering"}:
+                _transition_product_delivery_to_awaiting_acceptance(
+                    self.control_plane,
+                    mission_id=mission.mission_id,
+                    actor=self.daemon_id,
+                    reason=(
+                        "daemon found completed product delivery with an answered acceptance "
+                        "ticket for the current delivery iteration"
+                    ),
                     subject_ref=ticket_id,
                 )
             return
@@ -1230,6 +1624,116 @@ class ControlPlaneDaemon:
                 subject_ref=ticket.ticket_id,
             )
 
+    def _ensure_player_review_collaboration_from_gate(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None or mission.task_type != "product_development":
+            return
+        if mission.acceptance_ref is not None:
+            return
+        gate = _latest_human_player_review_only_gate(self.control_plane, mission)
+        if gate is None:
+            return
+        ticket_id = _player_review_ticket_id(
+            mission_id=mission.mission_id,
+            gate_id=gate.gate_evaluation_id,
+        )
+        existing = self.control_plane.collaboration_tickets.get(ticket_id)
+        if existing is not None:
+            if existing.status not in {"open", "waiting", "escalated"}:
+                existing = existing.model_copy(
+                    update={
+                        "status": "open",
+                        "resolution_refs": _dedupe(
+                            [*existing.resolution_refs, gate.gate_evaluation_id]
+                        ),
+                    }
+                )
+                self.control_plane.collaboration_tickets[existing.ticket_id] = existing
+                self._persist_collaboration_ticket(existing)
+            self._move_mission_to_waiting_human_for_player_review(
+                mission_id=mission.mission_id,
+                subject_ref=existing.ticket_id,
+            )
+            return
+        ticket = CollaborationTicket(
+            ticket_id=ticket_id,
+            mission_id=mission.mission_id,
+            type="review",
+            role_needed=f"{mission.owner or 'mission-owner'}-or-target-player-reviewer",
+            why_needed=(
+                "KUN has reached the point where automated game/product gates need a fresh "
+                "human or target-player playtest. Missing player-feel approval is not a "
+                "code repair signal by itself."
+            ),
+            context_ref=gate.gate_evaluation_id,
+            risk_if_skipped=(
+                "The daemon may keep opening mechanical acceptance-rework branches instead "
+                "of resolving whether the current game actually feels good enough to a real player."
+            ),
+            deadline=observed_at + timedelta(hours=24),
+            sla_policy={"reminder_after_hours": 6, "escalate_after_hours": 24},
+            escalation_policy={
+                "after_deadline": (
+                    "keep waiting_human or explicitly run low-risk polish; do not mark final"
+                )
+            },
+            fallback_policy={
+                "allowed": False,
+                "rule": "fresh human or target-player review is required for final completion",
+            },
+            resume_after_response=True,
+            recommended_option="play the current build and answer accept / rework / reject",
+            output_contract=(
+                "Return accept/rework/reject, a player-feel score, and concrete notes on "
+                "visual objects, drag feel, object causality, NPC goals, rewards, UI, and fun."
+            ),
+        )
+        self.control_plane.record_collaboration_ticket(ticket, actor=self.daemon_id)
+        report.created_collaboration_ticket_ids.append(ticket.ticket_id)
+        self._move_mission_to_waiting_human_for_player_review(
+            mission_id=mission.mission_id,
+            subject_ref=ticket.ticket_id,
+        )
+
+    def _move_mission_to_waiting_human_for_player_review(
+        self,
+        *,
+        mission_id: str,
+        subject_ref: str,
+    ) -> None:
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None or mission.status == "waiting_human":
+            return
+        transition_path: list[MissionStatus]
+        if mission.status in {"running", "blocked"}:
+            transition_path = ["waiting_human"]
+        elif mission.status == "queued":
+            transition_path = ["running", "waiting_human"]
+        elif mission.status in {"changing_plan", "repairing"}:
+            transition_path = ["queued", "running", "waiting_human"]
+        else:
+            return
+        for target in transition_path:
+            current = self.control_plane.missions.get(mission_id)
+            if current is None or current.status == target:
+                continue
+            self.control_plane.transition_mission(
+                mission_id=mission_id,
+                target=target,
+                actor=self.daemon_id,
+                reason=(
+                    "daemon converted missing fresh player-review evidence into a human "
+                    "playtest collaboration wait"
+                ),
+                subject_ref=subject_ref,
+            )
+
     def _ensure_open_acceptance_keeps_product_pressure(
         self,
         *,
@@ -1260,9 +1764,20 @@ class ControlPlaneDaemon:
         ticket = _latest_open_acceptance_ticket(self.control_plane, mission)
         if ticket is None:
             return
+        if _report_has_mechanical_acceptance_loop(report, mission_id):
+            return
+        if _has_pending_mechanical_acceptance_loop_followup(self.control_plane, mission):
+            return
         if _has_ready_or_active_current_plan_work(self.control_plane, mission):
             return
         if _latest_product_pressure_evidence_allows_waiting(contract):
+            return
+        if _is_acceptance_rework_plan_version(
+            mission.current_plan_version
+        ) and _latest_product_pressure_evidence_allows_waiting(
+            contract,
+            allow_continuous_pressure_wait=True,
+        ):
             return
         gate_id = _open_acceptance_pressure_gate_id(
             mission_id=mission.mission_id,
@@ -1335,15 +1850,29 @@ class ControlPlaneDaemon:
         mission = self.control_plane.missions.get(mission_id)
         if mission is None or mission.task_type != "product_development":
             return
-        if mission.status not in {"delivering", "awaiting_acceptance"}:
+        if mission.status not in {
+            "delivering",
+            "awaiting_acceptance",
+            "repairing",
+            "changing_plan",
+            "running",
+        }:
             return
         gate = _latest_acceptance_rework_gate(self.control_plane, mission)
         if gate is None:
             return
         contract = self.control_plane.contracts.get(mission.execution_contract_ref or "")
+        if _report_has_mechanical_acceptance_loop(report, mission_id):
+            return
+        if _has_pending_mechanical_acceptance_loop_followup(self.control_plane, mission):
+            return
         if (
             gate.governance_signal == "open_acceptance_requires_continued_product_pressure"
-            and _latest_product_pressure_evidence_allows_waiting(contract)
+            and _latest_product_pressure_evidence_allows_waiting(
+                contract,
+                allow_continuous_pressure_wait=True,
+            )
+            and _is_acceptance_rework_plan_version(gate.task_plan_version)
         ):
             return
         plan_version = _acceptance_rework_plan_version(mission=mission, gate=gate)
@@ -1375,6 +1904,7 @@ class ControlPlaneDaemon:
             gate=gate,
             base_plan=base_plan,
             plan_version=plan_version,
+            contract=contract,
         )
         self.control_plane.task_plans[plan.plan_id] = plan
         if self.control_plane.store is not None:
@@ -1438,6 +1968,329 @@ class ControlPlaneDaemon:
                 subject_ref=subject_ref,
             )
         self._transition_to_queued(mission_id, subject_ref=subject_ref)
+
+    def _ensure_mission_director_review(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        """Queue a KUN-native Mission Director review when supervision is configured."""
+
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None or mission.status not in ACTIVE_DAEMON_MISSION_STATUSES:
+            return
+        if mission.status == "paused":
+            return
+        plan_version = mission.current_plan_version or "no-plan"
+        delivery_manifest_ref = _latest_delivery_manifest_ref(self.control_plane, mission)
+        open_ticket_ids = sorted(
+            ticket.ticket_id
+            for ticket in self.control_plane.collaboration_tickets.values()
+            if ticket.mission_id == mission_id
+            and ticket.status in {"open", "waiting", "escalated", "fallback_selected"}
+        )
+        queued_or_active = [
+            item
+            for item in self.control_plane.work_items.values()
+            if item.mission_id == mission_id and item.status in {"queued", "running", "retrying"}
+        ]
+        if any(_is_pending_mission_director_or_plan_change(item) for item in queued_or_active):
+            return
+        if not self._mission_director_should_review(
+            mission=mission,
+            queued_or_active=queued_or_active,
+        ):
+            return
+        signature = _hash_payload(
+            {
+                "mission_id": mission_id,
+                "status": mission.status,
+                "task_plan_version": plan_version,
+                "delivery_manifest_ref": delivery_manifest_ref,
+                "acceptance_ref": mission.acceptance_ref,
+                "open_ticket_ids": open_ticket_ids,
+                "queued_or_active_count": len(queued_or_active),
+            }
+        )[:12]
+        idempotency_key = f"mission-director:{mission_id}:{signature}"
+        if any(
+            item.idempotency_key == idempotency_key and item.status != "cancelled"
+            for item in self.control_plane.work_items.values()
+        ):
+            return
+        work_item = WorkItem(
+            work_item_id=f"work-mission-director-{_slug(mission_id)}-{signature}",
+            mission_id=mission_id,
+            task_plan_version=plan_version,
+            type="review",
+            owner=MISSION_DIRECTOR_OWNER,
+            priority=100,
+            idempotency_key=idempotency_key,
+            expected_output=(
+                "Act as KUN Mission Director. Review goal alignment, information gaps, "
+                "task decomposition, worker distribution, evidence, acceptance state, and "
+                "whether gate/test/self-score pass is being mistaken for final product quality."
+            ),
+            recovery_refs=[ref for ref in [delivery_manifest_ref] if ref is not None],
+        )
+        if self._runner_for(work_item) is None:
+            return
+        self.control_plane.work_items[work_item.work_item_id] = work_item
+        self._persist_work_item(work_item)
+        report.created_work_item_ids.append(work_item.work_item_id)
+
+    def _retire_superseded_mission_director_work(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        """Cancel queued duplicate reviews once a plan-change handoff exists."""
+
+        pending_plan_change_ids = {
+            item.work_item_id
+            for item in self.control_plane.work_items.values()
+            if item.mission_id == mission_id
+            and item.status in {"queued", "running", "retrying"}
+            and _is_kun_plan_change_work_item(item)
+        }
+        pending_directors = [
+            item
+            for item in self.control_plane.work_items.values()
+            if item.mission_id == mission_id
+            and item.owner == MISSION_DIRECTOR_OWNER
+            and item.status in {"queued", "retrying"}
+            and not _is_rainflow_phase1_acceptance_review(item)
+        ]
+        mission = self.control_plane.missions.get(mission_id)
+        accepted_or_terminal = (
+            mission is not None
+            and mission.status in {"learning_writeback", "closed", "partial_closed"}
+            and mission.acceptance_ref is not None
+        )
+        if accepted_or_terminal or pending_plan_change_ids:
+            retiring = pending_directors
+        elif len(pending_directors) > 1:
+            retiring = pending_directors[:-1]
+        else:
+            return
+        retired: list[str] = []
+        for item in retiring:
+            updated = item.model_copy(update={"status": "cancelled"})
+            self.control_plane.work_items[item.work_item_id] = updated
+            self._persist_work_item(updated)
+            retired.append(item.work_item_id)
+        if not retired:
+            return
+        artifact = ArtifactRecord(
+            artifact_id=(
+                f"artifact-superseded-mission-director-cleanup-"
+                f"{mission_id}-{_compact_time(observed_at)}"
+            ),
+            kind="report",
+            path_or_uri=(
+                f"control-plane://daemon/{self.daemon_id}/{mission_id}/"
+                f"superseded-mission-director-cleanup/{observed_at.isoformat()}"
+            ),
+            content_hash=_hash_payload(
+                {
+                    "mission_id": mission_id,
+                    "pending_plan_change_ids": sorted(pending_plan_change_ids),
+                    "retired_work_item_ids": retired,
+                }
+            ),
+            created_by=self.daemon_id,
+            mission_id=mission_id,
+            supports=[
+                "superseded_mission_director_cleanup",
+                "mission_director_dedupe",
+                "plan_change_handoff",
+                "state_hygiene",
+                *sorted(pending_plan_change_ids),
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        self._upsert_artifact(artifact)
+        report.retired_work_item_ids.extend(retired)
+
+    def _retire_terminal_followup_only_work(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        """Collapse stale governance residue after accepted product delivery."""
+
+        mission = self.control_plane.missions.get(mission_id)
+        if (
+            mission is None
+            or mission.acceptance_ref is None
+            or mission.status not in {"learning_writeback", "closed", "partial_closed"}
+        ):
+            return
+        retired: list[str] = []
+        for work_item in list(self.control_plane.work_items.values()):
+            if work_item.mission_id != mission_id:
+                continue
+            if work_item.status in {"done", "cancelled"}:
+                continue
+            if not (
+                _is_state_preserving_followup(work_item) or _is_kun_plan_change_work_item(work_item)
+            ):
+                continue
+            updated = work_item.model_copy(update={"status": "cancelled"})
+            self.control_plane.work_items[work_item.work_item_id] = updated
+            self._persist_work_item(updated)
+            retired.append(work_item.work_item_id)
+        if not retired:
+            return
+        artifact = ArtifactRecord(
+            artifact_id=(
+                f"artifact-terminal-followup-cleanup-{mission_id}-{_compact_time(observed_at)}"
+            ),
+            kind="report",
+            path_or_uri=(
+                f"control-plane://daemon/{self.daemon_id}/{mission_id}/"
+                f"terminal-followup-cleanup/{observed_at.isoformat()}"
+            ),
+            content_hash=_hash_payload(
+                {
+                    "mission_id": mission_id,
+                    "mission_status": mission.status,
+                    "acceptance_ref": mission.acceptance_ref,
+                    "retired_work_item_ids": retired,
+                }
+            ),
+            created_by=self.daemon_id,
+            mission_id=mission_id,
+            supports=[
+                "terminal_followup_cleanup",
+                "state_hygiene",
+                "followup_closure",
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        self._upsert_artifact(artifact)
+        report.retired_work_item_ids.extend(retired)
+
+    def _restore_cancelled_rainflow_phase1_acceptance_reviews(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        """Repair over-eager governance cleanup of RainFlow Phase 1 reviews."""
+
+        if not _is_rainflow_ad_mission(self.control_plane, mission_id):
+            return
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None or not mission.current_plan_version:
+            return
+        current_items = [
+            item
+            for item in self.control_plane.work_items.values()
+            if item.mission_id == mission_id
+            and item.task_plan_version == mission.current_plan_version
+        ]
+        downstream_dependency_refs = {
+            dep
+            for item in current_items
+            if item.status in {"queued", "running", "retrying", "blocked"}
+            for dep in item.dependencies
+        }
+        restored: list[str] = []
+        for item in current_items:
+            if item.status != "cancelled":
+                continue
+            if not _is_rainflow_phase1_acceptance_review(item):
+                continue
+            if item.work_item_id not in downstream_dependency_refs:
+                continue
+            dependency_statuses = [
+                self.control_plane.work_items[dep].status
+                for dep in item.dependencies
+                if dep in self.control_plane.work_items
+            ]
+            if any(status == "cancelled" for status in dependency_statuses):
+                continue
+            updated = item.model_copy(update={"status": "queued"})
+            self.control_plane.work_items[item.work_item_id] = updated
+            self._persist_work_item(updated)
+            restored.append(item.work_item_id)
+        if not restored:
+            return
+        artifact = ArtifactRecord(
+            artifact_id=(
+                f"artifact-rainflow-phase1-review-restore-{mission_id}-{_compact_time(observed_at)}"
+            ),
+            kind="report",
+            path_or_uri=(
+                f"control-plane://daemon/{self.daemon_id}/{mission_id}/"
+                f"rainflow-phase1-review-restore/{observed_at.isoformat()}"
+            ),
+            content_hash=_hash_payload(
+                {
+                    "mission_id": mission_id,
+                    "restored_work_item_ids": restored,
+                    "reason": "RainFlow Phase 1 acceptance review is core product work.",
+                }
+            ),
+            created_by=self.daemon_id,
+            mission_id=mission_id,
+            supports=[
+                "rainflow_phase1_acceptance_review_restored",
+                "state_hygiene",
+                "core_product_gate_preserved",
+                *restored,
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        self._upsert_artifact(artifact)
+        report.recovered_work_item_ids.extend(restored)
+
+    def _mission_director_should_review(
+        self,
+        *,
+        mission: Mission,
+        queued_or_active: Sequence[WorkItem],
+    ) -> bool:
+        if mission.status in {"delivering", "awaiting_acceptance"}:
+            return True
+        current_plan_reviewed = self._mission_director_reviewed_current_plan(mission)
+        if (
+            mission.artifact_manifest_refs
+            and mission.current_plan_version
+            and not current_plan_reviewed
+        ):
+            return True
+        plan = self._current_task_plan(mission)
+        if plan is None:
+            return mission.status in {"planning", "info_gap", "contracted", "queued", "running"}
+        if plan.info_gaps:
+            return mission.status in {"planning", "info_gap", "contracted", "queued", "running"}
+        if mission.status in {"blocked", "repairing"}:
+            return not queued_or_active
+        if queued_or_active:
+            return False
+        return mission.status in {"planning", "info_gap", "contracted", "queued", "running"}
+
+    def _mission_director_reviewed_current_plan(self, mission: Mission) -> bool:
+        if not mission.current_plan_version:
+            return False
+        return any(
+            gate.mission_id == mission.mission_id
+            and gate.task_plan_version == mission.current_plan_version
+            and gate.created_by == MISSION_DIRECTOR_OWNER
+            for gate in self.control_plane.gate_evaluations.values()
+        )
 
     def _resolve_capability_duplicates(
         self,
@@ -1547,11 +2400,14 @@ class ControlPlaneDaemon:
         if mission.status not in {
             "queued",
             "running",
+            "waiting_human",
+            "waiting_external",
             "blocked",
             "repairing",
             "changing_plan",
             "delivering",
             "awaiting_acceptance",
+            "learning_writeback",
             "closed",
             "partial_closed",
         }:
@@ -1598,6 +2454,361 @@ class ControlPlaneDaemon:
         self._upsert_artifact(artifact)
         report.retired_work_item_ids.extend(retired)
 
+    def _retire_superseded_product_gate_work(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        """Cancel stale product gates while a newer rework branch is active."""
+
+        mission = self.control_plane.missions.get(mission_id)
+        if (
+            mission is None
+            or mission.task_type != "product_development"
+            or not mission.current_plan_version
+        ):
+            return
+        current_items = [
+            item
+            for item in self.control_plane.work_items.values()
+            if item.mission_id == mission_id
+            and item.task_plan_version == mission.current_plan_version
+        ]
+        protected_branch_id = _active_game_rework_branch_id(current_items)
+        active_iteration_ids = {
+            item.work_item_id
+            for item in current_items
+            if item.owner == "kun-game-production-runner"
+            and item.type == "execution"
+            and item.status not in {"done", "cancelled"}
+            and "iteration" in (item.phase or item.work_item_id)
+            and (
+                protected_branch_id is None
+                or _game_rework_branch_id(item) in {None, protected_branch_id}
+            )
+        }
+        if not active_iteration_ids and protected_branch_id is None:
+            return
+
+        protected_ids = set(active_iteration_ids)
+        if protected_branch_id is not None:
+            protected_ids.update(
+                item.work_item_id
+                for item in current_items
+                if _game_rework_branch_id(item) == protected_branch_id
+                and item.status not in {"done", "cancelled"}
+            )
+        changed = True
+        while changed:
+            changed = False
+            for item in current_items:
+                if item.work_item_id in protected_ids:
+                    continue
+                if any(dep in protected_ids for dep in item.dependencies):
+                    protected_ids.add(item.work_item_id)
+                    changed = True
+
+        retired: list[str] = []
+        for item in current_items:
+            if item.work_item_id in protected_ids:
+                continue
+            if item.status in {"done", "cancelled"}:
+                continue
+            branch_id = _game_rework_branch_id(item)
+            if (
+                protected_branch_id is not None
+                and branch_id is not None
+                and branch_id != protected_branch_id
+                and item.status != "running"
+            ):
+                updated = item.model_copy(update={"status": "cancelled"})
+                self.control_plane.work_items[updated.work_item_id] = updated
+                self._persist_work_item(updated)
+                retired.append(updated.work_item_id)
+                continue
+            if not _is_product_review_or_delivery_gate(item):
+                continue
+            updated = item.model_copy(update={"status": "cancelled"})
+            self.control_plane.work_items[updated.work_item_id] = updated
+            self._persist_work_item(updated)
+            retired.append(updated.work_item_id)
+        if not retired:
+            return
+        artifact = ArtifactRecord(
+            artifact_id=(
+                f"artifact-superseded-product-gate-cleanup-"
+                f"{mission_id}-{_compact_time(observed_at)}"
+            ),
+            kind="report",
+            path_or_uri=(
+                f"control-plane://daemon/{self.daemon_id}/{mission_id}/"
+                f"superseded-product-gate-cleanup/{observed_at.isoformat()}"
+            ),
+            content_hash=_hash_payload(
+                {
+                    "mission_id": mission_id,
+                    "active_plan_version": mission.current_plan_version,
+                    "active_iteration_ids": sorted(active_iteration_ids),
+                    "protected_work_item_ids": sorted(protected_ids),
+                    "retired_work_item_ids": retired,
+                }
+            ),
+            created_by=self.daemon_id,
+            mission_id=mission_id,
+            supports=[
+                "superseded_product_gate_cleanup",
+                "product_rework_branch_isolation",
+                *retired,
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        self._upsert_artifact(artifact)
+        report.retired_work_item_ids.extend(retired)
+
+    def _retire_downstream_product_work_after_failed_gate(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        """Cancel queued product delivery steps blocked by a failed product gate."""
+
+        mission = self.control_plane.missions.get(mission_id)
+        if (
+            mission is None
+            or mission.task_type != "product_development"
+            or not mission.current_plan_version
+        ):
+            return
+        current_items = [
+            item
+            for item in self.control_plane.work_items.values()
+            if item.mission_id == mission_id
+            and item.task_plan_version == mission.current_plan_version
+        ]
+        failed_gate_ids = {
+            item.work_item_id
+            for item in current_items
+            if item.status == "failed" and _is_blocking_product_gate(item)
+        }
+        if not failed_gate_ids:
+            return
+
+        retired: list[str] = []
+        blocked_ids = set(failed_gate_ids)
+        changed = True
+        while changed:
+            changed = False
+            for item in current_items:
+                if item.work_item_id in blocked_ids:
+                    continue
+                if item.status in {"done", "cancelled", "running"}:
+                    continue
+                if not any(dep in blocked_ids for dep in item.dependencies):
+                    continue
+                blocked_ids.add(item.work_item_id)
+                if _is_product_review_or_delivery_gate(item):
+                    updated = item.model_copy(update={"status": "cancelled"})
+                    self.control_plane.work_items[updated.work_item_id] = updated
+                    self._persist_work_item(updated)
+                    retired.append(updated.work_item_id)
+                changed = True
+
+        if not retired:
+            return
+        artifact = ArtifactRecord(
+            artifact_id=(
+                f"artifact-failed-product-gate-downstream-cleanup-"
+                f"{mission_id}-{_compact_time(observed_at)}"
+            ),
+            kind="report",
+            path_or_uri=(
+                f"control-plane://daemon/{self.daemon_id}/{mission_id}/"
+                f"failed-product-gate-downstream-cleanup/{observed_at.isoformat()}"
+            ),
+            content_hash=_hash_payload(
+                {
+                    "mission_id": mission_id,
+                    "active_plan_version": mission.current_plan_version,
+                    "failed_gate_work_item_ids": sorted(failed_gate_ids),
+                    "retired_work_item_ids": retired,
+                }
+            ),
+            created_by=self.daemon_id,
+            mission_id=mission_id,
+            supports=[
+                "failed_product_gate_downstream_cleanup",
+                "delivery_blocked_by_failed_player_gate",
+                *retired,
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        self._upsert_artifact(artifact)
+        report.retired_work_item_ids.extend(retired)
+
+    def _retire_downstream_product_work_after_cancelled_dependency(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        """Cancel queued product gates that can never run after a dependency is cancelled."""
+
+        mission = self.control_plane.missions.get(mission_id)
+        if (
+            mission is None
+            or mission.task_type != "product_development"
+            or not mission.current_plan_version
+        ):
+            return
+        current_items = [
+            item
+            for item in self.control_plane.work_items.values()
+            if item.mission_id == mission_id
+            and item.task_plan_version == mission.current_plan_version
+        ]
+        blocked_ids = {item.work_item_id for item in current_items if item.status == "cancelled"}
+        if not blocked_ids:
+            return
+
+        retired: list[str] = []
+        changed = True
+        while changed:
+            changed = False
+            for item in current_items:
+                if item.work_item_id in blocked_ids:
+                    continue
+                if item.status in {"done", "cancelled", "running"}:
+                    continue
+                if not any(dep in blocked_ids for dep in item.dependencies):
+                    continue
+                blocked_ids.add(item.work_item_id)
+                if _is_product_review_or_delivery_gate(item):
+                    updated = item.model_copy(update={"status": "cancelled"})
+                    self.control_plane.work_items[updated.work_item_id] = updated
+                    self._persist_work_item(updated)
+                    retired.append(updated.work_item_id)
+                changed = True
+
+        if not retired:
+            return
+        artifact = ArtifactRecord(
+            artifact_id=(
+                f"artifact-cancelled-dependency-downstream-cleanup-"
+                f"{mission_id}-{_compact_time(observed_at)}"
+            ),
+            kind="report",
+            path_or_uri=(
+                f"control-plane://daemon/{self.daemon_id}/{mission_id}/"
+                f"cancelled-dependency-downstream-cleanup/{observed_at.isoformat()}"
+            ),
+            content_hash=_hash_payload(
+                {
+                    "mission_id": mission_id,
+                    "active_plan_version": mission.current_plan_version,
+                    "cancelled_dependency_work_item_ids": sorted(blocked_ids),
+                    "retired_work_item_ids": retired,
+                }
+            ),
+            created_by=self.daemon_id,
+            mission_id=mission_id,
+            supports=[
+                "cancelled_dependency_downstream_cleanup",
+                "unrunnable_delivery_queue_cleanup",
+                *retired,
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        self._upsert_artifact(artifact)
+        report.retired_work_item_ids.extend(retired)
+
+    def _retire_stale_quality_followups_before_running(
+        self,
+        *,
+        mission_id: str,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        """Retire stale quality follow-ups when fresher execution lanes supersede them."""
+
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None or mission.task_type != "product_development":
+            return
+        contract = self.control_plane.contracts.get(mission.execution_contract_ref or "")
+        ready_items = self.control_plane.ready_work_items(mission_id, now=observed_at)
+        has_ready_core_work = any(
+            _is_ready_product_core_work(
+                self.control_plane,
+                mission=mission,
+                contract=contract,
+                work_item=item,
+            )
+            for item in ready_items
+        )
+        human_only_gate = _latest_human_player_review_only_gate(self.control_plane, mission)
+        if not has_ready_core_work and human_only_gate is None:
+            return
+
+        retired: list[str] = []
+        for item in list(self.control_plane.work_items.values()):
+            if item.mission_id != mission_id or item.status not in {"queued", "partial"}:
+                continue
+            if not _is_stale_quality_followup(item):
+                continue
+            if human_only_gate is not None and item.recovery_refs:
+                referenced_gate_ids = {
+                    ref for ref in item.recovery_refs if ref in self.control_plane.gate_evaluations
+                }
+                if (
+                    referenced_gate_ids
+                    and human_only_gate.gate_evaluation_id not in referenced_gate_ids
+                ):
+                    continue
+            updated = item.model_copy(update={"status": "cancelled"})
+            self.control_plane.work_items[updated.work_item_id] = updated
+            self._persist_work_item(updated)
+            retired.append(updated.work_item_id)
+        if not retired:
+            return
+        artifact = ArtifactRecord(
+            artifact_id=(
+                f"artifact-stale-quality-followup-cleanup-{mission_id}-{_compact_time(observed_at)}"
+            ),
+            kind="report",
+            path_or_uri=(
+                f"control-plane://daemon/{self.daemon_id}/{mission_id}/"
+                f"stale-quality-followup-cleanup/{observed_at.isoformat()}"
+            ),
+            content_hash=_hash_payload(
+                {
+                    "mission_id": mission_id,
+                    "retired_work_item_ids": retired,
+                    "has_ready_core_work": has_ready_core_work,
+                    "human_only_gate": human_only_gate.gate_evaluation_id
+                    if human_only_gate is not None
+                    else None,
+                }
+            ),
+            created_by=self.daemon_id,
+            mission_id=mission_id,
+            supports=[
+                "stale_quality_followup_cleanup",
+                "core_product_lane_priority",
+                *retired,
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        self._upsert_artifact(artifact)
+        report.retired_work_item_ids.extend(retired)
+
     def _retire_superseded_collaboration_tickets(
         self,
         *,
@@ -1611,6 +2822,8 @@ class ControlPlaneDaemon:
         if mission.status not in {
             "queued",
             "running",
+            "waiting_human",
+            "waiting_external",
             "blocked",
             "repairing",
             "changing_plan",
@@ -1641,6 +2854,8 @@ class ControlPlaneDaemon:
             if ticket.mission_id != mission_id:
                 continue
             if ticket.status not in {"open", "waiting", "escalated", "fallback_selected"}:
+                continue
+            if self._ticket_is_bound_to_active_waiting_work(ticket):
                 continue
             if ticket.context_ref in active_context_refs:
                 continue
@@ -1689,6 +2904,22 @@ class ControlPlaneDaemon:
         self._upsert_artifact(artifact)
         report.retired_collaboration_ticket_ids.extend(retired)
 
+    def _ticket_is_bound_to_active_waiting_work(self, ticket: CollaborationTicket) -> bool:
+        """Keep human tickets visible while their referenced work item is still blocked."""
+
+        bound_refs = [ticket.context_ref, *ticket.auto_resolvable_by]
+        for ref in bound_refs:
+            if not ref:
+                continue
+            work_item = self.control_plane.work_items.get(ref)
+            if work_item is None:
+                continue
+            if work_item.mission_id != ticket.mission_id:
+                continue
+            if work_item.status in {"waiting_human", "waiting_external", "blocked"}:
+                return True
+        return False
+
     def _current_task_plan(self, mission: Mission) -> TaskPlan | None:
         plans = [
             plan
@@ -1715,6 +2946,56 @@ class ControlPlaneDaemon:
             for item in self.control_plane.work_items.values()
             if item.mission_id == mission_id
         }
+        protected_game_rework_branch_id = _active_game_rework_branch_id(
+            list(mission_work_items.values())
+        )
+        running_run_item_ids = {
+            run.work_item_id
+            for run in self.control_plane.runs.values()
+            if run.work_item_id in mission_work_items and run.exit_status == "running"
+        }
+        for item in mission_work_items.values():
+            if item.status != "queued" or item.lease is None:
+                continue
+            lease_expired = item.timeout is not None and item.timeout <= now
+            lease_owned_by_this_daemon = _lease_owned_by_daemon(item.lease, self.daemon_id)
+            if not lease_expired and not lease_owned_by_this_daemon:
+                continue
+            self.resource_lock_store.release_holder(item.lease, now=now)
+            recovered = item.model_copy(
+                update={
+                    "lease": None,
+                    "heartbeat": None,
+                    "timeout": None,
+                }
+            )
+            self.control_plane.work_items[recovered.work_item_id] = recovered
+            self._persist_work_item(recovered)
+            if recovered.work_item_id not in report.recovered_work_item_ids:
+                report.recovered_work_item_ids.append(recovered.work_item_id)
+        for item in mission_work_items.values():
+            if item.status != "running" or item.work_item_id in running_run_item_ids:
+                continue
+            if item.lease is not None or item.heartbeat is not None:
+                continue
+            if (
+                protected_game_rework_branch_id is not None
+                and _game_rework_branch_id(item) == protected_game_rework_branch_id
+                and item.type in {"execution", "test"}
+            ):
+                continue
+            recovered = item.model_copy(
+                update={
+                    "status": "queued",
+                    "lease": None,
+                    "heartbeat": None,
+                    "timeout": None,
+                }
+            )
+            self.control_plane.work_items[recovered.work_item_id] = recovered
+            self._persist_work_item(recovered)
+            if recovered.work_item_id not in report.recovered_work_item_ids:
+                report.recovered_work_item_ids.append(recovered.work_item_id)
         findings = self.supervisor.detect_stale_runs(
             work_items=mission_work_items,
             runs=[
@@ -1735,6 +3016,28 @@ class ControlPlaneDaemon:
             seen.add(key)
             self._apply_recovery(finding=finding, report=report, now=now)
 
+    def _release_orphaned_resource_locks(self, *, now: datetime) -> None:
+        """Clear locks whose owning work item is no longer actively running.
+
+        Recovery can happen after an external kill or interrupted daemon loop.
+        In that case the work item lease may already be cleared while the
+        separate resource-lock file still contains the old holder.  Keeping that
+        holder blocks clean retests and creates an artificial deadlock.
+        """
+
+        released_holders: set[str] = set()
+        for lease in self.resource_lock_store.list_active(now=now):
+            work_item = self.control_plane.work_items.get(lease.work_item_id)
+            still_owns_lock = (
+                work_item is not None
+                and work_item.status == "running"
+                and work_item.lease == lease.holder_id
+            )
+            if still_owns_lock or lease.holder_id in released_holders:
+                continue
+            self.resource_lock_store.release_holder(lease.holder_id, now=now)
+            released_holders.add(lease.holder_id)
+
     def _apply_recovery(
         self,
         *,
@@ -1747,6 +3050,8 @@ class ControlPlaneDaemon:
         work_item = self.control_plane.work_items.get(finding.work_item_id)
         if work_item is None:
             return
+        if work_item.lease:
+            self.resource_lock_store.release_holder(work_item.lease, now=now)
         plan = self.supervisor.build_recovery_plan(
             work_item,
             failure_category=finding.failure_category,
@@ -1764,6 +3069,22 @@ class ControlPlaneDaemon:
         self.control_plane.work_items[failed_item.work_item_id] = failed_item
         self._persist_work_item(failed_item)
         self._close_running_run(finding=finding, work_item=failed_item, now=now)
+        mission = self.control_plane.missions.get(work_item.mission_id)
+        if (
+            mission is not None
+            and mission.status == "queued"
+            and plan.gate_evaluation.next_state not in {"running", "blocked", "cancelled", "paused"}
+        ):
+            self.control_plane.transition_mission(
+                mission_id=mission.mission_id,
+                target="running",
+                actor=self.daemon_id,
+                reason=(
+                    "stale work recovery needs a running-state recovery transition; "
+                    "move queued mission into running before applying recovery gate"
+                ),
+                subject_ref=finding.work_item_id,
+            )
         self.control_plane.apply_gate(plan.gate_evaluation)
         report.recovered_work_item_ids.append(work_item.work_item_id)
         report.recovery_gate_refs.append(plan.gate_evaluation.gate_evaluation_id)
@@ -2018,45 +3339,76 @@ class ControlPlaneDaemon:
                 continue
             if item.code in dedicated_followup_codes:
                 continue
+            mission = self.control_plane.missions.get(mission_id)
+            if (
+                item.code == "quality_gate_not_passed"
+                and _is_rainflow_ad_mission(self.control_plane, mission_id)
+                and any(
+                    _is_rainflow_core_work_item(ready)
+                    for ready in self.control_plane.ready_work_items(
+                        mission_id,
+                        now=report.observed_at,
+                    )
+                )
+            ):
+                continue
+            current_plan_version = mission.current_plan_version if mission else None
             evidence_refs = _dedupe([observation_artifact_ref, *item.evidence_refs])
-            stable_evidence_refs = list(item.evidence_refs) or [item.code]
-            evidence_sig = _hash_payload({"code": item.code, "evidence": stable_evidence_refs})[:12]
-            qi_expected_output = (
-                (
+            # Observation follow-ups are scoped to the active plan and code.
+            # Their evidence can grow on every tick in long-running dogfood
+            # missions; including all refs in the id creates endless duplicate
+            # Qi/Nuo work. Keep ids stable and let recovery_refs accumulate.
+            evidence_sig = _hash_payload(
+                _observation_followup_signature_payload(
+                    item,
+                    task_plan_version=current_plan_version,
+                )
+            )[:12]
+            if item.code == "mechanical_acceptance_rework_loop":
+                qi_expected_output = (
+                    "Run a Qi-owned strategy replay / shadow rerun / process audit for this "
+                    "mechanical acceptance-rework loop before more product rework runs. Compare "
+                    "the repeated delivery path against a stricter alternative strategy, record "
+                    "observable product deltas, evidence gaps, and acceptance deltas, then emit "
+                    "replay-only capability or known-limit evidence. Do not mutate production "
+                    f"runtime defaults. Observation {item.code}: {item.recommended_action}"
+                )
+            elif item.code == "quality_gate_not_passed":
+                qi_expected_output = (
                     "Audit, score, and optimize this failed quality gate. Continue iteration, "
                     "find a better path, turn product gaps into stricter acceptance criteria, "
                     "open a plan-change branch, and require clean retest evidence before final closure. "
                     f"Observation {item.code}: {item.recommended_action}"
                 )
-                if item.code == "quality_gate_not_passed"
-                else (
-                    (
-                        "Audit this failed work item as an execution-quality incident. Continue "
-                        "iteration, find a better path, classify whether the runner/tool path "
-                        "failed, and create a strategy change or capability-governance action "
-                        f"before the mission can close. Observation {item.code}: {item.recommended_action}"
-                    )
-                    if item.code == "failed_work_without_recovery"
-                    else (
-                        (
-                            "Audit and govern duplicate runtime capabilities. Merge, dedupe, or "
-                            "discard duplicate production defaults, keep the strongest verified "
-                            f"profile, and preserve evidence. Observation {item.code}: {item.recommended_action}"
-                        )
-                        if item.code == "capability_duplicates_collapsed"
-                        else (
-                            "Audit, score, and optimize this runtime observation. Decide whether "
-                            "to merge, dedupe, discard, change plan, or open a better strategy. "
-                            f"Observation {item.code}: {item.recommended_action}"
-                        )
-                    )
+            elif item.code in {
+                "failed_work_without_recovery",
+                "failed_work_recovery_incomplete",
+            }:
+                qi_expected_output = (
+                    "Audit this failed work item as an execution-quality incident. Continue "
+                    "iteration, find a better path, classify whether the runner/tool path "
+                    "failed, and create a strategy change or capability-governance action "
+                    f"before the mission can close. Observation {item.code}: {item.recommended_action}"
                 )
-            )
+            elif item.code == "capability_duplicates_collapsed":
+                qi_expected_output = (
+                    "Audit and govern duplicate runtime capabilities. Merge, dedupe, or "
+                    "discard duplicate production defaults, keep the strongest verified "
+                    f"profile, and preserve evidence. Observation {item.code}: {item.recommended_action}"
+                )
+            else:
+                qi_expected_output = (
+                    "Audit, score, and optimize this runtime observation. Decide whether "
+                    "to merge, dedupe, discard, change plan, or open a better strategy. "
+                    f"Observation {item.code}: {item.recommended_action}"
+                )
             qi_suffix = (
-                "strategy_v2-"
+                "strategy-replay-"
+                if item.code == "mechanical_acceptance_rework_loop"
+                else "strategy_v2-"
                 if item.code == "quality_gate_not_passed"
                 else "recovery_v1-"
-                if item.code == "failed_work_without_recovery"
+                if item.code in {"failed_work_without_recovery", "failed_work_recovery_incomplete"}
                 else ""
             )
             if "qi" in item.routes:
@@ -2071,6 +3423,7 @@ class ControlPlaneDaemon:
                     expected_output=qi_expected_output,
                     evidence_refs=evidence_refs,
                     required=item.severity in {"high", "critical"},
+                    priority=98 if item.code == "mechanical_acceptance_rework_loop" else 90,
                     report=report,
                 )
             if "nuo" in item.routes:
@@ -2086,8 +3439,67 @@ class ControlPlaneDaemon:
                     ),
                     evidence_refs=evidence_refs,
                     required=item.severity in {"high", "critical"},
+                    priority=98 if item.code == "mechanical_acceptance_rework_loop" else 90,
                     report=report,
                 )
+
+    def _retire_resolved_observation_followups(
+        self,
+        *,
+        mission_id: str,
+        observation: RuntimeObservationReport,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        active_codes = {item.code for item in observation.items}
+        retired: list[str] = []
+        for work_item in list(self.control_plane.work_items.values()):
+            if work_item.mission_id != mission_id or work_item.status in {"done", "cancelled"}:
+                continue
+            if not _is_resolved_observation_followup(self.control_plane, work_item):
+                continue
+            if active_codes and _observation_followup_matches_active_code(
+                work_item,
+                active_codes,
+            ):
+                continue
+            updated = work_item.model_copy(update={"status": "cancelled"})
+            self.control_plane.work_items[updated.work_item_id] = updated
+            self._persist_work_item(updated)
+            retired.append(updated.work_item_id)
+        if not retired:
+            return
+        artifact = ArtifactRecord(
+            artifact_id=(
+                f"artifact-resolved-observation-followup-cleanup-"
+                f"{mission_id}-{_compact_time(observed_at)}"
+            ),
+            kind="report",
+            path_or_uri=(
+                f"control-plane://daemon/{self.daemon_id}/{mission_id}/"
+                f"resolved-observation-followup-cleanup/{observed_at.isoformat()}"
+            ),
+            content_hash=_hash_payload(
+                {
+                    "mission_id": mission_id,
+                    "retired_work_item_ids": retired,
+                    "observation_ref": observation.mission_id,
+                }
+            ),
+            created_by=self.daemon_id,
+            mission_id=mission_id,
+            supports=[
+                "resolved_observation_followup_cleanup",
+                "state_hygiene",
+                "clean_runtime_observation"
+                if not active_codes
+                else "partially_resolved_runtime_observation",
+            ],
+            freshness="fresh",
+            source_quality="primary",
+        )
+        self._upsert_artifact(artifact)
+        report.retired_work_item_ids.extend(retired)
 
     def _queue_observation_followup(
         self,
@@ -2099,9 +3511,60 @@ class ControlPlaneDaemon:
         expected_output: str,
         evidence_refs: Sequence[str],
         required: bool,
+        priority: int = 90,
         report: DaemonTickReport,
     ) -> None:
         if work_item_id in self.control_plane.work_items:
+            existing = self.control_plane.work_items[work_item_id]
+            if existing.status == "partial" and owner == "nuo" and item_type == "repair":
+                self._queue_nuo_clean_retest_for_partial_repair(
+                    mission_id=mission_id,
+                    partial_repair=existing,
+                    evidence_refs=evidence_refs,
+                    priority=priority,
+                    report=report,
+                )
+                return
+            merged_recovery_refs = _dedupe([*existing.recovery_refs, *evidence_refs])
+            fresh_evidence = any(
+                ref not in existing.recovery_refs and _is_substantive_observation_evidence(ref)
+                for ref in evidence_refs
+            )
+            if existing.status == "done" and required and fresh_evidence:
+                if _is_mechanical_acceptance_loop_observation_followup(existing):
+                    updated = existing.model_copy(update={"recovery_refs": merged_recovery_refs})
+                    self.control_plane.work_items[work_item_id] = updated
+                    self._persist_work_item(updated)
+                    return
+                updated = existing.model_copy(
+                    update={
+                        "status": "queued",
+                        "priority": max(existing.priority, priority),
+                        "expected_output": expected_output,
+                        "recovery_refs": merged_recovery_refs,
+                        "lease": None,
+                        "heartbeat": None,
+                        "timeout": None,
+                    }
+                )
+                self.control_plane.work_items[work_item_id] = updated
+                self._persist_work_item(updated)
+                report.observation_followup_ids.append(work_item_id)
+                return
+            if existing.status == "queued" and (
+                existing.priority < priority
+                or existing.expected_output != expected_output
+                or merged_recovery_refs != existing.recovery_refs
+            ):
+                updated = existing.model_copy(
+                    update={
+                        "priority": max(existing.priority, priority),
+                        "expected_output": expected_output,
+                        "recovery_refs": merged_recovery_refs,
+                    }
+                )
+                self.control_plane.work_items[work_item_id] = updated
+                self._persist_work_item(updated)
             return
         mission = self.control_plane.missions.get(mission_id)
         work_item = WorkItem(
@@ -2110,7 +3573,7 @@ class ControlPlaneDaemon:
             task_plan_version=mission.current_plan_version if mission else "runtime-observation",
             type=item_type,
             owner=owner,
-            priority=90,
+            priority=priority,
             idempotency_key=f"runtime-observation:{owner}:{work_item_id}",
             expected_output=expected_output,
             recovery_refs=list(evidence_refs),
@@ -2130,6 +3593,513 @@ class ControlPlaneDaemon:
         self._persist_work_item(work_item)
         report.created_work_item_ids.append(work_item.work_item_id)
         report.observation_followup_ids.append(work_item.work_item_id)
+
+    def _queue_nuo_clean_retests_for_partial_recoveries(
+        self,
+        *,
+        mission_id: str,
+        observation_artifact_ref: str,
+        report: DaemonTickReport,
+    ) -> None:
+        """Ensure Nuo-origin partial repair work is closed by clean retest evidence."""
+
+        for item in list(self.control_plane.work_items.values()):
+            if item.mission_id != mission_id or item.status != "partial" or item.type != "repair":
+                continue
+            is_nuo_repair = item.owner == "nuo"
+            is_nuo_recovery = item.owner == "control-plane" and (
+                item.idempotency_key or ""
+            ).startswith("nuo-recovery:")
+            if not (is_nuo_repair or is_nuo_recovery):
+                continue
+            if _has_done_nuo_clean_retest(self.control_plane, item):
+                self._close_partial_repair_with_completed_clean_retest(
+                    partial_repair=item,
+                    report=report,
+                )
+                self._requeue_failed_subjects_for_completed_clean_retest(
+                    partial_repair=item,
+                    report=report,
+                )
+                continue
+            if self._has_active_nuo_clean_retest(item):
+                continue
+            self._queue_nuo_clean_retest_for_partial_repair(
+                mission_id=mission_id,
+                partial_repair=item,
+                evidence_refs=[observation_artifact_ref],
+                priority=item.priority,
+                report=report,
+            )
+
+    def _recover_stale_waiting_human_nuo_clean_retests(
+        self,
+        *,
+        mission_id: str,
+        report: DaemonTickReport,
+    ) -> None:
+        """Re-probe orphaned clean retests before keeping a mission human-blocked."""
+
+        for item in list(self.control_plane.work_items.values()):
+            if item.mission_id != mission_id:
+                continue
+            if item.status != "waiting_human":
+                continue
+            if item.owner != "nuo" or item.type != "retest":
+                continue
+            if not (item.idempotency_key or "").startswith("nuo-clean-retest:"):
+                continue
+            if not _workspace_clean_retest_can_requeue(item):
+                self._ensure_waiting_clean_retest_ticket(
+                    mission_id=mission_id,
+                    work_item=item,
+                    report=report,
+                )
+                continue
+            updated = item.model_copy(
+                update={
+                    "status": "queued",
+                    "lease": None,
+                    "heartbeat": None,
+                    "timeout": None,
+                }
+            )
+            self.control_plane.work_items[updated.work_item_id] = updated
+            self._persist_work_item(updated)
+            if updated.work_item_id not in report.recovered_work_item_ids:
+                report.recovered_work_item_ids.append(updated.work_item_id)
+            if updated.work_item_id not in report.observation_followup_ids:
+                report.observation_followup_ids.append(updated.work_item_id)
+            self._retire_collaboration_tickets_bound_to_work_item(
+                mission_id=mission_id,
+                work_item_id=updated.work_item_id,
+                report=report,
+            )
+
+    def _ensure_waiting_clean_retest_ticket(
+        self,
+        *,
+        mission_id: str,
+        work_item: WorkItem,
+        report: DaemonTickReport,
+    ) -> None:
+        """Keep an operator ticket open while a clean retest remains human-blocked."""
+
+        matching = [
+            ticket
+            for ticket in self.control_plane.collaboration_tickets.values()
+            if ticket.mission_id == mission_id
+            and (
+                ticket.context_ref == work_item.work_item_id
+                or work_item.work_item_id in ticket.auto_resolvable_by
+            )
+        ]
+        if any(
+            ticket.status in {"open", "waiting", "escalated", "fallback_selected"}
+            for ticket in matching
+        ):
+            return
+        if matching:
+            ticket = matching[-1]
+            updated = ticket.model_copy(
+                update={
+                    "status": "open",
+                    "resolution_refs": _dedupe([*ticket.resolution_refs, work_item.work_item_id]),
+                }
+            )
+            self.control_plane.collaboration_tickets[updated.ticket_id] = updated
+            self._persist_collaboration_ticket(updated)
+            if updated.ticket_id not in report.created_collaboration_ticket_ids:
+                report.created_collaboration_ticket_ids.append(updated.ticket_id)
+            return
+        ticket_id = f"ticket-nuo-clean-retest-{_slug(work_item.work_item_id)}-operator-action"
+        ticket = CollaborationTicket(
+            ticket_id=ticket_id,
+            mission_id=mission_id,
+            type="operator_action",
+            role_needed="operator_with_workspace_write_access",
+            why_needed=(
+                "Nuo clean retest remains blocked; KUN cannot safely resume implementation "
+                "until the operator restores write access or approves a writable project path."
+            ),
+            context_ref=work_item.work_item_id,
+            risk_if_skipped=(
+                "The mission will keep cycling through failed repair work without fresh "
+                "product changes or clean retest evidence."
+            ),
+            deadline=report.observed_at + timedelta(hours=24),
+            output_contract=(
+                "Restore write access or provide an authorized project workspace, then rerun "
+                f"{work_item.work_item_id} and attach clean retest evidence."
+            ),
+            fallback_policy={
+                "if_unavailable": "continue only governance/replay work; do not deliver final product"
+            },
+            escalation_policy={
+                "on_timeout": "keep mission repairing and do not report final acceptance"
+            },
+            resume_after_response=True,
+            auto_resolvable_by=[work_item.work_item_id],
+        )
+        self.control_plane.record_collaboration_ticket(ticket, actor=self.daemon_id)
+        if ticket.ticket_id not in report.created_collaboration_ticket_ids:
+            report.created_collaboration_ticket_ids.append(ticket.ticket_id)
+
+    def _queue_nuo_clean_retests_for_blocked_current_plan_work(
+        self,
+        *,
+        mission_id: str,
+        observation_artifact_ref: str,
+        report: DaemonTickReport,
+    ) -> None:
+        """Recover stale blocked implementation/test work with a bounded clean retest."""
+
+        mission = self.control_plane.missions.get(mission_id)
+        if mission is None or not mission.current_plan_version:
+            return
+        for item in list(self.control_plane.work_items.values()):
+            if (
+                item.mission_id != mission_id
+                or item.task_plan_version != mission.current_plan_version
+                or item.status != "blocked"
+                or item.owner == "nuo"
+            ):
+                continue
+            if not self._blocked_work_item_allows_clean_retest(item):
+                continue
+            if _has_done_nuo_clean_retest(self.control_plane, item):
+                self._requeue_failed_subjects_for_completed_clean_retest(
+                    partial_repair=item,
+                    report=report,
+                )
+                continue
+            if self._has_active_nuo_clean_retest(item):
+                continue
+            self._queue_nuo_clean_retest_for_partial_repair(
+                mission_id=mission_id,
+                partial_repair=item,
+                evidence_refs=[observation_artifact_ref],
+                priority=max(item.priority, 80),
+                report=report,
+            )
+
+    def _close_partial_repair_with_completed_clean_retest(
+        self,
+        *,
+        partial_repair: WorkItem,
+        report: DaemonTickReport,
+    ) -> None:
+        """Mark Nuo diagnosis complete once the required clean retest has passed."""
+
+        clean_retest_refs = [
+            item
+            for item in self.control_plane.work_items.values()
+            if item.mission_id == partial_repair.mission_id
+            and item.owner == "nuo"
+            and item.type == "retest"
+            and item.status == "done"
+            and partial_repair.work_item_id in item.recovery_refs
+        ]
+        if not clean_retest_refs or partial_repair.status != "partial":
+            return
+        evidence_refs = [
+            ref
+            for clean_retest in clean_retest_refs
+            for ref in [clean_retest.work_item_id, *clean_retest.recovery_refs]
+        ]
+        closed = partial_repair.model_copy(
+            update={
+                "status": "done",
+                "lease": None,
+                "heartbeat": None,
+                "timeout": None,
+                "recovery_refs": _dedupe([*partial_repair.recovery_refs, *evidence_refs]),
+            }
+        )
+        self.control_plane.work_items[closed.work_item_id] = closed
+        self._persist_work_item(closed)
+        if closed.work_item_id not in report.recovered_work_item_ids:
+            report.recovered_work_item_ids.append(closed.work_item_id)
+
+    def _blocked_work_item_allows_clean_retest(self, item: WorkItem) -> bool:
+        text = (
+            f"{item.work_item_id}\n{item.expected_output}\n"
+            f"{' '.join(item.recovery_refs)}\n"
+            f"{' '.join(item.checkpoint_refs)}\n"
+            f"{' '.join(item.external_source_refs)}"
+        ).lower()
+        human_decision_tokens = (
+            "human acceptance",
+            "human/player acceptance",
+            "explicit human",
+            "user acceptance",
+            "user approval",
+            "awaiting_acceptance",
+            "人工验收",
+            "用户确认",
+            "用户审批",
+        )
+        if any(token in text for token in human_decision_tokens):
+            return False
+        clean_retest_tokens = (
+            "workspace",
+            "write",
+            "permission",
+            "sandbox",
+            "project",
+            "build",
+            "test",
+            "wrapper",
+            "timeout",
+            "tool",
+            "path",
+            "npm",
+            "typescript",
+            "ts2304",
+            "写入",
+            "权限",
+            "构建",
+            "测试",
+            "目录",
+        )
+        if (item.workspace_ref or item.resource_locks) and any(
+            token in text for token in clean_retest_tokens
+        ):
+            return True
+        latest_run = _latest_run_for_work_item(self.control_plane, item.work_item_id)
+        if latest_run is None:
+            return False
+        return latest_run.failure_category in {
+            "tool_failure",
+            "environment_failure",
+            "timeout",
+            "network_failure",
+            "auth_failure",
+            "wrapper_failure",
+        }
+
+    def _has_active_nuo_clean_retest(self, partial_repair: WorkItem) -> bool:
+        return any(
+            item.mission_id == partial_repair.mission_id
+            and item.owner == "nuo"
+            and item.type == "retest"
+            and item.status in {"queued", "running", "retrying", "partial"}
+            and partial_repair.work_item_id in item.recovery_refs
+            for item in self.control_plane.work_items.values()
+        )
+
+    def _requeue_failed_subjects_for_completed_clean_retest(
+        self,
+        *,
+        partial_repair: WorkItem,
+        report: DaemonTickReport,
+    ) -> None:
+        clean_retest_refs = [
+            item
+            for item in self.control_plane.work_items.values()
+            if item.mission_id == partial_repair.mission_id
+            and item.owner == "nuo"
+            and item.type == "retest"
+            and item.status == "done"
+            and partial_repair.work_item_id in item.recovery_refs
+        ]
+        if not clean_retest_refs:
+            return
+        subject_ids: list[str] = []
+        if partial_repair.status in {"failed", "blocked"}:
+            subject_ids.append(partial_repair.work_item_id)
+        key = partial_repair.idempotency_key or ""
+        if key.startswith("nuo-recovery:"):
+            parts = key.split(":")
+            if len(parts) >= 2:
+                subject_ids.append(parts[1])
+        for ref in partial_repair.recovery_refs:
+            item = self.control_plane.work_items.get(ref)
+            if item is not None and item.status in {"failed", "blocked"}:
+                subject_ids.append(item.work_item_id)
+
+        evidence_refs = [
+            artifact_ref
+            for clean_retest in clean_retest_refs
+            for artifact_ref in [clean_retest.work_item_id, *clean_retest.recovery_refs]
+        ]
+        for subject_id in dict.fromkeys(subject_ids):
+            subject = self.control_plane.work_items.get(subject_id)
+            if subject is None or subject.status not in {"failed", "queued", "blocked"}:
+                continue
+            if _subject_failed_after_clean_retest(
+                self.control_plane,
+                subject=subject,
+                clean_retests=clean_retest_refs,
+            ):
+                continue
+            if _daemon_subject_requires_product_iteration_instead_of_clean_retest_rerun(
+                self.control_plane,
+                subject,
+            ):
+                continue
+            evidence_already_attached = any(ref in subject.recovery_refs for ref in evidence_refs)
+            if subject.status == "queued" and evidence_already_attached:
+                continue
+            update = {
+                "recovery_refs": _dedupe([*subject.recovery_refs, *evidence_refs]),
+            }
+            if subject.status in {"failed", "blocked"}:
+                update.update(
+                    {
+                        "status": "queued",
+                        "lease": None,
+                        "heartbeat": None,
+                        "timeout": None,
+                    }
+                )
+            requeued = subject.model_copy(update=update)
+            self.control_plane.work_items[requeued.work_item_id] = requeued
+            self._persist_work_item(requeued)
+            report.recovered_work_item_ids.append(requeued.work_item_id)
+
+    def _queue_nuo_clean_retest_for_partial_repair(
+        self,
+        *,
+        mission_id: str,
+        partial_repair: WorkItem,
+        evidence_refs: Sequence[str],
+        priority: int,
+        report: DaemonTickReport,
+    ) -> None:
+        """Close Nuo diagnosis loops with an explicit clean retest work item."""
+
+        repair_sig = _hash_payload({"partial_repair": partial_repair.work_item_id})[:12]
+        work_item_id = f"work-nuo-clean-retest-{_slug(partial_repair.work_item_id)}-{repair_sig}"
+        if work_item_id in self.control_plane.work_items:
+            existing = self.control_plane.work_items[work_item_id]
+            if existing.status == "waiting_human" and _workspace_clean_retest_can_requeue(existing):
+                updated = existing.model_copy(
+                    update={
+                        "status": "queued",
+                        "priority": max(existing.priority, priority),
+                        "recovery_refs": _dedupe([*existing.recovery_refs, *evidence_refs]),
+                        "lease": None,
+                        "heartbeat": None,
+                        "timeout": None,
+                    }
+                )
+                self.control_plane.work_items[updated.work_item_id] = updated
+                self._persist_work_item(updated)
+                report.recovered_work_item_ids.append(updated.work_item_id)
+                report.observation_followup_ids.append(updated.work_item_id)
+                self._retire_collaboration_tickets_bound_to_work_item(
+                    mission_id=mission_id,
+                    work_item_id=updated.work_item_id,
+                    report=report,
+                )
+                return
+            if existing.status == "queued" and existing.priority < priority:
+                updated = existing.model_copy(
+                    update={
+                        "priority": priority,
+                        "recovery_refs": _dedupe([*existing.recovery_refs, *evidence_refs]),
+                    }
+                )
+                self.control_plane.work_items[work_item_id] = updated
+                self._persist_work_item(updated)
+            return
+
+        mission = self.control_plane.missions.get(mission_id)
+        contract = (
+            self.control_plane.contracts.get(mission.execution_contract_ref or "")
+            if mission
+            else None
+        )
+        workspace_ref = partial_repair.workspace_ref
+        contract_workspace = _workspace_path_from_contract(contract)
+        if contract_workspace:
+            workspace_ref = contract_workspace
+        resource_locks = list(partial_repair.resource_locks)
+        if workspace_ref and not any(
+            lock == f"workspace:{workspace_ref}" for lock in resource_locks
+        ):
+            resource_locks.append(f"workspace:{workspace_ref}")
+        repair_text = (
+            f"{partial_repair.work_item_id}\n{partial_repair.expected_output}\n"
+            f"{' '.join(partial_repair.recovery_refs)}"
+        ).lower()
+        is_acceptance_loop_repair = (
+            "mechanical_acceptance_rework_loop" in repair_text
+            or "mechanical acceptance rework loop" in repair_text
+            or ("acceptance-rework" in repair_text and "loop" in repair_text)
+        )
+        expected_output = (
+            "Run a Nuo clean retest for the mechanical_acceptance_rework_loop diagnosis. "
+            "Verify that the blocker is a product/process loop, attach governance evidence, "
+            "and require Qi strategy replay or a plan-change branch before another delivery "
+            "attempt. Do not open an operator ticket unless a separate environment probe "
+            "fails."
+            if is_acceptance_loop_repair
+            else (
+                "Run a Nuo clean retest for the prior partial repair diagnosis. Verify whether "
+                "the workspace/write/environment blocker is cleared, attach clean retest "
+                "evidence, and only then allow the product loop to continue. Do not count the "
+                "original incident as a KUN capability failure without this retest."
+            )
+        )
+
+        work_item = WorkItem(
+            work_item_id=work_item_id,
+            mission_id=mission_id,
+            task_plan_version=partial_repair.task_plan_version,
+            type="retest",
+            owner="nuo",
+            priority=priority,
+            dependencies=[],
+            idempotency_key=f"nuo-clean-retest:{partial_repair.work_item_id}",
+            expected_output=expected_output,
+            workspace_ref=workspace_ref,
+            resource_locks=resource_locks,
+            recovery_refs=_dedupe(
+                [partial_repair.work_item_id, *partial_repair.recovery_refs, *evidence_refs]
+            ),
+        )
+        if self._runner_for(work_item) is None:
+            self._queue_unrunnable_followup_ticket(
+                mission_id=mission_id,
+                work_item_id=work_item.work_item_id,
+                owner="nuo",
+                item_type="retest",
+                report=report,
+            )
+            return
+        self.control_plane.work_items[work_item.work_item_id] = work_item
+        self._persist_work_item(work_item)
+        report.created_work_item_ids.append(work_item.work_item_id)
+        report.observation_followup_ids.append(work_item.work_item_id)
+
+    def _retire_collaboration_tickets_bound_to_work_item(
+        self,
+        *,
+        mission_id: str,
+        work_item_id: str,
+        report: DaemonTickReport,
+    ) -> None:
+        """Cancel only tickets explicitly bound to a requeued machine-retest item."""
+
+        for ticket in list(self.control_plane.collaboration_tickets.values()):
+            if ticket.mission_id != mission_id:
+                continue
+            if ticket.status not in {"open", "waiting", "escalated", "fallback_selected"}:
+                continue
+            if ticket.context_ref != work_item_id and work_item_id not in ticket.auto_resolvable_by:
+                continue
+            updated = ticket.model_copy(
+                update={
+                    "status": "cancelled",
+                    "resolution_refs": _dedupe([*ticket.resolution_refs, work_item_id]),
+                }
+            )
+            self.control_plane.collaboration_tickets[updated.ticket_id] = updated
+            self._persist_collaboration_ticket(updated)
+            if updated.ticket_id not in report.retired_collaboration_ticket_ids:
+                report.retired_collaboration_ticket_ids.append(updated.ticket_id)
 
     def _queue_unrunnable_followup_ticket(
         self,
@@ -2181,6 +4151,62 @@ class ControlPlaneDaemon:
             except ValueError:
                 return
 
+    def _ensure_collaboration_ticket_for_work_item(
+        self,
+        *,
+        work_item: WorkItem,
+        observed_at: datetime,
+        report: DaemonTickReport,
+    ) -> None:
+        """Turn human/operator work into a resumable ticket instead of no-runner churn."""
+
+        ticket_id = f"collab-work-item-{_slug(work_item.work_item_id)}"
+        existing = self.control_plane.collaboration_tickets.get(ticket_id)
+        if existing is not None:
+            if existing.status in {"answered", "fallback_selected", "closed"}:
+                target_status = "done"
+            elif existing.status == "cancelled":
+                target_status = "cancelled"
+            else:
+                target_status = "waiting_human"
+            if work_item.status != target_status:
+                updated = work_item.model_copy(update={"status": target_status})
+                self.control_plane.work_items[updated.work_item_id] = updated
+                self._persist_work_item(updated)
+            return
+
+        ticket = CollaborationTicket(
+            ticket_id=ticket_id,
+            mission_id=work_item.mission_id,
+            type="operator_action",
+            role_needed=work_item.owner or "operator",
+            why_needed=(
+                "This work item represents a human/operator collaboration step. It is not "
+                "daemon-runnable, so KUN must wait for an explicit response instead of "
+                "putting it back on the worker queue."
+            ),
+            context_ref=work_item.work_item_id,
+            risk_if_skipped=(
+                "The mission may keep reporting runner_missing or keep replaying governance "
+                "work while the actual product test queue is delayed."
+            ),
+            deadline=observed_at + timedelta(hours=24),
+            sla_policy={"reminder_after_hours": 4, "escalate_after_hours": 24},
+            escalation_policy={"after_deadline": "keep_ticket_visible_without_spawning_work"},
+            fallback_policy={
+                "allowed": True,
+                "rule": "record a bounded human-simulator decision for non-final playtest gates",
+            },
+            resume_after_response=True,
+            output_contract=work_item.expected_output or "Provide the requested human response.",
+            auto_resolvable_by=[work_item.work_item_id],
+        )
+        self.control_plane.record_collaboration_ticket(ticket, actor=self.daemon_id)
+        report.created_collaboration_ticket_ids.append(ticket.ticket_id)
+        updated = work_item.model_copy(update={"status": "waiting_human"})
+        self.control_plane.work_items[updated.work_item_id] = updated
+        self._persist_work_item(updated)
+
     def _finalize_idle_mission(
         self,
         *,
@@ -2202,6 +4228,10 @@ class ControlPlaneDaemon:
             for item in observation.items
             if item.severity in {"high", "critical"}
             and item.code not in {"delivery_manifest_missing"}
+            and not (
+                item.code == "mechanical_acceptance_rework_loop"
+                and _current_plan_delivery_candidate_completed(self.control_plane, mission_id)
+            )
         ]
         if blocking_items:
             return
@@ -2241,7 +4271,36 @@ class ControlPlaneDaemon:
         mission = self.control_plane.missions[mission_id]
         if mission.status == "queued":
             return
-        if mission.status in {"repairing", "retrying", "blocked", "paused", "changing_plan"}:
+        if mission.status == "awaiting_acceptance":
+            self.control_plane.transition_mission(
+                mission_id=mission_id,
+                target="repairing",
+                actor=self.daemon_id,
+                reason=(
+                    "daemon reopened awaiting-acceptance mission because executable "
+                    "current-plan work is still ready"
+                ),
+                subject_ref=subject_ref,
+            )
+            mission = self.control_plane.missions[mission_id]
+        elif mission.status == "delivering":
+            self.control_plane.transition_mission(
+                mission_id=mission_id,
+                target="changing_plan",
+                actor=self.daemon_id,
+                reason="daemon reopened delivery mission because executable work is ready",
+                subject_ref=subject_ref,
+            )
+            mission = self.control_plane.missions[mission_id]
+        if mission.status in {
+            "repairing",
+            "retrying",
+            "blocked",
+            "paused",
+            "changing_plan",
+            "waiting_human",
+            "waiting_external",
+        }:
             self.control_plane.transition_mission(
                 mission_id=mission_id,
                 target="queued",
@@ -2345,6 +4404,123 @@ class ControlPlaneDaemon:
     ) -> None:
         if state_store is not None:
             state_store.save(state)
+
+    def _bind_managed_service_context(
+        self,
+        *,
+        state_store: FileDaemonServiceStateStore | None,
+        started_at: datetime,
+        mission_ids: list[str],
+        worker_heartbeat_interval_sec: float,
+    ) -> None:
+        with self._service_state_lock:
+            self._service_state_store = state_store
+            self._service_started_at = started_at
+            self._service_tick_count = 0
+            self._service_consecutive_idle_ticks = 0
+            self._service_active_mission_ids = list(mission_ids)
+            self._service_worker_slots = {}
+            self._service_worker_heartbeat_interval_sec = worker_heartbeat_interval_sec
+
+    def _clear_managed_service_context(self) -> None:
+        with self._service_state_lock:
+            self._service_state_store = None
+            self._service_started_at = None
+            self._service_tick_count = 0
+            self._service_consecutive_idle_ticks = 0
+            self._service_active_mission_ids = []
+            self._service_worker_slots = {}
+
+    def _clear_managed_worker_slot(self, slot_id: str) -> None:
+        with self._service_state_lock:
+            if self._service_state_store is None or self._service_started_at is None:
+                return
+            self._service_worker_slots.pop(slot_id, None)
+            tick_count = self._service_tick_count
+            consecutive_idle_ticks = self._service_consecutive_idle_ticks
+        self._save_managed_service_heartbeat(
+            status="running",
+            observed_at=_now(),
+            tick_count=tick_count,
+            consecutive_idle_ticks=consecutive_idle_ticks,
+        )
+
+    def _save_managed_service_heartbeat(
+        self,
+        *,
+        status: DaemonServiceStatus,
+        observed_at: datetime,
+        tick_count: int,
+        consecutive_idle_ticks: int,
+    ) -> None:
+        with self._service_state_lock:
+            state_store = self._service_state_store
+            started_at = self._service_started_at
+            if state_store is None or started_at is None:
+                return
+            worker_slots = list(self._service_worker_slots.values())
+            state = DaemonServiceState(
+                daemon_id=self.daemon_id,
+                status=status,
+                started_at=started_at,
+                updated_at=observed_at,
+                process_id=os.getpid(),
+                tick_count=tick_count,
+                consecutive_idle_ticks=consecutive_idle_ticks,
+                active_mission_ids=list(self._service_active_mission_ids),
+                last_heartbeat_at=observed_at,
+                last_tick_observed_at=observed_at,
+                last_tick_ran_work_item_ids=[
+                    slot.work_item_id for slot in worker_slots if slot.work_item_id
+                ],
+                worker_pool_size=self.worker_pool.worker_count,
+                resource_lock_backend=self.resource_lock_backend,
+                last_tick_worker_slots=worker_slots,
+            )
+            state_store.save(state)
+
+    def _start_managed_worker_heartbeat(
+        self,
+        slot: WorkerSlotSnapshot,
+    ) -> Callable[[], None] | None:
+        with self._service_state_lock:
+            if self._service_state_store is None:
+                return None
+            running_slot = slot.model_copy(update={"status": "running"})
+            self._service_worker_slots[slot.slot_id] = running_slot
+            interval = self._service_worker_heartbeat_interval_sec
+            tick_count = self._service_tick_count
+            consecutive_idle_ticks = self._service_consecutive_idle_ticks
+        self._save_managed_service_heartbeat(
+            status="running",
+            observed_at=_now(),
+            tick_count=tick_count,
+            consecutive_idle_ticks=consecutive_idle_ticks,
+        )
+        stop_event = threading.Event()
+
+        def _heartbeat_loop() -> None:
+            while not stop_event.wait(interval):
+                self._save_managed_service_heartbeat(
+                    status="running",
+                    observed_at=_now(),
+                    tick_count=self._service_tick_count,
+                    consecutive_idle_ticks=self._service_consecutive_idle_ticks,
+                )
+
+        thread = threading.Thread(
+            target=_heartbeat_loop,
+            name=f"{_slug(self.daemon_id)}-{_slug(slot.slot_id)}-heartbeat",
+            daemon=True,
+        )
+        thread.start()
+
+        def _stop() -> None:
+            stop_event.set()
+            thread.join(timeout=min(interval, 1.0))
+            self._clear_managed_worker_slot(slot.slot_id)
+
+        return _stop
 
 
 def _bind_capability_policy(
@@ -2594,8 +4770,13 @@ def _compact_time(value: datetime) -> str:
 
 
 def _slug(value: str) -> str:
-    safe = [ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value]
-    return "".join(safe).strip("-")[:80] or "item"
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value).strip("-")
+    if not safe:
+        return "item"
+    if len(safe) <= 80:
+        return safe
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    return f"{safe[:67].rstrip('-_')}-{digest}"
 
 
 def _info_gap_reason(
@@ -2629,7 +4810,69 @@ def _latest_delivery_manifest_ref(
     return None
 
 
-def _acceptance_ticket_id(mission_id: str, delivery_manifest_ref: str) -> str:
+def _current_plan_delivery_candidate_completed(
+    control_plane: InMemoryControlPlane,
+    mission_id: str,
+) -> bool:
+    """Return true when the active plan has a passing delivery candidate."""
+
+    mission = control_plane.missions.get(mission_id)
+    if mission is None or not mission.current_plan_version:
+        return False
+    current_items = [
+        item
+        for item in control_plane.work_items.values()
+        if item.mission_id == mission_id
+        and item.task_plan_version == mission.current_plan_version
+        and item.status != "cancelled"
+        and not _is_nonblocking_governance_followup(item)
+    ]
+    if not current_items or any(item.status not in {"done", "partial"} for item in current_items):
+        return False
+    delivery_items = [
+        item
+        for item in current_items
+        if (
+            item.type == "merge"
+            or "final-delivery" in item.work_item_id
+            or "final_delivery" in item.work_item_id
+            or "final delivery" in item.expected_output.lower()
+        )
+    ]
+    if not delivery_items:
+        return False
+    delivery_item_ids = {item.work_item_id for item in delivery_items}
+    return any(
+        gate.subject_ref in delivery_item_ids
+        and gate.north_star_verdict == "pass"
+        and not gate.hard_gate_failures
+        for gate in control_plane.gate_evaluations.values()
+    )
+
+
+def _is_nonblocking_governance_followup(work_item: WorkItem) -> bool:
+    if work_item.owner == MISSION_DIRECTOR_OWNER and work_item.work_item_id.startswith(
+        "work-mission-director-"
+    ):
+        return True
+    if work_item.owner != "qi":
+        return False
+    if work_item.type not in {"governance", "research"}:
+        return False
+    identifier = f"{work_item.work_item_id} {work_item.idempotency_key or ''}"
+    return (
+        "runtime-learning" in identifier
+        or "runtime-observation:qi:" in identifier
+        or "mechanical_acceptance_rework_loop" in identifier
+    )
+
+
+def _acceptance_ticket_id(
+    mission_id: str,
+    delivery_manifest_ref: str,
+    *,
+    delivery_iteration_ref: str | None = None,
+) -> str:
     """Build a stable, collision-resistant ticket ID for a delivery manifest.
 
     Manifest IDs can be very long and often share a long common prefix across
@@ -2638,9 +4881,33 @@ def _acceptance_ticket_id(mission_id: str, delivery_manifest_ref: str) -> str:
     """
 
     digest = _hash_payload(
-        {"mission_id": mission_id, "delivery_manifest_ref": delivery_manifest_ref}
+        {
+            "mission_id": mission_id,
+            "delivery_manifest_ref": delivery_manifest_ref,
+            "delivery_iteration_ref": delivery_iteration_ref or "",
+        }
     )[:12]
     return f"collab-acceptance-{_slug(mission_id)}-{_slug(delivery_manifest_ref)}-{digest}"
+
+
+def _delivery_acceptance_iteration_ref(
+    control_plane: InMemoryControlPlane,
+    *,
+    mission: Mission,
+    delivery_manifest_ref: str,
+) -> str:
+    manifest = control_plane.artifact_manifests.get(delivery_manifest_ref)
+    return _hash_payload(
+        {
+            "delivery_manifest_ref": delivery_manifest_ref,
+            "manifest_content_hash": manifest.content_hash if manifest is not None else "",
+            "artifact_refs": manifest.artifact_refs if manifest is not None else [],
+            "evidence_refs": manifest.evidence_refs if manifest is not None else [],
+            "review_refs": manifest.review_refs if manifest is not None else [],
+            "rollback_refs": manifest.rollback_refs if manifest is not None else [],
+            "current_plan_version": mission.current_plan_version or "",
+        }
+    )[:12]
 
 
 def _observation_routes(report: RuntimeObservationReport) -> list[str]:
@@ -2653,6 +4920,26 @@ def _observation_routes(report: RuntimeObservationReport) -> list[str]:
             seen.add(route)
             routes.append(route)
     return routes
+
+
+def _observation_followup_signature_payload(
+    item: RuntimeObservationItem,
+    *,
+    task_plan_version: str | None,
+) -> dict[str, object]:
+    """Keep follow-ups stable per blocker, not just per plan."""
+
+    payload: dict[str, object] = {
+        "code": item.code,
+        "task_plan_version": task_plan_version,
+    }
+    if item.code in {
+        "failed_work_recovery_incomplete",
+        "failed_work_without_recovery",
+        "mechanical_acceptance_rework_loop",
+    }:
+        payload["evidence_refs"] = sorted(set(item.evidence_refs))[:8]
+    return payload
 
 
 def _tick_is_idle(report: DaemonTickReport) -> bool:
@@ -2693,6 +4980,10 @@ def _lease_id(
         f"lease:{_slug(daemon_id)}:{_slug(worker_id)}:"
         f"{_slug(work_item_id)}:{_compact_time(observed_at)}"
     )
+
+
+def _lease_owned_by_daemon(lease: str, daemon_id: str) -> bool:
+    return lease.startswith(f"lease:{_slug(daemon_id)}:")
 
 
 def _default_resource_lock_store(
@@ -2739,16 +5030,290 @@ def _resource_lock_backend(
     return "memory"
 
 
-def _is_delivery_state_followup(work_item: WorkItem) -> bool:
-    if work_item.owner not in {"qi", "nuo", "control-plane"}:
+def _mission_state_requires_followup_only_work(status: MissionStatus) -> bool:
+    return status in {
+        "info_gap",
+        "awaiting_approval",
+        "waiting_human",
+        "waiting_external",
+        "blocked",
+        "delivering",
+        "awaiting_acceptance",
+        "paused",
+        "escalated",
+    }
+
+
+def _is_state_preserving_followup(work_item: WorkItem) -> bool:
+    if work_item.owner not in {"qi", "nuo", "control-plane", MISSION_DIRECTOR_OWNER}:
         return False
+    idempotency_key = work_item.idempotency_key or ""
+    if work_item.owner in {"qi", "nuo"} and idempotency_key.startswith("nuo-recovery:"):
+        return True
     return work_item.work_item_id.startswith(
         (
+            "work-mission-director-",
             "work-qi-observation-",
+            "work-qi-strategy-replay-",
             "work-qi-runtime-learning-",
             "work-nuo-observation-",
+            "work-nuo-clean-retest-",
+            "work-nuo-",
             "work-qi-preflight-",
             "work-nuo-preflight-",
+        )
+    )
+
+
+def _is_kun_plan_change_work_item(work_item: WorkItem) -> bool:
+    return work_item.owner == "kun" and (
+        work_item.work_item_id.startswith("work-kun-plan-change-")
+        or (work_item.idempotency_key or "").startswith("mission-director-plan-change:")
+    )
+
+
+def _is_pending_mission_director_or_plan_change(work_item: WorkItem) -> bool:
+    return work_item.owner == MISSION_DIRECTOR_OWNER or _is_kun_plan_change_work_item(work_item)
+
+
+def _latest_run_for_work_item(
+    control_plane: InMemoryControlPlane,
+    work_item_id: str,
+) -> RunRecord | None:
+    runs = [run for run in control_plane.runs.values() if run.work_item_id == work_item_id]
+    if not runs:
+        return None
+    floor = datetime.min.replace(tzinfo=UTC)
+    return max(runs, key=lambda run: run.ended_at or run.started_at or floor)
+
+
+def _run_finished_at(run: RunRecord | None) -> datetime | None:
+    if run is None:
+        return None
+    return run.ended_at or run.started_at
+
+
+def _subject_failed_after_clean_retest(
+    control_plane: InMemoryControlPlane,
+    *,
+    subject: WorkItem,
+    clean_retests: Sequence[WorkItem],
+) -> bool:
+    """Avoid infinite reruns once a clean retest has already unblocked the subject."""
+
+    latest_subject_run = _latest_run_for_work_item(control_plane, subject.work_item_id)
+    if latest_subject_run is None or latest_subject_run.exit_status != "failed":
+        return False
+    subject_finished_at = _run_finished_at(latest_subject_run)
+    if subject_finished_at is None:
+        return False
+
+    clean_retest_finished_at = [
+        finished_at
+        for clean_retest in clean_retests
+        if (
+            finished_at := _run_finished_at(
+                _latest_run_for_work_item(control_plane, clean_retest.work_item_id)
+            )
+        )
+        is not None
+    ]
+    return bool(clean_retest_finished_at) and subject_finished_at > max(clean_retest_finished_at)
+
+
+def _is_product_review_or_delivery_gate(work_item: WorkItem) -> bool:
+    text = " ".join(
+        [
+            work_item.work_item_id,
+            work_item.owner,
+            work_item.type,
+            work_item.phase or "",
+            work_item.expected_output,
+        ]
+    ).lower()
+    if work_item.owner not in {"external-supervisor-gpt5.5", "kun-game-production-runner"}:
+        return False
+    if work_item.type not in {"review", "merge", "test"} and not (
+        work_item.type == "execution" and ("final-delivery" in text or "final_delivery" in text)
+    ):
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "supervisor-gate",
+            "final-player",
+            "final_player",
+            "benchmark-residual",
+            "benchmark_residual",
+            "final-delivery",
+            "final_delivery",
+            "player experience",
+            "product feel",
+        )
+    )
+
+
+def _is_blocking_product_gate(work_item: WorkItem) -> bool:
+    if not _is_product_review_or_delivery_gate(work_item):
+        return False
+    text = " ".join(
+        [
+            work_item.work_item_id,
+            work_item.phase or "",
+            work_item.expected_output,
+        ]
+    ).lower()
+    return any(
+        marker in text
+        for marker in (
+            "supervisor-gate",
+            "final-player",
+            "final_player",
+            "player experience",
+            "product feel",
+        )
+    )
+
+
+def _game_rework_branch_id(work_item: WorkItem) -> str | None:
+    match = _GAME_REWORK_BRANCH_RE.match(work_item.work_item_id)
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _active_game_rework_branch_id(work_items: Sequence[WorkItem]) -> str | None:
+    branches: dict[str, list[WorkItem]] = {}
+    for work_item in work_items:
+        branch_id = _game_rework_branch_id(work_item)
+        if branch_id is None:
+            continue
+        branches.setdefault(branch_id, []).append(work_item)
+    if not branches:
+        return None
+
+    candidates: list[tuple[tuple[int, int, int, int, str], str]] = []
+    for branch_id, branch_items in branches.items():
+        has_running = 1 if any(item.status == "running" for item in branch_items) else 0
+        pending_exec_or_test = any(
+            item.status in {"queued", "retrying", "blocked", "partial"}
+            and item.type in {"execution", "test"}
+            for item in branch_items
+        )
+        pending_any = any(
+            item.status in {"queued", "retrying", "blocked", "partial"} for item in branch_items
+        )
+        failed_count = sum(1 for item in branch_items if item.status == "failed")
+        if not (has_running or pending_exec_or_test or pending_any):
+            continue
+        candidates.append(
+            (
+                (
+                    has_running,
+                    1 if pending_exec_or_test else 0,
+                    -failed_count,
+                    sum(1 for item in branch_items if item.status == "done"),
+                    branch_id,
+                ),
+                branch_id,
+            )
+        )
+    if not candidates:
+        return None
+    return max(candidates)[1]
+
+
+def _daemon_subject_requires_product_iteration_instead_of_clean_retest_rerun(
+    control_plane: InMemoryControlPlane,
+    subject: WorkItem,
+) -> bool:
+    """Do not let environment clean retests rerun product-quality gates."""
+
+    latest_run = _latest_run_for_work_item(control_plane, subject.work_item_id)
+    if latest_run is not None:
+        product_failure = latest_run.failure_category in {
+            "delivery_failure",
+            "model_quality_failure",
+            "evidence_failure",
+        }
+        if product_failure and (
+            _subject_latest_gate_is_browser_environment_blocker(control_plane, subject)
+            or _subject_latest_gate_is_local_runtime_evidence_linkage_blocker(
+                control_plane, subject
+            )
+        ):
+            return False
+        if product_failure and (
+            _is_product_review_or_delivery_gate(subject) or _is_rainflow_core_work_item(subject)
+        ):
+            return True
+    if not _is_product_review_or_delivery_gate(subject):
+        return False
+    for gate in control_plane.gate_evaluations.values():
+        if gate.mission_id != subject.mission_id or gate.subject_ref != subject.work_item_id:
+            continue
+        if _daemon_gate_requires_product_iteration(gate):
+            return True
+    return False
+
+
+def _subject_latest_gate_is_browser_environment_blocker(
+    control_plane: InMemoryControlPlane,
+    subject: WorkItem,
+) -> bool:
+    gates = [
+        gate
+        for gate in control_plane.gate_evaluations.values()
+        if gate.mission_id == subject.mission_id and gate.subject_ref == subject.work_item_id
+    ]
+    if not gates:
+        return False
+    return set(gates[-1].hard_gate_failures) == {"local_browser_player_gate_blocked"}
+
+
+def _subject_latest_gate_is_local_runtime_evidence_linkage_blocker(
+    control_plane: InMemoryControlPlane,
+    subject: WorkItem,
+) -> bool:
+    gates = [
+        gate
+        for gate in control_plane.gate_evaluations.values()
+        if gate.mission_id == subject.mission_id and gate.subject_ref == subject.work_item_id
+    ]
+    if not gates:
+        return False
+    return set(gates[-1].hard_gate_failures) == {"local_runtime_evidence_missing"}
+
+
+def _daemon_gate_requires_product_iteration(gate: GateEvaluation) -> bool:
+    if gate.next_action not in {"needs_plan_change", "needs_repair", "rejected"}:
+        return False
+    if _gate_only_requires_fresh_human_player_review(gate):
+        return False
+    text = " ".join(
+        [
+            gate.failure_category or "",
+            gate.root_cause,
+            gate.governance_signal,
+            *gate.hard_gate_failures,
+        ]
+    ).lower()
+    return any(
+        marker in text
+        for marker in (
+            "fresh_real_player_review_pass",
+            "final_player",
+            "player_feel",
+            "player experience",
+            "product feel",
+            "commercial_ui",
+            "visual_object",
+            "character_animation",
+            "causal_interaction",
+            "touch_drag",
+            "delivery_failure",
+            "not final",
+            "rework_required",
         )
     )
 
@@ -2765,22 +5330,29 @@ def _should_continue_product_pressure_while_awaiting_acceptance(
     return production_mode == "scribble_adventure_functional_parity_v1"
 
 
+def _is_acceptance_rework_plan_version(plan_version: str | None) -> bool:
+    return bool(plan_version and "-acceptance-rework-" in plan_version)
+
+
 def _latest_product_pressure_evidence_allows_waiting(
     contract: ExecutionContract | None,
+    *,
+    allow_continuous_pressure_wait: bool = False,
 ) -> bool:
     """Return true when fresh external product-feel evidence is strong enough to wait.
 
-    Human acceptance is still required to close a product mission, but a passed
-    final-player-experience gate should not itself create infinite rework.
+    Human acceptance is still required to close a product mission.  Contracts
+    that explicitly ask KUN to continue until final game completion or human
+    acceptance must keep using passed product evidence as an input to the next
+    iteration, not as permission to idle in ``awaiting_acceptance``.
     """
 
     if contract is None or not isinstance(contract.delivery_contract, dict):
         return False
     delivery_policy = contract.delivery_contract
-    hard_user_constraint = str(delivery_policy.get("hard_user_constraint") or "").lower()
     if (
-        delivery_policy.get("auto_continue_until_human_acceptance") is True
-        or "continue_until_final_game_complete" in hard_user_constraint
+        _contract_requires_continuous_product_pressure(delivery_policy)
+        and not allow_continuous_pressure_wait
     ):
         return False
     project_path = _workspace_path_from_contract(contract)
@@ -2831,6 +5403,87 @@ def _latest_product_pressure_evidence_allows_waiting(
             return False
 
     return final_required or residual_required
+
+
+def _has_pending_mechanical_acceptance_loop_followup(
+    control_plane: InMemoryControlPlane,
+    mission: Mission,
+) -> bool:
+    """Avoid product rework churn while Qi/Nuo are auditing a detected loop."""
+
+    contract = control_plane.contracts.get(mission.execution_contract_ref or "")
+    if _is_rainflow_ad_context(mission, contract):
+        return False
+
+    loop_marker = "mechanical_acceptance_rework_loop"
+    active_statuses = {"queued", "running", "retrying", "partial"}
+    governance_owners = {"qi", "nuo"}
+    for item in control_plane.work_items.values():
+        if (
+            item.mission_id != mission.mission_id
+            or item.owner not in governance_owners
+            or item.status not in active_statuses
+        ):
+            continue
+        if (
+            item.owner == "nuo"
+            and item.status == "partial"
+            and _has_done_nuo_clean_retest(control_plane, item)
+        ):
+            continue
+        haystack = " ".join(
+            [
+                item.work_item_id,
+                item.expected_output,
+                *item.recovery_refs,
+            ]
+        )
+        if loop_marker in haystack:
+            return True
+        if "acceptance-rework" in (mission.current_plan_version or "") and (
+            "quality_gate_not_passed" in haystack or "strategy replay" in haystack
+        ):
+            return True
+    return False
+
+
+def _report_has_mechanical_acceptance_loop(
+    report: DaemonTickReport,
+    mission_id: str,
+) -> bool:
+    observation = report.runtime_observations.get(mission_id)
+    if observation is None:
+        return False
+    return any(
+        item.code == "mechanical_acceptance_rework_loop" and item.severity in {"high", "critical"}
+        for item in observation.items
+    )
+
+
+def _has_done_nuo_clean_retest(
+    control_plane: InMemoryControlPlane,
+    partial_repair: WorkItem,
+) -> bool:
+    return any(
+        item.mission_id == partial_repair.mission_id
+        and item.owner == "nuo"
+        and item.type == "retest"
+        and item.status == "done"
+        and partial_repair.work_item_id in item.recovery_refs
+        for item in control_plane.work_items.values()
+    )
+
+
+def _contract_requires_continuous_product_pressure(delivery_policy: dict[str, object]) -> bool:
+    if delivery_policy.get("auto_continue_until_human_acceptance") is True:
+        return True
+    hard_constraint = str(delivery_policy.get("hard_user_constraint", ""))
+    if hard_constraint in {
+        "continue_until_final_game_complete",
+        "auto_continue_until_human_acceptance",
+    }:
+        return True
+    return delivery_policy.get("production_mode") == "scribble_adventure_functional_parity_v1"
 
 
 def _transition_product_delivery_to_awaiting_acceptance(
@@ -2908,6 +5561,29 @@ def _has_ready_or_active_current_plan_work(
     )
 
 
+def _ready_current_plan_product_work(
+    control_plane: InMemoryControlPlane,
+    mission: Mission,
+    *,
+    now: datetime,
+) -> list[WorkItem]:
+    return [
+        item
+        for item in control_plane.ready_work_items(mission.mission_id, now=now)
+        if item.task_plan_version == mission.current_plan_version
+        and not _is_state_preserving_followup(item)
+    ]
+
+
+def _has_ready_current_plan_product_work(
+    control_plane: InMemoryControlPlane,
+    mission: Mission,
+    *,
+    now: datetime,
+) -> bool:
+    return bool(_ready_current_plan_product_work(control_plane, mission, now=now))
+
+
 def _open_acceptance_pressure_gate_id(
     *,
     mission_id: str,
@@ -2935,7 +5611,7 @@ def _latest_acceptance_rework_gate(
         gate
         for gate in control_plane.gate_evaluations.values()
         if gate.mission_id == mission.mission_id
-        and gate.stage == "acceptance"
+        and gate.stage in {"acceptance", "delivery"}
         and (
             mission.current_plan_version is None
             or gate.task_plan_version == mission.current_plan_version
@@ -2947,10 +5623,76 @@ def _latest_acceptance_rework_gate(
             or "human_product_feedback" in gate.governance_signal
             or "user_feedback" in gate.governance_signal
         )
+        and not _gate_only_requires_fresh_human_player_review(gate)
+        and not _acceptance_gate_recovered_by_later_clean_gate(control_plane, gate)
     ]
     if not candidates:
         return None
     return sorted(candidates, key=lambda gate: gate.gate_evaluation_id)[-1]
+
+
+def _latest_human_player_review_only_gate(
+    control_plane: InMemoryControlPlane,
+    mission: Mission,
+) -> GateEvaluation | None:
+    candidates = [
+        gate
+        for gate in control_plane.gate_evaluations.values()
+        if gate.mission_id == mission.mission_id
+        and gate.stage in {"acceptance", "delivery"}
+        and (
+            mission.current_plan_version is None
+            or gate.task_plan_version == mission.current_plan_version
+        )
+        and _gate_only_requires_fresh_human_player_review(gate)
+        and not _acceptance_gate_recovered_by_later_clean_gate(control_plane, gate)
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda gate: gate.gate_evaluation_id)[-1]
+
+
+def _player_review_ticket_id(*, mission_id: str, gate_id: str) -> str:
+    return f"collab-player-review-{_slug(mission_id)}-{_slug(gate_id)}"
+
+
+def _gate_failure_name(value: str) -> str:
+    return value.split(":", 1)[-1].strip().lower()
+
+
+_HUMAN_PLAYER_ACCEPTANCE_FAILURES = {
+    "fresh_real_player_review_pass",
+    "human_acceptance_missing",
+    "human_or_target_user_acceptance_missing",
+    "human_or_target_user_review_missing",
+    "human_player_review_missing",
+    "human_review_missing",
+    "player_acceptance_missing",
+    "target_player_acceptance_missing",
+    "target_user_acceptance_missing",
+}
+
+
+def _is_human_player_acceptance_failure(value: str) -> bool:
+    name = _gate_failure_name(value)
+    return name in _HUMAN_PLAYER_ACCEPTANCE_FAILURES or name.endswith(
+        (
+            "_human_acceptance_missing",
+            "_target_user_acceptance_missing",
+            "_target_player_acceptance_missing",
+            "_player_acceptance_missing",
+        )
+    )
+
+
+def _gate_only_requires_fresh_human_player_review(gate: GateEvaluation) -> bool:
+    failures = [failure for failure in gate.hard_gate_failures if failure]
+    if failures:
+        return all(_is_human_player_acceptance_failure(failure) for failure in failures)
+    return gate.next_action == "needs_human" and gate.next_state in {
+        "awaiting_acceptance",
+        "waiting_human",
+    }
 
 
 def _task_plan_for_version(
@@ -2989,9 +5731,11 @@ def _acceptance_rework_task_plan(
     gate: GateEvaluation,
     base_plan: TaskPlan | None,
     plan_version: str,
+    contract: ExecutionContract | None = None,
 ) -> TaskPlan:
     base_acceptance = list(base_plan.acceptance_criteria) if base_plan else []
     base_constraints = list(base_plan.constraints) if base_plan else []
+    rainflow_mode = _is_rainflow_ad_context(mission, contract)
     feedback_constraints = [
         "KUN self-score, residual pass, and one internal gate pass are not final acceptance.",
         "If the user says the product is not close enough, treat it as a hard product gate failure.",
@@ -3011,6 +5755,13 @@ def _acceptance_rework_task_plan(
         feedback_constraints.append(
             "KUN must keep iterating until the delivery is a polished playable game, not a dashboard or prototype shell."
         )
+    if rainflow_mode:
+        feedback_constraints.append(
+            "Phase 1 mixed-edit quality must pass before any AI video generation stage can continue."
+        )
+        feedback_constraints.append(
+            "Opening hook, conversion flow, CTA guidance, creator/spoken-sales handling, and smooth pacing are hard ad-product gates."
+        )
     return TaskPlan(
         plan_id=f"plan-{_slug(mission.mission_id)}-{_slug(plan_version)}",
         mission_id=mission.mission_id,
@@ -3028,6 +5779,16 @@ def _acceptance_rework_task_plan(
                 "The next delivery demonstrates the rejected behavior has been repaired.",
                 "Fresh build, browser/playtest, product residual, and final-player-experience gates pass.",
                 "The mission returns to awaiting acceptance only after real product evidence is refreshed.",
+                *(
+                    [
+                        "Phase 1 mixed-edit demo comparison proves stronger hook, structure, pacing, and CTA than the previous baseline.",
+                        "Stage 1 AI transition clips remain blocked until Phase 1 acceptance evidence is complete.",
+                        "Stage 2 regenerated visuals preserve the same meaning while improving ad quality.",
+                        "Stage 3 advanced creative blends into the information-flow ad without breaking conversion clarity or pacing.",
+                    ]
+                    if rainflow_mode
+                    else []
+                ),
             ]
         ),
         constraints=_dedupe([*base_constraints, *feedback_constraints]),
@@ -3038,12 +5799,27 @@ def _acceptance_rework_task_plan(
         evidence_plan=[
             *(base_plan.evidence_plan if base_plan else []),
             "Capture the acceptance-rework gate, fresh tests, browser evidence, and final player experience gate.",
+            *(
+                [
+                    "Capture baseline-vs-current ad-video comparison artifacts for the rejected RainFlow delivery.",
+                ]
+                if rainflow_mode
+                else []
+            ),
         ],
         decomposition=[
             "Reopen the product plan from acceptance feedback.",
             "Repair the concrete rejected interaction/experience gap.",
             "Run fresh internal, browser, residual, and final-player-experience gates.",
             "Deliver again only after evidence proves the new version is closer to the user's target.",
+            *(
+                [
+                    "Keep AI transition/regeneration/advanced-creative stages disabled until Phase 1 mixed-edit quality is accepted.",
+                    "Advance RainFlow AI video work in order: Stage 1 transitions, Stage 2 semantic-preserving visual regeneration, then Stage 3 advanced creative blending.",
+                ]
+                if rainflow_mode
+                else []
+            ),
         ],
         worker_plan=[
             "KUN-owned product runner performs the implementation.",
@@ -3056,6 +5832,14 @@ def _acceptance_rework_task_plan(
             "Run build and internal tests.",
             "Run visual/sandbox/fun/browser/static/long gates when available.",
             "Run benchmark residual and final-player-experience gates before acceptance.",
+            *(
+                [
+                    "Run hook/structure/CTA demo comparison and creator-spoken-sales handling review before acceptance.",
+                    "Run stage-specific semantic-fidelity and creative-blending gates before advancing from Stage 1 to Stage 2 or Stage 3.",
+                ]
+                if rainflow_mode
+                else []
+            ),
         ],
         rollback_plan=[
             "If the rework worsens playability, roll back to the last passing product snapshot and reopen Qi/Nuo analysis.",
@@ -3079,13 +5863,22 @@ def _acceptance_rework_work_items(
 ) -> list[WorkItem]:
     workspace_path = _workspace_path_from_contract(contract)
     workspace_ref = f"workspace://{workspace_path}" if workspace_path else None
-    resource_locks = [f"workspace:{workspace_path}"] if workspace_path else []
-    prefix = f"work-{_slug(mission.mission_id)}-{_slug(plan_version)}"
+    sandbox_ref = _sandbox_ref_from_contract(contract)
+    resource_locks = _acceptance_rework_resource_locks(
+        mission=mission,
+        contract=contract,
+        workspace_path=workspace_path,
+    )
+    plan_signature = _hash_payload(
+        {"mission_id": mission.mission_id, "plan_version": plan_version}
+    )[:8]
+    prefix = f"work-{_slug(mission.mission_id)}-{_slug(plan_version)}-{plan_signature}"
     delivery_policy = contract.delivery_contract if contract is not None else {}
     production_mode = (
         delivery_policy.get("production_mode") if isinstance(delivery_policy, dict) else None
     )
     game_mode = production_mode == "scribble_adventure_functional_parity_v1"
+    rainflow_mode = _is_rainflow_ad_context(mission, contract)
     full_parity_feedback = _is_full_product_parity_feedback(gate)
     if game_mode and full_parity_feedback:
         specs = [
@@ -3212,6 +6005,127 @@ def _acceptance_rework_work_items(
                 "Deliver again only if the fresh final-player-experience and residual gates pass.",
             ),
         ]
+    elif rainflow_mode:
+        specs = [
+            (
+                "01-phase1-mixed-edit-repair",
+                "execution",
+                "kun",
+                [],
+                (
+                    "Repair RainFlow mixed-edit quality first: strengthen opening hook, ad structure, "
+                    "conversion logic, CTA guidance, creator/spoken-sales handling, and pacing before "
+                    "any AI generation stage continues."
+                ),
+            ),
+            (
+                "02-material-screening-and-selection",
+                "execution",
+                "kun",
+                [f"{prefix}-01-phase1-mixed-edit-repair"],
+                (
+                    "Improve material acquisition, review/screening, and selection so clips support a "
+                    "coherent information-flow ad narrative instead of filler assembly."
+                ),
+            ),
+            (
+                "03-assembly-and-creator-integration",
+                "execution",
+                "kun",
+                [f"{prefix}-02-material-screening-and-selection"],
+                (
+                    "Refine mixed-edit assembly with usable creator/spoken-sales segments, smoother "
+                    "transitions, and better timing between proof, guidance, and CTA."
+                ),
+            ),
+            (
+                "04-phase1-demo-comparison-and-retest",
+                "test",
+                "kun",
+                [f"{prefix}-03-assembly-and-creator-integration"],
+                (
+                    "Run fresh Phase 1 regression tests and baseline-vs-current demo comparison for "
+                    "hook, structure, pacing, CTA, creator handling, and ad polish."
+                ),
+            ),
+            (
+                "05-phase1-acceptance-review",
+                "review",
+                MISSION_DIRECTOR_OWNER,
+                [f"{prefix}-04-phase1-demo-comparison-and-retest"],
+                (
+                    "Review whether Phase 1 mixed-edit quality now clearly beats the previous baseline "
+                    "and whether AI generation stages may be reopened."
+                ),
+            ),
+            (
+                "06-stage1-transition-generation",
+                "execution",
+                "kun",
+                [f"{prefix}-05-phase1-acceptance-review"],
+                (
+                    "Only after Phase 1 passes, generate transition clips that improve mixed-edit flow "
+                    "without changing ad meaning."
+                ),
+            ),
+            (
+                "07-stage1-retest-and-gate",
+                "test",
+                "kun",
+                [f"{prefix}-06-stage1-transition-generation"],
+                "Retest transition-clip quality and confirm the mixed-edit meaning remains unchanged.",
+            ),
+            (
+                "08-stage2-visual-regeneration",
+                "execution",
+                "kun",
+                [f"{prefix}-07-stage1-retest-and-gate"],
+                (
+                    "After Stage 1 passes, regenerate or replace original visuals while preserving the "
+                    "same meaning, offer logic, and creator-spoken-sales intent."
+                ),
+            ),
+            (
+                "09-stage2-retest-and-gate",
+                "test",
+                "kun",
+                [f"{prefix}-08-stage2-visual-regeneration"],
+                (
+                    "Retest Stage 2 meaning preservation, visual quality lift, and rollback evidence "
+                    "before any advanced creative blending."
+                ),
+            ),
+            (
+                "10-stage3-advanced-creative-generation",
+                "execution",
+                "kun",
+                [f"{prefix}-09-stage2-retest-and-gate"],
+                (
+                    "Create stronger advanced ad creative and blend it into the information-flow ad "
+                    "while keeping pacing, guidance, and conversion flow coherent."
+                ),
+            ),
+            (
+                "11-stage3-retest-and-gate",
+                "test",
+                "kun",
+                [f"{prefix}-10-stage3-advanced-creative-generation"],
+                (
+                    "Retest Stage 3 creative blending for ad polish, conversion logic, and safe mixed-edit "
+                    "integration."
+                ),
+            ),
+            (
+                "12-final-delivery",
+                "merge",
+                "kun",
+                [f"{prefix}-11-stage3-retest-and-gate"],
+                (
+                    "Deliver again only if refreshed evidence proves Phase 1 quality, Stage 1 safety, "
+                    "Stage 2 semantic preservation, and Stage 3 blended ad polish."
+                ),
+            ),
+        ]
     else:
         specs = [
             (
@@ -3246,6 +6160,7 @@ def _acceptance_rework_work_items(
                 idempotency_key=f"acceptance-rework:{gate.gate_evaluation_id}:{work_item_id}",
                 expected_output=expected_output,
                 workspace_ref=workspace_ref,
+                sandbox_ref=sandbox_ref,
                 recovery_refs=[gate.gate_evaluation_id],
             )
         )
@@ -3289,15 +6204,464 @@ def _is_full_product_parity_feedback(gate: GateEvaluation) -> bool:
     )
 
 
+def _is_rainflow_ad_mode(contract: ExecutionContract | None) -> bool:
+    if contract is None or not isinstance(contract.delivery_contract, dict):
+        return False
+    return contract.delivery_contract.get("production_mode") == RAINFLOW_AD_PRODUCTION_MODE
+
+
+def _is_rainflow_ad_context(
+    mission: Mission,
+    contract: ExecutionContract | None,
+) -> bool:
+    if _is_rainflow_ad_mode(contract):
+        return True
+    payloads: list[Mapping[str, object]] = []
+    if contract is not None:
+        payloads.extend(
+            [contract.delivery_contract, contract.risk_policy, contract.rollback_policy]
+        )
+    text = " ".join(
+        [
+            mission.mission_id,
+            mission.objective,
+            mission.current_plan_version or "",
+            *[json.dumps(payload, sort_keys=True, ensure_ascii=False) for payload in payloads],
+        ]
+    ).lower()
+    return any(
+        token in text
+        for token in (
+            "rainflow",
+            "information-flow ad",
+            "information_flow_ad",
+            "adflow",
+            "phase1_mixed_edit",
+        )
+    )
+
+
+def _is_rainflow_ad_mission(
+    control_plane: InMemoryControlPlane,
+    mission_id: str,
+) -> bool:
+    mission = control_plane.missions.get(mission_id)
+    contract = (
+        control_plane.contracts.get(mission.execution_contract_ref or "") if mission else None
+    )
+    if _is_rainflow_ad_mode(contract):
+        return True
+    if mission is not None and _is_rainflow_ad_context(mission, contract):
+        return True
+    mission_text = " ".join(
+        [
+            mission_id,
+            mission.objective if mission else "",
+            mission.current_plan_version if mission and mission.current_plan_version else "",
+        ]
+    ).lower()
+    if "rainflow" in mission_text:
+        return True
+    return any(
+        item.mission_id == mission_id and item.work_item_id.startswith("work-rainflow-")
+        for item in control_plane.work_items.values()
+    )
+
+
+def _acceptance_gate_recovered_by_later_clean_gate(
+    control_plane: InMemoryControlPlane,
+    gate: GateEvaluation,
+) -> bool:
+    order = _daemon_gate_order_keys(control_plane, gate.mission_id)
+    current_order = order.get(gate.gate_evaluation_id, (-1, -1, "", gate.gate_evaluation_id))
+    for candidate in control_plane.gate_evaluations.values():
+        if candidate.mission_id != gate.mission_id or candidate.stage == "governance":
+            continue
+        candidate_order = order.get(
+            candidate.gate_evaluation_id,
+            (-1, -1, "", candidate.gate_evaluation_id),
+        )
+        if candidate_order <= current_order:
+            continue
+        if not _daemon_gate_is_clean_pass(candidate):
+            continue
+        if candidate.subject_ref == gate.subject_ref and candidate.stage == gate.stage:
+            return True
+        if gate.gate_evaluation_id in _daemon_gate_recovery_refs(control_plane, candidate):
+            return True
+    return False
+
+
+def _daemon_gate_order_keys(
+    control_plane: InMemoryControlPlane,
+    mission_id: str,
+) -> dict[str, tuple[int, int, str, str]]:
+    gate_run_order: dict[str, tuple[int, str]] = {}
+    for index, run in enumerate(control_plane.runs.values()):
+        if run.gate_evaluation_ref:
+            ended_at = run.ended_at.isoformat() if run.ended_at else ""
+            gate_run_order[run.gate_evaluation_ref] = (index, ended_at)
+    gate_ledger_order: dict[str, int] = {}
+    for event in control_plane.ledger_events.values():
+        if event.mission_id != mission_id or event.event_type != "gate_evaluation":
+            continue
+        gate_ref = event.payload.get("gate_evaluation_id")
+        if isinstance(gate_ref, str):
+            gate_ledger_order[gate_ref] = max(
+                event.sequence,
+                gate_ledger_order.get(gate_ref, -1),
+            )
+    order: dict[str, tuple[int, int, str, str]] = {}
+    for gate in control_plane.gate_evaluations.values():
+        if gate.mission_id != mission_id:
+            continue
+        run_index, run_time = gate_run_order.get(gate.gate_evaluation_id, (-1, ""))
+        order[gate.gate_evaluation_id] = (
+            gate_ledger_order.get(gate.gate_evaluation_id, -1),
+            run_index,
+            run_time,
+            gate.gate_evaluation_id,
+        )
+    return order
+
+
+def _daemon_gate_is_clean_pass(gate: GateEvaluation) -> bool:
+    return (
+        gate.north_star_verdict == "pass"
+        and gate.result_quality >= gate.thresholds.get("result_quality", 0.8)
+        and not gate.hard_gate_failures
+    )
+
+
+def _daemon_gate_recovery_refs(
+    control_plane: InMemoryControlPlane,
+    gate: GateEvaluation,
+) -> set[str]:
+    refs = {gate.subject_ref, *gate.evidence_refs, *gate.artifact_refs, *gate.review_refs}
+    for ref in [*gate.evidence_refs, *gate.artifact_refs, *gate.review_refs]:
+        artifact = control_plane.artifacts.get(ref)
+        if artifact is None:
+            continue
+        refs.update(artifact.supports)
+        if artifact.work_item_id:
+            refs.add(artifact.work_item_id)
+    return refs
+
+
+def _prioritize_ready_work_items_for_daemon(
+    control_plane: InMemoryControlPlane,
+    *,
+    mission_id: str,
+    ready_items: Sequence[WorkItem],
+) -> list[WorkItem]:
+    if not _is_rainflow_ad_mission(control_plane, mission_id):
+        return list(ready_items)
+
+    def lane(item: WorkItem) -> int:
+        if _is_rainflow_core_environment_recovery(item):
+            return 0
+        if _is_rainflow_core_work_item(item):
+            return 1
+        if _is_rainflow_failed_or_quality_recovery_followup(item):
+            return 2
+        if _is_quality_observation_followup(item):
+            return 4
+        return 3
+
+    return sorted(
+        ready_items,
+        key=lambda item: (lane(item), -item.priority, item.work_item_id),
+    )
+
+
+def _is_rainflow_core_work_item(work_item: WorkItem) -> bool:
+    if _is_rainflow_phase1_acceptance_review(work_item):
+        return True
+    if _is_rainflow_core_environment_recovery(work_item):
+        return True
+    text = " ".join(
+        [
+            work_item.work_item_id,
+            work_item.phase or "",
+            work_item.task_plan_version or "",
+            work_item.expected_output,
+        ]
+    ).lower()
+    return (
+        work_item.owner == "kun"
+        and any(token in text for token in ("rainflow", "adflow", "seedance", "phase1", "stage1"))
+        and work_item.type in {"execution", "test", "review", "research", "merge", "retest"}
+    )
+
+
+def _is_ready_product_core_work(
+    control_plane: InMemoryControlPlane,
+    *,
+    mission: Mission,
+    contract: ExecutionContract | None,
+    work_item: WorkItem,
+) -> bool:
+    if work_item.owner == "kun" and work_item.type in {"execution", "test", "review", "merge"}:
+        return True
+    if work_item.owner == "kun-game-production-runner" and work_item.type in {
+        "execution",
+        "test",
+        "review",
+        "merge",
+        "retest",
+    }:
+        return True
+    if _is_product_review_or_delivery_gate(work_item):
+        return True
+    return _is_rainflow_ad_context(mission, contract) and _is_rainflow_core_work_item(work_item)
+
+
+def _ready_current_plan_product_work(
+    control_plane: InMemoryControlPlane,
+    mission: Mission,
+    *,
+    now: datetime | None = None,
+) -> list[WorkItem]:
+    contract = control_plane.contracts.get(mission.execution_contract_ref or "")
+    current_plan_version = mission.current_plan_version
+    return [
+        item
+        for item in control_plane.ready_work_items(mission.mission_id, now=now)
+        if (current_plan_version is None or item.task_plan_version == current_plan_version)
+        and _is_ready_product_core_work(
+            control_plane,
+            mission=mission,
+            contract=contract,
+            work_item=item,
+        )
+    ]
+
+
+def _has_ready_current_plan_product_work(
+    control_plane: InMemoryControlPlane,
+    mission: Mission,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    return bool(_ready_current_plan_product_work(control_plane, mission, now=now))
+
+
+def _has_ready_state_preserving_followup(
+    control_plane: InMemoryControlPlane,
+    mission_id: str,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    return any(
+        _is_state_preserving_followup(item)
+        for item in control_plane.ready_work_items(mission_id, now=now)
+    )
+
+
+def _is_rainflow_phase1_acceptance_review(work_item: WorkItem) -> bool:
+    return (
+        work_item.owner == MISSION_DIRECTOR_OWNER
+        and "rainflow" in work_item.work_item_id.lower()
+        and "phase1-acceptance-review" in work_item.work_item_id.lower()
+    )
+
+
+def _is_rainflow_core_environment_recovery(work_item: WorkItem) -> bool:
+    text = " ".join(
+        [
+            work_item.work_item_id,
+            work_item.idempotency_key or "",
+            work_item.expected_output,
+            *work_item.recovery_refs,
+        ]
+    ).lower()
+    if "rainflow" not in text:
+        return False
+    if (
+        work_item.owner == "nuo"
+        and work_item.type == "retest"
+        and (work_item.idempotency_key or "").startswith("nuo-clean-retest:")
+    ):
+        clean_retest_subject = (work_item.idempotency_key or "").split(":", 1)[-1]
+        if (
+            clean_retest_subject.startswith(("work-nuo-observation-", "work-qi-observation-"))
+            or "-observation-" in clean_retest_subject
+        ):
+            return False
+        return any(
+            token in text
+            for token in (
+                "environment blocker",
+                "workspace/write/environment",
+                "sandbox_permission",
+                "permission",
+                "wrapper",
+                "network",
+                "transport",
+                "timeout",
+                "tool",
+            )
+        )
+    if work_item.owner != "control-plane":
+        return False
+    if work_item.type not in {"repair", "retest", "test", "execution"}:
+        return False
+    return (
+        "rerun the same subject" in text or "repair wrapper" in text or "fix_wrapper" in text
+    ) and (
+        "environment blocker" in text
+        or "sandbox_permission" in text
+        or "permission" in text
+        or "wrapper" in text
+        or "network" in text
+        or "transport" in text
+        or "timeout" in text
+        or "tool" in text
+    )
+
+
+def _is_quality_observation_followup(work_item: WorkItem) -> bool:
+    haystack = " ".join(
+        [
+            work_item.work_item_id,
+            work_item.idempotency_key or "",
+            work_item.expected_output,
+            *work_item.recovery_refs,
+        ]
+    ).lower()
+    if work_item.owner in {"qi", "nuo"} and (
+        (work_item.idempotency_key or "").startswith("runtime-observation:")
+        or "-observation-" in work_item.work_item_id
+    ):
+        return True
+    return (
+        "quality_gate_not_passed" in haystack
+        or "quality-gate-not-passed" in haystack
+        or "subjective_playtest_missing" in haystack
+        or "subjective-playtest-missing" in haystack
+        or "mechanical_acceptance_rework_loop" in haystack
+    )
+
+
+def _is_stale_quality_followup(work_item: WorkItem) -> bool:
+    if work_item.owner not in {"qi", "nuo"} or work_item.type not in {"governance", "repair"}:
+        return False
+    haystack = " ".join(
+        [
+            work_item.work_item_id,
+            work_item.idempotency_key or "",
+            work_item.expected_output,
+            *work_item.recovery_refs,
+        ]
+    ).lower()
+    return "quality_gate_not_passed" in haystack or "quality-gate-not-passed" in haystack
+
+
+def _is_rainflow_failed_or_quality_recovery_followup(work_item: WorkItem) -> bool:
+    haystack = " ".join(
+        [
+            work_item.work_item_id,
+            work_item.idempotency_key or "",
+            work_item.expected_output,
+            *work_item.recovery_refs,
+        ]
+    ).lower()
+    if work_item.owner not in {"qi", "nuo"}:
+        return False
+    if not (
+        (work_item.idempotency_key or "").startswith("runtime-observation:")
+        or "-observation-" in work_item.work_item_id
+    ):
+        return False
+    return any(
+        token in haystack
+        for token in (
+            "failed_work_recovery_incomplete",
+            "failed_work_without_recovery",
+            "quality_gate_not_passed",
+        )
+    )
+
+
+def _is_mechanical_acceptance_loop_observation_followup(work_item: WorkItem) -> bool:
+    haystack = " ".join(
+        [
+            work_item.work_item_id,
+            work_item.idempotency_key or "",
+            work_item.expected_output,
+            *work_item.recovery_refs,
+        ]
+    )
+    return "mechanical_acceptance_rework_loop" in haystack
+
+
+def _is_substantive_observation_evidence(ref: str) -> bool:
+    """Ignore fresh wrapper reports when deciding whether to rerun a follow-up.
+
+    Runtime observations are emitted on every tick.  A new observation artifact
+    is useful context, but it is not by itself a new product, gate, or failure
+    signal.  Requeue only when a substantive ref such as a gate, work item, or
+    external artifact has changed.
+    """
+
+    return not (
+        ref.startswith("artifact-runtime-observation-")
+        or ref.startswith("artifact-daemon-progress-")
+    )
+
+
+def _is_resolved_observation_followup(
+    control_plane: InMemoryControlPlane,
+    work_item: WorkItem,
+) -> bool:
+    key = work_item.idempotency_key or ""
+    if key.startswith("runtime-observation:"):
+        return work_item.owner in {"qi", "nuo"} or work_item.type in {"governance", "repair"}
+    if _is_kun_plan_change_work_item(work_item) and (
+        key.startswith("qi-plan-change:work-qi-observation-")
+        or any("work-qi-observation-" in ref for ref in work_item.recovery_refs)
+    ):
+        return True
+    if not key.startswith("nuo-recovery:"):
+        return False
+    parts = key.split(":")
+    if len(parts) < 2:
+        return False
+    subject = control_plane.work_items.get(parts[1])
+    return subject is not None and subject.status in {"done", "delivered"}
+
+
+def _observation_followup_matches_active_code(
+    work_item: WorkItem,
+    active_codes: set[str],
+) -> bool:
+    haystack = " ".join(
+        [
+            work_item.work_item_id,
+            work_item.idempotency_key or "",
+            work_item.expected_output,
+            *work_item.recovery_refs,
+        ]
+    )
+    return any(code in haystack or _slug(code) in haystack for code in active_codes)
+
+
+def _is_human_collaboration_work_item(work_item: WorkItem) -> bool:
+    return work_item.type == "collaboration" or work_item.owner in {"operator", "human"}
+
+
 def _effective_resource_locks(
     control_plane: InMemoryControlPlane,
     work_item: WorkItem,
 ) -> set[str]:
-    locks = {
-        normalized
-        for value in work_item.resource_locks
-        if (normalized := normalize_resource_lock_ref(value))
-    }
+    locks: set[str] = set()
+    for value in work_item.resource_locks:
+        normalized = normalize_resource_lock_ref(value)
+        if not normalized:
+            continue
+        if is_pure_governance_work_item(work_item) and is_workspace_resource_lock_ref(normalized):
+            continue
+        locks.add(normalized)
     if (
         work_item.owner in {"qi", "nuo"}
         or work_item.type in {"governance", "repair", "rollback", "merge"}
@@ -3305,30 +6669,16 @@ def _effective_resource_locks(
     ):
         locks.add(f"mission-state:{work_item.mission_id}")
     workspace_ref = work_item.workspace_ref
-    if workspace_ref:
+    if workspace_ref and work_item_requires_workspace_boundary(work_item):
         locks.add(normalize_resource_lock_ref(f"workspace:{workspace_ref}"))
     mission = control_plane.missions.get(work_item.mission_id)
     contract = (
         control_plane.contracts.get(mission.execution_contract_ref or "") if mission else None
     )
     workspace_path = _workspace_path_from_contract(contract)
-    if workspace_path and work_item.type in {
-        "execution",
-        "test",
-        "merge",
-        "repair",
-        "retest",
-        "rollback",
-    }:
+    if workspace_path and work_item_requires_workspace_boundary(work_item):
         locks.add(normalize_resource_lock_ref(f"workspace:{workspace_path}"))
-    if work_item.type in {
-        "execution",
-        "test",
-        "merge",
-        "repair",
-        "retest",
-        "rollback",
-    } and not _has_workspace_boundary_lock(locks):
+    if work_item_requires_workspace_boundary(work_item) and not _has_workspace_boundary_lock(locks):
         locks.add(f"mission-workspace:{work_item.mission_id}")
     return locks
 
@@ -3356,6 +6706,86 @@ def _workspace_path_from_contract(contract: ExecutionContract | None) -> str | N
             if isinstance(value, str) and value.strip():
                 return value
     return None
+
+
+def _workspace_clean_retest_can_requeue(work_item: WorkItem) -> bool:
+    """Re-probe stale human-blocked clean retests before requiring an operator."""
+
+    if work_item.owner != "nuo" or work_item.type != "retest":
+        return False
+    if not (work_item.idempotency_key or "").startswith("nuo-clean-retest:"):
+        return False
+    workspace = _workspace_path_from_work_item(work_item)
+    if workspace is None or not workspace.exists() or not workspace.is_dir():
+        return False
+    probe = workspace / f".kun-daemon-clean-retest-{_slug(work_item.work_item_id)}.tmp"
+    try:
+        probe.write_text("kun daemon clean retest\n", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _workspace_path_from_work_item(work_item: WorkItem) -> Path | None:
+    candidates: list[str] = []
+    if work_item.workspace_ref:
+        candidates.append(work_item.workspace_ref)
+    candidates.extend(lock for lock in work_item.resource_locks if lock.startswith("workspace:"))
+    for candidate in candidates:
+        path = _local_workspace_path(candidate)
+        if path is not None:
+            return path
+    return None
+
+
+def _local_workspace_path(value: str) -> Path | None:
+    normalized = value.strip()
+    if normalized.startswith("workspace://"):
+        normalized = normalized.removeprefix("workspace://")
+        if not normalized.startswith("/"):
+            normalized = f"/{normalized}"
+    elif normalized.startswith("workspace:"):
+        normalized = normalized.removeprefix("workspace:")
+    if normalized.startswith("//"):
+        normalized = normalized[1:]
+    path = Path(normalized).expanduser()
+    if not path.is_absolute():
+        return None
+    return path
+
+
+def _sandbox_ref_from_contract(contract: ExecutionContract | None) -> str | None:
+    if contract is None:
+        return None
+    for payload in (contract.delivery_contract, contract.risk_policy, contract.rollback_policy):
+        value = payload.get("sandbox_ref") if isinstance(payload, dict) else None
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _acceptance_rework_resource_locks(
+    *,
+    mission: Mission,
+    contract: ExecutionContract | None,
+    workspace_path: str | None,
+) -> list[str]:
+    locks: list[str] = []
+    if workspace_path:
+        locks.append(f"workspace:{workspace_path}")
+    locks.append(f"mission:{mission.mission_id}")
+    if contract is not None:
+        delivery = (
+            contract.delivery_contract if isinstance(contract.delivery_contract, dict) else {}
+        )
+        output_dir = delivery.get("output_dir")
+        if isinstance(output_dir, str) and output_dir.strip():
+            locks.append(f"output_dir:{output_dir}")
+        for value in delivery.get("resource_locks", []):
+            if isinstance(value, str) and value.strip():
+                locks.append(value)
+    return _merge_unique(locks)
 
 
 def _read_json_file(path: Path) -> dict[str, object]:

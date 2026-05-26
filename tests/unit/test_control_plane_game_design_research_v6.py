@@ -171,10 +171,18 @@ def test_game_design_runner_research_gate_queues_app_runner_and_builds_mvp(
     assert (final_project_path / "docs" / "delivery-report.md").exists()
     assert (tmp_path / "huohutu-research" / "docs" / "game-design-spec.md").exists()
     assert control_plane.missions["msn-game-design"].current_plan_version == ("mvp-v2-design-gated")
-    assert control_plane.missions["msn-game-design"].status == "delivering"
+    assert control_plane.missions["msn-game-design"].status == "awaiting_acceptance"
     assert control_plane.contracts[
         "contract-msn-game-design-mvp-v2-design-gated"
     ].delivery_contract["research_first"]
+    acceptance_tickets = [
+        ticket
+        for ticket in control_plane.collaboration_tickets.values()
+        if ticket.context_ref == "manifest-msn-game-design-mvp-v2-design-gated-huohutu-mvp-delivery"
+    ]
+    assert len(acceptance_tickets) == 1
+    assert acceptance_tickets[0].status == "open"
+    assert acceptance_tickets[0].type == "review"
 
 
 def test_game_design_runner_supplements_contract_sources_to_threshold(tmp_path: Path) -> None:

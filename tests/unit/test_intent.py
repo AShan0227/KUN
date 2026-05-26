@@ -83,3 +83,37 @@ async def test_interpret_fallback_to_defaults_on_bad_json():
     )
     assert tr.meta.task_type == "general.default"
     assert tr.meta.risk_level == "low"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_interpret_normalizes_unknown_constraint_kinds():
+    stub = StubProvider(
+        tier="top",
+        builder=_json_builder(
+            '{"task_type": "general.default", "risk_level": "medium", '
+            '"success_criteria_short": "keep task isolated", '
+            '"goal_detail": "Run the task in an isolated workspace.", '
+            '"constraints": ['
+            '{"kind": "workspace_isolation", "detail": "use only /tmp/work"}, '
+            '{"kind": "path_only", "detail": "/tmp/work"}, '
+            '"do not touch main branch"'
+            "]}",
+        ),
+    )
+    router = LLMRouter({"top": stub, "fallback": stub})
+    interpreter = IntentInterpreter(router)
+
+    tr = await interpreter.interpret(
+        "Run in a new isolated workspace",
+        owner=Owner(tenant_id="u-sylvan"),
+    )
+
+    assert tr.spec is not None
+    assert [constraint.kind for constraint in tr.spec.constraints] == [
+        "custom",
+        "path_only",
+        "custom",
+    ]
+    assert tr.spec.constraints[0].detail == "workspace_isolation: use only /tmp/work"
+    assert tr.spec.constraints[2].detail == "do not touch main branch"

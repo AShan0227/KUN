@@ -80,6 +80,12 @@ packages = ["kun"]
 line-length = 100
 target-version = "py312"
 src = ["kun", "tests"]
+extend-exclude = [
+  "$CODEX_HOME",
+  "artifacts",
+  "msn-rainflow-ad-video",
+  "tmp-rainflow-root",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "B", "C4", "UP", "ASYNC", "S", "SIM", "RUF"]

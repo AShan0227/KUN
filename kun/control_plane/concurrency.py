@@ -130,6 +130,74 @@ def normalize_resource_lock_ref(value: str) -> str:
     return f"workspace:{workspace_value}"
 
 
+WORKSPACE_LOCKING_WORK_ITEM_TYPES = frozenset(
+    {"execution", "research", "review", "test", "merge", "repair", "retest", "rollback"}
+)
+WORKSPACE_RESOURCE_LOCK_PREFIXES = (
+    "workspace:",
+    "worktree:",
+    "project:",
+    "repo:",
+    "output:",
+    "output_dir:",
+    "delivery:",
+)
+
+
+def is_pure_governance_work_item(work_item: WorkItem) -> bool:
+    """Return whether a Qi/Nuo item should stay on the governance lane."""
+
+    if work_item.type == "governance" and work_item.owner in {"qi", "nuo"}:
+        return True
+    if work_item.owner == "qi" and work_item.type == "research":
+        text = " ".join(
+            [
+                work_item.work_item_id,
+                work_item.idempotency_key or "",
+                work_item.expected_output,
+            ]
+        ).lower()
+        if (
+            "strategy-replay" in text
+            or "strategy replay" in text
+            or "process audit" in text
+            or "self_improvement" in text
+            or "do not deliver user-task output" in text
+        ):
+            return True
+    if work_item.owner != "nuo" or work_item.type != "repair":
+        return False
+    text = " ".join(
+        [
+            work_item.work_item_id,
+            work_item.idempotency_key or "",
+            work_item.expected_output,
+        ]
+    ).lower()
+    return (
+        "-observation-" in text
+        or "runtime-observation:" in text
+        or "classify this runtime observation" in text
+    ) and "clean-retest" not in text
+
+
+def is_workspace_resource_lock_ref(value: str) -> bool:
+    """Return whether a resource lock protects workspace-like writable state."""
+
+    normalized = normalize_resource_lock_ref(value)
+    return normalized.startswith(WORKSPACE_RESOURCE_LOCK_PREFIXES)
+
+
+def work_item_requires_workspace_boundary(work_item: WorkItem) -> bool:
+    """Return whether this work item should lock and write the workspace."""
+
+    if is_pure_governance_work_item(work_item):
+        return False
+    if work_item.type in WORKSPACE_LOCKING_WORK_ITEM_TYPES:
+        return True
+    return any(is_workspace_resource_lock_ref(value) for value in work_item.resource_locks)
+
+
 class SandboxIsolationSpec(BaseModel):
     """The sandbox mode actually requested for a work item."""
 
@@ -720,6 +788,7 @@ def sandbox_spec_for_work_item(
     container_runtime: str | None,
 ) -> SandboxIsolationSpec:
     root_refs = [ref for ref in [workspace_ref, work_item.workspace_ref] if ref]
+    writable_refs = _dedupe(root_refs) if work_item_requires_workspace_boundary(work_item) else []
     if mode == "workspace_snapshot":
         text = "使用工作区边界、预执行快照和可审计回滚隔离本次执行。"
     elif mode == "container_required":
@@ -734,7 +803,7 @@ def sandbox_spec_for_work_item(
         mode=mode,
         workspace_ref=workspace_ref or work_item.workspace_ref,
         root_refs=_dedupe(root_refs),
-        writable_refs=_dedupe(root_refs),
+        writable_refs=writable_refs,
         container_runtime=container_runtime,
         checkpoint_refs=list(work_item.checkpoint_refs),
         rollback_refs=list(work_item.rollback_refs),
@@ -848,7 +917,10 @@ __all__ = [
     "WorkerSlotSnapshot",
     "WorkerSlotStatus",
     "build_merge_governance_report",
+    "is_pure_governance_work_item",
+    "is_workspace_resource_lock_ref",
     "normalize_resource_lock_ref",
     "sandbox_spec_for_work_item",
+    "work_item_requires_workspace_boundary",
     "worker_slots",
 ]

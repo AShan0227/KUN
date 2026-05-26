@@ -13,6 +13,7 @@ def test_feature_activation_audit_runs_trigger_tasks_for_all_core_features(tmp_p
     assert {case.feature_id for case in report.cases} >= {
         "info_gap_human_collaboration",
         "delivery_acceptance_and_state_cleanup",
+        "mission_director_delivery_supervision",
         "runtime_activation_preflight_checkpoint",
         "worker_pool_resource_lock_wait",
         "parallel_worker_pool_isolated_execution",

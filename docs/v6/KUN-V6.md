@@ -224,6 +224,7 @@ Control Plane 是 KUN 的运行中枢，负责把方案变成可持续执行的�
 - 运行时功能激活层：每个 work item 执行前必须显式绑定 production 能力、skill 触发、外部信息信号、沙箱边界、checkpoint、rollback 引用和启/傩反馈通道。
 - 受限预执行层：在主 runner 执行前，按 work item 的 workspace、skill 和外部信息信号运行安全预检查，产出 artifact；预执行失败必须进入启/傩治理，不得静默丢失，也不得直接记为 KUN 能力失败。
 - 启/傩默认激活层：daemon 默认注册 Qi runtime governance runner 和 Nuo runtime repair runner。凡由预执行、运行时门禁或傩诊断生成的 Qi/Nuo follow-up work item，必须能被后台服务自动执行、生成治理 artifact、写入 gate，并保持 replay 候选不得默认启用。
+- Mission Director 交付总监层：daemon 默认注册一个 KUN-native 交付总监 runner，作为任务级监督角色，持续审查目标对齐、信息缺口、任务拆解、worker 分配、证据、验收状态和“门禁通过是否被误当成最终完成”。Mission Director 可以单独配置模型、provider 和档位；它不替代启、傩或具体执行 runner，只对 mission 交付闭环拥有监督和阻断权。它的调度优先级必须高于普通业务执行、最终交付和自动返工，确保监督先于继续开发或关闭任务。
 - 信息缺口主动协同层：处于 planning/info_gap 且存在 `TaskPlan.info_gaps` 的任务，daemon 必须自动生成协同票据，说明缺什么、问谁、风险、超时策略和恢复规则；任务进入等待人类输入状态，不能绕过缺口直接执行。
 - 执行型 skill 默认沙箱边界：shell、Python 等可执行 skill 必须在显式配置的执行根目录内运行；相对目录只能解析到执行根目录下，绝对目录必须落在 allowlist 根内，越界请求必须失败并可审计。它是默认工作区隔离，不宣称替代容器或系统级 chroot。
 - 容器级隔离协议：高风险或生产并发任务必须能声明 `container_required` 或 `external_container` 沙箱模式；daemon 必须把容器运行时、workspace 根、可写路径、网络策略、checkpoint 和 rollback 引用写入执行状态。没有容器 runner 时不得假装已经容器化，必须在驾驶舱和门禁中显示隔离等级。
@@ -271,6 +272,7 @@ KUN 的驾驶舱和审计报告必须把这六层分开展示。`fixture`、`syn
 - 傩的“已诊断”和“已修复”必须分账本。污染、EOF、timeout、auth、wrapper、报告缺失、互评缺失等分类报告只能关闭诊断阶段；只有 clean retest、rerun、replay 或 rollback 证据通过，才能关闭恢复阶段。
 - 傩的 clean retest 必须能改变执行状态。若复测证明权限、写入、workspace、wrapper 或环境阻断已经解除，系统必须自动关闭对应阻断票据并恢复任务队列；只有复测仍失败时，才允许进入人机协同或继续等待外部修复。
 - 启的“候选能力”和“生产能力”必须分账本。真实任务可以写学习信号，但不能直接修改 KUN 默认 runtime；能力变化必须走 replay、holdout、shadow、canary、production 和 rollback。
+- Mission Director 的监督结论必须参与任务状态机。若它发现任务方案不完整、worker 分配缺失、产品体验证据不足、人工/目标用户验收缺失，或 runner 把测试/自评分/门禁通过误判为最终交付完成，必须生成 review artifact 和 GateEvaluation，并把任务推进到 needs_info、needs_human 或 needs_plan_change，而不是允许直接关闭任务。
 - 策略优化不能只等单一路径失败后改计划。高风险或高价值任务必须支持多策略候选、低成本试跑、结果比较和最优路径选择；启负责保留有效路径、合并重复路径、淘汰噪音路径。
 - 启的策略复盘必须成为可执行工作流，而不是只写结论。遇到用户否定、产品体验残差、门禁失败、反复返工或任务理解不足时，启必须创建 Qi-owned 的 strategy replay / shadow rerun / process audit 工作项，复跑同一任务切片，比较旧策略和新策略，再把更优路径交给 KUN 执行。该复盘只能进入 `self_improvement` 账本和 replay 候选证据，不能直接修改生产默认能力。
 - AB adapter、Frontier50 live executor、真实任务 runner 必须在驾驶舱中分开展示。adapter summary 不能被显示成 live AB 已执行。

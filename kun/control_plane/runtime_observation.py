@@ -14,6 +14,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from kun.control_plane.capability_execution import CapabilityExecutionPolicy
 from kun.control_plane.runtime import InMemoryControlPlane
 
+_OBSERVATION_EVIDENCE_LIMIT = 32
+_HUMAN_PLAYER_ACCEPTANCE_FAILURES = {
+    "fresh_real_player_review_pass",
+    "human_acceptance_missing",
+    "human_or_target_user_acceptance_missing",
+    "human_or_target_user_review_missing",
+    "human_player_review_missing",
+    "human_review_missing",
+    "player_acceptance_missing",
+    "target_player_acceptance_missing",
+    "target_user_acceptance_missing",
+}
+
 ObservationSeverity = Literal["info", "low", "medium", "high", "critical"]
 ObservationRoute = Literal["kun", "qi", "nuo", "human", "external_supervisor", "control_plane"]
 
@@ -168,21 +181,31 @@ def _capability_consumption_observations(
     control_plane: InMemoryControlPlane,
     mission_id: str,
 ) -> list[RuntimeObservationItem]:
+    mission = control_plane.missions.get(mission_id)
+    current_plan_version = mission.current_plan_version if mission is not None else None
+    receipt_work_item_ids = {
+        artifact.work_item_id
+        for artifact in control_plane.artifacts.values()
+        if artifact.mission_id == mission_id
+        and artifact.work_item_id is not None
+        and (
+            "capability_behavior_receipt" in artifact.supports
+            or {"strategy_optimization_plan", "dynamic_best_strategy"} <= set(artifact.supports)
+        )
+    }
     missing_receipt_ids: list[str] = []
     for work_item in control_plane.work_items.values():
         if work_item.mission_id != mission_id:
+            continue
+        if current_plan_version is not None and work_item.task_plan_version != current_plan_version:
             continue
         if work_item.status not in {"done", "partial"}:
             continue
         if not work_item.required_capability_refs:
             continue
-        has_behavior_receipt = any(
-            artifact.mission_id == mission_id
-            and artifact.work_item_id == work_item.work_item_id
-            and "capability_behavior_receipt" in artifact.supports
-            for artifact in control_plane.artifacts.values()
-        )
-        if not has_behavior_receipt:
+        if _is_runtime_observation_followup(work_item):
+            continue
+        if work_item.work_item_id not in receipt_work_item_ids:
             missing_receipt_ids.append(work_item.work_item_id)
     if not missing_receipt_ids:
         return []
@@ -197,19 +220,54 @@ def _capability_consumption_observations(
                 "说明哪些 executable directive 被执行、影响了哪个阶段。"
             ),
             routes=["qi", "control_plane", "external_supervisor"],
-            evidence_refs=missing_receipt_ids,
+            evidence_refs=_cap_observation_refs(missing_receipt_ids),
         )
     ]
+
+
+def _is_runtime_observation_followup(work_item: Any) -> bool:
+    return (
+        work_item.owner in {"qi", "nuo"}
+        and work_item.type in {"governance", "repair", "research", "retest"}
+    ) or "-observation-" in work_item.work_item_id
+
+
+def _has_capability_behavior_receipt(
+    *,
+    control_plane: InMemoryControlPlane,
+    mission_id: str,
+    work_item_id: str,
+) -> bool:
+    for artifact in control_plane.artifacts.values():
+        if artifact.mission_id != mission_id or artifact.work_item_id != work_item_id:
+            continue
+        supports = set(artifact.supports)
+        if "capability_behavior_receipt" in supports:
+            return True
+        if {"strategy_optimization_plan", "dynamic_best_strategy"} <= supports:
+            return True
+    return False
+
+
+def _cap_observation_refs(refs: list[str]) -> list[str]:
+    """Keep observation evidence bounded so long dogfood histories stay runnable."""
+
+    return refs[-_OBSERVATION_EVIDENCE_LIMIT:]
 
 
 def _failed_work_observations(
     control_plane: InMemoryControlPlane,
     mission_id: str,
 ) -> list[RuntimeObservationItem]:
+    mission = control_plane.missions.get(mission_id)
+    current_plan_version = mission.current_plan_version if mission is not None else None
     failed_work = [
         item
         for item in control_plane.work_items.values()
-        if item.mission_id == mission_id and item.status == "failed"
+        if item.mission_id == mission_id
+        and item.status == "failed"
+        and (current_plan_version is None or item.task_plan_version == current_plan_version)
+        and not _failed_work_is_human_acceptance_wait(control_plane, item)
     ]
     if not failed_work:
         return []
@@ -217,7 +275,15 @@ def _failed_work_observations(
     recovery_items = [
         item
         for item in control_plane.work_items.values()
-        if item.mission_id == mission_id and item.owner in {"qi", "nuo"}
+        if item.mission_id == mission_id
+        and (
+            item.owner in {"qi", "nuo"}
+            or (
+                item.owner == "control-plane"
+                and (item.idempotency_key or "").startswith("nuo-recovery:")
+            )
+        )
+        and (current_plan_version is None or item.task_plan_version == current_plan_version)
     ]
     recovered_refs = {
         ref for item in recovery_items if item.status == "done" for ref in item.recovery_refs
@@ -228,10 +294,15 @@ def _failed_work_observations(
         if item.status not in {"done", "cancelled", "failed"}
         for ref in item.recovery_refs
     }
+    # A completed Qi/Nuo follow-up is only proof that a recovery path ran. If
+    # the original work item is still failed, the recovery loop is still
+    # incomplete and needs a real retry/retest or a new plan branch.
+    attempted = [work_id for work_id in failed_ids if work_id in recovered_refs]
     unrecovered = [work_id for work_id in failed_ids if work_id not in recovered_refs]
     incomplete = [work_id for work_id in unrecovered if work_id in pending_recovery_refs]
+    incomplete = [*attempted, *incomplete]
     missing = [work_id for work_id in unrecovered if work_id not in pending_recovery_refs]
-    if not unrecovered:
+    if not unrecovered and not attempted:
         return []
     observations: list[RuntimeObservationItem] = []
     if incomplete:
@@ -243,7 +314,7 @@ def _failed_work_observations(
                 why_watch="Qi/Nuo 已经接手失败项，但恢复任务还没有完成或通过复测。",
                 recommended_action="阻断交付，直到恢复工作完成并产生干净复测或治理证据。",
                 routes=["nuo", "qi", "external_supervisor"],
-                evidence_refs=incomplete,
+                evidence_refs=_cap_observation_refs(incomplete),
             )
         )
     if missing:
@@ -258,10 +329,27 @@ def _failed_work_observations(
                     "换执行路径、补 runner，或把失败沉淀成能力治理。"
                 ),
                 routes=["nuo", "qi", "external_supervisor"],
-                evidence_refs=missing,
+                evidence_refs=_cap_observation_refs(missing),
             )
         )
     return observations
+
+
+def _failed_work_is_human_acceptance_wait(
+    control_plane: InMemoryControlPlane,
+    work_item: Any,
+) -> bool:
+    if work_item.owner != "mission-director":
+        return False
+    gates = [
+        gate
+        for gate in control_plane.gate_evaluations.values()
+        if gate.mission_id == work_item.mission_id and gate.subject_ref == work_item.work_item_id
+    ]
+    if not gates:
+        return False
+    latest = sorted(gates, key=lambda gate: gate.gate_evaluation_id)[-1]
+    return _gate_only_requires_human_player_acceptance(latest)
 
 
 def _quality_gate_observations(
@@ -270,11 +358,20 @@ def _quality_gate_observations(
 ) -> list[RuntimeObservationItem]:
     mission = control_plane.missions.get(mission_id)
     current_plan_version = mission.current_plan_version if mission is not None else None
+    gate_order = _gate_order_keys(control_plane, mission_id)
+    latest_gates_by_subject_stage = _latest_gate_by_subject_stage(control_plane, mission_id)
     weak_gates = [
         gate
         for gate in control_plane.gate_evaluations.values()
         if gate.mission_id == mission_id
         and (not current_plan_version or gate.task_plan_version == current_plan_version)
+        and gate.task_type != "self_improvement"
+        and latest_gates_by_subject_stage.get(_gate_subject_stage_key(gate))
+        == gate.gate_evaluation_id
+        and not _gate_subject_is_runtime_observation_followup(control_plane, gate.subject_ref)
+        and not _weak_gate_recovered_by_later_subject_pass(control_plane, gate, gate_order)
+        and not _gate_recovered_by_later_recovery_pass(control_plane, gate, gate_order)
+        and not _gate_only_requires_human_player_acceptance(gate)
         and (
             gate.north_star_verdict != "pass"
             or gate.result_quality < gate.thresholds.get("result_quality", 0.8)
@@ -283,7 +380,7 @@ def _quality_gate_observations(
     ]
     if not weak_gates:
         return []
-    failed_refs = [gate.gate_evaluation_id for gate in weak_gates]
+    failed_refs = _cap_observation_refs([gate.gate_evaluation_id for gate in weak_gates])
     responsibility_scopes = {gate.responsibility_scope for gate in weak_gates}
     routes: list[ObservationRoute] = ["qi", "external_supervisor"]
     if responsibility_scopes & {"environment", "mixed", "unknown"}:
@@ -304,30 +401,302 @@ def _quality_gate_observations(
     ]
 
 
+def _gate_failure_name(value: str) -> str:
+    return value.split(":", 1)[-1].strip().lower()
+
+
+def _is_human_player_acceptance_failure(value: str) -> bool:
+    name = _gate_failure_name(value)
+    return name in _HUMAN_PLAYER_ACCEPTANCE_FAILURES or name.endswith(
+        (
+            "_human_acceptance_missing",
+            "_target_user_acceptance_missing",
+            "_target_player_acceptance_missing",
+            "_player_acceptance_missing",
+        )
+    )
+
+
+def _gate_only_requires_human_player_acceptance(gate: Any) -> bool:
+    failures = [failure for failure in gate.hard_gate_failures if failure]
+    if failures:
+        return all(_is_human_player_acceptance_failure(failure) for failure in failures)
+    return gate.next_action == "needs_human" and gate.next_state in {
+        "awaiting_acceptance",
+        "waiting_human",
+    }
+
+
+def _latest_gate_by_subject_stage(
+    control_plane: InMemoryControlPlane,
+    mission_id: str,
+) -> dict[str, str]:
+    """Return the newest gate per subject and stage.
+
+    A later work-item validation pass must not erase a still-actionable delivery
+    or external-supervisor failure for the same work item.
+    """
+
+    gate_order = _gate_order_keys(control_plane, mission_id)
+    latest: dict[str, Any] = {}
+    for gate in control_plane.gate_evaluations.values():
+        if gate.mission_id != mission_id:
+            continue
+        key = _gate_subject_stage_key(gate)
+        current = latest.get(key)
+        if current is None or gate_order.get(
+            gate.gate_evaluation_id, (-1, -1, "", gate.gate_evaluation_id)
+        ) > gate_order.get(current.gate_evaluation_id, (-1, -1, "", current.gate_evaluation_id)):
+            latest[key] = gate
+    return {key: gate.gate_evaluation_id for key, gate in latest.items()}
+
+
+def _gate_order_keys(
+    control_plane: InMemoryControlPlane,
+    mission_id: str,
+) -> dict[str, tuple[int, int, str, str]]:
+    gate_run_order: dict[str, tuple[int, str]] = {}
+    for index, run in enumerate(control_plane.runs.values()):
+        if run.gate_evaluation_ref:
+            ended_at = run.ended_at.isoformat() if run.ended_at else ""
+            gate_run_order[run.gate_evaluation_ref] = (index, ended_at)
+    gate_ledger_order: dict[str, int] = {}
+    for event in control_plane.ledger_events.values():
+        if event.mission_id != mission_id or event.event_type != "gate_evaluation":
+            continue
+        gate_ref = event.payload.get("gate_evaluation_id")
+        if isinstance(gate_ref, str):
+            gate_ledger_order[gate_ref] = max(
+                event.sequence,
+                gate_ledger_order.get(gate_ref, -1),
+            )
+
+    order: dict[str, tuple[int, int, str, str]] = {}
+    for gate in control_plane.gate_evaluations.values():
+        if gate.mission_id != mission_id:
+            continue
+        run_index, run_time = gate_run_order.get(gate.gate_evaluation_id, (-1, ""))
+        order[gate.gate_evaluation_id] = (
+            gate_ledger_order.get(gate.gate_evaluation_id, -1),
+            run_index,
+            run_time,
+            gate.gate_evaluation_id,
+        )
+    return order
+
+
+def _weak_gate_recovered_by_later_subject_pass(
+    control_plane: InMemoryControlPlane,
+    gate: Any,
+    gate_order: dict[str, tuple[int, int, str, str]],
+) -> bool:
+    if gate.stage not in {"governance", "workitem", "execution", "test", "retest", "repair"}:
+        return False
+    subject = control_plane.work_items.get(gate.subject_ref)
+    if subject is None or subject.status not in {"done", "delivered"}:
+        return False
+    current_order = gate_order.get(gate.gate_evaluation_id, (-1, -1, "", gate.gate_evaluation_id))
+    for gate in control_plane.gate_evaluations.values():
+        if gate.mission_id != subject.mission_id or gate.subject_ref != subject.work_item_id:
+            continue
+        candidate_order = gate_order.get(
+            gate.gate_evaluation_id, (-1, -1, "", gate.gate_evaluation_id)
+        )
+        if candidate_order <= current_order:
+            continue
+        if _gate_is_clean_pass(gate):
+            return True
+    return False
+
+
+def _gate_recovered_by_later_recovery_pass(
+    control_plane: InMemoryControlPlane,
+    gate: Any,
+    gate_order: dict[str, tuple[int, int, str, str]],
+) -> bool:
+    """Return whether later clean recovery evidence supersedes an old weak gate."""
+
+    current_order = gate_order.get(gate.gate_evaluation_id, (-1, -1, "", gate.gate_evaluation_id))
+    failed_refs = {gate.gate_evaluation_id}
+    for candidate in control_plane.gate_evaluations.values():
+        if candidate.mission_id != gate.mission_id:
+            continue
+        if candidate.stage == "governance":
+            continue
+        candidate_order = gate_order.get(
+            candidate.gate_evaluation_id,
+            (-1, -1, "", candidate.gate_evaluation_id),
+        )
+        if candidate_order <= current_order:
+            continue
+        if not _gate_is_clean_pass(candidate):
+            continue
+        if failed_refs & _gate_recovery_refs(control_plane, candidate):
+            return True
+    return False
+
+
+def _gate_recovery_refs(
+    control_plane: InMemoryControlPlane,
+    gate: Any,
+) -> set[str]:
+    refs = {gate.subject_ref, *gate.evidence_refs, *gate.artifact_refs, *gate.review_refs}
+    for ref in [*gate.evidence_refs, *gate.artifact_refs, *gate.review_refs]:
+        artifact = control_plane.artifacts.get(ref)
+        if artifact is None:
+            continue
+        refs.update(artifact.supports)
+        if artifact.work_item_id:
+            refs.add(artifact.work_item_id)
+    return refs
+
+
+def _gate_is_clean_pass(gate: Any) -> bool:
+    return (
+        gate.north_star_verdict == "pass"
+        and gate.result_quality >= gate.thresholds.get("result_quality", 0.8)
+        and not gate.hard_gate_failures
+    )
+
+
+def _gate_subject_stage_key(gate: Any) -> str:
+    return f"{gate.subject_ref}\x1f{gate.stage}"
+
+
+def _gate_subject_is_runtime_observation_followup(
+    control_plane: InMemoryControlPlane,
+    subject_ref: str,
+) -> bool:
+    work_item = control_plane.work_items.get(subject_ref)
+    if work_item is not None:
+        return _is_runtime_observation_followup(work_item)
+    lowered = subject_ref.lower()
+    return (
+        "-observation-" in lowered
+        or lowered.startswith("work-qi-")
+        or lowered.startswith("work-nuo-")
+    )
+
+
 def _acceptance_rework_loop_observations(
     control_plane: InMemoryControlPlane,
     mission_id: str,
 ) -> list[RuntimeObservationItem]:
     mission = control_plane.missions.get(mission_id)
-    if mission is None:
+    if mission is None or not mission.current_plan_version:
         return []
+    if mission.acceptance_ref:
+        review = control_plane.acceptance_reviews.get(mission.acceptance_ref)
+        if review is not None and review.decision == "accepted":
+            return []
+    current_plan_version = mission.current_plan_version
+    if "acceptance-rework" not in current_plan_version:
+        return []
+    current_chain_base = _acceptance_rework_chain_base(current_plan_version)
+
+    def same_active_chain(plan_version: str | None) -> bool:
+        return bool(
+            plan_version
+            and (
+                plan_version == current_plan_version
+                or (
+                    "acceptance-rework" in plan_version
+                    and _acceptance_rework_chain_base(plan_version) == current_chain_base
+                )
+            )
+        )
+
     pressure_gates = [
         gate
         for gate in control_plane.gate_evaluations.values()
         if gate.mission_id == mission_id
+        and same_active_chain(gate.task_plan_version)
         and gate.governance_signal == "open_acceptance_requires_continued_product_pressure"
     ]
+    mission_director_blocks = [
+        gate
+        for gate in control_plane.gate_evaluations.values()
+        if gate.mission_id == mission_id
+        and same_active_chain(gate.task_plan_version)
+        and "gate_pass_not_product_done" in gate.hard_gate_failures
+    ]
+    delivery_passes = [
+        gate
+        for gate in control_plane.gate_evaluations.values()
+        if gate.mission_id == mission_id
+        and same_active_chain(gate.task_plan_version)
+        and gate.stage == "delivery"
+        and gate.next_action == "ready_to_deliver"
+    ]
+    current_delivery_item_ids = {
+        item.work_item_id
+        for item in control_plane.work_items.values()
+        if item.mission_id == mission_id
+        and item.task_plan_version == current_plan_version
+        and item.status != "cancelled"
+        and (
+            item.type == "merge"
+            or "final-delivery" in item.work_item_id
+            or "final_delivery" in item.work_item_id
+            or "final delivery" in item.expected_output.lower()
+        )
+    }
+    current_delivery_candidate_passes = [
+        gate
+        for gate in control_plane.gate_evaluations.values()
+        if gate.mission_id == mission_id
+        and same_active_chain(gate.task_plan_version)
+        and gate.subject_ref in current_delivery_item_ids
+        and gate.north_star_verdict == "pass"
+        and not gate.hard_gate_failures
+    ]
+    active_rework_statuses = {"queued", "running", "blocked", "retrying", "partial", "failed"}
     rework_versions = {
         item.task_plan_version
         for item in control_plane.work_items.values()
-        if item.mission_id == mission_id and "acceptance-rework" in item.task_plan_version
+        if item.mission_id == mission_id
+        and item.status in active_rework_statuses
+        and same_active_chain(item.task_plan_version)
+        and "acceptance-rework" in item.task_plan_version
     }
-    if len(pressure_gates) < 2 and len(rework_versions) < 2:
+    historical_rework_versions = {
+        item.task_plan_version
+        for item in control_plane.work_items.values()
+        if item.mission_id == mission_id
+        and item.status != "cancelled"
+        and same_active_chain(item.task_plan_version)
+        and "acceptance-rework" in item.task_plan_version
+    }
+    repeated_pressure = len(pressure_gates) >= 2 or len(rework_versions) >= 2
+    repeated_delivery_rejection = len(delivery_passes) >= 2 and len(mission_director_blocks) >= 2
+    old_loop_with_current_delivery_candidate = (
+        len(current_delivery_candidate_passes) >= 1 and len(historical_rework_versions) >= 2
+    )
+    if (
+        not repeated_pressure
+        and not repeated_delivery_rejection
+        and not old_loop_with_current_delivery_candidate
+    ):
         return []
     refs = [
         gate.gate_evaluation_id
         for gate in sorted(pressure_gates, key=lambda gate: gate.gate_evaluation_id)
     ]
+    refs.extend(
+        gate.gate_evaluation_id
+        for gate in sorted(mission_director_blocks, key=lambda gate: gate.gate_evaluation_id)
+    )
+    refs.extend(
+        gate.gate_evaluation_id
+        for gate in sorted(delivery_passes, key=lambda gate: gate.gate_evaluation_id)
+    )
+    refs.extend(
+        gate.gate_evaluation_id
+        for gate in sorted(
+            current_delivery_candidate_passes, key=lambda gate: gate.gate_evaluation_id
+        )
+    )
+    refs.extend(sorted(historical_rework_versions))
     refs.extend(sorted(rework_versions))
     return [
         RuntimeObservationItem(
@@ -337,12 +706,19 @@ def _acceptance_rework_loop_observations(
             why_watch="同一任务反复从交付态被压回返工，说明门禁可能只驱动流程重跑，没有证明产品体验有新的有效增量。",
             recommended_action=(
                 "Qi 必须重新审查策略并提出更优路径；Nuo 检查是否是门禁/状态污染；"
-                "外部监督只确认真实产品变化和玩家体感，不接受单纯测试重复通过。"
+                "外部监督只确认真实产品变化和目标用户体感，不接受单纯测试重复通过。"
             ),
             routes=["qi", "nuo", "external_supervisor"],
-            evidence_refs=refs,
+            evidence_refs=_cap_observation_refs(refs),
         )
     ]
+
+
+def _acceptance_rework_chain_base(plan_version: str) -> str:
+    marker = "-acceptance-rework-"
+    if marker not in plan_version:
+        return plan_version
+    return plan_version.split(marker, 1)[0]
 
 
 def _delivery_observations(
@@ -371,7 +747,7 @@ def _delivery_observations(
                     why_watch="后续计划已经覆盖旧阻断，但旧 queued/blocked/failed 项继续留在活跃状态会污染驾驶舱和监督判断。",
                     recommended_action="Control Plane 应自动取消被当前计划覆盖的旧工作项，并留下 superseded cleanup 证据。",
                     routes=["control_plane", "qi", "external_supervisor"],
-                    evidence_refs=stale_items,
+                    evidence_refs=_cap_observation_refs(stale_items),
                 )
             ]
     if work_items and all(item.status in {"done", "partial"} for item in work_items):
@@ -395,7 +771,7 @@ def _delivery_observations(
                     why_watch="这会把执行结果留在工程日志里，用户仍拿不到可验收交付包。",
                     recommended_action="让 runner finalize mission，生成 delivery manifest 和最终 gate。",
                     routes=["kun", "control_plane", "external_supervisor"],
-                    evidence_refs=[item.work_item_id for item in work_items],
+                    evidence_refs=_cap_observation_refs([item.work_item_id for item in work_items]),
                 )
             ]
     if (
@@ -421,11 +797,15 @@ def _delivery_observations(
             and manifest.kind == "delivery"
             and manifest.supports_delivery
         ]
+        latest_delivery_manifest_ref = (
+            delivery_manifest_refs[-1] if delivery_manifest_refs else None
+        )
         acceptance_ticket_open = any(
             ticket.mission_id == mission_id
             and ticket.type in {"review", "user_decision", "approval"}
             and ticket.status in {"open", "waiting"}
-            and (ticket.context_ref in delivery_manifest_refs or "acceptance" in ticket.ticket_id)
+            and latest_delivery_manifest_ref is not None
+            and ticket.context_ref == latest_delivery_manifest_ref
             for ticket in control_plane.collaboration_tickets.values()
         )
         if delivery_manifest_refs and not acceptance_ticket_open:
@@ -437,7 +817,7 @@ def _delivery_observations(
                     why_watch="产品体验好不好不能只靠内部门禁；进入交付态后必须主动请求人类或目标用户验收。",
                     recommended_action="自动打开 acceptance/review ticket，注明交付物、验收问题、超时和恢复策略。",
                     routes=["human", "control_plane", "external_supervisor"],
-                    evidence_refs=delivery_manifest_refs,
+                    evidence_refs=_cap_observation_refs(delivery_manifest_refs),
                 )
             ]
     return []

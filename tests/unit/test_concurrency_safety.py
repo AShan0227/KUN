@@ -44,6 +44,21 @@ def test_derive_resource_intents_marks_side_effect_tools_as_write() -> None:
 
 
 @pytest.mark.unit
+def test_path_only_constraint_is_read_for_review_tasks() -> None:
+    spec = TaskSpec(
+        goal_detail="Audit files in an isolated workspace and report findings.",
+        required_tools=["file_read"],
+        constraints=[Constraint(kind="path_only", detail="/tmp/isolated-workspace")],
+    )
+
+    intents = derive_resource_intents(_task(spec=spec, text="审核隔离工作区并输出方案"))
+    by_resource = {intent.resource: intent for intent in intents}
+
+    assert by_resource["path:tmp-isolated-workspace"].mode == "read"
+    assert by_resource["project:proj-main"].mode == "read"
+
+
+@pytest.mark.unit
 def test_pending_actions_for_requires_approval_for_external_side_effects() -> None:
     spec = TaskSpec(
         goal_detail="发布公告并发送邮件",

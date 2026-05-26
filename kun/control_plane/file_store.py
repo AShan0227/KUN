@@ -52,12 +52,17 @@ class FileControlPlaneStore:
         self._lock_path = self._path.with_name(f"{self._path.name}.lock")
         self._lock = RLock()
         self._transaction_depth = 0
+        self._loaded_signature: tuple[str, int, int] | None = None
         self._init_buckets()
         self._load()
 
     @property
     def path(self) -> Path:
         return self._path
+
+    @property
+    def loaded_signature(self) -> tuple[str, int, int] | None:
+        return self._loaded_signature
 
     def put_mission(self, mission: Mission) -> Mission:
         return self._put_and_persist(self._missions, mission)
@@ -161,7 +166,7 @@ class FileControlPlaneStore:
         item = self._work_items.get(work_item_id)
         if item is None or item.lease != lease:
             return None
-        released = item.model_copy(update={"lease": None, "timeout": None})
+        released = item.model_copy(update={"lease": None, "heartbeat": None, "timeout": None})
         stored = self._work_items.put(released)
         self._persist_unlocked()
         return stored
@@ -353,6 +358,7 @@ class FileControlPlaneStore:
     def _load_from_disk_locked(self) -> None:
         self._init_buckets()
         if not self._path.exists():
+            self._loaded_signature = self._current_file_signature()
             return
 
         payload = json.loads(self._path.read_text(encoding="utf-8"))
@@ -401,6 +407,7 @@ class FileControlPlaneStore:
             self._capability_profiles,
             payload,
         )
+        self._loaded_signature = self._current_file_signature()
 
     def _load_bucket[RecordT: BaseModel](
         self,
@@ -428,10 +435,11 @@ class FileControlPlaneStore:
         record: RecordT,
     ) -> RecordT:
         with self._lock:
+            bucket_name = self._bucket_name_or_record(bucket, record)
+            active_bucket = getattr(self, bucket_name)
             if self._transaction_depth:
-                stored = bucket.put(record)
+                stored = active_bucket.put(record)
                 return stored
-            bucket_name = self._bucket_name(bucket)
             with self._interprocess_locked():
                 self._load_from_disk_locked()
                 active_bucket = getattr(self, bucket_name)
@@ -461,9 +469,17 @@ class FileControlPlaneStore:
                 os.fsync(temp_file.fileno())
             os.replace(temp_path, self._path)
             self._fsync_parent_dir()
+            self._loaded_signature = self._current_file_signature()
         except Exception:
             temp_path.unlink(missing_ok=True)
             raise
+
+    def _current_file_signature(self) -> tuple[str, int, int] | None:
+        try:
+            stat = self._path.stat()
+        except OSError:
+            return (str(self._path), -1, -1)
+        return (str(self._path), stat.st_mtime_ns, stat.st_size)
 
     def _bucket_name(self, bucket: _RecordBucket[Any]) -> str:
         for name in (
@@ -484,6 +500,48 @@ class FileControlPlaneStore:
             if getattr(self, name) is bucket:
                 return name
         raise ValueError("unknown control-plane store bucket")
+
+    def _bucket_name_or_record(self, bucket: _RecordBucket[Any], record: BaseModel) -> str:
+        """Resolve a bucket even if another thread refreshed bucket objects.
+
+        Public put methods fetch ``self._run_records``/etc. before entering the
+        store lock.  A concurrent writer can reload the JSON snapshot and
+        replace all bucket objects in that tiny window.  In that case identity
+        lookup sees a stale bucket object; the record type is still enough to
+        route the write to the current live bucket.
+        """
+
+        try:
+            return self._bucket_name(bucket)
+        except ValueError:
+            pass
+        if isinstance(record, Mission):
+            return "_missions"
+        if isinstance(record, TaskPlan):
+            return "_task_plans"
+        if isinstance(record, ExecutionContract):
+            return "_execution_contracts"
+        if isinstance(record, WorkingContext):
+            return "_working_contexts"
+        if isinstance(record, WorkItem):
+            return "_work_items"
+        if isinstance(record, RunRecord):
+            return "_run_records"
+        if isinstance(record, ArtifactRecord):
+            return "_artifact_records"
+        if isinstance(record, ArtifactManifest):
+            return "_artifact_manifests"
+        if isinstance(record, LedgerEvent):
+            return "_ledger_events"
+        if isinstance(record, GateEvaluation):
+            return "_gate_evaluations"
+        if isinstance(record, CollaborationTicket):
+            return "_collaboration_tickets"
+        if isinstance(record, AcceptanceReview):
+            return "_acceptance_reviews"
+        if isinstance(record, CapabilityProfile):
+            return "_capability_profiles"
+        raise ValueError("unknown control-plane store record type")
 
     @contextmanager
     def _interprocess_locked(self):

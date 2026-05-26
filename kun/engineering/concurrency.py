@@ -284,21 +284,22 @@ async def scan_pre_conflicts(
 def derive_resource_intents(task_ref: TaskRef) -> list[ResourceIntent]:
     """Derive conservative resource intents from TASK.md L1/L2."""
     intents: dict[str, ResourceIntent] = {}
+    has_side_effect = _task_has_side_effect(task_ref)
 
     if task_ref.meta.owner.project_id:
         _put_intent(
             intents,
             ResourceIntent(
                 resource=f"project:{_normalize(task_ref.meta.owner.project_id)}",
-                mode="write" if _task_has_side_effect(task_ref) else "read",
+                mode="write" if has_side_effect else "read",
                 reason="task owner project",
             ),
         )
 
     if task_ref.spec is not None:
-        _add_spec_intents(intents, task_ref.spec)
+        _add_spec_intents(intents, task_ref.spec, has_side_effect=has_side_effect)
 
-    if _task_has_side_effect(task_ref):
+    if has_side_effect:
         root = task_ref.meta.task_type.split(".", 1)[0]
         _put_intent(
             intents,
@@ -394,7 +395,7 @@ def _derive_resource_intents_from_task_row(row: TaskRow) -> list[ResourceIntent]
             ),
         )
     if spec:
-        _add_spec_dict_intents(intents, spec)
+        _add_spec_dict_intents(intents, spec, has_side_effect=has_side_effect)
     if has_side_effect:
         root = row.task_type.split(".", 1)[0]
         _put_intent(
@@ -408,7 +409,12 @@ def _derive_resource_intents_from_task_row(row: TaskRow) -> list[ResourceIntent]
     return list(intents.values())
 
 
-def _add_spec_intents(intents: dict[str, ResourceIntent], spec: TaskSpec) -> None:
+def _add_spec_intents(
+    intents: dict[str, ResourceIntent],
+    spec: TaskSpec,
+    *,
+    has_side_effect: bool,
+) -> None:
     _add_tool_intents(intents, spec.required_tools)
     _add_external_resource_intents(intents, spec.external_resources)
     for constraint in spec.constraints:
@@ -417,13 +423,18 @@ def _add_spec_intents(intents: dict[str, ResourceIntent], spec: TaskSpec) -> Non
                 intents,
                 ResourceIntent(
                     resource=f"path:{_normalize(constraint.detail)}",
-                    mode="write",
+                    mode="write" if has_side_effect else "read",
                     reason="path_only constraint",
                 ),
             )
 
 
-def _add_spec_dict_intents(intents: dict[str, ResourceIntent], spec: dict[str, Any]) -> None:
+def _add_spec_dict_intents(
+    intents: dict[str, ResourceIntent],
+    spec: dict[str, Any],
+    *,
+    has_side_effect: bool,
+) -> None:
     _add_tool_intents(intents, [str(item) for item in spec.get("required_tools") or []])
     _add_external_resource_intents(
         intents,
@@ -437,7 +448,7 @@ def _add_spec_dict_intents(intents: dict[str, ResourceIntent], spec: dict[str, A
                 intents,
                 ResourceIntent(
                     resource=f"path:{_normalize(str(raw_constraint.get('detail', 'unknown')))}",
-                    mode="write",
+                    mode="write" if has_side_effect else "read",
                     reason="path_only constraint",
                 ),
             )

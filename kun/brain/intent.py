@@ -8,6 +8,7 @@ Output format constrained by Pydantic schema via structured prompt.
 
 from __future__ import annotations
 
+import json
 from typing import Any, cast
 
 from kun.core.logging import get_logger
@@ -48,7 +49,20 @@ _SYSTEM_PROMPT = """你是 KUN 的意图理解层. 用户发来自然语言任�
 - 宁可保守估 cost / duration (不高估用户信任度)
 - 不确定就选 low complexity / medium risk
 - task_type 从已知 taxonomy 里匹配最接近的, 实在找不到用 "general.*"
+- constraints.kind 只能是 no_external_paid_api / path_only / budget_cap / no_irreversible / custom.
+- 如果约束是 workspace、branch、port、sandbox、review gate 等自定义约束, kind 必须用 custom, 原始类别写进 detail.
 """
+
+
+_ALLOWED_CONSTRAINT_KINDS = {
+    "no_external_paid_api",
+    "path_only",
+    "budget_cap",
+    "no_irreversible",
+    "custom",
+}
+
+_CONSTRAINT_DETAIL_KEYS = ("detail", "description", "text", "value", "reason")
 
 
 class IntentInterpreter:
@@ -106,7 +120,7 @@ class IntentInterpreter:
                 required_skills=parsed.get("required_skills", []),
                 required_tools=parsed.get("required_tools", []),
                 external_resources=parsed.get("external_resources", []),
-                constraints=parsed.get("constraints", []),
+                constraints=self._normalize_constraints(parsed.get("constraints", [])),
                 foreseen_risks=parsed.get("foreseen_risks", []),
                 fallback_plan=parsed.get("fallback_plan"),
             )
@@ -118,6 +132,53 @@ class IntentInterpreter:
             risk=meta.risk_level,
         )
         return TaskRef(meta=meta, spec=spec)
+
+    @staticmethod
+    def _normalize_constraints(raw_constraints: Any) -> list[dict[str, str]]:
+        """Preserve model-proposed constraints while fitting the TASK.md schema.
+
+        Models often invent useful domain labels such as ``workspace_isolation``
+        or ``review_gate``.  Those labels are semantically valuable but are not
+        legal ``Constraint.kind`` values, so keep them in ``detail`` and store
+        the constraint as ``custom`` instead of rejecting the whole task.
+        """
+        if raw_constraints is None:
+            return []
+        if not isinstance(raw_constraints, list):
+            raw_constraints = [raw_constraints]
+
+        normalized: list[dict[str, str]] = []
+        for raw in raw_constraints:
+            if isinstance(raw, str):
+                detail = raw.strip()
+                if detail:
+                    normalized.append({"kind": "custom", "detail": detail})
+                continue
+
+            if not isinstance(raw, dict):
+                detail = str(raw).strip()
+                if detail:
+                    normalized.append({"kind": "custom", "detail": detail})
+                continue
+
+            raw_kind = str(raw.get("kind") or "custom").strip()
+            kind = raw_kind if raw_kind in _ALLOWED_CONSTRAINT_KINDS else "custom"
+            detail = ""
+            for key in _CONSTRAINT_DETAIL_KEYS:
+                value = raw.get(key)
+                if value is not None and str(value).strip():
+                    detail = str(value).strip()
+                    break
+            if not detail:
+                extra = {k: v for k, v in raw.items() if k != "kind"}
+                detail = (
+                    json.dumps(extra, ensure_ascii=False, sort_keys=True) if extra else raw_kind
+                )
+            if kind == "custom" and raw_kind not in _ALLOWED_CONSTRAINT_KINDS:
+                detail = f"{raw_kind}: {detail}"
+            normalized.append({"kind": kind, "detail": detail})
+
+        return normalized
 
     @staticmethod
     def _parse_json(text: str) -> dict[str, Any]:

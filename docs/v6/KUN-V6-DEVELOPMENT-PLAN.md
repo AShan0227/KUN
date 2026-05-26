@@ -33,6 +33,7 @@
 | 子系统 | 长期职责 | 不做什么 |
 | --- | --- | --- |
 | Control Plane | 任务主线、队列、权限、状态机、账本、进程监督、门禁、回滚、进度报告 | 不承担具体 AB 评分，不直接生成能力候选 |
+| Mission Director | 任务级交付监督、北极星对齐、信息完整性、拆解和 worker 分配审查、最终验收阻断 | 不替代启/傩，不直接写业务产物，不把自评分或门禁通过当最终完成 |
 | 启 Qi | AB 执行、Frontier50 round、互评、报告、gap、同题复测、replay、holdout、shadow、canary、外部项目经验吸收 | 不绕过 Control Plane 自己推进生产变更 |
 | 傩 Nuo | stub/fallback/误路由/timeout/EOF/wrapper/report/review 缺失检测，健康诊断，污染结论，风险治理 | 不当执行器，不把污染误算成 agent 能力失败 |
 | KUN Runtime | 使用通过验证的能力完成真实任务，产出交付物、证据、测试、评审 | 不在用户任务执行路径自改默认能力、runner 行为或生产配置 |
@@ -91,6 +92,7 @@
 - 每个 work item 执行前必须运行受限预执行层：绑定 production capability、skill、workspace、checkpoint、rollback、外部信息信号和启/傩反馈通道。
 - 预执行 skill 失败必须生成可审计 artifact；如果启/傩 runner 可用，必须自动创建 Qi/Nuo follow-up work item，不得静默忽略，也不得直接算作 KUN 能力失败。
 - daemon 默认必须注册 Qi runtime governance runner 和 Nuo runtime repair runner，确保预执行、运行时门禁和傩诊断生成的 Qi/Nuo follow-up work item 可以被后台服务自动执行，而不是只停留在待办列表。
+- daemon 默认必须注册 Mission Director runner。Mission Director 是可单独配置模型/provider/档位的任务级监督角色，必须审查任务目标、信息缺口、拆解、worker 分配、证据、验收和“测试通过是否被误判为产品完成”；发现问题时必须生成 review artifact 和 GateEvaluation，并触发 needs_info、needs_human 或 needs_plan_change。它的 work item 优先级必须高于普通业务执行、最终交付和自动返工，避免监督被后续开发或 delivery work 抢跑。
 - planning/info_gap 任务如果存在 `TaskPlan.info_gaps`，daemon 必须自动生成协同票据并转入 waiting_human，不能先执行任务方案，也不能只靠 API 抛错。
 - 本地测试类预执行必须绑定明确 workspace，禁止在没有工作区边界时误跑当前仓库。
 - shell、Python 等执行型 skill 必须默认限制在配置的执行根目录内，拒绝越界 cwd，并把 sandbox root、实际 cwd、sandbox_enforced 写入运行元数据；它是默认工作区隔离，不替代容器级隔离。
@@ -128,6 +130,7 @@
 - 用户无需手动盯终端或手动重跑同一任务。
 - 普通真实任务 work item 能通过默认 KUN runtime runner 执行，产出 artifact，并在完成后形成 delivery manifest。
 - Qi/Nuo follow-up 在默认 daemon 路由下能自动执行，并生成治理/修复 artifact。
+- Mission Director 在默认 daemon 路由下能自动执行；产品类任务缺少真实玩家体感证据、人工/目标用户验收或完整任务拆解时，不能进入最终完成状态，必须被推回计划变更、继续迭代或人机协同。即使同一 tick 同时生成自动返工项，`max_work_items=1` 时也必须先运行 Mission Director。
 - 信息缺口能自动变成用户可理解的协同票据。
 - workspace 快照能在测试中真实恢复文件内容并移除快照后新增文件。
 - Watchtower 规则能在 V6 gate 事件上触发，触发结果进入 daemon tick report。

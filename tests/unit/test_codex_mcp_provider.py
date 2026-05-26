@@ -91,3 +91,43 @@ def test_default_cwd_created():
     """Provider creates its sandbox cwd on init so first call doesn't race it."""
     p = CodexMcpProvider(tier="coding")
     assert os.path.isdir(p._cwd)
+
+
+@pytest.mark.unit
+def test_cwd_and_sandbox_env_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("KUN_CODEX_MCP_CWD", str(tmp_path))
+    monkeypatch.setenv("KUN_CODEX_MCP_SANDBOX", "workspace-write")
+
+    p = CodexMcpProvider(tier="coding")
+
+    assert p._cwd == str(tmp_path)
+    assert p._sandbox == "workspace-write"
+
+
+@pytest.mark.unit
+def test_explicit_sandbox_overrides_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("KUN_CODEX_MCP_CWD", str(tmp_path))
+    monkeypatch.setenv("KUN_CODEX_MCP_SANDBOX", "read-only")
+
+    p = CodexMcpProvider(tier="coding", sandbox="workspace-write")
+
+    assert p._cwd == str(tmp_path)
+    assert p._sandbox == "workspace-write"
+
+
+@pytest.mark.unit
+def test_stream_limit_env_override(monkeypatch):
+    monkeypatch.setenv("KUN_CODEX_MCP_STREAM_LIMIT_BYTES", "1048576")
+
+    p = CodexMcpProvider(tier="coding")
+
+    assert p._stream_limit == 1048576
+
+
+@pytest.mark.unit
+def test_stream_limit_invalid_env_uses_default(monkeypatch):
+    monkeypatch.setenv("KUN_CODEX_MCP_STREAM_LIMIT_BYTES", "not-a-number")
+
+    p = CodexMcpProvider(tier="coding")
+
+    assert p._stream_limit > 1048576

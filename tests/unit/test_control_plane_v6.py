@@ -165,6 +165,7 @@ def test_state_machine_blocks_illegal_jumps_and_terminal_transitions() -> None:
     assert_transition_allowed("intake", "info_gap")
     assert_transition_allowed("planning", "awaiting_approval")
     assert_transition_allowed("running", "info_gap")
+    assert_transition_allowed("info_gap", "changing_plan")
     with pytest.raises(ValueError, match="not allowed"):
         assert_transition_allowed("planning", "running")
     with pytest.raises(ValueError, match="terminal"):

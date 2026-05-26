@@ -351,6 +351,27 @@ def test_file_store_transaction_persists_related_records_in_one_snapshot(tmp_pat
     assert [item["work_item_id"] for item in payload["work_items"]] == ["work-msn-txn"]
 
 
+def test_file_store_routes_write_after_bucket_refresh(tmp_path: Path) -> None:
+    path = tmp_path / "control-plane.json"
+    store = FileControlPlaneStore(path)
+    store.put_mission(_mission("msn-refresh"))
+    store.put_work_item(_work_item("msn-refresh"))
+
+    stale_run_bucket = store._run_records
+    stale_item_bucket = store._work_items
+    store.reload()
+
+    run = _run_record("work-msn-refresh", "run-after-refresh")
+    item = _work_item("msn-refresh", work_item_id="work-after-refresh")
+
+    assert store._put_and_persist(stale_run_bucket, run) == run
+    assert store._put_and_persist(stale_item_bucket, item) == item
+
+    rebuilt = FileControlPlaneStore(path)
+    assert rebuilt.get_run_record("run-after-refresh") == run
+    assert rebuilt.get_work_item("work-after-refresh") == item
+
+
 def test_file_store_ignores_unknown_fields_from_older_snapshots(tmp_path: Path) -> None:
     path = tmp_path / "control-plane.json"
     store = _store(path)

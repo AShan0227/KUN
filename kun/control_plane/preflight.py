@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -85,7 +86,7 @@ def _planned_skill_runs(
 ) -> list[tuple[str, dict[str, Any]]]:
     _autoload_skills()
     mission = control_plane.missions[work_item.mission_id]
-    plan = control_plane.task_plans.get(mission.current_plan_version or "")
+    plan = _task_plan_for_mission(control_plane=control_plane, mission=mission)
     contract = control_plane.contracts.get(mission.execution_contract_ref or "")
     workspace = _workspace_path(work_item.workspace_ref) or _workspace_path_from_contract(contract)
     text = _work_item_text(mission.objective, plan, work_item)
@@ -139,7 +140,7 @@ def _planned_skill_runs(
             (
                 "shell-exec",
                 {
-                    "command": ".venv/bin/python -m pytest -q",
+                    "command": _pytest_preflight_command(text=text, workspace=workspace),
                     "cwd": workspace,
                     "timeout_sec": 120,
                 },
@@ -147,6 +148,27 @@ def _planned_skill_runs(
         )
 
     return _dedupe_runs(runs)
+
+
+def _task_plan_for_mission(*, control_plane: InMemoryControlPlane, mission: Any) -> TaskPlan | None:
+    if mission.current_plan_version:
+        direct = control_plane.task_plans.get(mission.current_plan_version)
+        if direct is not None:
+            return direct
+        for plan in control_plane.task_plans.values():
+            if (
+                plan.mission_id == mission.mission_id
+                and plan.version == mission.current_plan_version
+            ):
+                return plan
+    return next(
+        (
+            plan
+            for plan in control_plane.task_plans.values()
+            if plan.mission_id == mission.mission_id
+        ),
+        None,
+    )
 
 
 def _run_skill(
@@ -299,10 +321,10 @@ def _work_item_text(objective: str, plan: TaskPlan | None, work_item: WorkItem) 
     if plan is not None:
         parts.extend(
             [
-                " ".join(plan.evidence_plan),
-                " ".join(plan.decomposition),
-                " ".join(plan.test_plan),
-                " ".join(plan.constraints),
+                *plan.evidence_plan,
+                *plan.decomposition,
+                *plan.test_plan,
+                *plan.constraints,
             ]
         )
     return "\n".join(part for part in parts if part)
@@ -350,11 +372,64 @@ def _should_inspect_workspace(work_item: WorkItem, text: str) -> bool:
 
 def _should_run_pytest(work_item: WorkItem, text: str, workspace: str) -> bool:
     lowered = text.lower()
-    if "pytest" in lowered:
-        return True
-    if work_item.type not in {"test", "retest"}:
+    return "pytest" in lowered and _first_explicit_pytest_command(text) is not None
+
+
+def _pytest_preflight_command(*, text: str, workspace: str) -> str:
+    explicit = _first_explicit_pytest_command(text)
+    if explicit:
+        return _normalize_pytest_command(explicit, workspace=workspace)
+    python = ".venv/bin/python" if (Path(workspace) / ".venv/bin/python").exists() else "python"
+    return f"{python} -m pytest -q"
+
+
+def _first_explicit_pytest_command(text: str) -> str | None:
+    for raw_line in text.splitlines():
+        line = raw_line.strip().strip("`")
+        line = re.sub(r"^(?:[-*]|\d+[.)])\s*", "", line).strip().strip("`")
+        if "pytest" not in line:
+            continue
+        if any(token in line for token in (";", "&&", "||", "|", ">", "<", "$(", "`")):
+            continue
+        try:
+            parts = shlex.split(line)
+        except ValueError:
+            continue
+        if _is_supported_pytest_invocation(parts):
+            return shlex.join(parts)
+    return None
+
+
+def _is_supported_pytest_invocation(parts: list[str]) -> bool:
+    if not parts:
         return False
-    return _workspace_looks_like_python_test_project(workspace)
+    if parts[:3] == ["uv", "run", "pytest"]:
+        return True
+    if parts[:5] == ["uv", "run", "python", "-m", "pytest"]:
+        return True
+    if parts[:3] == ["python", "-m", "pytest"]:
+        return True
+    if parts[0] == "pytest":
+        return True
+    return len(parts) >= 3 and parts[0].endswith("/python") and parts[1:3] == ["-m", "pytest"]
+
+
+def _normalize_pytest_command(command: str, *, workspace: str) -> str:
+    parts = shlex.split(command)
+    if parts[:3] == ["uv", "run", "pytest"]:
+        args = parts[3:]
+    elif parts[:5] == ["uv", "run", "python", "-m", "pytest"]:
+        args = parts[5:]
+    elif parts[:3] == ["python", "-m", "pytest"]:
+        args = parts[3:]
+    elif parts and parts[0] == "pytest":
+        args = parts[1:]
+    elif len(parts) >= 3 and parts[0].endswith("/python") and parts[1:3] == ["-m", "pytest"]:
+        args = parts[3:]
+    else:
+        return command
+    python = ".venv/bin/python" if (Path(workspace) / ".venv/bin/python").exists() else "python"
+    return shlex.join([python, "-m", "pytest", *args])
 
 
 def _workspace_looks_like_python_test_project(workspace: str) -> bool:

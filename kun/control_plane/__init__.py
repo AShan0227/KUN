@@ -28,6 +28,7 @@ from kun.control_plane.capability_execution import (
     CapabilityExecutionDirective,
     CapabilityExecutionPolicy,
     build_capability_execution_policy,
+    ensure_policy_covers_required_capabilities,
 )
 from kun.control_plane.capability_governance import (
     CapabilityGovernanceDecision,
@@ -142,6 +143,11 @@ from kun.control_plane.game_production import (
     GameProductionSpec,
 )
 from kun.control_plane.kun_runtime_runner import KunRuntimeTaskRunner, KunTaskExecutionOutput
+from kun.control_plane.mission_director import (
+    MISSION_DIRECTOR_OWNER,
+    MissionDirectorModelConfig,
+    MissionDirectorRunner,
+)
 from kun.control_plane.nuo import (
     Finding,
     HealthReport,
@@ -214,6 +220,14 @@ from kun.control_plane.qi_ab import (
     QiABRoundVerdict,
     build_qi_ab_round_contract,
     build_qi_ab_round_work_item,
+)
+from kun.control_plane.rainflow_ad_mission import (
+    RAINFLOW_AD_PRODUCTION_MODE,
+    RAINFLOW_DEFAULT_PORTS,
+    RainFlowAdMission,
+    build_rainflow_ad_mission,
+    build_rainflow_ad_mission_from_record,
+    discover_rainflow_mission_packages,
 )
 from kun.control_plane.runtime import (
     ControlPlaneProgressReport,
@@ -300,6 +314,9 @@ __all__ = [
     "KUN_EXTERNAL_SAMPLE_COMPARISON_RUNNER_OWNER",
     "KUN_GAME_DESIGN_RESEARCH_RUNNER_OWNER",
     "KUN_GAME_PRODUCTION_RUNNER_OWNER",
+    "MISSION_DIRECTOR_OWNER",
+    "RAINFLOW_AD_PRODUCTION_MODE",
+    "RAINFLOW_DEFAULT_PORTS",
     "AcceptanceDecision",
     "AcceptanceReview",
     "AdoptionMode",
@@ -397,6 +414,8 @@ __all__ = [
     "MinimalSupervisor",
     "Mission",
     "MissionDashboardCard",
+    "MissionDirectorModelConfig",
+    "MissionDirectorRunner",
     "MissionProgressTone",
     "MissionStatus",
     "NextAction",
@@ -426,6 +445,7 @@ __all__ = [
     "QiABRoundVerdict",
     "QiRuntimeGovernanceRunner",
     "QualityGateStatus",
+    "RainFlowAdMission",
     "RedisResourceLockStore",
     "ResearchSource",
     "ResourceLockAcquisition",
@@ -492,6 +512,8 @@ __all__ = [
     "build_productization_work_items",
     "build_qi_ab_round_contract",
     "build_qi_ab_round_work_item",
+    "build_rainflow_ad_mission",
+    "build_rainflow_ad_mission_from_record",
     "build_recovery_bundle",
     "build_runtime_observation_report",
     "build_task_cockpit_view",
@@ -504,8 +526,10 @@ __all__ = [
     "default_recovery_for_failure",
     "diagnose_nuo_health",
     "discover_external_behavior_source_paths",
+    "discover_rainflow_mission_packages",
     "distill_external_behavior_from_paths",
     "distill_external_behavior_signals",
+    "ensure_policy_covers_required_capabilities",
     "evaluate_v6_watchtower_event",
     "evaluate_v6_watchtower_event_sync",
     "govern_default_runtime_capabilities",

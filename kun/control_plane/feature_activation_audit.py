@@ -59,6 +59,7 @@ from kun.control_plane.game_production import (
     GameProductionRunner,
 )
 from kun.control_plane.kun_runtime_runner import KunRuntimeTaskRunner, KunTaskExecutionOutput
+from kun.control_plane.mission_director import MISSION_DIRECTOR_OWNER, MissionDirectorRunner
 from kun.control_plane.productization import (
     ProductizationDogfoodRunner,
     build_productization_dogfood_mission,
@@ -389,6 +390,152 @@ def _case_acceptance_collaboration_cleanup(root: Path, now: datetime) -> Feature
     )
 
 
+def _case_mission_director_delivery_supervision(root: Path, now: datetime) -> FeatureActivationCase:
+    control_plane = InMemoryControlPlane()
+    mission = Mission(
+        mission_id="msn-activation-mission-director",
+        owner="customer",
+        objective="Ship a final product only after real user experience evidence.",
+        task_type="product_development",
+        status="delivering",
+        current_plan_version="v1",
+        artifact_manifest_refs=["manifest-activation-director-delivery"],
+    )
+    plan = TaskPlan(
+        plan_id="plan-activation-mission-director",
+        mission_id=mission.mission_id,
+        version="v1",
+        objective=mission.objective,
+        acceptance_criteria=["human or target user accepts the final product"],
+        decomposition=["build", "test", "playtest", "accept"],
+        worker_plan=["kun builds", "mission-director supervises"],
+        test_plan=["internal", "player perception"],
+        approval_status="approved",
+    )
+    contract = ExecutionContract(
+        contract_id="contract-activation-mission-director",
+        mission_id=mission.mission_id,
+        task_plan_version=plan.version,
+        delivery_contract={
+            "final_player_experience_required": True,
+            "human_acceptance_required": True,
+        },
+    )
+    delivery_artifact = ArtifactRecord(
+        artifact_id="artifact-activation-director-delivery",
+        kind="answer",
+        path_or_uri="mem://activation/mission-director/delivery",
+        content_hash="hash-activation-director-delivery",
+        created_by="kun",
+        mission_id=mission.mission_id,
+        supports=["directly_playable_product"],
+    )
+    test_artifact = ArtifactRecord(
+        artifact_id="artifact-activation-director-internal-test",
+        kind="test_result",
+        path_or_uri="mem://activation/mission-director/internal-test",
+        content_hash="hash-activation-director-test",
+        created_by="kun",
+        mission_id=mission.mission_id,
+        supports=["internal_test_passed"],
+    )
+    manifest = ArtifactManifest(
+        manifest_id="manifest-activation-director-delivery",
+        mission_id=mission.mission_id,
+        kind="delivery",
+        artifact_refs=[delivery_artifact.artifact_id, test_artifact.artifact_id],
+        primary_artifact_ref=delivery_artifact.artifact_id,
+        evidence_refs=[test_artifact.artifact_id],
+        created_by="kun",
+        content_hash="hash-activation-director-manifest",
+        supports_delivery=True,
+    )
+    gate = GateEvaluation(
+        gate_evaluation_id="gate-activation-director-runner-pass",
+        mission_id=mission.mission_id,
+        task_plan_version=plan.version,
+        subject_ref="work-final-delivery",
+        stage="acceptance",
+        task_type="product_development",
+        rubric_version="activation-fixture",
+        metric_pack_version="activation-fixture",
+        north_star_verdict="pass",
+        result_quality=0.9,
+        speed=0.8,
+        cost=0.8,
+        risk=0.2,
+        evidence_quality=0.8,
+        collaboration_quality=0.8,
+        evidence_refs=[test_artifact.artifact_id],
+        artifact_refs=[delivery_artifact.artifact_id],
+        confidence=0.85,
+        next_action="ready_to_deliver",
+        next_state="delivering",
+        created_by="kun",
+    )
+    control_plane.missions[mission.mission_id] = mission
+    control_plane.task_plans[plan.plan_id] = plan
+    control_plane.contracts[contract.contract_id] = contract
+    control_plane.artifacts[delivery_artifact.artifact_id] = delivery_artifact
+    control_plane.artifacts[test_artifact.artifact_id] = test_artifact
+    control_plane.artifact_manifests[manifest.manifest_id] = manifest
+    control_plane.gate_evaluations[gate.gate_evaluation_id] = gate
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={
+            MISSION_DIRECTOR_OWNER: MissionDirectorRunner(control_plane=control_plane)
+        },
+        daemon_id="activation-mission-director",
+    )
+    report = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        now=now,
+        max_work_items=1,
+        write_progress=False,
+    )
+    director_artifacts = [
+        artifact.artifact_id
+        for artifact in control_plane.artifacts.values()
+        if "mission_director_review" in artifact.supports
+    ]
+    director_gates = [
+        gate.gate_evaluation_id
+        for gate in control_plane.gate_evaluations.values()
+        if gate.created_by == MISSION_DIRECTOR_OWNER
+    ]
+    ran_director = any(
+        work_item_id.startswith("work-mission-director-")
+        for work_item_id in report.ran_work_item_ids
+    )
+    activated = (
+        ran_director
+        and bool(director_artifacts)
+        and control_plane.missions[mission.mission_id].status in {"changing_plan", "waiting_human"}
+    )
+    return FeatureActivationCase(
+        feature_id="mission_director_delivery_supervision",
+        subsystem="mission_director",
+        trigger_condition=(
+            "A product mission is in delivery state with a passing runner gate but missing "
+            "real player/human acceptance evidence."
+        ),
+        dependencies=[
+            "MissionDirectorRunner",
+            "delivery manifest",
+            "acceptance gate",
+            "human/player perception evidence contract",
+        ],
+        activated=bool(activated),
+        evidence_refs=[*director_artifacts, *director_gates],
+        generated_work_item_ids=[*report.created_work_item_ids, *report.ran_work_item_ids],
+        trigger_status=control_plane.missions[mission.mission_id].status,
+        notes=[
+            "This proves Mission Director is activated by daemon scheduling and can outrank "
+            "ordinary delivery work in the fixture."
+        ],
+    )
+
+
 def _case_runtime_activation_preflight_snapshot(root: Path, now: datetime) -> FeatureActivationCase:
     workspace = root / "runtime-activation-workspace"
     workspace.mkdir(parents=True)
@@ -439,7 +586,7 @@ def _case_runtime_activation_preflight_snapshot(root: Path, now: datetime) -> Fe
 
 def _case_worker_pool_resource_lock(root: Path, now: datetime) -> FeatureActivationCase:
     lock_store = FileResourceLockStore(root / "worker-locks.json")
-    control_plane, _store, mission = _runtime(
+    control_plane, store, mission = _runtime(
         root / "worker-lock-runtime.json",
         mission_id="msn-activation-worker-lock",
         workspace=root / "worker-lock-workspace",
@@ -448,12 +595,28 @@ def _case_worker_pool_resource_lock(root: Path, now: datetime) -> FeatureActivat
         update={"resource_locks": ["workspace:activation-shared"]}
     )
     control_plane.work_items[item.work_item_id] = item
+    store.put_work_item(item)
+    holder_item = WorkItem(
+        work_item_id="work-msn-activation-worker-lock-holder",
+        mission_id=mission.mission_id,
+        task_plan_version="v1",
+        type="execution",
+        owner="kun",
+        status="running",
+        lease="external-holder",
+        heartbeat=now,
+        timeout=now + timedelta(minutes=10),
+        resource_locks=["workspace:activation-shared"],
+        expected_output="Hold the shared activation resource.",
+    )
+    control_plane.work_items[holder_item.work_item_id] = holder_item
+    store.put_work_item(holder_item)
     lock_store.acquire_many(
         resources=["workspace:activation-shared"],
         holder_id="external-holder",
         daemon_id="external-daemon",
         worker_id="external-worker",
-        work_item=item,
+        work_item=holder_item,
         now=now,
         ttl=timedelta(minutes=10),
     )
@@ -791,10 +954,18 @@ def _case_qi_nuo_observation_strategy_loop(root: Path, now: datetime) -> Feature
         mission_id="msn-activation-qi-nuo",
         workspace=root / "qi-nuo-workspace",
     )
+    mission = control_plane.missions[mission.mission_id].model_copy(
+        update={"task_type": "product_development"}
+    )
+    control_plane.missions[mission.mission_id] = mission
+    if control_plane.store is not None:
+        control_plane.store.put_mission(mission)
     failed = control_plane.work_items["work-msn-activation-qi-nuo"].model_copy(
         update={"status": "failed"}
     )
     control_plane.work_items[failed.work_item_id] = failed
+    if control_plane.store is not None:
+        control_plane.store.put_work_item(failed)
     control_plane.transition_mission(
         mission_id=mission.mission_id,
         target="running",
@@ -808,6 +979,12 @@ def _case_qi_nuo_observation_strategy_loop(root: Path, now: datetime) -> Feature
         runners_by_owner=_default_owner_runners(control_plane),
         daemon_id="activation-qi-nuo",
         worker_pool=WorkerPoolConfig(worker_count=3),
+    )
+    observation_tick = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        max_work_items=0,
+        write_progress=True,
+        now=now,
     )
     loop = daemon.run_loop(
         mission_ids=[mission.mission_id],
@@ -845,9 +1022,13 @@ def _case_qi_nuo_observation_strategy_loop(root: Path, now: datetime) -> Feature
             or "strategy_optimization_plan" in artifact.supports
         ],
         generated_work_item_ids=[
-            wid
-            for tick in loop.tick_reports
-            for wid in [*tick.created_work_item_ids, *tick.ran_work_item_ids]
+            *observation_tick.created_work_item_ids,
+            *observation_tick.observation_followup_ids,
+            *[
+                wid
+                for tick in loop.tick_reports
+                for wid in [*tick.created_work_item_ids, *tick.ran_work_item_ids]
+            ],
         ],
         trigger_status=control_plane.missions[mission.mission_id].status,
         notes=[
@@ -859,27 +1040,39 @@ def _case_qi_nuo_observation_strategy_loop(root: Path, now: datetime) -> Feature
 def _case_runtime_observation_hardening(root: Path, now: datetime) -> FeatureActivationCase:
     control_plane, _store, mission = _runtime(
         root / "runtime-observation-hardening.json",
-        mission_id="msn-activation-runtime-observation-hardening",
+        mission_id="msn-activation-runtime-hardening",
         workspace=root / "runtime-observation-hardening-workspace",
     )
-    work_item = control_plane.work_items[
-        "work-msn-activation-runtime-observation-hardening"
-    ].model_copy(
+    rework_plan_version = "runtime-observation-v1-acceptance-rework-22222222"
+    mission = mission.model_copy(
+        update={
+            "status": "awaiting_acceptance",
+            "current_plan_version": rework_plan_version,
+        }
+    )
+    control_plane.missions[mission.mission_id] = mission
+    work_item = control_plane.work_items["work-msn-activation-runtime-hardening"].model_copy(
         update={
             "status": "done",
+            "task_plan_version": rework_plan_version,
             "required_capability_refs": ["cap-observation-required"],
             "expected_output": "Capability must produce a behavior receipt.",
         }
     )
     control_plane.work_items[work_item.work_item_id] = work_item
-    for index in range(2):
+    for index, plan_version in enumerate(
+        [
+            "runtime-observation-v1-acceptance-rework-11111111",
+            rework_plan_version,
+        ]
+    ):
         gate = GateEvaluation(
             gate_evaluation_id=f"gate-observation-pressure-{index}",
             mission_id=mission.mission_id,
-            task_plan_version=f"v1-acceptance-rework-{index}",
+            task_plan_version=plan_version,
             subject_ref=f"ticket-observation-acceptance-{index}",
             stage="delivery",
-            task_type="self_improvement",
+            task_type=mission.task_type,
             rubric_version="kun-runtime-observation-hardening-v1",
             metric_pack_version="north-star-v6",
             north_star_verdict="partial",
@@ -1663,6 +1856,7 @@ def _case_productization_dogfood_runner(root: Path, now: datetime) -> FeatureAct
 _CASE_FUNCTIONS: list[Callable[[Path, datetime], FeatureActivationCase]] = [
     _case_info_gap_collaboration,
     _case_acceptance_collaboration_cleanup,
+    _case_mission_director_delivery_supervision,
     _case_runtime_activation_preflight_snapshot,
     _case_worker_pool_resource_lock,
     _case_parallel_worker_pool_isolated_execution,
