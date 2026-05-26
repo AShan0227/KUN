@@ -1,0 +1,130 @@
+topic: engineering_hints_not_constraints
+title: Hint 字段而非 Constraint — 让 downstream 自决, 不绑死决策
+description: |
+  跨 agent 信息流动时, 上游 (e.g. Supervisor + RCDH) 计算出"建议"信息
+  传给下游 (e.g. Strategist), 应该用 **hint 字段** 而不是 **constraint
+  字段**:
+
+    Hint  = "我建议你考虑 X" → downstream 可参考可忽略
+    Constraint = "你必须做 X" → downstream 别无选择
+
+  为什么 hint 更好:
+    1. **downstream 可能有更精确判断** (e.g. 已训练好的 candidate generator)
+    2. **降低耦合** — 上游算法升级不强制下游同步
+    3. **保留 audit** — hint 进 log + evidence, 让 review 可追溯"为什么没 follow"
+    4. **测试简化** — 测 hint 输出值即可, 不需要 mock 整个 downstream chain
+
+trigger:
+  conditions:
+    - 上游算法计算"建议"传给下游 (cross-agent / cross-module)
+    - 下游有自己的决策逻辑可能与建议不同
+    - 系统需要 audit / debug 决策路径
+
+action:
+  pattern:
+    - rule: 字段命名带 _hint / _suggested / _recommended 前缀
+      do: |
+        # Good:
+        request["target_level_hint"] = 1
+        request["explorer_mode_hint"] = "conservative"
+        request["recommended_action"] = "activate"
+
+        # Bad:
+        request["target_level"] = 1  # downstream 必须用这个值
+        request["explorer_mode"] = "conservative"
+      why: |
+        命名告诉 downstream "这是建议不是强制", 避免误解.
+    - rule: 不 mutate input dict
+      do: |
+        # Good (pure function):
+        def enrich(request, diagnostic):
+            new = dict(request)
+            if diagnostic:
+                new["target_level_hint"] = ...
+            return new
+
+        # Bad (in-place mutation):
+        def enrich(request, diagnostic):
+            request["target_level_hint"] = ...
+      why: |
+        caller 可同时持有 raw request (log 用) 和 enriched request
+        (downstream 喂). pure function 让逻辑可单测.
+    - rule: hint 缺失时 downstream 有 fallback
+      do: |
+        target_level = candidate.target_level  # 已有逻辑算出
+        hint = request.get("target_level_hint")
+        if hint is not None and ...:  # 满足 follow 条件
+            target_level = hint  # 用 hint
+      why: |
+        downstream 仍能在没 hint 时跑; 有 hint 时优先 follow 但不强制.
+    - rule: hint 用字段而非 mutation 现有字段
+      do: |
+        # 不要做:
+        request["priority"] = "urgent"  # 已有 priority 字段被改
+
+        # 要做:
+        request["priority_classification"] = "urgent"  # 新字段, 旧的保留
+      why: |
+        保留原值让 audit 知道"原本是什么 + 升级到什么"
+
+  anti_patterns:
+    - 用 hint 当 constraint — downstream 必须 follow, 无 fallback 路径
+    - hint 字段命名歧义 (e.g. "target_level" 而非 "target_level_hint")
+      让 downstream 不知道是 hint 还是 hard value
+    - mutate input dict — caller 失去 raw 数据
+    - hint 不入 evidence/log — review 无法追溯为什么 / 没 follow
+    - hint 是 strict type (无 None) — caller 必须传, 增加耦合
+
+rationale: |
+  KUN L5.4 build_self_created_request 严格按此模式:
+
+    enriched_request["target_level_hint"] = 1  # hint, not constraint
+    enriched_request["explorer_mode_hint"] = "conservative"
+
+    enriched_request["rcdh_recommended_action"] = "activate"  # also hint
+
+    # Strategist 接到时:
+    # - 用 candidate generator 算出 base candidates
+    # - 看 target_level_hint, 优先匹配的 candidate 排前 (rank_candidates L4.4)
+    # - 但不强制 — 如果生成器有更精确 level, 用生成器的
+
+  实测: Strategist + enriched cluster request 的集成测试验证 hint 进
+  search_request 但不破坏现有 candidate 生成逻辑.
+
+  对比:
+    constraint-style: 上游一旦决定, 下游必须 follow, 任何上游 bug
+      直接放大成下游 bug.
+    hint-style: 上游给 suggestion, 下游有 final say, bug 隔离.
+
+evidence:
+  - source: kun/agents/supervisor/self_created_request.py
+    date: 2026-05-27
+    phase: L5.4
+    notes: |
+      enrich_with_diagnostic 输出 target_level_hint / explorer_mode_hint
+      / rcdh_recommended_action 字段, downstream Strategist 可参考可忽略.
+
+  - source: kun/agents/strategist/deliberation.py:rank_candidates
+    date: 2026-05-27
+    phase: L4.4
+    notes: |
+      rank_candidates 4 维 sort key 中 explorer_mode 排序是 hint-aware
+      (conservative > aggressive); 但生成器仍可输出任意 mode.
+
+confidence: 0.87  # 1 个 module 验证 + 跨 agent 通用模式
+applicability:
+  scopes:
+    - cross_agent_information_flow
+    - decision_audit
+    - decoupled_decision_layers
+  do_not_apply_when:
+    - 上游真有 authoritative decision (e.g. user 显式指令)
+    - downstream 无能力自决 (纯透传)
+    - 实时性要求让 audit log 不可负担
+
+related_methodologies:
+  - frozen_dataclass_agent_io_contract
+  - engineering_first_with_llm_fallback
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

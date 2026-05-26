@@ -137,18 +137,21 @@
 
 ---
 
-## L5 · 自创任务（推进中，RSI 真闭合的标志）
+## L5 · 自创任务（✅ 已达成 2026-05-27，RSI 真闭合的标志）
 
 **交付标志**：监督线发现的系统性问题 → 自动转 Strategist 任务（无需人提）→ 闭环跑完产出 capability → 自动晋级。
 
-### 计划任务
+### 实施细节
 
-- [x] **L5.1** Supervisor 异常聚类 → 自动写 strategy_search_request（commits 78f79ac + bf87d6d）
-- [x] **L5.2** 自动晋级 promotion_queue 超时规则（候选 > N 天未晋级 → 重审）（commit 7a9d79a）
-- [x] **L5.3** 监督线给 Strategist 的高优触发通道（commit b4df983）
-- [x] **L5.4** 自创 RSI 请求生成（cluster + RCDH diagnostic → rich strategy_search_request）（commit 29e84b3）
-- [x] **L5.5** End-to-end wiring: Supervisor cluster + RCDH → Strategist auto-trigger（commit pending）
-- [ ] **L5.6** L5 验收 + retrospective + ≥3 新 methodology seeds
+- [x] **L5.1** Supervisor 异常聚类 → 自动写 strategy_search_request（commits 78f79ac + bf87d6d · +15 tests）
+- [x] **L5.2** 自动晋级 promotion_queue 超时规则（commit 7a9d79a · +16 tests）
+- [x] **L5.3** 监督线给 Strategist 的高优触发通道（commit b4df983 · +18 tests）
+- [x] **L5.4** 自创 RSI 请求生成（cluster + RCDH diagnostic → rich strategy_search_request）（commit 29e84b3 · +11 tests）
+- [x] **L5.5** End-to-end wiring: Supervisor cluster + RCDH → Strategist auto-trigger（commit 53aaca7 · +5 tests）
+- [x] **L5.6** L5 验收 + retrospective + 3 新 methodology seeds（commit pending）
+  - anomaly_clustering_with_member_uniqueness
+  - promotion_lifecycle_sweeper_with_reaudit_signal
+  - engineering_hints_not_constraints
 
 ---
 
