@@ -85,3 +85,33 @@
 **11 个新单测**覆盖：默认 3 mode + budget / has_mode + all_modes / 自定义 entries / lazy-init + 跨 mode 不同 instance / 未知 mode 默认 entry / max_concurrent 匹配 entry / dispatch 路由 / provider_factory 注入 / factory 失败 fallback / all_modes 列表。1042/1042 unit tests pass，ruff clean。
 
 **为下一步**：L4.4 合议层 dedup（Jaccard 相似度 ≥ 0.85 合并）+ cluster + 优先级排序 —— Pool 跨实例并发产候选时去重 + 聚类。
+
+---
+
+## L4.4 · 合议层 dedup + cluster + rank
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/agents/strategist/deliberation.py`：
+  - `_candidate_signature` 计算 signature set（target / level / mode / rollout / kind / spec_keys）
+  - `jaccard_similarity(a, b)` pure Jaccard
+  - `deduplicate(candidates, threshold)` 两两比对 Jaccard ≥ threshold → 合并；保留 `_candidate_score` 更高的（acceptance + explorer_mode bonus）
+  - `cluster_by_kind` 按 `(target_module, change_kind)` 聚类 → `CandidateCluster` frozen dataclass
+  - `rank_candidates` 4 维 sort key: `explorer_mode rank (backward=0 < conservative=1 < performance=2 < aggressive=3)` → `requires_human_review` → `sampling_rate` 低优先 → `acceptance_threshold` 严格优先
+  - `deliberate(candidates)` 主入口: dedup → rank（cluster 留给上层 UI/Gate 展示用）
+- `StrategistService.propose_candidates` forward 路径在 `filter_candidates` 之后调 `deliberate(candidates)`，让输出已 dedup + ranked
+- 默认 `DEDUP_JACCARD_THRESHOLD = 0.7`（无 embedding 时比 0.85 经验值更宽 — 工程化 token 集合相似度比 embedding 精度低，需要松一档）
+- `__init__.py` export 7 个新名字
+
+**关键决策**：
+- **不用 embedding model 做 dedup**：embedding 引入依赖（sentence-transformers / OpenAI embedding API），L4 阶段为"engineering-first" 不上 LLM。Jaccard on token sets 工程化覆盖大多数候选对比场景 — embedding 留 L5+ 闭环再上
+- **`threshold=0.7` 比 ADR §合议 写的 0.85 宽**：embedding cosine 0.85 是高相似（语义匹配）；token Jaccard 0.7 已经是"几乎同一 candidate"。换 metric 必须换 threshold，不能照搬数字
+- **合并时保留 acceptance 严 + conservative**：保守目标 + 保守 mode 在风险敏感场景更优。"保留 aggressive" 等于让 Gate 接到风险更高候选 — 不是这层该做的判断
+- **`rank_candidates` 4 维 tuple key**：单维（如只 mode）信息不够；4 维让排序在"同 mode 内"也有稳定顺序。注意 acceptance 取负让"严格目标" 排前
+- **`deliberate` 不调 cluster**：cluster 是展示用，不影响实际候选列表。让 Gate 接到的是已 dedup+ranked 平铺 list，不是 nested cluster
+- **lazy import in service.py**：`from kun.agents.strategist.deliberation import deliberate` 在 `propose_candidates` 内部 — 避免 service.py top-level import deliberation.py 引起的"deliberation 间接 import StrategyExperiment 循环依赖"（实际通过 TYPE_CHECKING 已解决，但 lazy import 是更稳妥的做法）
+
+**23 个新单测**覆盖：Jaccard 4 case（identical / disjoint / partial / both-empty / one-empty）/ signature 2 case / deduplicate 5 case（empty / single / distinct / merge / threshold / mode-preference） / cluster 2 case / rank 4 case（backward first / conservative before aggressive / auto before human / lower sampling）/ deliberate 2 case / 集成 case 验证 StrategistService.propose 输出已 ranked。1065/1065 unit tests pass，ruff clean。
+
+**为下一步**：L4.5 Resource quota — token budget / 时间窗 / dedup_key cooldown 工程化限流，防 RSI 闭环资源爆炸。
