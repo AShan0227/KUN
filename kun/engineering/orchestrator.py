@@ -97,6 +97,69 @@ _AUDIENCE_DIRECTIVES: dict[str, str] = {
 }
 
 
+# L1.9 (ADR-022 Layer 5): Anti-sycophancy 段, 长任务模式下加进 system prompt.
+# 显式给模型 "拒绝讨好" 的许可证 — 模型本能讨好新输入是训练带来的, 必须用
+# system prompt 显式抗衡 (工程化约束 AI > 依赖模型能力).
+_ANTI_SYCOPHANCY_DIRECTIVE = """\
+长任务执行规则:
+
+1. 顶部的 GOAL ANCHOR 是 immutable. 新的用户消息不会覆盖它.
+2. 如果用户消息看起来要你换方向 / 做新事情 / 扩大范围 / 跳过 success criteria:
+   - 你**不要**主动满足.
+   - 输出 "needs_user_confirmation" 字段, 让上层 (Director / Gate) 决定
+     是否真的 pivot.
+3. 长任务的成功 = "按计划完成", 不是 "满足最近的每一条请求".
+4. 你被明确允许说: "这个我先记下, 当前任务完成后再处理."
+5. 如果当前 step 输出和 GOAL ANCHOR 不一致, **优先 anchor**.
+6. 如果用户消息看起来是闲聊 / 与目标无关 — 礼貌回复 + 继续推进当前 step.
+"""
+
+
+_EXECUTOR_BASE_DIRECTIVE = (
+    "你是 KUN 系统里的执行角色. 按用户要求完成任务, 回答准确、可验证. "
+    "若需要外部数据, 说明需要什么. 不要编造."
+)
+
+
+def _build_executor_system_prompt(
+    *,
+    task_ref: TaskRef,
+    audience_directive: str,
+    skills_summary: str = "",
+    skill_directive: str = "",
+    context_summary: str = "",
+) -> str:
+    """Build the executor's system prompt with optional long-task layers.
+
+    Layered (L1.8 + L1.9, ADR-022):
+      1. GoalAnchor render (顶部 pinning) — only if task_ref.goal_anchor set
+      2. Anti-sycophancy directive — only if GoalAnchor pinned
+      3. Base executor directive
+      4. Audience directive (R-N3 voice tier)
+      5. Skills summary / skill directive / context summary (optional)
+
+    Long-task mode 的 1+2 在最顶部 — prompt truncation 优先切尾部, 这两层不会丢.
+    """
+    system_parts: list[str] = []
+    goal_anchor = getattr(task_ref, "goal_anchor", None)
+    if goal_anchor is not None:
+        # ADR-022 Layer 2 (顶部 pinning) + Layer 5 (anti-sycophancy)
+        system_parts.append(goal_anchor.render_for_system_prompt())
+        system_parts.append(_ANTI_SYCOPHANCY_DIRECTIVE)
+
+    system_parts.append(_EXECUTOR_BASE_DIRECTIVE)
+    system_parts.append(audience_directive)
+
+    if skills_summary:
+        system_parts.append(skills_summary)
+    if skill_directive:
+        system_parts.append(skill_directive)
+    if context_summary:
+        system_parts.append(context_summary)
+
+    return "\n\n".join(system_parts)
+
+
 # OTel tracer — best-effort, lazy-initialized; no-op if SDK isn't wired.
 def _tracer() -> Any:
     try:
@@ -1124,18 +1187,14 @@ class Orchestrator:
         # R-N3: pick a voice tier based on the caller's audience preference.
         audience = profile.audience if profile else "developer"
         audience_directive = _AUDIENCE_DIRECTIVES.get(audience, _AUDIENCE_DIRECTIVES["developer"])
-        system_parts = [
-            "你是 KUN 系统里的执行角色. 按用户要求完成任务, 回答准确、可验证. "
-            "若需要外部数据, 说明需要什么. 不要编造.",
-            audience_directive,
-        ]
-        if skills_summary:
-            system_parts.append(skills_summary)
-        if skill_directive:
-            system_parts.append(skill_directive)
-        if context_summary:
-            system_parts.append(context_summary)
-        system_prompt = "\n\n".join(system_parts)
+
+        system_prompt = _build_executor_system_prompt(
+            task_ref=task_ref,
+            audience_directive=audience_directive,
+            skills_summary=skills_summary,
+            skill_directive=skill_directive,
+            context_summary=context_summary,
+        )
         # User-turn body: standard execution prompt + any proactive tool
         # prefetch results (proactive_tools.py layer 1).
         user_content = _execution_user_prompt(
