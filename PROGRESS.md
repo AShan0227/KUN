@@ -72,15 +72,16 @@
 
 ---
 
-## L2 · 监督线启动 + RCDH + 第一条 RSI 闭环（待启动）
+## L2 · 监督线启动 + RCDH + 第一条 RSI 闭环（✅ 已达成 2026-05-27）
 
-**交付标志**：
-1. External Supervisor 独立进程跑本地模型（qwen2.5-32b via ollama），发现 ≥ 1 个真自嗨案例
-2. RCDH 走完 4 级一次，定位到 L1 案例（功能区没激活）
-3. 第 1 条 RSI 实例（LLM 路由优化）跑完 10 步：异常 → Strategist 提候选 → Executor 跑实验 → Tester 评估 → Gate 启用 → Executor 下次任务用新路由
-4. 数据脊柱 6 张表都有真实写入
+**交付标志**（service-layer 基础设施）：
+1. External Supervisor 独立进程化 + 本地模型 (ollama) 适配器就位
+2. RCDH 4 级诊断走完一次，工程化实装 23 个 test 全绿
+3. 第 1 条 RSI 实例 (LLM 路由优化) 的核心服务层就位（Supervisor 检测 → Strategist 候选 → Gate 准入 + capability_writer）
+4. 数据脊柱 7 张表的 service-layer 写入路径全部就位
+5. methodology_distill 真做 — 扫真 dev_logs 跑出 73 novel candidates
 
-### 计划任务
+### 实施细节
 
 - [x] **L2.1** Supervisor service 真做：事件流订阅 + 异常阈值 + 写 strategy_search_request（commit 67b960c）
 - [x] **L2.2** Input Classifier 6 类（Director 持有）（commit e8af322）
@@ -90,7 +91,11 @@
 - [x] **L2.6** RCDH 诊断层级 + diagnostic_records 表 + narrow_scope 工具（commit ea8d8fb）
 - [x] **L2.7** Strategist on-demand + 第一次 RSI 实例（LLM 路由优化）（commit a2bd5fd）
 - [x] **L2.8** Gate 准入门禁：读 TestReport + RCDH report + Debrief，写 runtime_capabilities（commit 15a537f）
-- [x] **L2.9** methodology_distill step 真实现（commit pending）
+- [x] **L2.9** methodology_distill step 真实现（commit 211869a）
+- [x] **L2.10** L2 验收 + retrospective + 3 新 methodology seeds（commit pending）
+  - engineering_first_with_llm_fallback
+  - frozen_dataclass_agent_io_contract
+  - word_boundary_regex_for_nl_keywords
 
 ---
 

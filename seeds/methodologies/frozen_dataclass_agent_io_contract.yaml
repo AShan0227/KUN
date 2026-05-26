@@ -1,0 +1,119 @@
+topic: frozen_dataclass_agent_io_contract
+title: Agent 间 IO 用 frozen dataclass + emitter callback, 不直耦 DB
+description: |
+  多 agent 系统里, 每个 agent service 的输出用 `@dataclass(frozen=True)`
+  作"对外契约 type", 配 `to_row_payload(tenant_id)` helper 转 ORM
+  可消费的 dict, 配 `Callable[..., Awaitable[None]]` 风格的 emitter
+  callback 让上层注入实际的 DB writer.
+
+  这样:
+    1. agent service 不导入 sqlalchemy session — 单测零外部依赖
+    2. 类型是 frozen 不可变 — 跨 agent 传递不出现"中途被改"问题
+    3. emitter 注入让测试用 fake / prod 用真 DB writer 零修改
+    4. ORM schema 演化时只改 to_row_payload, 接口不动
+
+trigger:
+  conditions:
+    - 多 agent / service 协作, 一个 service 产输出给下一个消费
+    - 输出最终要落 DB (有 ORM Row 类对应)
+    - service 必须可单测, 不能依赖真 DB connection
+
+action:
+  pattern:
+    - rule: 输出类型用 @dataclass(frozen=True)
+      do: |
+        @dataclass(frozen=True)
+        class GateDecision:
+            decision_id: str
+            verdict: str
+            reasons: list[str]
+            ...
+      why: |
+        immutability 保证下游不会改它; 配合 default_factory 让 list/dict
+        默认值安全; asdict() 直接给 LLM Trace / dev_log.
+    - rule: 提供 to_row_payload(tenant_id) helper
+      do: |
+        def to_row_payload(self, tenant_id: str) -> dict[str, Any]:
+            return { "tenant_id": tenant_id, ... }
+      why: |
+        agent service 不导 sqlalchemy. helper 转纯 dict, 由上层落库.
+    - rule: emitter callback 注入
+      do: |
+        EmitCallback = Callable[[T], Awaitable[None]]
+
+        class Service:
+            def __init__(self, *, emitter: EmitCallback | None = None):
+                self._emitter = emitter
+      why: |
+        测试用 fake (lambda t: received.append(t));
+        prod 用 真 DB writer.
+    - rule: emitter 异常的两种语义区分
+      do: |
+        - 状态累积写 (新增 capability / 新增 record): try/except, 仅 log.
+          不打挂 service 主路径.
+        - 状态机推进 (capability flip enabled): raise.
+          caller 必须知道 promotion_queue 状态机卡住了.
+      why: |
+        accumulation 失败可重试; 状态机推进失败必须可见.
+
+  anti_patterns:
+    - service 内直接 `from kun.core.db import session_scope` — 单测要 mock 整个 DB
+    - 输出用 dict[str, Any] — 没有类型契约, 跨 agent 字段名 typo 不可见
+    - 输出用 mutable dataclass — 下游意外改字段调试地狱
+    - 一律 try/except 吞所有 emitter 异常 — 状态机卡死时无声败坏
+
+rationale: |
+  L2 阶段 9 个 service (Supervisor / InputClassifier / PlanReviewHeartbeat /
+  ExternalSupervisorService / GateAdvisory / DebriefRecord /
+  SelfAggrandizementCheck / StrategistService / GateService) 全部用此模式.
+
+  实战收益:
+    1. 写新 service 几乎 copy-paste, 开发速度恒定.
+    2. 单测全部不依赖真 DB, 跑 ~14s 完成 928 tests.
+    3. 测试用 fake emitter (3-5 行), prod 接 真 DB writer (改 1 行).
+    4. ORM schema 演化只需更新 to_row_payload, 跨 service 接口不动.
+
+evidence:
+  - source: kun/agents/strategist/service.py:StrategyExperiment
+    date: 2026-05-27
+    phase: L2.7
+    notes: |
+      frozen dataclass + to_row_payload + ExperimentEmitter 三件套.
+      14 个 test 用 fake emitter, prod 接 RuntimeExperimentRow writer.
+
+  - source: kun/agents/gate/service.py:GateDecision
+    date: 2026-05-27
+    phase: L2.8
+    notes: |
+      GateDecision frozen + capability_row_payload dict + CapabilityWriter.
+      admit emitter 吞 vs enable_capability writer 必 raise — 显式区分语义.
+
+  - source: kun/agents/supervisor/plan_review_heartbeat.py:ReviewTrigger
+    date: 2026-05-27
+    phase: L2.3
+    notes: |
+      ReviewTrigger frozen + ReviewRequestEmitter callback. asyncio.Lock
+      保护 mutable counter state, frozen output 出去.
+
+  - source: kun/external_supervisor/service.py:ExternalSupervisorObservation
+    date: 2026-05-27
+    phase: L2.4
+    notes: |
+      frozen dataclass + extras dict + raw_llm_content 给 debug 用.
+      所有 mode wrapper (GateAdvisory / DebriefRecord) 都把 underlying
+      observation 作字段保留.
+
+confidence: 0.95  # 9 个 service 一致用此 pattern, 零 friction
+applicability:
+  scopes: [agent_design, microservice_io_contracts, type_design]
+  do_not_apply_when:
+    - 单文件脚本, 无 service 边界
+    - 输出是流式 (用 AsyncIterator 不是 dataclass)
+    - 类型必须真 mutable (累加 counter 这种, 用 mutable + asyncio.Lock)
+
+related_methodologies:
+  - engineering_first_with_llm_fallback  # 工程化纪律的另一面
+  - paired_commit  # 同等粒度纪律
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

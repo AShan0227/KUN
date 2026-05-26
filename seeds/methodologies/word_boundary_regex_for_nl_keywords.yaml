@@ -1,0 +1,105 @@
+topic: word_boundary_regex_for_nl_keywords
+title: NL 关键词匹配必带 word boundary, 子串匹配是 bug
+description: |
+  在自然语言文本里检测关键词 (event keyword / decision keyword / category
+  keyword), 必须用 `re.search(r"\b{keyword}\b", text)`, 不能用
+  `if keyword in text` 子串匹配. 子串匹配会把 "spec" 命中 "specific"、
+  "id" 命中 "guide"、"act" 命中 "activate" — 这是一类隐藏 bug, 通过
+  test fixtures 才能发现.
+
+  尤其在多层级条件路由 (如 RCDH 4 级) 里, 误命中会让上层抢占下层
+  case, 永远跑不到正确层级.
+
+trigger:
+  conditions:
+    - 检测自然语言文本里是否含有特定关键词
+    - 关键词来自一个固定列表 (常量集合)
+    - 命中决策影响后续路由/分级/分类
+  applicable_kinds:
+    - 4 级诊断层级 (RCDH) 关键词
+    - 6 类输入分类 (Input Classifier) 关键词
+    - log 异常分类
+    - 模块/角色名命中 (executor / supervisor 等)
+
+action:
+  pattern:
+    - rule: 用 re.search(r"\b{kw}\b", text, re.IGNORECASE)
+      do: |
+        for pattern in _KEYWORDS:
+            m = re.search(rf"\b{re.escape(pattern)}\b", text, re.IGNORECASE)
+            if m:
+                hits.append(...)
+      why: word boundary 强制 token 边界 — "spec" 不会撞 "specific"
+    - rule: 长短语关键词允许内部空格
+      do: |
+        # "missing requirement" / "not enabled" / "design decision"
+        # 多词短语用 \b...\b 包括首尾 token 边界, 内部空格直接写
+        _PATTERNS = (r"\bdesign decision\b", r"\bmissing requirement\b")
+      why: 复合关键词比单词更精准 — 不会撞短词
+    - rule: 单 token 关键词检查是否有更精确替代
+      do: |
+        # "spec" 太短 → 改用 "specification" / "specs are wrong" 等
+        # 单 token 命中率 > 1% 时考虑换长短语
+      why: 短关键词即使加 \b 命中率也高, 噪声大
+    - rule: 提取 m.group(0) 作 evidence
+      do: |
+        hits.append({"type": "keyword", "keyword": m.group(0)})
+      why: 让 audit 知道具体命中的是哪段 (而不是 pattern source)
+
+  anti_patterns:
+    - if keyword in text — 子串撞: spec 撞 specific
+    - keyword == text.lower() — 完全匹配漏掉所有 "spec is wrong" 样本
+    - 用 r"\bword\b" 包括 punctuation 边界 — 已经是 \b 行为, 但不要
+      手写 r"^word|word$" 替代
+
+rationale: |
+  L2.6 RCDH 第一版用 `if kw in text` 让 4 个 test 失败:
+    - test_l2_single_module_focus: "module-specific bug" 命中 "spec" (L0)
+    - test_l2_repeat_module_in_evidence: "no specific signal" 命中 "spec"
+    - test_l3_file_line_in_evidence: "unspecific failure" 命中 "spec"
+    - test_force_escalation_to_l0_after_n_repeats: 同上
+
+  4 个 case 都是 L0 误判抢 L2/L3 root_cause. 修复仅一处:
+    text 关键词检查从 `if kw in text` → `re.search(rf"\b{kw}\b", text)`.
+
+  这是工程化 NL 关键词匹配的标准做法, 几乎是 Python 内置 string.in
+  方法的"反模式标本". 应该出现在所有 KUN 子系统 keyword detection
+  的初始设计 review checklist.
+
+evidence:
+  - source: kun/governance/rcdh.py (L2.6)
+    date: 2026-05-27
+    phase: L2.6
+    outcome: bug_fix_success
+    notes: |
+      _L0_DESIGN_KEYWORDS 用 r"\b...\b" 改造, 单点修复让 4 个失败
+      test 通过. _L1_ACTIVATION_KEYWORDS 同步改.
+
+  - source: kun/agents/director/input_classifier.py
+    date: 2026-05-26
+    phase: L1.8
+    notes: |
+      Input Classifier 早期就用了 \b — 这里 lesson 没踩到 bug.
+      6 类分类全部 \b 边界 + 中文不用 \b (Unicode 行为不同).
+
+  - source: kun/agents/strategist/service.py:_is_self_referential
+    date: 2026-05-27
+    phase: L2.7
+    notes: |
+      模块名 prefix match 用 4 种形式 (裸名 / 点 / kun.X / kun/X), 不
+      是 keyword match 但同样的 boundary 思路 — 完整 token 边界.
+
+confidence: 0.92  # 1 个 bug 真实发现 + 多个子系统验证
+applicability:
+  scopes: [nlp_keyword_matching, classification_rules, log_parsing]
+  do_not_apply_when:
+    - 关键词列表全是长唯一短语 (如完整句子)
+    - 文本是结构化 JSON, 用 jq/dict access 而不是 text match
+    - 中文匹配 — \b 在 Unicode 行为不同, 用 [一-鿿] 字符类边界
+
+related_methodologies:
+  - engineering_first_with_llm_fallback  # 同样工程化 NL 优先思路
+  - large_design_refactor  # 重写前 grep 命中率验证
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27
