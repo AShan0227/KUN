@@ -55,3 +55,35 @@
 - `kun/engineering/` 还有 `orchestrator.py` (1500+ 行主线协调器, 保留) + 9 个其他模块（按需逐步迁）。
 - **验证**：5 commit 全部跑 760/760 unit tests pass，无 regression。
 
+---
+
+## L1.3 · alembic 0011 数据脊柱 7 张表
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 写 `alembic/versions/0011_rsi_data_spine.py` 建 7 张表：`runtime_capabilities` / `runtime_experiments` / `strategy_search_requests` / `diagnostic_records` / `goal_anchors` / `plan_reviews` / `evidence_ledger`
+- 在 `kun/core/orm.py` 加 7 个 ORM 类（`RuntimeCapabilityRow` 等），sqlalchemy 2.0 declarative + Mapped 风格
+- 所有表带 ADR-007 RLS：`ENABLE/FORCE ROW LEVEL SECURITY` + `tenant_isolation` policy
+- DB 层 check constraint 强制业务约束：`scope_modules ≤ 5`（RCDH 圈定）/ `goal_statement ≤ 200 字符`（GoalAnchor 强制简短）/ `promotion_state` 8 态枚举 / `priority` low/medium/high / `target_level` 0-3（RCDH 层）/ `sampling_rate` 0-1（canary）
+- 关键索引（部分索引 = WHERE 条件优化）：
+  - `runtime_capabilities`: `WHERE enabled=TRUE` 的目标模块查找
+  - `runtime_experiments`: `WHERE status IN ('pending','running')` 的活跃实验
+  - `strategy_search_requests`: `WHERE status='open'` 的 dedup_key 查找（工程层做 1h 去重）
+  - `evidence_ledger`: `WHERE diagnostic_id IS NOT NULL` 的诊断回溯
+
+**关键决策**：
+- **schema 约束放 DB 层而非纯 application 层**：`scope_modules ≤ 5` 用 `jsonb_array_length(scope_modules) <= 5` 强制 — pydantic `max_length=5` + DB constraint 双保险，**不允许任何 agent 绕过**
+- **RLS 一并加，不留"以后再加"**：ADR-007 红线，所有 tenant_id 主键的表都 enable RLS。0007 阶段做了 grants + 0006 enable，新表不需要再 grant（ALTER DEFAULT PRIVILEGES 已生效）
+- **`metadata` 列改用 ORM attribute `capability_metadata`**：SQLAlchemy 的 `Base` 已经有 `metadata` 属性（DB meta），列名 `metadata` 会冲突。用 `Mapped[dict] = mapped_column("metadata", ...)` 把 Python 属性名与 DB 列名错开
+- **part index 而非 full index**：`WHERE enabled=TRUE` 类的部分索引比全索引小 10x+，对 hot path 查询足够
+
+**验证**：
+- `alembic upgrade head` 成功，`\dt` 确认 7 张表存在
+- **Round-trip 测试**：`alembic downgrade 0010` → 7 表全删 → `alembic upgrade head` → 7 表重建。fully reversible
+- 760/760 unit tests pass
+- ruff check + format 全过
+
+**为下一步**：6 张表 + evidence_ledger 已就位，但都是空表。L1.4 (ConcurrencySafety 真合并) / L1.5 (删 KnowledgePrecipitation) 之后，L1.7 阶段 Director 开始写 `goal_anchors`，L2 阶段 Supervisor / Strategist / Gate 开始写其余 6 张表。数据脊柱真正活起来在 L2。
+
+

@@ -13,11 +13,13 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     PrimaryKeyConstraint,
     String,
     Text,
@@ -475,3 +477,178 @@ class IdempotencyRow(Base):
     ttl_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
 
     __table_args__ = (CheckConstraint("ttl_sec > 0", name="idempotency_ttl_positive"),)
+
+
+# ============== RSI DATA SPINE (ADR-024, alembic 0011) ==============
+
+
+class RuntimeCapabilityRow(Base):
+    """已合入但默认未启用的候选能力. Gate 写, Executor 读.
+
+    晋级状态机: merged → in_replay → in_shadow → in_canary → ready → enabled.
+    超时未晋级 → expired (idle-batch 扫到后重审).
+    """
+
+    __tablename__ = "runtime_capabilities"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    capability_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    target_module: Mapped[str] = mapped_column(String(256), nullable=False)
+    change_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    promotion_state: Mapped[str] = mapped_column(String(32), nullable=False, default="merged")
+    promotion_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    promotion_deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    rollback_on: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    sampling_rate: Mapped[float] = mapped_column(
+        Numeric(precision=5, scale=4), nullable=False, default=0
+    )
+    capability_metadata: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict
+    )
+
+
+class RuntimeExperimentRow(Base):
+    """Strategist 写入的候选实验. Executor 任务前读 → 应用 change_spec override.
+
+    实验跑完 → Tester 出 TestReport → Gate 决定是否进 promotion_queue.
+    """
+
+    __tablename__ = "runtime_experiments"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    experiment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    target_module: Mapped[str] = mapped_column(String(256), nullable=False)
+    target_level: Mapped[int] = mapped_column(Integer, nullable=False)  # RCDH 层 0-3
+    change_spec: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    rollout_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    sampling_rate: Mapped[float] = mapped_column(
+        Numeric(precision=5, scale=4), nullable=False, default=0
+    )
+    success_metric: Mapped[str] = mapped_column(String(128), nullable=False)
+    acceptance_threshold: Mapped[float] = mapped_column(Numeric, nullable=False)
+    rollback_on: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    ttl_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=86400)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
+class StrategySearchRequestRow(Base):
+    """监督线写, Strategist 读. 异常信号 → 触发策略搜索.
+
+    工程层做 1 小时 dedup_key 去重 (索引: tenant_id, dedup_key, created_at WHERE status='open').
+    """
+
+    __tablename__ = "strategy_search_requests"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    triggered_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_module: Mapped[str] = mapped_column(String(256), nullable=False)
+    evidence: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    priority: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    dedup_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
+class DiagnosticRecordRow(Base):
+    """RCDH 4 级诊断结果 (ADR-021). Supervisor 走 RCDH 时写; Gate 验诊断报告时读.
+
+    scope_modules ≤ 5 (DB 层 check constraint 强制). 重复 ≥ 3 次同症状强制升 L0/L1.
+    """
+
+    __tablename__ = "diagnostic_records"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    diagnostic_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    triggered_by_event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    symptom_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    repeat_history_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    level_0_check: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    level_1_check: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    level_2_check: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    level_3_check: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    root_cause_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recommended_action: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    scope_modules: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
+class GoalAnchorRow(Base):
+    """长任务 GoalAnchor (ADR-022). Director 写, Executor 每次 LLM call 顶部 pin.
+
+    immutable=True 默认; 不允许新指令覆盖. goal_statement ≤ 200 字符 (强制).
+    """
+
+    __tablename__ = "goal_anchors"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    anchor_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    goal_statement: Mapped[str] = mapped_column(Text, nullable=False)
+    success_criteria: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    out_of_scope: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    invariants: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    immutable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
+class PlanReviewRow(Base):
+    """Anti-drift 长任务 Plan Review (ADR-022 Layer 4).
+
+    Supervisor 每 3 步 / 5 分钟注入 → Executor 自评 → External Supervisor 独立 verify.
+    """
+
+    __tablename__ = "plan_reviews"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    review_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    anchor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    triggered_at_step: Mapped[int] = mapped_column(Integer, nullable=False)
+    triggered_at_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    executor_self_report: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    supervisor_verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    drift_evidence: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    external_supervisor_verify: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    action_taken: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
+class EvidenceLedgerRow(Base):
+    """全链路证据账本 (ADR-024). Append-only.
+
+    每条 entry 一种 kind: artifact / test_report / diagnostic / debrief / decision.
+    可选关联 diagnostic_id + external_supervisor_debrief_id + diagnostic_level_reached.
+    """
+
+    __tablename__ = "evidence_ledger"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    entry_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    diagnostic_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_supervisor_debrief_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    diagnostic_level_reached: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
