@@ -1,7 +1,11 @@
 """Capability card writeback — 把任务结果回写到能力卡.
 
-ADR-018 §16.4 KnowledgePrecipitation 的一个 step:
-每次任务完成 → 更新实体 (角色模板 / 模型) 在对应 task_type 上的统计.
+ADR-024 RSI 闭环 step 4 的一部分: 每次任务完成 → 更新实体 (角色模板 / 模型)
+在对应 task_type 上的统计. 这是闭环 "执行 → 能力卡 → 下次路由" 的关键一环.
+
+(原 ADR-018 §16.4 KnowledgePrecipitation 抽象 2026-05-26 删除 — 0 调用方,
+纯壳. capability_writeback / 方法论蒸馏 / 路由规律涌现各自独立写入.
+ADR-024 用 6 张数据脊柱表 + 10 步闭环替代该抽象.)
 
 运行时是即时 upsert; 置信区间、衰减权重等重算放 idle-batch.
 """

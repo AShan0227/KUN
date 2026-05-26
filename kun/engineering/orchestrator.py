@@ -1003,7 +1003,7 @@ class Orchestrator:
                     )
                     validation_outcome = "partial"
 
-        # 7.5 Capability card writeback (ADR-018 §16.4 KnowledgePrecipitation)
+        # 7.5 Capability card writeback (ADR-024 RSI step 4 — 闭环"执行→能力卡→路由")
         outcome: Outcome = validation_outcome
         rubric_5 = validation_score * 5.0 if validation_score is not None else None
         try:

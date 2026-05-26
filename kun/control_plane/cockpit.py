@@ -15,7 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from kun.control_plane.concurrency import (
+from kun.control_plane.work_item_governance import (
     ResourceLockConflict,
     SandboxIsolationSpec,
     WorkerSlotSnapshot,

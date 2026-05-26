@@ -1,4 +1,21 @@
-"""Concurrency, lock, sandbox, and merge-governance helpers for KUN V6.
+"""Work-item governance — locks / sandbox / worker slots / merge-governance for KUN V6.
+
+⚠️ 2026-05-27 重命名自 `kun.control_plane.concurrency` (L1.4):
+原名与 `kun.engineering.concurrency` (通用任务级并发原语) 命名冲突,
+grep / 导航时混淆. 新名 `work_item_governance` 强调它的职责 — 不是
+通用 concurrency, 是 control_plane 对**work-item 粒度**的治理 (worker
+slot 配置 / sandbox 隔离 / 资源锁租约 / merge 冲突治理).
+
+两者区别:
+  kun.engineering.concurrency  → 任务级 IdempotencyKey / ResourceGuard / Lease
+  kun.control_plane.work_item_governance → work-item 级 WorkerPoolConfig /
+                                            ResourceLockLease / SandboxIsolationSpec /
+                                            MergeGovernanceReport / 4 种 lock store
+
+ADR-018 §16.5 ConcurrencySafety 半合并 — 两者实际是同概念域不同抽象层,
+**不强行合并**, 用命名区分.
+
+---
 
 This module is the product boundary between "one daemon doing a batch" and a
 real Control Plane that can coordinate multiple worker slots and multiple

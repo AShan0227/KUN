@@ -30,7 +30,7 @@ from kun.control_plane.capability_execution import (
     build_capability_execution_policy,
     ensure_policy_covers_required_capabilities,
 )
-from kun.control_plane.concurrency import (
+from kun.control_plane.work_item_governance import (
     FileResourceLockStore,
     InMemoryResourceLockStore,
     RedisResourceLockStore,

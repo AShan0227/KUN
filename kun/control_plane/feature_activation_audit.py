@@ -30,7 +30,7 @@ from kun.control_plane.capability_evolution import (
     build_capability_promotion,
 )
 from kun.control_plane.capability_execution import CapabilityExecutionPolicy
-from kun.control_plane.concurrency import (
+from kun.control_plane.work_item_governance import (
     FileResourceLockStore,
     RedisResourceLockStore,
     SQLiteResourceLockStore,

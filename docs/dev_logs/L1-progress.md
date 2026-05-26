@@ -86,4 +86,44 @@
 
 **为下一步**：6 张表 + evidence_ledger 已就位，但都是空表。L1.4 (ConcurrencySafety 真合并) / L1.5 (删 KnowledgePrecipitation) 之后，L1.7 阶段 Director 开始写 `goal_anchors`，L2 阶段 Supervisor / Strategist / Gate 开始写其余 6 张表。数据脊柱真正活起来在 L2。
 
+---
+
+## L1.4 + L1.5 · ConcurrencySafety 重命名 + KnowledgePrecipitation 注释清理
+
+**完成**：2026-05-27 / commit pending
+
+### L1.5 · KnowledgePrecipitation 抽象删除
+
+**纯注释清理**（抽象已 0 调用方）：
+- `kun/agents/gate/capability_writeback.py` docstring 改：删 "ADR-018 §16.4 KnowledgePrecipitation 的一个 step" 引用，改成 "ADR-024 RSI 闭环 step 4" + 注明 KP 抽象 2026-05-26 删
+- `kun/engineering/orchestrator.py:1006` 注释改：删 "(ADR-018 §16.4 KnowledgePrecipitation)" 引用，改成 "(ADR-024 RSI step 4 — 闭环'执行→能力卡→路由')"
+
+只剩 1 处 "deletion marker" 在 capability_writeback.py docstring（解释什么时候删的、为什么删）。**这是保留历史轨迹的有意行为**，不是遗留 ref。
+
+### L1.4 · `control_plane/concurrency.py` 重命名为 `work_item_governance.py`
+
+**核心认知**：审计的 M3 "两份 concurrency 重复" 是**误判**。两份文件实际是**同概念域、不同抽象层**：
+
+| 文件 | 职责 | 主要导出 |
+|---|---|---|
+| `kun/engineering/concurrency.py` (575行) | 任务级并发原语 | IdempotencyKey / ResourceGuard / Lease / scan_pre_conflicts |
+| `kun/control_plane/concurrency.py` (926行) | work-item 级治理 | WorkerPoolConfig / ResourceLockLease / SandboxIsolationSpec / MergeGovernanceReport / 4 种 lock store |
+
+两者**不重复，但命名冲突**（grep / 导航易混）。**正确做法 = 重命名澄清职责，不强行合并**。
+
+操作：
+- `git mv kun/control_plane/concurrency.py kun/control_plane/work_item_governance.py`
+- 7 个 importer (control_plane/feature_activation_audit / activation / cockpit / __init__ / kun_runtime_runner / daemon + tests/unit/test_control_plane_kun_runtime_runner_v6.py) 用 `sed -i` 一并改 `kun.control_plane.concurrency` → `kun.control_plane.work_item_governance`
+- 新文件顶部加 docstring 解释重命名原因 + 两者区别
+
+**关键决策**：
+- **审计可能误判，要交叉验证**：M3 把命名冲突当 "重复" 写，没看实际 export。我先 `grep ^class ^def` 对比再下结论。**启发式：审计报告的"合并 / 删除"建议必须用源码级 grep 验证**
+- **重命名 > 合并**：ADR-018 §16.5 ConcurrencySafety 因此从"待合并"降级为"半合并"（同概念域，分层共存）。这与 ADR-018 v3 修订一致（≥ 3 调用方才真合并）
+- **批量重命名用 sed**：7 个文件 + 单一 grep pattern 用 `sed -i.bak ... && rm .bak`，比 7 次 Edit 快 + 不出错
+
+**验证**：760/760 unit tests pass, ruff clean。
+
+**为下一步**：L1.4 + L1.5 都是清理性收尾。下一步 L1.6 接 `capability_router` 进 `LLMRouter.decide()` — 这是 L1 中"建了但没接"的最大案例，接进去**立刻产生第一条真闭环**（任务结果 → capability card → 下次路由调整）。
+
+
 
