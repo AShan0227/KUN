@@ -56,3 +56,32 @@
 **13 个新单测**覆盖：默认 3 dim / fan-out task.done / 唯一 cost_audit / 未知 event 空 / 自定义 config / lazy init / 不匹配 event 空返回 / 路由单 dim / 两 dim 并行 fan-out / state isolation / all_dimensions 列表 / 共享 emitter / 单 dim 异常吞。1031/1031 unit tests pass，ruff clean。
 
 **为下一步**：L4.3 External Supervisor Pool 配置化 —— 按 audit mode 分实例（gate_review / task_debrief / self_aggrandizement 各自独立 ExternalSupervisorService 实例 + 本地模型 concurrency budget）。
+
+---
+
+## L4.3 · External Supervisor Pool 配置化（按 audit mode 分实例）
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/external_supervisor/pool.py`：`ExternalSupervisorPool` + `ExternalSupervisorPoolConfig` + `ExternalSupervisorPoolEntry`
+- 3 个默认 mode + 各自 budget:
+  - `gate_review`: max_concurrent=2, temperature=0.1, max_tokens=512 — 严肃决策低温
+  - `task_debrief`: max_concurrent=1, temperature=0.3, max_tokens=1024 — 允许发散输出更长
+  - `self_aggrandizement`: max_concurrent=3, temperature=0.1, max_tokens=256 — 高频简短
+- `instance_for(mode)` lazy-init；未知 mode 用默认 entry（容错优先，与 Supervisor Pool 同思路）
+- `dispatch(mode, ...)` 路由到对应 instance + 调 `analyze_observation`
+- `provider_factory` 可选注入 — 每 mode 独立 LLM provider（e.g. gate_review 用快模型，debrief 用深推理）；factory 异常 fallback 到 shared provider
+- 共享或独立两种 provider 注入方式同源支持
+
+**关键决策**：
+- **每 mode 独立 budget 是核心**：gate_review 等级紧迫（Gate 决策不能等），debrief 可慢可串行，self_aggrandizement 高频高并发。单一 SupervisorService 用同一 semaphore 会让 3 个 mode 互相争抢
+- **`temperature` per mode**：gate decisions deserve low temperature 一致性；debrief 允许更宽 verdict 反映"真复盘"；self_aggrandizement 是判定题不是 essay → 低温短输出
+- **provider_factory 而非每 mode 必传 provider**：默认 caller 只需传一个 `llm_provider`（共享），需要细分时再传 factory。**降低 90% 用例的配置负担**
+- **factory 失败 fallback 到 shared 而非 raise**：本地模型容易"今天慢明天好"，pool 不应该让单个 mode 的 factory 失败阻止其他 mode 工作
+- **未知 mode 用默认 entry**：与 Supervisor Pool 同思路，容错优先；让 L4+ 加新 mode 不需先改 config
+- **不重写 Mode A/B 的 wrapper**：L2.5 `mode_a_gate_review` / `mode_b_task_debrief` / `check_self_aggrandizement` 已经接受 `ExternalSupervisorService`，**调用方可以传 `pool.instance_for(mode)` 替换原单实例**。Pool 是 service 的横向扩展，不破坏现有 API
+
+**11 个新单测**覆盖：默认 3 mode + budget / has_mode + all_modes / 自定义 entries / lazy-init + 跨 mode 不同 instance / 未知 mode 默认 entry / max_concurrent 匹配 entry / dispatch 路由 / provider_factory 注入 / factory 失败 fallback / all_modes 列表。1042/1042 unit tests pass，ruff clean。
+
+**为下一步**：L4.4 合议层 dedup（Jaccard 相似度 ≥ 0.85 合并）+ cluster + 优先级排序 —— Pool 跨实例并发产候选时去重 + 聚类。

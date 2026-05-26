@@ -22,6 +22,11 @@ from kun.external_supervisor.modes import (
     mode_a_gate_review,
     mode_b_task_debrief,
 )
+from kun.external_supervisor.pool import (
+    ExternalSupervisorPool,
+    ExternalSupervisorPoolConfig,
+    ExternalSupervisorPoolEntry,
+)
 from kun.external_supervisor.service import (
     ExternalSupervisorObservation,
     ExternalSupervisorService,
@@ -30,6 +35,9 @@ from kun.external_supervisor.service import (
 __all__ = [
     "DebriefRecord",
     "ExternalSupervisorObservation",
+    "ExternalSupervisorPool",
+    "ExternalSupervisorPoolConfig",
+    "ExternalSupervisorPoolEntry",
     "ExternalSupervisorService",
     "GateAdvisory",
     "SelfAggrandizementCheck",

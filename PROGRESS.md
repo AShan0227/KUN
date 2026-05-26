@@ -125,8 +125,8 @@
 ### 计划任务
 
 - [x] **L4.1** Strategist Explorer Pool 配置化（默认 3 模式）（commits b6c560c + 65180f2）
-- [x] **L4.2** Supervisor Pool 多实例（不同 audit 维度）（commit pending）
-- [ ] **L4.3** External Supervisor Pool 配置化（按 audit mode 分实例）
+- [x] **L4.2** Supervisor Pool 多实例（不同 audit 维度）（commit 173d3c1）
+- [x] **L4.3** External Supervisor Pool 配置化（按 audit mode 分实例）（commit pending）
 - [ ] **L4.4** 合议层：dedup（embedding 相似度 > 0.85 合并）/ cluster / 排序
 - [ ] **L4.5** Resource quota（token / 时间 / dedup_key cooldown）
 - [ ] **L4.6** 探索惩罚（失败候选 3 次内不重复 / similar 策略合并）
