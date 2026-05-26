@@ -152,3 +152,36 @@
 **13 个新单测**覆盖：defaults / 非法参数 / 首次允许 / experiment exceeded / token exceeded / record post call / tenant isolation / negative token ignored / window purge / result fields / 集成 0-budget / 集成 partial-budget / 集成无 quota unchanged。1078/1078 unit tests pass，ruff clean。
 
 **为下一步**：L4.6 探索惩罚 — 失败候选 3 次内不重复 (failure history) + similar 策略合并 (复用 L4.4 Jaccard)。
+
+---
+
+## L4.6 · Exploration Penalty (探索惩罚)
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/governance/exploration_penalty.py`：`ExplorationPenalty` + `PenaltyCheckResult` + `PenaltyState` + `candidate_signature_key` helper
+- 默认 `max_retries_per_window=3` + `window_seconds=86400` (24h) — 同 ADR-024 §探索惩罚
+- per-tenant + per-signature deque 累计失败时间戳；purge 自动清窗外旧记录
+- `candidate_signature_key(c)` 返回 stable string (target + level + kind + mode + rollout + top-5 change_spec keys) —— 与 deliberation 的 Jaccard set 互补
+- 4 个核心 API：
+  - `check(tenant, candidate)` → PenaltyCheckResult
+  - `record_failure(tenant, candidate, reason)` 累记
+  - `record_success(tenant, candidate)` 清失败计数 (signature 整条删)
+  - `filter_candidates(tenant, candidates)` 批量过滤掉 blocked 的
+- StrategistService `_emit_and_adjust` 在 quota check 之前调 `exploration_penalty.filter_candidates` —— 失败 signature 不进 quota 不烧 budget
+- governance `__init__.py` export
+
+**关键决策**：
+- **signature 用 stable string 而非 Jaccard set**：deliberation 的 set 是给"模糊匹配 + 计算相似度"；这里需要精确 lookup (是不是同一个曾失败过的 candidate)。两者互补不冲突
+- **`record_success` 清整个 signature 失败历史而非递减**：一次成功 = 该 signature 又可探索；递减让"3 次失败再 1 次成功"还有 2 次 buffer，不符合"成功 reset" 直觉
+- **top-5 change_spec keys**：避免 signature 过长 (e.g. RAG candidate 的 change_spec 可能有 10+ 字段)；前 5 个 sorted 已足够区分主要差异
+- **不算 change_spec 的 dict/list 字段**：嵌套结构序列化不稳定 (顺序 / 缩进)，让 signature 不 stable。**只取 scalar 字段保证 cross-process 一致**
+- **filter 在 quota 之前**：失败 signature 先剔，剩下的才占 quota budget。反过来会让"3 次失败 candidate"还占 budget 直到被 penalty 拒
+- **`record_failure` 不调 `check`**：caller 显式记，让 Tester / Gate 在拿到 rollback 触发后调一次。让 ExplorationPenalty 不耦合具体业务流
+- **window 24h 默认**：足够覆盖一个 promotion cycle (replay → shadow → canary)；24h 后允许"也许之前 bug 已修" retry
+- **per-tenant isolation**：与 ResourceQuota 同思路 — 高 tenant 失败不影响其他
+
+**17 个新单测**覆盖：signature key 4 case (stable / kind / target / no dict dump) / defaults + invalid args / check fresh / blocks after max / record_success clears / different signatures isolated / tenant isolated / window purge resets / filter drops blocked / snapshot lists tracked / Strategist 集成 3 case (filter / no penalty unchanged / success re-allows)。1095/1095 unit tests pass，ruff clean。
+
+**为下一步**：L4.7 L4 验收 + retrospective + ≥3 新 methodology seeds —— 关闭 L4 阶段, 蒸馏多实例治理经验.
