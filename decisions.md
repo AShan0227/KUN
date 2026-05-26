@@ -652,4 +652,313 @@ class PlanReview(BaseModel):
 
 ---
 
+## ADR-023：External Supervisor 独立进程 + 本地模型
+
+- **状态**：accepted (2026-05-26)
+- **背景**：内部 Supervisor（傩）和主线 Executor 用同一类模型时存在「同源偏差」问题 — 模型评模型自己容易自嗨；同时事后回溯模式（KUN-V1.md 原 idle-batch）对长任务而言来得太晚。需要一个独立视角 + 实时介入的监督机制。本地模型 (qwen2.5-32b 等) 的零边际成本进一步让"持续监管"成为可能。
+- **决策**：External Supervisor 是 7 个 agent 角色之一，但与其他 6 个角色架构上不同：**独立进程 + 本地模型 + 双模式 (实时同步 + 任务尾复盘)**。
+
+### 独立性要求
+
+3 条硬约束，启动时 fail-close：
+
+```python
+# kun/agents/external_supervisor/__init__.py
+class ExternalSupervisor:
+    def __init__(self):
+        # 必须独立进程 (multiprocessing.Process, 不能 asyncio.Task)
+        assert isinstance(self.process, multiprocessing.Process)
+        
+        # 必须显式配 model
+        assert os.getenv("KUN_SUPERVISOR_MODEL"), \
+            "External supervisor requires explicit KUN_SUPERVISOR_MODEL"
+        
+        # 必须不同 model family (不允许用同 family 监督自己)
+        assert self.model_family != main_line_model_family, \
+            "External supervisor must use different model family from main line"
+```
+
+任一条件不满足，启动失败。**不允许 silent 跑同模型监督自己**。
+
+### 双模式
+
+```
+Mode A · 同步监管 (during task)
+  
+  订阅 NATS subject: kun.task.*
+  每 N event (默认 5) 或 T 秒 (默认 30) 判一次:
+  
+    审计维度:
+      - 漂移 (与 GoalAnchor 偏离)
+      - 自嗨/假通过 (声明完成但证据不足)
+      - 阻塞 (主线无新事件超时)
+      - context 污染 (Executor 反复读取无关 asset)
+  
+    三级响应:
+      weak  → 写 supervisor_observations 表 (留痕不打扰)
+      mid   → push 到主线 channel (Executor 看得见但不强制)
+      high  → 强制 Gate pause 主线 (主线必须停)
+
+
+Mode B · 任务尾复盘 (end of task, ≤30s)
+  
+  Gate 准入门禁前必跑:
+  
+    输出 1 页 debrief:
+      - 任务真完成 vs 假通过 (含证据对比)
+      - 关键决策点合理性
+      - silent failure / dead loop / 跳过的 step
+      - RCDH 层级建议 (如果有问题)
+    
+    写 evidence_ledger:
+      - external_supervisor_debrief_id 字段必填
+    
+    Gate 准入规则:
+      - debrief 不过关 → Gate 拒绝准入 (即使 Tester 给了 pass)
+```
+
+### 4 种 Audit Mode（按触发激活，不全跑）
+
+| Mode | 触发条件 |
+|---|---|
+| 产品体验审计 | Artifact 含用户可见输出 (UI / 文本 / 对外消息) |
+| 工程质量审计 | 改了代码 / config / migration |
+| 用户目标对齐审计 | Director 判 complexity ≥ medium |
+| **自嗨 / 假通过审计** | **每次必跑** — RSI 不退化的命门 |
+
+大部分简单任务只跑自嗨审计 1 种；复杂任务跑 3-4 种。
+
+### 本地模型接入
+
+```python
+# kun/interface/llm/local_provider.py (新增)
+class LocalLLMProvider(LLMProvider):
+    """通过 ollama / llama.cpp / vllm 接入本地模型"""
+    name = "local"
+    
+    def __init__(self, model_id: str, endpoint: str):
+        # 默认: ollama 在 localhost:11434
+        self.endpoint = endpoint or "http://localhost:11434"
+        self.model_id = model_id  # e.g. "qwen2.5:32b"
+```
+
+部署：
+
+```yaml
+# docker-compose.dev.yml 加 service
+external-supervisor:
+  build: .
+  command: uv run kun external-supervisor
+  depends_on: [nats, postgres, ollama]
+  environment:
+    KUN_SUPERVISOR_MODEL: local:qwen2.5-32b
+    KUN_SUPERVISOR_ENDPOINT: http://ollama:11434
+    KUN_NATS_URL: nats://nats:4222
+    KUN_PG_DSN: ${KUN_PG_DSN}
+
+ollama:
+  image: ollama/ollama:latest
+  ports: ["11434:11434"]
+  volumes: [ollama_data:/root/.ollama]
+```
+
+### ROI
+
+- 远程模型监管 100 次/天 × 3k token ≈ $3/day（用 gpt-5.5）
+- 本地模型 = $0 marginal + 一次性硬件成本（M-series MacBook 即可跑 32B）
+- 一年节省 ~$1000+，**更关键的是不为成本斤斤计较 — 监管密度可以拉满**
+
+### 与其他 ADR 的关系
+
+- **ADR-020**: External Supervisor 是 7 个 agent 角色之一（独立进程 + 本地模型是它特有的）
+- **ADR-021 RCDH**: Mode B 复盘报告输出推荐的 RCDH 层级
+- **ADR-022 Anti-drift**: Mode A 同步监管核心 audit 维度之一是 drift detection；plan_review 的独立 verify 由 External Supervisor 跑
+
+### 影响
+
+- 新增 `kun/agents/external_supervisor/` 目录
+- 新增 `kun/interface/llm/local_provider.py`
+- 新加 `docker-compose.dev.yml` 的 ollama + external-supervisor 两个 service
+- 新增 `supervisor_observations` 表（Mode A 留痕）
+- `evidence_ledger.external_supervisor_debrief_id` 字段
+- Gate 准入逻辑必须读 debrief
+
+---
+
+## ADR-024：RSI 闭环 + 6 张数据脊柱表
+
+- **状态**：accepted (2026-05-26)
+- **背景**：KUN-V1.md §1.3 强调"学习放在每一面" — 但 2026-05-26 审计发现实际状态是 idle-batch 7 个 step 中 6 个 stub；capability_router 写了但没接进 LLMRouter；route_rule_mining / methodology_distill / debate 学习曲线全部零代码。"学习" 是叙事但落不下来。需要把 RSI 闭环用数据脊柱真正固化下来。
+- **决策**：RSI 闭环以 **6 张数据脊柱表 + 10 步流程 + 3 条工程化约束** 落地。
+
+### 6 张数据脊柱表（alembic 0011）
+
+闭环 = 数据流动。**先建表后写代码**。
+
+| 表 | 写入方 | 读取方 | 闭哪个环 |
+|---|---|---|---|
+| `runtime_capabilities` | Gate | Executor 启动 + 任务前 | capability 晋级 → 实际启用 |
+| `runtime_experiments` | Strategist | Executor / Tester | 候选策略 → 真跑实验 |
+| `strategy_search_requests` | Supervisor / External Supervisor | Strategist | 异常 → 自动触发探索 |
+| `diagnostic_records` | Supervisor (走 RCDH) | Gate / Strategist | 诊断到层级 → 引导修复 |
+| `goal_anchors` | Director | Executor (system prompt 顶部) | 长任务防漂移 |
+| `plan_reviews` | Supervisor + Executor + External Supervisor | Gate | 漂移检测闭环 |
+
+`evidence_ledger` 加字段：
+
+```sql
+ALTER TABLE evidence_ledger ADD COLUMN diagnostic_id ULID;
+ALTER TABLE evidence_ledger ADD COLUMN external_supervisor_debrief_id ULID;
+ALTER TABLE evidence_ledger ADD COLUMN diagnostic_level_reached INT;
+```
+
+### RSI 10 步闭环
+
+```
+1. 人类定义目标、安全边界、验收标准
+   ↓
+2. Director 启动
+   - 拆任务 + 生成 GoalAnchor (ADR-022)
+   - 定义验收标准
+   - 输出 complexity + priority_profile + input classification
+   ↓
+3. Gate 建立任务账本
+   - sandbox
+   - resource lock (ConcurrencySafety)
+   - rollback drill 准备
+   - evidence_ledger 入条
+   ↓
+4. Executor 执行主线任务
+   
+   同时并行启动监督线 (ADR-020 双线):
+   - Director 持续验收目标对齐 (anti-drift heartbeat, ADR-022)
+   - External Supervisor 持续 Mode A 监管 (ADR-023)
+   - Supervisor 持续抓异常信号 (anomaly threshold)
+   
+   ↓ 如果发现问题
+   
+5. Supervisor 走 RCDH 自评 (ADR-021)
+   - L0 → L3 顺序排查
+   - 写 diagnostic_record
+   - 推荐修复方向
+   
+   ↓ 如果是 L2 (模块开发问题)
+   
+6. Strategist 做 Strategy Search
+   - 多个本地 Explorer 并行 (ADR-020)
+   - 多个候选策略
+   - 每个策略带实验计划和验收指标
+   - 写 StrategyExperiment 进 runtime_experiments
+   
+   ↓
+   
+7. Safe Experimentation
+   - Strategist 编排实验 (forward / backward 由 ADR-021 决定)
+   - Gate 强制 sandbox / lock / rollback
+   - KUN Runner 实现候选方案
+   - Tester / Browser / Replay runner 执行验证
+   
+   ↓
+   
+8. Learning Signal 独立收集
+   - 自动测试结果
+   - 浏览器试玩 (Phase 2 才有)
+   - 历史 replay
+   - External Supervisor 评分
+   - 残差审计
+   - 性能 / 失败率 / 质量指标
+   
+   ↓
+   
+9. 合议层
+   - Gate 去重、聚类、排序
+   - Director 判断任务相关性
+   - Supervisor 判风险
+   - Strategist 比较策略优劣
+   - External Supervisor 给独立意见 (Mode B 复盘)
+   
+   ↓
+   
+10. Capability Governance (Gate 执行)
+   - 失败：淘汰/归档/形成 known limit
+   - 通过：合入 main，但默认 runtime_enabled=false
+   - 自动进入 promotion 队列
+   - replay / shadow / canary / rollback drill 序列
+   - 达标后 Gate 写 runtime_capabilities.enabled=true
+```
+
+### 3 条工程化约束
+
+#### 约束 1 · 自指限制（防退化）
+
+Strategist 提的策略**如果改 Strategist / Supervisor / Director / Gate 自己** → 强制升 L4 人审。
+
+```python
+# kun/agents/strategist/__init__.py
+SELF_REFERENTIAL_TARGETS = {"strategist", "supervisor", "director", "gate", "external_supervisor"}
+
+def submit_experiment(self, exp: StrategyExperiment):
+    if exp.target_module.split(".")[0] in SELF_REFERENTIAL_TARGETS:
+        require_human_approval(exp)
+```
+
+→ RSI 允许全自动改 Executor / Tester；改"监督和治理自己" 必须人审。这是 termination condition。
+
+#### 约束 2 · 基础能力闸门（防 RSI 假启动）
+
+Phase 1 拆为 1a + 1b：
+
+- **Phase 1a (基础能力)**：KUN 能可靠完成 3 类开发任务（写测试 / 修 typo bug / 加单 endpoint）
+  - 判定：3 类任务最近 N 次成功率 95% CI 下界 ≥ 0.7
+  - N 自适应：方差小 → N=10；方差大 → N=30+
+  - **不需要 RSI**
+- **Phase 1b (RSI 闭环)**：1a 通过后启用 RSI 在这 3 类任务上探索"做得更好的策略"
+- **没跑通 1a 不许跑 1b**
+
+#### 约束 3 · 候选能力晋级队列（防 dormant feature）
+
+`runtime_capabilities` 表 + promotion_queue：
+
+```python
+class RuntimeCapability(BaseModel):
+    capability_id: str
+    target_module: str
+    change_summary: str
+    enabled: bool = False              # 合入 main 后默认 false
+    promotion_state: Literal[
+        "merged",                      # 合入 main
+        "in_replay",                   # 历史 replay 中
+        "in_shadow",                   # shadow 模式中
+        "in_canary",                   # canary 模式中 (1% → 5% → 25%)
+        "ready",                       # 达标待启用
+        "enabled",                     # runtime_enabled=true
+        "rolled_back",                 # 出问题回滚
+        "expired",                     # 超时未晋级 → 重审
+    ]
+    promotion_started_at: datetime
+    promotion_deadline: datetime       # 默认 N 天 (e.g. 14)
+    rollback_on: list[str]             # 哪些指标超过什么阈值自动回滚
+```
+
+**超时规则**：候选能力 > N 天未晋级 → 自动写 strategy_search_request 重新评估（Strategist 判断"过期 / 污染 / 低价值" → 合并 / 降级 / 删除 / 重新排队）。
+
+### 与其他 ADR 的关系
+
+- **ADR-020**: 6 张表是 L5 治理层的数据脊柱；10 步流程贯穿 7 agent 协作
+- **ADR-021 RCDH**: step 5 走 RCDH；diagnostic_records 是 6 张表之一
+- **ADR-022 Anti-drift**: step 4 监督线包含 Director heartbeat；goal_anchors + plan_reviews 是 6 张表之二
+- **ADR-023 External Supervisor**: step 4 / 8 / 9 都有 External Supervisor 参与
+- **ADR-018 §16.4 KnowledgePrecipitation 删除**: 本 ADR 用 6 张表 + 10 步流程替代
+
+### 影响
+
+- alembic 0011 新建 6 张表 + evidence_ledger 加 3 字段
+- 新建 `kun/governance/rsi_loop.py` 编排 10 步
+- 新建 `kun/governance/promotion_queue.py` 处理 capability 晋级
+- 新建 `kun/governance/evidence_ledger.py` 写入 / 查询封装
+- 删除 ADR-018 §16.4 KnowledgePrecipitation 抽象
+- 实施分 L2 / L3 两阶段（L2 跑通第 1 条 RSI；L3 扩散到 3 条并行）
+
+---
+
 *ADR 记录自 2026-04-23 起，追加式维护。*
