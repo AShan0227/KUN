@@ -1,0 +1,350 @@
+"""StrategistService — on-demand 策略搜索 (ADR-024 step 5-6).
+
+输入: strategy_search_request (Supervisor 写, anomaly 触发)
+输出: 1-3 个 StrategyExperiment 候选 → 写 runtime_experiments
+
+第一条 RSI 实例 (L2.7): LLM 路由优化
+  anomaly_kind = llm_fallback_spike → 3 个候选 (Explorer Pool 3 模式):
+    Aggressive    — 提 tier (top → strong) 给该 task_type
+    Conservative  — 增加 primary 重试预算, 不改路由
+    Performance   — fallback provider 直升 primary
+
+Explorer Pool 当前简化为 engineering rule-based, L3+ 闭环再上 LLM Explorer.
+
+自指限制 (ADR-024 约束 1): target_module ∈ {strategist.*, supervisor.*,
+gate.*, director.*} → 强制 requires_human_review=True, Gate 拒绝自动启用.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+from typing import Any
+
+from kun.core.ids import new_id
+from kun.core.logging import get_logger
+
+log = get_logger("kun.agents.strategist.service")
+
+
+_SELF_REFERENTIAL_PREFIXES = (
+    "strategist",
+    "supervisor",
+    "gate",
+    "director",
+    "external_supervisor",
+)
+"""自指限制 (ADR-024 §约束 1): 改这些 agent 自己 → 强制人审."""
+
+
+@dataclass(frozen=True)
+class StrategyExperiment:
+    """单个候选实验, 对应 runtime_experiments 一行."""
+
+    experiment_id: str
+    target_module: str
+    target_level: int  # RCDH 层 0-3
+    change_spec: dict[str, Any]
+    rollout_mode: str  # shadow / canary / replay / direct
+    sampling_rate: float  # 0.0-1.0
+    success_metric: str  # 名字 — Tester 读取的指标
+    acceptance_threshold: float
+    rollback_on: list[dict[str, Any]] = field(default_factory=list)
+    ttl_seconds: int = 86400
+    status: str = "pending"
+    explorer_mode: str = "conservative"  # aggressive / conservative / performance
+    requires_human_review: bool = False
+    rationale: str = ""
+
+    def to_row_payload(self, tenant_id: str) -> dict[str, Any]:
+        """转 RuntimeExperimentRow 可消费的 dict."""
+        return {
+            "tenant_id": tenant_id,
+            "experiment_id": self.experiment_id,
+            "target_module": self.target_module,
+            "target_level": self.target_level,
+            "change_spec": self.change_spec,
+            "rollout_mode": self.rollout_mode,
+            "sampling_rate": self.sampling_rate,
+            "success_metric": self.success_metric,
+            "acceptance_threshold": float(self.acceptance_threshold),
+            "rollback_on": self.rollback_on,
+            "ttl_seconds": self.ttl_seconds,
+            "status": self.status,
+        }
+
+
+ExperimentEmitter = Callable[[StrategyExperiment], Awaitable[None]]
+"""异步 emitter — 真写 runtime_experiments 表. L3 接 DB writer; 测试用 fake."""
+
+
+def _is_self_referential(target_module: str) -> bool:
+    """target_module 命中 5 个监督角色之一 → self-referential."""
+    lowered = target_module.lower()
+    for prefix in _SELF_REFERENTIAL_PREFIXES:
+        if (
+            lowered == prefix
+            or lowered.startswith(f"{prefix}.")
+            or lowered.startswith(f"{prefix}/")
+            or lowered.startswith(f"kun/agents/{prefix}")
+            or lowered.startswith(f"kun.agents.{prefix}")
+        ):
+            return True
+    return False
+
+
+# ---- 第一条 RSI 实例: llm_fallback_spike ----
+
+
+def _candidates_for_llm_fallback_spike(
+    request: dict[str, Any],
+) -> list[StrategyExperiment]:
+    """anomaly_kind=llm_fallback_spike → 3 个候选 (Explorer Pool)."""
+    target_module = str(request.get("target_module") or "llm.router")
+    evidence = request.get("evidence") or []
+    primary_provider = None
+    primary_model = None
+    fallback_provider = None
+    for ev in evidence:
+        if ev.get("primary_provider"):
+            primary_provider = ev["primary_provider"]
+            primary_model = ev.get("primary_model")
+        if ev.get("fallback_provider"):
+            fallback_provider = ev["fallback_provider"]
+
+    candidates: list[StrategyExperiment] = []
+
+    # Conservative — 提 tier (strong → top) 给该 task_type, sampling 30%
+    candidates.append(
+        StrategyExperiment(
+            experiment_id=new_id("experiment_run"),
+            target_module=target_module,
+            target_level=1,  # L1 (activation) — 改 router 配置
+            change_spec={
+                "kind": "tier_upgrade",
+                "from_tier": "strong",
+                "to_tier": "top",
+                "task_types": ["*"],
+            },
+            rollout_mode="canary",
+            sampling_rate=0.3,
+            success_metric="llm_fallback_rate",
+            acceptance_threshold=0.05,  # 目标 fallback < 5%
+            rollback_on=[
+                {
+                    "metric": "cost_usd_per_task",
+                    "operator": ">",
+                    "value": 0.5,
+                },
+                {
+                    "metric": "task_failure_rate",
+                    "operator": ">",
+                    "value": 0.1,
+                },
+            ],
+            explorer_mode="conservative",
+            rationale=(
+                f"primary={primary_provider}/{primary_model} 频繁 fallback "
+                f"→ 提 tier 减少 fallback, canary 30% 观察."
+            ),
+        )
+    )
+
+    # Aggressive — fallback provider 直升 primary, sampling 50%
+    if fallback_provider:
+        candidates.append(
+            StrategyExperiment(
+                experiment_id=new_id("experiment_run"),
+                target_module=target_module,
+                target_level=1,
+                change_spec={
+                    "kind": "primary_swap",
+                    "old_primary": primary_provider,
+                    "new_primary": fallback_provider,
+                },
+                rollout_mode="canary",
+                sampling_rate=0.5,
+                success_metric="task_success_rate",
+                acceptance_threshold=0.9,
+                rollback_on=[
+                    {
+                        "metric": "task_success_rate",
+                        "operator": "<",
+                        "value": 0.7,
+                    },
+                ],
+                explorer_mode="aggressive",
+                rationale=(
+                    f"fallback={fallback_provider} 命中率高 "
+                    f"→ 升 primary, 看是否更稳."
+                ),
+            )
+        )
+
+    # Performance — 增加 primary 重试预算, 不改路由
+    candidates.append(
+        StrategyExperiment(
+            experiment_id=new_id("experiment_run"),
+            target_module=target_module,
+            target_level=1,
+            change_spec={
+                "kind": "retry_budget_increase",
+                "from_retries": 1,
+                "to_retries": 3,
+            },
+            rollout_mode="shadow",  # shadow 不影响生产
+            sampling_rate=1.0,
+            success_metric="llm_fallback_rate",
+            acceptance_threshold=0.1,
+            rollback_on=[
+                {
+                    "metric": "latency_p95_ms",
+                    "operator": ">",
+                    "value": 5000,
+                },
+            ],
+            explorer_mode="performance",
+            rationale=(
+                "primary 可能只是临时抖动 → 重试 3 次, shadow 验证不引入 P95 增长."
+            ),
+        )
+    )
+
+    return candidates
+
+
+def _candidates_for_task_failure_spike(
+    request: dict[str, Any],
+) -> list[StrategyExperiment]:
+    """anomaly_kind=task_failure_spike → 单 Conservative 候选."""
+    target_module = str(request.get("target_module") or "executor.unknown")
+    evidence = request.get("evidence") or []
+    task_type = "unknown"
+    for ev in evidence:
+        if ev.get("task_type"):
+            task_type = ev["task_type"]
+            break
+
+    return [
+        StrategyExperiment(
+            experiment_id=new_id("experiment_run"),
+            target_module=target_module,
+            target_level=2,  # 模块层
+            change_spec={
+                "kind": "tier_upgrade",
+                "from_tier": "strong",
+                "to_tier": "top",
+                "task_types": [task_type],
+            },
+            rollout_mode="canary",
+            sampling_rate=0.2,
+            success_metric="task_success_rate",
+            acceptance_threshold=0.85,
+            rollback_on=[
+                {"metric": "task_success_rate", "operator": "<", "value": 0.5},
+            ],
+            explorer_mode="conservative",
+            rationale=(
+                f"task_type={task_type} 失败率上升 → 临时提 tier 看是否模型能力问题."
+            ),
+        )
+    ]
+
+
+_CANDIDATE_GENERATORS: dict[
+    str, Callable[[dict[str, Any]], list[StrategyExperiment]]
+] = {
+    "llm_fallback_spike": _candidates_for_llm_fallback_spike,
+    "task_failure_spike": _candidates_for_task_failure_spike,
+}
+
+
+class StrategistService:
+    """on-demand Strategist 服务.
+
+    输入: strategy_search_request dict
+    输出: 1-3 个 StrategyExperiment 候选; emitter 异步落 runtime_experiments.
+    """
+
+    def __init__(
+        self,
+        *,
+        emitter: ExperimentEmitter | None = None,
+    ) -> None:
+        self._emitter = emitter
+
+    async def propose_candidates(
+        self,
+        request: dict[str, Any],
+    ) -> list[StrategyExperiment]:
+        """读 request → 生成候选 → emitter 落库.
+
+        未知 anomaly_kind → 空 list (Supervisor 升级到 LLM Strategist 或人).
+        """
+        anomaly_kind = request.get("anomaly_kind") or ""
+        generator = _CANDIDATE_GENERATORS.get(anomaly_kind)
+        if generator is None:
+            log.warning(
+                "strategist.unknown_anomaly_kind",
+                anomaly_kind=anomaly_kind,
+                target_module=request.get("target_module"),
+            )
+            return []
+
+        candidates = generator(request)
+
+        # 自指限制: target_module 命中监督角色 → 标 requires_human_review
+        adjusted: list[StrategyExperiment] = []
+        for c in candidates:
+            if _is_self_referential(c.target_module):
+                # frozen dataclass — 用 replace 模拟修改
+                from dataclasses import replace
+
+                adjusted.append(
+                    replace(
+                        c,
+                        requires_human_review=True,
+                        status="awaiting_human_review",
+                        rationale=c.rationale + " [SELF-REFERENTIAL: human review required]",
+                    )
+                )
+            else:
+                adjusted.append(c)
+
+        # emit 落库
+        for c in adjusted:
+            if self._emitter is not None:
+                try:
+                    await self._emitter(c)
+                except Exception as e:
+                    log.warning(
+                        "strategist.emitter_failed",
+                        error=str(e),
+                        experiment_id=c.experiment_id,
+                    )
+
+        log.info(
+            "strategist.candidates_proposed",
+            anomaly_kind=anomaly_kind,
+            count=len(adjusted),
+            self_referential=sum(1 for c in adjusted if c.requires_human_review),
+        )
+        return adjusted
+
+
+def experiment_as_dict(exp: StrategyExperiment) -> dict[str, Any]:
+    """Helper: StrategyExperiment → plain dict (for downstream consumers)."""
+    return asdict(exp)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+__all__ = [
+    "ExperimentEmitter",
+    "StrategistService",
+    "StrategyExperiment",
+    "experiment_as_dict",
+]

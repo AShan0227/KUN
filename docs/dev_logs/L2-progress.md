@@ -188,3 +188,35 @@
 **23 个新单测**覆盖：narrow_scope 7 种路径 / L0 keyword + cross-module / L1 keyword + capability_state / L2 single + repeat / L3 stack trace + file+line / 强制升级 3 种边界 / scope_modules 上限 / 自动 narrow / 无信号兜底 / LevelCheckResult 默认。874/874 unit tests pass，ruff clean。
 
 **为下一步**：L2.7 第一条 RSI 实例 —— Strategist on-demand 用 LLM router 优化为例：异常 → Strategist 提候选 → Executor 跑实验 → Tester 评估 → Gate 启用 → 下次任务用新路由。
+
+---
+
+## L2.7 · Strategist on-demand + 第一条 RSI 实例 (LLM 路由优化)
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/agents/strategist/service.py`：
+  - `StrategyExperiment` (frozen dataclass) 对应 `runtime_experiments` 一行 — experiment_id / target_module / target_level / change_spec / rollout_mode / sampling_rate / success_metric / acceptance_threshold / rollback_on / ttl_seconds / status / explorer_mode / requires_human_review / rationale
+  - `to_row_payload(tenant_id)` 转 ORM 可消费的 dict（L2.8 Gate / L3 DB writer 用）
+  - `StrategistService.propose_candidates(request) → list[StrategyExperiment]`：根据 `anomaly_kind` 路由到候选生成器；未知 kind → 空 list + warning
+  - `_candidates_for_llm_fallback_spike` 第一条 RSI 实例 — Explorer Pool 3 模式：
+    - **Conservative**: tier upgrade strong→top, sampling 30%, canary，rollback_on cost > $0.5 / task_failure > 10%
+    - **Aggressive**: fallback provider 直升 primary（依赖 evidence 含 fallback_provider；缺则跳过），sampling 50%, canary
+    - **Performance**: 重试 1→3, sampling 100% shadow（不影响生产）, rollback_on latency_p95 > 5s
+  - `_candidates_for_task_failure_spike` 单 Conservative 候选 — tier upgrade 该 task_type, canary 20%
+- 自指限制 `_is_self_referential(target_module)` 检测 5 个监督角色前缀（strategist / supervisor / gate / director / external_supervisor）4 种命名形式（裸名 / 点路径 / `kun.agents.X` / `kun/agents/X`）；命中 → `requires_human_review=True` + `status="awaiting_human_review"` + rationale 加 `[SELF-REFERENTIAL]` 标记
+- `__init__.py` export `StrategistService` / `StrategyExperiment` / `ExperimentEmitter` / `experiment_as_dict`
+
+**关键决策**：
+- **engineering rule-based candidates，不调 LLM**：L2 范围只做 rule-based Explorer。3 个 mode 的差异由工程化决策树驱动（conservative=最小风险参数 / aggressive=大幅改动 / performance=不动主路径只 shadow）。L3+ 闭环再上 LLM Explorer
+- **fallback_provider 是 aggressive 的硬依赖**：没有 fallback 信息就不知道改谁。evidence 没填则跳过 aggressive 而不是猜 — 避免做 `primary=anthropic → primary=stub` 这种荒诞实验
+- **rollback_on 必须配齐**：每个候选都附 2-3 个回滚触发器（成本/失败率/延迟）。没回滚保护就上线 = 出问题靠人发现，与 RSI 闭环宗旨违背
+- **sampling_rate 按 mode 阶梯**：performance=100%（shadow，无伤），conservative=30%（canary 真路径），aggressive=50%（明确风险更高时反而 sample 多让信号更快显现，但 rollback 触发器也更紧）
+- **`replace(c, requires_human_review=True)` 用 dataclasses.replace**：frozen dataclass 不能就地改，replace 返回新实例。保持 immutability 同时实现"通过自指 → 调整 status"
+- **emitter exception 吞掉 + log**：失败原因后续 RSI 闭环自己发现并修；不让 Strategist 主路径挂掉
+- **`anomaly_kind` 未知返回空 list 而不是抛**：上游 Supervisor 写的 request 可能是新 kind，Strategist 端 graceful — warning 进 log，让 LLM Strategist (L3+) 接手
+
+**14 个新单测**覆盖：自指 4 种命名形式 + 拒绝其他模块 / llm_fallback 三 mode / fallback_provider 缺失跳 aggressive / acceptance + rollback 强制配齐 / task_failure 单 candidate / 自指标 human review / 非自指不标 / unknown kind 空 list / missing kind 空 list / emitter 调用 / emitter 异常吞 / to_row_payload 形状 / experiment_as_dict 转换。888/888 unit tests pass，ruff clean。
+
+**为下一步**：L2.8 Gate 准入门禁 —— 读 TestReport + DiagnosticRecord + DebriefRecord，决定是否把 experiment 写进 `runtime_capabilities` 让下次任务真用上。

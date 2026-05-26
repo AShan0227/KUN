@@ -87,9 +87,9 @@
 - [x] **L2.3** Periodic Plan Review Heartbeat（每 3 步 / 5 分钟）（commit 9cee6c9）
 - [x] **L2.4** External Supervisor 独立进程化 + LocalLLMProvider 接入（ollama）（commits 5bbf486 + 6330d6e + cb64c2f）
 - [x] **L2.5** External Supervisor Mode A 同步监管 + Mode B 任务尾复盘 + 自嗨检测（commit 92a258e）
-- [x] **L2.6** RCDH 诊断层级 + diagnostic_records 表 + narrow_scope 工具（commit pending）
-- [ ] Strategist on-demand + 第一次 RSI 实例（LLM 路由优化）
-- [ ] Gate 准入门禁：读 TestReport + RCDH report + Debrief，写 runtime_capabilities
+- [x] **L2.6** RCDH 诊断层级 + diagnostic_records 表 + narrow_scope 工具（commit ea8d8fb）
+- [x] **L2.7** Strategist on-demand + 第一次 RSI 实例（LLM 路由优化）（commit pending）
+- [ ] **L2.8** Gate 准入门禁：读 TestReport + RCDH report + Debrief，写 runtime_capabilities
 
 ---
 
