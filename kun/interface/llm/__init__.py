@@ -20,6 +20,7 @@ from kun.interface.llm.base import (
     ToolCall,
     UsageInfo,
 )
+from kun.interface.llm.local_provider import LocalLLMProvider
 from kun.interface.llm.router import LLMRouter, get_router
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "LLMResponse",
     "LLMRole",
     "LLMRouter",
+    "LocalLLMProvider",
     "ModelTier",
     "TaskProfile",
     "ToolCall",
