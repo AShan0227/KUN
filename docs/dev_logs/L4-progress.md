@@ -115,3 +115,40 @@
 **23 个新单测**覆盖：Jaccard 4 case（identical / disjoint / partial / both-empty / one-empty）/ signature 2 case / deduplicate 5 case（empty / single / distinct / merge / threshold / mode-preference） / cluster 2 case / rank 4 case（backward first / conservative before aggressive / auto before human / lower sampling）/ deliberate 2 case / 集成 case 验证 StrategistService.propose 输出已 ranked。1065/1065 unit tests pass，ruff clean。
 
 **为下一步**：L4.5 Resource quota — token budget / 时间窗 / dedup_key cooldown 工程化限流，防 RSI 闭环资源爆炸。
+
+---
+
+## L4.5 · Resource quota (token / experiment / cooldown)
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/governance/resource_quota.py`：`ResourceQuota` + `QuotaState` + `QuotaCheckResult` frozen dataclass
+- 双预算 per-tenant + 滑动窗口（默认 1 小时）：
+  - **token budget** 默认 1M tokens/hour, 防 LLM 调用爆炸
+  - **experiment budget** 默认 30 experiments/hour, 防 Pool 多实例 + Explorer 候选无限增长
+- `check_and_record_experiment(tenant_id, experiment_id, estimated_tokens=0)` 单步 check + 预扣：
+  - experiment_budget 命中 → 拒绝 + 详细 reason
+  - token_budget 命中 → 拒绝 + 详细 reason
+  - 通过 → 记录新 experiment + 预扣 estimated_tokens
+- `record_token_usage(tenant_id, tokens)` LLM call 完成后显式累记真实 token 数
+- `snapshot(tenant_id)` 给 monitoring 用，返回 token_usage / experiment_count / budget
+- 滑动窗口在 check 时自动 purge 旧记录（`deque + popleft`）
+- `asyncio.Lock` 保护并发；per-tenant state isolation
+- StrategistService.__init__ 增 `resource_quota: ResourceQuota | None` 注入；`_emit_and_adjust` 在 emit 前调 quota check，被拒的 candidate 不写出 emitter
+- governance `__init__.py` export `ResourceQuota` + `QuotaCheckResult`
+
+**关键决策**：
+- **双预算 (token + experiment) 而非单一指标**：token 限制 LLM cost，experiment 限制 Strategist 探索频率。两者解耦：高 token 任务 (e.g. 深推理) 可能只 1 experiment 但消耗大；高 experiment 任务 (e.g. 多模式 Pool fan-out) 可能 token 少但实验密。**单一指标会让一种场景误伤**
+- **per-tenant 独立 state**：复用同 service instance 但 state 字典 keyed by tenant_id — 高 tenant 不影响低 tenant
+- **预扣 estimated_tokens 而非仅事后记**：不预扣会让 burst 短时间内多个 experiment 通过 check 然后集体烧 token；预扣即 reservation pattern
+- **`record_token_usage` 单独 API**：LLM call 完成后才知道真实 token 数，与 reservation 分开记。caller 可不调（理论上预扣足够）但调了让窗口数据更准
+- **`asyncio.Lock` 全局而非 per-tenant**：state dict 写入需 lock；per-tenant lock 更复杂收益不明显。瓶颈在 quota check 几微秒，全局锁不卡
+- **`tenant_id="default"` 在 Strategist 调用**：当前 candidate 不带 tenant 字段，用默认占位。L5+ caller 传真 tenant 时需透传到 `_emit_and_adjust`
+- **Quota check 在 emit 前 / dedup 后**：candidate 已经被 deliberate 排好后再 quota；保留高优先级（backward / conservative）candidate 更可能通过。如果在 dedup 前 quota，noise candidate 占用 budget
+- **被拒 candidate 不写出**：用户/调用方收到的 list 已是 quota-passed 子集；filter 在 service 内部完成，不让 caller 区分"被生成但拒"和"未生成"
+- **`window_seconds=0` 抛 ValueError**：0 窗口让"立即拒绝所有"，没意义；用 `experiment_budget_per_window=0` 表达"拒绝所有"语义更清楚
+
+**13 个新单测**覆盖：defaults / 非法参数 / 首次允许 / experiment exceeded / token exceeded / record post call / tenant isolation / negative token ignored / window purge / result fields / 集成 0-budget / 集成 partial-budget / 集成无 quota unchanged。1078/1078 unit tests pass，ruff clean。
+
+**为下一步**：L4.6 探索惩罚 — 失败候选 3 次内不重复 (failure history) + similar 策略合并 (复用 L4.4 Jaccard)。
