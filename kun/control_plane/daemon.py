@@ -30,24 +30,6 @@ from kun.control_plane.capability_execution import (
     build_capability_execution_policy,
     ensure_policy_covers_required_capabilities,
 )
-from kun.control_plane.work_item_governance import (
-    FileResourceLockStore,
-    InMemoryResourceLockStore,
-    RedisResourceLockStore,
-    ResourceLockBackend,
-    ResourceLockConflict,
-    SandboxIsolationMode,
-    SandboxIsolationSpec,
-    SQLiteResourceLockStore,
-    WorkerPoolConfig,
-    WorkerSlotSnapshot,
-    is_pure_governance_work_item,
-    is_workspace_resource_lock_ref,
-    normalize_resource_lock_ref,
-    sandbox_spec_for_work_item,
-    work_item_requires_workspace_boundary,
-    worker_slots,
-)
 from kun.control_plane.mission_director import MISSION_DIRECTOR_OWNER
 from kun.control_plane.preflight import WorkItemPreflight, run_work_item_preflight
 from kun.control_plane.rainflow_ad_mission import RAINFLOW_AD_PRODUCTION_MODE
@@ -71,6 +53,24 @@ from kun.control_plane.v6 import (
     WorkItem,
 )
 from kun.control_plane.watchtower_bridge import evaluate_v6_watchtower_event_sync
+from kun.control_plane.work_item_governance import (
+    FileResourceLockStore,
+    InMemoryResourceLockStore,
+    RedisResourceLockStore,
+    ResourceLockBackend,
+    ResourceLockConflict,
+    SandboxIsolationMode,
+    SandboxIsolationSpec,
+    SQLiteResourceLockStore,
+    WorkerPoolConfig,
+    WorkerSlotSnapshot,
+    is_pure_governance_work_item,
+    is_workspace_resource_lock_ref,
+    normalize_resource_lock_ref,
+    sandbox_spec_for_work_item,
+    work_item_requires_workspace_boundary,
+    worker_slots,
+)
 from kun.control_plane.workspace_snapshot import restore_workspace_snapshot
 
 if TYPE_CHECKING:

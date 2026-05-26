@@ -68,4 +68,4 @@ async def get_trace(task_id: str) -> list[EvidenceEntry]:
 def _new_id() -> str:
     from kun.core.ids import new_id
 
-    return new_id("ev")
+    return new_id("evidence")

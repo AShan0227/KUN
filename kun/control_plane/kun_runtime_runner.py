@@ -20,9 +20,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from kun.control_plane.capability_execution import CapabilityExecutionPolicy
-from kun.control_plane.work_item_governance import build_merge_governance_report
 from kun.control_plane.runtime import InMemoryControlPlane, WorkItemResult
 from kun.control_plane.v6 import ArtifactManifest, ArtifactRecord, GateEvaluation, WorkItem
+from kun.control_plane.work_item_governance import build_merge_governance_report
 
 
 class KunTaskExecutionOutput(BaseModel):

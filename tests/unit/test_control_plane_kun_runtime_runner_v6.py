@@ -18,8 +18,8 @@ from kun.control_plane import (
     WorkingContext,
     WorkItem,
 )
-from kun.control_plane.work_item_governance import normalize_resource_lock_ref
 from kun.control_plane.rainflow_ad_mission import RAINFLOW_AD_PRODUCTION_MODE
+from kun.control_plane.work_item_governance import normalize_resource_lock_ref
 
 NOW = datetime(2026, 5, 20, 10, 0, tzinfo=UTC)
 

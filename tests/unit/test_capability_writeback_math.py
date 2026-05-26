@@ -10,13 +10,13 @@ Test hits the internal helper via explicit import.
 from __future__ import annotations
 
 import pytest
-from kun.datamodel.capability import CapabilityCard, EntityRef
 from kun.agents.gate.capability_writeback import (
     TaskOutcome,
     _apply_outcome,
     _select_card_for_update,
     record_outcome,
 )
+from kun.datamodel.capability import CapabilityCard, EntityRef
 from sqlalchemy.dialects import postgresql
 
 

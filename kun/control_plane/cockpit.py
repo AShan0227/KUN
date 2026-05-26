@@ -15,11 +15,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from kun.control_plane.work_item_governance import (
-    ResourceLockConflict,
-    SandboxIsolationSpec,
-    WorkerSlotSnapshot,
-)
 from kun.control_plane.daemon import DaemonServiceState, daemon_service_process_is_alive
 from kun.control_plane.progress import (
     QualityGateStatus,
@@ -39,6 +34,11 @@ from kun.control_plane.v6 import (
     TaskType,
     WorkItem,
     WorkItemStatus,
+)
+from kun.control_plane.work_item_governance import (
+    ResourceLockConflict,
+    SandboxIsolationSpec,
+    WorkerSlotSnapshot,
 )
 
 CockpitTone = Literal["working", "waiting", "blocked", "ready", "done"]

@@ -104,4 +104,4 @@ async def run_diagnostic(
 def _new_id() -> str:
     from kun.core.ids import new_id
 
-    return new_id("dx")
+    return new_id("diagnostic")

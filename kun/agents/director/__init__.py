@@ -9,6 +9,7 @@ Director Protocol (base.py) 在 L1.7 后会有具体类实现 (复合 IntentInte
 TaskPlanner + TaskRouter + GoalAnchor 生成 + Input Classification).
 """
 
+from kun.agents.director.anchor import GoalAnchor
 from kun.agents.director.base import Director
 from kun.agents.director.intent import IntentInterpreter
 from kun.agents.director.planner import ExecutionPlan, PlanStep, TaskPlanner
@@ -17,6 +18,7 @@ from kun.agents.director.role_router import RouteChoice, TaskRouter
 __all__ = [
     "Director",
     "ExecutionPlan",
+    "GoalAnchor",
     "IntentInterpreter",
     "PlanStep",
     "RouteChoice",

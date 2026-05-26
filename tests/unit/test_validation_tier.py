@@ -1,8 +1,8 @@
 """Validation tier selection matrix (§8.1)."""
 
 import pytest
-from kun.datamodel.task import Owner, TaskMeta
 from kun.agents.tester.validation import pick_tier
+from kun.datamodel.task import Owner, TaskMeta
 
 
 def _mk(risk: str, complexity: float) -> TaskMeta:

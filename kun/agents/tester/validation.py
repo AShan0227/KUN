@@ -17,10 +17,10 @@ from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kun.agents.tester.multi_judge import jury_evaluate
 from kun.core.logging import get_logger
 from kun.core.scoring import ScoreDescriptor
 from kun.datamodel.task import TaskMeta
-from kun.agents.tester.multi_judge import jury_evaluate
 from kun.interface.llm import LLMMessage, LLMRequest, LLMRouter, get_router
 
 log = get_logger("kun.agents.tester.validation")

@@ -20,13 +20,13 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from kun.control_plane.capability_execution import CapabilityExecutionPolicy
+from kun.control_plane.v6 import ArtifactRecord, ExecutionContract, TaskPlan, WorkItem
 from kun.control_plane.work_item_governance import (
     is_pure_governance_work_item,
     is_workspace_resource_lock_ref,
     normalize_resource_lock_ref,
     work_item_requires_workspace_boundary,
 )
-from kun.control_plane.v6 import ArtifactRecord, ExecutionContract, TaskPlan, WorkItem
 from kun.control_plane.workspace_snapshot import create_workspace_snapshot
 
 if TYPE_CHECKING:

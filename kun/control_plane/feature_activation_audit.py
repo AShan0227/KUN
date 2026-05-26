@@ -30,12 +30,6 @@ from kun.control_plane.capability_evolution import (
     build_capability_promotion,
 )
 from kun.control_plane.capability_execution import CapabilityExecutionPolicy
-from kun.control_plane.work_item_governance import (
-    FileResourceLockStore,
-    RedisResourceLockStore,
-    SQLiteResourceLockStore,
-    WorkerPoolConfig,
-)
 from kun.control_plane.daemon import ControlPlaneDaemon
 from kun.control_plane.daemon_service import build_daemon_worker_pool_service_install_plans
 from kun.control_plane.external_sample_comparison import (
@@ -84,6 +78,12 @@ from kun.control_plane.v6 import (
     TaskPlan,
     WorkingContext,
     WorkItem,
+)
+from kun.control_plane.work_item_governance import (
+    FileResourceLockStore,
+    RedisResourceLockStore,
+    SQLiteResourceLockStore,
+    WorkerPoolConfig,
 )
 from kun.watchtower.engine import RuleEngine
 from kun.watchtower.rules import GuardRule, RuleTrigger
