@@ -216,9 +216,7 @@ class CodexMcpProvider(LLMProvider):
         usage = UsageInfo(input_tokens=est_input, output_tokens=est_output)
         cost_equiv = self.compute_cost(usage, equivalent=True)
 
-        llm_request_total.labels(
-            provider=self.name, model=self.model_id, role="invoke"
-        ).inc()
+        llm_request_total.labels(provider=self.name, model=self.model_id, role="invoke").inc()
         llm_latency_seconds.labels(provider=self.name, model=self.model_id).observe(
             latency_ms / 1000
         )

@@ -956,7 +956,6 @@ class Orchestrator:
                             # marked as unverified. Best-effort: notification
                             # failure must not break the task pipeline.
                             try:
-                                from kun.datamodel.notification import Notification
                                 from kun.engineering.notifications import (
                                     push as push_notification,
                                 )

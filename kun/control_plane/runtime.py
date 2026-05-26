@@ -31,12 +31,6 @@ from kun.control_plane.nuo import (
     diagnose_nuo_health,
 )
 from kun.control_plane.store import ControlPlaneStore
-
-# Local copy of the rainflow production-mode discriminator. Duplicated here so
-# the core runtime does not reverse-depend on a domain module. If the domain
-# renames its mode string, update both copies (or migrate to a shared
-# kun/control_plane/production_modes.py).
-RAINFLOW_AD_PRODUCTION_MODE = "rainflow_information_flow_ad_v1"
 from kun.control_plane.v6 import (
     AcceptanceReview,
     ArtifactManifest,
@@ -59,6 +53,12 @@ from kun.control_plane.v6 import (
     default_recovery_for_failure,
     validate_workitem_dag,
 )
+
+# Local copy of the rainflow production-mode discriminator. Duplicated here so
+# the core runtime does not reverse-depend on a domain module. If the domain
+# renames its mode string, update both copies (or migrate to a shared
+# kun/control_plane/production_modes.py).
+RAINFLOW_AD_PRODUCTION_MODE = "rainflow_information_flow_ad_v1"
 
 if TYPE_CHECKING:
     from kun.control_plane.capability_evolution import (

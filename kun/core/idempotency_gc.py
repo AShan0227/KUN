@@ -24,8 +24,8 @@ log = get_logger("kun.idempotency_gc")
 
 async def expire_once() -> int:
     """Delete expired idempotency rows once. Returns the number removed."""
-    Session = get_admin_sessionmaker()
-    async with Session() as s:
+    session_factory = get_admin_sessionmaker()
+    async with session_factory() as s:
         # Use SQL math on (created_at + ttl_sec seconds) so the comparison
         # happens server-side without pulling rows into Python.
         result = await s.execute(

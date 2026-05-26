@@ -8,7 +8,6 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 # Defaults we tolerate in dev but must NEVER reach production.
 _DEV_DEFAULT_PG_ADMIN_DSN = "postgresql+asyncpg://kun:kun@localhost:55432/kun"
 _DEV_DEFAULT_S3_ACCESS_KEY = "minio"

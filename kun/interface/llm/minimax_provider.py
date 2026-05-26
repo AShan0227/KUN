@@ -140,9 +140,7 @@ class MiniMaxProvider(LLMProvider):
             else ("length" if choice.get("finish_reason") == "length" else "stop")
         )
 
-        llm_request_total.labels(
-            provider=self.name, model=self.model_id, role="invoke"
-        ).inc()
+        llm_request_total.labels(provider=self.name, model=self.model_id, role="invoke").inc()
         llm_latency_seconds.labels(provider=self.name, model=self.model_id).observe(latency / 1000)
         llm_cost_usd.labels(provider=self.name, model=self.model_id, tenant_id="unknown").inc(
             cost_actual
