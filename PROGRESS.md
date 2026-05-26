@@ -137,15 +137,18 @@
 
 ---
 
-## L5 · 自创任务（待启动，RSI 真闭合的标志）
+## L5 · 自创任务（推进中，RSI 真闭合的标志）
 
 **交付标志**：监督线发现的系统性问题 → 自动转 Strategist 任务（无需人提）→ 闭环跑完产出 capability → 自动晋级。
 
 ### 计划任务
 
-- [ ] Supervisor 异常聚类 → 自动写 strategy_search_request
-- [ ] 自动晋级 promotion_queue 超时规则（候选 > N 天未晋级 → 重审）
-- [ ] 监督线给 Strategist 的高优触发通道
+- [x] **L5.1** Supervisor 异常聚类 → 自动写 strategy_search_request（commit pending）
+- [ ] **L5.2** 自动晋级 promotion_queue 超时规则（候选 > N 天未晋级 → 重审）
+- [ ] **L5.3** 监督线给 Strategist 的高优触发通道
+- [ ] **L5.4** 自创 RSI 请求生成（cluster + RCDH diagnostic → rich strategy_search_request）
+- [ ] **L5.5** End-to-end wiring: Supervisor cluster → Strategist auto-trigger
+- [ ] **L5.6** L5 验收 + retrospective + ≥3 新 methodology seeds
 
 ---
 
