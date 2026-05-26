@@ -1,0 +1,118 @@
+topic: caller_count_is_a_guardrail_not_a_kpi
+title: caller count (≥N) 是抽象护栏不是 KPI — 不要人为制造 caller 来达标
+description: |
+  "≥3 调用方才算真合并" 这类规则是为了**防止过度抽象**而设的护栏:
+  抽象出来无人用 = 死代码. 但反向使用 = 把 caller count 当 KPI =
+  害人. 反 KPI 化的工程审计原则:
+
+    1. **数 caller** — 用 grep, 不靠假设
+    2. **每个 caller 自然性** — 是不是真需要这个抽象? 如果不是,
+       说明抽象设计有问题, 不是 caller 不够
+    3. **三档决策**:
+       - 自然 caller ≥ N → "真合并", 维持
+       - 接口已成熟 + 单 caller 通过依赖注入支持多用法 →
+         "by interface 真合并", 维持
+       - 完全无 caller, 无自然消费场景 → **永久退役**,
+         不假装实施
+    4. **反对硬塞 caller 凑数** — 制造的 caller 后续被发现"不
+       自然" 时, 抽象的语义会被反向污染
+
+trigger:
+  conditions:
+    - 审计现有抽象 (interface / module / pattern) 是否真在用
+    - 历史 ADR / spec 提到 "≥N caller 才算真合并" 类规则
+    - 决定一个抽象继续维护还是收回
+  applicable_kinds:
+    - Interface design audit
+    - Code dead-weight cleanup
+    - ADR follow-through review
+    - Architecture maturity check
+
+action:
+  pattern:
+    - rule: 先 grep 实际数 caller
+      do: |
+        grep -rn "ClassName\|module.function" --include="*.py"
+        grep | wc -l
+      why: 不靠记忆 — 真实 caller 数是事实
+    - rule: 区分"真 caller" vs "间接 caller"
+      consider:
+        - import + 真调用 = 真 caller
+        - 仅 docstring 提到 = 不算
+        - 测试中 import = 算 (验证接口活)
+        - 同模块内自引用 = 不算 (引擎自用不算 N 个 caller)
+    - rule: 三档决策表
+      decisions:
+        - condition: 真 caller >= N
+          action: "真合并, 维持"
+        - condition: 真 caller < N 但 interface 已被依赖注入消费
+          action: "by interface 真合并, 维持 (caller 数不再是瓶颈)"
+        - condition: 真 caller = 0, 无自然 caller 场景
+          action: "永久退役, 写决策归档不删 (避免新人疑问)"
+        - condition: 真 caller < N 但有自然新 caller 可加
+          action: "加 1-2 真 caller 自然达标; 别凑数"
+    - rule: 退役决策必须有书面归档
+      do: 写 docs/<adr>-audit.md 说明审计 + 退役原因
+      why: 比删除更清晰 — 防止新人发现旧 ADR 还提 "GuardPolicy"
+        然后困惑实施
+  anti_patterns:
+    - "claim: 调用方少加个测试也算 (实际: 测试不是 caller, 是验证)"
+    - "claim: 为达 ≥3 加个 wrapper 函数包一下 (实际: 制造伪 caller)"
+    - "claim: 暂时 1 caller 慢慢就 3 了 (实际: 没具体路径就是侥幸)"
+    - "claim: ADR 说 ≥3 必须达到 (实际: 把护栏当 KPI 的根源)"
+
+rationale: |
+  KUN L3.6 审计 ADR-018 §16 4 个半合并项的真实例子:
+
+    ValidationPipeline: 1 真 caller (orchestrator) + Tester 接口
+      承诺 + tests → "by interface 真合并", 维持
+    NotificationLayer: 1 caller → 加 Gate + Supervisor 2 自然
+      caller → 3 caller, 真合并
+    GuardRule: 2 prod caller + tests → "已真合并", 维持
+    GuardPolicy: 0 caller, 0 import, 设计概念从未实施 →
+      **永久退役**
+
+  GuardPolicy 退役 = 减少未来困惑. 留着这个名字不实施, 比把它
+  真删除更糟 — 每个新人都会查它是什么. 明文归档决策更清晰.
+
+  护栏的目的: 防止"抽象一时爽, 维护火葬场". KPI 化反而强迫多余
+  抽象, 增加维护成本而非降低.
+
+evidence:
+  - source: docs/adr-018-audit.md
+    date: 2026-05-27
+    phase: L3.6
+    notes: |
+      ValidationPipeline / NotificationLayer / GuardRule /
+      GuardPolicy 4 项实际 grep + 决策表 + 退役归档.
+
+  - source: kun/agents/gate/service.py + kun/agents/supervisor/service.py
+    date: 2026-05-27
+    phase: L3.6
+    notes: |
+      NotificationLayer 加 2 个**自然** caller (Gate 自指 + Supervisor
+      L4 escalation) — 不是为达标硬塞, 是它们真需要推 NUO alert.
+
+  - source: ADR-018 §16
+    date: 2026-04-23 (origin)
+    notes: |
+      原始 "≥3 caller 才算真合并" 规则. L3.6 重新解读为护栏不是 KPI.
+
+confidence: 0.92  # 1 个 ADR 4 项审计验证 + 明确归档决策
+applicability:
+  scopes:
+    - architecture_audit
+    - abstraction_lifecycle
+    - dead_code_cleanup
+    - adr_follow_through
+  do_not_apply_when:
+    - 抽象是公共库 (跨 repo 提供给 N 个未知 caller)
+    - 抽象在新生阶段, 第一个 caller 还在写 (合理预期)
+    - caller count ≥N 是合同要求 (e.g. API 协议向后兼容)
+
+related_methodologies:
+  - large_design_refactor  # 同样: grep verify 是必备
+  - paired_commit  # 同样: 工程化纪律不盲目跟规则
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

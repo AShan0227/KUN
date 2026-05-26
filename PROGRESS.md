@@ -99,19 +99,22 @@
 
 ---
 
-## L3 · 闭环扩散 + Forward/Backward 双策略（推进中）
+## L3 · 闭环扩散 + Forward/Backward 双策略（✅ 已达成 2026-05-27）
 
 **交付标志**：3 条 RSI 实例并行跑；自指限制生效；ADR-018 半合并补齐到 ≥ 3 调用方。
 
-### 计划任务
+### 实施细节
 
-- [x] **L3.1** 第 2 条 RSI 实例：context 压缩策略（commit f03a5bf）
-- [x] **L3.2** 第 3 条 RSI 实例：skill 选择启发式（commit 0476315）
-- [x] **L3.3** Forward / Backward 双修复策略（Strategist auto-select）（commit 5276801）
-- [x] **L3.4** 监督线三级阈值 + 4 级升级路径真接（commit 0c8bc9a）
-- [x] **L3.5** 自指限制强化（Strategist 改自己强制 L4 人审）（commits a496a9f + 5d30395）
-- [x] **L3.6** ADR-018 半合并补齐：ValidationPipeline / NotificationLayer / GuardPolicy / GuardRule（commit pending）
-- [ ] **L3.7** L3 验收 + retrospective + ≥3 新 methodology seeds
+- [x] **L3.1** 第 2 条 RSI 实例：context 压缩策略（commit f03a5bf · +10 tests）
+- [x] **L3.2** 第 3 条 RSI 实例：skill 选择启发式（commit 0476315 · +9 tests）
+- [x] **L3.3** Forward / Backward 双修复策略（Strategist auto-select）（commit 5276801 · +14 tests）
+- [x] **L3.4** 监督线三级阈值 + 4 级升级路径真接（commit 0c8bc9a · +22 tests）
+- [x] **L3.5** 自指限制强化（governance + Strategist + Gate 双重）（commits a496a9f + 5d30395 · +13 tests）
+- [x] **L3.6** ADR-018 半合并补齐（commits 84308fa + 98c890a · +7 tests）
+- [x] **L3.7** L3 验收 + retrospective + 3 新 methodology seeds（commit pending）
+  - rsi_explorer_pool_three_modes
+  - forward_backward_repair_auto_select
+  - caller_count_is_a_guardrail_not_a_kpi
 
 ---
 

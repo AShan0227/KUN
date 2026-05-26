@@ -1,0 +1,109 @@
+topic: forward_backward_repair_auto_select
+title: 修复策略 Forward / Backward 工程化自动决策
+description: |
+  系统出异常时, 不要默认"探索新解" — 先看是不是最近一次改动引起的回归.
+  如果是, **回滚比新探索更安全更快**. 工程化规则:
+
+    最近 24h 内有 enabled capability 命中 anomaly 的 target_module
+      → backward rollback (单实验, 直接关掉那条 capability)
+    否则
+      → forward exploration (Explorer Pool 3 模式新候选)
+
+  Backward 不走 canary — 是已知态, 直接关. Rollback 候选自带"回滚的
+  回滚"触发器 (如果回滚后异常率反而升 → re-enable).
+
+trigger:
+  conditions:
+    - 系统检测到异常 → Strategist 接到 strategy_search_request
+    - 能访问 capability_history (最近 promotion 记录)
+    - 异常 target_module 与 history capability 的 target_module 可比对
+  applicable_to:
+    - Strategist 候选生成
+    - Gate / promotion_queue 回滚决策
+    - 任何"探索 vs 回退"二选一的工程系统
+
+action:
+  pattern:
+    - rule: select_repair_direction(request, history, lookback=24h)
+      logic: |
+        if history empty / None: return forward
+        for entry in history:
+            if entry.enabled and now - entry.promoted_at <= lookback:
+                return backward
+        return forward
+      why: |
+        24h 是经验起点 — 覆盖大多数 promotion 周期 (deadline 默认 14d
+        但 enable 通常 < 数小时). 太短漏掉缓慢恶化, 太长误判.
+    - rule: backward candidate 单实验
+      do: |
+        - explorer_mode="backward" (区分 conservative/aggressive/performance)
+        - rollout_mode="direct" (不 canary — 回滚是已知态)
+        - sampling_rate=1.0
+        - change_spec.kind="capability_rollback" +
+          rollback_capability_id 指向 history 中那条 enabled
+        - rollback_on 含"回滚的回滚"触发器
+          (anomaly_rate > 1.2 倍原值 → re-enable)
+      why: |
+        rollback 不再探索, 不需要 canary 验证. 一步直接.
+    - rule: backward 候选共用 _emit_and_adjust
+      do: |
+        与 forward 候选共用自指限制检查 + emit 落库 helper.
+      why: |
+        backward target_module 也可能是监督角色 (e.g. 回滚 strategist
+        自己的改动), 仍需走自指人审分支.
+  anti_patterns:
+    - 默认 always forward (新探索) → 错过近因回滚
+    - 默认 always backward → 阻止系统真改进
+    - lookback 不绑窗口 (历史全部看一遍) → 几个月前的 capability 误命中
+    - backward 走 canary → 已知态浪费 sampling 时间
+    - 没"回滚的回滚"保护 → 回滚错决策 = dead end
+
+rationale: |
+  实测 KUN L3.3: 14 个单测覆盖各路径包括 ISO 字符串时间戳容错 +
+  history_reader 抛异常默认回 forward (不让 DB 错误意外触发 rollback).
+
+  Forward / Backward 本质是 RSI 闭环的"敏感度调节":
+    - 倾向 forward → 系统不断改进但风险高
+    - 倾向 backward → 系统稳定但停止进化
+    - auto-select 让"近期改动相关" 自动 backward, 其他 forward
+
+  ADR-024 §约束: capability 启用窗口期内 (~14d) 出问题, 默认怀疑
+  这条 capability. 这个 methodology 是 ADR-024 的执行规则.
+
+evidence:
+  - source: kun/agents/strategist/service.py:select_repair_direction
+    date: 2026-05-27
+    phase: L3.3
+    notes: |
+      module-level pure function. capability_history_reader 注入,
+      lookback_hours=24 默认.
+  - source: kun/agents/strategist/service.py:_candidate_for_backward_rollback
+    date: 2026-05-27
+    phase: L3.3
+    notes: |
+      explorer_mode="backward", rollout_mode="direct",
+      rollback_on 含 anomaly_rate > 1.2 触发器. 与
+      _emit_and_adjust 共用 self-referential 检查.
+  - source: tests/unit/test_l3_forward_backward.py
+    date: 2026-05-27
+    phase: L3.3
+    notes: |
+      14 个测试覆盖: empty/None history / 仅 disabled / 近期
+      enabled / 超时容错 / ISO 字符串 / no tzinfo / history
+      reader 异常默认 forward / backward + self-referential 仍人审.
+
+confidence: 0.85  # 1 个 Strategist 实例验证, 模式可清晰扩展
+applicability:
+  scopes:
+    [rsi_repair_direction, capability_promotion, rollback_safety]
+  do_not_apply_when:
+    - 系统没 capability_history (新系统启动时)
+    - anomaly 与 capability 完全无关 (e.g. 网络中断引起)
+    - 回滚成本远大于探索成本 (e.g. 数据迁移类 capability)
+
+related_methodologies:
+  - rsi_explorer_pool_three_modes
+  - engineering_first_with_llm_fallback
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27
