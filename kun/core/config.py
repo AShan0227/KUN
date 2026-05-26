@@ -66,6 +66,14 @@ class Settings(BaseSettings):
     ofox_proxy_url: str = "https://api.ofox.ai"
     ofox_api_key: str | None = None
 
+    # External Supervisor (ADR-023) — 本地推理引擎 (ollama / llama.cpp / vLLM)
+    external_supervisor_enabled: bool = Field(default=False)
+    external_supervisor_model_id: str = Field(default="qwen2.5:32b")
+    external_supervisor_base_url: str = Field(default="http://localhost:11434/v1")
+    external_supervisor_api_key: str = Field(default="ollama")
+    external_supervisor_timeout_sec: float = Field(default=120.0)
+    external_supervisor_max_concurrent: int = Field(default=2, ge=1)
+
     # Budgets (ADR-008)
     budget_daily_usd: float = Field(default=10.0)
     budget_monthly_usd: float = Field(default=200.0)
