@@ -99,18 +99,19 @@
 
 ---
 
-## L3 · 闭环扩散 + Forward/Backward 双策略（待启动）
+## L3 · 闭环扩散 + Forward/Backward 双策略（推进中）
 
 **交付标志**：3 条 RSI 实例并行跑；自指限制生效；ADR-018 半合并补齐到 ≥ 3 调用方。
 
 ### 计划任务
 
-- [ ] 第 2 条 RSI 实例：context 压缩策略
-- [ ] 第 3 条 RSI 实例：skill 选择启发式
-- [ ] Forward / Backward 双修复策略（Strategist auto-select）
-- [ ] 监督线三级阈值 + 4 级升级路径真接
-- [ ] 自指限制（Strategist 改自己强制 L4 人审）
-- [ ] ADR-018 半合并补齐：ValidationPipeline / NotificationLayer / GuardPolicy / GuardRule
+- [x] **L3.1** 第 2 条 RSI 实例：context 压缩策略（commit pending）
+- [ ] **L3.2** 第 3 条 RSI 实例：skill 选择启发式
+- [ ] **L3.3** Forward / Backward 双修复策略（Strategist auto-select）
+- [ ] **L3.4** 监督线三级阈值 + 4 级升级路径真接
+- [ ] **L3.5** 自指限制（Strategist 改自己强制 L4 人审）
+- [ ] **L3.6** ADR-018 半合并补齐：ValidationPipeline / NotificationLayer / GuardPolicy / GuardRule
+- [ ] **L3.7** L3 验收 + retrospective + ≥3 新 methodology seeds
 
 ---
 

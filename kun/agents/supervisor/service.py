@@ -36,6 +36,8 @@ _DEFAULT_FAILURE_THRESHOLD = 3  # task 连续 3 次失败
 _DEFAULT_ANOMALY_THRESHOLD = 0.6  # task_anomaly_score 高水位
 _DEFAULT_DURATION_OUTLIER_RATIO = 3.0  # 任务时长 > 3x 该 task_type 平均
 _DEFAULT_WINDOW_SEC = 60  # 滑动窗口
+_DEFAULT_CONTEXT_OVERSIZED_INPUT_TOKENS = 80_000  # 单次 LLM call input_tokens 阈值
+_DEFAULT_CONTEXT_OVERSIZED_THRESHOLD = 3  # 窗口内超阈值次数 ≥ N → spike (L3.1)
 
 
 @dataclass
@@ -61,6 +63,8 @@ class SupervisorAnomalyState:
     anomaly_threshold: float = _DEFAULT_ANOMALY_THRESHOLD
     duration_outlier_ratio: float = _DEFAULT_DURATION_OUTLIER_RATIO
     window_sec: int = _DEFAULT_WINDOW_SEC
+    context_oversized_input_tokens: int = _DEFAULT_CONTEXT_OVERSIZED_INPUT_TOKENS
+    context_oversized_threshold: int = _DEFAULT_CONTEXT_OVERSIZED_THRESHOLD
 
     def _purge_old(self, now: datetime) -> None:
         """滑动窗口 — 丢掉超过 window_sec 的旧事件."""
@@ -140,6 +144,11 @@ class SupervisorService:
                 req2 = self._check_duration_outlier(state, payload)
                 if req2:
                     triggered.append(req2)
+
+            elif event_type == "llm.invoke.completed":
+                req = self._check_context_oversized(state, payload)
+                if req:
+                    triggered.append(req)
 
             # 异步写 (emitter 兜底)
             for req in triggered:
@@ -259,6 +268,47 @@ class SupervisorService:
                 }
             ],
             priority="low",
+        )
+
+    def _check_context_oversized(
+        self,
+        state: SupervisorAnomalyState,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """L3.1 第二条 RSI 实例: context 压缩策略.
+
+        窗口内 input_tokens > threshold 的事件数 ≥ context_oversized_threshold
+        → spike. target_module 落 llm.context (context 压缩属于 context 子系统).
+        """
+        input_tokens = int(payload.get("input_tokens") or 0)
+        if input_tokens < state.context_oversized_input_tokens:
+            return None
+        # 数窗口内同样超大的事件
+        oversized_count = sum(
+            1
+            for e in state.events
+            if e.event_type == "llm.invoke.completed"
+            and int(e.payload.get("input_tokens") or 0)
+            >= state.context_oversized_input_tokens
+        )
+        if oversized_count < state.context_oversized_threshold:
+            return None
+        return self._build_request(
+            state=state,
+            anomaly_kind="context_oversized_spike",
+            target_module="llm.context",
+            evidence=[
+                {
+                    "type": "input_tokens_spike",
+                    "oversized_count": oversized_count,
+                    "threshold_tokens": state.context_oversized_input_tokens,
+                    "window_sec": state.window_sec,
+                    "latest_input_tokens": input_tokens,
+                    "latest_provider": payload.get("provider"),
+                    "latest_task_type": payload.get("task_type"),
+                }
+            ],
+            priority="medium",
         )
 
     def _build_request(

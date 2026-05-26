@@ -252,11 +252,118 @@ def _candidates_for_task_failure_spike(
     ]
 
 
+def _candidates_for_context_oversized_spike(
+    request: dict[str, Any],
+) -> list[StrategyExperiment]:
+    """L3.1 第二条 RSI 实例: context 压缩策略.
+
+    anomaly_kind=context_oversized_spike → 3 个候选 (Explorer Pool):
+      Conservative — 老消息 summary 压缩 (保语义, 加预处理 step)
+      Aggressive   — 硬截断 (drop messages older than N turns)
+      Performance  — RAG 替代全 context (检索相关历史, 不传所有)
+    """
+    target_module = str(request.get("target_module") or "llm.context")
+    evidence = request.get("evidence") or []
+    threshold_tokens = 80_000
+    latest_input_tokens = 0
+    for ev in evidence:
+        if ev.get("threshold_tokens"):
+            threshold_tokens = int(ev["threshold_tokens"])
+        if ev.get("latest_input_tokens"):
+            latest_input_tokens = int(ev["latest_input_tokens"])
+
+    candidates: list[StrategyExperiment] = []
+
+    # Conservative — summary 压缩 (保语义)
+    candidates.append(
+        StrategyExperiment(
+            experiment_id=new_id("experiment_run"),
+            target_module=target_module,
+            target_level=2,  # 模块层 — 改 context assembler
+            change_spec={
+                "kind": "context_summary_compression",
+                "older_than_turns": 10,
+                "summary_target_tokens": 500,
+                "trigger_input_tokens": threshold_tokens,
+            },
+            rollout_mode="canary",
+            sampling_rate=0.3,
+            success_metric="avg_input_tokens_per_call",
+            acceptance_threshold=float(threshold_tokens) * 0.6,
+            rollback_on=[
+                {"metric": "task_success_rate", "operator": "<", "value": 0.85},
+                {"metric": "context_loss_complaint_rate", "operator": ">", "value": 0.05},
+            ],
+            explorer_mode="conservative",
+            rationale=(
+                f"input_tokens 频繁超 {threshold_tokens} (latest={latest_input_tokens}) "
+                f"→ 用 summary 压缩老消息, 保语义."
+            ),
+        )
+    )
+
+    # Aggressive — 硬截断
+    candidates.append(
+        StrategyExperiment(
+            experiment_id=new_id("experiment_run"),
+            target_module=target_module,
+            target_level=2,
+            change_spec={
+                "kind": "context_hard_truncation",
+                "max_turns": 20,
+                "preserve_top_pins": True,  # 保留 anchor 顶部 pinning
+            },
+            rollout_mode="canary",
+            sampling_rate=0.2,
+            success_metric="avg_input_tokens_per_call",
+            acceptance_threshold=float(threshold_tokens) * 0.4,
+            rollback_on=[
+                {"metric": "task_success_rate", "operator": "<", "value": 0.8},
+            ],
+            explorer_mode="aggressive",
+            rationale=(
+                "input_tokens 严重超阈 → 硬截断保留最近 20 轮 + anchor pinning. "
+                "风险: 丢中间上下文."
+            ),
+        )
+    )
+
+    # Performance — RAG 替代全 context
+    candidates.append(
+        StrategyExperiment(
+            experiment_id=new_id("experiment_run"),
+            target_module=target_module,
+            target_level=2,
+            change_spec={
+                "kind": "context_rag_retrieval",
+                "top_k": 8,
+                "embedding_model": "default",
+                "fallback_to_truncation": True,
+            },
+            rollout_mode="shadow",  # shadow 不影响生产
+            sampling_rate=1.0,
+            success_metric="avg_input_tokens_per_call",
+            acceptance_threshold=float(threshold_tokens) * 0.3,
+            rollback_on=[
+                {"metric": "retrieval_relevance_score", "operator": "<", "value": 0.6},
+                {"metric": "latency_p95_ms", "operator": ">", "value": 3000},
+            ],
+            explorer_mode="performance",
+            rationale=(
+                "改 RAG 检索相关历史而不传全部. shadow 验证检索相关度不掉."
+            ),
+        )
+    )
+
+    return candidates
+
+
 _CANDIDATE_GENERATORS: dict[
     str, Callable[[dict[str, Any]], list[StrategyExperiment]]
 ] = {
     "llm_fallback_spike": _candidates_for_llm_fallback_spike,
     "task_failure_spike": _candidates_for_task_failure_spike,
+    "context_oversized_spike": _candidates_for_context_oversized_spike,
 }
 
 
