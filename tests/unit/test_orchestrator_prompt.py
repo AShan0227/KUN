@@ -190,7 +190,9 @@ def test_system_prompt_long_task_with_skills_and_context():
         "skill_dir",
         "context",
     ]
-    for prev, nxt in zip(ordered[:-1], ordered[1:], strict=True):
+    from itertools import pairwise
+
+    for prev, nxt in pairwise(ordered):
         assert positions[prev] < positions[nxt], (
             f"order broken: {prev}@{positions[prev]} should precede {nxt}@{positions[nxt]}"
         )

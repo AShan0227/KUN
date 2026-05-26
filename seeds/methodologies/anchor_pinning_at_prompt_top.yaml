@@ -1,0 +1,77 @@
+topic: anchor_pinning_at_prompt_top
+title: LLM prompt 不可丢内容必放顶部 (顶部 pinning)
+description: |
+  LLM context limit + token truncation 通常发生在尾部. 把不可丢的内容
+  (anchor / policy / role 定义) 放 system prompt 最顶部, 用工程化方式
+  保证它不会被切掉. 这是 prompt engineering 的硬规则.
+
+trigger:
+  conditions:
+    - 在 LLM system prompt 里要放不能被丢的内容
+    - 长任务 / 多轮对话, 累积 context 可能触发 truncation
+    - 用户/系统下游可能不断 append 新 context
+  applicable_content_types:
+    - GoalAnchor (任务目标)
+    - 安全 policy (不要做 X / 必须做 Y)
+    - role 定义 (你是 KUN 的执行角色)
+    - 不变量 (invariants — 全程必须保持)
+    - 模板格式约束 (output schema)
+
+action:
+  rules:
+    - rule: position
+      where: system prompt 最顶部 (不是底部)
+      why: truncation 切尾部, 顶部信号最强
+    - rule: visual_marker
+      do: 用清晰边界标识 (═══, ###, 框) 让 LLM 视觉上识别
+      example: "═══ GOAL ANCHOR (immutable, pinned) ═══"
+    - rule: explicit_immutability
+      do: 显式说明不可变 (immutable, do not override)
+      why: LLM 本能讨好新输入 — 明确告诉它"这段不会被新消息覆盖"
+    - rule: ordering
+      do: anchor → policy/anti-sycophancy → base directive → audience → optional
+      why: 不可丢度从高到低排序
+  anti_patterns:
+    - 把 anchor 放 system prompt 底部 → truncation 优先切
+    - 把 anchor 放 user message → 每轮可被新内容覆盖
+    - 没有视觉边界 → LLM 不知道这段是"特殊"内容
+    - 不加 "immutable" 字样 → LLM 会"配合"新指令改方向
+
+rationale: |
+  LLM 的 attention 机制对位置敏感 — system prompt 顶部权重最高, 尾部
+  最容易被新输入"挤掉". 同时大多数 LLM SDK 的 truncation 策略也是
+  从尾部砍 (head 保留). 顶部 pin 是工程化保证, 不依赖模型自觉.
+
+  反 sycophancy 同理: 模型本能讨好是训练带来的, 必须用 system prompt
+  显式告诉它"拒绝", 不能假设它会自己抗.
+
+evidence:
+  - source: docs/dev_logs/L1-progress.md (L1.8 + L1.9)
+    date: 2026-05-27
+    phase: L1.8+L1.9
+    outcome: success
+    notes: |
+      Executor system prompt 把 GoalAnchor.render() + anti-sycophancy 段
+      放顶部. test_system_prompt_long_task_pins_anchor_at_top 断言
+      prompt.startswith("═══ GOAL ANCHOR") — 顶部位置工程化保证.
+
+  - source: ADR-022 Anti-drift Layer 2 + Layer 5
+    date: 2026-05-26
+    notes: |
+      Anti-drift 整体架构 5 层, Layer 2 (顶部 pinning) + Layer 5
+      (anti-sycophancy directive) 都是 prompt 顶部技术.
+
+confidence: 0.9  # 多次设计中验证 + 业内 prompt eng 共识
+applicability:
+  scopes: [prompt_engineering, llm_integration, long_context_tasks]
+  do_not_apply_when:
+    - 单次短对话 (无 truncation 风险)
+    - prompt 总 token 远低于 context limit (≤ 10% capacity)
+    - 内容是参考性的, 丢了不影响正确性
+
+related_methodologies:
+  - extract_helper_for_testable_prompt_assembly
+  - large_design_refactor
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

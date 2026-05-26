@@ -1,0 +1,64 @@
+topic: module_relocation_grep_string_literals_too
+title: 模块迁移时除了 grep import 还要 grep 字符串字面量
+description: |
+  Python 里模块路径既可作 import 语句, 又可作字符串字面量 (monkeypatch /
+  get_logger / get_tracer / mock.patch / importlib.import_module 等).
+  grep "from kun.OLD" 只能找 import; 字符串字面量需要单独 grep.
+
+trigger:
+  conditions:
+    - 要把模块从 kun/old/foo.py 迁移到 kun/new/foo.py
+    - 或重命名模块路径
+    - 需要更新所有 importer
+
+action:
+  steps:
+    - step: 1
+      do: 'grep -rn "from kun.OLD" kun/ tests/  → 找显式 import'
+    - step: 2
+      do: 'grep -rn "kun.OLD" kun/ tests/  → 找字符串字面量'
+      where_to_look_for:
+        - monkeypatch.setattr("kun.OLD.x.y", ...)
+        - get_logger("kun.OLD.foo")
+        - tracer.get_tracer("kun.OLD.foo")
+        - mock.patch("kun.OLD.foo")
+        - importlib.import_module("kun.OLD.foo")
+    - step: 3
+      do: 两类都批量改 (sed -i 比 N 次 Edit 快 5-10x)
+    - step: 4
+      do: 跑测试验证 — 字符串字面量错了不会报 ImportError, 只在跑到该代码时炸
+  anti_patterns:
+    - 只 grep import, 假设 import 改完就完事
+    - 跳过测试 — 字符串字面量错误是隐式的, 不跑测试看不见
+
+rationale: |
+  Python 静态分析能识别 import, 但 dynamic patching 用的字符串路径是
+  runtime 才解析的. monkeypatch.setattr("kun.OLD.x", ...) 在 import 改完
+  后仍指向旧路径 — Python 不会 ImportError (字符串 lookup 失败时静默
+  跳过), 测试看似正常运行, 但 patch 不生效, 副作用全跑真路径.
+
+evidence:
+  - source: docs/dev_logs/L1-progress.md (L1.2 Commit D + Commit E)
+    date: 2026-05-26
+    phase: L1.2
+    outcome: success
+    notes: |
+      L1.2 Commit D 迁 validation.py 时漏了 test_orchestrator_validation.py
+      里的 monkeypatch 字符串 "kun.engineering.capability_writeback.session_scope".
+      跑测试时报错 → 补 grep 字符串字面量 → 修复.
+      启发式立刻应用到 L1.2 Commit E: 先 grep 字面量再改, 一次过.
+
+confidence: 0.8
+applicability:
+  scopes: [refactoring, python_module_relocation, dynamic_dispatch]
+  do_not_apply_when:
+    - 模块只在 import 语句被引用 (无 monkeypatch / patch / dynamic import)
+    - 项目用静态依赖注入 (无字符串路径)
+
+related_methodologies:
+  - git_mv_invalidates_read_state
+  - paired_commit
+  - adr_authoring
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

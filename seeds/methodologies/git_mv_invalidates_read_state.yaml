@@ -1,0 +1,55 @@
+topic: git_mv_invalidates_read_state
+title: git mv 之后必须重新 Read 才能 Edit
+description: |
+  Edit tool 跟踪 Read 调用建立的 in-session 状态。git mv / mv / rename 之后,
+  对新路径的第一次 Edit 必须先 Read 一次, 否则报 "File has not been read yet"。
+  Bash tail/cat 显示文件内容不算 Read tool 的"已读"标记。
+
+trigger:
+  conditions:
+    - 刚执行 git mv 移动文件
+    - 接下来要 Edit 移动后的文件 (新路径)
+    - 之前对旧路径用过 Read tool, 但新路径还没
+
+action:
+  steps:
+    - step: 1
+      do: git mv kun/old.py kun/new.py 之后, 立刻 Read kun/new.py 一次
+      why: 让 Edit tool 知道新路径已被"读过"
+    - step: 2
+      do: 然后才能 Edit kun/new.py
+    - step: 3
+      do: 如果忘了, Edit 会报 "File has not been read yet" — Recover: Read 后重试
+  anti_patterns:
+    - 用 Bash cat / Bash tail 看新路径内容当作"读过"
+    - 跨 turn 把 Read 痕迹延后到 Edit 之后
+    - 假设 git mv 会自动迁移 Edit tool 状态
+
+rationale: |
+  Edit tool 是显式工具, 它跟踪的也是 Read tool 的 in-session 调用痕迹。
+  Bash 命令的输出对 Edit tool 不透明 — 即使 cat 显示了完整内容, Edit 不知道。
+  这是工程约束, 不是 bug — 防止 LLM 凭"我看过文件"的记忆乱改, 强制每次
+  Edit 都对应 fresh Read。
+
+evidence:
+  - source: docs/dev_logs/L1-progress.md (L1.2 Commit D)
+    date: 2026-05-26
+    phase: L1.2
+    outcome: success
+    notes: |
+      git mv kun/engineering/validation.py 到 kun/agents/tester/validation.py 后,
+      第一次 Edit 报 "File has not been read yet". 补 Read 后通过.
+
+confidence: 0.85  # 多次出现, 规律稳定
+applicability:
+  scopes: [tool_usage, file_operations, refactoring]
+  do_not_apply_when:
+    - 创建全新文件 (Write tool 不需要 Read)
+    - 文件没有移动, 只是修改 (Read 已在 session 内)
+
+related_methodologies:
+  - module_relocation_grep_string_literals_too
+  - paired_commit
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27
