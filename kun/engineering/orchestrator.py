@@ -27,7 +27,7 @@ from sqlalchemy.exc import IntegrityError
 
 from kun.agents.director.intent import IntentInterpreter
 from kun.agents.director.planner import TaskPlanner
-from kun.brain.router import TaskRouter
+from kun.agents.director.role_router import TaskRouter
 from kun.context.packer import ContextPacker
 from kun.core.config import settings
 from kun.core.db import session_scope

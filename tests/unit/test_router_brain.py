@@ -1,7 +1,7 @@
 """TaskRouter (brain) tests."""
 
 import pytest
-from kun.brain.router import TaskRouter
+from kun.agents.director.role_router import TaskRouter
 from kun.datamodel.task import Owner, TaskMeta
 
 
