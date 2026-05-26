@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from kun.brain.planner import PlanStep, TaskPlanner
+from kun.agents.director.planner import PlanStep, TaskPlanner
 from kun.datamodel.task import Constraint, Owner, Risk, TaskMeta, TaskRef, TaskSpec
 from kun.interface.llm.base import LLMRequest, LLMResponse
 
