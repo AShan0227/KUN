@@ -20,7 +20,7 @@ from kun.engineering.agent_benchmark import (
     run_benchmark,
     sample_benchmark_tasks,
 )
-from kun.engineering.capability_writeback import TaskOutcome, record_outcome
+from kun.agents.gate.capability_writeback import TaskOutcome, record_outcome
 
 router = APIRouter()
 log = get_logger("kun.api.nuo.benchmark")

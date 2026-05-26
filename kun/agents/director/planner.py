@@ -18,7 +18,7 @@ from kun.datamodel.runtime import validate_dag
 from kun.datamodel.task import TaskRef
 from kun.interface.llm.base import LLMMessage, LLMRequest, LLMResponse, TaskProfile
 
-log = get_logger("kun.brain.planner")
+log = get_logger("kun.agents.director.planner")
 
 _PLANNER_SYSTEM_PROMPT = """你是 Genesis 的任务拆解层。
 只输出严格 JSON，不要 Markdown，不要解释。
@@ -73,7 +73,7 @@ class TaskPlanner:
         # collapse to single_step (tells us where to invest L2 blueprints).
         from opentelemetry import trace
 
-        tracer = trace.get_tracer("kun.brain.planner")
+        tracer = trace.get_tracer("kun.agents.director.planner")
         with tracer.start_as_current_span("kun.planner.plan") as span:
             span.set_attribute("kun.task_id", task_ref.meta.task_id)
             span.set_attribute("kun.task_type", task_ref.meta.task_type)

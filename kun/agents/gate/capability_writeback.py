@@ -31,7 +31,7 @@ from kun.datamodel.capability import (
     Stats,
 )
 
-log = get_logger("kun.engineering.capability_writeback")
+log = get_logger("kun.agents.gate.capability_writeback")
 
 Outcome = Literal["pass", "partial", "fail"]
 

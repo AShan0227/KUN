@@ -20,7 +20,7 @@ from kun.interface.llm import (
     TaskProfile,
 )
 
-log = get_logger("kun.brain.intent")
+log = get_logger("kun.agents.director.intent")
 
 
 _SYSTEM_PROMPT = """你是 KUN 的意图理解层. 用户发来自然语言任务, 你把它转成结构化 TASK.md.
@@ -81,7 +81,7 @@ class IntentInterpreter:
         # OTel: business-level span around intent parsing.
         from opentelemetry import trace
 
-        tracer = trace.get_tracer("kun.brain.intent")
+        tracer = trace.get_tracer("kun.agents.director.intent")
         with tracer.start_as_current_span("kun.intent.interpret") as span:
             span.set_attribute("kun.tenant_id", owner.tenant_id)
             span.set_attribute("kun.user_message_len", len(user_message))

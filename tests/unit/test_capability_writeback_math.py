@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 from kun.datamodel.capability import CapabilityCard, EntityRef
-from kun.engineering.capability_writeback import (
+from kun.agents.gate.capability_writeback import (
     TaskOutcome,
     _apply_outcome,
     _select_card_for_update,
@@ -160,11 +160,11 @@ async def test_record_outcome_sets_explicit_rls_tenant(
         return None
 
     monkeypatch.setattr(
-        "kun.engineering.capability_writeback.session_scope",
+        "kun.agents.gate.capability_writeback.session_scope",
         fake_session_scope,
     )
     monkeypatch.setattr(
-        "kun.engineering.capability_writeback._record_outcome_in_txn",
+        "kun.agents.gate.capability_writeback._record_outcome_in_txn",
         fake_record_in_txn,
     )
 
