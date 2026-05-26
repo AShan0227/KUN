@@ -13,6 +13,28 @@ from kun.interface.llm.stub_provider import StubProvider
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_same_instance_fallback_does_not_retry_same_provider() -> None:
+    """KUN_CODEX_ONLY pins primary == fallback to one provider; if primary fails,
+    fallback resolves to the same instance and we should NOT call it again."""
+    flaky = StubProvider(model_id="codex-mcp", tier="top", fail_rate=1.0)
+    providers = {
+        "top": flaky,
+        "strong": flaky,
+        "cheap": flaky,
+        "coding": flaky,
+        "fallback": flaky,  # same instance as primary
+    }
+    router = LLMRouter(providers)
+
+    with pytest.raises(RuntimeError, match="fallback resolves to the same instance"):
+        await router.invoke(
+            LLMRequest(messages=[LLMMessage(role="user", content="hi")]),
+            purpose="execution",
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_purpose_maps_to_tier():
     providers = {
         "top": StubProvider(model_id="top", tier="top"),

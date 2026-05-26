@@ -17,9 +17,9 @@ lint:  ## ruff check + format check
 	uv run ruff check kun tests
 	uv run ruff format --check kun tests
 
-format:  ## apply ruff format fixes
-	uv run ruff check --fix kun tests
+format:  ## apply ruff format + auto-fix lints
 	uv run ruff format kun tests
+	uv run ruff check --fix kun tests
 
 typecheck:  ## mypy (non-blocking)
 	uv run mypy kun || true

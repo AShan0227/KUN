@@ -167,14 +167,20 @@ def load_skills_from_dir(root: str | Path = "skills") -> SkillRegistry:
         log.info("skills.dir_missing", path=str(root))
         return registry
 
+    failed: list[dict[str, str]] = []
     for skill_file in sorted(root.rglob("SKILL.md")):
         try:
             content = skill_file.read_text(encoding="utf-8")
             record = parse_skill(content, str(skill_file))
             registry.register(record)
         except Exception as e:
+            failed.append({"path": str(skill_file), "error": str(e)})
             log.warning("skills.parse_failed", path=str(skill_file), error=str(e))
 
+    if failed:
+        # Loud summary so ops sees how many skills are missing, not just a
+        # stream of individual warnings that may scroll past.
+        log.error("skills.load_partial", failed_count=len(failed), failed=failed)
     log.info("skills.loaded", count=len(registry), path=str(root))
     return registry
 

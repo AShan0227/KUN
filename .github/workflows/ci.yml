@@ -112,7 +112,9 @@ jobs:
   license-scan:
     name: Starter skill license scan
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # license-scan is strict — unlicensed third-party skill content must
+    # block merge. If it's failing for a known-bad reason, fix the skill,
+    # don't soft-fail the job.
     steps:
       - uses: actions/checkout@v4
       - name: REUSE compliance

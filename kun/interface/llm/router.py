@@ -396,12 +396,10 @@ async def _select_by_capability(
         return CapabilityRouteChoice(provider=selected, branch=branch, scores=[])
     candidates = _ordered_provider_candidates(selected, base_primary, challenger)
     if len(candidates) <= 1:
-        scores = await _rank_capability_candidates(
-            candidates=candidates,
-            request=request,
-            purpose=purpose,
-        )
-        return CapabilityRouteChoice(provider=selected, branch=branch, scores=scores)
+        # Only one candidate (no A/B challenger, no shared instances) — ranking
+        # would return a single cold-start score that doesn't change the pick,
+        # so skip the DB round-trip entirely.
+        return CapabilityRouteChoice(provider=selected, branch=branch, scores=[])
     scores = await _rank_capability_candidates(
         candidates=candidates,
         request=request,
