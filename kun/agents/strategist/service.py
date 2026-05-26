@@ -666,6 +666,10 @@ class StrategistService:
         candidates = generator(request)
         # L4.1 Explorer Pool 过滤 — 仅保留 enabled forward modes
         candidates = self._explorer_pool.filter_candidates(candidates)
+        # L4.4 合议层 — dedup + rank (cluster 给上层展示用, 此处不调)
+        from kun.agents.strategist.deliberation import deliberate
+
+        candidates = deliberate(candidates)
         return await self._emit_and_adjust(candidates, anomaly_kind)
 
     async def _emit_and_adjust(
