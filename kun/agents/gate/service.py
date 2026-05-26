@@ -54,6 +54,11 @@ CapabilityWriter = Callable[[dict[str, Any]], Awaitable[None]]
 """异步 writer — 真写 runtime_capabilities. 测试用 fake."""
 
 
+NotificationSender = Callable[[dict[str, Any]], Awaitable[None]]
+"""L3.6: NotificationLayer.push 注入 — 让 Gate 在自指拒绝时推送 alert
+(ADR-018 §16.3 第 3 个 NotificationLayer caller). 测试用 fake."""
+
+
 def _check_test_report(
     test_report: dict[str, Any] | None,
     min_pass_rate: float,
@@ -139,14 +144,29 @@ class GateService:
         self,
         *,
         capability_writer: CapabilityWriter | None = None,
+        notification_sender: NotificationSender | None = None,
         min_pass_rate: float = _DEFAULT_MIN_PASS_RATE,
         min_evidence_quality: float = _DEFAULT_MIN_EVIDENCE_QUALITY,
         promotion_deadline_days: int = _DEFAULT_PROMOTION_DEADLINE_DAYS,
     ) -> None:
         self._writer = capability_writer
+        self._notification_sender = notification_sender
         self._min_pass_rate = min_pass_rate
         self._min_evidence_quality = min_evidence_quality
         self._promotion_deadline_days = promotion_deadline_days
+
+    async def _safe_notify(self, payload: dict[str, Any]) -> None:
+        """L3.6: 给 NotificationLayer 推一条; 失败不打挂 admit 主路径."""
+        if self._notification_sender is None:
+            return
+        try:
+            await self._notification_sender(payload)
+        except Exception as e:
+            log.warning(
+                "gate.notification_send_failed",
+                error=str(e),
+                kind=payload.get("kind"),
+            )
 
     async def admit(
         self,
@@ -257,6 +277,26 @@ class GateService:
                         error=str(e),
                         capability_id=capability_id,
                     )
+            # L3.6: 推 NotificationLayer alert — 让 NUO 看到自指 capability 待人审
+            await self._safe_notify(
+                {
+                    "tenant_id": tenant_id,
+                    "kind": "alert",
+                    "severity": "warn",
+                    "channel": "side",
+                    "title": "Self-referential capability awaiting human review",
+                    "body": (
+                        f"target_module={row_payload['target_module']} "
+                        f"capability_id={capability_id}"
+                    ),
+                    "payload": {
+                        "capability_id": capability_id,
+                        "target_module": row_payload["target_module"],
+                        "decision_id": decision.decision_id,
+                        "reasons": reasons,
+                    },
+                }
+            )
             log.info(
                 "gate.awaiting_human_review",
                 decision_id=decision.decision_id,
@@ -392,5 +432,6 @@ __all__ = [
     "CapabilityWriter",
     "GateDecision",
     "GateService",
+    "NotificationSender",
     "decision_as_dict",
 ]

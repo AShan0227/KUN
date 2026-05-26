@@ -92,6 +92,11 @@ SearchRequestEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 L2.7 给 Strategist 接 Supervisor 时, 用真正的 DB writer; 测试用 fake."""
 
 
+NotificationSender = Callable[[dict[str, Any]], Awaitable[None]]
+"""L3.6: NotificationLayer.push 注入 — escalation_path 含 'human' 时推送 alert
+(ADR-018 §16.3 第 2 个 NotificationLayer caller). 测试用 fake."""
+
+
 class SupervisorService:
     """Supervisor 常驻 service. 工程化阈值检测 + 写 strategy_search_requests.
 
@@ -108,12 +113,27 @@ class SupervisorService:
         self,
         *,
         emitter: SearchRequestEmitter | None = None,
+        notification_sender: NotificationSender | None = None,
         dedup_ttl_sec: int = DEDUP_TTL_SEC,
     ) -> None:
         self._states: dict[str, SupervisorAnomalyState] = {}
         self._emitter = emitter
+        self._notification_sender = notification_sender
         self._dedup_ttl_sec = dedup_ttl_sec
         self._lock = asyncio.Lock()
+
+    async def _safe_notify(self, payload: dict[str, Any]) -> None:
+        """L3.6: 给 NotificationLayer 推一条; 失败不打挂 observe 主路径."""
+        if self._notification_sender is None:
+            return
+        try:
+            await self._notification_sender(payload)
+        except Exception as e:
+            log.warning(
+                "supervisor.notification_send_failed",
+                error=str(e),
+                kind=payload.get("kind"),
+            )
 
     def state_for(self, tenant_id: str) -> SupervisorAnomalyState:
         if tenant_id not in self._states:
@@ -174,6 +194,30 @@ class SupervisorService:
                         )
                 else:
                     log.info("supervisor.search_request_pending_emitter", request=req)
+
+                # L3.6: escalation_path 含 human (L4) → 推 NUO alert
+                if "human" in (req.get("escalation_path") or []):
+                    await self._safe_notify(
+                        {
+                            "tenant_id": req.get("tenant_id", "default"),
+                            "kind": "alert",
+                            "severity": "warn",
+                            "channel": "side",
+                            "title": f"Supervisor escalation: {req.get('anomaly_kind')}",
+                            "body": (
+                                f"target_module={req.get('target_module')} "
+                                f"severity={req.get('severity')} "
+                                f"repeat={req.get('repeat_count')}"
+                            ),
+                            "payload": {
+                                "request_id": req.get("request_id"),
+                                "anomaly_kind": req.get("anomaly_kind"),
+                                "target_module": req.get("target_module"),
+                                "escalation_path": req.get("escalation_path"),
+                                "evidence": req.get("evidence"),
+                            },
+                        }
+                    )
 
             return triggered
 
