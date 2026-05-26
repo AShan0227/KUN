@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from kun.core.ids import new_id
@@ -77,6 +77,26 @@ class StrategyExperiment:
 
 ExperimentEmitter = Callable[[StrategyExperiment], Awaitable[None]]
 """异步 emitter — 真写 runtime_experiments 表. L3 接 DB writer; 测试用 fake."""
+
+
+CapabilityHistoryReader = Callable[[str], Awaitable[list[dict[str, Any]]]]
+"""读取 target_module 在最近 N 小时内的 capability 晋级记录.
+
+Return entries shape:
+    {
+        "capability_id": str,
+        "promoted_at": datetime,
+        "enabled": bool,
+        "change_summary": str,
+        "metadata": dict,
+    }
+
+按时间从新到旧排序. None 表示不查 (caller 选择 forward).
+"""
+
+
+_BACKWARD_LOOKBACK_HOURS = 24
+"""若 target_module 在该窗口内有 capability 晋级 → 考虑 backward rollback."""
 
 
 def _is_self_referential(target_module: str) -> bool:
@@ -482,6 +502,95 @@ _CANDIDATE_GENERATORS: dict[
 }
 
 
+# ---- L3.3 Forward / Backward 双修复策略 ----
+
+
+def _candidate_for_backward_rollback(
+    request: dict[str, Any],
+    capability_to_rollback: dict[str, Any],
+) -> StrategyExperiment:
+    """构造 backward rollback 候选 — 单实验, 不走 Explorer Pool.
+
+    把 target_module 的最近一次 enabled capability 标 disabled + 准备回滚.
+    """
+    target_module = str(request.get("target_module") or "unknown")
+    cap_id = capability_to_rollback.get("capability_id", "unknown")
+    change_summary = capability_to_rollback.get("change_summary", "")
+    return StrategyExperiment(
+        experiment_id=new_id("experiment_run"),
+        target_module=target_module,
+        target_level=1,  # activation 层 — 禁用 capability
+        change_spec={
+            "kind": "capability_rollback",
+            "rollback_capability_id": cap_id,
+            "original_change_summary": change_summary,
+            "direction": "backward",
+        },
+        rollout_mode="direct",  # 回滚不 canary, 直接关
+        sampling_rate=1.0,
+        success_metric=request.get("evidence", [{}])[0].get(
+            "type", "anomaly_rate"
+        ),
+        acceptance_threshold=0.5,  # 异常率减半即视为成功
+        rollback_on=[
+            # "回滚的回滚" — 如果异常率反而升 → re-enable capability
+            {"metric": "anomaly_rate", "operator": ">", "value": 1.2},
+        ],
+        explorer_mode="backward",
+        rationale=(
+            f"target_module={target_module} 最近 24h 有 capability "
+            f"{cap_id} 启用 ('{change_summary[:60]}'), 异常窗口与之相关 → "
+            f"backward rollback 比 forward 新探索更安全."
+        ),
+    )
+
+
+def select_repair_direction(
+    request: dict[str, Any],
+    capability_history: list[dict[str, Any]] | None,
+    *,
+    lookback_hours: int = _BACKWARD_LOOKBACK_HOURS,
+) -> str:
+    """决定 repair direction: 'forward' (新探索) 或 'backward' (回滚).
+
+    Engineering 规则:
+      - capability_history 空 / None → forward (无可回滚)
+      - 最近 lookback_hours 内有 enabled capability 命中 target_module → backward
+      - 否则 → forward (无近期改动可疑)
+    """
+    if not capability_history:
+        return "forward"
+    cutoff = datetime.now(UTC) - timedelta(hours=lookback_hours)
+    for entry in capability_history:
+        promoted_at = entry.get("promoted_at")
+        enabled = entry.get("enabled", False)
+        if not enabled:
+            continue
+        if isinstance(promoted_at, datetime) and promoted_at >= cutoff:
+            return "backward"
+        if isinstance(promoted_at, str):
+            # ISO 字符串容错
+            try:
+                parsed = datetime.fromisoformat(promoted_at)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=UTC)
+                if parsed >= cutoff:
+                    return "backward"
+            except ValueError:
+                continue
+    return "forward"
+
+
+def _most_recent_enabled_capability(
+    capability_history: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """从 capability_history 取最近一条 enabled 的."""
+    for entry in capability_history:
+        if entry.get("enabled"):
+            return entry
+    return None
+
+
 class StrategistService:
     """on-demand Strategist 服务.
 
@@ -493,8 +602,10 @@ class StrategistService:
         self,
         *,
         emitter: ExperimentEmitter | None = None,
+        capability_history_reader: CapabilityHistoryReader | None = None,
     ) -> None:
         self._emitter = emitter
+        self._history_reader = capability_history_reader
 
     async def propose_candidates(
         self,
@@ -502,9 +613,46 @@ class StrategistService:
     ) -> list[StrategyExperiment]:
         """读 request → 生成候选 → emitter 落库.
 
+        Forward / Backward auto-select (L3.3):
+          - 若 capability_history_reader 注入 + 最近 24h target_module 有 enabled
+            capability → backward rollback (单实验, 不 Explorer Pool)
+          - 否则 → forward (Explorer Pool 3 模式)
+
         未知 anomaly_kind → 空 list (Supervisor 升级到 LLM Strategist 或人).
         """
         anomaly_kind = request.get("anomaly_kind") or ""
+        target_module = str(request.get("target_module") or "")
+
+        # Forward / Backward 决策
+        capability_history: list[dict[str, Any]] | None = None
+        if self._history_reader is not None and target_module:
+            try:
+                capability_history = await self._history_reader(target_module)
+            except Exception as e:
+                log.warning(
+                    "strategist.history_reader_failed",
+                    error=str(e),
+                    target_module=target_module,
+                )
+                capability_history = None
+
+        direction = select_repair_direction(request, capability_history)
+        if direction == "backward":
+            entry = (
+                _most_recent_enabled_capability(capability_history)
+                if capability_history
+                else None
+            )
+            if entry is not None:
+                candidates = [_candidate_for_backward_rollback(request, entry)]
+                log.info(
+                    "strategist.backward_rollback_selected",
+                    target_module=target_module,
+                    capability_id=entry.get("capability_id"),
+                )
+                return await self._emit_and_adjust(candidates, anomaly_kind)
+
+        # Forward — Explorer Pool
         generator = _CANDIDATE_GENERATORS.get(anomaly_kind)
         if generator is None:
             log.warning(
@@ -515,14 +663,19 @@ class StrategistService:
             return []
 
         candidates = generator(request)
+        return await self._emit_and_adjust(candidates, anomaly_kind)
 
-        # 自指限制: target_module 命中监督角色 → 标 requires_human_review
+    async def _emit_and_adjust(
+        self,
+        candidates: list[StrategyExperiment],
+        anomaly_kind: str,
+    ) -> list[StrategyExperiment]:
+        """共用: 自指标 human review + emit 落库."""
+        from dataclasses import replace
+
         adjusted: list[StrategyExperiment] = []
         for c in candidates:
             if _is_self_referential(c.target_module):
-                # frozen dataclass — 用 replace 模拟修改
-                from dataclasses import replace
-
                 adjusted.append(
                     replace(
                         c,
@@ -534,7 +687,6 @@ class StrategistService:
             else:
                 adjusted.append(c)
 
-        # emit 落库
         for c in adjusted:
             if self._emitter is not None:
                 try:
@@ -551,6 +703,7 @@ class StrategistService:
             anomaly_kind=anomaly_kind,
             count=len(adjusted),
             self_referential=sum(1 for c in adjusted if c.requires_human_review),
+            backward=sum(1 for c in adjusted if c.explorer_mode == "backward"),
         )
         return adjusted
 
@@ -565,8 +718,10 @@ def _utc_now() -> datetime:
 
 
 __all__ = [
+    "CapabilityHistoryReader",
     "ExperimentEmitter",
     "StrategistService",
     "StrategyExperiment",
     "experiment_as_dict",
+    "select_repair_direction",
 ]

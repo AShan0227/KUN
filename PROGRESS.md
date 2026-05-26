@@ -106,8 +106,8 @@
 ### 计划任务
 
 - [x] **L3.1** 第 2 条 RSI 实例：context 压缩策略（commit f03a5bf）
-- [x] **L3.2** 第 3 条 RSI 实例：skill 选择启发式（commit pending）
-- [ ] **L3.3** Forward / Backward 双修复策略（Strategist auto-select）
+- [x] **L3.2** 第 3 条 RSI 实例：skill 选择启发式（commit 0476315）
+- [x] **L3.3** Forward / Backward 双修复策略（Strategist auto-select）（commit pending）
 - [ ] **L3.4** 监督线三级阈值 + 4 级升级路径真接
 - [ ] **L3.5** 自指限制（Strategist 改自己强制 L4 人审）
 - [ ] **L3.6** ADR-018 半合并补齐：ValidationPipeline / NotificationLayer / GuardPolicy / GuardRule

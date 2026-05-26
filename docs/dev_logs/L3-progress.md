@@ -56,3 +56,33 @@
 **9 个新单测**覆盖：min_samples 边界 / 低失败率不触发 / 高失败率触发 / priority 升 high / 不同 pair 独立累积 / 缺字段不触发 / Strategist 3 mode + level / acceptance 动态 / rollback 必备。947/947 unit tests pass，ruff clean。
 
 **为下一步**：L3.3 Forward / Backward 双修复策略 —— Strategist 在 anomaly 发生时 auto-select 是该 forward fix（往前进一步改）还是 backward rollback（回退到上一个 known-good capability）。
+
+---
+
+## L3.3 · Forward / Backward 双修复策略 (Strategist auto-select)
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- `StrategistService.__init__` 增 `capability_history_reader: CapabilityHistoryReader | None` 注入：`Callable[[target_module], Awaitable[list[capability_entry]]]`，返回最近 capability 晋级记录（按时间倒序）
+- `select_repair_direction(request, capability_history, lookback_hours=24)` engineering 规则：
+  - history 空 / 无 enabled / 全是 24h 以外 → `forward`
+  - 24h 内有 enabled capability 命中 target_module → `backward`
+  - 容错 ISO 字符串 timestamp + 无 tzinfo 当 UTC
+- `_candidate_for_backward_rollback(request, capability)`：单 StrategyExperiment（不走 Explorer Pool 3 模式），`explorer_mode="backward"`, `rollout_mode="direct"`（回滚不 canary）, `change_spec.kind="capability_rollback"` + `rollback_capability_id`, rollback_on 含"回滚的回滚"保护（如果 anomaly_rate 反而上升 → re-enable）
+- `propose_candidates` 改造：先调 history_reader → select_repair_direction → 若 backward 走 `_candidate_for_backward_rollback` 单候选；否则走 Explorer Pool generator
+- 共用 `_emit_and_adjust` 助手把"自指标 human review + emit 落库"抽出 — backward / forward 路径都走此 helper，确保自指限制 + emitter 行为一致
+- history_reader 异常吞掉 + log，回退 forward（不打挂 Strategist 主路径）
+
+**关键决策**：
+- **24h 是 backward lookback 默认起点**：足够覆盖大多数 promotion 周期（promotion_deadline 默认 14 天，但 enable 通常在数小时内完成）。窗口太短漏掉缓慢恶化，太长误判（24h 前的改动不太可能突然恶化）
+- **backward rollout_mode="direct" 而不是 canary**：回滚是已知态，没必要再 canary。canary 在 forward 探索时合理；rollback 直接关
+- **rollback_on 含"回滚的回滚"触发器**：如果回滚后 anomaly_rate > 1.2 倍（更糟），自动 re-enable 原 capability。防止 backward 本身是错决策导致 dead-end
+- **history_reader 是依赖注入，不是 import**：与 emitter 同思路，让 service 单测零外部依赖，prod 接 ORM query helper
+- **`_emit_and_adjust` 共用让 backward 也走自指限制检查**：理论上 backward target_module 也可能是监督角色，必须经过 self-referential check。Helper 抽出来让两条路径行为一致
+- **`select_repair_direction` 独立 module-level 函数**：纯函数 + 容易单测 + 让 LLM Strategist (L3+) 也可以复用此决策逻辑
+- **history_reader 失败默认 forward 而非 backward**：caller 失败时回退到默认行为，让"无法判断"等价于"未发现近期 capability"。inverse 会让 DB 错误意外触发 rollback
+
+**14 个新单测**覆盖：direction 6 case（无 history / 空 / disabled / 近期 enabled / 太老 / ISO 字符串 / 无 tzinfo ISO）/ backward candidate 形状 / propose 路由 4 case（backward / forward 无 reader / forward 空 history / reader 异常）/ backward emitter 调用 / backward + self-referential 仍人审。961/961 unit tests pass，ruff clean。
+
+**为下一步**：L3.4 监督线三级阈值（weak / mid / strong）+ 4 级升级路径（role / task / gate / human）真接 — 把 Supervisor 异常按 severity 推到不同层。

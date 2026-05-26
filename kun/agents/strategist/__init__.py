@@ -6,16 +6,20 @@
 
 from kun.agents.strategist.base import Strategist
 from kun.agents.strategist.service import (
+    CapabilityHistoryReader,
     ExperimentEmitter,
     StrategistService,
     StrategyExperiment,
     experiment_as_dict,
+    select_repair_direction,
 )
 
 __all__ = [
+    "CapabilityHistoryReader",
     "ExperimentEmitter",
     "Strategist",
     "StrategistService",
     "StrategyExperiment",
     "experiment_as_dict",
+    "select_repair_direction",
 ]
