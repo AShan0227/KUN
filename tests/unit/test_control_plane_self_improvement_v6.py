@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from kun.control_plane import (
+    RSI_CAPABILITY_GOVERNANCE_LAYER,
+    RSI_LAYER_SEQUENCE,
+    RSI_LEARNING_SIGNAL_LAYER,
+    RSI_SAFE_EXPERIMENTATION_LAYER,
+    RSI_SELF_EVALUATION_LAYER,
+    RSI_STRATEGY_SEARCH_LAYER,
     ArtifactRecord,
     CapabilityProfile,
     ControlPlaneDaemon,
@@ -62,6 +68,8 @@ def test_nuo_self_improvement_audit_finds_unconsumed_capability_and_routes_qi() 
     assert result.gate_evaluation.score_breakdown["gap_count"] == 1.0
     assert result.gate_evaluation.hard_gate_failures == []
     assert "nuo_self_improvement_audit" in result.artifacts[0].supports
+    assert f"rsi_layer:{RSI_SELF_EVALUATION_LAYER}" in result.artifacts[0].supports
+    assert f"rsi_layer:{RSI_LEARNING_SIGNAL_LAYER}" in result.artifacts[0].supports
     assert [item.owner for item in result.followup_work_items] == ["qi"]
     assert result.followup_work_items[0].idempotency_key.startswith("qi-self-improvement-strategy:")
 
@@ -89,6 +97,12 @@ def test_qi_self_improvement_strategy_generates_candidates_and_replay_profile() 
     assert len(strategy.candidates) >= 3
     assert strategy.selected_candidate_refs
     assert any(candidate.selected for candidate in strategy.candidates)
+    assert strategy.required_layer_order == RSI_LAYER_SEQUENCE
+    assert all(strategy.rsi_layer_coverage.values())
+    assert all(candidate.strategy_search_space for candidate in strategy.candidates)
+    assert all(candidate.safe_experiment_plan for candidate in strategy.candidates)
+    assert all(candidate.learning_signal_requirements for candidate in strategy.candidates)
+    assert all(candidate.capability_governance_requirements for candidate in strategy.candidates)
 
     strategy_work = WorkItem(
         work_item_id="work-qi-self-strategy",
@@ -106,6 +120,9 @@ def test_qi_self_improvement_strategy_generates_candidates_and_replay_profile() 
     assert result.gate_evaluation is not None
     assert result.gate_evaluation.next_action == "continue"
     assert "qi_multi_strategy_candidates" in result.artifacts[0].supports
+    assert f"rsi_layer:{RSI_STRATEGY_SEARCH_LAYER}" in result.artifacts[0].supports
+    assert f"rsi_layer:{RSI_SAFE_EXPERIMENTATION_LAYER}" in result.artifacts[0].supports
+    assert f"rsi_layer:{RSI_CAPABILITY_GOVERNANCE_LAYER}" in result.artifacts[0].supports
     assert [item.owner for item in result.followup_work_items] == ["kun"]
     profile = next(iter(control_plane.capability_profiles.values()))
     assert profile.promotion_stage == "replay"
@@ -145,6 +162,8 @@ def test_audit_marks_runtime_enabled_profile_without_promotion_proof_as_safety_g
     assert audit.status == "blocked"
     assert [gap.category for gap in audit.gaps] == ["safety_gap"]
     assert audit.gaps[0].severity == "critical"
+    assert audit.gaps[0].self_evaluation_question
+    assert "unsafe_runtime_profile" in audit.gaps[0].learning_signal_refs
 
 
 def test_daemon_queues_nuo_self_improvement_audit_when_runner_can_execute() -> None:

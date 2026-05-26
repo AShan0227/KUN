@@ -176,22 +176,23 @@ KUN 采用 RSI-inspired engineering loop，而不是无边界递归自我改写�
 
 闭环职责：
 
-- Nuo 定期或事件触发地审计 KUN 自身：代码功能、runner 消费证据、历史任务评分、重复失败、干净复测缺失、能力晋级边界和协同效率。
-- Qi 对 Nuo gap 做多策略搜索：每个重要 gap 至少给出多个候选方案，比较质量、风险、成本和回滚复杂度，选择候选路径。
+- Self-Evaluation：Nuo 定期或事件触发地审计 KUN 自身，必须回答“哪里做得差、为什么差”，覆盖代码功能、runner 消费证据、历史任务评分、重复失败、干净复测缺失、能力晋级边界和协同效率。
+- Strategy Search：Qi 对 Nuo gap 做多策略搜索，不能只修症状；每个重要 gap 至少给出多个候选方法论，比较质量、风险、成本和回滚复杂度，选择候选路径。
+- Safe Experimentation：KUN runner 只能在 `self_improvement` / governance 路径里实现候选，并必须绑定 sandbox、resource lock、rollback、versioning、测试和 replay 证据。
+- Learning Signal：任何自我改进都必须绑定客观反馈，例如自动测试、历史 replay、dogfood、浏览器试玩、残差审计、失败率、质量指标、延迟、幻觉率、CTR/GMV 等；KUN 自评不能作为唯一证据。
+- Capability Governance：capability profile 默认仍保持 `runtime_enabled=false`，直到 replay、holdout、shadow、canary、rollback 和 production promotion gate 全部通过。
 - Mission Director 判断这些候选是否符合用户目标和系统边界，避免把机械门禁通过误判成真实完成。
-- KUN runner 只能在 `self_improvement` / governance 路径里实现候选，并必须绑定 sandbox、resource lock、rollback、测试和 replay 证据。
-- capability profile 默认仍保持 `runtime_enabled=false`，直到 replay、holdout、shadow、canary、rollback 和 production promotion gate 全部通过。
 
 标准流：
 
 ```text
-Nuo self-audit
-→ self_improvement gap report
-→ Qi multi-strategy candidates
+Nuo self-evaluation
+→ objective learning-signal gap report
+→ Qi strategy search over alternate method families
 → selected replay-stage capability candidate
-→ KUN sandbox implementation
-→ tests / historical replay / dogfood / clean retest
-→ promotion gate
+→ KUN safe experiment in sandbox
+→ tests / historical replay / dogfood / clean retest / product metrics
+→ capability governance promotion gate
 → governance-approved runtime profile
 ```
 

@@ -1323,12 +1323,30 @@ def _case_governed_self_improvement_loop(root: Path, now: datetime) -> FeatureAc
         and profile.promotion_stage == "replay"
         and not profile.runtime_enabled
     ]
+    layer_supports = {
+        support
+        for artifact in control_plane.artifacts.values()
+        for support in artifact.supports
+        if support.startswith("rsi_layer:")
+    }
     kun_followups = [
         item.work_item_id
         for item in control_plane.work_items.values()
         if item.work_item_id.startswith("work-kun-self-improvement-implementation-")
     ]
-    activated = bool(audit_artifacts and strategy_artifacts and replay_profiles and kun_followups)
+    activated = bool(
+        audit_artifacts
+        and strategy_artifacts
+        and replay_profiles
+        and kun_followups
+        and {
+            "rsi_layer:self_evaluation",
+            "rsi_layer:strategy_search",
+            "rsi_layer:safe_experimentation",
+            "rsi_layer:learning_signal",
+            "rsi_layer:capability_governance",
+        }.issubset(layer_supports)
+    )
     return FeatureActivationCase(
         feature_id="governed_self_improvement_loop",
         subsystem="qi_nuo_self_iteration",
@@ -1342,7 +1360,7 @@ def _case_governed_self_improvement_loop(root: Path, now: datetime) -> FeatureAc
             "runtime_enabled=false replay capability profile",
         ],
         activated=activated,
-        evidence_refs=[*audit_artifacts, *strategy_artifacts, *replay_profiles],
+        evidence_refs=[*audit_artifacts, *strategy_artifacts, *replay_profiles, *layer_supports],
         generated_work_item_ids=[
             *first.created_work_item_ids,
             *first.ran_work_item_ids,

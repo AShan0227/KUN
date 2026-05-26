@@ -29,7 +29,26 @@ NUO_SELF_IMPROVEMENT_OWNER = "nuo"
 QI_SELF_IMPROVEMENT_OWNER = "qi"
 SELF_IMPROVEMENT_AUDIT_SUPPORT = "nuo_self_improvement_audit"
 SELF_IMPROVEMENT_STRATEGY_SUPPORT = "qi_self_improvement_strategy_search"
+RSI_SELF_EVALUATION_LAYER = "self_evaluation"
+RSI_STRATEGY_SEARCH_LAYER = "strategy_search"
+RSI_SAFE_EXPERIMENTATION_LAYER = "safe_experimentation"
+RSI_LEARNING_SIGNAL_LAYER = "learning_signal"
+RSI_CAPABILITY_GOVERNANCE_LAYER = "capability_governance"
+RSI_LAYER_SEQUENCE = [
+    RSI_SELF_EVALUATION_LAYER,
+    RSI_STRATEGY_SEARCH_LAYER,
+    RSI_SAFE_EXPERIMENTATION_LAYER,
+    RSI_LEARNING_SIGNAL_LAYER,
+    RSI_CAPABILITY_GOVERNANCE_LAYER,
+]
 
+SelfImprovementRSILayer = Literal[
+    "self_evaluation",
+    "strategy_search",
+    "safe_experimentation",
+    "learning_signal",
+    "capability_governance",
+]
 SelfImprovementGapCategory = Literal[
     "capability_gap",
     "coordination_gap",
@@ -69,6 +88,9 @@ class SelfImprovementGap(BaseModel):
     severity: SelfImprovementSeverity
     summary: str
     evidence_refs: list[str] = Field(default_factory=list)
+    rsi_layer: Literal["self_evaluation"] = RSI_SELF_EVALUATION_LAYER
+    self_evaluation_question: str = "What did KUN do poorly, and why?"
+    learning_signal_refs: list[str] = Field(default_factory=list)
     recommended_owner: Literal["qi", "nuo", "mission-director", "kun", "human"] = "qi"
     recommended_action: str
     governance_boundary: str = (
@@ -90,6 +112,8 @@ class SelfImprovementAuditReport(BaseModel):
     summary: str
     task_scores: list[TaskPerformanceScore] = Field(default_factory=list)
     gaps: list[SelfImprovementGap] = Field(default_factory=list)
+    rsi_layer_coverage: dict[SelfImprovementRSILayer, bool] = Field(default_factory=dict)
+    required_layer_order: list[SelfImprovementRSILayer] = Field(default_factory=list)
     inspected_signal_counts: dict[str, int] = Field(default_factory=dict)
     created_by: str = "nuo"
 
@@ -106,8 +130,12 @@ class SelfImprovementStrategyCandidate(BaseModel):
     candidate_id: str
     gap_id: str
     hypothesis: str
+    strategy_search_space: list[str] = Field(default_factory=list)
     implementation_scope: str
+    safe_experiment_plan: list[str] = Field(default_factory=list)
     validation_plan: list[str] = Field(default_factory=list)
+    learning_signal_requirements: list[str] = Field(default_factory=list)
+    capability_governance_requirements: list[str] = Field(default_factory=list)
     rollback_plan: list[str] = Field(default_factory=list)
     expected_impact: float = Field(ge=0.0, le=1.0)
     risk: float = Field(ge=0.0, le=1.0)
@@ -125,6 +153,8 @@ class SelfImprovementStrategySearchReport(BaseModel):
     task_plan_version: str
     candidates: list[SelfImprovementStrategyCandidate] = Field(default_factory=list)
     selected_candidate_refs: list[str] = Field(default_factory=list)
+    rsi_layer_coverage: dict[SelfImprovementRSILayer, bool] = Field(default_factory=dict)
+    required_layer_order: list[SelfImprovementRSILayer] = Field(default_factory=list)
     promotion_policy: str = (
         "selected candidates become replay-stage evidence only until holdout, shadow, canary, "
         "rollback, and production promotion gates pass"
@@ -168,6 +198,8 @@ class NuoSelfImprovementAuditRunner:
             extra_supports=[
                 "kun_self_improvement_gap_report",
                 "self_improvement_governance_only",
+                f"rsi_layer:{RSI_SELF_EVALUATION_LAYER}",
+                f"rsi_layer:{RSI_LEARNING_SIGNAL_LAYER}",
                 *[f"gap:{gap.category}" for gap in report.gaps],
                 *[gap.gap_id for gap in report.gaps],
             ],
@@ -223,6 +255,10 @@ class QiSelfImprovementStrategyRunner:
                 "qi_multi_strategy_candidates",
                 "qi_better_strategy_search",
                 "self_improvement_governance_only",
+                f"rsi_layer:{RSI_STRATEGY_SEARCH_LAYER}",
+                f"rsi_layer:{RSI_SAFE_EXPERIMENTATION_LAYER}",
+                f"rsi_layer:{RSI_LEARNING_SIGNAL_LAYER}",
+                f"rsi_layer:{RSI_CAPABILITY_GOVERNANCE_LAYER}",
                 *strategy.selected_candidate_refs,
             ],
         )
@@ -295,6 +331,15 @@ def build_self_improvement_audit_report(
         ),
         task_scores=task_scores,
         gaps=gaps,
+        rsi_layer_coverage={
+            RSI_SELF_EVALUATION_LAYER: True,
+            RSI_STRATEGY_SEARCH_LAYER: False,
+            RSI_SAFE_EXPERIMENTATION_LAYER: False,
+            RSI_LEARNING_SIGNAL_LAYER: any(gap.learning_signal_refs for gap in gaps)
+            or bool(task_scores),
+            RSI_CAPABILITY_GOVERNANCE_LAYER: any(gap.category == "safety_gap" for gap in gaps),
+        },
+        required_layer_order=list(RSI_LAYER_SEQUENCE),
         inspected_signal_counts={
             "missions": len(control_plane.missions),
             "work_items": len(control_plane.work_items),
@@ -323,6 +368,8 @@ def build_qi_self_improvement_strategy_search(
         selected_candidate_refs=[
             candidate.candidate_id for candidate in selected if candidate.selected
         ],
+        rsi_layer_coverage=_strategy_layer_coverage(selected),
+        required_layer_order=list(RSI_LAYER_SEQUENCE),
     )
 
 
@@ -470,6 +517,11 @@ def _capability_consumption_gaps(
             severity="high",
             summary="Required capabilities were attached to work items without behavior receipts.",
             evidence_refs=missing,
+            self_evaluation_question=(
+                "Why did KUN claim capability activation without proving the capability changed "
+                "runner behavior?"
+            ),
+            learning_signal_refs=[*missing, "capability_behavior_receipt_missing"],
             recommended_action=(
                 "Qi should design runner-level directive receipts and KUN should add tests proving "
                 "capability policy changes execution behavior."
@@ -503,6 +555,10 @@ def _nuo_recovery_gaps(
             severity="high",
             summary="Nuo has diagnosis evidence without clean retest closure evidence.",
             evidence_refs=partial_nuo,
+            self_evaluation_question=(
+                "Why did Nuo classify a failure without proving the recovery through clean retest?"
+            ),
+            learning_signal_refs=[*partial_nuo, "nuo_clean_retest_missing"],
             recommended_owner="nuo",
             recommended_action="Nuo must schedule and pass clean retest before recovery closes.",
         )
@@ -542,6 +598,11 @@ def _evaluation_gaps(
             severity="high",
             summary="Mission is near delivery without the required human/player experience evidence.",
             evidence_refs=missing,
+            self_evaluation_question=(
+                "Why did KUN treat delivery readiness as product success without human or player "
+                "experience feedback?"
+            ),
+            learning_signal_refs=[*missing, *mission.artifact_manifest_refs],
             recommended_owner="mission-director",
             recommended_action=(
                 "Mission Director should block closure and route Qi strategy replay or human "
@@ -571,6 +632,10 @@ def _coordination_gaps(
             severity="medium",
             summary="Governance follow-up work is still open and can stall task closure.",
             evidence_refs=open_followups,
+            self_evaluation_question=(
+                "Why are Qi/Nuo/Mission Director follow-ups not converging into executable closure?"
+            ),
+            learning_signal_refs=[*open_followups, "open_governance_followups"],
             recommended_action=(
                 "Qi/Nuo/Mission Director follow-ups need executable runners, dependency checks, "
                 "and clean closure gates."
@@ -601,6 +666,11 @@ def _capability_governance_gaps(
             severity="critical",
             summary="Runtime-enabled capability profiles lack production promotion evidence.",
             evidence_refs=risky,
+            self_evaluation_question=(
+                "Why did a capability reach runtime-enabled state without full production "
+                "promotion proof?"
+            ),
+            learning_signal_refs=[*risky, "unsafe_runtime_profile"],
             recommended_owner="qi",
             recommended_action=(
                 "Demote unsafe profiles to replay/holdout or produce full promotion, holdout, "
@@ -629,6 +699,11 @@ def _efficiency_gaps(
             severity="medium",
             summary="Duplicate idempotency keys indicate mechanical or repeated work generation.",
             evidence_refs=repeated,
+            self_evaluation_question=(
+                "Why is the Control Plane repeating the same work instead of searching a new "
+                "strategy?"
+            ),
+            learning_signal_refs=[*repeated, "duplicate_idempotency_keys"],
             recommended_action=(
                 "Mission Director should retire superseded branches and Qi should search for a "
                 "different strategy instead of requeueing the same work."
@@ -644,7 +719,24 @@ def _strategy_candidates_for_gap(
     common_validation = [
         "unit regression covering the original gap",
         "historical replay or fixture proving the old behavior fails",
+        "objective learning-signal comparison against the old behavior",
         "Nuo clean retest or governance gate proving the gap is closed",
+    ]
+    common_safe_experiment = [
+        "implement in branch or sandbox only",
+        "hold workspace/resource lock for writes",
+        "record rollback plan before changing runner behavior",
+    ]
+    common_learning_signals = [
+        "automated test result",
+        "historical replay result",
+        "Nuo clean retest result",
+        *gap.learning_signal_refs,
+    ]
+    common_governance = [
+        "runtime_enabled remains false until promotion gate passes",
+        "ordinary user tasks may only emit learning_signal evidence",
+        "production promotion requires replay, holdout, shadow/canary, regression, and rollback refs",
     ]
     return [
         SelfImprovementStrategyCandidate(
@@ -653,8 +745,16 @@ def _strategy_candidates_for_gap(
             hypothesis=(
                 "Add explicit instrumentation and hard gates so this gap cannot silently pass."
             ),
+            strategy_search_space=[
+                "instrumentation gate",
+                "hard blocker",
+                "artifact support receipt",
+            ],
             implementation_scope="control-plane gate, artifact supports, and regression tests",
+            safe_experiment_plan=common_safe_experiment,
             validation_plan=common_validation,
+            learning_signal_requirements=common_learning_signals,
+            capability_governance_requirements=common_governance,
             rollback_plan=["revert gate change and restore previous runner routing"],
             expected_impact=0.82,
             risk=0.28,
@@ -666,8 +766,16 @@ def _strategy_candidates_for_gap(
                 "Move the behavior into a runner contract so activated capabilities are consumed "
                 "by execution, not just metadata."
             ),
+            strategy_search_space=[
+                "runner contract redesign",
+                "directive receipt",
+                "execution policy consumption",
+            ],
             implementation_scope="runner contract, sandbox/resource-lock checks, and receipts",
+            safe_experiment_plan=common_safe_experiment,
             validation_plan=[*common_validation, "daemon tick replay with the runner registered"],
+            learning_signal_requirements=common_learning_signals,
+            capability_governance_requirements=common_governance,
             rollback_plan=["disable the new runner route and keep artifacts as learning_signal"],
             expected_impact=0.9,
             risk=0.38,
@@ -679,13 +787,39 @@ def _strategy_candidates_for_gap(
                 "Treat the fix as a capability candidate and prove it through replay/holdout "
                 "before production defaults change."
             ),
+            strategy_search_space=[
+                "capability candidate",
+                "replay/holdout evaluation",
+                "shadow or canary promotion path",
+            ],
             implementation_scope="Qi candidate, replay profile, holdout checklist, rollback plan",
+            safe_experiment_plan=common_safe_experiment,
             validation_plan=[*common_validation, "promotion remains runtime_enabled=false"],
+            learning_signal_requirements=common_learning_signals,
+            capability_governance_requirements=common_governance,
             rollback_plan=["delete replay candidate if holdout fails"],
             expected_impact=0.76,
             risk=0.16,
         ),
     ]
+
+
+def _strategy_layer_coverage(
+    candidates: list[SelfImprovementStrategyCandidate],
+) -> dict[SelfImprovementRSILayer, bool]:
+    return {
+        RSI_SELF_EVALUATION_LAYER: bool(candidates),
+        RSI_STRATEGY_SEARCH_LAYER: any(candidate.strategy_search_space for candidate in candidates),
+        RSI_SAFE_EXPERIMENTATION_LAYER: any(
+            candidate.safe_experiment_plan for candidate in candidates
+        ),
+        RSI_LEARNING_SIGNAL_LAYER: any(
+            candidate.learning_signal_requirements for candidate in candidates
+        ),
+        RSI_CAPABILITY_GOVERNANCE_LAYER: any(
+            candidate.capability_governance_requirements for candidate in candidates
+        ),
+    }
 
 
 def _select_strategy_candidates(
@@ -814,8 +948,9 @@ def _qi_strategy_search_work_item(
         idempotency_key=f"qi-self-improvement-strategy:{report.audit_id}",
         expected_output=(
             "Run Qi multi-strategy search for the Nuo self improvement audit. Generate at "
-            "least two candidate fixes per gap, select the best strategy by quality/risk/cost, "
-            "emit replay-stage evidence only, and do not enable production runtime defaults."
+            "least two candidate fixes per gap, compare alternate method families rather than "
+            "only patching symptoms, select the best strategy by quality/risk/cost, emit "
+            "replay-stage evidence only, and do not enable production runtime defaults."
         ),
         recovery_refs=[report.audit_id, *[gap.gap_id for gap in report.gaps]],
         phase="self-improvement-strategy-search",
@@ -842,9 +977,9 @@ def _kun_implementation_work_items(
             idempotency_key=f"kun-self-improvement-implementation:{strategy.search_id}",
             expected_output=(
                 "Implement the selected KUN self-improvement candidate in a branch/sandbox with "
-                "explicit rollback, regression tests, historical replay, and Nuo clean retest. "
-                "This work may produce capability candidates only; production runtime defaults "
-                "remain disabled until governance promotion passes."
+                "explicit rollback, regression tests, historical replay, objective learning "
+                "signals, and Nuo clean retest. This work may produce capability candidates only; "
+                "production runtime defaults remain disabled until governance promotion passes."
             ),
             recovery_refs=[strategy.search_id, *strategy.selected_candidate_refs],
             phase="self-improvement-implementation",
@@ -953,6 +1088,12 @@ def _slug(value: str) -> str:
 __all__ = [
     "NUO_SELF_IMPROVEMENT_OWNER",
     "QI_SELF_IMPROVEMENT_OWNER",
+    "RSI_CAPABILITY_GOVERNANCE_LAYER",
+    "RSI_LAYER_SEQUENCE",
+    "RSI_LEARNING_SIGNAL_LAYER",
+    "RSI_SAFE_EXPERIMENTATION_LAYER",
+    "RSI_SELF_EVALUATION_LAYER",
+    "RSI_STRATEGY_SEARCH_LAYER",
     "SELF_IMPROVEMENT_AUDIT_SUPPORT",
     "SELF_IMPROVEMENT_STRATEGY_SUPPORT",
     "NuoSelfImprovementAuditRunner",
