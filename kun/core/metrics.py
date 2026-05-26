@@ -1,6 +1,13 @@
 """Prometheus metrics definitions (ADR-016).
 
 Naming: kun.<subsystem>.<metric>.
+
+Cardinality rules:
+  - `tenant_id` is permitted ONLY on cost / quality / security counters that
+    must be billed/audited per tenant. Request-rate / latency / cache counters
+    must NOT carry tenant_id (N tenants × M models × K roles explodes the
+    time-series count). Per-tenant ops dashboards should aggregate from logs
+    + traces, not from metrics.
 """
 
 from __future__ import annotations
@@ -26,7 +33,7 @@ context_cache_cost_savings_usd = Counter(
 llm_request_total = Counter(
     "kun_llm_request_total",
     "LLM requests by provider/model/role",
-    ["provider", "model", "role", "tenant_id"],
+    ["provider", "model", "role"],
 )
 
 llm_latency_seconds = Histogram(

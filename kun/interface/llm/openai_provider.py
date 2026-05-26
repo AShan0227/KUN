@@ -129,7 +129,7 @@ class OpenAIProvider(LLMProvider):
         )
 
         llm_request_total.labels(
-            provider=self.name, model=self.model_id, role="invoke", tenant_id="unknown"
+            provider=self.name, model=self.model_id, role="invoke"
         ).inc()
         llm_latency_seconds.labels(provider=self.name, model=self.model_id).observe(latency / 1000)
         llm_cost_usd.labels(provider=self.name, model=self.model_id, tenant_id="unknown").inc(

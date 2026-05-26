@@ -134,7 +134,7 @@ class CodexCliProvider(LLMProvider):
         equiv_cost = self.compute_cost(usage, equivalent=True)
 
         llm_request_total.labels(
-            provider=self.name, model=self.model_id, role="invoke", tenant_id="unknown"
+            provider=self.name, model=self.model_id, role="invoke"
         ).inc()
         llm_latency_seconds.labels(provider=self.name, model=self.model_id).observe(
             latency_ms / 1000

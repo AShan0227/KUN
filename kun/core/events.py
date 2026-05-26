@@ -138,7 +138,17 @@ async def close_nats(nc: NATS | None) -> None:
 
 
 async def publish_to_nats(nc: NATS | None, event: EventRow) -> bool:
-    """Publish an event to NATS. Returns True on success."""
+    """Publish an event to NATS. Returns True on success.
+
+    SEMANTICS: this uses base NATS (fire-and-forget) — `await nc.publish`
+    returning successfully means the message was written into the client's
+    send buffer, NOT that the NATS server has persisted it. For
+    deliver-at-least-once with durable ack, this needs to migrate to
+    JetStream (`nc.jetstream().publish` returns a PubAck). The outbox row
+    is only marked published on True here, so a NATS server crash between
+    client buffer and server fsync would mean we'd retry on next worker
+    tick — fine for at-least-once, but consumers must dedupe by event_id.
+    """
     if nc is None:
         return False
     try:

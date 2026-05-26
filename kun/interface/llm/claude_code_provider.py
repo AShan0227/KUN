@@ -175,7 +175,6 @@ class ClaudeCodeProvider(LLMProvider):
             provider=self.name,
             model=reported_model,
             role="invoke",
-            tenant_id="unknown",
         ).inc()
         llm_latency_seconds.labels(provider=self.name, model=reported_model).observe(
             latency_ms / 1000

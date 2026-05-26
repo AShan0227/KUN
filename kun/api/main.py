@@ -131,9 +131,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         log.info("nats_subscriber.scheduled")
 
+    import os
+
+    # Idempotency key GC: drop expired rows so old fingerprints don't keep
+    # returning stale results forever and the table doesn't grow unbounded.
+    if os.getenv("KUN_IDEMPOTENCY_GC_ENABLED", "1") == "1":
+        from kun.core.idempotency_gc import idempotency_gc_worker
+
+        gc_interval = int(os.getenv("KUN_IDEMPOTENCY_GC_INTERVAL_SEC", "3600"))
+        app.state.idempotency_gc_task = asyncio.create_task(
+            idempotency_gc_worker(interval_sec=gc_interval)
+        )
+        log.info("idempotency_gc.scheduled", interval_sec=gc_interval)
+
     # Start idle-batch worker (R-A8) if enabled.
     # Default ON in dev, off in production until we've verified it.
-    import os
 
     if os.getenv("KUN_IDLE_BATCH_ENABLED", "1") == "1":
         from kun.engineering.idle_batch import idle_batch_worker
@@ -168,6 +180,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         idle_batch.cancel()
         with suppress(asyncio.CancelledError):
             await idle_batch
+
+    gc_task: asyncio.Task[None] | None = getattr(app.state, "idempotency_gc_task", None)
+    if gc_task is not None:
+        gc_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await gc_task
 
     nats_sub: asyncio.Task[None] | None = getattr(app.state, "nats_subscriber_task", None)
     if nats_sub is not None:

@@ -52,14 +52,41 @@ class TaskOutcome:
 
 
 async def record_outcome(tenant_id: str, outcome: TaskOutcome) -> None:
-    """Upsert a capability card with a new task outcome."""
+    """Upsert a capability card with a new task outcome.
+
+    Retries IntegrityError exactly once for the first-write race against the
+    unique (tenant_id, entity_type, entity_id, task_type) index. Any other
+    IntegrityError (constraint violation, malformed payload) is logged with
+    full context and re-raised — retrying corrupt data is futile.
+    """
     for attempt in range(2):
         try:
             async with session_scope(tenant_id=tenant_id) as s:
                 await _record_outcome_in_txn(s, tenant_id, outcome)
             break
-        except IntegrityError:
+        except IntegrityError as e:
+            constraint = getattr(e.orig, "diag", None)
+            constraint_name = getattr(constraint, "constraint_name", "") if constraint else ""
+            is_unique_race = (
+                "unique" in str(e.orig).lower()
+                or "duplicate key" in str(e.orig).lower()
+                or "uq_" in constraint_name
+            )
+            if not is_unique_race:
+                log.error(
+                    "capability.writeback.integrity_error",
+                    entity=f"{outcome.entity_type}:{outcome.entity_id}",
+                    task_type=outcome.task_type,
+                    constraint=constraint_name,
+                    detail=str(e.orig),
+                )
+                raise
             if attempt >= 1:
+                log.error(
+                    "capability.writeback.retry_exhausted",
+                    entity=f"{outcome.entity_type}:{outcome.entity_id}",
+                    task_type=outcome.task_type,
+                )
                 raise
             log.info(
                 "capability.writeback.retry_after_conflict",

@@ -143,7 +143,9 @@ class TaskPlanner:
                 PlanStep(
                     step_id=1,
                     description="核对任务目标、约束、风险和成功标准，确认执行边界",
-                    skill_hint="task.boundary_check",
+                    # skill_hint omitted — no `task.boundary_check` skill is
+                    # registered. The LLM reasons directly; hinting a fake tool
+                    # name would mislead the model.
                 )
             )
 
@@ -152,7 +154,7 @@ class TaskPlanner:
                 PlanStep(
                     step_id=len(steps) + 1,
                     description="确认依赖任务已完成: " + ", ".join(spec.blocking_task_ids),
-                    skill_hint="task.dependency_check",
+                    # skill_hint omitted — see above.
                 )
             )
 
@@ -188,7 +190,8 @@ class TaskPlanner:
                 PlanStep(
                     step_id=len(steps) + 1,
                     description=f"按可验证指标检查并交付结果: {metrics_preview}",
-                    skill_hint="task.validation",
+                    # skill_hint omitted — no `task.validation` skill is registered;
+                    # the orchestrator runs ValidationPipeline post-execution instead.
                 )
             )
 

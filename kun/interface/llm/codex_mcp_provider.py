@@ -206,15 +206,18 @@ class CodexMcpProvider(LLMProvider):
             first = result["content"][0] or {}
             content_text = str(first.get("text", ""))
 
-        # Usage is not reported in the tools/call response; leave zeros —
-        # rate-limit headroom is tracked via the codex/event stream in
-        # future work. Cost equivalent still computes via our $/Mtok guess
-        # over zero tokens = 0; that's fine for the subscription path.
-        usage = UsageInfo()
+        # Codex MCP tools/call doesn't return token usage. Rather than report
+        # zeros (which hides spend visibility in NUO) estimate from byte length
+        # using ~4 chars/token. This is rough but at least non-zero so the
+        # budget tracker sees the work happened.
+        prompt_chars = sum(len(m.content or "") for m in request.messages)
+        est_input = max(1, prompt_chars // 4)
+        est_output = max(1, len(content_text) // 4)
+        usage = UsageInfo(input_tokens=est_input, output_tokens=est_output)
         cost_equiv = self.compute_cost(usage, equivalent=True)
 
         llm_request_total.labels(
-            provider=self.name, model=self.model_id, role="invoke", tenant_id="unknown"
+            provider=self.name, model=self.model_id, role="invoke"
         ).inc()
         llm_latency_seconds.labels(provider=self.name, model=self.model_id).observe(
             latency_ms / 1000

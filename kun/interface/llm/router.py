@@ -351,6 +351,19 @@ class LLMRouter:
                 raise RuntimeError(
                     f"No provider for primary={decision.primary_tier} or fallback={decision.fallback_tier}"
                 )
+            # Under single-provider configs (e.g. KUN_CODEX_ONLY=1) primary and
+            # fallback may point at the same instance. Retrying the same instance
+            # that just failed is almost always wasteful — propagate the error
+            # so the caller can react (and so we don't double-charge quota).
+            if primary is not None and fallback is primary:
+                log.warning(
+                    "router.fallback_skipped_same_provider",
+                    provider=primary.name,
+                )
+                raise RuntimeError(
+                    f"primary provider {primary.name} failed and fallback resolves to "
+                    f"the same instance; no other LLM source configured"
+                )
             log.info(
                 "router.fallback_engaged",
                 purpose=purpose,
@@ -417,7 +430,12 @@ async def _rank_capability_candidates(
             task_type=_task_type_for_request(request, purpose),
         )
     except Exception as e:
-        log.debug("router.capability_choice_skipped", error=str(e))
+        log.warning(
+            "router.capability_choice_skipped",
+            error=str(e),
+            error_type=type(e).__name__,
+            candidates=[p.model_id for p in candidates],
+        )
         return []
 
 
@@ -596,12 +614,9 @@ def get_router() -> LLMRouter:
             "router.minimax_substitute",
             hint="MiniMax used for top/strong/cheap (no Anthropic creds/CLI)",
         )
-        providers["top"] = MiniMaxProvider(model_id="MiniMax-M2.7")
-        providers["top"].tier = "top"
-        providers["strong"] = MiniMaxProvider(model_id="MiniMax-M2.7")
-        providers["strong"].tier = "strong"
-        providers["cheap"] = MiniMaxProvider(model_id="MiniMax-M2.7")
-        providers["cheap"].tier = "cheap"
+        providers["top"] = MiniMaxProvider(model_id="MiniMax-M2.7", tier="top")
+        providers["strong"] = MiniMaxProvider(model_id="MiniMax-M2.7", tier="strong")
+        providers["cheap"] = MiniMaxProvider(model_id="MiniMax-M2.7", tier="cheap")
     else:
         log.warning("router.no_creds", hint="falling back to stub for top/strong/cheap")
         providers["top"] = StubProvider(model_id="stub-opus-4.7", tier="top")
@@ -625,14 +640,13 @@ def get_router() -> LLMRouter:
         # Fallback within the OAuth family — claude-code CLI for coding too
         providers["coding"] = ClaudeCodeProvider(tier="coding")
     elif has_minimax:
-        providers["coding"] = MiniMaxProvider(model_id="MiniMax-M2.7")
-        providers["coding"].tier = "coding"
+        providers["coding"] = MiniMaxProvider(model_id="MiniMax-M2.7", tier="coding")
     else:
         providers["coding"] = StubProvider(model_id="stub-codex-5.3", tier="coding")
 
     # ---- fallback ----
     if has_minimax:
-        providers["fallback"] = MiniMaxProvider(model_id="MiniMax-M2.7")
+        providers["fallback"] = MiniMaxProvider(model_id="MiniMax-M2.7", tier="fallback")
     else:
         log.warning("router.no_minimax_creds", hint="falling back to stub for fallback")
         providers["fallback"] = StubProvider(model_id="stub-minimax-m2.7", tier="fallback")
