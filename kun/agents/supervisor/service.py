@@ -61,6 +61,9 @@ class SupervisorAnomalyState:
     """dedup_key → last_emitted_at"""
     repeat_counts: dict[str, int] = field(default_factory=dict)
     """dedup_key → 累计出现次数 (跨 dedup_ttl 也计, 给 escalation 升级用 L3.4)"""
+    recent_emitted_requests: list[dict[str, Any]] = field(default_factory=list)
+    """最近 emit 的 strategy_search_request payloads (L5.1 cluster 用).
+    滑动窗口同 events; 保留 ≤ 20 个."""
 
     fallback_threshold: int = _DEFAULT_FALLBACK_THRESHOLD
     failure_threshold: int = _DEFAULT_FAILURE_THRESHOLD
@@ -180,6 +183,11 @@ class SupervisorService:
                 req = self._check_skill_mismatch(state, payload)
                 if req:
                     triggered.append(req)
+
+            # L5.1: 聚类检查 — 如果窗口内已积累 ≥ 2 个 request, 跑 cluster
+            # cluster 触发 → 额外 emit 1 个 "cluster search_request" 给 Strategist
+            cluster_requests = self._maybe_cluster(state, triggered)
+            triggered.extend(cluster_requests)
 
             # 异步写 (emitter 兜底)
             for req in triggered:
@@ -324,6 +332,56 @@ class SupervisorService:
             ],
             priority="low",
         )
+
+    def _maybe_cluster(
+        self,
+        state: SupervisorAnomalyState,
+        new_requests: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """L5.1: 把 new requests 加入 recent buffer, 跑聚类, 返回 cluster 触发的额外 requests.
+
+        Cluster 自己也走 dedup (用 cluster dedup_key).
+        """
+        from kun.agents.supervisor.anomaly_cluster import (
+            cluster_anomalies,
+            cluster_to_search_request,
+        )
+
+        # 加入 recent buffer
+        for req in new_requests:
+            state.recent_emitted_requests.append(req)
+        # 限 ≤ 20 个最近 request
+        if len(state.recent_emitted_requests) > 20:
+            state.recent_emitted_requests = state.recent_emitted_requests[-20:]
+
+        if len(state.recent_emitted_requests) < 2:
+            return []
+
+        clusters = cluster_anomalies(state.recent_emitted_requests)
+        if not clusters:
+            return []
+
+        cluster_requests: list[dict[str, Any]] = []
+        now = datetime.now(UTC)
+        for cluster in clusters:
+            payload = cluster_to_search_request(cluster)
+            dedup_key = payload["dedup_key"]
+            # cluster dedup — 1h 内同 cluster 不重复
+            last_at = state.recent_search_requests.get(dedup_key)
+            if (
+                last_at is not None
+                and (now - last_at).total_seconds() < self._dedup_ttl_sec
+            ):
+                continue
+            state.recent_search_requests[dedup_key] = now
+            cluster_requests.append(payload)
+            log.info(
+                "supervisor.cluster_triggered",
+                cluster_id=cluster.cluster_id,
+                cluster_kind=cluster.cluster_kind,
+                member_count=len(cluster.member_request_ids),
+            )
+        return cluster_requests
 
     def _check_context_oversized(
         self,

@@ -6,8 +6,14 @@
   - plan_review_heartbeat.py   · Plan Review Heartbeat 长任务防漂 (L2.3)
   - escalation.py              · 三级阈值 + 4 级升级路径 (L3.4)
   - pool.py                    · 多实例 Pool 按 audit 维度分流 (L4.2)
+  - anomaly_cluster.py         · 异常聚类 → 自创 RSI 请求 (L5.1)
 """
 
+from kun.agents.supervisor.anomaly_cluster import (
+    AnomalyCluster,
+    cluster_anomalies,
+    cluster_to_search_request,
+)
 from kun.agents.supervisor.base import Supervisor
 from kun.agents.supervisor.escalation import (
     EscalationDecision,
@@ -28,6 +34,7 @@ from kun.agents.supervisor.pool import SupervisorPool, SupervisorPoolConfig
 from kun.agents.supervisor.service import SupervisorAnomalyState, SupervisorService
 
 __all__ = [
+    "AnomalyCluster",
     "EscalationDecision",
     "EscalationLevel",
     "PlanReviewHeartbeat",
@@ -39,6 +46,8 @@ __all__ = [
     "SupervisorPool",
     "SupervisorPoolConfig",
     "SupervisorService",
+    "cluster_anomalies",
+    "cluster_to_search_request",
     "compute_severity",
     "decide_escalation",
     "derive_action",
