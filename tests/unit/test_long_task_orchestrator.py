@@ -807,3 +807,412 @@ async def test_per_task_heartbeat_restored_after_run() -> None:
     assert orch._executor._plan_review is original_plan_review
     # And the original heartbeat never had an emitter wired in
     assert original_heartbeat._emitter is None
+
+
+# --------------------------------------------------------------------------- #
+# Critique hook tests (LT.WIRE-2 — every-N-steps direct supervisor call)      #
+# --------------------------------------------------------------------------- #
+
+
+class _CriticServiceStub:
+    """Stub ExternalSupervisorService that lets each test pick a verdict.
+
+    Same shape as the existing ``_StubExternalSupervisorService`` but with a
+    knob to inject raises and per-call verdict sequencing so we can simulate
+    the alarming-drift path independently of the heartbeat code.
+    """
+
+    def __init__(
+        self,
+        *,
+        verdicts: list[str] | None = None,
+        raise_exc: BaseException | None = None,
+    ) -> None:
+        # Per-call verdicts; clamps to last entry once exhausted.
+        self._verdicts = list(verdicts or ["ok"])
+        self._idx = 0
+        self._raise = raise_exc
+        self.calls: list[dict[str, Any]] = []
+
+    async def analyze_observation(
+        self,
+        *,
+        obs_kind: str,
+        observation_payload: dict[str, Any],
+        anchor: dict[str, Any] | None = None,
+        target_task_id: str | None = None,
+        target_anchor_id: str | None = None,
+    ) -> SimpleNamespace:
+        self.calls.append(
+            {
+                "obs_kind": obs_kind,
+                "observation_payload": observation_payload,
+                "anchor": anchor,
+                "target_task_id": target_task_id,
+                "target_anchor_id": target_anchor_id,
+            }
+        )
+        if self._raise is not None:
+            raise self._raise
+        if self._idx < len(self._verdicts):
+            verdict = self._verdicts[self._idx]
+            self._idx += 1
+        else:
+            verdict = self._verdicts[-1]
+        return SimpleNamespace(
+            observation_id=f"ev_l-crit-{self._idx}",
+            observed_at=datetime.now(UTC),
+            obs_kind=obs_kind,
+            target_task_id=target_task_id,
+            target_anchor_id=target_anchor_id,
+            verdict=verdict,
+            rationale=f"stub rationale ({verdict})",
+            recommended_action="halt and reassess" if verdict == "alarming" else None,
+            raw_llm_content="{}",
+            model_used="stub-critic",
+            extras={},
+        )
+
+
+def _multi_step_responses(n_tool_steps: int) -> list[LLMStepResponse]:
+    """Helper: n_tool_steps tool-call responses then a final answer."""
+    out: list[LLMStepResponse] = [
+        _tool_response(tool_id=f"t-{i}") for i in range(n_tool_steps)
+    ]
+    out.append(_final_response("all done"))
+    return out
+
+
+async def test_critique_hook_fires_every_n_steps() -> None:
+    """critique_every_n_steps=2 + 6 main-line steps → critique fires 3 times.
+
+    The wrapped invoker counts each LLM call as a step, so 5 tool-call steps
+    + 1 final = 6 calls total; critique fires at call 2, 4, 6.
+    """
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=5))  # 5 tool + 1 final = 6 calls
+    store = _CheckpointStore()
+    critic = _CriticServiceStub(verdicts=["ok", "ok", "ok"])
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        external_supervisor_service=critic,  # type: ignore[arg-type]
+        critique_every_n_steps=2,
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+    ref = _ref_with_anchor(task_id="task-crit-1")
+    sink = _EventCollector()
+
+    outcome = await orch.run_long_task(ref, on_event=sink)
+
+    assert outcome.loop_result.status == "final"
+    # 6 LLM calls → critique at calls 2, 4, 6 → 3 supervisor calls
+    assert len(critic.calls) == 3
+    # All three critiques were obs_kind='critique'
+    assert all(c["obs_kind"] == "critique" for c in critic.calls)
+    # Each call passed the anchor
+    for c in critic.calls:
+        assert c["anchor"] is not None
+        assert c["anchor"]["goal_statement"]
+    # Three long_task.critique events emitted (one per supervisor call)
+    critiques = sink.all_of("long_task.critique")
+    assert len(critiques) == 3
+    # call_count increments by `every` between events
+    counts = [ev.data["call_count"] for ev in critiques]
+    assert counts == [2, 4, 6]
+
+
+async def test_critique_hook_below_threshold_does_not_fire() -> None:
+    """critique_every_n_steps=10 + only 3 LLM calls → no supervisor calls."""
+    # 2 tool steps + 1 final = 3 LLM calls; below threshold 10
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=2))
+    store = _CheckpointStore()
+    critic = _CriticServiceStub()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        external_supervisor_service=critic,  # type: ignore[arg-type]
+        critique_every_n_steps=10,
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+    sink = _EventCollector()
+
+    outcome = await orch.run_long_task(_ref_with_anchor(), on_event=sink)
+
+    assert outcome.loop_result.status == "final"
+    # No critique calls — 3 LLM calls < threshold 10
+    assert critic.calls == []
+    assert sink.all_of("long_task.critique") == []
+    assert sink.all_of("long_task.drift_alarm") == []
+
+
+async def test_critique_hook_failure_does_not_break_main_path() -> None:
+    """Supervisor raising during critique is logged + swallowed; loop still wins."""
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=3))  # 4 LLM calls
+    store = _CheckpointStore()
+    critic = _CriticServiceStub(raise_exc=RuntimeError("local LLM down"))
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        external_supervisor_service=critic,  # type: ignore[arg-type]
+        critique_every_n_steps=2,
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+    sink = _EventCollector()
+
+    outcome = await orch.run_long_task(_ref_with_anchor(), on_event=sink)
+
+    # Even though critique raised, the main loop completed normally.
+    assert outcome.loop_result.status == "final"
+    # We DID attempt the supervisor (calls were recorded before raise) —
+    # one attempt at call 2, one at call 4
+    assert len(critic.calls) == 2
+    # No critique / drift_alarm events emitted (the raise short-circuits before emit)
+    assert sink.all_of("long_task.critique") == []
+    assert sink.all_of("long_task.drift_alarm") == []
+    # Terminal events still happen
+    assert sink.first("answer") is not None
+    assert sink.events[-1].kind == "done"
+
+
+async def test_critique_verdict_alarming_emits_drift_alarm_event() -> None:
+    """verdict='alarming' → emits long_task.drift_alarm with rationale."""
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=1))  # 2 LLM calls
+    store = _CheckpointStore()
+    critic = _CriticServiceStub(verdicts=["alarming"])
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        external_supervisor_service=critic,  # type: ignore[arg-type]
+        critique_every_n_steps=2,
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+    ref = _ref_with_anchor(task_id="task-alarm-1")
+    sink = _EventCollector()
+
+    outcome = await orch.run_long_task(ref, on_event=sink)
+
+    assert outcome.loop_result.status == "final"
+    # Exactly one critique call at call 2, with verdict='alarming'
+    assert len(critic.calls) == 1
+    # Both events emitted: critique + drift_alarm
+    critiques = sink.all_of("long_task.critique")
+    alarms = sink.all_of("long_task.drift_alarm")
+    assert len(critiques) == 1
+    assert len(alarms) == 1
+    assert critiques[0].data["verdict"] == "alarming"
+    assert alarms[0].data["verdict"] == "alarming"
+    assert alarms[0].data["task_id"] == "task-alarm-1"
+    assert "alarming" in alarms[0].data["rationale"]
+    # recommended_action threads through
+    assert alarms[0].data["recommended_action"] == "halt and reassess"
+
+
+async def test_critique_verdict_concerning_emits_critique_only() -> None:
+    """verdict='concerning' → only long_task.critique, no drift_alarm."""
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=1))
+    store = _CheckpointStore()
+    critic = _CriticServiceStub(verdicts=["concerning"])
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        external_supervisor_service=critic,  # type: ignore[arg-type]
+        critique_every_n_steps=2,
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+    sink = _EventCollector()
+
+    outcome = await orch.run_long_task(_ref_with_anchor(), on_event=sink)
+
+    assert outcome.loop_result.status == "final"
+    assert len(sink.all_of("long_task.critique")) == 1
+    assert sink.all_of("long_task.drift_alarm") == []
+
+
+async def test_critique_backward_compat_default_disabled() -> None:
+    """Not passing critique_every_n_steps → hook disabled, no supervisor calls,
+    even when external_supervisor_service IS wired (used for plan_review verify)."""
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=4))  # 5 LLM calls
+    store = _CheckpointStore()
+    critic = _CriticServiceStub()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        external_supervisor_service=critic,  # type: ignore[arg-type]
+        # critique_every_n_steps deliberately omitted
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+    sink = _EventCollector()
+
+    outcome = await orch.run_long_task(_ref_with_anchor(), on_event=sink)
+
+    assert outcome.loop_result.status == "final"
+    # No critique-mode supervisor calls. The plan_review path may or may not
+    # fire its OWN supervisor calls via _external_supervisor_verify — but
+    # those have obs_kind='drift_check', NOT 'critique'.
+    critique_calls = [c for c in critic.calls if c["obs_kind"] == "critique"]
+    assert critique_calls == []
+    assert sink.all_of("long_task.critique") == []
+
+
+async def test_critique_invalid_cadence_raises_at_construction() -> None:
+    """critique_every_n_steps=0 → ValueError at constructor."""
+    with pytest.raises(ValueError, match="critique_every_n_steps"):
+        LongTaskOrchestrator(
+            llm_invoker=_FakeLLM([_final_response()]),
+            tool_executor=_passthrough_tools,
+            checkpoint_writer=_CheckpointStore().writer,
+            checkpoint_reader=_CheckpointStore().reader,
+            checkpoint_status_marker=_CheckpointStore().marker,
+            critique_every_n_steps=0,
+        )
+
+
+async def test_critique_no_service_means_hook_disabled() -> None:
+    """critique_every_n_steps set but no service → hook silently disabled.
+
+    No crash, no events, loop runs normally. Useful when the supervisor
+    process is offline but the orchestrator still ships.
+    """
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=3))  # 4 LLM calls
+    store = _CheckpointStore()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        # No external_supervisor_service wired
+        critique_every_n_steps=2,
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+    sink = _EventCollector()
+
+    outcome = await orch.run_long_task(_ref_with_anchor(), on_event=sink)
+
+    assert outcome.loop_result.status == "final"
+    # No critique events emitted (no service to call)
+    assert sink.all_of("long_task.critique") == []
+    assert sink.all_of("long_task.drift_alarm") == []
+
+
+async def test_critique_skipped_when_anchor_missing() -> None:
+    """No goal_anchor → critique threshold still counts but supervisor is not called.
+
+    The render rejects empty anchors; we degrade by skipping the call (the
+    long_task.warning event already alerts the caller about the missing anchor).
+    """
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=3))  # 4 LLM calls
+    store = _CheckpointStore()
+    critic = _CriticServiceStub()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        external_supervisor_service=critic,  # type: ignore[arg-type]
+        critique_every_n_steps=2,
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+
+    outcome = await orch.run_long_task(_ref_without_anchor(), on_event=None)
+
+    assert outcome.loop_result.status == "final"
+    # Anchor missing → supervisor never invoked
+    assert critic.calls == []
+
+
+async def test_critique_observation_payload_carries_last_steps() -> None:
+    """The supervisor receives the last K step summaries inside observation_payload."""
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=3))  # 4 LLM calls
+    store = _CheckpointStore()
+    critic = _CriticServiceStub(verdicts=["ok", "ok"])
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        external_supervisor_service=critic,  # type: ignore[arg-type]
+        critique_every_n_steps=2,
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+
+    await orch.run_long_task(_ref_with_anchor(), on_event=None)
+
+    # Two critique calls (at call_count 2 and 4)
+    assert len(critic.calls) == 2
+    for c in critic.calls:
+        payload = c["observation_payload"]
+        assert "critique_prompt" in payload
+        assert "last_steps" in payload
+        assert "call_count" in payload
+        # The critique_prompt is the rendered template
+        assert "EXTERNAL CRITIC" in payload["critique_prompt"]
+        # last_steps slice = critique_every_n_steps entries
+        assert len(payload["last_steps"]) == 2
+    # Call counts grow
+    assert critic.calls[0]["observation_payload"]["call_count"] == 2
+    assert critic.calls[1]["observation_payload"]["call_count"] == 4
+
+
+async def test_critique_llm_invoker_restored_after_run() -> None:
+    """After run_long_task, the executor's _llm reference is restored to the
+    original (un-wrapped) invoker — so a subsequent run with a different
+    config doesn't accumulate wrappers."""
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=1))
+    store = _CheckpointStore()
+    critic = _CriticServiceStub()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        external_supervisor_service=critic,  # type: ignore[arg-type]
+        critique_every_n_steps=2,
+        enable_recursive_planner=False,
+    )
+    original_llm = orch._executor._llm
+
+    await orch.run_long_task(_ref_with_anchor(), on_event=None)
+
+    # After run, the wrapper is gone — back to the original llm_invoker
+    assert orch._executor._llm is original_llm

@@ -59,6 +59,7 @@ from kun.agents.executor.compaction import ConversationCompactor, Summarizer
 from kun.agents.executor.exec_loop import (
     ExecutorLoop,
     LLMInvoker,
+    LLMStepResponse,
     LoopResult,
     ToolExecutor,
 )
@@ -76,6 +77,7 @@ from kun.core.logging import get_logger
 from kun.datamodel.task import TaskRef
 from kun.external_supervisor.service import ExternalSupervisorService
 from kun.integration.external_supervisor import make_external_supervisor_verify
+from kun.integration.external_supervisor_critique import render_critique_prompt
 from kun.integration.plan_review_db import PlanReviewWriter
 
 log = get_logger("kun.engineering.long_task_orchestrator")
@@ -190,6 +192,13 @@ class LongTaskOrchestrator:
         recursive_max_depth: int = 3,
         recursive_max_breadth: int = 8,
         enable_recursive_planner: bool = True,
+        # External Supervisor critique cadence (ADR-023 cross-check).
+        # When set + external_supervisor_service is wired, every N main-line
+        # steps the orchestrator calls the supervisor directly with a
+        # critique prompt (anchor + last N step summaries) and emits
+        # long_task.critique / long_task.drift_alarm based on verdict.
+        # None (default) = critique hook disabled — backward compatible.
+        critique_every_n_steps: int | None = None,
     ) -> None:
         # --- Auto-wire external_supervisor_verify from service when not given ---
         # If both are passed, the explicit verify wins (caller is being deliberate).
@@ -198,6 +207,19 @@ class LongTaskOrchestrator:
                 external_supervisor_service
             )
         self._external_supervisor_verify = external_supervisor_verify
+
+        # --- Critique hook (direct supervisor call every N steps) ---
+        # Validation: critique_every_n_steps must be >= 1 when set; the hook
+        # only fires when external_supervisor_service is wired AND the cadence
+        # is set. critique_every_n_steps=None keeps the hook disabled
+        # (backward compat with all pre-existing tests).
+        if critique_every_n_steps is not None and critique_every_n_steps < 1:
+            raise ValueError(
+                "critique_every_n_steps must be >= 1 when set; got "
+                f"{critique_every_n_steps!r}"
+            )
+        self._external_supervisor_service = external_supervisor_service
+        self._critique_every_n_steps = critique_every_n_steps
 
         # --- Stash heartbeat tuning so we can rebuild per-task when needed ---
         # When plan_review_writer_factory is provided, run_long_task rebuilds
@@ -438,6 +460,31 @@ class LongTaskOrchestrator:
                 self._plan_review = per_task_service
                 self._executor._plan_review = per_task_service
 
+        # ---- 1c. Wire critique hook (direct supervisor cross-check every K steps) ----
+        # We wrap the ExecutorLoop's LLM invoker with a counter + critique
+        # caller. After every K LLM invocations, we ask
+        # ExternalSupervisorService.analyze_observation to grade the last K
+        # step summaries against the anchor. Verdict 'alarming' → emit
+        # long_task.drift_alarm so the caller (main Orchestrator) can decide
+        # to abort. We track step summaries in a closure list so compaction
+        # of `messages` doesn't erase our look-back. Restored in finally.
+        original_llm_invoker = self._executor._llm
+        critique_hook_active = (
+            self._critique_every_n_steps is not None
+            and self._external_supervisor_service is not None
+        )
+        if critique_hook_active:
+            # Local imports avoid pulling protocol types into module scope where
+            # they would clash with the in-file `LLMInvoker` alias.
+            wrapped_invoker = self._build_critique_wrapped_invoker(
+                original_invoker=original_llm_invoker,
+                emit=_emit,
+                task_id=task_id,
+                anchor_id=anchor_id,
+                anchor_dict=anchor_dict,
+            )
+            self._executor._llm = wrapped_invoker
+
         try:
             # ---- 2. Optional: RecursivePlanner.expand → PlanTree ----
             plan_tree: PlanTree | None = None
@@ -503,8 +550,128 @@ class LongTaskOrchestrator:
                 self._heartbeat = original_heartbeat
                 self._plan_review = original_plan_review
                 self._executor._plan_review = original_plan_review
+            # Restore original LLM invoker if we wrapped it for critique.
+            if critique_hook_active:
+                self._executor._llm = original_llm_invoker
 
     # ----------------------------- internals --------------------------------
+
+    def _build_critique_wrapped_invoker(
+        self,
+        *,
+        original_invoker: LLMInvoker,
+        emit: Callable[[str, dict[str, Any]], Awaitable[None]],
+        task_id: str,
+        anchor_id: str | None,
+        anchor_dict: dict[str, Any] | None,
+    ) -> LLMInvoker:
+        """Build an LLM invoker wrapper that fires a critique every K steps.
+
+        Each call counts as one main-line step. When the counter is a multiple
+        of ``self._critique_every_n_steps``, we call
+        ``ExternalSupervisorService.analyze_observation`` with a critique
+        prompt summarising the last K steps, then emit:
+          - ``long_task.critique`` (always — verdict + rationale)
+          - ``long_task.drift_alarm`` (when verdict == 'alarming')
+
+        The wrapper never raises into the ExecutorLoop: if the supervisor
+        call fails we log + skip, so a flaky local LLM doesn't kill the run.
+        """
+        every = self._critique_every_n_steps
+        svc = self._external_supervisor_service
+        if every is None or svc is None:
+            # Defensive — caller guards on this, but keep typing honest.
+            raise RuntimeError(
+                "_build_critique_wrapped_invoker called without "
+                "critique_every_n_steps + external_supervisor_service"
+            )
+        # Build the critique anchor exactly once per run. We accept `None` /
+        # `{}` here and degrade: render_critique_prompt rejects an empty
+        # anchor, so we set a sentinel that disables the critique call (still
+        # increments the counter so tests can observe the call cadence).
+        critique_anchor: dict[str, Any] = anchor_dict or {}
+        step_summaries: list[dict[str, Any]] = []
+        call_count = 0
+
+        async def _wrapped(messages: list[dict[str, Any]]) -> LLMStepResponse:
+            nonlocal call_count
+            response = await original_invoker(messages)
+            call_count += 1
+            # Capture this step's summary. Prefer assistant text content; fall
+            # back to a tool-call digest if the model only emitted tools.
+            summary = (response.content or "").strip()
+            if not summary and response.tool_calls:
+                summary = "tool_calls=" + ",".join(
+                    tc.name for tc in response.tool_calls
+                )
+            step_summaries.append({"step_idx": call_count, "summary": summary})
+
+            if call_count % every != 0:
+                return response
+
+            # Critique threshold hit — call the supervisor.
+            if not critique_anchor:
+                log.info(
+                    "long_task_orchestrator.critique_skipped_no_anchor",
+                    task_id=task_id,
+                    call_count=call_count,
+                )
+                return response
+
+            try:
+                critique_prompt = render_critique_prompt(
+                    anchor=critique_anchor,
+                    last_steps=step_summaries,
+                )
+                observation = await svc.analyze_observation(
+                    obs_kind="critique",
+                    observation_payload={
+                        "critique_prompt": critique_prompt,
+                        "last_steps": list(step_summaries[-every:]),
+                        "call_count": call_count,
+                    },
+                    anchor=critique_anchor,
+                    target_task_id=task_id,
+                    target_anchor_id=anchor_id,
+                )
+            except Exception as e:
+                log.warning(
+                    "long_task_orchestrator.critique_failed",
+                    task_id=task_id,
+                    call_count=call_count,
+                    error=str(e),
+                )
+                return response
+
+            verdict = getattr(observation, "verdict", None) or "ok"
+            rationale = getattr(observation, "rationale", "") or ""
+            recommended = getattr(observation, "recommended_action", None)
+            await emit(
+                "long_task.critique",
+                {
+                    "task_id": task_id,
+                    "anchor_id": anchor_id,
+                    "call_count": call_count,
+                    "verdict": verdict,
+                    "rationale": rationale,
+                    "recommended_action": recommended,
+                },
+            )
+            if verdict == "alarming":
+                await emit(
+                    "long_task.drift_alarm",
+                    {
+                        "task_id": task_id,
+                        "anchor_id": anchor_id,
+                        "call_count": call_count,
+                        "verdict": verdict,
+                        "rationale": rationale,
+                        "recommended_action": recommended,
+                    },
+                )
+            return response
+
+        return _wrapped
 
     async def _emit_terminal_events(
         self,

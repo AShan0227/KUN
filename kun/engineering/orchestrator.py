@@ -68,6 +68,10 @@ log = get_logger("kun.engineering.orchestrator")
 
 _STALE_QUEUED_TASK_AFTER = timedelta(seconds=30)
 
+# Sentinel for the lazy-built External Supervisor cache. Lives at module
+# scope so identity comparison ("is _UNSET") survives across instances.
+_UNSET: Any = object()
+
 
 class OutputTranslator(Protocol):
     async def __call__(
@@ -252,7 +256,48 @@ class Orchestrator:
         self.output_translator = output_translator or translate_for
         # LT.WIRE-1: optional external supervisor (process-separate local LLM).
         # When None, LongTaskOrchestrator silently skips drift cross-check.
+        # When still None at _run_long_task_branch entry, the orchestrator
+        # lazily attempts to build one from settings via
+        # _maybe_build_external_supervisor (LT.WIRE-2).
         self.external_supervisor = external_supervisor
+        # Sentinel cache for the lazy-built supervisor. Distinct from None so
+        # we can distinguish "not yet attempted" from "attempted and got None".
+        self._external_supervisor_cached: Any = _UNSET
+
+    async def _maybe_build_external_supervisor(self) -> Any | None:
+        """Lazy build ExternalSupervisorService when enabled in settings.
+
+        Cached in ``self._external_supervisor_cached`` so each call after the
+        first returns the same instance (or the same ``None`` decision). The
+        sentinel ``_UNSET`` distinguishes "not yet attempted" from "attempted
+        and decided not to build" — a one-time build attempt per Orchestrator
+        instance.
+
+        Returns:
+          The constructed ``ExternalSupervisorService`` if
+          ``settings.external_supervisor_enabled`` is True and ``build_service``
+          succeeded; ``None`` if disabled or if the build failed (a warning
+          is logged in that case).
+        """
+        if self._external_supervisor_cached is not _UNSET:
+            return self._external_supervisor_cached
+
+        cfg = settings()
+        if not cfg.external_supervisor_enabled:
+            self._external_supervisor_cached = None
+            return None
+        try:
+            from kun.external_supervisor.runner import build_service
+            svc = await build_service()
+            self._external_supervisor_cached = svc
+            log.info("long_task.external_supervisor.built")
+            return svc
+        except Exception as e:
+            log.warning(
+                "long_task.external_supervisor.build_failed", error=str(e)
+            )
+            self._external_supervisor_cached = None
+            return None
 
     # ----------------------------- public entry -----------------------------
 
@@ -1220,6 +1265,12 @@ class Orchestrator:
         ) -> Any:
             return make_plan_review_writer(tenant_id, task_id, anchor_id)
 
+        # LT.WIRE-2: resolve external supervisor service — caller-injected wins,
+        # otherwise lazily build from settings.external_supervisor_enabled.
+        external_supervisor = self.external_supervisor
+        if external_supervisor is None:
+            external_supervisor = await self._maybe_build_external_supervisor()
+
         lt_orch = LongTaskOrchestrator(
             llm_invoker=make_llm_invoker(
                 self.llm_router, purpose="execution", profile=llm_profile
@@ -1230,7 +1281,7 @@ class Orchestrator:
             checkpoint_status_marker=make_checkpoint_status_marker(),
             # LT.WIRE-1: persist plan_reviews + run External Supervisor on drift
             plan_review_writer_factory=_make_pr_writer,
-            external_supervisor_service=self.external_supervisor,
+            external_supervisor_service=external_supervisor,
             # LT.WIRE-2: real LLM summarizer for compaction (replaces rule-based)
             compactor_summarizer=make_llm_summarizer(
                 self.llm_router, purpose="compression"
