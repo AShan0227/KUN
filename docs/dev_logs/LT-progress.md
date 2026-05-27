@@ -296,3 +296,74 @@ curl -H "Authorization: Bearer sk-ant-oat01-..." \
 
 **总测试**: 1670 → 1675 (+5), ruff 全绿.
 
+---
+
+## LT.CODEX-PURE-LLM · codex MCP 转纯 LLM 模式, gpt-5.5 走 XML 协议
+
+**完成**：2026-05-27 / commit e6cbd2d
+
+**背景 (dogfood v4 死因复盘)**：
+
+dogfood v4 用 gpt-5.5 跑长任务, 任务要求"创建文件 X / 写新 seeds Y"。gpt-5.5 字面回:
+
+> "当前环境是 read-only sandbox，approval policy 为 never，所以我不能新增/修改文件..."
+
+根因不是单一: 是 **codex 宿主和 KUN 给 gpt-5.5 的双重身份冲突**:
+
+```
+codex MCP 启动:  sandbox=read-only, approval=never (codex 自家配置)
+                  base-instructions: "Do not run tools or take side effects"
+KUN 注入:        skill_directive (XML 工具协议描述)
+                  system prompt: "用这些 skill 创建文件"
+
+gpt-5.5 看到:
+  - codex (宿主) 说: 别用工具, 沙箱锁了
+  - KUN (任务) 说:  用这套 XML 协议干活
+  → 信宿主, 出 sandbox 拒绝
+```
+
+**解 (Path B, 用户选)**：让 codex 闭嘴, 让 KUN 的协议成为 gpt-5.5 唯一信号源。
+
+**做了什么**：
+- 重写 `codex_mcp_provider.py` 的 `base-instructions` (从 3 行扩到 15 行):
+  - 显式: "你是 pure LLM oracle, 没 file write/shell/codex tools"
+  - 显式: "宿主的 XML 协议是 ONLY 行动方式, emit `<skill name='X'><param>val</param></skill>`"
+  - 显式: "Never claim sandbox restrictions — 那不是你的事"
+- `supports_tools = True` (之前 False; 现在 XML 协议确实是 tool 通道)
+- `_build_prompt` 接 `request.tools` (即使现 caller 没传), 自描述契约
+- 导出 `PURE_LLM_BASE_INSTRUCTIONS` 常量给测试做 contract check
+- 5 个新 unit test: supports_tools / base-instructions 关键短语 / payload `_send` intercept / build_prompt 加 tool spec / 无 tools 保留旧 shape
+- 新 smoke script `scripts/codex_pure_llm_smoke.py`: 离线验证 + 真实 codex MCP 调用 + 检测 sandbox 拒绝 pattern + 检测 `<skill>` XML 命中
+
+**关键决策**：
+- **改 prompt-engineering 而非沙箱**: codex MCP 的 sandbox=read-only 是 ChatGPT 客户端给的, 我们改不了。但只要 gpt-5.5 不去 codex 的 file tool, sandbox 是不是 read-only 就不重要 — 它根本不用。所以 fix 在 prompt 层就够, 不动 sandbox 参数。
+- **`supports_tools` 真改 True**: 这个 flag 现在反映"模型能不能走 tool 流", XML 协议虽不是结构化 tool_use, 但 LT.TOOLS-GAP 已经把 XML→ToolCall 解回正了, ExecutorLoop 看到 tool_calls 走 dispatch。flag = True 不会引入新 bug, 反让 router/Loop 路由决策更准。
+- **payload _send intercept 测试**: 不 mock 整个 subprocess (太脆), 只拦 `_send` callback, 断 JSON-RPC payload 里 `base-instructions` 字段。轻量但能锁住 contract。
+- **smoke script 独立 stage**: 不进 pytest (pytest 不该启外部 subprocess), 但放 `scripts/` 给开发者跑 + 给 CI 后续做 e2e 验证用。
+
+**真实测试 (commit 前)**：
+```
+$ .venv/bin/python scripts/codex_pure_llm_smoke.py
+🚀 Calling gpt-5.x via codex MCP (model=gpt-5.5)...
+📥 Response (81 chars, latency=17497ms):
+<skill name="write_file"><path>notes/hello.md</path><content>hi</content></skill>
+🧪 Verdict:
+   sandbox refusal patterns: none ✓
+   <skill name='write_file'> present: ✓
+✅ PASS
+```
+
+gpt-5.5 出**精确** XML, 无前缀 prose, 无 sandbox 抱怨。
+
+**dogfood v5 应该能跑了**：
+- 现在 gpt-5.5 收到 KUN 的长任务 → 看到 skill_directive → 该写文件时 emit `<skill name="write_file">...</skill>`
+- KUN 的 `make_llm_invoker` 路径已经有 `parse_skill_calls` 解 XML 回 ToolCall (commit 3b81372 / LT.TOOLS-GAP)
+- ExecutorLoop 收 tool_calls, dispatch 给 ToolExecutor, 真落盘
+- 闭环
+
+**未完工作 (DOGFOOD #26)**：
+- 用户决策启动 dogfood v5 (gpt-5.5 跑全程 Phase A-E)
+- v5 跑完后写 dogfood-retrospective 抽 ≥3 张 methodology seeds
+
+**总测试**: 1675 → 1680 (+5), ruff 全绿. 累计长任务相关代码改动: 1347 → 1680 (+333 tests), 23+ commits.
+
