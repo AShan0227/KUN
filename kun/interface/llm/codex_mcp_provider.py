@@ -15,6 +15,18 @@ Implementation shape:
     consumed and dropped — the final agent text is returned in the
     ``tools/call`` response's ``structuredContent.content``
 
+**Pure-LLM mode (LT.CODEX-PURE-LLM, 2026-05-27)**: codex MCP-server runs
+gpt-5.x with its OWN read-only sandbox + approval=never config. In agent
+mode that means gpt-5.x sees its environment as "no write access" and
+refuses anything that needs file mutation — which broke dogfood v4 when
+KUN's long task asked for file creation. Fix: drive codex MCP in
+**pure-LLM mode** — tell gpt-5.x explicitly that the KUN host provides
+its own tools via XML protocol (see ``kun.engineering.agent_loop``'s
+``build_skill_directive``), and that codex's local sandbox is irrelevant.
+gpt-5.x then emits ``<skill name="X">`` XML which KUN's host parses
+(LT.TOOLS-GAP path in ``llm_invoker.py``) and dispatches via the host
+ToolExecutor.
+
 Subscription-paid, so ``cost_usd_actual == 0`` (ADR-008 duality). We fill
 ``cost_usd_equivalent`` with a rough $/M-token estimate since the MCP
 response doesn't carry a cost field.
@@ -78,11 +90,44 @@ _PROTOCOL_VERSION = "2025-06-18"
 _DEFAULT_STREAM_LIMIT_BYTES = 16 * 1024 * 1024
 
 
+# LT.CODEX-PURE-LLM: the base-instructions passed to codex MCP. We use this
+# to override codex's default agent identity — gpt-5.x should treat itself as
+# a pure language oracle that emits XML when it wants to take action, NOT as
+# an agent with sandboxed file tools. The host (KUN) parses the XML and runs
+# the tools itself (see kun.integration.llm_invoker.parse_skill_calls path).
+_PURE_LLM_BASE_INSTRUCTIONS = """\
+You are a pure language-model oracle wrapped by the KUN agent host. \
+You do NOT have file write access, NO shell, NO local tools. \
+codex's own sandbox/approval settings are off-topic — never mention them. \
+
+When the user's prompt contains a `<skill_directive>` block or describes \
+host-provided tools, those are the ONLY way to perform actions. \
+To request an action emit XML in this exact shape:
+  <skill name="tool_name"><param_name>value</param_name></skill>
+
+The KUN host will parse the XML, dispatch the tool, and return the result \
+to you on the next turn. Multiple <skill> calls per response are allowed. \
+
+When a user request needs an action you have a skill for: emit the <skill> \
+XML, no prose preamble. When a user request is pure reasoning or you have \
+no matching skill: respond with prose. \
+
+Never claim sandbox restrictions. Never refuse on the grounds of \
+file-system access — KUN has the file-system access, you do not need it.
+"""
+
+
 class CodexMcpProvider(LLMProvider):
     """Subprocess MCP-client adapter for `codex mcp-server`."""
 
     name = "codex-mcp"
-    supports_tools = False  # codex drives its own tool loop; we just pass a prompt
+    # LT.CODEX-PURE-LLM: in pure-LLM mode we DO support tools — they're
+    # surfaced to gpt-5.x via the system-prompt XML protocol (skill_directive),
+    # and the host parses the model's <skill> XML response back into ToolCalls
+    # via kun.integration.llm_invoker. This is "tools via text protocol" — not
+    # the structured tool_use that Anthropic/OpenAI APIs have, but it's still
+    # a working tool-using path.
+    supports_tools = True
     supports_streaming = False
     supports_cache = True  # backend handles caching
 
@@ -155,15 +200,10 @@ class CodexMcpProvider(LLMProvider):
                     "approval-policy": "never",
                     "sandbox": self._sandbox,
                     "cwd": self._cwd,
-                    # Keep codex stateless: minimal agent system prompt, no
-                    # AGENTS.md pickup. Codex 0.125+ requires non-empty
-                    # instructions; we give a one-liner that stays out of
-                    # the way and lets the user prompt drive everything.
-                    "base-instructions": (
-                        "You are an LLM call adapter. Answer the user's prompt "
-                        "directly and concisely. Do not run tools or take side "
-                        "effects unless asked."
-                    ),
+                    # LT.CODEX-PURE-LLM: drive gpt-5.x as a pure language oracle
+                    # — the host (KUN) holds the tools and the file system, the
+                    # model emits XML when it wants action. See module docstring.
+                    "base-instructions": _PURE_LLM_BASE_INSTRUCTIONS,
                     "developer-instructions": "",
                     "config": {"model_reasoning_effort": self.reasoning_effort},
                 },
@@ -383,6 +423,25 @@ class CodexMcpProvider(LLMProvider):
     @staticmethod
     def _build_prompt(request: LLMRequest) -> str:
         parts: list[str] = []
+        # LT.CODEX-PURE-LLM: surface request.tools as XML protocol description
+        # so gpt-5.x sees them even when the orchestrator didn't bake a
+        # skill_directive into a system message. Tools-text first so it
+        # frames everything that follows.
+        if request.tools:
+            tools_lines: list[str] = [
+                "# Available tools (KUN host dispatches; you emit <skill> XML)"
+            ]
+            for tool in request.tools:
+                schema = tool.schema_ or {}
+                tools_lines.append(
+                    f"  - <skill name=\"{tool.name}\">: {tool.description}\n"
+                    f"    schema: {schema}"
+                )
+            tools_lines.append(
+                "Emit XML like: "
+                "<skill name=\"NAME\"><param>value</param></skill>"
+            )
+            parts.append("\n".join(tools_lines))
         for m in request.messages:
             if m.role == "system":
                 parts.append(f"# System\n{m.content}")
@@ -393,6 +452,14 @@ class CodexMcpProvider(LLMProvider):
             elif m.role == "tool":
                 parts.append(f"# Tool result\n{m.content}")
         return "\n\n".join(parts) or "(empty)"
+
+
+__all__ = ["PURE_LLM_BASE_INSTRUCTIONS", "CodexMcpProvider"]
+
+
+# Public alias for testing / introspection. Tests reference this to verify
+# the prompt-engineering contract without reaching into a private constant.
+PURE_LLM_BASE_INSTRUCTIONS = _PURE_LLM_BASE_INSTRUCTIONS
 
 
 def _env_int(name: str, default: int) -> int:

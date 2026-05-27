@@ -14,8 +14,11 @@ from __future__ import annotations
 import os
 
 import pytest
-from kun.interface.llm.base import LLMMessage, LLMRequest
-from kun.interface.llm.codex_mcp_provider import CodexMcpProvider
+from kun.interface.llm.base import LLMMessage, LLMRequest, ToolSpec
+from kun.interface.llm.codex_mcp_provider import (
+    PURE_LLM_BASE_INSTRUCTIONS,
+    CodexMcpProvider,
+)
 
 
 @pytest.mark.unit
@@ -131,3 +134,137 @@ def test_stream_limit_invalid_env_uses_default(monkeypatch):
     p = CodexMcpProvider(tier="coding")
 
     assert p._stream_limit > 1048576
+
+
+# =================== LT.CODEX-PURE-LLM ===================
+# These tests pin down the contract that codex MCP-server is driven in
+# pure-LLM mode: gpt-5.x is told it has no file system / no shell, the host
+# owns the tools, and tool requests come back as <skill> XML which KUN's
+# llm_invoker parses (LT.TOOLS-GAP path). Catches regressions where someone
+# softens the base-instructions or flips supports_tools back to False.
+
+
+@pytest.mark.unit
+def test_supports_tools_is_true_in_pure_llm_mode():
+    """In pure-LLM mode codex MCP supports tools via the XML protocol — the
+    flag must reflect that so the router and ExecutorLoop know to inject
+    skill specs into the prompt."""
+    p = CodexMcpProvider(tier="coding")
+    assert p.supports_tools is True
+
+
+@pytest.mark.unit
+def test_base_instructions_assert_no_file_access_and_xml_protocol():
+    """The base-instructions sent to codex MCP must override codex's default
+    agent identity. Required signals: (1) explicit no-write/no-shell, (2)
+    XML protocol example, (3) explicit don't-claim-sandbox.
+
+    Regression catcher: dogfood v4 broke because base-instructions said
+    "Do not run tools or take side effects" — that left gpt-5.x with two
+    conflicting directives (codex's no-tools vs KUN's use-skills) and it
+    chose to refuse with a sandbox excuse.
+    """
+    text = PURE_LLM_BASE_INSTRUCTIONS
+    lower = text.lower()
+    # Explicit denial of file write access (any phrasing)
+    assert "file write" in lower or "file system" in lower or "file-system" in lower
+    assert "no " in lower or "not have" in lower  # has a negation near the file-claim
+    # Explicit denial of shell
+    assert "no shell" in lower
+    # XML protocol shape — model must see the exact <skill name="..."> shape
+    assert '<skill name=' in text
+    # Don't claim sandbox restrictions (regression catcher for v4)
+    assert "sandbox" in lower
+    # Must instruct model NOT to mention/claim sandbox
+    assert any(
+        signal in lower
+        for signal in ("never claim", "never mention", "off-topic")
+    )
+
+
+@pytest.mark.unit
+def test_invoke_payload_uses_pure_llm_base_instructions(monkeypatch):
+    """The actual JSON-RPC payload sent to codex MCP must carry
+    PURE_LLM_BASE_INSTRUCTIONS as ``base-instructions``. We don't run the
+    subprocess — we intercept _send and assert the payload shape.
+    """
+    import asyncio
+
+    p = CodexMcpProvider(tier="coding")
+
+    captured: dict = {}
+
+    async def _fake_send(msg):
+        # Capture the first tools/call payload, fire a fake result so invoke
+        # can return without hanging.
+        if msg.get("method") == "tools/call":
+            captured["payload"] = msg
+            fut = p._pending.get(msg["id"])
+            if fut and not fut.done():
+                fut.set_result(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": msg["id"],
+                        "result": {"structuredContent": {"content": "ok"}},
+                    }
+                )
+
+    async def _fake_ensure_running():
+        return None
+
+    monkeypatch.setattr(p, "_send", _fake_send)
+    monkeypatch.setattr(p, "_ensure_running", _fake_ensure_running)
+
+    resp = asyncio.run(
+        p.invoke(LLMRequest(messages=[LLMMessage(role="user", content="hi")]))
+    )
+
+    assert resp.content == "ok"
+    args = captured["payload"]["params"]["arguments"]
+    assert args["base-instructions"] == PURE_LLM_BASE_INSTRUCTIONS
+    # Old agent-mode wording must be GONE — this catches a partial revert.
+    assert "Do not run tools" not in args["base-instructions"]
+
+
+@pytest.mark.unit
+def test_build_prompt_includes_tool_specs_when_request_carries_tools():
+    """When the request has ``tools`` populated, the built prompt must
+    surface them as XML protocol description so gpt-5.x sees them even
+    when the orchestrator didn't bake a skill_directive into the system
+    message. Important for callers that pass tools= directly to the router
+    rather than through LongTaskOrchestrator's skill_directive injection.
+    """
+    req = LLMRequest(
+        messages=[LLMMessage(role="user", content="please write a file")],
+        tools=[
+            ToolSpec(
+                name="write_file",
+                description="Write content to a path",
+                schema_={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                },
+            ),
+        ],
+    )
+    built = CodexMcpProvider._build_prompt(req)
+    # Tool name + XML shape + schema fragment all present
+    assert 'write_file' in built
+    assert '<skill name="write_file">' in built
+    assert "schema:" in built
+    assert "please write a file" in built  # user message still concatenated
+
+
+@pytest.mark.unit
+def test_build_prompt_without_tools_keeps_legacy_shape():
+    """Backwards-compat: when request.tools is empty, prompt is just the
+    role-tagged concatenation — no synthetic tool section that would
+    confuse callers expecting the old behavior."""
+    req = LLMRequest(messages=[LLMMessage(role="user", content="just chat")])
+    built = CodexMcpProvider._build_prompt(req)
+    assert "# User" in built
+    assert "just chat" in built
+    assert "Available tools" not in built  # no tools section added
