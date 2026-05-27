@@ -10,6 +10,10 @@ acceptance_metric). 跑完一次 KUN.execute(task), 用 acceptance_metric 评
 industry-agnostic — 4 行业共用同一 framework, 各自填具体 task.
 """
 
+from kun.evaluation.ecommerce_shopify import (
+    build_shopify_eval_suite,
+    build_shopify_golden_tasks,
+)
 from kun.evaluation.industry_suite import (
     AcceptanceMetric,
     EvalReport,
@@ -25,5 +29,7 @@ __all__ = [
     "EvalResult",
     "GoldenTask",
     "IndustryEvalSuite",
+    "build_shopify_eval_suite",
+    "build_shopify_golden_tasks",
     "builtin_acceptance_metrics",
 ]
