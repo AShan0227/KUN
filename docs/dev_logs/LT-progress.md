@@ -56,3 +56,36 @@
 - PlanReviewOutcome 落 `plan_reviews` DB 表 (alembic 0011 已经有表, 只缺 writer)
 
 ---
+
+## LT.C · Checkpoint / resume — TaskCheckpoint 持久化
+
+**完成**：2026-05-27 / commits dd1d712 + (latest)
+
+**做了什么**：
+- 新数据脊柱表 `task_checkpoints` (alembic 0012)
+  - pk (tenant_id, checkpoint_id), RLS tenant_isolation, FORCE ROW LEVEL SECURITY
+  - sequence (单调递增 per-task) + step_idx + conversation_snapshot + working_state + artifact_refs
+  - goal_anchor_id + last_self_report (resume 时校验 + 回退)
+  - cost_usd_so_far + tokens_used_so_far (per-task budget tracking)
+  - status: active / final / failed_resume (CHECK constraint)
+  - 2 索引: (task_id, sequence) for resume, (status) for dashboard
+- 新 EntityKind `task_checkpoint` (prefix `tcp-`)
+- TaskCheckpointRow (kun/core/orm.py)
+- TaskCheckpointService (kun/agents/executor/checkpoint.py) + 16 测试
+  - save / resume / finalize 三个方法
+  - resume: anchor 不匹配自动标 failed_resume 防 stale resume
+  - 全 DI callback (writer / reader / status_marker), 单测 FakeStore in-memory
+
+**关键决策**：
+- **sequence 单调递增而不是依赖时间戳**: 防时钟跳变 / 跨进程 / 跨副本. resume 取 sequence 最大值的 active row.
+- **anchor mismatch 自动 failed_resume**: 任务跑到一半重新拆 anchor (产品方向变了), 旧 checkpoint resume 会拿到错 context — 主动 fail 比静默错误好.
+- **writer raise propagates (状态机推进失败必须可见)**: 与 ADR-024 frozen_dataclass_agent_io_contract 一致. status_marker 失败仅 log (状态累积可重试).
+- **finalize 要求 status_marker**: 若 caller 没注入直接 RuntimeError, 提前暴露配置问题, 不让 final status 静默丢.
+- **conversation_snapshot 是 list[dict] (JSONB)**: 落 LLM messages list 直接 round-trip; mutable copy in to_row_payload 防 alias.
+
+**未完工作 (整合)**:
+- 真实 session_scope 接 writer/reader/status_marker (~10 行 adapter)
+- Executor loop 每个 step 后调 save (LT.E)
+- 启动时调 resume 决定从哪开始 (LT.E)
+
+---
