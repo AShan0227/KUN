@@ -1073,4 +1073,121 @@ async def methodology_distill_real_impl(tenant_id: str) -> dict:
 
 ---
 
+## ADR-026：Phase 2 接入层架构 — Browser-first hybrid
+
+**状态**：accepted（2026-05-27）
+
+### 背景
+
+Phase 1 (L0-L5) 完成后, KUN 已经具备:
+- 7 agent + Pool 多实例 + 监督线 + Strategist + Gate
+- RSI 真闭环 (Supervisor → Strategist → Gate → runtime_capabilities)
+- 1186 unit tests 全绿, 端到端 demo 跑通真 Postgres
+
+Phase 2 商业化目标 (用户决策, 2026-05-27): "电商 / 投放 / 内容分发 / CRM **四个行业互通, 先不上线, 完善打磨产品**". 4 个行业本质都是 SaaS 操作场景, KUN 扮演 agent 替人在 Shopify / Meta Ads / 微信公众号 / Salesforce 等平台上做事.
+
+### 决策
+
+接入层架构: **Browser-first hybrid** —
+- **Browser automation 是主路径**: Playwright + DOM 自愈, 覆盖度最大化 (~100%)
+- **官方 API 是加速路径**: 同操作有 API 就走 API (快 10x), 缺时 fallback browser
+- **不做 SDK**: KUN 不是开发者平台, 是 agent
+
+### 不做 SDK 的理由
+
+| 形态 | 适用 | 4 行业可用度 |
+|------|------|------------|
+| 官方 API | 已开放接口的平台 (Shopify, Meta Ads) | ~40% (微信公众号/小红书接口稀缺) |
+| SDK | 给第三方开发者集成 KUN 的库 | 0 (与产品定位不符) |
+| Browser 自动化 | 所有 SaaS (鲲扮演人) | ~100% |
+
+KUN 产品定位是"自主 agent 替人做事", 不是"开发者集成在 KUN 上构建产品". SDK 是 platform-as-product 思路, 与 agent-as-product 不兼容.
+
+### 架构
+
+```
+Director → Adapter Router → ┬─ Official API Adapter (Shopify/Meta/Salesforce/etc)
+                            └─ Browser Adapter (Playwright pool + visual self-heal)
+```
+
+**核心模块** (`kun/interface/automation/`):
+- `base.py` · `AutomationAdapter` Protocol + `Action` / `ActionResult` 数据模型
+- `registry.py` · `AdapterRegistry` — 注册 `(platform, operation) → list[adapter]`
+- `router.py` · `AdapterRouter` — capability_score-driven API / Browser 选择
+- `api_base.py` · `APIAdapter` base — HTTP-based 适配器抽象 (子类实现 `_do_execute`)
+- `browser_base.py` · `BrowserAdapter` base — Playwright 适配器抽象 (page_factory 注入)
+
+**与现有 `kun/interface/adapters/` 区分**:
+- `adapters/` 是 **输出翻译** (KUN 内部 → A2A / email / REST / markdown), L0 早期建
+- `automation/` 是 **动作执行** (KUN 操作他人 SaaS), L6 起步
+
+### Router 选择算法
+
+1. `action.requested_kind` 显式 (`api` 或 `browser`) → 用它
+2. 否则 API capability_score >= 0.7 → 用 API (快 + 稳)
+3. API 不达标 / 不可用 → fallback Browser
+4. 没注册的 (platform, operation) → `AdapterSelection.kind=None` + reason
+
+`capability_score` 与 LLM Router (ADR-002) 同源 cold-start damping:
+- `damped_score = 0.5 + min(1.0, sample_size/30) * (success_rate - 0.5)`
+- `health_check` 失败 → 5 分钟 cooldown 不选
+
+### Fallback policy
+
+主路径 (API) 失败 → 切 `fallback_candidate` (Browser).
+- 主路径 success → record_success → score 升
+- 主路径 fail → record_failure + 切 fallback
+- Fallback 也 fail → return result with `fallback_used=True`, caller 决定下一步
+
+### Adapter 注册流程 (per 行业)
+
+1. 选定行业 (e.g. 电商) → 选 platform (e.g. Shopify, Taobao, JD)
+2. 每个 platform 实装 API + Browser 两个 adapter (有 API 的) 或仅 Browser
+3. Adapter `supported_operations` 声明能干啥 ("create_product", "list_orders", ...)
+4. 在 KUN 启动时 `registry.register(my_adapter)` 注入
+5. KUN Director 拆 task → Executor 调 `router.route_and_execute(action)`
+
+### 自我进化路径 (RSI 入口)
+
+接入层本身可作 RSI 实例:
+- **API 成功率监控**: 每个 platform/operation 维护 capability_card
+- **失败 spike → strategy_search_request**: 同 (platform, op) 失败率 ≥ 阈值 → Supervisor 写
+- **Strategist 候选**: e.g. "Shopify API 频繁 429 → 切 Browser primary" 或 "DOM 自愈规则更新"
+- **Gate 准入 → runtime_capability**: 验证后写入, 影响下次 Router 选择
+
+这与现有 RSI 闭环完全兼容, capability_card 是接口点.
+
+### 不在本 ADR 实装
+
+- Playwright 真依赖 (留给行业接入时 `uv add playwright`)
+- DOM 自愈算法 (selector fallback / visual cv) — 各行业 adapter 自己实装
+- 具体 platform adapter (Shopify / Meta / WeChat / Salesforce) — 选定行业后建
+- 业务能力卡冷启动校准 task (见 ADR-011) — 选行业后补
+
+### 实施路径
+
+L6.A (本 ADR 同时落地) · Adapter Router framework + Registry + base classes + 26 unit tests
+L6.B · 行业评测集框架 (industry-agnostic IndustryEvalSuite + GoldenTask)
+L6.D (待行业选定) · 第一个 platform adapter 实装
+L6.E · KUN 真接 Director.intent → Executor → Router → action execution e2e
+
+### 影响
+
+- 新 module `kun/interface/automation/` (5 个文件 + tests)
+- 现有 7 agent 都不动 — 接入层是新加的 leaf
+- Director 现有 `intent.py` 后续加 `action` 字段输出 (映射到 `Action(target_platform, operation)`)
+- Executor 现有调用通过 LLM 完成, 后续加 `route_and_execute` 选项 (与 LLM 调用并存)
+- Supervisor 增 `action_failure_spike` anomaly type (类似 `task_failure_spike` 但 per-platform)
+- Strategist 增 `_candidates_for_action_failure_spike` generator
+
+### 北极星价值
+
+- **真正完成 KUN 闭环**: 不只能内部跑测试和单测; 能真去 Shopify 后台上架商品 / Meta Ads 后台调出价
+- **4 行业互通**: Adapter Router framework 一次设计, 4 行业都用; 切换行业不动 KUN 核心
+- **RSI 真改变世界**: 现在 RSI 改的是 LLM 路由 / context 压缩 / skill 选择 这些"内部"系统; L6 起 RSI 也能改"我在 Shopify 怎么操作更稳" 这种"外部"系统
+
+> **关键认识**: Browser-first 不是"无奈选 browser 因为 API 不全", 是"承认 SaaS 操作的 ground truth 是浏览器 UI". API 是优化, 不是基线.
+
+---
+
 *ADR 记录自 2026-04-23 起，追加式维护。*
