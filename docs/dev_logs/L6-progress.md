@@ -153,3 +153,28 @@
   → ActionResult(status="ok") → action_result_to_artifact() Phase 1 风格 dict
 
 ---
+
+## L6.D-WeChat MP · 微信公众号 BrowserAdapter (内容分发第一站)
+
+**完成**：2026-05-27 / commit ebc3f42
+
+**做了什么**：
+- `kun/interface/automation/wechat_mp/` 模块 (browser.py + __init__.py)
+- `WeChatMPBrowserAdapter` 3 ops: `publish_article` / `list_articles` / `get_article_stats`
+- 无官方 API → 全 Browser path 强制 (订阅号 API 受限; 服务号要审核)
+- 14 单测覆盖: supported_operations / 默认存草稿 / publish_now=True 群发 / 缺字段失败 / digest 自动截 120 字 / fill 异常 / 导航 / 错误路径 / health_check / Router 集成
+
+**关键决策**：
+- **默认存草稿不直接群发**: 微信订阅号 1次/日 上限 + 群发不可撤回. caller 必须显式 `publish_now=True` 才点群发, 否则只入草稿给人工二次确认机会. (ADR-025 conservative pattern.)
+- **digest 自动截 120 字**: 微信摘要硬上限, adapter 帮 caller 截好不出错.
+- **default_timeout_sec=60s** (vs Shopify 30s): 微信后台加载慢 + 服务器在国内.
+- **_SELECTORS 占位 + 显式说明真生产需录制**: 微信 UI 变更频繁, selectors 应当走 capability_card 自愈 (未来 RSI 候选场景).
+- **不引 Playwright dep**: page_factory 注入 (与 Shopify 同模式), 单测全 FakePage.
+
+**未来 (生产前)**：
+  1. Playwright Inspector 录制 latest _SELECTORS
+  2. 注入已登录 page_factory (cookie + session)
+  3. CAPTCHA 处理 + 重试 (微信偶尔弹验证码)
+  4. capability_card 记录 selector 失效次数, 触发自愈
+
+---
