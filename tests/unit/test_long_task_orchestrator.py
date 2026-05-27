@@ -9,6 +9,8 @@ and the real LT services in between.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -489,3 +491,319 @@ async def test_event_count_matches_events_emitted_outcome() -> None:
     # We expect: started, plan_tree, answer, long_task.completed, done = 5
     # (no plan_tree if recursion disabled; here it's enabled)
     assert outcome.events_emitted == 5
+
+
+# --------------------------------------------------------------------------- #
+# LT.INT integration wiring tests                                             #
+# (external_supervisor_service auto-wire + plan_review_writer_factory)        #
+# --------------------------------------------------------------------------- #
+
+
+class _StubExternalSupervisorService:
+    """Stub of ExternalSupervisorService — same shape as the integration
+    test's stub. Captures analyze_observation calls."""
+
+    def __init__(self, verdict: str = "ok") -> None:
+        self.verdict = verdict
+        self.calls: list[dict[str, Any]] = []
+
+    async def analyze_observation(
+        self,
+        *,
+        obs_kind: str,
+        observation_payload: dict[str, Any],
+        anchor: dict[str, Any] | None = None,
+        target_task_id: str | None = None,
+        target_anchor_id: str | None = None,
+    ) -> SimpleNamespace:
+        self.calls.append(
+            {
+                "obs_kind": obs_kind,
+                "observation_payload": observation_payload,
+                "anchor": anchor,
+                "target_task_id": target_task_id,
+                "target_anchor_id": target_anchor_id,
+            }
+        )
+        return SimpleNamespace(
+            observation_id="ev_l-stub-1",
+            observed_at=datetime.now(UTC),
+            obs_kind=obs_kind,
+            target_task_id=target_task_id,
+            target_anchor_id=target_anchor_id,
+            verdict=self.verdict,
+            rationale="stub rationale",
+            recommended_action=None,
+            raw_llm_content="{}",
+            model_used="stub",
+            extras={},
+        )
+
+
+async def test_external_supervisor_service_auto_wires_verify() -> None:
+    """When external_supervisor_service is passed (no verify), the orchestrator
+    auto-builds external_supervisor_verify via the integration adapter and
+    threads it into PlanReviewService."""
+    llm = _FakeLLM([_final_response()])
+    store = _CheckpointStore()
+    service = _StubExternalSupervisorService(verdict="concerning")
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        external_supervisor_service=service,  # type: ignore[arg-type]
+    )
+
+    # Auto-wire: orchestrator should now have a non-None external verify
+    # callable, and PlanReviewService should have inherited it.
+    assert orch._external_supervisor_verify is not None
+    assert orch._plan_review._external_verify is not None
+
+    # Smoke: invoking the verify callable forwards to the service.
+    result = await orch._external_supervisor_verify({"step": 1}, {"goal_statement": "ship it"})
+    assert result.verdict == "concerning"
+    assert len(service.calls) == 1
+    assert service.calls[0]["obs_kind"] == "drift_check"  # adapter default
+
+    # End-to-end run still completes cleanly (no DI conflicts).
+    outcome = await orch.run_long_task(_ref_with_anchor(), on_event=None)
+    assert outcome.loop_result.status == "final"
+
+
+async def test_explicit_verify_wins_over_service() -> None:
+    """When both external_supervisor_verify AND external_supervisor_service
+    are passed, the explicit verify wins (no auto-wiring)."""
+    llm = _FakeLLM([_final_response()])
+    store = _CheckpointStore()
+    service = _StubExternalSupervisorService()
+
+    async def explicit_verify(
+        _self_report: dict[str, Any], _anchor: dict[str, Any] | None
+    ) -> SimpleNamespace:
+        return SimpleNamespace(verdict="ok", rationale="explicit")
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        external_supervisor_verify=explicit_verify,
+        external_supervisor_service=service,  # type: ignore[arg-type]
+    )
+
+    # The explicit verify is preserved (identity check).
+    assert orch._external_supervisor_verify is explicit_verify
+
+    # Calling the wired verify hits the explicit one, NOT the service.
+    result = await orch._external_supervisor_verify({"x": 1}, None)
+    assert result.rationale == "explicit"
+    assert service.calls == []
+
+
+# ---- plan_review_writer_factory wiring ---- #
+
+
+class _FactoryRecorder:
+    """Records factory invocations and the writer's invocations.
+
+    factory(tenant_id, task_id, anchor_id) → writer
+    writer(outcome, *, triggered_at_step, self_report=None) → review_id
+    """
+
+    def __init__(self, raise_on_write: bool = False) -> None:
+        self.factory_calls: list[dict[str, Any]] = []
+        self.writer_calls: list[dict[str, Any]] = []
+        self._raise_on_write = raise_on_write
+
+    def __call__(self, *, tenant_id: str, task_id: str, anchor_id: str) -> Any:
+        self.factory_calls.append(
+            {"tenant_id": tenant_id, "task_id": task_id, "anchor_id": anchor_id}
+        )
+
+        async def _writer(
+            outcome: Any,
+            *,
+            triggered_at_step: int,
+            self_report: dict[str, Any] | None = None,
+        ) -> str:
+            if self._raise_on_write:
+                raise RuntimeError("simulated db write failure")
+            self.writer_calls.append(
+                {
+                    "outcome": outcome,
+                    "triggered_at_step": triggered_at_step,
+                    "self_report": self_report,
+                }
+            )
+            return f"plan_review-{len(self.writer_calls)}"
+
+        return _writer
+
+
+async def test_plan_review_writer_factory_called_with_tenant_task_anchor() -> None:
+    """When plan_review_writer_factory is set, run_long_task calls it with
+    (tenant_id, task_id, anchor_id) at task start."""
+    llm = _FakeLLM([_final_response()])
+    store = _CheckpointStore()
+    recorder = _FactoryRecorder()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        plan_review_writer_factory=recorder,
+        # No need for heartbeat triggers in this test — just verify factory call
+    )
+    ref = _ref_with_anchor(task_id="task-zzz")
+
+    outcome = await orch.run_long_task(ref, on_event=None)
+
+    assert outcome.loop_result.status == "final"
+    assert len(recorder.factory_calls) == 1
+    call = recorder.factory_calls[0]
+    assert call["tenant_id"] == ref.meta.owner.tenant_id
+    assert call["task_id"] == "task-zzz"
+    assert call["anchor_id"] == ref.goal_anchor.anchor_id
+
+
+async def test_plan_review_writer_factory_not_called_without_anchor() -> None:
+    """No goal_anchor → no anchor_id → factory should NOT be invoked (we don't
+    know what anchor_id to bind to)."""
+    llm = _FakeLLM([_final_response()])
+    store = _CheckpointStore()
+    recorder = _FactoryRecorder()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        plan_review_writer_factory=recorder,
+    )
+
+    outcome = await orch.run_long_task(_ref_without_anchor(), on_event=None)
+
+    assert outcome.loop_result.status == "final"
+    assert recorder.factory_calls == []
+    assert recorder.writer_calls == []
+
+
+async def test_heartbeat_triggers_invoke_plan_review_writer() -> None:
+    """With step_interval=1, every observe call triggers heartbeat, which
+    fires the per-task emitter, which calls the writer."""
+    # Two tool-step responses then final — gives at least 2 LLM iterations
+    # (the tool step counts as a step; observe is called at top of each iter).
+    llm = _FakeLLM(
+        [
+            _tool_response(tool_id="t-1"),
+            _final_response("all done"),
+        ]
+    )
+    store = _CheckpointStore()
+    recorder = _FactoryRecorder()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        plan_review_writer_factory=recorder,
+        plan_review_step_interval=1,
+        # keep time interval large so step-threshold is the deterministic one
+        plan_review_time_interval_sec=3600.0,
+        enable_recursive_planner=False,  # keep test tight
+    )
+    ref = _ref_with_anchor(task_id="task-hb-1")
+
+    outcome = await orch.run_long_task(ref, on_event=None)
+
+    assert outcome.loop_result.status == "final"
+    # observe runs at the top of EVERY iteration, so we expect ≥ 2 writes
+    # (one per iteration with step_interval=1).
+    assert len(recorder.writer_calls) >= 2
+    # Each call carries a PlanReviewOutcome with internal_verdict + action.
+    for call in recorder.writer_calls:
+        out = call["outcome"]
+        assert out.triggered is True
+        assert out.internal_verdict in {"aligned", "drifting", "off_track"}
+        assert out.final_verdict == out.internal_verdict
+        # external_verdict is None (we don't have a real verify path here)
+        assert out.external_verdict is None
+        assert out.action in {
+            "continue",
+            "pause_for_anchor_recheck",
+            "trigger_rcdh_level_0",
+        }
+        assert call["triggered_at_step"] >= 1
+
+
+async def test_plan_review_writer_failure_does_not_break_main_path() -> None:
+    """Writer raising should be logged but never propagate out of the loop."""
+    llm = _FakeLLM([_final_response("done despite writer failure")])
+    store = _CheckpointStore()
+    recorder = _FactoryRecorder(raise_on_write=True)
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        plan_review_writer_factory=recorder,
+        plan_review_step_interval=1,
+        plan_review_time_interval_sec=3600.0,
+        enable_recursive_planner=False,
+    )
+    ref = _ref_with_anchor()
+    sink = _EventCollector()
+
+    outcome = await orch.run_long_task(ref, on_event=sink)
+
+    # Even though writer raised, the main loop still produces 'final'.
+    assert outcome.loop_result.status == "final"
+    assert outcome.loop_result.final_text == "done despite writer failure"
+    # Writer was attempted (factory was called → emitter fired → writer raised)
+    assert len(recorder.factory_calls) == 1
+    # Standard terminal events still emitted
+    assert sink.first("answer") is not None
+    assert sink.events[-1].kind == "done"
+
+
+async def test_per_task_heartbeat_restored_after_run() -> None:
+    """The orchestrator's shared heartbeat / plan_review references should be
+    restored to the originals after run_long_task returns, so a second run
+    (without factory) still uses the no-emitter wiring."""
+    llm = _FakeLLM([_final_response()])
+    store = _CheckpointStore()
+    recorder = _FactoryRecorder()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        plan_review_writer_factory=recorder,
+        plan_review_step_interval=1,
+        plan_review_time_interval_sec=3600.0,
+        enable_recursive_planner=False,
+    )
+    original_heartbeat = orch._heartbeat
+    original_plan_review = orch._plan_review
+
+    await orch.run_long_task(_ref_with_anchor(), on_event=None)
+
+    # After run, the shared instances are restored — heartbeat NOT the per-task one
+    assert orch._heartbeat is original_heartbeat
+    assert orch._plan_review is original_plan_review
+    assert orch._executor._plan_review is original_plan_review
+    # And the original heartbeat never had an emitter wired in
+    assert original_heartbeat._emitter is None

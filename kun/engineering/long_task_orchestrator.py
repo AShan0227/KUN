@@ -62,13 +62,21 @@ from kun.agents.executor.exec_loop import (
     LoopResult,
     ToolExecutor,
 )
-from kun.agents.supervisor.plan_review_heartbeat import PlanReviewHeartbeat
+from kun.agents.supervisor.plan_review_heartbeat import (
+    PlanReviewHeartbeat,
+    ReviewTrigger,
+    derive_action,
+)
 from kun.agents.supervisor.plan_review_service import (
     ExternalSupervisorVerify,
+    PlanReviewOutcome,
     PlanReviewService,
 )
 from kun.core.logging import get_logger
 from kun.datamodel.task import TaskRef
+from kun.external_supervisor.service import ExternalSupervisorService
+from kun.integration.external_supervisor import make_external_supervisor_verify
+from kun.integration.plan_review_db import PlanReviewWriter
 
 log = get_logger("kun.engineering.long_task_orchestrator")
 
@@ -120,6 +128,17 @@ EventSink = Callable[[OrchestratorEvent], Awaitable[None]]
 """Optional async sink for each emitted OrchestratorEvent."""
 
 
+PlanReviewWriterFactory = Callable[..., PlanReviewWriter]
+"""Factory producing a per-task PlanReviewWriter.
+
+Call signature (kwargs)::
+
+    factory(tenant_id=..., task_id=..., anchor_id=...) -> PlanReviewWriter
+
+Matches ``kun.integration.plan_review_db.make_plan_review_writer``.
+"""
+
+
 async def _noop_event_sink(_ev: OrchestratorEvent) -> None:
     """Default sink when caller passes on_event=None."""
     return None
@@ -149,6 +168,9 @@ class LongTaskOrchestrator:
         checkpoint_reader: CheckpointReader,
         checkpoint_status_marker: CheckpointStatusMarker | None = None,
         external_supervisor_verify: ExternalSupervisorVerify | None = None,
+        # LT.INT integration adapters (optional; backward-compatible)
+        external_supervisor_service: ExternalSupervisorService | None = None,
+        plan_review_writer_factory: PlanReviewWriterFactory | None = None,
         compactor_summarizer: Summarizer | None = None,
         recursive_sub_planner: SubPlanner | None = None,
         atomic_decider: AtomicDecider | None = None,
@@ -169,7 +191,24 @@ class LongTaskOrchestrator:
         recursive_max_breadth: int = 8,
         enable_recursive_planner: bool = True,
     ) -> None:
-        # --- Layer 4: heartbeat + service ---
+        # --- Auto-wire external_supervisor_verify from service when not given ---
+        # If both are passed, the explicit verify wins (caller is being deliberate).
+        if external_supervisor_verify is None and external_supervisor_service is not None:
+            external_supervisor_verify = make_external_supervisor_verify(
+                external_supervisor_service
+            )
+        self._external_supervisor_verify = external_supervisor_verify
+
+        # --- Stash heartbeat tuning so we can rebuild per-task when needed ---
+        # When plan_review_writer_factory is provided, run_long_task rebuilds
+        # heartbeat + PlanReviewService with a per-task emitter wired in at
+        # construction time (PlanReviewHeartbeat only consults its emitter
+        # attribute, never re-reads it post-init).
+        self._plan_review_step_interval = plan_review_step_interval
+        self._plan_review_time_interval_sec = plan_review_time_interval_sec
+        self._plan_review_writer_factory = plan_review_writer_factory
+
+        # --- Layer 4: heartbeat + service (default, no-emitter wiring) ---
         self._heartbeat = PlanReviewHeartbeat(
             step_interval=plan_review_step_interval,
             time_interval_sec=plan_review_time_interval_sec,
@@ -256,7 +295,17 @@ class LongTaskOrchestrator:
         task_id = task_ref.meta.task_id
         tenant_id = task_ref.meta.owner.tenant_id
 
-        # ---- 1. Resolve goal anchor + initial messages ----
+        # ---- 0. (Optional) Per-task heartbeat + plan_review_writer wiring ----
+        # If the caller injected a plan_review_writer_factory, we rebuild the
+        # heartbeat (with a per-task emitter that persists each trigger) plus
+        # the PlanReviewService bound to that heartbeat, and reassign them on
+        # the ExecutorLoop for this run. Heartbeat consults its emitter
+        # attribute set at __init__, so we can't safely mutate the shared one
+        # across concurrent tasks — we rebuild and restore.
+        original_heartbeat = self._heartbeat
+        original_plan_review = self._plan_review
+        per_task_heartbeat: PlanReviewHeartbeat | None = None
+        plan_review_writer: PlanReviewWriter | None = None
         goal_anchor = getattr(task_ref, "goal_anchor", None)
         anchor_id: str | None = None
         anchor_dict: dict[str, Any] | None = None
@@ -307,64 +356,153 @@ class LongTaskOrchestrator:
             {"role": "user", "content": user_text},
         ]
 
-        # ---- 2. Optional: RecursivePlanner.expand → PlanTree ----
-        plan_tree: PlanTree | None = None
-        if self._enable_recursive:
-            root_steps = _build_root_steps(task_ref)
-            root_description = user_text
+        # ---- 1b. Wire per-task plan_review writer + heartbeat emitter ----
+        # Done after anchor resolution because the writer is pre-bound to
+        # (tenant_id, task_id, anchor_id). We rebuild heartbeat + service so
+        # the new emitter is in place at construction time, and reassign on
+        # the shared ExecutorLoop. Restored in finally below.
+        if self._plan_review_writer_factory is not None and anchor_id is not None:
             try:
-                plan_tree = await self._recursive_planner.expand(
-                    root_description=root_description,
-                    root_steps=root_steps,
-                )
-                await _emit(
-                    "long_task.plan_tree",
-                    {
-                        "task_id": task_id,
-                        "node_count": plan_tree.node_count(),
-                        "leaves": len(plan_tree.leaves()),
-                        "depth": plan_tree.depth(),
-                        "root_description": plan_tree.root().description,
-                    },
+                plan_review_writer = self._plan_review_writer_factory(
+                    tenant_id=tenant_id,
+                    task_id=task_id,
+                    anchor_id=anchor_id,
                 )
             except Exception as e:
                 log.warning(
-                    "long_task_orchestrator.recursive_planner_failed",
+                    "long_task_orchestrator.plan_review_writer_factory_failed",
                     task_id=task_id,
                     error=str(e),
                 )
-                # PlanTree is opt-in / advisory; ExecutorLoop runs without it.
-                plan_tree = None
+                plan_review_writer = None
 
-        # ---- 3. Emit started ----
-        await _emit(
-            "long_task.started",
-            {
-                "task_id": task_id,
-                "anchor_id": anchor_id,
-                "plan_tree_size": plan_tree.node_count() if plan_tree else 0,
-            },
-        )
+            if plan_review_writer is not None:
+                bound_writer = plan_review_writer
 
-        # ---- 4. ExecutorLoop.run (workhorse) ----
-        loop_result = await self._executor.run(
-            task_id=task_id,
-            tenant_id=tenant_id,
-            initial_messages=initial_messages,
-            goal_anchor_id=anchor_id,
-            anchor_dict=anchor_dict,
-        )
+                async def _heartbeat_emitter(trigger: ReviewTrigger) -> None:
+                    """Persist a placeholder PlanReviewOutcome on each trigger.
 
-        # ---- 5. Map LoopResult.status → OrchestratorEvent(s) ----
-        await self._emit_terminal_events(loop_result, task_id, _emit)
+                    We do not yet parse the Executor's self_report JSON out of
+                    the message stream (LT.INT-G+ work), so external_verdict
+                    stays None. The internal verdict + drift_evidence come
+                    from heartbeat's own rule-based evaluation, which is
+                    surfaced via trigger.payload — re-use it to avoid making
+                    the row look more informed than it is.
+                    """
+                    payload = trigger.payload or {}
+                    internal_verdict = payload.get("supervisor_verdict", "aligned")
+                    drift_evidence = list(payload.get("drift_evidence", []) or [])
+                    self_report_payload = payload.get("executor_self_report") or None
+                    if not isinstance(self_report_payload, dict):
+                        self_report_payload = None
 
-        # ---- 6. Return outcome ----
-        return LongTaskRunOutcome(
-            loop_result=loop_result,
-            plan_tree=plan_tree,
-            final_checkpoint_id=loop_result.last_checkpoint_id,
-            events_emitted=events_emitted,
-        )
+                    action = derive_action(internal_verdict)
+                    outcome = PlanReviewOutcome(
+                        triggered=True,
+                        trigger=trigger,
+                        internal_verdict=internal_verdict,  # type: ignore[arg-type]
+                        external_verdict=None,
+                        final_verdict=internal_verdict,  # type: ignore[arg-type]
+                        drift_evidence=drift_evidence,
+                        action=action,
+                        rationale=(
+                            f"heartbeat-triggered ({trigger.reason}) at "
+                            f"step={trigger.triggered_at_step}; "
+                            f"internal={internal_verdict}"
+                        ),
+                    )
+                    try:
+                        await bound_writer(
+                            outcome,
+                            triggered_at_step=trigger.triggered_at_step,
+                            self_report=self_report_payload,
+                        )
+                    except Exception as e:
+                        log.warning(
+                            "long_task_orchestrator.plan_review_write_failed",
+                            task_id=task_id,
+                            review_id=trigger.review_id,
+                            error=str(e),
+                        )
+
+                per_task_heartbeat = PlanReviewHeartbeat(
+                    step_interval=self._plan_review_step_interval,
+                    time_interval_sec=self._plan_review_time_interval_sec,
+                    emitter=_heartbeat_emitter,
+                )
+                per_task_service = PlanReviewService(
+                    heartbeat=per_task_heartbeat,
+                    external_supervisor_verify=self._external_supervisor_verify,
+                )
+                self._heartbeat = per_task_heartbeat
+                self._plan_review = per_task_service
+                self._executor._plan_review = per_task_service
+
+        try:
+            # ---- 2. Optional: RecursivePlanner.expand → PlanTree ----
+            plan_tree: PlanTree | None = None
+            if self._enable_recursive:
+                root_steps = _build_root_steps(task_ref)
+                root_description = user_text
+                try:
+                    plan_tree = await self._recursive_planner.expand(
+                        root_description=root_description,
+                        root_steps=root_steps,
+                    )
+                    await _emit(
+                        "long_task.plan_tree",
+                        {
+                            "task_id": task_id,
+                            "node_count": plan_tree.node_count(),
+                            "leaves": len(plan_tree.leaves()),
+                            "depth": plan_tree.depth(),
+                            "root_description": plan_tree.root().description,
+                        },
+                    )
+                except Exception as e:
+                    log.warning(
+                        "long_task_orchestrator.recursive_planner_failed",
+                        task_id=task_id,
+                        error=str(e),
+                    )
+                    # PlanTree is opt-in / advisory; ExecutorLoop runs without it.
+                    plan_tree = None
+
+            # ---- 3. Emit started ----
+            await _emit(
+                "long_task.started",
+                {
+                    "task_id": task_id,
+                    "anchor_id": anchor_id,
+                    "plan_tree_size": plan_tree.node_count() if plan_tree else 0,
+                },
+            )
+
+            # ---- 4. ExecutorLoop.run (workhorse) ----
+            loop_result = await self._executor.run(
+                task_id=task_id,
+                tenant_id=tenant_id,
+                initial_messages=initial_messages,
+                goal_anchor_id=anchor_id,
+                anchor_dict=anchor_dict,
+            )
+
+            # ---- 5. Map LoopResult.status → OrchestratorEvent(s) ----
+            await self._emit_terminal_events(loop_result, task_id, _emit)
+
+            # ---- 6. Return outcome ----
+            return LongTaskRunOutcome(
+                loop_result=loop_result,
+                plan_tree=plan_tree,
+                final_checkpoint_id=loop_result.last_checkpoint_id,
+                events_emitted=events_emitted,
+            )
+        finally:
+            # Restore shared heartbeat / service if we rebuilt per-task ones.
+            if per_task_heartbeat is not None:
+                self._heartbeat = original_heartbeat
+                self._plan_review = original_plan_review
+                self._executor._plan_review = original_plan_review
 
     # ----------------------------- internals --------------------------------
 
@@ -479,4 +617,5 @@ __all__ = [
     "LongTaskOrchestrator",
     "LongTaskRunOutcome",
     "OrchestratorEvent",
+    "PlanReviewWriterFactory",
 ]
