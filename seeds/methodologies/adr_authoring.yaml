@@ -39,7 +39,7 @@ action:
          实施 ADR（如 Auth / 部署）最后或并行
 
 anti_patterns:
-  - "状态: proposed" 状态滞留超过 1 周（要么 accepted 要么 dropped）
+  - 状态 proposed 滞留超过 1 周（要么 accepted 要么 dropped）
   - 决策段写"可能采用" / "建议使用"等模糊措辞
   - 机制类 ADR 不带 schema 示例 → 编码阶段又得决定一轮
   - ADR 之间循环引用

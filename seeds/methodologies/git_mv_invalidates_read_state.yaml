@@ -19,7 +19,8 @@ action:
     - step: 2
       do: 然后才能 Edit kun/new.py
     - step: 3
-      do: 如果忘了, Edit 会报 "File has not been read yet" — Recover: Read 后重试
+      do: |
+        如果忘了, Edit 会报 "File has not been read yet" — Recover: Read 后重试
   anti_patterns:
     - 用 Bash cat / Bash tail 看新路径内容当作"读过"
     - 跨 turn 把 Read 痕迹延后到 Edit 之后
