@@ -555,6 +555,36 @@ def _has_side_effect_text(text: str) -> bool:
     return bool(_matched_action_types(text))
 
 
+_NEGATION_PREFIXES_CN = ("不", "未", "勿", "禁止", "不得", "不要", "莫")
+_NEGATION_PREFIXES_EN = (
+    "don't ",
+    "do not ",
+    "never ",
+    "not ",
+    "no ",
+    "won't ",
+    "without ",
+)
+# 检查匹配关键词前 N 个字符内是否有否定词. 中文最近 1-2 字, 英文最近 ~10 字符
+_NEG_LOOKBEHIND_CN = 4
+_NEG_LOOKBEHIND_EN = 16
+
+
+def _is_negated_match(text: str, match_start: int) -> bool:
+    """Check if the keyword match at `match_start` is preceded by a negation.
+
+    Eliminates false-positives like "不得删除" / "未发送" / "don't deploy".
+    """
+    if match_start == 0:
+        return False
+    cn_window = text[max(0, match_start - _NEG_LOOKBEHIND_CN) : match_start]
+    for neg in _NEGATION_PREFIXES_CN:
+        if neg in cn_window:
+            return True
+    en_window = text[max(0, match_start - _NEG_LOOKBEHIND_EN) : match_start].lower()
+    return any(neg in en_window for neg in _NEGATION_PREFIXES_EN)
+
+
 def _matched_action_types(text: str) -> set[str]:
     normalized = text.lower()
     ascii_search_text = re.sub(r"[_\-.]+", " ", normalized)
@@ -562,10 +592,17 @@ def _matched_action_types(text: str) -> set[str]:
     for keyword, action_type in _SIDE_EFFECT_KEYWORDS.items():
         if keyword.isascii():
             pattern = rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])"
-            if re.search(pattern, ascii_search_text):
-                matched.add(action_type)
-        elif keyword in normalized:
-            matched.add(action_type)
+            for m in re.finditer(pattern, ascii_search_text):
+                if not _is_negated_match(ascii_search_text, m.start()):
+                    matched.add(action_type)
+                    break
+        else:
+            idx = normalized.find(keyword)
+            while idx != -1:
+                if not _is_negated_match(normalized, idx):
+                    matched.add(action_type)
+                    break
+                idx = normalized.find(keyword, idx + len(keyword))
     return matched
 
 
