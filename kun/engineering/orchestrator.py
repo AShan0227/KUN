@@ -25,7 +25,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
-from kun.agents.director.intent import IntentInterpreter
+from kun.agents.director.intent import IntentInterpreter, _is_long_task
 from kun.agents.director.planner import TaskPlanner
 from kun.agents.director.role_router import TaskRouter
 from kun.agents.gate.capability_writeback import Outcome, TaskOutcome, record_outcome
@@ -119,6 +119,22 @@ _EXECUTOR_BASE_DIRECTIVE = (
     "你是 KUN 系统里的执行角色. 按用户要求完成任务, 回答准确、可验证. "
     "若需要外部数据, 说明需要什么. 不要编造."
 )
+
+
+def _is_long_task_branch_eligible(task_ref: TaskRef) -> bool:
+    """Return True iff this task should execute via LongTaskOrchestrator.
+
+    Eligibility (ADR-022, LT.INT-F):
+      - meta passes _is_long_task heuristic (complex / long duration / risk)
+      - GoalAnchor is pinned on task_ref (Director.intent attached one)
+
+    If meta says long but no anchor — fall back to short path to avoid
+    half-configured long-task runs (anchor is the contract surface for
+    drift detection).
+    """
+    if not _is_long_task(task_ref.meta):
+        return False
+    return getattr(task_ref, "goal_anchor", None) is not None
 
 
 def _build_executor_system_prompt(
@@ -618,6 +634,25 @@ class Orchestrator:
             task_started_total.labels(
                 tenant_id=tenant.tenant_id, task_type=task_ref.meta.task_type
             ).inc()
+
+        # 6.5 LT.INT-F: Long-task branching (ADR-022).
+        # When the task is long-task mode AND has a pinned GoalAnchor, route
+        # through the LongTaskOrchestrator (ExecutorLoop + checkpoint + plan_review
+        # + compaction + recursive planner). Otherwise fall through to the
+        # existing short-task one-shot path below.
+        if _is_long_task_branch_eligible(task_ref):
+            async for ev in self._run_long_task_branch(
+                task_ref=task_ref,
+                user_message=user_message,
+                tenant=tenant,
+                runtime=runtime,
+                choice=choice,
+                t0=t0,
+                output_kind=output_kind,
+                force_fallback=force_fallback,
+            ):
+                yield ev
+            return
 
         # 7. Select candidate skills (L1 summary injected into step prompt)
         context_pack = await self.context_packer.pack(
@@ -1127,6 +1162,183 @@ class Orchestrator:
         yield OrchestratorEvent(
             kind="answer",
             data={"content": answer, "task_id": task_ref.meta.task_id},
+        )
+        yield OrchestratorEvent(
+            kind="done",
+            data={"result": result.model_dump(mode="json")},
+        )
+
+    # ---------------------------- long-task branch (LT.INT-F) ----------------------------
+
+    async def _run_long_task_branch(
+        self,
+        *,
+        task_ref: TaskRef,
+        user_message: str,
+        tenant: Any,
+        runtime: RuntimeState,
+        choice: Any,
+        t0: float,
+        output_kind: str,
+        force_fallback: bool,
+    ) -> AsyncIterator[OrchestratorEvent]:
+        """Long-task execution branch — assembled lazily to avoid heavy imports.
+
+        Wires LT.A-F services via integration adapters, runs LongTaskOrchestrator,
+        bridges its events into the main OrchestratorEvent stream, then performs
+        the same post-execution tail as the short-task path (capability writeback +
+        TaskResult persistence + answer/done events).
+        """
+        # Lazy imports — keep short-task import surface clean
+        from kun.engineering.long_task_orchestrator import LongTaskOrchestrator
+        from kun.integration.checkpoint_db import (
+            make_checkpoint_reader,
+            make_checkpoint_status_marker,
+            make_checkpoint_writer,
+        )
+        from kun.integration.llm_invoker import make_llm_invoker
+        from kun.integration.tool_executor import make_tool_executor
+
+        # Build LLM profile reflecting current task + budget posture
+        llm_profile = TaskProfile(
+            task_type=task_ref.meta.task_type,
+            risk_level=task_ref.meta.risk_level,
+            needs_reasoning=(task_ref.meta.complexity_score >= 0.5),
+            force_fallback=force_fallback,
+        )
+
+        lt_orch = LongTaskOrchestrator(
+            llm_invoker=make_llm_invoker(
+                self.llm_router, purpose="execution", profile=llm_profile
+            ),
+            tool_executor=make_tool_executor(),
+            checkpoint_writer=make_checkpoint_writer(),
+            checkpoint_reader=make_checkpoint_reader(),
+            checkpoint_status_marker=make_checkpoint_status_marker(),
+        )
+
+        # Collect events from LongTaskOrchestrator (they have identical
+        # OrchestratorEvent shape — local vs global model, same kind+data).
+        collected: list[OrchestratorEvent] = []
+
+        async def _on_lt_event(lt_ev: Any) -> None:
+            collected.append(
+                OrchestratorEvent(kind=lt_ev.kind, data=dict(lt_ev.data))
+            )
+
+        outcome = await lt_orch.run_long_task(task_ref, on_event=_on_lt_event)
+
+        # Replay collected events into the main stream
+        for ev in collected:
+            yield ev
+
+        # Map LoopResult.status → TaskStatus + capability outcome.
+        # TaskStatus literal: queued / running / paused / done / failed / cancelled.
+        # partial / max_steps / budget_exceeded → 'failed' (closest valid bucket);
+        # the underlying nuance is preserved in the answer text + last events.
+        status_map: dict[str, TaskStatus] = {
+            "final": "done",
+            "max_steps": "failed",
+            "budget_exceeded": "failed",
+            "wall_clock_exceeded": "failed",
+            "stuck": "failed",
+            "failed": "failed",
+            "user_cancelled": "cancelled",
+        }
+        loop_result = outcome.loop_result
+        task_status: TaskStatus = status_map.get(loop_result.status, "failed")
+        # Capability writeback wants 'pass' / 'partial' / 'fail'
+        outcome_label: Outcome = (
+            "pass" if loop_result.status == "final"
+            else ("partial" if loop_result.status in
+                  ("max_steps", "budget_exceeded", "wall_clock_exceeded")
+                  else "fail")
+        )
+
+        # Translate answer for output audience — compute raw_answer first so
+        # validation has something to grade.
+        raw_answer = (
+            loop_result.final_text
+            if loop_result.status == "final"
+            else (loop_result.error or loop_result.rationale or "长任务未完成")
+        )
+
+        # Validation parity with short-task path step 7.4. Emit "insight" event
+        # so monitoring + tests that key off validation verdicts see the same
+        # contract. Only validate on successful completion; non-final stays at
+        # outcome_label='partial'/'fail' set above.
+        if task_status == "done" and raw_answer.strip():
+            tier = pick_tier(task_ref.meta)
+            if tier != "tier0":
+                try:
+                    results = await self.validation.validate_task(
+                        task_ref.meta,
+                        raw_answer,
+                        goal=task_ref.meta.success_criteria_short,
+                    )
+                    aggregated = ValidationPipeline.aggregate(results)
+                    if aggregated is not None:
+                        verdict = "passed" if aggregated.pass_ else "did_not_fully_pass"
+                        if not aggregated.pass_:
+                            outcome_label = "partial"
+                        yield OrchestratorEvent(
+                            kind="insight",
+                            data={
+                                "stage": "validation",
+                                "tier": tier,
+                                "verdict": verdict,
+                                "score": aggregated.score.value,
+                                "reason": aggregated.reason,
+                            },
+                        )
+                except Exception as e:
+                    log.error(
+                        "long_task.validation.infrastructure_failure",
+                        error=str(e),
+                        task_id=task_ref.meta.task_id,
+                    )
+                    outcome_label = "partial"
+
+        # Capability writeback (parity with short-task path step 7.5)
+        try:
+            await record_outcome(
+                tenant.tenant_id,
+                TaskOutcome(
+                    entity_type="role_template",
+                    entity_id=choice.role_template_id,
+                    task_type=task_ref.meta.task_type,
+                    outcome=outcome_label,
+                    cost_usd=loop_result.total_cost_usd,
+                    duration_sec=loop_result.elapsed_seconds,
+                ),
+            )
+        except Exception as e:
+            log.warning("long_task.capability.writeback_failed", error=str(e))
+        translated = await self._translate_answer(
+            answer=raw_answer,
+            task_ref=task_ref,
+            tenant=tenant,
+            status=task_status,
+            output_kind=output_kind,
+        )
+
+        result = TaskResult(
+            task_id=task_ref.meta.task_id,
+            status=task_status,
+            answer=translated,
+            cost_usd_actual=loop_result.total_cost_usd,
+            cost_usd_equivalent=loop_result.total_cost_usd,
+            tokens_in=loop_result.total_tokens,
+            tokens_out=0,
+            duration_sec=loop_result.elapsed_seconds,
+        )
+
+        async with session_scope() as s:
+            await _persist_task_result(s, tenant_id=tenant.tenant_id, result=result)
+
+        yield OrchestratorEvent(
+            kind="answer",
+            data={"content": translated, "task_id": task_ref.meta.task_id},
         )
         yield OrchestratorEvent(
             kind="done",
