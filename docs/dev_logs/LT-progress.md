@@ -367,3 +367,66 @@ gpt-5.5 出**精确** XML, 无前缀 prose, 无 sandbox 抱怨。
 
 **总测试**: 1675 → 1680 (+5), ruff 全绿. 累计长任务相关代码改动: 1347 → 1680 (+333 tests), 23+ commits.
 
+---
+
+## LT.TOOLS-GAP-2 · codex base-instructions 区分 "no codex tools" vs "no tools at all"
+
+**完成**：2026-05-27 / commit c740717
+
+**dogfood v5 死因 (新, 比 v4 更细)**：
+
+跑了 1 step 就 final answer, gpt-5.5 字面输出:
+> "我需要读取仓库文件并新增文档/seed，但当前可用技能列表里没有通用'读写文件/执行命令'的主机技能，且任务不匹配现有专用技能（如 presentations、spreadsheets、documents、github 等）。请提供一个可用的文件/命令执行 skill"
+
+奇怪点: gpt-5.5 列的 4 个名字 ("presentations / spreadsheets / documents / github") **都不是 KUN 实际有的 skill**。KUN 实际有 11 个 (5 starter + 6 builtin), 包含 file-io / shell-exec / writing-markdown / web-search 等 —— 完全够这个任务用。
+
+**根因**：上轮 LT.CODEX-PURE-LLM 写的 base-instructions 太"杀绝"。原文:
+```
+You do NOT have file write access, NO shell, NO local tools.
+```
+
+模糊了"没 codex 直接工具" 跟 "啥工具都没" 的区别。gpt-5.5 见 base-instructions 跟 KUN 的"可用工具: file-io, shell-exec, ..."两套矛盾信号, 信前者 (codex 系统层级更高), 然后凭空列出 Claude Code 的真实 plugin 名当"理想工具"。这是个**自己挖坑自己跳**的 prompt-engineering bug。
+
+**做了什么**：
+1. **重写 base-instructions** (核心):
+   - 显式区分 "no codex DIRECT tools" vs "KUN provides host tools"
+   - "可用工具" section 是真工具列表, **TRUST THE LIST. Do NOT invent tool names**
+   - 给精确 XML 格式: `<skill name="X">{"key": "value"}</skill>` JSON-in-body
+     (之前 base-instructions 误写 `<param>val</param>` 嵌套元素格式, 跟
+     KUN 的 `parse_skill_calls` 期望的 JSON-in-body 不符 — 顺便修)
+   - "若需要的工具不在列表, 明说 '需要 X 但没有'", 不要静默 refuse
+2. **测试 contract 升级**: `test_base_instructions_*` 检查
+   - "host tool" / "no codex direct" / JSON 提示 / "trust the list" / 反幻觉
+3. **smoke 重写** (`scripts/codex_pure_llm_smoke.py`):
+   - 用真 KUN skill IDs (file-io / shell-exec / writing-markdown)
+   - 用 `build_skill_directive` 生成 system prompt (跟 LongTaskOrchestrator 一致)
+   - 用 `parse_skill_calls` 真验证 XML 解得出来 (之前 smoke 只 string-match)
+   - 加 `autoload_builtins()` (parse_skill_calls 过 dispatcher.is_registered)
+   - 加 hallucination 检测 (presentations / spreadsheets / documents / github 现在算 fail signal)
+
+**真实 smoke 结果 (commit 前)**：
+```
+prompt: skill_directive [file-io, shell-exec, writing-markdown]
+        + "请把 'hi' 写到 notes/hello.md"
+gpt-5.5 返 (83 字符, 11.8s):
+  <skill name="file-io">{"op":"write","path":"notes/hello.md","content":"hi"}</skill>
+✓ 真实 skill 名
+✓ JSON-in-body 格式
+✓ schema 字段对 (op/path/content)
+✓ parse_skill_calls 解出 1 个 invocation
+✓ 无 sandbox 拒绝
+✓ 无幻觉名
+```
+
+**关键决策**：
+- **不动 selector**: 假设 selector 已经合理选 — 修 base-instructions 即可。后面 dogfood v6 跑出来再看是否需要 selector 兜底逻辑 (e.g. "永远把 file-io / shell-exec 钉死在前 N")。
+- **不动 build_skill_directive**: 它产 Chinese-mixed-with-XML 已经能 work, 改成纯英文反而可能影响中文任务的语境理解。
+- **smoke 增加幻觉检测黑名单**: 不是泛化"任何 unknown name 就 fail", 而是定向钉 v5 出现过的 4 个名字。误伤面小, 回归侦测精度高。
+- **parse_skill_calls 自己有 unknown_skill 过滤是好事**: 现 dispatcher 没注册的 XML 会被默默 drop, 防止脏数据进 ExecutorLoop。LT.TOOLS-GAP-2 smoke 自己用 autoload 让 dispatcher 跟 uvicorn 状态一致。
+
+**未完工作 (DOGFOOD #26)**：
+- dogfood v6 启动 (gpt-5.5 跑全程 Phase A-E, 修后的 base-instructions)
+- v6 跑完后写 dogfood-retrospective 抽 ≥3 张 methodology seeds
+
+**总测试**: 1680 (持平, 改的是 test contract 没新增数量), ruff 全绿.
+
