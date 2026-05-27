@@ -1,0 +1,120 @@
+topic: dict_driven_adapter_dispatch
+title: 多 operation adapter 用 _OPERATION_MAP 字典分派, 替代 if/elif 链
+description: |
+  当一个 Adapter 类要支持多个 operation (e.g. Shopify 的 create_product /
+  list_orders / get_product) 时, 用字典分派 (_OPERATION_MAP) 替代 if/elif 链:
+
+    _OPERATION_MAP[op] = (method, url_template, body_wrapper, response_status_key)
+
+  好处:
+    1. 加新 op = 加一行字典 entry, 改最小
+    2. supported_operations property 直接从字典 keys 派生
+    3. 单测可参数化跑遍所有 op
+    4. 数据驱动 — 同一份字典可序列化为 capability card / OpenAPI schema
+    5. URL template `{var}` 由 payload 自动 substitute, 无需手写每个 op 的拼接
+
+  这是工业级 SDK 的常见模式 (boto3 / stripe-python 都用类似 metadata-driven
+  dispatch), 但比 SDK 更轻 — 没有运行时 introspection / code-gen, 一份 dict.
+
+trigger:
+  conditions:
+    - Adapter 类要支持 ≥3 个相似 operation
+    - operation 间差异是 (HTTP method / URL / body shape) 模式化
+    - 加新 operation 频繁 (每个垂直行业要加 3-10 个)
+    - 单测希望参数化跑遍
+
+action:
+  pattern:
+    - rule: _OPERATION_MAP 是 ClassVar 字典
+      do: |
+        from typing import ClassVar
+
+        class ShopifyAPIAdapter:
+            _OPERATION_MAP: ClassVar[dict[str, tuple[str, str, bool]]] = {
+                "create_product": ("POST", "/admin/api/2024-01/products.json", True),
+                "list_orders":    ("GET",  "/admin/api/2024-01/orders.json",   False),
+                "get_product":    ("GET",  "/admin/api/2024-01/products/{product_id}.json", False),
+            }
+            #                       method  url_template                       wrap_body
+      why: |
+        ClassVar 让 ruff 不报 RUF012; tuple 保持顺序固定; 注释对齐每列含义.
+    - rule: supported_operations 从 keys 派生
+      do: |
+        @property
+        def supported_operations(self) -> set[str]:
+            return set(self._OPERATION_MAP.keys())
+      why: |
+        Router 用 supported_operations 判断 adapter 能不能跑这个 op.
+        字典是唯一真理来源.
+    - rule: URL template `{var}` 由 payload substitute
+      do: |
+        method, url_template, wrap = self._OPERATION_MAP[op]
+        try:
+            url = url_template.format(**payload)
+        except KeyError as e:
+            return ActionResult(status="failed", error=f"missing {e}")
+      why: |
+        加一个新 op `get_order` 只需 `("GET", "/orders/{order_id}.json", False)`.
+        无需写 url 拼接代码.
+    - rule: 'body_wrapper bool 控制是否 wrap (Shopify 要 `{"product": {...}}`)'
+      do: |
+        body = {"product": payload} if wrap_body else payload
+      why: |
+        Shopify create 要 wrap, list 不要. 一个 bool 字段表达.
+        (如果有更复杂的 wrap, 用 Callable 而非 bool.)
+    - rule: 单测参数化跑遍所有 op
+      do: |
+        @pytest.mark.parametrize("op", list(ShopifyAPIAdapter._OPERATION_MAP.keys()))
+        async def test_each_op_returns_action_result(op, http_caller):
+            adapter = ShopifyAPIAdapter(http_caller=http_caller)
+            result = await adapter.execute(make_action(operation=op, ...))
+            assert isinstance(result, ActionResult)
+      why: |
+        加新 op 自动被测试覆盖.
+
+  anti_patterns:
+    - 'if/elif 链分派 — 加 op 要改多处'
+    - '每个 op 一个 method — 没有共用 path, 重复代码'
+    - 'URL 拼接手写 — 每处一份, 易 typo'
+    - '用 dict 但 value 是 dict (不是 tuple) — 字段名可能漂移; tuple 顺序固定'
+
+rationale: |
+  L6.D-Shopify 实战: ShopifyAPIAdapter + ShopifyBrowserAdapter 都用
+  _OPERATION_MAP. 添加新 platform (淘宝/京东) 只需:
+    1. copy ShopifyAPIAdapter
+    2. 改 _OPERATION_MAP 内容
+    3. 改 _BASE_URL / auth header
+    4. 单测自动跑遍
+
+  与 LLM Router 选 provider 类似: data-driven 比 code-driven 易维护.
+
+evidence:
+  - source: kun/interface/automation/shopify/api.py:ShopifyAPIAdapter._OPERATION_MAP
+    date: 2026-05-27
+    phase: L6.D-Shopify
+    notes: |
+      3 ops via _OPERATION_MAP. supported_operations 从 keys 派生.
+      URL template `{product_id}` 自动从 payload 替换.
+      添加 create_order / update_product 只需加 entry.
+
+  - source: kun/interface/automation/shopify/browser.py:ShopifyBrowserAdapter._SELECTORS
+    date: 2026-05-27
+    phase: L6.D-Shopify
+    notes: |
+      browser 版用 _SELECTORS dict 而非 _OPERATION_MAP — 同模式不同 value:
+      key=op, value=tuple(url, selectors_to_fill, click_target).
+
+confidence: 0.9  # 工业界标准做法, 多次实战
+applicability:
+  scopes: [adapter_design, http_client, multi_operation_dispatch]
+  do_not_apply_when:
+    - operation 间差异是结构性的 (不只是 method/URL/body 不同) —— 用多 method
+    - 只 1-2 个 op — if/else 足够清晰
+    - operation 实现需要复杂状态机 — dispatch 是错误的抽象
+
+related_methodologies:
+  - frozen_dataclass_agent_io_contract  # tuple value 是 frozen 类型契约
+  - browser_first_hybrid_no_sdk  # adapter framework 的另一面
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

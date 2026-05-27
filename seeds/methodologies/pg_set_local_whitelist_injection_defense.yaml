@@ -1,0 +1,137 @@
+topic: pg_set_local_whitelist_injection_defense
+title: PG SET LOCAL 不能 bind parameter, 必须字符白名单防 SQL injection
+description: |
+  Postgres 的 `SET` / `SET LOCAL` 语句不支持 SQL bind parameter — value 必须
+  在 SQL 文本里硬拼:
+
+      SET LOCAL app.tenant_id = 'tenant-x'  -- ✅ 这是唯一形式
+      SET LOCAL app.tenant_id = $1          -- ❌ 报 syntax error
+
+  这意味着如果 caller 给你 `tenant_id = "evil'; DROP TABLE users; --"`, 你
+  直接拼进 SQL 就是 SQL injection.
+
+  防御方法: **字符白名单 regex**, 拒接受任何含危险字符的输入. 这是
+  defense in depth — 即使 caller 也应该校验, 这一层是最后兜底.
+
+  模板:
+    _TENANT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.\-]{1,128}$")
+
+    - `[A-Za-z0-9_.\-]` 不含 `'` / `;` / 空格 / 换行 / `\` / `"`
+    - `{1,128}` 限长, 防 buffer abuse
+    - `^...$` 全字符匹配, 不允许 partial
+
+  对应 RLS policy 生效需要在每个 transaction 入口调用一次. session_scope
+  入口是放这调用的好地方.
+
+trigger:
+  conditions:
+    - 用 Postgres RLS 多租户
+    - 需要在 transaction 内 SET LOCAL app.tenant_id (或 role / search_path)
+    - tenant_id / role 等来自 caller (HTTP header / JWT claim)
+    - 不能信 caller 已经校验 (zero trust)
+
+action:
+  pattern:
+    - rule: SET 用 f-string 拼 (没办法), 但前置白名单 regex
+      do: |
+        import re
+        from sqlalchemy import text
+
+        _TENANT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.\-]{1,128}$")
+
+        class InvalidTenantIdError(ValueError):
+            """Raised when tenant_id fails safety regex."""
+
+        async def bind_tenant_to_session(session, tenant_id: str) -> None:
+            if not isinstance(tenant_id, str) or not tenant_id:
+                raise InvalidTenantIdError("tenant_id must be non-empty string")
+            if not _TENANT_ID_PATTERN.match(tenant_id):
+                raise InvalidTenantIdError(f"unsupported chars: {tenant_id!r}")
+            # SET 不支持 bind parameter; 上面已 validate.
+            await session.execute(text(f"SET LOCAL app.tenant_id = '{tenant_id}'"))
+      why: |
+        白名单 regex 在 SET 拼接前过滤掉所有可能 escape 单引号的字符.
+        即使 caller 没校验, 这层挡得住.
+    - rule: 白名单只允许 ID-shaped 字符
+      do: |
+        # 允许:  a-z A-Z 0-9 _ . -
+        # 拒:    ' " ; \ space newline \t / | & < > = ?  以及其他所有非 ASCII
+        _TENANT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.\-]{1,128}$")
+      why: |
+        tenant_id 应该是 "u-sylvan" / "t-acme" / "tenant_123" / UUID 风格.
+        任何含空格/标点/quote 的都不是合法 ID — 直接拒.
+    - rule: 拒 None / 非 str / 空字符串 / overlong
+      do: |
+        if not isinstance(tenant_id, str) or not tenant_id:
+            raise InvalidTenantIdError("non-empty string")
+        # `{1,128}` 上面已限长, 但 isinstance 早拒最有效
+      why: |
+        类型校验在 regex 之前, 失败信息更清晰.
+    - rule: SET LOCAL 限当前 transaction
+      do: |
+        # session_scope 已经包了 transaction — 这里只在 with 块内有效.
+        # autocommit 模式下不生效 — caller 必须用 session_scope.
+        await session.execute(text(f"SET LOCAL app.tenant_id = '{tenant_id}'"))
+      why: |
+        SET LOCAL 是 transaction-scoped, autocommit 不生效会让 RLS policy
+        看不到 setting → 拒所有 row → 静默失败. 必须配合 transaction.
+    - rule: 单测要覆盖 SQL injection attempts
+      do: |
+        bad_inputs = [
+            "evil'; DROP TABLE users; --",
+            "x' OR '1'='1",
+            "tenant with space",
+            "tenant\nwith\nnewline",
+            "tenant;extra",
+        ]
+        for bad in bad_inputs:
+            with pytest.raises(InvalidTenantIdError):
+                await bind_tenant_to_session(session, bad)
+      why: |
+        防 injection 代码必须测真实 attack payload, 否则 regex bug 看不出.
+
+  anti_patterns:
+    - '直接 f-string 拼 SET 没校验 — caller 给恶意输入即 SQL injection'
+    - '试图用 bind parameter (text 后 bindparams) — PG SET 报 syntax error, 不支持 bind'
+    - '白名单允许引号 (单/双 quote) — 都是 escape 字符'
+    - '长度无限 (不限 max chars) — 攻击者可 push 大字符串拉爆 SQL'
+
+rationale: |
+  L6.AuthScaffold 实战: bind_tenant_to_session 用白名单 regex.
+  7 单测覆盖 SQL injection / 空 / 非 str / overlong 各路径.
+
+  PG `SET` 的 bind parameter 限制是 PG 内核约束, 没绕路, 必须白名单防御.
+
+  Phase 2 中期切换 (KUN_AUTH_ENABLED=true) 时, 每个 session_scope 入口
+  调 bind_tenant_to_session(session, identity.tenant_id), RLS policy
+  用 `current_setting('app.tenant_id')` 就生效.
+
+evidence:
+  - source: kun/api/auth/rls.py:bind_tenant_to_session
+    date: 2026-05-27
+    phase: L6.AuthScaffold
+    notes: |
+      `[A-Za-z0-9_.\-]{1,128}` regex + InvalidTenantIdError.
+      7 unit tests 覆盖 SQL injection / SET LOCAL emit.
+
+  - source: alembic/versions/*_rls_policy_tenant_id.py (未来)
+    date: 2026-05-27
+    phase: L6.AuthScaffold (升级路径)
+    notes: |
+      Phase 2 中期改 RLS policy 用 `current_setting('app.tenant_id')` 不带 true.
+      没 SET → policy 拒所有 row.
+
+confidence: 0.9  # PG SET 限制广为人知, regex 模板可迁移
+applicability:
+  scopes: [postgres_rls, sql_injection_defense, tenant_isolation]
+  do_not_apply_when:
+    - 不用 PG (其他 DB 不一定有此限制)
+    - tenant_id 由内部 trusted source 全程生成 (不来自 HTTP)
+    - 用 SQLAlchemy ORM 而非 raw SET (但 RLS 仍需要 SET, 无法绕)
+
+related_methodologies:
+  - feature_complete_flag_default_off  # AuthScaffold 一套
+  - frozen_dataclass_agent_io_contract  # tenant_id 类型契约
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

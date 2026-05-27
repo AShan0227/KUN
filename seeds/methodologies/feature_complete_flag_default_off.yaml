@@ -1,0 +1,110 @@
+topic: feature_complete_flag_default_off
+title: 安全敏感 feature 完整实装但默认关 — flag flip 即切生产 posture
+description: |
+  对所有"安全敏感 / 破坏性 / 必须在生产前就位但 dev 不能默认开启"的 feature,
+  采用"完整 production-ready 但默认 disabled"的模式:
+
+    1. 完整写 feature 代码 (业务逻辑 + 错误处理 + 边界 + 测试)
+    2. 加 config flag `KUN_FEATURE_X_ENABLED: bool = False`
+    3. 同时加 strong-config validator: enabled 时其他依赖 (secret/key/url) 必须就位
+    4. dev 默认 disabled, fall back 到旧行为 (default_tenant_id / pass-through)
+    5. 生产前: 1 个 env flag 切换, 无需重新部署或代码改动
+
+  这种模式让 dev 体验完全不变, 同时让生产部署的"flag flip checklist"成为
+  唯一切换点 — 无需在 CI/CD 里再做架构决定.
+
+trigger:
+  conditions:
+    - feature 是 auth / rate limit / circuit breaker / canary / RLS / tenant 隔离 类
+    - feature 在 dev 默认开会破坏开发体验 (e.g. auth 要每次手动加 token)
+    - feature 在生产必须就位 (不能 dev 才有)
+    - flag flip 是部署 checklist 的一部分
+
+action:
+  pattern:
+    - rule: feature 完整写, 不留 TODO/stub
+      do: |
+        # ✅ 全部就位
+        def resolve_tenant_id(*, header, settings, decoder):
+            if not settings.auth_enabled:
+                return ResolvedIdentity(tenant=settings.default_tenant_id, ...)
+            # 完整 JWT decode + 错误映射, 不是 raise NotImplementedError
+            ...
+      why: |
+        留 stub 就有"发现时已晚"的风险. 完整写 + flag off, 一次到位.
+    - rule: 配置 flag + 依赖项校验绑在 config validator
+      do: |
+        @model_validator(mode="after")
+        def _auth_consistency(self):
+            if self.auth_enabled:
+                if not self.auth_jwt_secret:
+                    raise ValueError("KUN_AUTH_ENABLED=true 但 secret 未设")
+                if len(self.auth_jwt_secret) < 32:
+                    raise ValueError("secret must be >= 32 chars")
+            return self
+      why: |
+        生产 flag flip 时, 启动即报. 不要"启用了但 secret 是空"裸奔到第一个请求.
+    - rule: disabled 时必须有 fall-back 不是 raise
+      do: |
+        if not settings.auth_enabled:
+            if not settings.default_tenant_id:
+                raise RuntimeError("misconfig")  # dev 应有默认
+            return Identity(tenant_id=settings.default_tenant_id, ...)
+      why: |
+        dev 行为不变是核心承诺. 没有 default 就是配置错误, 显式 raise.
+    - rule: feature 的 tests 同时跑 enabled + disabled 两态
+      do: |
+        def test_resolve_disabled_uses_default(): ...
+        def test_resolve_enabled_decodes_token(): ...
+        def test_resolve_enabled_missing_header_raises(): ...
+      why: |
+        flag flip 前两态都要走过. 单测每次跑都验证两态.
+
+  anti_patterns:
+    - feature 只在 enabled 时写, disabled 是空 stub — flag flip 后才发现 bug
+    - feature flag 没 config validator — enabled 时 secret 缺失, 部署后才报
+    - disabled 时 raise — dev 体验破坏, 改回 default_tenant_id 行为
+    - feature 通过环境变量"硬编码"启用 (没有 flag) — 切回 disabled 需要改代码
+
+rationale: |
+  L6.AuthScaffold 实战: JWT + RLS + middleware 全部 production-ready,
+  但 `KUN_AUTH_ENABLED=false` 默认. dev 体验完全不变 (所有 1282 测试无需 token).
+
+  生产切换:
+    1. KUN_AUTH_ENABLED=true
+    2. KUN_AUTH_JWT_SECRET=<48 char>
+    3. config validator 启动时验证
+    4. 旧的 default_tenant_id 路径自动停用
+
+  成本: 写时多 ~50% 代码 (要支持两态), 但生产部署成本下降 ~90% (无架构改动).
+
+evidence:
+  - source: kun/api/auth/middleware.py:resolve_tenant_id
+    date: 2026-05-27
+    phase: L6.AuthScaffold
+    notes: |
+      auth_enabled=False → return default_tenant_id;
+      auth_enabled=True → decode JWT + verify.
+      同一接口两个 path, 单测两态都覆盖.
+
+  - source: kun/core/config.py:_auth_consistency
+    date: 2026-05-27
+    phase: L6.AuthScaffold
+    notes: |
+      model_validator 强制 enabled 时 secret ≥32 chars.
+      启动时 fail closed, 不让 enabled=true 但 secret 空的状态存在.
+
+confidence: 0.9  # 单次实战, 但模式对所有安全敏感 feature 都成立
+applicability:
+  scopes: [auth, rate_limiting, security_features, gradual_rollout]
+  do_not_apply_when:
+    - feature 是核心业务 (不能"默认关")
+    - feature 是 dev-only debugging tool (不该在生产存在)
+    - feature 切换需要数据迁移 (不是单纯 flag flip)
+
+related_methodologies:
+  - paired_commit  # 同等"两态都验证"纪律
+  - frozen_dataclass_agent_io_contract  # 接口纯函数易测两态
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27
