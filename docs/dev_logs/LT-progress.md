@@ -89,3 +89,33 @@
 - 启动时调 resume 决定从哪开始 (LT.E)
 
 ---
+
+## LT.D · Long context compaction — ConversationCompactor
+
+**完成**：2026-05-27 / commit (latest)
+
+**做了什么**：
+- 新建 `kun/agents/executor/compaction.py`
+- `estimate_tokens(messages)` 启发式 (chars/4), 多模态 list content 兼容, 非 dict 容错
+- `ConversationCompactor.maybe_compact(messages, anchor=None) → CompactionResult | None`
+  - 阈值下 None (caller 直接 no-op 不付 LLM)
+  - 阈值上: head (protect_first_n) + summary (1 条) + tail (keep_last_k)
+  - 中间 < min_compactable 时不压缩 (1 → 1 无意义)
+  - summarizer 全 DI: 默认规则版 (anchor recap + msgs preview), 真生产替换 LLM
+- summary message 自动标 `_kun_compacted=True` + `_kun_compacted_count=N`, 便审计追溯
+- 18 单测覆盖
+
+**关键决策**：
+- **chars/4 启发式 tokenizer**: 真 tokenizer 在 LT.E 时换 (provider 提供). 当前能看趋势就够触发判断.
+- **summary 用 system role**: LLM 看到 system role 默认更信任. 中文/英文 prompt 风格都吃这套.
+- **summary 显式标 `_kun_compacted` 元数据**: 不污染 role/content. 下次 audit / Replay 可识别 + 跳过 / 展开.
+- **head + summary + tail 三段结构, 不嵌套**: 直接喂 LLM, 模型不需要理解"什么是 compaction". 多次压缩时 caller 自己决定要不要把上次 summary 也折进新 summary.
+- **min_compactable=2 默认**: 防"中间只有 1 条 → 折叠成 1 条 summary, 净增开销". 实测 LLM tokenizer 估算误差时这是个有用 guard.
+- **原 messages list 在 result 里完整保留**: audit / replay 不丢; 一旦 compaction 走完, caller 可以 archive 原始的去 DB 但当前 working list 用 compacted_messages.
+
+**未完工作 (整合)**:
+- 真 LLM tokenizer 替换 (LT.E 接 provider 时, e.g. tiktoken / anthropic.count_tokens)
+- LLM-based summarizer 接 ExternalSupervisor 或主 LLMRouter 跑摘要
+- Executor loop 集成 (每次 LLM call 前调 maybe_compact, 用 compacted_messages)
+
+---
