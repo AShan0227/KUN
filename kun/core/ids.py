@@ -33,6 +33,7 @@ EntityKind = Literal[
     "strategy_search",  # ss-  · StrategySearchRequest (ADR-024)
     "experiment_run",  # er-  · runtime_experiments (ADR-024)
     "capability_promo",  # cp-  · runtime_capabilities (ADR-024)
+    "task_checkpoint",  # tcp- · TaskCheckpoint (LT.C, ADR-022 持久化)
 ]
 
 _PREFIX: Final[dict[EntityKind, str]] = {
@@ -58,6 +59,7 @@ _PREFIX: Final[dict[EntityKind, str]] = {
     "strategy_search": "ss",
     "experiment_run": "er",
     "capability_promo": "cp",
+    "task_checkpoint": "tcp",
 }
 
 

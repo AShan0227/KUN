@@ -652,3 +652,52 @@ class EvidenceLedgerRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
+
+
+class TaskCheckpointRow(Base):
+    """长任务执行 checkpoint (LT.C, ADR-022 持久化层).
+
+    每个 Executor step 后落一条, 进程挂掉时按 sequence 取 latest active row,
+    resume conversation_snapshot + working_state + artifact_refs.
+
+    status:
+      active        — 任务在跑, 可 resume
+      final         — 任务正常完成, 最终 snapshot
+      failed_resume — resume 时发现 snapshot 不一致 / 已 stale (e.g. anchor 已变)
+    """
+
+    __tablename__ = "task_checkpoints"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    checkpoint_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    step_idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    """每个 task 内部单调递增 — 跨 step 也唯一. resume 取最大值."""
+
+    # Snapshot data
+    conversation_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    """LLM messages list (role/content). 用 list[dict] 而非 frozen — JSONB 落库."""
+    working_state: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    """任意 caller 自定义的中间状态 (tool 已用过的、未完成 sub-task list 等)."""
+    artifact_refs: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    """已产 artifact 的 MinIO key / file path."""
+
+    # Verification / resume help
+    goal_anchor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_self_report: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    cost_usd_so_far: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    tokens_used_so_far: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Status
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
