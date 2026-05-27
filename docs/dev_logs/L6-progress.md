@@ -121,3 +121,35 @@
   4. FastAPI middleware wire: 用 resolve_tenant_id() 落 request.state.tenant_id, 然后每个 session_scope 入口调 bind_tenant_to_session()
 
 ---
+
+## L6.E · Director → Executor → AdapterRouter e2e wiring
+
+**完成**：2026-05-27 / commits (L6.E-1 + L6.E-2)
+
+**做了什么**：
+- `kun/agents/director/automation_intent.py` · `extract_automation_action(parsed, *, tenant_id)` 纯函数
+  - 从 IntentInterpreter 已 parse 的 JSON 抽 `automation: {target_platform, operation, payload}`
+  - 字段校验 (类型 + 非空) + 可选 requested_kind (api/browser)
+  - target_platform 自动 trim + lowercase
+- `kun/agents/executor/automation_runner.py` · `AutomationRunner.run(action) → RouterDecision`
+  - 桥接 AdapterRouter, emit `action.started` / `action.completed` / `action.failed` 事件
+  - 状态累积 emit raise 被吞 (不打挂主路径, ADR-024 frozen_dataclass 模式)
+  - `action_result_to_artifact()` 转 Phase 1 风格 dict, 供 capability writeback
+- 34 测: 18 director-side + 10 executor-side + 6 integration (e2e: parsed JSON → Action → Router → Shopify API → ActionResult)
+- 不需改 IntentInterpreter — 用现有 parsed dict 抽取 (single-responsibility 保持)
+- TaskRef `extra='allow'` 已经支持后续 caller 挂 `automation_action` 字段, 本次不强制改 IntentInterpreter
+
+**关键决策**：
+- **不改 IntentInterpreter, 抽取作独立纯函数**: 让 LLM intent parsing 与 Action 抽取解耦. IntentInterpreter 继续单一职责 (NL → parsed dict), 任何 caller 可独立调 extract_automation_action.
+- **AUTOMATION_PROMPT_HINT 作 system prompt 片段**: 暴露给上层让用户/调用方按需贴到 IntentInterpreter 的 system prompt. 不强制改 IntentInterpreter 内部 prompt — 留出灵活性.
+- **AutomationRunner 是薄 wrapper 不是新 dataclass**: 直接复用 Action / ActionResult / RouterDecision. 价值在事件 emit + 单测易写.
+- **emit 失败不打挂主路径**: `try/except Exception` 包 `_safe_emit`. action 执行本身的异常上抛 (这是 Executor 的决策, 不是基础设施的).
+- **集成测全 DI 替身**: 0 LLM 实调 / 0 HTTP / 0 Playwright. _StubLLMRouter + _FakeHttpCaller + _FakePage. 6 个 integration 测 0.11s 跑完.
+
+**端到端示例 (test_e2e_director_to_router_happy_path)**:
+  parsed_intent = {"automation": {"target_platform": "shopify", "operation": "create_product", "payload": {"title": "Test Mug"}}}
+  → extract_automation_action() → Action(target_platform=shopify, op=create_product, ...)
+  → AutomationRunner.run() → Router 选 ShopifyAPIAdapter → fake_http_caller 收到 POST /admin/api/.../products.json
+  → ActionResult(status="ok") → action_result_to_artifact() Phase 1 风格 dict
+
+---
