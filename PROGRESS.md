@@ -155,15 +155,25 @@
 
 ---
 
-## L6 · Phase 2 商业化（条件成熟才进）
+## L6 · Phase 2 商业化（推进中, 不上线打磨产品）
 
-**前置条件**：L5 跑稳 + 用户决定切 Phase 2。
+**前置条件**：L5 跑稳 (✅ 1203 tests) + 用户决定切 Phase 2 (✅ 2026-05-27: 4 行业互通, 先不上线).
 
-### 计划任务
+### 实施细节
 
-- [ ] 垂直行业选定（电商 / 投放 / 内容分发 / CRM 选一）
-- [ ] 接入层 adapter（API / SDK / browser automation）
-- [ ] 业务能力卡 + 行业评测集
+- [x] **L6.A** Adapter Router framework — Browser-first hybrid（26 tests, commit pending）
+  - `kun/interface/automation/` 模块: Action / ActionResult / AutomationAdapter Protocol
+  - APIAdapter base + BrowserAdapter base + AdapterRegistry + AdapterRouter
+  - capability_score-driven API / Browser 选择 (与 LLM Router cold-start damping 同源)
+  - Fallback policy: API 失败 → Browser; health check cooldown 5 分钟
+- [x] **L6.B** 行业评测集框架 — IndustryEvalSuite + GoldenTask（17 tests, commit pending）
+  - 4 个 built-in metric: exact_key_match / status_ok / keys_present / jaccard_payload
+  - custom metric 注入支持
+  - 评测报告: pass_rate / by_platform / by_operation 聚合
+- [x] **L6.C** ADR-026 接入层架构决策（commit pending）
+- [ ] **L6.D** 第一个 platform adapter 实装（待行业选定）
+- [ ] **L6.E** Director.intent → Executor → Router e2e wiring
+- [ ] 垂直行业选定（电商 / 投放 / 内容分发 / CRM 选一）— 用户决策
 - [ ] ADR-019 Auth posture 升级到 Phase 2 / Phase 3
 
 ---
