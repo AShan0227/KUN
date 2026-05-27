@@ -284,6 +284,7 @@ class LongTaskOrchestrator:
         task_ref: TaskRef,
         *,
         on_event: EventSink | None = None,
+        extra_system_segments: list[str] | None = None,
     ) -> LongTaskRunOutcome:
         """Run the long-task pipeline end-to-end.
 
@@ -292,6 +293,10 @@ class LongTaskOrchestrator:
             (long-task mode), but absence is tolerated with a warning event.
           on_event: optional async sink; ``await on_event(ev)`` is called for
             each emitted ``OrchestratorEvent``. ``None`` → no-op sink.
+          extra_system_segments: optional list of system-prompt segments to
+            append after GoalAnchor + anti-sycophancy. LT.TOOLS-GAP fix —
+            caller (Orchestrator) injects skill directive here so LLM sees
+            tool schema. Each segment is joined by double newline.
 
         Returns:
           ``LongTaskRunOutcome`` carrying the underlying ``LoopResult``,
@@ -372,6 +377,14 @@ class LongTaskOrchestrator:
             user_text = task_ref.meta.success_criteria_short
         else:
             user_text = "(no goal detail provided)"
+
+        # LT.TOOLS-GAP fix: append skill_directive / other extras to system
+        # prompt so LLM sees tool schemas — without this, LLM has no idea
+        # what tools exist and gives empty final answer.
+        if extra_system_segments:
+            for segment in extra_system_segments:
+                if segment and segment.strip():
+                    system_prompt = system_prompt + "\n\n" + segment
 
         initial_messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},

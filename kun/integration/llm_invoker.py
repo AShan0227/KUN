@@ -167,10 +167,35 @@ def make_llm_invoker(
             for tc in response.tool_calls
         ]
 
+        # LT.TOOLS-GAP fallback: some providers (e.g. codex MCP / gpt-5.5)
+        # don't fill structured `tool_calls` field — they emit `<skill>` XML
+        # in `content` (same protocol KUN's short-task agent_loop uses).
+        # Parse them so ExecutorLoop sees tool_calls instead of an empty
+        # final answer.
+        if not tool_calls and response.content:
+            from kun.engineering.agent_loop import parse_skill_calls
+
+            xml_calls = parse_skill_calls(response.content)
+            if xml_calls:
+                tool_calls = [
+                    ExecToolCall(
+                        tool_id=f"xml-{i}",
+                        name=call.name,
+                        arguments=dict(call.params),
+                    )
+                    for i, call in enumerate(xml_calls)
+                ]
+
+        # If we recovered tool_calls via XML fallback, override finish_reason
+        # so ExecutorLoop dispatches them instead of treating content as final.
+        finish_reason = response.finish_reason
+        if tool_calls and not response.tool_calls:
+            finish_reason = "tool_use"
+
         return LLMStepResponse(
             content=response.content,
             tool_calls=tool_calls,
-            finish_reason=response.finish_reason,
+            finish_reason=finish_reason,
             usage_tokens=response.usage.total(),
             cost_usd=response.cost_usd_equivalent,
         )

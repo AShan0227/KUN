@@ -325,3 +325,107 @@ async def test_message_count_preserved() -> None:
     sent = router.calls[0][0].messages
     assert len(sent) == 4
     assert [m.role for m in sent] == ["system", "user", "assistant", "user"]
+
+
+# ===== LT.TOOLS-GAP fallback: XML <skill> → tool_calls =====
+
+
+@pytest.mark.asyncio
+async def test_xml_skill_fallback_parses_into_tool_calls() -> None:
+    """provider 返 content 含 <skill> XML, 无结构化 tool_calls → fallback parse."""
+    from kun.skills.dispatcher import SkillResult, register
+
+    async def _fake_exec(_params: dict) -> SkillResult:
+        return SkillResult(skill_id="test-fallback-tool", ok=True, output="ok")
+
+    register("test-fallback-tool", _fake_exec)
+    content_with_skill = (
+        '我先查一下文件.\n<skill name="test-fallback-tool">{"command": "ls"}</skill>\n'
+        "然后再决定下一步."
+    )
+    router = _StubRouter(
+        response=LLMResponse(
+            content=content_with_skill,
+            tool_calls=[],  # provider 没填结构化字段
+            finish_reason="stop",
+            usage=UsageInfo(input_tokens=100, output_tokens=50),
+            cost_usd_equivalent=0.01,
+        )
+    )
+    invoker = make_llm_invoker(router)  # type: ignore[arg-type]
+    response = await invoker([{"role": "user", "content": "read a file"}])
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].name == "test-fallback-tool"
+    assert response.tool_calls[0].arguments == {"command": "ls"}
+    assert response.finish_reason == "tool_use"  # override 'stop'
+
+
+@pytest.mark.asyncio
+async def test_xml_skill_fallback_skipped_when_structured_present() -> None:
+    """provider 已经填结构化 tool_calls → XML 不解 (避免双重解析)."""
+    router = _StubRouter(
+        response=LLMResponse(
+            content='maybe try <skill name="ignored">{}</skill>',
+            tool_calls=[
+                ToolCall(id="t-1", name="real_tool", arguments={"x": 1}),
+            ],
+            finish_reason="tool_use",
+            usage=UsageInfo(input_tokens=10, output_tokens=5),
+            cost_usd_equivalent=0.001,
+        )
+    )
+    invoker = make_llm_invoker(router)  # type: ignore[arg-type]
+    response = await invoker([{"role": "user", "content": "x"}])
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].name == "real_tool"
+    assert response.finish_reason == "tool_use"
+
+
+@pytest.mark.asyncio
+async def test_xml_skill_fallback_multiple_calls() -> None:
+    """content 含多个 <skill> → 全部 parse 进 tool_calls."""
+    from kun.skills.dispatcher import SkillResult, register
+
+    async def _fake_a(_params: dict) -> SkillResult:
+        return SkillResult(skill_id="test-multi-a", ok=True, output="a")
+
+    async def _fake_b(_params: dict) -> SkillResult:
+        return SkillResult(skill_id="test-multi-b", ok=True, output="b")
+
+    register("test-multi-a", _fake_a)
+    register("test-multi-b", _fake_b)
+    content = (
+        '<skill name="test-multi-a">{"x": "a"}</skill>\n'
+        '中间叙述.\n'
+        '<skill name="test-multi-b">{"y": "b"}</skill>'
+    )
+    router = _StubRouter(
+        response=LLMResponse(
+            content=content, tool_calls=[],
+            finish_reason="stop",
+            usage=UsageInfo(input_tokens=50, output_tokens=20),
+            cost_usd_equivalent=0.005,
+        )
+    )
+    invoker = make_llm_invoker(router)  # type: ignore[arg-type]
+    response = await invoker([{"role": "user", "content": "x"}])
+    assert len(response.tool_calls) == 2
+    assert {tc.name for tc in response.tool_calls} == {"test-multi-a", "test-multi-b"}
+
+
+@pytest.mark.asyncio
+async def test_xml_skill_fallback_no_match_keeps_empty_tool_calls() -> None:
+    """content 不含 <skill> XML → tool_calls 仍为空, finish_reason 保留."""
+    router = _StubRouter(
+        response=LLMResponse(
+            content="just a regular answer",
+            tool_calls=[],
+            finish_reason="stop",
+            usage=UsageInfo(input_tokens=10, output_tokens=5),
+            cost_usd_equivalent=0.001,
+        )
+    )
+    invoker = make_llm_invoker(router)  # type: ignore[arg-type]
+    response = await invoker([{"role": "user", "content": "x"}])
+    assert response.tool_calls == []
+    assert response.finish_reason == "stop"

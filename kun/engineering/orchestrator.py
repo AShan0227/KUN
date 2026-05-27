@@ -1239,6 +1239,7 @@ class Orchestrator:
         TaskResult persistence + answer/done events).
         """
         # Lazy imports — keep short-task import surface clean
+        from kun.engineering.agent_loop import build_skill_directive
         from kun.engineering.long_task_orchestrator import LongTaskOrchestrator
         from kun.integration.checkpoint_db import (
             make_checkpoint_reader,
@@ -1249,6 +1250,20 @@ class Orchestrator:
         from kun.integration.llm_summarizer import make_llm_summarizer
         from kun.integration.plan_review_db import make_plan_review_writer
         from kun.integration.tool_executor import make_tool_executor
+        from kun.skills.dispatcher import is_registered as _skill_is_registered
+
+        # LT.TOOLS-GAP fix: build skill directive so LLM 知道有哪些工具可用.
+        # Short-task path 早就这么做; long-task path 之前漏接 → LLM 0 工具 schema
+        # 立刻给空 final answer (dogfood 跑出来的 bug).
+        skill_candidates = self.skill_selector.select(task_ref, top_k=5)
+        skill_summaries = [
+            (s.skill_id, s.manifest.description, dict(s.manifest.input_schema or {}))
+            for s in skill_candidates
+            if _skill_is_registered(s.skill_id)
+        ]
+        skill_directive = (
+            build_skill_directive(skill_summaries) if skill_summaries else ""
+        )
 
         # Build LLM profile reflecting current task + budget posture
         llm_profile = TaskProfile(
@@ -1297,7 +1312,13 @@ class Orchestrator:
                 OrchestratorEvent(kind=lt_ev.kind, data=dict(lt_ev.data))
             )
 
-        outcome = await lt_orch.run_long_task(task_ref, on_event=_on_lt_event)
+        # LT.TOOLS-GAP: inject skill_directive so LLM sees tool schemas.
+        extra_segments = [skill_directive] if skill_directive else []
+        outcome = await lt_orch.run_long_task(
+            task_ref,
+            on_event=_on_lt_event,
+            extra_system_segments=extra_segments,
+        )
 
         # Replay collected events into the main stream
         for ev in collected:
