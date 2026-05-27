@@ -161,19 +161,30 @@
 
 ### 实施细节
 
-- [x] **L6.A** Adapter Router framework — Browser-first hybrid（26 tests, commit pending）
+- [x] **L6.A** Adapter Router framework — Browser-first hybrid（26 tests, commits 738a5df+803e8ac）
   - `kun/interface/automation/` 模块: Action / ActionResult / AutomationAdapter Protocol
   - APIAdapter base + BrowserAdapter base + AdapterRegistry + AdapterRouter
   - capability_score-driven API / Browser 选择 (与 LLM Router cold-start damping 同源)
   - Fallback policy: API 失败 → Browser; health check cooldown 5 分钟
-- [x] **L6.B** 行业评测集框架 — IndustryEvalSuite + GoldenTask（17 tests, commit pending）
+- [x] **L6.B** 行业评测集框架 — IndustryEvalSuite + GoldenTask（17 tests, commit 5b2ae43）
   - 4 个 built-in metric: exact_key_match / status_ok / keys_present / jaccard_payload
   - custom metric 注入支持
   - 评测报告: pass_rate / by_platform / by_operation 聚合
-- [x] **L6.C** ADR-026 接入层架构决策（commit pending）
-- [ ] **L6.D** 第一个 platform adapter 实装（待行业选定）
+- [x] **L6.C** ADR-026 接入层架构决策（写入 decisions.md）
+- [x] **L6.D-Shopify** 电商 Shopify adapter (API + Browser)（20 tests, commit a87c31a）
+  - `ShopifyAPIAdapter` 3 ops (create_product / list_orders / get_product) via _OPERATION_MAP
+  - URL template `{product_id}` 自动替换 / body wrap `{"product": {...}}`
+  - HTTP 401/403 → auth_required, 429 → rate_limited, 5xx → failed
+  - `ShopifyBrowserAdapter` 同 3 ops via admin panel selectors
+- [x] **L6.D-EcomEval** 电商 Shopify 评测集（11 tests, commit c7307bb）
+  - 6 golden task (3 op × 2 场景: happy + edge)
+  - executor 用 `requested_kind="api"` 跑 API path
+- [x] **L6.AuthScaffold** JWT + tenant_id + RLS 绑定（44 tests, commits 3da10f3+23c8150）
+  - HS256 JWT 用 stdlib hmac (无 PyJWT 依赖)
+  - `resolve_tenant_id` 纯函数 + `bind_tenant_to_session` RLS helper
+  - 默认 `KUN_AUTH_ENABLED=false`, flag flip 即切换到生产 posture
 - [ ] **L6.E** Director.intent → Executor → Router e2e wiring
-- [ ] 垂直行业选定（电商 / 投放 / 内容分发 / CRM 选一）— 用户决策
+- [ ] **L6.D** 其他 3 行业 adapter (投放 / 内容分发 / CRM)— 用户决策选哪个
 - [ ] ADR-019 Auth posture 升级到 Phase 2 / Phase 3
 
 ---
@@ -215,4 +226,4 @@
 
 ---
 
-*最后更新：2026-05-26（v3 方案落地中）*
+*最后更新：2026-05-27（L6 Phase 2 foundation 完成: 框架 + 电商首垂直 + Auth 脚手架）*
