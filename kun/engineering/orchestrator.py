@@ -239,6 +239,7 @@ class Orchestrator:
         validation: ValidationPipeline | None = None,
         context_packer: ContextPacker | None = None,
         output_translator: OutputTranslator | None = None,
+        external_supervisor: Any | None = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -249,6 +250,9 @@ class Orchestrator:
         self.skill_selector = get_skill_selector()
         self.context_packer = context_packer or ContextPacker()
         self.output_translator = output_translator or translate_for
+        # LT.WIRE-1: optional external supervisor (process-separate local LLM).
+        # When None, LongTaskOrchestrator silently skips drift cross-check.
+        self.external_supervisor = external_supervisor
 
     # ----------------------------- public entry -----------------------------
 
@@ -1197,6 +1201,8 @@ class Orchestrator:
             make_checkpoint_writer,
         )
         from kun.integration.llm_invoker import make_llm_invoker
+        from kun.integration.llm_summarizer import make_llm_summarizer
+        from kun.integration.plan_review_db import make_plan_review_writer
         from kun.integration.tool_executor import make_tool_executor
 
         # Build LLM profile reflecting current task + budget posture
@@ -1207,6 +1213,13 @@ class Orchestrator:
             force_fallback=force_fallback,
         )
 
+        # plan_review_writer_factory expects (tenant_id, task_id, anchor_id)
+        # — adapt make_plan_review_writer's signature.
+        def _make_pr_writer(
+            *, tenant_id: str, task_id: str, anchor_id: str
+        ) -> Any:
+            return make_plan_review_writer(tenant_id, task_id, anchor_id)
+
         lt_orch = LongTaskOrchestrator(
             llm_invoker=make_llm_invoker(
                 self.llm_router, purpose="execution", profile=llm_profile
@@ -1215,6 +1228,13 @@ class Orchestrator:
             checkpoint_writer=make_checkpoint_writer(),
             checkpoint_reader=make_checkpoint_reader(),
             checkpoint_status_marker=make_checkpoint_status_marker(),
+            # LT.WIRE-1: persist plan_reviews + run External Supervisor on drift
+            plan_review_writer_factory=_make_pr_writer,
+            external_supervisor_service=self.external_supervisor,
+            # LT.WIRE-2: real LLM summarizer for compaction (replaces rule-based)
+            compactor_summarizer=make_llm_summarizer(
+                self.llm_router, purpose="compression"
+            ),
         )
 
         # Collect events from LongTaskOrchestrator (they have identical
