@@ -31,6 +31,13 @@ from kun.agents.supervisor.plan_review_heartbeat import (
     derive_action,
     evaluate_executor_self_report,
 )
+from kun.agents.supervisor.plan_review_prompt import render_plan_review_prompt
+from kun.agents.supervisor.plan_review_service import (
+    ExternalSupervisorVerify,
+    PlanReviewOutcome,
+    PlanReviewService,
+    VerdictName,
+)
 from kun.agents.supervisor.pool import SupervisorPool, SupervisorPoolConfig
 from kun.agents.supervisor.self_created_request import (
     build_self_created_request,
@@ -42,7 +49,10 @@ __all__ = [
     "AnomalyCluster",
     "EscalationDecision",
     "EscalationLevel",
+    "ExternalSupervisorVerify",
     "PlanReviewHeartbeat",
+    "PlanReviewOutcome",
+    "PlanReviewService",
     "ReviewRequestEmitter",
     "ReviewTrigger",
     "Severity",
@@ -51,6 +61,7 @@ __all__ = [
     "SupervisorPool",
     "SupervisorPoolConfig",
     "SupervisorService",
+    "VerdictName",
     "build_self_created_request",
     "cluster_anomalies",
     "cluster_to_search_request",
@@ -60,4 +71,5 @@ __all__ = [
     "enrich_with_diagnostic",
     "escalation_path_for",
     "evaluate_executor_self_report",
+    "render_plan_review_prompt",
 ]
