@@ -211,3 +211,43 @@
 | LT.G e2e integration | 8 | LT.A-F 联动验证 |
 | **Total** | **107** | 1347 → 1454 全套 (+107) |
 
+---
+
+## LT.INT · 整合 — 真接到主 runtime path (并行 5 Agent + 我整合)
+
+**完成**：2026-05-27 (LT 收官后续追加)
+
+**目标**：把 LT.A-G 6 个 service 真接到 `Orchestrator.stream()`. 之前 service 完整 + 单测 100% 过, 但 orchestrator 从未调 — `service_module_not_wired_to_runtime_audit` 方法论说的就是这个状态.
+
+**做法**：5 个并行 Agent + 我手动整合, **零现有 test 回归** (1454 → 1550, +96 new tests).
+
+**子任务清单**:
+
+| sub-task | Agent | tests | 文件 |
+|---|---|---|---|
+| LT.INT-A LLMInvoker + ToolExecutor adapter | A 并行 | 28 | kun/integration/llm_invoker.py + tool_executor.py |
+| LT.INT-B Checkpoint DB writer/reader/marker | B 并行 | 15 | kun/integration/checkpoint_db.py |
+| LT.INT-C PlanReview DB writer | C 并行 | 19 | kun/integration/plan_review_db.py |
+| LT.INT-D ExternalSupervisor adapter | D 并行 | 10 | kun/integration/external_supervisor.py |
+| LT.INT-E LongTaskOrchestrator skeleton | E 并行 | 14 | kun/engineering/long_task_orchestrator.py |
+| LT.INT-F Orchestrator 分流 + branch test | 我 | 10 | kun/engineering/orchestrator.py + branch test |
+| **Total** | | **96** | **15 文件** |
+
+**关键决策**:
+
+- **分流而非替换**: `Orchestrator.stream()` 在 step 6 (RuntimeState 设 running) 和 step 7 (skill 选择) 之间插入分流, **短任务路径零改动**, 1538 现有 tests 全过.
+- **eligibility = is_long_task + has_anchor**: 缺 anchor 时即使 complex 也走短任务 (anchor 是 drift 检测的契约面, 没有就不该走长任务).
+- **本地 OrchestratorEvent 镜像 + 一行转换**: 避免 LongTaskOrchestrator 直接 import kun.engineering.orchestrator (拉起 SQLAlchemy/watchtower/skills 重图). Wire 时 `OrchestratorEvent(kind=lt.kind, data=lt.data)` 转换零成本.
+- **lazy imports in _run_long_task_branch**: 5 个 integration adapter 在分流方法内 import, 短任务路径不付加载开销.
+- **Parity for validation + writeback**: 长任务 final 仍跑 `ValidationPipeline` + emit "insight" event + `record_outcome` capability writeback — 与短任务步骤 7.4 / 7.5 完全对齐, 现有测试期望保持.
+- **Status mapping defense**: branch test 有 `test_status_map_keys_cover_loop_status_literals` 守门, LoopStatus 加新值会让测试失败提示更新.
+- **5 agent 并行 + 我整合**: 各 agent 独立目录 (kun/integration/X.py 各自一文件), 互不冲突. 我集中处理 orchestrator.py + branch test. ~30 分钟完成 86 + 10 tests.
+
+**未完 (后续 ticket, LT.INT 范围外)**:
+- 真长任务跑 1+ 小时 e2e (产品验证, 用户提供场景)
+- LongTaskOrchestrator 接 PlanReview DB writer + ExternalSupervisor verify (现 service 缺这两 callback 接入, 但 e2e fallback 不影响主路径)
+- LLM-based summarizer 替 ConversationCompactor default
+- 长任务期间用户消息走 LongTaskInputRouter (LT.A) 接 WS 入口
+
+**LT + LT.INT 总成果**: 1347 → 1550 tests (+203), 21 个 commit, 长任务能力从"零件"到"真接到主路径". /loop 后用户给真任务即可跑.
+
