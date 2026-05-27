@@ -228,14 +228,26 @@ docker compose -f docker-compose.dev.yml ps | grep postgres
 uv run python scripts/e2e_rsi_demo.py
 ```
 
-> ⚠️ `scripts/e2e_rsi_demo.py` 在 **Phase1.D** 提交（下一步）。本试验目前可手动按 README 的 service 调用模式拼。
+**期望看到**（实测 2026-05-27 已通过）：
+- Supervisor 检测到 3 次连续 llm.fallback.triggered + 1 次 duration_outlier → 写 2 个 strategy_search_request 到真 Postgres
+- Strategist 产 3 个 candidates (Explorer Pool 3 模式)
+- Gate 全部 approve → 写 3 行 runtime_capabilities (sampling 0.3/0.5/1.0, state=merged)
+- Promotion queue sweeper 跑一次 → 0 expired / 0 stale (因为刚写入)
 
-**期望看到**：
-- Supervisor 检测到 3 次连续 llm.fallback.triggered → 写 strategy_search_request
-- Strategist 接到 request → 产 3 个 candidates
-- 其中 1 个被 Gate approve → 写一行 runtime_capabilities (enabled=False, promotion_state=merged)
-- Promotion queue sweeper 跑一次 → 状态机推进
-- 直接查 DB：`docker exec -it kun-dev-postgres-1 psql -U kun -d kun -c "SELECT capability_id, target_module, promotion_state FROM kun_data.runtime_capabilities;"`
+**直接查表确认**（注意：RLS 默认隐藏，psql 要用 superuser `kun` 而不是 `kun_app`）：
+```bash
+docker exec kun-dev-postgres-1 psql -U kun -d kun -c "SELECT request_id, target_module, priority, status FROM strategy_search_requests WHERE tenant_id='u-e2e-demo';"
+
+docker exec kun-dev-postgres-1 psql -U kun -d kun -c "SELECT capability_id, target_module, promotion_state, enabled, sampling_rate FROM runtime_capabilities WHERE tenant_id='u-e2e-demo';"
+```
+
+**预期输出**：
+```
+strategy_search_requests: 2 rows (anthropic / executor.coding.refactor)
+runtime_capabilities:     3 rows (llm.router × 3, merged, enabled=f)
+```
+
+**清理**: demo 脚本启动时自动 cleanup 上次 demo 数据, 重复跑无残留.
 
 ---
 
