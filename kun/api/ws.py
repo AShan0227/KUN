@@ -34,6 +34,7 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from kun.api.long_task_intake import handle_long_task_input
 from kun.api.runtime import get_orchestrator
 from kun.core.logging import get_logger
 from kun.core.tenancy import (
@@ -108,13 +109,22 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     )
     send_lock = asyncio.Lock()
     current_task: asyncio.Task[None] | None = None
+    # Long-task state: populated by _run_task_stream as orchestrator events
+    # surface them. None during short tasks → handle_long_task_input falls
+    # through to the legacy "start a fresh task" path (preserves backward compat).
+    task_state: dict[str, Any] = {"task_id": None, "goal_anchor": None}
 
     log.info("ws.connected", tenant_id=tenant_id, user_id=user_id)
 
     try:
         with tenant_scope(ctx):
             while True:
-                current_task = _clear_finished_task(current_task)
+                cleared = _clear_finished_task(current_task)
+                if cleared is None and current_task is not None:
+                    # Task ended this loop — drop any long-task state with it.
+                    task_state["task_id"] = None
+                    task_state["goal_anchor"] = None
+                current_task = cleared
                 raw = await ws.receive_text()
                 try:
                     msg = json.loads(raw)
@@ -128,11 +138,33 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 if mtype == "user_message":
                     output_kind = str(msg.get("output_kind") or default_output_kind)
                     if current_task is not None:
-                        await _send_json(
-                            ws,
-                            {"type": "error", "message": "task already running"},
-                            send_lock,
+                        if task_state["goal_anchor"] is None:
+                            # Short-task path: preserve legacy reject behavior.
+                            await _send_json(
+                                ws,
+                                {"type": "error", "message": "task already running"},
+                                send_lock,
+                            )
+                            continue
+                        # Snapshot the live task into a default arg so the
+                        # lambda binds it now (avoids B023 + late-binding bug
+                        # if current_task is rebound below).
+                        live_task: asyncio.Task[None] = current_task
+                        outcome = await handle_long_task_input(
+                            new_input=content,
+                            current_task=current_task,
+                            current_goal_anchor=task_state["goal_anchor"],
+                            current_task_id=task_state["task_id"],
+                            send_json=lambda payload: _send_json(ws, payload, send_lock),
+                            cancel_current_task=lambda t=live_task: _cancel_task(t),
+                            start_new_task=lambda _msg: asyncio.create_task(asyncio.sleep(0)),
                         )
+                        if outcome.next_action == "pivot_pause_cancelled":
+                            current_task = None
+                            task_state["task_id"] = None
+                            task_state["goal_anchor"] = None
+                        # All long-task outcomes were already handled inside
+                        # the helper (sent reply, cancelled, etc.); loop on.
                         continue
                     if _is_correction(content):
                         await _send_json(
