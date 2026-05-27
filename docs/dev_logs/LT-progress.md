@@ -1,0 +1,32 @@
+# LT · 长复杂任务能力 补齐 (追加式)
+
+> 用户指令: "完善鲲做长复杂能力" — 一次性补齐开发部分.
+> 7 个子任务: LT.A → LT.G.
+>
+> 完整回顾在 `LT-retrospective.md`(LT 全部完成时写, ADR-025 强制).
+
+---
+
+## LT.A · Layer 3 wiring — LongTaskInputRouter
+
+**完成**：2026-05-27 / commit (latest)
+
+**做了什么**：
+- 新建 `kun/agents/director/long_task_router.py` (LongTaskInputRouter)
+- 把 `classify_input` 的 6 类分类映射到 6 个 routing bucket: executor / off_topic_reply / scope_expansion_review / pivot_pause / cancel / passthrough
+- 4 个可注入 callback (off_topic_replier / scope_expansion_emitter / pivot_handler / cancel_handler) — caller 决定怎么真正消费
+- 短任务 / 无 anchor → passthrough (Layer 3 不干预)
+- 13 单测全过覆盖 6 类路由 + 异常路径 + 优先级 (interrupt > pivot)
+
+**关键决策**：
+- **不直接在 orchestrator.run 里写 if/elif**: 路由是 cross-cutting concern (WS/REST/event 都用), 抽 service 易测.
+- **callback 全可选 + raise 不打挂主路径**: ADR-024 frozen_dataclass 模式. 即使 off_topic_replier 挂了, RoutingDecision 仍正确返回, caller 可自己处理.
+- **礼貌回复 + 二次确认**: off_topic_noise 自动生成"我先记下…当前任务完成后再处理", explicit_pivot 自动生成"是确认切换吗? (yes/no)" — 模板化, 单测可验证内容.
+- **bucket 名 vs category 名分开**: classification.category 是分类器结果, bucket 是路由动作 — 解耦让未来加 LLM 分类时分类器换实现但 bucket 不动.
+
+**未完工作 (caller 集成)**：
+- WS / REST entry point 集成 LongTaskInputRouter (~3 行代码, 不在 LT.A 范围)
+- off_topic_replier 实装 (走 NUO alert / WS event)
+- pivot_handler / cancel_handler 接 task lifecycle
+
+---
