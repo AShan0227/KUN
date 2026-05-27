@@ -178,3 +178,30 @@
   4. capability_card 记录 selector 失效次数, 触发自愈
 
 ---
+
+## L6.D-Xiaohongshu · 小红书 BrowserAdapter (内容分发第二站)
+
+**完成**：2026-05-27 / commit (latest)
+
+**做了什么**：
+- `kun/interface/automation/xiaohongshu/` 模块 (browser.py + __init__.py)
+- `XiaohongshuBrowserAdapter` 3 ops: `publish_note` / `list_notes` / `get_note_stats`
+- 创作者后台: https://creator.xiaohongshu.com
+- 17 单测覆盖: 默认草稿 / publish_now=True / image_text vs video tab 切换 / invalid note_type / 缺字段 / fill 异常 / topics 列表填入 / 空 topics / list+stats 导航 / anti-bot challenge 模拟 / health_check / Router 集成 / timeout 验证
+
+**关键决策**：
+- **note_type 分流 (image_text vs video)**: 走不同的创作流 tab. 在 _SELECTORS 字典里分别留 `tab_image_text` / `tab_video` selector, adapter 内 click 对应 tab.
+- **topics 是小红书算法核心**: 推荐分发依据. payload 字段 `topics: list[str]`, adapter 依次 fill 进 topic_input — 不去重 / 不截断 (caller 自负).
+- **默认 timeout 90s** (vs WeChat MP 60s, Shopify 30s): 小红书上传 + 风控审核更慢. 反映实际平台慢的事实, 而非乐观假设.
+- **anti-bot 测试模拟**: FakePage `fail_on="goto"` 抛 `anti-bot challenge: slider` — 验证 adapter 在 anti-bot 触发时优雅 failed. 真生产需要 CAPTCHA 处理 + 重试.
+- **错误时保留 title 在 result_payload**: 失败 result 不空, 至少带 `title` + `note_type` 给重试 / 诊断用. 不像 Shopify 失败 payload 全空.
+- **默认存草稿 (与 WeChat MP 一致)**: ADR-025 conservative pattern 复用 — 内容分发平台审核不可逆, caller 必须 explicit publish_now.
+
+**生产前 TODO** (同 WeChat MP):
+  1. Playwright Inspector 录 latest _SELECTORS (小红书 UI 改版频率高)
+  2. 注入已登录 page_factory + cookie
+  3. **anti-bot challenge handler** (slider captcha / rotating challenge) — 小红书反爬比微信严, 这是重点
+  4. **图片上传** — 真生产用 `page.set_input_files(upload_input, [paths...])`, FakePage 不模拟
+  5. capability_card 记录 selector 失效次数, 触发自愈 (RSI 候选场景)
+
+---
