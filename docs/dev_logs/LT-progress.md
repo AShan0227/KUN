@@ -251,3 +251,48 @@
 
 **LT + LT.INT 总成果**: 1347 → 1550 tests (+203), 21 个 commit, 长任务能力从"零件"到"真接到主路径". /loop 后用户给真任务即可跑.
 
+---
+
+## LT.OAUTH · AnthropicProvider 支持 OAuth 订阅 token
+
+**完成**：2026-05-27 / commit add1b14
+
+**背景**：dogfood (#26) 被卡到没法跑 — 三条 LLM 路径全部不可用:
+
+| 路径 | 问题 |
+|---|---|
+| codex MCP (gpt-5.5) | 沙箱 read-only, approval=never, 不让写文件 |
+| Claude CLI | sandbox keychain isolation, KUN 子进程读不到 user macOS keychain |
+| Anthropic API key (sk-ant-api03-*) | 没 console 账号, 用户没付费过 |
+
+用户提议方案 B: 用 `claude setup-token` 出的 OAuth token (sk-ant-oat01-*) 走自己 Claude Pro/Max **订阅 endpoint**, 不付 per-token 钱。
+
+**做了什么**：
+- `kun/interface/llm/anthropic_provider.py`: `_build_client` 检测 `ANTHROPIC_API_KEY.startswith("sk-ant-oat")` 时:
+  1. 用 `AsyncAnthropic(auth_token=token)` 触发 SDK 的 `_bearer_auth` 路径 → `Authorization: Bearer <token>`
+  2. `default_headers={"anthropic-beta": "oauth-2025-04-20"}` (订阅端点强制 opt-in)
+  3. **显式 `client.api_key = None`** — 否则 SDK init 时 `ANTHROPIC_API_KEY` env var 会被自动填进 `self.api_key`, 同一请求同时发 X-Api-Key + Authorization 双头, 订阅端点拒
+- 5 个新 unit test 覆盖 ofox proxy / 直 api_key / OAuth token / SDK auth_headers contract / no credentials
+- 顺手清掉 scripts/ 里 5 个 ruff 老 nit (I001 import 排序 / F541 空 f-string / F841 unused var)
+
+**关键决策**：
+- **token 前缀检测而非配置标志**: `sk-ant-oat` 是 Anthropic 颁的格式不变, 无需新 env var. 用户换回 sk-ant-api03 时无需改任何配置.
+- **保留 SDK 不换 raw httpx**: SDK 0.96 原生支持 `auth_token=` 参数, 改最小. 后续 retry/streaming 不需要重写.
+- **显式 nil api_key**: SDK 自动 env var pickup 是个隐式陷阱, 测试里直接断言 `client.api_key is None` + `'X-Api-Key' not in auth_headers` 把这个陷阱钉死.
+- **header-build 测试**: 第 4 个 test `test_oauth_token_sdk_emits_bearer_only` 不光看构造参数, 直接读 `client.auth_headers` property — 防未来有人在 OAuth 分支偷加 api_key fallback.
+
+**curl 端到端验证 (commit 前)**：
+```
+curl -H "Authorization: Bearer sk-ant-oat01-..." \
+     -H "anthropic-beta: oauth-2025-04-20" \
+     https://api.anthropic.com/v1/messages
+→ {"type":"error","error":{"type":"rate_limit_error",...}}
+```
+**不是 401** — auth 通了, 只是用户订阅额度被打满。这恰好证明 header 配置正确。
+
+**未完工作 (DOGFOOD #26)**：
+- 等订阅额度恢复 (Claude Pro/Max 是 5h rolling window) → 重跑 `scripts/dogfood_distill.py` → 产出 3 份 markdown + ≥5 yaml seeds + ≥3 runtime_capabilities rows
+- 长期 ticket: Claude CLI sandbox keychain isolation 解决方案 (现下只能 OAuth token, 没法跑完整 CLI 体验)
+
+**总测试**: 1670 → 1675 (+5), ruff 全绿.
+
