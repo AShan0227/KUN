@@ -166,13 +166,15 @@ def test_base_instructions_assert_no_file_access_and_xml_protocol():
     """
     text = PURE_LLM_BASE_INSTRUCTIONS
     lower = text.lower()
-    # Explicit denial of file write access (any phrasing)
-    assert "file write" in lower or "file system" in lower or "file-system" in lower
-    assert "no " in lower or "not have" in lower  # has a negation near the file-claim
-    # Explicit denial of shell
-    assert "no shell" in lower
+    # LT.TOOLS-GAP-2 revision: distinguishes "no DIRECT codex tools" from
+    # "no tools at all". Must explicitly reference host tools / KUN tools.
+    assert "host tool" in lower or "kun tool" in lower or "host_tool" in lower
+    # Explicit no-codex-direct-tools (any phrasing variant)
+    assert "no codex" in lower or "no direct codex" in lower
     # XML protocol shape — model must see the exact <skill name="..."> shape
+    # AND the JSON-in-body form (not nested elements)
     assert '<skill name=' in text
+    assert '"param1"' in text or '"key"' in text or "JSON" in text or "json" in text
     # Don't claim sandbox restrictions (regression catcher for v4)
     assert "sandbox" in lower
     # Must instruct model NOT to mention/claim sandbox
@@ -180,6 +182,10 @@ def test_base_instructions_assert_no_file_access_and_xml_protocol():
         signal in lower
         for signal in ("never claim", "never mention", "off-topic")
     )
+    # Anti-hallucination: must explicitly forbid invented tool names
+    # (regression catcher for v5 where gpt-5.5 made up "presentations" etc)
+    assert "invent" in lower or "made-up" in lower or "made up" in lower
+    assert "trust the list" in lower or "trust the list" in text.lower()
 
 
 @pytest.mark.unit
