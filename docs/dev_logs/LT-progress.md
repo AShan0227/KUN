@@ -119,3 +119,30 @@
 - Executor loop 集成 (每次 LLM call 前调 maybe_compact, 用 compacted_messages)
 
 ---
+
+## LT.E · Multi-step execution loop — ExecutorLoop
+
+**完成**：2026-05-27 / commit (latest)
+
+**做了什么**：
+- 新建 `kun/agents/executor/exec_loop.py`
+- ToolCall / ToolResult / LLMStepResponse / LoopResult 全 frozen dataclass
+- LoopStatus 7 个: `final / max_steps / budget_exceeded / wall_clock_exceeded / stuck / failed / user_cancelled`
+- ExecutorLoop.run() 真 agent loop: 终止检查 → compact → plan_review prompt → LLM → tool_calls dispatch → checkpoint → repeat
+- 整合 LT.B (plan_review) + LT.C (checkpoint) + LT.D (compactor), 全 DI 可选
+- 18 单测全过, 1429 总测试 (+18)
+
+**关键决策**：
+- **永远不 raise, 用 LoopResult.status 表退出原因**: caller 不用 try/except 写循环外层. 7 种退出类型可观测.
+- **LLMStepResponse provider-agnostic**: content + tool_calls + finish_reason + usage_tokens + cost_usd. Anthropic/OpenAI/Gemini 都能映射进来.
+- **所有整合 service 失败不破坏 loop**: compactor / plan_review / checkpoint 任一 raise → log warning, 主路径继续. ADR-024 状态累积失败不阻塞主路径.
+- **tool_executor 抛 → 全 ToolResult is_error=True**: 不让 1 个 tool 异常导致整个 loop 挂. 但连续 N 次 tool failures (默认 3) → status=stuck.
+- **`steps_taken` 含 final step**: final answer 那次 LLM call 也算 1 step (调过 LLM, 付了 cost).
+- **`final_messages` 是完整对话**: caller 复盘 / replay 用. checkpoint 落库的是 snapshot, 这里是内存视图.
+
+**未完工作 (LT.G 整合)**:
+- 接到 kun.engineering.orchestrator 或 control_plane 主路径 — Executor 调用 ExecutorLoop 跑长任务
+- LLMRouter → LLMInvoker adapter (~10 行 wrapper, 把 LLMResponse 映射成 LLMStepResponse)
+- ToolRegistry → ToolExecutor adapter (skill / tool registry 已存在, 接一层)
+
+---
