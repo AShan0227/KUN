@@ -21,19 +21,35 @@ from kun.agents.director.input_classifier import (
     classify_input,
 )
 from kun.agents.director.intent import IntentInterpreter
+from kun.agents.director.long_task_router import (
+    CancelHandler,
+    LongTaskInputRouter,
+    OffTopicReplier,
+    PivotHandler,
+    RoutingBucket,
+    RoutingDecision,
+    ScopeExpansionEmitter,
+)
 from kun.agents.director.planner import ExecutionPlan, PlanStep, TaskPlanner
 from kun.agents.director.role_router import RouteChoice, TaskRouter
 
 __all__ = [
     "AUTOMATION_PROMPT_HINT",
+    "CancelHandler",
     "Director",
     "ExecutionPlan",
     "GoalAnchor",
     "InputCategory",
     "InputClassification",
     "IntentInterpreter",
+    "LongTaskInputRouter",
+    "OffTopicReplier",
+    "PivotHandler",
     "PlanStep",
     "RouteChoice",
+    "RoutingBucket",
+    "RoutingDecision",
+    "ScopeExpansionEmitter",
     "TaskPlanner",
     "TaskRouter",
     "classify_input",
