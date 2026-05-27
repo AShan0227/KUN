@@ -34,6 +34,7 @@ EntityKind = Literal[
     "experiment_run",  # er-  · runtime_experiments (ADR-024)
     "capability_promo",  # cp-  · runtime_capabilities (ADR-024)
     "task_checkpoint",  # tcp- · TaskCheckpoint (LT.C, ADR-022 持久化)
+    "bug_case",  # bc-  · BugRootCase (alembic 0013, RCDH 案例库)
 ]
 
 _PREFIX: Final[dict[EntityKind, str]] = {
@@ -60,6 +61,7 @@ _PREFIX: Final[dict[EntityKind, str]] = {
     "experiment_run": "er",
     "capability_promo": "cp",
     "task_checkpoint": "tcp",
+    "bug_case": "bc",
 }
 
 

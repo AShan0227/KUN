@@ -654,6 +654,63 @@ class EvidenceLedgerRow(Base):
     )
 
 
+class BugRootCaseRow(Base):
+    """Bug 根因案例库 (alembic 0013) — RCDH fast-path lookup.
+
+    RCDH 4 级诊断从头分析每个 trace 慢. 这张表挂"案例库" — 同 trace_signature
+    见过就直接返 fix_pattern, 没命中再走完整诊断. 命中即 O(1) 走捷径.
+
+    Signature 生成: error_type + top 3 内部 frame (kun.* 优先 over site-packages)
+    + SHA256 prefix. 详见 kun.governance.bug_case_library.trace_signature.
+
+    工程语义:
+      - (tenant_id, trace_signature) UNIQUE — 同 tenant 同 signature 只一条
+      - hit_count + last_hit_at 在 lookup 命中后递增
+      - evidence_dx_id 关联 diagnostic_records (如有完整诊断证据)
+    """
+
+    __tablename__ = "bug_root_cause_cases"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    trace_signature: Mapped[str] = mapped_column(String(256), nullable=False)
+    error_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    root_cause_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    fix_pattern: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_dx_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    last_hit_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("hit_count >= 1", name="bug_case_hit_count_positive"),
+        CheckConstraint(
+            "length(trace_signature) > 0",
+            name="bug_case_signature_not_empty",
+        ),
+        CheckConstraint(
+            "length(error_type) > 0",
+            name="bug_case_error_type_not_empty",
+        ),
+        CheckConstraint(
+            "length(root_cause_kind) > 0",
+            name="bug_case_root_cause_kind_not_empty",
+        ),
+        CheckConstraint(
+            "length(fix_pattern) > 0",
+            name="bug_case_fix_pattern_not_empty",
+        ),
+        UniqueConstraint(
+            "tenant_id", "trace_signature", name="ix_bug_cases_signature"
+        ),
+        Index("ix_bug_cases_hit_count", "tenant_id", "hit_count"),
+    )
+
+
 class TaskCheckpointRow(Base):
     """长任务执行 checkpoint (LT.C, ADR-022 持久化层).
 

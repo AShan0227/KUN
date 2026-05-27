@@ -1,6 +1,11 @@
-"""L2.6 — RCDH 4 级诊断 + narrow_scope 单测."""
+"""L2.6 — RCDH 4 级诊断 + narrow_scope 单测.
+
+Includes bug_case_library fast-path 接入测试 (alembic 0013).
+"""
 
 from __future__ import annotations
+
+from typing import Any
 
 import pytest
 from kun.governance.diagnosis_scope import MAX_SCOPE_MODULES, narrow_scope
@@ -296,3 +301,122 @@ def test_level_check_result_defaults() -> None:
     assert r.skipped is False
     assert r.is_root_cause is False
     assert r.evidence == []
+
+
+# ---- bug_case_library fast-path (alembic 0013) ----
+
+
+class _FakeBugCaseStore:
+    """In-memory bug case store for RCDH integration tests."""
+
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, str], dict[str, Any]] = {}
+        self.writes = 0
+
+    async def reader(self, tenant_id: str, signature: str) -> dict[str, Any] | None:
+        row = self.rows.get((tenant_id, signature))
+        return dict(row) if row else None
+
+    async def writer(self, row: dict[str, Any]) -> None:
+        self.writes += 1
+        self.rows[(row["tenant_id"], row["trace_signature"])] = dict(row)
+
+
+@pytest.mark.asyncio
+async def test_run_diagnostic_case_lookup_hit_returns_fast_path() -> None:
+    """run_diagnostic with case_lookup hit → fast_path 返回 (单步, 不跑 4 级).
+
+    场景: 案例库里已有同 signature 的 case → 直接命中, root_cause_level=1,
+    fast_path=True, fix_pattern carry 上来.
+    """
+    from kun.governance.bug_case_library import record_case
+
+    store = _FakeBugCaseStore()
+    trace_lines = [
+        'File "kun/agents/executor/service.py", line 42, in handle',
+        'File "kun/governance/rcdh.py", line 100, in run',
+    ]
+    # 预先 record 一条 case
+    case_id = await record_case(
+        tenant_id="t-acme",
+        error_type="AssertionError",
+        trace_lines=trace_lines,
+        root_cause_kind="double_responsibility",
+        fix_pattern="拆分 Executor 职责: 把 dispatch 和 io 分到不同模块",
+        writer=store.writer,
+    )
+
+    # 现在跑 RCDH — 应该 fast-path 命中
+    record = await run_diagnostic(
+        "some symptom",
+        triggered_by_event_id="e-fast",
+        tenant_id="t-acme",
+        error_type="AssertionError",
+        trace_lines=trace_lines,
+        case_reader=store.reader,
+        case_writer=store.writer,
+    )
+
+    assert record.fast_path is True
+    assert record.case_id == case_id
+    assert record.root_cause_level == 1
+    assert record.recommended_action == "activate"
+    assert record.root_cause_kind == "double_responsibility"
+    assert record.fix_pattern is not None
+    assert "拆分 Executor" in record.fix_pattern
+    # Level 1 evidence 应该带 bug_case_library_hit 标记
+    assert any(
+        ev.get("type") == "bug_case_library_hit"
+        for ev in record.level_1_check.evidence
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_diagnostic_case_lookup_miss_runs_full_then_records() -> None:
+    """run_diagnostic with case_lookup miss → 走完整诊断 + record_case 落新案例.
+
+    场景: 案例库无对应 signature → 走 4 级诊断, 诊断有结论 → 落新条 case_id.
+    """
+    store = _FakeBugCaseStore()
+    trace_lines = [
+        'File "kun/foo.py", line 1, in bar',
+    ]
+
+    # 案例库为空, 跑应该走完整诊断
+    record = await run_diagnostic(
+        # 用 L0 keyword 触发诊断走 L0 完整路径
+        "ADR ambiguous specification mismatch",
+        triggered_by_event_id="e-miss",
+        tenant_id="t-acme",
+        error_type="NewError",
+        trace_lines=trace_lines,
+        case_reader=store.reader,
+        case_writer=store.writer,
+    )
+
+    # fast_path=False (没命中, 走完整诊断)
+    assert record.fast_path is False
+    # 完整诊断有结论
+    assert record.root_cause_level == 0
+    assert record.recommended_action == "redesign"
+
+    # case 被新落库 (writes 至少 1, 含新案例)
+    assert store.writes >= 1
+    # record.case_id 应该已被赋上 (诊断完成后 record_case 落条)
+    assert record.case_id is not None
+    assert record.case_id.startswith("bc-")
+    # 案例库里应该有 1 条 row
+    assert len(store.rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_diagnostic_no_case_args_does_not_use_library() -> None:
+    """没传 case_reader/writer → 完全走原有 4 级诊断, fast_path=False."""
+    record = await run_diagnostic(
+        "ADR contract mismatch",
+        triggered_by_event_id="e-no-cases",
+    )
+    assert record.fast_path is False
+    assert record.case_id is None
+    assert record.fix_pattern is None
+    assert record.root_cause_level == 0  # L0 keyword 命中

@@ -27,6 +27,13 @@ from pydantic import BaseModel, Field
 
 from kun.core.ids import new_id
 from kun.core.logging import get_logger
+from kun.governance.bug_case_library import (
+    BugCase,
+    BugCaseReader,
+    BugCaseWriter,
+    lookup_case,
+    record_case,
+)
 from kun.governance.diagnosis_scope import MAX_SCOPE_MODULES, narrow_scope
 
 log = get_logger("kun.governance.rcdh")
@@ -63,6 +70,16 @@ class DiagnosticRecord(BaseModel):
     root_cause_level: DiagnosticLevel | None = None
     recommended_action: Literal["redesign", "activate", "module_rsi", "code_fix"] | None = None
     scope_modules: list[str] = Field(default_factory=list, max_length=5)  # ≤5 强制
+
+    # Fast-path fields (alembic 0013, bug_case_library) — 命中案例库时填充
+    fast_path: bool = False
+    """True 表示这条 record 是案例库命中走捷径产出, 没跑完整 4 级诊断."""
+    fix_pattern: str | None = None
+    """命中案例库时 carry 上来的修法描述 (案例库 row.fix_pattern)."""
+    case_id: str | None = None
+    """命中案例库时关联的 BugRootCase.case_id."""
+    root_cause_kind: str | None = None
+    """命中案例库时 carry 上来的根因 kind (e.g. 'race_condition')."""
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -239,6 +256,50 @@ _ACTION_BY_LEVEL: dict[DiagnosticLevel, str] = {
 }
 
 
+def _record_from_case_hit(
+    case: BugCase,
+    *,
+    triggered_by_event_id: str,
+    symptom: str,
+    repeat_history_count: int,
+    effective_scope: list[str],
+) -> DiagnosticRecord:
+    """案例库命中 → 构造 fast-path DiagnosticRecord.
+
+    Level 1 语义 (capability activation 层): 案例库命中等价于"该 trace pattern
+    已被识别为已知问题, 直接应用 fix_pattern". 选 L1 + action='activate' 因为
+    fast-path 本质是"激活已知修法", 不是 redesign / module_rsi / code_fix 的
+    完整诊断结论. fix_pattern + root_cause_kind + case_id 字段供消费方读修法.
+    """
+    record = DiagnosticRecord(
+        diagnostic_id=new_id("diagnostic"),
+        triggered_by_event_id=triggered_by_event_id,
+        symptom_summary=symptom,
+        repeat_history_count=repeat_history_count,
+        scope_modules=effective_scope,
+        fast_path=True,
+        fix_pattern=case.fix_pattern,
+        case_id=case.case_id,
+        root_cause_kind=case.root_cause_kind,
+    )
+    # L1 = activation 层 — fast-path 命中等同于"激活已知修法"
+    record.root_cause_level = 1
+    record.recommended_action = "activate"
+    record.level_1_check = LevelCheckResult(
+        is_root_cause=True,
+        evidence=[
+            {
+                "type": "bug_case_library_hit",
+                "case_id": case.case_id,
+                "trace_signature": case.trace_signature,
+                "root_cause_kind": case.root_cause_kind,
+                "hit_count": case.hit_count,
+            }
+        ],
+    )
+    return record
+
+
 async def run_diagnostic(
     symptom: str,
     *,
@@ -247,15 +308,23 @@ async def run_diagnostic(
     scope_modules: list[str] | None = None,
     evidence: list[dict[str, Any]] | None = None,
     capability_state: dict[str, bool] | None = None,
+    error_type: str | None = None,
+    trace_lines: list[str] | None = None,
+    tenant_id: str | None = None,
+    case_reader: BugCaseReader | None = None,
+    case_writer: BugCaseWriter | None = None,
 ) -> DiagnosticRecord:
     """走 RCDH 4 级诊断 — engineering-first, 不调 LLM (L2.6 范围).
 
     流程:
+      0. 案例库 fast-path (alembic 0013): 若 case_reader + error_type + trace_lines
+         都给了 → lookup_case. 命中 → 返 fast_path=True record, 不走 4 级诊断.
       1. 自动 narrow_scope 圈定 ≤5 模块 (若调用方未提供)
       2. 按 0→3 顺序依次检查
       3. 命中即定 root_cause_level + recommended_action
       4. 重复 ≥ REPEAT_FORCE_ESCALATION_THRESHOLD 次同症状强制升:
          若 root_cause 仍落在 L2/L3, 改 root_cause_level=0 + recommended_action="redesign"
+      5. 诊断完成 → 若 case_writer 给了且诊断有结论 → record_case 落新条 (best-effort).
     """
     if scope_modules and len(scope_modules) > MAX_SCOPE_MODULES:
         raise ValueError(
@@ -267,6 +336,44 @@ async def run_diagnostic(
     if not effective_scope:
         effective_scope = await narrow_scope(symptom, evidence=evidence)
 
+    # ---- Step 0: Bug case library fast-path ----
+    case_lookup_enabled = (
+        case_reader is not None
+        and error_type is not None
+        and trace_lines is not None
+        and tenant_id is not None
+    )
+    if case_lookup_enabled:
+        # type narrowing — case_lookup_enabled implies all four not None
+        assert error_type is not None
+        assert trace_lines is not None
+        assert tenant_id is not None
+
+        hit = await lookup_case(
+            tenant_id=tenant_id,
+            error_type=error_type,
+            trace_lines=trace_lines,
+            reader=case_reader,
+            writer=case_writer,
+        )
+        if hit is not None:
+            fast_record = _record_from_case_hit(
+                hit,
+                triggered_by_event_id=triggered_by_event_id,
+                symptom=symptom,
+                repeat_history_count=repeat_history_count,
+                effective_scope=effective_scope,
+            )
+            log.info(
+                "rcdh.fast_path_case_hit",
+                diagnostic_id=fast_record.diagnostic_id,
+                case_id=hit.case_id,
+                root_cause_kind=hit.root_cause_kind,
+                hit_count=hit.hit_count,
+            )
+            return fast_record
+
+    # ---- Step 1-4: 走完整 4 级诊断 ----
     record = DiagnosticRecord(
         diagnostic_id=new_id("diagnostic"),
         triggered_by_event_id=triggered_by_event_id,
@@ -331,6 +438,43 @@ async def run_diagnostic(
         recommended_action=record.recommended_action,
         scope_modules=record.scope_modules,
     )
+
+    # ---- Step 5: 诊断有结论 → record_case 落案例库 (best-effort) ----
+    if (
+        case_lookup_enabled
+        and case_writer is not None
+        and record.root_cause_level is not None
+        and record.recommended_action is not None
+    ):
+        assert error_type is not None
+        assert trace_lines is not None
+        assert tenant_id is not None
+
+        try:
+            new_case_id = await record_case(
+                tenant_id=tenant_id,
+                error_type=error_type,
+                trace_lines=trace_lines,
+                root_cause_kind=record.recommended_action,
+                fix_pattern=f"RCDH 诊断: L{record.root_cause_level} → "
+                f"action={record.recommended_action}, scope={record.scope_modules}",
+                evidence_dx_id=record.diagnostic_id,
+                reader=case_reader,
+                writer=case_writer,
+            )
+            record.case_id = new_case_id
+            log.info(
+                "rcdh.case_recorded",
+                diagnostic_id=record.diagnostic_id,
+                case_id=new_case_id,
+            )
+        except Exception as e:
+            log.warning(
+                "rcdh.case_record_failed",
+                diagnostic_id=record.diagnostic_id,
+                error=str(e),
+            )
+
     return record
 
 
