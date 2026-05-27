@@ -20,6 +20,16 @@ from kun.agents.executor.compaction import (
     Summarizer,
     estimate_tokens,
 )
+from kun.agents.executor.exec_loop import (
+    ExecutorLoop,
+    LLMInvoker,
+    LLMStepResponse,
+    LoopResult,
+    LoopStatus,
+    ToolCall,
+    ToolExecutor,
+    ToolResult,
+)
 
 __all__ = [
     "ActionEventEmitter",
@@ -31,9 +41,17 @@ __all__ = [
     "CompactionResult",
     "ConversationCompactor",
     "Executor",
+    "ExecutorLoop",
+    "LLMInvoker",
+    "LLMStepResponse",
+    "LoopResult",
+    "LoopStatus",
     "Summarizer",
     "TaskCheckpoint",
     "TaskCheckpointService",
+    "ToolCall",
+    "ToolExecutor",
+    "ToolResult",
     "action_result_to_artifact",
     "estimate_tokens",
 ]
