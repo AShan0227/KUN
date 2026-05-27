@@ -14,6 +14,12 @@ from kun.agents.executor.checkpoint import (
     TaskCheckpoint,
     TaskCheckpointService,
 )
+from kun.agents.executor.compaction import (
+    CompactionResult,
+    ConversationCompactor,
+    Summarizer,
+    estimate_tokens,
+)
 
 __all__ = [
     "ActionEventEmitter",
@@ -22,8 +28,12 @@ __all__ = [
     "CheckpointStatus",
     "CheckpointStatusMarker",
     "CheckpointWriter",
+    "CompactionResult",
+    "ConversationCompactor",
     "Executor",
+    "Summarizer",
     "TaskCheckpoint",
     "TaskCheckpointService",
     "action_result_to_artifact",
+    "estimate_tokens",
 ]
