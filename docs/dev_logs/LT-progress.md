@@ -146,3 +146,36 @@
 - ToolRegistry → ToolExecutor adapter (skill / tool registry 已存在, 接一层)
 
 ---
+
+## LT.F · 递归 planning — RecursivePlanner + PlanTree
+
+**完成**：2026-05-27 / commit (latest)
+
+**做了什么**：
+- 新建 `kun/agents/director/recursive_planner.py`
+- PlanNode frozen dataclass (节点 id + depth + parent + children_ids + is_atomic + success_criterion + verification_hint + metadata)
+- PlanTree frozen — by node_id 索引, walk/leaves/children_of/depth/node_count/total_estimated_cost/total_estimated_duration
+- RecursivePlanner.expand(root_description, root_steps) 递归构造 tree
+- 默认 atomic_decider 启发: success_criterion 已指定 / depth≥2 / desc≤12字符 / skill_hint=tool.x 任一命中
+- 默认 sub_planner 把 node 拆"准备/执行/验证"3 步
+- max_depth=3 + max_breadth_per_node=8 防爆炸
+- sub_planner raise → 视为 atomic 兜底
+- 17 单测全过, 1446 总测试 (+17)
+
+**关键决策**：
+- **不改 TaskPlanner, 新 module 顶层叠加**: TaskPlanner 现在 orchestrator + 多处用, 改它撞回归. RecursivePlanner 接 flat steps 入参, 与现有 planner 解耦.
+- **PlanNode frozen + 用 dict 索引而非引用**: 树修改靠"替换整个 node 副本" — frozen 保证不变性; dict[node_id] = updated_node 是唯一改法.
+- **atomic_decider 5 个启发式分支**: success_criterion (用户明确)/depth limit/short desc/tool prefix — 覆盖典型场景, 默认不需要 LLM. 真生产替换 LLM-based decider 给更智能判断.
+- **sub_planner 默认"准备/执行/验证"3 步**: 通用兜底模板, 无 LLM 也能用. 真生产用 LLM 给具体场景拆解.
+- **sub_planner raise 兜底 atomic**: 不破坏 tree, 整棵树仍可遍历. ADR-024 状态累积失败不阻塞主路径.
+- **node_id 复用 task_checkpoint prefix**: 临时复用; 真生产建议加单独 entity kind `plan_node` (prefix `pn-`).
+- **estimated_cost 自底向上 sum leaves**: tree.total_estimated_cost() = sum(leaves), 因为 non-atomic 的 cost 是 children cost 的总和概念.
+
+**未完工作 (LT.G 整合)**:
+- LLM-based sub_planner (现规则版只是兜底)
+- 接到 TaskPlanner 之后: `tree = recursive.expand(task.spec.goal_detail, [PlanStepInput(...) for s in plan.steps])`
+- 加 `plan_node` entity kind (现复用 task_checkpoint)
+- 落 plan_nodes DB 表 (e.g. alembic 0013)
+- ExecutorLoop 按 tree leaves 顺序跑 (而不是 flat steps)
+
+---
