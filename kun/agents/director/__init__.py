@@ -31,10 +31,19 @@ from kun.agents.director.long_task_router import (
     ScopeExpansionEmitter,
 )
 from kun.agents.director.planner import ExecutionPlan, PlanStep, TaskPlanner
+from kun.agents.director.recursive_planner import (
+    AtomicDecider,
+    PlanNode,
+    PlanStepInput,
+    PlanTree,
+    RecursivePlanner,
+    SubPlanner,
+)
 from kun.agents.director.role_router import RouteChoice, TaskRouter
 
 __all__ = [
     "AUTOMATION_PROMPT_HINT",
+    "AtomicDecider",
     "CancelHandler",
     "Director",
     "ExecutionPlan",
@@ -45,11 +54,16 @@ __all__ = [
     "LongTaskInputRouter",
     "OffTopicReplier",
     "PivotHandler",
+    "PlanNode",
     "PlanStep",
+    "PlanStepInput",
+    "PlanTree",
+    "RecursivePlanner",
     "RouteChoice",
     "RoutingBucket",
     "RoutingDecision",
     "ScopeExpansionEmitter",
+    "SubPlanner",
     "TaskPlanner",
     "TaskRouter",
     "classify_input",
