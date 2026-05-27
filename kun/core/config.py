@@ -101,6 +101,12 @@ class Settings(BaseSettings):
     api_port: int = 8000
     api_cors_origins: str = "http://localhost:3000"
 
+    # Auth (ADR-019 中期 posture). Default OFF — fall back to default_tenant_id.
+    # Flag flip = production switch. See kun/api/auth/ for the runtime.
+    auth_enabled: bool = Field(default=False)
+    auth_jwt_secret: str | None = Field(default=None)
+    auth_token_ttl_seconds: int = Field(default=3600, ge=60)
+
     @field_validator("api_cors_origins")
     @classmethod
     def _validate_cors_origins(cls, v: str) -> str:
@@ -112,6 +118,21 @@ class Settings(BaseSettings):
                 "allow_credentials=True this would enable CSRF. List exact origins."
             )
         return v
+
+    @model_validator(mode="after")
+    def _auth_consistency(self) -> Settings:
+        """Auth enabled requires a strong JWT secret."""
+        if self.auth_enabled:
+            if not self.auth_jwt_secret:
+                raise ValueError(
+                    "KUN_AUTH_ENABLED=true but KUN_AUTH_JWT_SECRET is unset"
+                )
+            if len(self.auth_jwt_secret) < 32:
+                raise ValueError(
+                    "KUN_AUTH_JWT_SECRET must be at least 32 characters "
+                    "(use `python -c 'import secrets; print(secrets.token_urlsafe(48))'`)"
+                )
+        return self
 
     @model_validator(mode="after")
     def _production_safety(self) -> Settings:
