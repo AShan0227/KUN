@@ -20,9 +20,6 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from kun.agents.gate.service import GateService
 from kun.agents.strategist.service import StrategistService
 from kun.agents.supervisor.service import SupervisorService
@@ -31,7 +28,8 @@ from kun.core.orm import (
     RuntimeCapabilityRow,
     StrategySearchRequestRow,
 )
-
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 TENANT_ID = "u-e2e-demo"
 TASK_TYPE = "coding.refactor"
@@ -142,7 +140,7 @@ async def main() -> None:
     print(f"    duration_outlier: {len(triggered)} trigger(s)")
 
     print(
-        f"    -> Supervisor 触发了 strategy_search_request, 已写 Postgres."
+        "    -> Supervisor 触发了 strategy_search_request, 已写 Postgres."
     )
 
     # Step 2: 读出 Postgres 中的 requests 给 Strategist
@@ -179,9 +177,9 @@ async def main() -> None:
     # Step 3: Strategist 产候选 (取第一个 request)
     print("\n[3] Strategist 处理第一个 request, 产生 candidates...")
     if requests_to_process:
-        req = requests_to_process[0]
         # 因为 demo 中我们已通过 Supervisor 写 request, anomaly_kind 应该改为 supervisor 视角
         # 简化: 直接构造一个 llm_fallback_spike request 给 Strategist
+        # (requests_to_process[0] 仅作存在性 sentinel — 实际 anomaly 数据下面写死)
         strategist = StrategistService()
         candidates = await strategist.propose_candidates(
             {

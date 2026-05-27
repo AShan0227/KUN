@@ -1,10 +1,18 @@
 """Anthropic provider adapter (for Opus 4.7 / Sonnet 4.6 / Haiku 4.5).
 
-Authentication: we support two modes (ADR-002):
+Authentication: we support three modes (ADR-002):
   1. via ofox proxy (subscription) — set KUN_OFOX_API_KEY + KUN_OFOX_PROXY_URL
-  2. direct Anthropic API — set ANTHROPIC_API_KEY
+  2. direct Anthropic API key — set ANTHROPIC_API_KEY=sk-ant-api03-...
+     Uses standard ``x-api-key`` header. Metered (per-token billing).
+  3. OAuth subscription token — set ANTHROPIC_API_KEY=sk-ant-oat01-...
+     Uses ``Authorization: Bearer <token>`` + ``anthropic-beta: oauth-2025-04-20``.
+     This is what ``claude setup-token`` emits. Consumes the user's Claude
+     Pro/Max subscription quota instead of paying per-token. Useful when the
+     KUN runtime needs to share a developer's existing subscription rather
+     than a metered API key.
 
-Both route through the anthropic SDK; the proxy option just overrides base_url.
+All three routes go through the anthropic SDK; ofox just overrides ``base_url``,
+and OAuth flips ``api_key``→``auth_token`` so the SDK sends Bearer auth.
 """
 
 from __future__ import annotations
@@ -82,6 +90,30 @@ class AnthropicProvider(LLMProvider):
             )
         direct_key = os.getenv("ANTHROPIC_API_KEY")
         if direct_key:
+            # OAuth subscription token: ``sk-ant-oat...`` from ``claude setup-token``.
+            # The SDK normally sends ``x-api-key: <key>``; for OAuth the server
+            # rejects that and requires ``Authorization: Bearer <token>`` plus
+            # the ``anthropic-beta: oauth-2025-04-20`` opt-in header.
+            #
+            # We pass the token as ``auth_token`` (so the SDK's ``_bearer_auth``
+            # builds the Bearer header) and explicitly null ``client.api_key``
+            # after construction — otherwise the SDK auto-picks up the same
+            # value from the ``ANTHROPIC_API_KEY`` env var and sends BOTH
+            # ``X-Api-Key`` and ``Authorization`` headers, which the server
+            # rejects.
+            if direct_key.startswith("sk-ant-oat"):
+                log.info(
+                    "anthropic.oauth_mode",
+                    token_prefix=direct_key[:14],
+                    model=self.model_id,
+                )
+                client = AsyncAnthropic(
+                    auth_token=direct_key,
+                    default_headers={"anthropic-beta": "oauth-2025-04-20"},
+                )
+                # Suppress the env-var-derived api_key so only Bearer goes out.
+                client.api_key = None
+                return client
             return AsyncAnthropic(api_key=direct_key)
         # No credentials — fail fast on call
         log.warning("anthropic.no_credentials", hint="set KUN_OFOX_API_KEY or ANTHROPIC_API_KEY")

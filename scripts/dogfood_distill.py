@@ -27,7 +27,6 @@ from pathlib import Path
 
 import websockets
 
-
 # ===================== Task description =====================
 
 DOGFOOD_TASK = """\
@@ -133,7 +132,7 @@ async def main() -> int:
     log_path = LOG_DIR / f"dogfood-run-{_now_iso()}.log"
     print(f"📄 Event log: {log_path}")
     print(f"🌐 WS URL:    {WS_URL}")
-    print(f"⚙️  Starting dogfood task — this will take 1-2 hours.\n")
+    print("⚙️  Starting dogfood task — this will take 1-2 hours.\n")
     print("Press Ctrl+C to interrupt (KUN keeps state in checkpoints).\n")
 
     started_at = time.perf_counter()
