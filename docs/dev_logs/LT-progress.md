@@ -179,3 +179,35 @@
 - ExecutorLoop 按 tree leaves 顺序跑 (而不是 flat steps)
 
 ---
+
+## LT.G · e2e integration + retrospective + 3 methodology seeds (收官)
+
+**完成**：2026-05-27 / commit 40596f5 + (latest)
+
+**做了什么**：
+- `tests/integration/test_long_task_e2e.py` 把 LT.A-F 6 个 service 串成完整长任务 runtime, 8 个 e2e 测试通过
+- `docs/dev_logs/LT-retrospective.md` (9 段 + Methodology Card Candidates + 验收清单 + 未完工作)
+- 3 张新 seeds/methodologies:
+  - `service_module_not_wired_to_runtime_audit.yaml` — 类完整 + 单测过 ≠ runtime 真用
+  - `maybe_x_pattern_threshold_zero_cost.yaml` — 阈值下返 None 零成本 no-op
+  - `status_enum_over_bool_observability.yaml` — Literal[多个 status] 替代 bool
+- 1454 全套测试通过 (+107 vs LT 开始), ruff 全绿, 27 seeds 全部 yaml.safe_load 通过
+
+**关键决策**：
+- **e2e integration test 全 fake DI**: 8 测试零 LLM 实调 / 零 PG / 零 redis. _InMemoryCheckpointStore + _ScriptedLLM + _ScriptedTools 模式. 测的是 "联动契约" 而非 "外部依赖运行".
+- **e2e 覆盖 5 场景**: full happy path / resume after crash / anchor mismatch / pivot pause / off_topic / drift detect / compaction trigger / atomic leaves. 验证 6 个 service 都真被调到 + 契约正确.
+- **3 张方法论选择**: 选 "实战即时可用" 的 (audit / maybe_X / status enum), 留更抽象的 (frozen_tree, take_strict_verdict, integrating_service_failure) 给未来类似任务一次抽几张.
+- **未完工作显式列**: "kun.engineering.orchestrator 集成 + LLMRouter adapter + ToolRegistry adapter + DB writer + 真任务 run" 这 6 项是 LT 范围外的整合, 写在 retrospective 末尾防被遗忘.
+
+**LT 全部完成 (7/7)**:
+| sub-task | tests | notes |
+|---|---|---|
+| LT.A Layer 3 wiring | 13 | LongTaskInputRouter, 6 routing buckets |
+| LT.B Layer 4 wiring | 17 | PlanReviewService + render_plan_review_prompt |
+| LT.C Checkpoint/resume | 16 | TaskCheckpoint ORM + alembic 0012 + service |
+| LT.D Long context compaction | 18 | ConversationCompactor, threshold-based |
+| LT.E Multi-step exec loop | 18 | ExecutorLoop 整合 B/C/D |
+| LT.F Recursive planning | 17 | PlanTree + PlanNode (frozen) |
+| LT.G e2e integration | 8 | LT.A-F 联动验证 |
+| **Total** | **107** | 1347 → 1454 全套 (+107) |
+

@@ -1,0 +1,117 @@
+topic: service_module_not_wired_to_runtime_audit
+title: 类 + 单测完整 ≠ 功能存在 — 必 grep 验证 runtime caller chain
+description: |
+  工程化失败的最大盲区: 设计文档完整、ORM 表完整、Service 类完整、单测 100%
+  通过 — 然而 runtime path 从未调用该 service. 功能"看起来 ready"实际是
+  孤岛代码.
+
+  发现方法:
+    1. 抽取所有公开 service 类名 + 入口 function 名
+    2. grep 它们在 runtime path (orchestrator / control_plane / WS / REST /
+       event bus / 主 task lifecycle) 里的出现次数
+    3. 0 命中 = 功能不存在
+    4. 命中 1-2 次但只在测试 / dev script 中 = 同样是"未接入"
+
+  审计长任务能力时 KUN 实例: ADR-022 5 层 anti-drift 设计完整, Layer 1/2/5
+  接入 OK, **Layer 3 (Input Classifier) + Layer 4 (Plan Review Heartbeat)
+  的 service 类完整 + 单测 100% 通过, 但 orchestrator/control_plane 从未调
+  它们**. 真长任务跑起来 Layer 3/4 等于不存在.
+
+trigger:
+  conditions:
+    - 审计某个功能是否"真的可用"
+    - 接手不熟悉的代码库, 评估实际覆盖率
+    - 发现"明明做了" 但运行时观察不到效果
+    - 准备 production 上线前的工程化 due diligence
+
+action:
+  pattern:
+    - rule: 抽取所有 service 公开类名 + 入口 function
+      do: |
+        # 给定 service 模块 kun/agents/<role>/<service>.py
+        grep -E "^class [A-Z]|^(async )?def [a-z_]+" kun/agents/<role>/<service>.py
+        # 得到: classify_input / PlanReviewHeartbeat / etc
+      why: |
+        建立"应该被调用"的 caller surface 清单. 没有这个清单, 后面 grep 是
+        盲扫.
+    - rule: 在 runtime path 里 grep 每个名字
+      do: |
+        # runtime path 通常是 orchestrator / control_plane / API entry / event handler
+        grep -rn "classify_input\b\|PlanReviewHeartbeat\b" \
+          kun/engineering/ kun/control_plane/ kun/api/
+        # 期望: 至少 1 个 production-call site
+      why: |
+        测试目录里的 import 不算 (只是验证类). 真正的 caller 必须在 runtime
+        路径里.
+    - rule: 0 命中 → 标"未接入", 不是"未实装"
+      do: |
+        # 出 audit 报告:
+        # ✅ 设计 / ❌ runtime wiring
+        # 估算"接入"工作量 — 通常 1 个 service ~3-10 行 caller 集成
+      why: |
+        管理层 / 用户看 "设计完成 + 测试过" 就以为 "可用了". 真相是 0% runtime
+        覆盖. 用 audit 报告把差距显式化.
+    - rule: 拆 "wiring task" 单独跟踪
+      do: |
+        # 不要在原 task 描述里隐去 wiring 工作.
+        # task 显式: "L1.8 GoalAnchor pin (含 runtime wiring)" vs
+        # 现在写法: "L1.8 GoalAnchor pin" — 用户以为做了, 实际只做一半
+      why: |
+        把 wiring 显式化, 让 task 描述与真实交付匹配. 跟踪到 caller chain
+        每一站都 100% 才算 done.
+    - rule: 加 caller-required test (集成测).
+      do: |
+        # tests/integration/test_x_wired_to_runtime.py
+        async def test_classify_input_called_during_long_task():
+            # 跑一个 long task, assert classify_input 被调用至少 1 次
+            ...
+      why: |
+        unit 测验证 service 行为. 集成测验证 "service 被 runtime 调用" — 二者
+        都要, 缺一不可.
+
+  anti_patterns:
+    - 看到 "类 + 单测 + ORM 表 = 100% 完成" 就放心 — 完全没 grep runtime path
+    - 改 task 描述去掉 wiring 字眼 (e.g. "L1.8 GoalAnchor pin + 验收"减为 "L1.8 GoalAnchor pin") — 验收实际范围被砍
+    - 假定其他人已经 wire 了 — 真审计前不假定
+    - 把"功能可用"的标准定为"单测过" — 单测只验证 unit 行为, 不验证 system 行为
+
+rationale: |
+  KUN 实战: 发现 Layer 3/4 service 类完整 + 各 ~15 单测全过, 但 grep 在
+  orchestrator/control_plane 路径 0 命中. 用户 / 文档都标 "L1.8 + L1.9 ✅
+  已完成", 但真长任务跑起来 Layer 3/4 没人调.
+
+  发现后用 LT.A/B 两轮 /loop 各 ~150 行 wire 完, 加 30 测覆盖. 工作量小,
+  但若不主动 grep 永远是 latent bug.
+
+  这 pattern 类似 "未读已读" / "已完成已交付" 之间的鸿沟. 工程版本是
+  "已实装 ≠ 已接入".
+
+evidence:
+  - source: docs/dev_logs/LT-retrospective.md
+    date: 2026-05-27
+    phase: LT.A/B
+    notes: |
+      审计 ADR-022 5 层 anti-drift, Layer 3/4 service 类齐 + 单测 100% 过,
+      但 orchestrator/control_plane runtime 路径 0 命中. 用 LongTaskInputRouter
+      + PlanReviewService 各 ~150 行补齐 wiring, 加 30 单测验证, 全过.
+
+  - source: kun/agents/director/input_classifier.py vs kun/engineering/orchestrator.py
+    date: 2026-05-27 (审计时)
+    phase: LT 审计阶段
+    notes: |
+      grep "classify_input" 在 engineering/ control_plane/ 都 0 命中.
+      仅在 tests/ 和 __init__.py 出现 — 标志性的"已实装未接入"指纹.
+
+confidence: 0.9  # KUN 实战暴露多次, 任何大代码库都该用此 audit
+applicability:
+  scopes: [audit, due_diligence, codebase_review, before_production]
+  do_not_apply_when:
+    - 项目刚开始, 还没到 runtime 层 — 没什么可 grep
+    - 已经知道"未接入"的事实, 不用再 audit
+
+related_methodologies:
+  - frozen_dataclass_agent_io_contract  # service 设计的另一面
+  - paired_commit  # 实装 + wiring 该一起跑
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27
