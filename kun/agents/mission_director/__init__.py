@@ -20,6 +20,12 @@
 - GateEvaluation (阻断 deliver / accept 时)
 """
 
+from kun.agents.mission_director.runner import (
+    CoverageProvider,
+    MissionCoverageInputs,
+    MissionDirectorRunner,
+    build_default_runner,
+)
 from kun.agents.mission_director.service import (
     AlignmentVerdict,
     MissionAlignmentReview,
@@ -34,10 +40,14 @@ MissionDirector = MissionDirectorService
 
 __all__ = [
     "AlignmentVerdict",
+    "CoverageProvider",
     "MissionAlignmentReview",
+    "MissionCoverageInputs",
     "MissionDirector",
+    "MissionDirectorRunner",
     "MissionDirectorService",
     "MissionReviewEmitter",
     "PlanChangeProposal",
     "PlanChangeSeverity",
+    "build_default_runner",
 ]
