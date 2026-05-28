@@ -1069,3 +1069,87 @@ class AuditorReportRow(Base):
             "audited_at",
         ),
     )
+
+
+class EnsembleCallRow(Base):
+    """V7 §11.4 multi-LLM ensemble_invoke 调用日志 (alembic 0017).
+
+    每次 ensemble_invoke 落一条:
+      - 跨 family 强约束 (V7 §11.2) 在 service 层校验, DB 仅记录现状
+      - divergence_score / divergence_signals 给驾驶舱 + Mission Director 用
+      - 高 divergence (> threshold) 告警事件由 service 层 on_divergence 触发,
+        但 DB 行本身就是历史 (按 divergence_score 索引便于复盘)
+
+    用途:
+      - 驾驶舱 `/cockpit/ensemble/recent` endpoint 真返数据 (X.B.UI 后续)
+      - 启 (Qi) post-hoc retrospect — 找历史 high-divergence 案例 (V7 §12.4)
+      - 成本归因 — 哪些 provider / 哪个策略最贵
+    """
+
+    __tablename__ = "ensemble_calls"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    call_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    invoked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    purpose: Mapped[str] = mapped_column(String(64), nullable=False, default="execution")
+    # e.g. "execution" / "intent" / "summarize" / "critique" / ...
+    providers: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    """list[dict] — [{name, model_id, family}, ...] (V7 §11.1 cross-family 记录)."""
+    consensus_strategy: Mapped[str] = mapped_column(String(32), nullable=False)
+    # majority_vote / weighted / pick_best_by_metric
+    divergence_score: Mapped[float] = mapped_column(
+        Numeric(4, 3), nullable=False, default=0.0
+    )
+    """0.000-1.000, 0=全一致, 1=完全分歧."""
+    divergence_signals: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    consensus_provider: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    """共识胜出 provider id, e.g. 'anthropic/claude-opus' (None 当 consensus 算不出)."""
+    total_cost_usd: Mapped[float] = mapped_column(
+        Numeric(10, 6), nullable=False, default=0.0
+    )
+    failure_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    """Providers 中失败的数量 (asyncio.gather return_exceptions=True 后)."""
+    n_providers_total: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    """Optional — hash of request messages 用于 dedup/replay 分析."""
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "consensus_strategy IN ('majority_vote', 'weighted', "
+            "'pick_best_by_metric')",
+            name="ec_strategy_valid",
+        ),
+        CheckConstraint(
+            "divergence_score >= 0 AND divergence_score <= 1",
+            name="ec_divergence_in_range",
+        ),
+        CheckConstraint(
+            "n_providers_total >= 2",
+            name="ec_min_2_providers",
+        ),
+        CheckConstraint(
+            "failure_count >= 0 AND failure_count <= n_providers_total",
+            name="ec_failure_count_bounds",
+        ),
+        Index("ix_ec_invoked_at", "tenant_id", "invoked_at"),
+        Index(
+            "ix_ec_high_divergence",
+            "tenant_id",
+            "divergence_score",
+            "invoked_at",
+        ),
+        Index("ix_ec_purpose_recent", "tenant_id", "purpose", "invoked_at"),
+    )
