@@ -1,15 +1,69 @@
-"""V7 Phase E — cockpit API 单测 (最小可行版).
+"""V7 Phase E + X.B — cockpit API 单测.
 
-测试 Phase E.A endpoint schema 正确, response 含 V7 章节引用.
-真实 DB 接入是 Phase E.B 工作.
+Phase E.A 起步是 stub. Phase X.B 切换到真 DB query (replaced).
+这里测试 endpoint schema + 把 readers monkeypatch 成 fake, 不实际打 DB.
+真 DB query 测试在 test_cockpit_readers.py + integration test.
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterator
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from kun.api.cockpit import router
+
+# ============================================================
+# Fake readers fixture (avoid touching real DB in unit tests)
+# ============================================================
+
+
+@pytest.fixture
+def fake_readers(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
+    """Monkeypatch the 3 cockpit DB readers with in-memory fakes.
+
+    Returns a dict the test can mutate to control what each reader returns:
+      fake_readers["mission_reviews"] = [...rows...]
+      fake_readers["lifecycle_transitions"] = [...rows...]
+      fake_readers["auditor_reports"] = [...rows...]
+    """
+    state: dict[str, list[dict[str, Any]]] = {
+        "mission_reviews": [],
+        "lifecycle_transitions": [],
+        "auditor_reports": [],
+    }
+    last_calls: dict[str, dict[str, Any]] = {}
+
+    async def fake_list_mission_reviews(**kwargs: Any) -> list[dict[str, Any]]:
+        last_calls["mission_reviews"] = kwargs
+        return list(state["mission_reviews"])
+
+    async def fake_list_lifecycle_transitions(
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        last_calls["lifecycle_transitions"] = kwargs
+        return list(state["lifecycle_transitions"])
+
+    async def fake_list_auditor_reports(**kwargs: Any) -> list[dict[str, Any]]:
+        last_calls["auditor_reports"] = kwargs
+        return list(state["auditor_reports"])
+
+    monkeypatch.setattr(
+        "kun.api.cockpit.list_recent_mission_reviews",
+        fake_list_mission_reviews,
+    )
+    monkeypatch.setattr(
+        "kun.api.cockpit.list_recent_lifecycle_transitions",
+        fake_list_lifecycle_transitions,
+    )
+    monkeypatch.setattr(
+        "kun.api.cockpit.list_recent_auditor_reports",
+        fake_list_auditor_reports,
+    )
+
+    yield {**state, "_calls": last_calls}
 
 
 @pytest.fixture
@@ -17,6 +71,11 @@ def client() -> TestClient:
     app = FastAPI()
     app.include_router(router)
     return TestClient(app)
+
+
+# ============================================================
+# Health (unchanged)
+# ============================================================
 
 
 @pytest.mark.unit
@@ -29,36 +88,178 @@ def test_cockpit_health(client: TestClient) -> None:
     assert "v7_doc_ref" in data
 
 
+# ============================================================
+# Capabilities — now backed by lifecycle_transitions
+# ============================================================
+
+
 @pytest.mark.unit
-def test_list_capabilities_returns_schema(client: TestClient) -> None:
+def test_list_capabilities_empty(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    """Empty DB → 0 capabilities, schema 保留."""
     resp = client.get("/cockpit/capabilities")
     assert resp.status_code == 200
     data = resp.json()
-    assert "capabilities" in data
-    assert "total" in data
-    assert "note" in data
-    assert "V7" in data["note"]
+    assert data["capabilities"] == []
+    assert data["transitions"] == []
+    assert data["total_capabilities"] == 0
+    assert data["total_transitions"] == 0
+    assert "lifecycle_transitions" in data["data_source"]
 
 
 @pytest.mark.unit
-def test_get_capability_stub_returns_501(client: TestClient) -> None:
-    resp = client.get("/cockpit/capabilities/cap-123")
-    assert resp.status_code == 501
-    assert "V7 Phase E.A stub" in resp.json()["detail"]
+def test_list_capabilities_groups_by_capability_id(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    """多 transition 按 capability_id 分组, current_stage = 最新."""
+    fake_readers["lifecycle_transitions"][:] = [
+        {  # newest first per reader contract (ORDER BY decided_at DESC)
+            "transition_id": "lct-3",
+            "capability_id": "cap-a",
+            "from_stage": "shadow",
+            "to_stage": "canary",
+            "decided_at": "2026-05-28T10:00:00+00:00",
+            "decision_rationale": "",
+            "user_approval_ticket_id": None,
+            "evidence_refs": [],
+            "metrics_snapshot": {},
+        },
+        {
+            "transition_id": "lct-2",
+            "capability_id": "cap-a",
+            "from_stage": "holdout",
+            "to_stage": "shadow",
+            "decided_at": "2026-05-27T10:00:00+00:00",
+            "decision_rationale": "",
+            "user_approval_ticket_id": None,
+            "evidence_refs": [],
+            "metrics_snapshot": {},
+        },
+        {
+            "transition_id": "lct-1",
+            "capability_id": "cap-b",
+            "from_stage": "candidate",
+            "to_stage": "replay",
+            "decided_at": "2026-05-26T10:00:00+00:00",
+            "decision_rationale": "",
+            "user_approval_ticket_id": None,
+            "evidence_refs": ["strategy_replay_report:rr-1"],
+            "metrics_snapshot": {},
+        },
+    ]
+    resp = client.get("/cockpit/capabilities?tenant_id=t-a")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_capabilities"] == 2
+    assert data["total_transitions"] == 3
+    by_id = {c["capability_id"]: c for c in data["capabilities"]}
+    assert by_id["cap-a"]["current_stage"] == "canary"  # latest (newest)
+    assert by_id["cap-a"]["transitions_count"] == 2
+    assert by_id["cap-b"]["current_stage"] == "replay"
+    assert by_id["cap-b"]["transitions_count"] == 1
+    # tenant_id propagated
+    assert fake_readers["_calls"]["lifecycle_transitions"]["tenant_id"] == "t-a"
 
 
 @pytest.mark.unit
-def test_mission_alignment_returns_v7_reference(client: TestClient) -> None:
+def test_get_capability_returns_404_when_no_history(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    resp = client.get("/cockpit/capabilities/cap-nope")
+    assert resp.status_code == 404
+    assert "cap-nope" in resp.json()["detail"]
+
+
+@pytest.mark.unit
+def test_get_capability_returns_history_when_present(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    fake_readers["lifecycle_transitions"][:] = [
+        {
+            "transition_id": "lct-9",
+            "capability_id": "cap-foo",
+            "from_stage": "canary",
+            "to_stage": "production",
+            "decided_at": "2026-05-28T08:00:00+00:00",
+            "decision_rationale": "Canary OK 3 days",
+            "user_approval_ticket_id": "tk-001",
+            "evidence_refs": ["canary_metrics:cm-1"],
+            "metrics_snapshot": {"baseline_score": 0.78},
+        },
+    ]
+    resp = client.get("/cockpit/capabilities/cap-foo")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["capability_id"] == "cap-foo"
+    assert data["current_stage"] == "production"
+    assert data["total_transitions"] == 1
+    # capability_id filter was forwarded to reader
+    assert (
+        fake_readers["_calls"]["lifecycle_transitions"]["capability_id"]
+        == "cap-foo"
+    )
+
+
+# ============================================================
+# Mission alignment — backed by mission_alignment_reviews
+# ============================================================
+
+
+@pytest.mark.unit
+def test_mission_alignment_empty_returns_v7_schema(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
     resp = client.get("/cockpit/missions/tk-001/alignment")
     assert resp.status_code == 200
     data = resp.json()
     assert data["task_id"] == "tk-001"
-    assert "V7 §9.7" in data["note"]
+    assert data["reviews"] == []
+    assert data["latest"] is None
+    assert data["total"] == 0
+    assert "V7 §9.7" in data["data_source"]
+
+
+@pytest.mark.unit
+def test_mission_alignment_with_data(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    fake_readers["mission_reviews"][:] = [
+        {
+            "review_id": "mar-1",
+            "task_id": "tk-001",
+            "task_plan_version": "v1",
+            "reviewed_at": "2026-05-28T09:00:00+00:00",
+            "verdict": "ok",
+            "alignment_score": 0.85,
+            "findings": [],
+            "info_gap_coverage": 0.9,
+            "decomposition_coverage": 0.85,
+            "evidence_coverage": 0.7,
+            "plan_change_proposed": False,
+            "plan_change_proposal_id": None,
+        }
+    ]
+    resp = client.get("/cockpit/missions/tk-001/alignment?tenant_id=t-x")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["latest"]["verdict"] == "ok"
+    assert data["tenant_id"] == "t-x"
+    # task_id forwarded to reader
+    assert (
+        fake_readers["_calls"]["mission_reviews"]["task_id"] == "tk-001"
+    )
+
+
+# ============================================================
+# RSI trifecta — still stub (no DB tables yet for trifecta state)
+# ============================================================
 
 
 @pytest.mark.unit
 def test_rsi_trifecta_returns_three_lines(client: TestClient) -> None:
-    """V7 §12.4 RSI 三线: 过去线 + 现在线 + 未来线."""
+    """V7 §12.4 RSI 三线 — 还没有专门表, 仍为 stub schema."""
     resp = client.get("/cockpit/missions/tk-001/rsi-trifecta")
     assert resp.status_code == 200
     data = resp.json()
@@ -66,12 +267,14 @@ def test_rsi_trifecta_returns_three_lines(client: TestClient) -> None:
     assert "past_line" in data["trifecta"]
     assert "present_line" in data["trifecta"]
     assert "future_line" in data["trifecta"]
-    # 过去线 = 启 (Qi) post-hoc
     assert "启" in data["trifecta"]["past_line"]["note"]
-    # 现在线 = 外部监督者 watchdog
     assert "外部监督者" in data["trifecta"]["present_line"]["note"]
-    # 未来线 = 启 (Qi) Explorer Pool
     assert "Explorer Pool" in data["trifecta"]["future_line"]["note"]
+
+
+# ============================================================
+# Ensemble / Discipline — still stub (待 Phase X.B 续接)
+# ============================================================
 
 
 @pytest.mark.unit
@@ -92,13 +295,102 @@ def test_discipline_recent_returns_schema(client: TestClient) -> None:
     assert "discipline_checks" in data
 
 
+# ============================================================
+# Auditor reports — backed by auditor_reports
+# ============================================================
+
+
 @pytest.mark.unit
-def test_auditor_reports_returns_schema(client: TestClient) -> None:
+def test_auditor_reports_empty_returns_v7_schema(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
     resp = client.get("/cockpit/supervisor/auditor-reports")
     assert resp.status_code == 200
     data = resp.json()
-    assert "auditor_reports" in data
-    assert "V7 §16.6" in (
-        data.get("note", "")
-        + " ".join(data.get("auditor_reports", []) or [])
-    ) or "auditor" in data.get("note", "")
+    assert data["auditor_reports"] == []
+    assert data["total"] == 0
+    assert data["risk_distribution"] == {"P0": 0, "P1": 0, "P2": 0}
+    assert data["block_release_count"] == 0
+    assert "V7 §16.6" in data["data_source"]
+
+
+@pytest.mark.unit
+def test_auditor_reports_aggregates_risk_distribution(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    fake_readers["auditor_reports"][:] = [
+        {
+            "report_id": "ar-1",
+            "audited_capability": "self-reflect",
+            "audited_at": "2026-05-28T09:00:00+00:00",
+            "auditor_provider": "anthropic/claude-opus",
+            "design_promise": "...",
+            "real_code_path": "...",
+            "bypass_methods": [],
+            "min_repro_steps": "",
+            "risk_level": "P0",
+            "must_fix": [],
+            "acceptance_tests": [],
+            "allow_release": False,
+            "rationale": "",
+        },
+        {
+            "report_id": "ar-2",
+            "audited_capability": "grep-verify",
+            "audited_at": "2026-05-27T09:00:00+00:00",
+            "auditor_provider": "openai/gpt-5.5",
+            "design_promise": "...",
+            "real_code_path": "...",
+            "bypass_methods": [],
+            "min_repro_steps": "",
+            "risk_level": "P1",
+            "must_fix": [],
+            "acceptance_tests": [],
+            "allow_release": False,
+            "rationale": "",
+        },
+        {
+            "report_id": "ar-3",
+            "audited_capability": "lifecycle gate",
+            "audited_at": "2026-05-26T09:00:00+00:00",
+            "auditor_provider": "anthropic/claude-opus",
+            "design_promise": "...",
+            "real_code_path": "...",
+            "bypass_methods": [],
+            "min_repro_steps": "",
+            "risk_level": "P2",
+            "must_fix": [],
+            "acceptance_tests": [],
+            "allow_release": True,
+            "rationale": "",
+        },
+    ]
+    resp = client.get("/cockpit/supervisor/auditor-reports")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 3
+    assert data["risk_distribution"] == {"P0": 1, "P1": 1, "P2": 1}
+    assert data["block_release_count"] == 2  # P0 + P1
+
+
+@pytest.mark.unit
+def test_auditor_reports_filter_by_risk_level(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    resp = client.get(
+        "/cockpit/supervisor/auditor-reports?risk_level=P0&tenant_id=t-z"
+    )
+    assert resp.status_code == 200
+    # Forwarded to reader as filter
+    call_kwargs = fake_readers["_calls"]["auditor_reports"]
+    assert call_kwargs["risk_level"] == "P0"
+    assert call_kwargs["tenant_id"] == "t-z"
+
+
+@pytest.mark.unit
+def test_auditor_reports_invalid_risk_level_returns_422(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    """pattern='^P[0-2]$' 拦截非法 risk_level."""
+    resp = client.get("/cockpit/supervisor/auditor-reports?risk_level=P9")
+    assert resp.status_code == 422

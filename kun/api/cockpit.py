@@ -32,8 +32,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
+from kun.api.cockpit_readers import (
+    list_recent_auditor_reports,
+    list_recent_lifecycle_transitions,
+    list_recent_mission_reviews,
+)
 from kun.governance.capability_lifecycle import CapabilityLifecycleStage
 
 router = APIRouter(prefix="/cockpit", tags=["cockpit"])
@@ -143,43 +148,99 @@ class AuditorReport:
 
 
 @router.get("/capabilities")
-async def list_capabilities() -> dict[str, Any]:
-    """List all capabilities with 7 层激活证据 + lifecycle stage.
+async def list_capabilities(
+    tenant_id: str = Query("default", description="RLS tenant scope"),
+    limit: int = Query(20, ge=1, le=100),
+) -> dict[str, Any]:
+    """List recent capability lifecycle transitions (V7 §15).
 
-    Phase E.A: stub data. Phase E.B 接真 DB.
+    Phase X.B: 真从 lifecycle_transitions 表查 (Phase E.A 的 stub 已替换).
+    7 层激活证据视图待 Phase E.C (frontend UI) — 现在只返 lifecycle 历史.
     """
-    # Stub — 实际 Phase E.B 应 query runtime_capabilities + capability_card
+    transitions = await list_recent_lifecycle_transitions(
+        tenant_id=tenant_id, limit=limit
+    )
+    # Group by capability_id, latest stage per capability
+    by_cap: dict[str, dict[str, Any]] = {}
+    for t in transitions:
+        cap_id = t["capability_id"]
+        if cap_id not in by_cap:
+            by_cap[cap_id] = {
+                "capability_id": cap_id,
+                "current_stage": t["to_stage"],
+                "latest_transition_at": t["decided_at"],
+                "transitions_count": 0,
+            }
+        by_cap[cap_id]["transitions_count"] += 1
     return {
-        "capabilities": [],
-        "total": 0,
+        "capabilities": list(by_cap.values()),
+        "transitions": transitions,
+        "total_capabilities": len(by_cap),
+        "total_transitions": len(transitions),
+        "tenant_id": tenant_id,
+        "data_source": "lifecycle_transitions (V7 §15 9 阶段 lifecycle)",
         "note": (
-            "V7 Phase E.A stub. Phase E.B 接 runtime_capabilities DB. "
-            "Phase E.C 接 frontend UI (3-4 周 separate session)."
+            "V7 Phase X.B 真 DB 查询. 完整 7 层激活证据视图 (capability_card "
+            "+ runtime_capabilities 关联) 待 Phase E.C frontend UI."
         ),
     }
 
 
 @router.get("/capabilities/{capability_id}")
-async def get_capability(capability_id: str) -> dict[str, Any]:
-    """Get single capability 7 层证据 + lifecycle history."""
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            f"V7 Phase E.A stub for capability_id={capability_id}. "
-            f"Phase E.B 接 capability_card + lifecycle_transitions DB."
-        ),
+async def get_capability(
+    capability_id: str,
+    tenant_id: str = Query("default", description="RLS tenant scope"),
+    limit: int = Query(50, ge=1, le=100),
+) -> dict[str, Any]:
+    """Get single capability lifecycle history + current stage (V7 §15)."""
+    transitions = await list_recent_lifecycle_transitions(
+        tenant_id=tenant_id, capability_id=capability_id, limit=limit
     )
+    if not transitions:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"capability_id={capability_id!r} (tenant={tenant_id!r}) 无 "
+                f"lifecycle 记录. V7 §15 还没进 observation 阶段, 或 tenant_id 错."
+            ),
+        )
+    current = transitions[0]  # ordered DESC
+    return {
+        "capability_id": capability_id,
+        "tenant_id": tenant_id,
+        "current_stage": current["to_stage"],
+        "current_stage_decided_at": current["decided_at"],
+        "transitions": transitions,
+        "total_transitions": len(transitions),
+        "data_source": "lifecycle_transitions",
+    }
 
 
 @router.get("/missions/{task_id}/alignment")
-async def get_mission_alignment(task_id: str) -> dict[str, Any]:
-    """Mission Director MissionAlignmentReview latest snapshot for a task."""
+async def get_mission_alignment(
+    task_id: str,
+    tenant_id: str = Query("default", description="RLS tenant scope"),
+    limit: int = Query(10, ge=1, le=100),
+) -> dict[str, Any]:
+    """Mission Director MissionAlignmentReview history for a task (V7 §9.7).
+
+    Phase X.B: 真从 mission_alignment_reviews 表查. DB 不可用时返空 list +
+    note 解释 (graceful degradation, log 记错).
+    """
+    reviews = await list_recent_mission_reviews(
+        tenant_id=tenant_id, task_id=task_id, limit=limit
+    )
+    latest = reviews[0] if reviews else None
     return {
         "task_id": task_id,
-        "status": "not_yet_implemented",
+        "tenant_id": tenant_id,
+        "reviews": reviews,
+        "latest": latest,
+        "total": len(reviews),
+        "data_source": "mission_alignment_reviews (V7 §9.7 交付总监)",
         "note": (
-            "V7 Phase E.A stub. Phase E.B 接 mission_alignment_reviews DB. "
-            "Mission Director 一级子系统 (V7 §9.7) 由 Phase B daemon 注册."
+            "V7 Phase X.B 真 DB 查询. 空 list 可能是: tenant 没数据 / DB 不可用 "
+            "(后者会在 log 警告)."
         ),
     }
 
@@ -234,13 +295,41 @@ async def get_recent_discipline_checks(limit: int = 20) -> dict[str, Any]:
 
 
 @router.get("/supervisor/auditor-reports")
-async def get_auditor_reports(limit: int = 20) -> dict[str, Any]:
-    """External Supervisor auditor hat 周期报告 (V7 §16.6)."""
+async def get_auditor_reports(
+    tenant_id: str = Query("default", description="RLS tenant scope"),
+    audited_capability: str | None = Query(
+        None, description="过滤特定 capability"
+    ),
+    risk_level: str | None = Query(
+        None, description="过滤 P0/P1/P2 风险等级", pattern="^P[0-2]$"
+    ),
+    limit: int = Query(20, ge=1, le=100),
+) -> dict[str, Any]:
+    """External Supervisor auditor hat 周期报告 (V7 §16.6).
+
+    Phase X.B: 真从 auditor_reports 表查 (alembic 0016 + Phase X.B.AR).
+    """
+    reports = await list_recent_auditor_reports(
+        tenant_id=tenant_id,
+        audited_capability=audited_capability,
+        risk_level=risk_level,
+        limit=limit,
+    )
+    # Aggregate risk distribution
+    risk_dist = {"P0": 0, "P1": 0, "P2": 0}
+    for r in reports:
+        rl = r["risk_level"]
+        if rl in risk_dist:
+            risk_dist[rl] += 1
+    n_block_release = sum(1 for r in reports if not r["allow_release"])
     return {
-        "auditor_reports": [],
-        "total": 0,
+        "auditor_reports": reports,
+        "total": len(reports),
         "limit": limit,
-        "note": "V7 Phase E.A stub. Phase E.B 接 auditor_reports DB (待 alembic migration).",
+        "tenant_id": tenant_id,
+        "risk_distribution": risk_dist,
+        "block_release_count": n_block_release,
+        "data_source": "auditor_reports (V7 §16.6 外部监督者 auditor hat)",
     }
 
 
