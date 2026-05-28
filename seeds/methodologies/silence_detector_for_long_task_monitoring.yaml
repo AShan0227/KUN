@@ -1,0 +1,45 @@
+topic: silence_detector_for_long_task_monitoring
+title: 长任务监控必须把静默当成可疑信号
+description: |
+  后台任务或长 executor loop 不能只监控成功事件。若超过阈值时间没有 progress、
+  checkpoint、heartbeat 或 tool event，应发出 task.suspected_stuck，由 Supervisor
+  或 Gate 决定继续、重试、暂停或升级。
+trigger:
+  conditions:
+    - 任务运行时间超过 5 分钟
+    - 任务声明会周期性产生 progress 或 heartbeat
+    - 最近 N 分钟没有任何相关事件
+action:
+  pattern:
+    - 为每个 long_task 记录 last_progress_at
+    - 将 progress、checkpoint、heartbeat、tool_result 都视为活跃信号
+    - 超过 silence_threshold 后 emit task.suspected_stuck
+    - External Supervisor 审核是否为正常长计算、工具卡死或 executor 漂移
+    - Gate 根据 verdict 选择 continue、pause、retry 或 fail
+  anti_patterns:
+    - 只 grep success pattern，不 watch Traceback、FAILED、OOM 或静默
+    - 把无日志输出误判为正常执行
+    - 每次静默都直接 kill，不经过 supervisor 判别
+    - 没有按 task_id 隔离 last_progress_at
+rationale: |
+  Claude Code 的 Monitor 纪律强调 silence is not success。KUN 有 heartbeat 与
+  SupervisorService，但缺针对“无事件”的显式 anomaly。
+evidence:
+  - source: docs/claude-code-engineering-manual.md
+    notes: 自我监控能力列出 Monitor 失败信号穷举与 silence 检测。
+  - source: docs/dev_logs/dogfood-run-20260528-011356.log
+    notes: dogfood 任务已有 long_task、checkpoint、plan_review 等事件，可作为 silence detector 输入。
+confidence: 0.82
+applicability:
+  scopes:
+    - monitoring
+    - long_task
+    - supervisor
+  do_not_apply_when:
+    - 任务本身是离线批处理且无进度事件契约
+    - silence_threshold 小于正常工具调用耗时
+related_methodologies:
+  - status_enum_over_bool_observability
+  - sliding_window_with_deque_purge
+distilled_from: claude-code-engineering-manual
+created_at: 2026-05-28

@@ -1,0 +1,46 @@
+topic: prompt_user_decision_at_irreversible_branch
+title: 遇到不可逆产品/范围决策时暂停并让用户选择
+description: |
+  当 agent 遇到产品方向、范围扩张、破坏性操作或高成本路径选择时，不应自行默认。
+  应 emit user_decision_required，给出 2 到 4 个互斥选项、推荐项和影响说明，
+  等用户回答后再恢复任务。
+trigger:
+  conditions:
+    - 任务出现产品方向分叉
+    - 用户请求可能扩大原始 scope
+    - 操作不可逆或回滚成本高
+    - 多个实现路径成本和风险差异明显
+action:
+  pattern:
+    - 暂停当前 executor loop，保存 checkpoint
+    - 生成短 header、问题、2 到 4 个选项和推荐项
+    - 通过 WS 或事件总线发送 user_decision_required
+    - 将用户选择写入 task event log
+    - 恢复执行时把选择作为新的硬约束注入 context
+  anti_patterns:
+    - agent 擅自选择产品方向
+    - 把 Gate 的 approve/reject 当成用户偏好选择
+    - 每个小实现细节都问用户，造成打扰
+    - 用户回答后不写入事件日志，后续无法审计
+rationale: |
+  Claude Code 在产品方向和大改动前使用 AskUserQuestion 暂停。KUN 有 Gate 与
+  LongTaskInputRouter，但 Gate 是机器门禁，不等于用户选择机制。
+evidence:
+  - source: docs/claude-code-engineering-manual.md
+    notes: 决策点暂停能力强调明确选项、推荐项与不擅自做产品决策。
+  - source: docs/dev_logs/LT-retrospective.md
+    notes: KUN 已具备 checkpoint/resume，可为暂停决策提供恢复基础。
+confidence: 0.86
+applicability:
+  scopes:
+    - product_decision
+    - long_task
+    - scope_control
+  do_not_apply_when:
+    - 低风险局部实现细节
+    - 用户已在 prompt 中明确指定选择
+related_methodologies:
+  - anchor_pinning_at_prompt_top
+  - forward_backward_repair_auto_select
+distilled_from: claude-code-engineering-manual
+created_at: 2026-05-28

@@ -1,0 +1,46 @@
+topic: worker_agent_spawner_prompt_isolation
+title: 无状态 Worker Agent 并行时必须用自包含 prompt 隔离上下文
+description: |
+  当复杂任务可拆成互不依赖的子任务时，主 agent 可并行 spawn worker。
+  每个 worker 不读取主 transcript，只接收自包含 prompt、明确输出契约和写入边界。
+  主 agent 负责整合结果，worker 失败不阻断主路径。
+trigger:
+  conditions:
+    - 存在两个以上互不依赖的子任务
+    - 子任务之间写入范围不重叠
+    - 等待一个子任务不会阻塞另一个子任务
+action:
+  pattern:
+    - 主线先判定依赖图，只有无依赖边的子任务才并行
+    - 给每个 worker prompt 写清目标、输入、允许修改范围、禁止回滚他人修改
+    - worker 输出 changed_files、summary、risks、verification
+    - worker completion 通过 agent.completed 事件通知主线
+    - 主线整合时审查冲突并决定是否采纳
+  anti_patterns:
+    - 把当前阻塞主线的关键路径任务交给 worker 后原地等待
+    - worker prompt 依赖主 transcript 隐含上下文
+    - 多个 worker 修改同一文件集合
+    - worker 失败导致整个长任务崩溃
+rationale: |
+  Claude Code 通过并行 subagent 把 LT.INT 等阶段的多个独立任务同时推进。
+  KUN 有七角色与多实例 Pool，但缺通用任务级 worker spawner 和 prompt 隔离契约。
+evidence:
+  - source: docs/claude-code-engineering-manual.md
+    notes: 并行 Agent tool 的工程原理包括无状态、自包含 prompt、结果隔离、失败隔离。
+  - source: docs/dev_logs/L4-retrospective.md
+    notes: KUN 已有 fan-out、多实例 pool、return_exceptions=True 的旁路失败隔离经验。
+confidence: 0.84
+applicability:
+  scopes:
+    - parallel_execution
+    - long_task
+    - coding_agent
+  do_not_apply_when:
+    - 子任务之间有强顺序依赖
+    - 写入范围高度重叠
+    - 任务太小，并行调度成本超过收益
+related_methodologies:
+  - pool_with_lazy_init_and_dependency_injection
+  - frozen_dataclass_agent_io_contract
+distilled_from: claude-code-engineering-manual
+created_at: 2026-05-28
