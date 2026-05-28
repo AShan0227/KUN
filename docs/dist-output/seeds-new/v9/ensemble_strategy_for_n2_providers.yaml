@@ -1,0 +1,38 @@
+topic: multi-llm-ensemble
+title: "majority_vote 在 N=2 时退化为先到先选"
+description: |
+  V7 §11.4 multi-LLM ensemble 提供 3 个 consensus 策略: majority_vote /
+  weighted / pick_best_by_metric. 当 providers 只有 2 个 (N=2) 时, majority_vote
+  无法形成 "多数" — 实测 dogfood v9 跑 8 次, 全部 8 次 consensus 都是 codex-mcp/gpt-5.5,
+  因为它是第一个返回的非空响应. 等价于 "先到先选", 没有用上 multi-LLM 的判断力.
+
+trigger:
+  - condition: "ensemble_invoke 配置只有 2 个 providers"
+    when: "KUN_V7_ENSEMBLE_TIERS 加 local provider 后 N=2"
+  - condition: "consensus_strategy=majority_vote"
+
+action:
+  - "factory 应在 N=2 时自动切换到 weighted (按 tier 权重) 或 pick_best_by_metric"
+  - "或文档明示: majority_vote 推荐 N>=3, 否则降级警告"
+  - "或单独 strategy 'auto' — 根据 N 自动选 strategy"
+
+anti_pattern:
+  - "盲目用 majority_vote 在 N=2 → 等于单 LLM, 浪费 cross-family 价值"
+
+evidence:
+  - dogfood: "dogfood v9 (commit d64ceab), 8/8 consensus都是gpt-5.5, 平均divergence 0.835"
+  - artifact: "docs/dist-output/dogfood-v9-design-coherence.md"
+  - source: "kun/interface/llm/ensemble.py:_pick_consensus_majority_vote"
+
+confidence: high
+applicability:
+  - "所有 multi-LLM ensemble 用例"
+  - "Mission Director 高风险决策 ensemble vote"
+  - "启 (Qi) Explorer Pool 候选 ensemble"
+
+related_methodologies:
+  - "cross_family_strict_enforce"
+  - "divergence_score_as_quality_signal"
+
+distilled_from: dogfood-v9
+created_at: "2026-05-28"

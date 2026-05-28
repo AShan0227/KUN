@@ -132,8 +132,6 @@ def _emit_to_stdout(payload: dict, *, started_at: float) -> None:
 
 async def _count_rows(table_name: str) -> int:
     """Direct DB count of a Phase X.B table (bypasses cockpit reader)."""
-    from sqlalchemy import func, select
-
     from kun.core.db import get_admin_sessionmaker
     from kun.core.orm import (
         AuditorReportRow,
@@ -141,6 +139,7 @@ async def _count_rows(table_name: str) -> int:
         LifecycleTransitionRow,
         MissionAlignmentReviewRow,
     )
+    from sqlalchemy import func, select
 
     table_to_orm = {
         "mission_alignment_reviews": MissionAlignmentReviewRow,
@@ -172,7 +171,7 @@ async def main() -> int:
     log_path = LOG_DIR / f"dogfood-v9-run-{_now_iso()}.log"
     print(f"📄 Event log: {log_path}")
     print(f"🌐 WS URL:    {WS_URL}")
-    print(f"⚙️  ENV:")
+    print("⚙️  ENV:")
     for k in (
         "KUN_V7_ENSEMBLE_ENABLED",
         "KUN_V7_ENSEMBLE_TIERS",
@@ -277,7 +276,7 @@ async def main() -> int:
         print(f"  ✅ Completed in {elapsed / 60:.1f} min")
         print(f"  📄 Full event log: {log_path}")
         print(
-            f"  🔥 Hot wirings: "
+            "  🔥 Hot wirings: "
             + ", ".join(
                 f"{t}+{d}" for t, d in deltas.items() if d > 0
             )
@@ -285,7 +284,7 @@ async def main() -> int:
         )
         # Check the artifact too
         artifact = (
-            Path(__file__).resolve().parent.parent
+            Path(__file__).resolve().parent.parent  # noqa: ASYNC240
             / "docs"
             / "dist-output"
             / "dogfood-v9-design-coherence.md"

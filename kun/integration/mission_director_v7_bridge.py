@@ -160,17 +160,82 @@ async def _emit_v7_review_async(
     decomposition_coverage: float,
     evidence_coverage: float,
     observed_findings: list[str],
+    use_thread_local_engine: bool = False,
 ) -> None:
-    """Inner async: build V7 service with DB emitter, call review_mission()."""
-    from kun.agents.mission_director.service import MissionDirectorService
-    from kun.integration.mission_director_db import make_mission_review_emitter
+    """Inner async: build V7 service with DB emitter, call review_mission().
 
-    # tenant_id None → make_mission_review_emitter binds to caller's tenant_id;
-    # we resolve the default tenant explicitly so the row carries a real value.
+    Two write modes:
+      - Default (session_scope): uses kun.core.db's global sessionmaker.
+        Suitable when caller controls the event loop (tests, daemon main).
+      - ``use_thread_local_engine=True``: creates a fresh engine + sessionmaker
+        scoped to the current event loop. Required when called from a thread
+        that ran ``asyncio.run()`` because the global sessionmaker may have
+        been initialized in a different loop ("Future attached to a different
+        loop" race). Dogfood v10 reproduced this.
+    """
+    from kun.agents.mission_director.service import MissionDirectorService
+
     if tenant_id is None or not tenant_id.strip():
         from kun.core.tenancy import current_tenant
 
         tenant_id = current_tenant().tenant_id
+
+    if use_thread_local_engine:
+        # V7 §16.3 isolation — thread-local engine, dispose on exit.
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import (
+            async_sessionmaker,
+            create_async_engine,
+        )
+
+        from kun.core.config import settings
+        from kun.core.orm import MissionAlignmentReviewRow
+
+        cfg = settings()
+        engine = create_async_engine(
+            cfg.pg_dsn,
+            pool_pre_ping=True,
+            pool_size=1,
+            max_overflow=0,
+        )
+        sm = async_sessionmaker(engine, expire_on_commit=False)
+
+        async def _local_emit(review) -> None:
+            payload = review.to_row_payload(tenant_id)
+            row = MissionAlignmentReviewRow(**payload)
+            async with sm() as s:
+                await s.execute(
+                    text("SELECT set_config('app.tenant_id', :t, true)"),
+                    {"t": tenant_id},
+                )
+                s.add(row)
+                await s.flush()
+                await s.commit()
+            log.info(
+                "mission_director_v7_bridge.review_persisted",
+                tenant_id=tenant_id,
+                review_id=review.review_id,
+                task_id=review.task_id,
+                verdict=review.verdict.value,
+                alignment_score=round(review.alignment_score, 3),
+            )
+
+        try:
+            service = MissionDirectorService(review_emitter=_local_emit)
+            await service.review_mission(
+                task_id=task_id,
+                task_plan_version=task_plan_version,
+                info_gap_coverage=info_gap_coverage,
+                decomposition_coverage=decomposition_coverage,
+                evidence_coverage=evidence_coverage,
+                observed_findings=list(observed_findings),
+            )
+        finally:
+            await engine.dispose()
+        return
+
+    # Default — caller controls the loop, use global session_scope.
+    from kun.integration.mission_director_db import make_mission_review_emitter
 
     service = MissionDirectorService(
         review_emitter=make_mission_review_emitter(tenant_id),
@@ -239,6 +304,10 @@ def emit_v7_review_for_work_item_sync(
     )
 
     def _thread_target() -> None:
+        # Bridge thread creates a NEW event loop via asyncio.run(); pass
+        # use_thread_local_engine=True so the inner async builds its own
+        # engine (avoids cross-loop asyncpg pool race that dogfood v10
+        # reproduced).
         try:
             asyncio.run(
                 _emit_v7_review_async(
@@ -249,6 +318,7 @@ def emit_v7_review_for_work_item_sync(
                     decomposition_coverage=decomposition_coverage,
                     evidence_coverage=evidence_coverage,
                     observed_findings=findings,
+                    use_thread_local_engine=True,
                 )
             )
         except Exception as e:

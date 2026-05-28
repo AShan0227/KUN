@@ -1,0 +1,43 @@
+topic: v7-production-wiring
+title: "不同 task type 走不同 bridge 路径, X.B 表激活非全等"
+description: |
+  Dogfood v9 跑 documentation.design.review 类任务, ensemble_calls 表 +8 行,
+  但 mission_alignment_reviews / lifecycle_transitions / auditor_reports 三张表
+  完全没增长. 这不是 bug, 是 wiring 路径跟 task type 强耦合:
+  - LongTaskOrchestrator (走 multi-step LLM loop) → ensemble_calls (X.B.MF-2)
+  - V6 MissionDirectorRunner.run(review work_item) → mission_alignment_reviews (X.B.MF-1)
+  - GateService.admit(approve) → lifecycle_transitions (X.B.MF-LC-wiring)
+                              → auditor_reports (X.B.MF-AR-wiring chained)
+  不同任务路径触发不同 bridges. Documentation 类任务不通过 daemon mission
+  dispatch, 所以 V6 MissionDirectorRunner 不会被调用.
+
+trigger:
+  - condition: "用户看 cockpit /writes-status 发现某张表常年 0 行"
+  - condition: "评估某个 task type e2e 后, X.B 表 row 没增长"
+
+action:
+  - "查 task_type → wiring_path 表 (本 yaml 文档化), 确认是否 expected"
+  - "如果是 documentation/research 类, mission_alignment_reviews 不增长是正常的"
+  - "如果是 capability_promotion 类, 应该看到 lifecycle_transitions 和 auditor_reports 增长"
+  - "如果对应路径应该激活但 0 行, 这是 wiring regression, 加 AT-* 测试"
+
+anti_pattern:
+  - "见某张表 0 行就认定 wiring 坏 — 实际可能没合适 task 触发过"
+  - "搞 'AT-* 测试全表都触发' — 不同 task type 触发不同表, 别强求"
+
+evidence:
+  - source: "scripts/dogfood_v9.py — documentation 类任务, 只 +8 ensemble_calls"
+  - source: "scripts/dogfood_v10_trigger_xb_tables.py — 直接调 GateService + MDRunner, 4 张表全+1"
+  - dogfood: "dogfood v9 retrospective F3 finding"
+
+confidence: high
+applicability:
+  - "Production e2e 验收"
+  - "Cockpit dashboard 解读"
+  - "新 wiring proof 测试设计"
+
+related_methodologies:
+  - "production_path_wiring_audit_before_claim"
+
+distilled_from: dogfood-v9
+created_at: "2026-05-28"

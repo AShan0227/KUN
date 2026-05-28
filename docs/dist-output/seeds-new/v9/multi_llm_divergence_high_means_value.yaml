@@ -1,0 +1,40 @@
+topic: multi-llm-ensemble
+title: "cross-family divergence > 0.5 是 multi-LLM 真有价值的硬指标"
+description: |
+  Multi-LLM ensemble 的 V7 §11.4 设计前提是 "不同 family 有不同盲区", 但这是
+  设计假设, 不是数据证据. Dogfood v9 跑了 8 次 cross-family ensemble (gpt-5.5
+  + Qwen2.5-14B), 平均 divergence_score = 0.835, 最低 0.59, 最高 1.0. 这是
+  Multi-LLM 真值得跑两遍的硬数据 — 如果 divergence 都 < 0.2, ensemble 就是
+  浪费钱.
+
+trigger:
+  - condition: "评估某个 ensemble 配置是否值得继续用"
+  - condition: "新加一对 cross-family providers 后, 跑 ≥ 5 次 sample, 看 avg divergence"
+
+action:
+  - "如果 avg divergence > 0.5 → 这对 providers 真互补, 保留"
+  - "如果 avg divergence < 0.2 → 浪费成本, 换 providers 或降为 single LLM"
+  - "在 V7 §16 production-loop hard rule 加: ensemble providers 配对前必须有
+    ≥ 5 次 sample, avg divergence > 0.5 才允许 production"
+
+anti_pattern:
+  - "上一对 same family (不同 tier) 的 providers, divergence 必然很低, 浪费"
+  - "凭直觉判断 "多 LLM 一定好", 不看 divergence_score 实测"
+
+evidence:
+  - dogfood: "dogfood v9 (commit d64ceab) — 8 calls avg divergence 0.835"
+  - dogfood: "dogfood v10 — 1 more call, divergence 1.0"
+  - source: "kun/interface/llm/ensemble.py:_compute_divergence (Jaccard similarity)"
+
+confidence: high
+applicability:
+  - "ensemble providers 配对决策"
+  - "成本控制评估"
+  - "V7 §11.4 consensus_strategy 选择前提"
+
+related_methodologies:
+  - "ensemble_strategy_for_n2_providers"
+  - "cross_family_strict_enforce"
+
+distilled_from: dogfood-v9
+created_at: "2026-05-28"

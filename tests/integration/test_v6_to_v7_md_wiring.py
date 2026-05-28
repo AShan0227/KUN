@@ -205,9 +205,29 @@ def _install_fake_session(
 
 
 def _install_sync_thread(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replace threading.Thread inside the bridge with a sync runner so the
-    test can assert deterministically that the row was added before run()
-    returns."""
+    """Replace ``_emit_v7_review_async`` with a sync wrapper that uses the
+    monkey-patched session_scope (not a thread-local engine), and replace
+    the bridge's threading.Thread with one that runs the target inline.
+
+    Why two patches:
+      - Bridge's thread_target calls asyncio.run(_emit_v7_review_async(
+        use_thread_local_engine=True, ...)). That builds a fresh engine →
+        bypasses the fake session_scope this test relies on.
+      - Override _emit_v7_review_async to forward to the legacy path
+        (use_thread_local_engine=False), which DOES go through session_scope.
+    """
+    import kun.integration.mission_director_v7_bridge as bridge_mod
+
+    real_emit = bridge_mod._emit_v7_review_async
+
+    async def _patched_emit(**kwargs: Any) -> None:
+        kwargs.pop("use_thread_local_engine", None)
+        await real_emit(**kwargs, use_thread_local_engine=False)
+
+    monkeypatch.setattr(
+        "kun.integration.mission_director_v7_bridge._emit_v7_review_async",
+        _patched_emit,
+    )
 
     class _SyncThread:
         def __init__(
@@ -216,6 +236,7 @@ def _install_sync_thread(monkeypatch: pytest.MonkeyPatch) -> None:
             target: Any,
             name: str = "",
             daemon: bool = False,
+            **_kwargs: Any,
         ) -> None:
             self._target = target
             self.name = name
