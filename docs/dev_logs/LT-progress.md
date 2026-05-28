@@ -1206,11 +1206,96 @@ kun/control_plane/mission_director.py:140:            emit_v7_review_for_work_it
 | # | 修复项 | 状态 | Commit |
 |---|---|---|---|
 | **MF-1** | V6→V7 Mission Director bridge | ✅ done | `cef3767` + `1819c8d` |
-| **MF-2** | LongTaskOrchestrator 真接 ensemble invoker | ⏳ next | — |
-| **MF-3** | cockpit endpoint 加 `writes_wired_status` 字段, 没 wiring 时返警告而非假成功 | ⏳ | — |
-| **MF-4** | 4 个 AT-* 验收测试 (类似 MF-1 的 wiring proof, 但覆盖 ensemble / lifecycle / auditor) | ⏳ | — |
+| **MF-2** | LongTaskOrchestrator 真接 ensemble invoker | ✅ done | `271c121` |
+| **MF-3** | cockpit endpoint 加 `writes_wired_status` 字段, 没 wiring 时返警告而非假成功 | ✅ done | `7367aaa` |
+| **MF-4** | 4 个 AT-* 验收测试 (类似 MF-1 的 wiring proof, 但覆盖 ensemble / lifecycle / auditor) | ⏳ partial (MF-1 + MF-2 都有 wiring proof) | — |
 | **MF-5** | 真 PG 跑 alembic 0014-0017 + CHECK violation 测试 (上面 audit signal) | ⏳ | — |
 | **MF-6** | cockpit_readers 区分 "tenant 无数据" vs "DB 异常" | ⏳ | — |
+| **MF-LC-wiring** | lifecycle_transitions 找 production caller (X.B.LC 是 orphan) | ⏳ | — |
+| **MF-AR-wiring** | auditor_reports 周期 schedule (periodic / pre-release / Canary→PROD gate) (X.B.AR 是 orphan) | ⏳ | — |
+
+---
+
+## V7.PHASE-X.B.MF-2 · LongTaskOrchestrator 真用 ensemble_invoker
+
+**完成**: 2026-05-28 / commit `271c121`
+
+之前 X.B.ENS 写了 `make_ensemble_llm_invoker`, 但 `kun/engineering/orchestrator.py:1289`
+construct LongTaskOrchestrator 时 hardcode `make_llm_invoker` (single-LLM).
+**生产代码零调用 ensemble**, attacker audit P0.
+
+**做了什么**:
+
+1. **`kun/integration/ensemble_invoker_factory.py`** (新, 221 行):
+   - `build_ensemble_invoker_from_settings(router, purpose, profile, tenant_id)`
+     → 返 LLMInvoker | None
+   - Opt-in via 3 env vars: `KUN_V7_ENSEMBLE_ENABLED` + `KUN_V7_ENSEMBLE_TIERS`
+     (CSV like `"top,cheap"`) + 可选 `KUN_V7_ENSEMBLE_STRATEGY` (`majority_vote` /
+     `weighted` / `pick_best_by_metric`)
+   - 从 router.providers[tier_name] 拿 provider 实例, dedupe 同实例, 校验 ≥ 1
+     cross-family pair (V7 §11.2)
+   - 任何 check 失败 → 返 None, caller 安全回退 single-LLM
+   - Wires `make_ensemble_call_log_emitter(tenant_id)` → ensemble_calls 表真有数据
+
+2. **`kun/engineering/orchestrator.py`** (+27 行): 在 line 1289 construct
+   site, 试 factory, 返 None 回退 `make_llm_invoker`. **生产代码真 import 了 factory**.
+
+3. **`tests/unit/test_ensemble_invoker_factory.py`** (新, 26 tests):
+   - 包括 `test_production_orchestrator_imports_factory` regression guard
+     (literally greps orchestrator.py)
+
+**Grep evidence** (commit 前):
+```
+$ grep -rn "ensemble_invoker_factory" kun/ --include="*.py" | grep -v test_
+kun/integration/ensemble_invoker_factory.py (定义)
+kun/engineering/orchestrator.py:1294 (生产 import + call)
+```
+
+**测试**: 1954 passed (+26 from 1928), ruff 全绿. 510 行, 3 文件.
+
+---
+
+## V7.PHASE-X.B.MF-3 · cockpit writes_wired_status — no fake-success
+
+**完成**: 2026-05-28 / commit `7367aaa`
+
+Attacker audit P1: cockpit 返 `"data_source": "真 DB 查询"` 当下面 writer
+根本没接生产路径时, 空 list 让消费方误以为 success.
+
+**做了什么**:
+
+1. **`kun/api/cockpit.py`** (+147 行) — `_writes_wired_status()` helper +
+   4 endpoint 加 `writes_wired_status` 字段 + 新 `/cockpit/writes-status` meta endpoint
+   - 4 张表每张报: writes_wired bool, writer name, env_gate, warning
+   - **mission_alignment_reviews**: MF-1 wired ✅
+   - **ensemble_calls**: MF-2 wired (opt-in env) ✅
+   - **lifecycle_transitions**: **ORPHAN** (no production caller, MF-LC-wiring TBD)
+   - **auditor_reports**: **ORPHAN** (no production schedule, MF-AR-wiring TBD)
+   - 当 writes_wired=False, endpoint 加 top-level `warning` 字段, 不再装 success
+
+2. **`tests/unit/test_cockpit_api.py`** (+116 行, +7 tests):
+   - 每个 endpoint 的 writes_wired_status 字段
+   - MD bridge env=false → false (kill switch verified)
+   - ensemble env on/off 切换
+   - /writes-status meta endpoint shape + MF progress tracker
+
+**测试**: 1961 passed (+7 from 1954); ruff 全绿. 261 行, 2 文件.
+
+---
+
+## V7 Phase X.B 软件真接生产路径 — 当前真实状态 (诚实版)
+
+| 表 | Writer | 状态 | Wiring proof |
+|---|---|---|---|
+| `mission_alignment_reviews` | V6 `MissionDirectorRunner.run()` → V7 bridge | ✅ | `test_v6_runner_run_actually_emits_v7_review` |
+| `ensemble_calls` | `_run_long_task_branch` → `ensemble_invoker_factory` | ✅ opt-in | `test_production_orchestrator_imports_factory` |
+| `lifecycle_transitions` | 无 | ❌ 还是 orphan (待 MF-LC-wiring) | `/cockpit/writes-status` 真返 false |
+| `auditor_reports` | 无 | ❌ 还是 orphan (待 MF-AR-wiring) | `/cockpit/writes-status` 真返 false |
+
+之前我吹的 "软件层 100% 完成" — **更真实的描述**:
+- **模块层** (代码 + 单测): 100%
+- **接生产层** (生产代码真 import + call): **50%** (2/4 张 X.B 表)
+- **e2e 验收层** (真 PG + 真 LLM 跑通): 0% (待 dogfood v9)
 
 ---
 
