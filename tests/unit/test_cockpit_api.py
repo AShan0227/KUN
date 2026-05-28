@@ -22,33 +22,46 @@ from kun.api.cockpit import router
 
 @pytest.fixture
 def fake_readers(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
-    """Monkeypatch the 3 cockpit DB readers with in-memory fakes.
+    """Monkeypatch the 3 cockpit DB readers with in-memory fakes returning
+    ReaderResult (V7 §16.6 MF-6 contract).
 
-    Returns a dict the test can mutate to control what each reader returns:
-      fake_readers["mission_reviews"] = [...rows...]
-      fake_readers["lifecycle_transitions"] = [...rows...]
-      fake_readers["auditor_reports"] = [...rows...]
+    Mutate ``fake_readers["mission_reviews"]`` etc. to set returned rows.
+    Mutate ``fake_readers["error_kind_<table>"]`` to simulate DB errors.
     """
+    from kun.api.cockpit_readers import ReaderResult
+
     state: dict[str, list[dict[str, Any]]] = {
         "mission_reviews": [],
         "lifecycle_transitions": [],
         "auditor_reports": [],
     }
+    error_kinds: dict[str, str | None] = {
+        "mission_reviews": None,
+        "lifecycle_transitions": None,
+        "auditor_reports": None,
+    }
     last_calls: dict[str, dict[str, Any]] = {}
 
-    async def fake_list_mission_reviews(**kwargs: Any) -> list[dict[str, Any]]:
+    async def fake_list_mission_reviews(**kwargs: Any) -> ReaderResult:
         last_calls["mission_reviews"] = kwargs
-        return list(state["mission_reviews"])
+        return ReaderResult(
+            rows=list(state["mission_reviews"]),
+            error_kind=error_kinds["mission_reviews"],
+        )
 
-    async def fake_list_lifecycle_transitions(
-        **kwargs: Any,
-    ) -> list[dict[str, Any]]:
+    async def fake_list_lifecycle_transitions(**kwargs: Any) -> ReaderResult:
         last_calls["lifecycle_transitions"] = kwargs
-        return list(state["lifecycle_transitions"])
+        return ReaderResult(
+            rows=list(state["lifecycle_transitions"]),
+            error_kind=error_kinds["lifecycle_transitions"],
+        )
 
-    async def fake_list_auditor_reports(**kwargs: Any) -> list[dict[str, Any]]:
+    async def fake_list_auditor_reports(**kwargs: Any) -> ReaderResult:
         last_calls["auditor_reports"] = kwargs
-        return list(state["auditor_reports"])
+        return ReaderResult(
+            rows=list(state["auditor_reports"]),
+            error_kind=error_kinds["auditor_reports"],
+        )
 
     monkeypatch.setattr(
         "kun.api.cockpit.list_recent_mission_reviews",
@@ -63,7 +76,11 @@ def fake_readers(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
         fake_list_auditor_reports,
     )
 
-    yield {**state, "_calls": last_calls}
+    yield {
+        **state,
+        "_calls": last_calls,
+        "_error_kinds": error_kinds,
+    }
 
 
 @pytest.fixture
@@ -510,3 +527,79 @@ def test_writes_status_meta_endpoint(client: TestClient) -> None:
     # MF progress tracker
     assert "mf_progress" in data
     assert "MF-1" in data["mf_progress"]
+
+
+# ============================================================
+# V7 Phase X.B.MF-6 — reader_error_kind 在 endpoint surface
+# ============================================================
+
+
+@pytest.mark.unit
+def test_mission_alignment_surfaces_reader_error_kind(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    """When reader DB fails, endpoint reveals error_kind (not silent empty)."""
+    fake_readers["_error_kinds"]["mission_reviews"] = "db_connection_refused"
+    resp = client.get("/cockpit/missions/tk-x/alignment")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["reader_error_kind"] == "db_connection_refused"
+    assert data["reviews"] == []  # honest empty due to DB failure
+    # Combined with writes_wired_status, consumer knows: writer is wired but
+    # READ failed — separate concerns
+
+
+@pytest.mark.unit
+def test_mission_alignment_no_reader_error_when_ok(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    """Successful DB read (even empty) → reader_error_kind=None."""
+    resp = client.get("/cockpit/missions/tk-empty/alignment")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["reader_error_kind"] is None
+
+
+@pytest.mark.unit
+def test_capabilities_surfaces_reader_error_kind(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    fake_readers["_error_kinds"]["lifecycle_transitions"] = "table_not_found"
+    resp = client.get("/cockpit/capabilities")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["reader_error_kind"] == "table_not_found"
+    assert data["transitions"] == []
+
+
+@pytest.mark.unit
+def test_get_capability_returns_503_when_reader_error(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    """Capability lookup with DB error → 503, not 404 (different problem)."""
+    fake_readers["_error_kinds"]["lifecycle_transitions"] = "db_connection_refused"
+    resp = client.get("/cockpit/capabilities/cap-x")
+    assert resp.status_code == 503
+    assert "db_connection_refused" in resp.json()["detail"]
+
+
+@pytest.mark.unit
+def test_get_capability_returns_404_when_truly_no_data(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    """No error + no rows → 404 (tenant truly has no data)."""
+    fake_readers["_error_kinds"]["lifecycle_transitions"] = None
+    resp = client.get("/cockpit/capabilities/cap-nope")
+    assert resp.status_code == 404
+    assert "lifecycle 记录" in resp.json()["detail"]
+
+
+@pytest.mark.unit
+def test_auditor_reports_surfaces_reader_error_kind(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    fake_readers["_error_kinds"]["auditor_reports"] = "permission_denied"
+    resp = client.get("/cockpit/supervisor/auditor-reports")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["reader_error_kind"] == "permission_denied"

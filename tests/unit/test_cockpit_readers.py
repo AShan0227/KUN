@@ -161,7 +161,10 @@ class _AuditorRowFake:
 async def test_mission_reviews_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     capture = _install_fake_session(monkeypatch, rows=[])
     out = await list_recent_mission_reviews(tenant_id="t-a")
-    assert out == []
+    assert out.rows == []
+    assert out.error_kind is None  # MF-6: empty is honest, not an error
+    assert out.is_ok is True
+    assert out.is_empty_honest is True
     assert capture["scope_kwargs"] == [{"tenant_id": "t-a"}]
 
 
@@ -174,9 +177,10 @@ async def test_mission_reviews_returns_dict_shape(
     ]
     _install_fake_session(monkeypatch, rows=rows)
     out = await list_recent_mission_reviews(tenant_id="t-a")
-    assert len(out) == 2
-    assert out[0]["verdict"] == "ok"
-    assert out[0]["alignment_score"] == pytest.approx(0.9)
+    assert out.error_kind is None
+    assert len(out.rows) == 2
+    assert out.rows[0]["verdict"] == "ok"
+    assert out.rows[0]["alignment_score"] == pytest.approx(0.9)
     # All 12 fields per V7 §20 cockpit schema
     expected_keys = {
         "review_id",
@@ -192,10 +196,10 @@ async def test_mission_reviews_returns_dict_shape(
         "plan_change_proposed",
         "plan_change_proposal_id",
     }
-    assert expected_keys.issubset(out[0].keys())
+    assert expected_keys.issubset(out.rows[0].keys())
     # reviewed_at is isoformat string (JSON-friendly)
-    assert isinstance(out[0]["reviewed_at"], str)
-    assert "T" in out[0]["reviewed_at"]
+    assert isinstance(out.rows[0]["reviewed_at"], str)
+    assert "T" in out.rows[0]["reviewed_at"]
 
 
 async def test_mission_reviews_limit_clamp(
@@ -210,12 +214,17 @@ async def test_mission_reviews_limit_clamp(
     await list_recent_mission_reviews(tenant_id="t-a", limit=-5)
 
 
-async def test_mission_reviews_db_failure_returns_empty(
+async def test_mission_reviews_db_failure_returns_classified_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """MF-6: DB failure returns ReaderResult with error_kind != None."""
     _install_failing_session(monkeypatch)
     out = await list_recent_mission_reviews(tenant_id="t-a")
-    assert out == []
+    assert out.rows == []
+    assert out.error_kind is not None
+    assert out.is_ok is False
+    assert out.is_empty_honest is False  # NOT honest empty — DB failed
+    assert out.error_detail  # diagnostic detail present
 
 
 # ============================================================
@@ -228,7 +237,8 @@ async def test_lifecycle_transitions_empty(
 ) -> None:
     capture = _install_fake_session(monkeypatch, rows=[])
     out = await list_recent_lifecycle_transitions(tenant_id="t-b")
-    assert out == []
+    assert out.rows == []
+    assert out.error_kind is None
     assert capture["scope_kwargs"] == [{"tenant_id": "t-b"}]
 
 
@@ -238,7 +248,8 @@ async def test_lifecycle_transitions_dict_shape(
     rows = [_LifecycleRowFake(transition_id="lct-1", to_stage="replay")]
     _install_fake_session(monkeypatch, rows=rows)
     out = await list_recent_lifecycle_transitions(tenant_id="t-b")
-    assert len(out) == 1
+    assert out.error_kind is None
+    assert len(out.rows) == 1
     expected_keys = {
         "transition_id",
         "capability_id",
@@ -250,28 +261,30 @@ async def test_lifecycle_transitions_dict_shape(
         "evidence_refs",
         "metrics_snapshot",
     }
-    assert expected_keys.issubset(out[0].keys())
+    assert expected_keys.issubset(out.rows[0].keys())
 
 
 async def test_lifecycle_transitions_filter_by_capability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_fake_session(monkeypatch, rows=[])
-    await list_recent_lifecycle_transitions(
+    out = await list_recent_lifecycle_transitions(
         tenant_id="t-b", capability_id="cap-foo"
     )
-    # Just ensuring the call path doesn't raise — actual WHERE introspection
-    # would need real PG, kept simple
+    assert out.error_kind is None
 
 
-async def test_lifecycle_transitions_db_failure_returns_empty(
+async def test_lifecycle_transitions_db_failure_returns_classified_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """MF-6: DB failure surfaces error_kind, not silent []."""
     _install_failing_session(monkeypatch)
     out = await list_recent_lifecycle_transitions(
         tenant_id="t-b", capability_id="cap-x"
     )
-    assert out == []
+    assert out.rows == []
+    assert out.error_kind is not None
+    assert out.is_ok is False
 
 
 # ============================================================
@@ -282,7 +295,8 @@ async def test_lifecycle_transitions_db_failure_returns_empty(
 async def test_auditor_reports_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     capture = _install_fake_session(monkeypatch, rows=[])
     out = await list_recent_auditor_reports(tenant_id="t-c")
-    assert out == []
+    assert out.rows == []
+    assert out.error_kind is None
     assert capture["scope_kwargs"] == [{"tenant_id": "t-c"}]
 
 
@@ -295,11 +309,11 @@ async def test_auditor_reports_dict_shape(
     ]
     _install_fake_session(monkeypatch, rows=rows)
     out = await list_recent_auditor_reports(tenant_id="t-c")
-    assert len(out) == 2
-    assert out[0]["risk_level"] == "P0"
-    assert out[0]["allow_release"] is False
-    assert out[1]["risk_level"] == "P2"
-    assert out[1]["allow_release"] is True
+    assert len(out.rows) == 2
+    assert out.rows[0]["risk_level"] == "P0"
+    assert out.rows[0]["allow_release"] is False
+    assert out.rows[1]["risk_level"] == "P2"
+    assert out.rows[1]["allow_release"] is True
     # All V7 §16.6 9-field schema + metadata
     expected_keys = {
         "report_id",
@@ -316,7 +330,7 @@ async def test_auditor_reports_dict_shape(
         "allow_release",
         "rationale",
     }
-    assert expected_keys.issubset(out[0].keys())
+    assert expected_keys.issubset(out.rows[0].keys())
 
 
 async def test_auditor_reports_filter_by_risk(
@@ -324,12 +338,64 @@ async def test_auditor_reports_filter_by_risk(
 ) -> None:
     _install_fake_session(monkeypatch, rows=[])
     out = await list_recent_auditor_reports(tenant_id="t-c", risk_level="P0")
-    assert out == []
+    assert out.rows == []
+    assert out.error_kind is None
 
 
-async def test_auditor_reports_db_failure_returns_empty(
+async def test_auditor_reports_db_failure_returns_classified_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_failing_session(monkeypatch)
     out = await list_recent_auditor_reports(tenant_id="t-c")
-    assert out == []
+    assert out.rows == []
+    assert out.error_kind is not None
+    assert out.is_ok is False
+
+
+# ============================================================
+# V7 §16.6 MF-6 — error_kind classification vocabulary
+# ============================================================
+
+
+def test_classify_db_error_connection_refused() -> None:
+    from kun.api.cockpit_readers import _classify_db_error
+
+    class _RefusedError(Exception):
+        pass
+
+    e = _RefusedError("connection refused: localhost:5432")
+    assert _classify_db_error(e) == "db_connection_refused"
+
+
+def test_classify_db_error_table_not_found() -> None:
+    from kun.api.cockpit_readers import _classify_db_error
+
+    class UndefinedTableError(Exception):
+        pass
+
+    e = UndefinedTableError('relation "mission_alignment_reviews" does not exist')
+    assert _classify_db_error(e) == "table_not_found"
+
+
+def test_classify_db_error_unknown_fallback() -> None:
+    from kun.api.cockpit_readers import _classify_db_error
+
+    class _AnythingError(Exception):
+        pass
+
+    e = _AnythingError("something weird happened")
+    assert _classify_db_error(e) == "unknown_db_error"
+
+
+def test_reader_result_is_empty_honest_only_when_no_error_and_no_rows() -> None:
+    from kun.api.cockpit_readers import ReaderResult
+
+    # honest empty
+    assert ReaderResult(rows=[]).is_empty_honest is True
+    # has data — not "empty"
+    assert ReaderResult(rows=[{"x": 1}]).is_empty_honest is False
+    # error — empty list but NOT honest
+    assert (
+        ReaderResult(rows=[], error_kind="db_connection_refused").is_empty_honest
+        is False
+    )
