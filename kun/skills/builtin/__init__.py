@@ -52,6 +52,14 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
         ),
         "auto_trigger_when": [],
     },
+    "grep-verify": {
+        "description": (
+            "在仓库白名单目录里 grep 正则, 返结构化 {matches, verdict (confirmed/refuted)}. "
+            "Claude Code 的 'grep verify before assume' 工程纪律的一等 primitive. "
+            "用于 'X 是否真在 runtime 用了' / 'Y 引用过几次' 这类问题, 不要靠记忆和假设."
+        ),
+        "auto_trigger_when": [],
+    },
 }
 
 
