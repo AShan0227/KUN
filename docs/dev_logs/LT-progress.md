@@ -771,7 +771,7 @@ emitter callback, 但 emitter 默认 None. 这条 commit 给 emitter 提供真�
 **测试**: 1820 passed, 0 failed (+16); ruff 全绿. 单 commit 982 行, 4 文件.
 
 **还要做的 Phase X.B**:
-- [ ] daemon 默认注册 Mission Director runner (每 tick 跑 review)
+- [x] **Mission Director daemon runner** ✅ commit `2882168` (X.B.MDR)
 - [x] **Lifecycle ORM Row + alembic + writer** ✅ commit `a9c688b` (X.B.LC)
 - [x] **Auditor Reports ORM Row + alembic + writer** ✅ commit `85fae52` (X.B.AR)
 - [x] **Cockpit API endpoints 真从 DB 查** ✅ commit `a3a2bb5` (X.B.UI)
@@ -922,4 +922,66 @@ Orchestrator 接 ensemble_invoke) 时再补.
 DB 写入 (3 张表) + DB 读出 (4 endpoint 改造) 都到位了, **驾驶舱真能查真数据了** —
 Phase E.A "stub UI" 升到 Phase X.B "真 DB UI", 离 Phase E.C frontend 还差
 具体页面层.
+
+---
+
+## V7.PHASE-X.B.MDR · Mission Director daemon runner (Phase X.B 第 5 刀)
+
+**完成**: 2026-05-28 / commit `2882168`
+
+Phase X.A 把 Mission Director service 建好了, 但 service 只是被动等 caller
+主动调 review_mission(). 真要进生产链路就缺个**周期 tick** — 谁来定期调?
+本 commit 加 daemon runner.
+
+**做了什么**:
+
+1. **`kun/agents/mission_director/runner.py`** (新, 319 行):
+   - `MissionCoverageInputs` frozen — coverage_provider 返这个 (3 coverage +
+     task_plan_version + findings)
+   - `CoverageProvider` 类型: `async (task_id) → MissionCoverageInputs | None`
+     (None = 这个 task 跳过, 不报错)
+   - `MissionDirectorRunner`:
+     - `.tick()` — 跑一遍配置的 task list, 每个 task 算 coverage + 调 service
+     - `.run_forever()` — loop + sleep + 响应 stop()
+     - `.stop()` — 让下一个 interval 边界退出
+     - `.stats` — read-only snapshot (tick_count / review_count / skipped / error_count)
+     - **错误隔离**: 单 task 失败不污染其他 task; active_tasks 失败 return [] 不停
+     - **CancelledError 上传** 让外层 cleanup
+   - `build_default_runner(tenant_id, coverage_provider, active_tasks_provider)`
+     factory 装配 X.B.MD 的 DB emitter
+   - `_signal_aware_loop` helper for `python -m kun.agents.mission_director.runner`
+     入口
+
+   **为啥 runner 不直接算 coverage**: 不同 task 类型 coverage 算法不一样
+   (短任务 vs 长任务 vs 内容分发), 解耦到 caller 的 coverage_provider 里
+   单独测 — 这步是 Phase X.B+ 接 LongTaskOrchestrator 真状态时再做.
+
+2. **`kun/agents/mission_director/__init__.py`** — 加 Runner / Inputs /
+   factory 到 public API.
+
+3. **`tests/unit/test_mission_director_runner.py`** (新, 371 行, 10 tests):
+   - 构造器 invariant (interval ≤ 0 → ValueError)
+   - tick happy path / None skip / coverage raise / service raise /
+     active_tasks raise
+   - run_forever stop() + CancelledError 传播
+   - build_default_runner factory 装配 DB emitter + threshold passthrough
+
+**测试**: 1879 passed (+10 from 1869); ruff 全绿.
+
+---
+
+## V7 Phase X.B 现状小结 (5/6 done) — 第 2 次更新
+
+| Subtask | Status | Commit |
+|---|---|---|
+| Mission Director DB | ✅ | `78313ad` |
+| Capability Lifecycle DB | ✅ | `a9c688b` |
+| Auditor Reports DB | ✅ | `85fae52` |
+| Cockpit API 真从 DB 查 | ✅ | `a3a2bb5` |
+| Mission Director daemon runner | ✅ | `2882168` |
+| Orchestrator 真用 ensemble_invoke | ⏳ | — |
+| dogfood v9 走新 V7 protocols | ⏳ | — |
+
+5 张牌全打完, 剩两张 (Orchestrator 接 ensemble_invoke 是更大动作, dogfood v9
+需要外部 API key). Phase X.B 真 runtime 接入度 ≈ 70-80% 了.
 
