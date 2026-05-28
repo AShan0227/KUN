@@ -758,3 +758,157 @@ class TaskCheckpointRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
+
+
+class MissionAlignmentReviewRow(Base):
+    """Mission Director MissionAlignmentReview 持久化 (V7 §9.7, alembic 0014).
+
+    Mission Director (交付总监) 一级子系统每 tick / milestone 输出一条
+    review. 用来跟 TaskPlanVersion 对齐, 给驾驶舱 + 启 (Qi) post-hoc retrospect
+    + 外部监督者 auditor hat 提供历史数据.
+
+    V7 §10.4 三级信号 mapping:
+      verdict='ok'           — alignment_score ≥ 0.7
+      verdict='drifting'     — 0.4 ≤ score < 0.7 (弱信号, log+watch)
+      verdict='off_anchor'   — 0.2 ≤ score < 0.4 (中信号, propose PlanChange)
+      verdict='needs_human'  — score < 0.2  (强信号, CollaborationTicket)
+
+    alignment_score = 0.4 * info_gap_coverage + 0.35 * decomposition_coverage
+                    + 0.25 * evidence_coverage (V7 §9.7 加权).
+
+    ADR-007 RLS: tenant_id 主键 + ENABLE/FORCE ROW LEVEL SECURITY + tenant_isolation
+    policy (同 0011/0012/0013 风格).
+    """
+
+    __tablename__ = "mission_alignment_reviews"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    review_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_plan_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    reviewed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    # ok / drifting / off_anchor / needs_human (CHECK constraint enforces enum)
+    alignment_score: Mapped[float] = mapped_column(
+        Numeric(4, 3), nullable=False
+    )
+    """0.000 - 1.000, weighted average of 3 coverages."""
+    findings: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    """list[str] 观察明细 (info_gap 未补 / 拆解漏 / 证据缺 etc.)."""
+    info_gap_coverage: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
+    decomposition_coverage: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
+    evidence_coverage: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
+    plan_change_proposed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    plan_change_proposal_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('ok', 'drifting', 'off_anchor', 'needs_human')",
+            name="mar_verdict_valid",
+        ),
+        CheckConstraint(
+            "alignment_score >= 0 AND alignment_score <= 1",
+            name="mar_score_in_range",
+        ),
+        CheckConstraint(
+            "info_gap_coverage >= 0 AND info_gap_coverage <= 1",
+            name="mar_info_gap_in_range",
+        ),
+        CheckConstraint(
+            "decomposition_coverage >= 0 AND decomposition_coverage <= 1",
+            name="mar_decomp_in_range",
+        ),
+        CheckConstraint(
+            "evidence_coverage >= 0 AND evidence_coverage <= 1",
+            name="mar_evidence_in_range",
+        ),
+        Index("ix_mar_task_reviewed_at", "tenant_id", "task_id", "reviewed_at"),
+        Index("ix_mar_verdict", "tenant_id", "verdict", "reviewed_at"),
+    )
+
+
+class PlanChangeProposalRow(Base):
+    """Mission Director PlanChangeProposal 持久化 (V7 §10.3.2, alembic 0014).
+
+    方案线 (Mission Director / 启 Qi) 发现需要改方案时生成 proposal:
+      severity='low'    — KUN 自动改 + log
+      severity='medium' — KUN 自动改 + 推 NUO panel + 用户可一键回滚
+      severity='high'   — CollaborationTicket 等用户审 (V7 §10.3.3 决策权 3 档)
+
+    triggered_by 区分谁触发: 'mission_director' (任务级) / 'qi' (启方案级反思).
+
+    candidate_changes 是 list[dict], 至少 1 个候选 (≥ 1 才有改的可能).
+    rollback_condition 是字符串描述 — 满足该条件就回滚.
+    """
+
+    __tablename__ = "plan_change_proposals"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    triggered_by: Mapped[str] = mapped_column(String(32), nullable=False)
+    triggered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    change_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    # scope / criteria / resource / risk
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    # low / medium / high (CHECK constraint enforces enum)
+    affected_work_items: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    affected_deliverables: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    candidate_changes: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    """list[dict], ≥ 1 候选方案 (CHECK constraint: jsonb_array_length >= 1)."""
+    rollback_condition: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    user_approval_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    # 用户审批结果 (None=待审, True=通过, False=拒绝)
+    user_decision: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    user_decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "severity IN ('low', 'medium', 'high')",
+            name="pcp_severity_valid",
+        ),
+        CheckConstraint(
+            "change_type IN ('scope', 'criteria', 'resource', 'risk')",
+            name="pcp_change_type_valid",
+        ),
+        CheckConstraint(
+            "triggered_by IN ('mission_director', 'qi', 'nuo', 'external_supervisor')",
+            name="pcp_triggered_by_valid",
+        ),
+        CheckConstraint(
+            "jsonb_array_length(candidate_changes) >= 1",
+            name="pcp_candidate_changes_nonempty",
+        ),
+        # high severity → user_approval_required=True 不变量 (V7 §10.3.3)
+        CheckConstraint(
+            "NOT (severity = 'high' AND user_approval_required = false)",
+            name="pcp_high_severity_needs_approval",
+        ),
+        Index("ix_pcp_task_triggered_at", "tenant_id", "task_id", "triggered_at"),
+        Index("ix_pcp_severity_pending", "tenant_id", "severity", "user_decision"),
+    )
