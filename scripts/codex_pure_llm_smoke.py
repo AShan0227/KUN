@@ -1,5 +1,11 @@
 """LT.CODEX-PURE-LLM / LT.TOOLS-GAP-2 smoke test.
 
+# SCOPE (V7 §16.3): LLM-provider 层 smoke test, NOT task-execution 路径.
+# 直接调 CodexMcpProvider, 不走 Orchestrator — 这是合理的, 因为它验证的是
+# LLM provider 接口契约, 不是 task execution. **不产 capability / 不进
+# capability_card / 不算"已开发能力"**. 跟 e2e_rsi_demo.py (绕过 Orchestrator
+# 的真 fixture-only) 性质不同 — 这个是 LLM-layer test, 那个是 task-layer fixture.
+
 Fires ONE small request against the live codex MCP-server with a realistic
 prompt structure matching what LongTaskOrchestrator sends (skill_directive
 inside system message — same shape build_skill_directive produces). Verifies:

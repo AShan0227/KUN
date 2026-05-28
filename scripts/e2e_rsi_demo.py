@@ -1,5 +1,20 @@
 """端到端 RSI 闭环 demo (Phase 1.D 验收).
 
+# FIXTURE-ONLY (V7 §16.3 + Phase 0.5 标注)
+#
+# 本脚本**绕过** Orchestrator 直接调内部 services, 仅用于:
+#   - 工程师本地手动验证 RSI 闭环各环节 wiring
+#   - L 系列开发期 fixture / smoke test
+#
+# 严格约束 (V7 §16.0 产品魂级硬规则):
+#   - 产物**不允许进** capability_card / seeds/methodologies/ / production runtime
+#   - 不允许在驾驶舱 / dev_log / commit message 里宣称"已完成 RSI"
+#   - 此脚本跑出的 strategy_search_request / runtime_capability 行必须标
+#     metadata.fixture_only=True (待 Phase 0.5.gate 实装时强 enforce)
+#   - 真实 RSI 必须走主路径: 用户输入 → Orchestrator → 启 (Qi) → 9 阶段 lifecycle
+#
+# 不是 "已开发能力"; 不是 "production 路径"; 不是验收依据.
+
 跑这个脚本会:
   1. 起 SupervisorService → 喂 3 次 llm.fallback.triggered → 触发 anomaly
   2. SupervisorService 自动 cluster (因为还会喂 1 次 task.failed 让 module_systemic 触发)
