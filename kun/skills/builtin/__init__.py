@@ -44,6 +44,14 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
         "description": "读 PDF 文件并抽取文本内容",
         "auto_trigger_when": [],
     },
+    "self-reflect": {
+        "description": (
+            "KUN 自检 / 自蒸馏专用 skill — 白名单 read (docs/seeds/kun/tests/scripts/alembic), "
+            "单写出目录 docs/dist-output/, 支持 offset+limit, 无 delete. "
+            "给 dogfood / RSI / methodology distillation 这类'让 KUN 读自己'的任务用."
+        ),
+        "auto_trigger_when": [],
+    },
 }
 
 
