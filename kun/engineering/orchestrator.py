@@ -1286,10 +1286,31 @@ class Orchestrator:
         if external_supervisor is None:
             external_supervisor = await self._maybe_build_external_supervisor()
 
-        lt_orch = LongTaskOrchestrator(
-            llm_invoker=make_llm_invoker(
+        # V7 Phase X.B.MF-2: opt-in multi-LLM ensemble via env-driven factory.
+        # When KUN_V7_ENSEMBLE_ENABLED=true and KUN_V7_ENSEMBLE_TIERS has ≥2
+        # distinct cross-family providers, use ensemble; otherwise fall back
+        # to single-LLM (preserves backward compat for default deployments).
+        # Audit grep: kun/integration/ensemble_invoker_factory.py:
+        #   build_ensemble_invoker_from_settings
+        from kun.integration.ensemble_invoker_factory import (
+            build_ensemble_invoker_from_settings,
+        )
+
+        ensemble_invoker = build_ensemble_invoker_from_settings(
+            router=self.llm_router,
+            purpose="execution",
+            profile=llm_profile,
+            tenant_id=tenant.tenant_id,
+        )
+        if ensemble_invoker is not None:
+            chosen_invoker = ensemble_invoker
+        else:
+            chosen_invoker = make_llm_invoker(
                 self.llm_router, purpose="execution", profile=llm_profile
-            ),
+            )
+
+        lt_orch = LongTaskOrchestrator(
+            llm_invoker=chosen_invoker,
             tool_executor=make_tool_executor(),
             checkpoint_writer=make_checkpoint_writer(),
             checkpoint_reader=make_checkpoint_reader(),
