@@ -1483,3 +1483,112 @@ transition 触发 chained heuristic auditor emit. 每次 capability promoted, �
 将抽出 yaml seed 候选: `production_path_wiring_audit_before_claim.yaml` (放
 `docs/dist-output/seeds-new/v9-failure-mode/`), 让 KUN 自己记住这个反模式.
 
+---
+
+## V7 Phase X.C · 收尾 wave (P0 + P1)
+
+> 用户指令: "把欠缺的部分列个清单，全部补齐"
+>
+> X.B 完成后, 用户要求把 V7 产品规格 vs 现状对账, 补齐 P0/P1 缺口.
+> 一次性补齐: 5 个 P0 (MF-AR-LLM / MD-DAEMON / CHECKPOINT-E2E / TRIFECTA /
+> LIFECYCLE-WALKER) + 2 个 P1 (COLLAB-E2E / DOGFOOD-V11).
+
+### X.C-1 · MF-AR-LLM 真 LLM-driven 7-角度审计
+
+**完成**: 2026-05-28 / commit `b262624`
+
+之前的 `emit_heuristic_auditor_report_for_capability` 用纯启发式规则
+(grep 文件存在性 + import 链路) 出 AuditorReport, V7 §16.6 要求的"真攻击
+者审计"没接 LLM.
+
+**做了什么**:
+- 新 `kun/integration/auditor_report_llm.py` (~230 行) — `llm_audit_capability`
+  函数, 用 cross-family ensemble (gpt-5.5 + Qwen) 跑 AUDITOR_SYSTEM_PROMPT_TEMPLATE
+- `auditor_report_v7_bridge.py` 改成 LLM-first fallback chain: 先试 LLM,
+  失败/未启用 → 降级 heuristic, 保证 release-gate 永远有数据
+- env 开关 `KUN_V7_AUDITOR_USE_LLM` 默认 false (成本敏感, 接业务才开)
+- `tests/unit/test_auditor_report_llm.py` (12 tests) — env parsing
+  parametrize / JSON 提取 / happy path mocked invoker / error fallback
+
+### X.C-2 · MD-DAEMON 周期 mission-review tick
+
+**完成**: 2026-05-28 / commit `b262624` (同 wave)
+
+`kun/control_plane/daemon.py` 加 `_fire_v7_mission_director_periodic_tick`,
+在 `tick_once` 末尾按 active mission 触发 V7 X.B.MF-1 bridge, env 开关
+`KUN_V7_MD_DAEMON_TICK_ENABLED` 默认 false. 不影响现有 tick 行为.
+
+### X.C-3 · CHECKPOINT-E2E crash + resume against real PG
+
+**完成**: 2026-05-28 / commit `2d8a6dc`
+
+V7 §LT.C 给了 TaskCheckpoint schema (alembic 0012) + service + writer +
+reader, 但没人验证过完整 crash + resume 链路. 这文件是缺的"硬证据":
+
+- `tests/integration/test_v7_checkpoint_crash_resume_e2e.py` (4 tests):
+  - 写 3 个 checkpoint (seq 1/2/3), `del service_a` (模拟 crash),
+    建 fresh reader, 验证拉回 latest active = step 3, 状态 round-trip 完整
+  - active → final 转移后 reader 跳过该 row (返 None)
+  - 全新 task 无 row → reader 返 None (fresh start 路径)
+  - 乱序 sequence 写入 → reader 仍按最大 sequence 返
+- autouse fixture 重置 `kun.core.db` 全局 sessionmaker, 修 pytest-asyncio
+  loop race
+
+### X.C-4 · TRIFECTA 三线 coordinator (V7 §12.4)
+
+**完成**: 2026-05-28 / commit `e6bb123`
+
+V7 §12.4 RSI 三线并行 (过去线 retrospective / 现在线 watchdog / 未来线
+explorer) — 协议要求并行, 此前只有 prose 没代码.
+
+- 新 `kun/agents/trifecta/coordinator.py` (260 行):
+  - `TrifectaCoordinator` 注入 3 个 hook 在 `asyncio.gather` 内并行跑
+  - `TrifectaRunReport` frozen IO (V7 §13.6) — 含 per-line state +
+    `total_cost_usd` + `cost_multiplier_vs_baseline` (V7 §12.4.4 估值)
+  - master env `KUN_V7_TRIFECTA_ENABLED` 默认 false + per-line opt-out;
+    缺 hook → SKIPPED; 单线 raise → 不杀其他线
+- 6 unit tests: master 默认 OFF / 3 线 fire 并行 / per-line 关 / 失败隔离
+  / 缺 hook 标 SKIPPED / 5x baseline 成本 multiplier 算对
+
+### X.C-5 · LIFECYCLE-WALKER 9 阶段全流程演示
+
+**完成**: 2026-05-28 / commit `b66fa9a`
+
+V7 §15 lifecycle 9 阶段 各部件都齐了, 但没人把一个合成 capability 走
+完整 8 转移 (OBSERVATION → ... → MONITOR) 落 real PG 再读回. 这是
+"production-loop 闭环演示"缺的最后一段证据.
+
+- `tests/integration/test_v7_lifecycle_walker_e2e.py` (10 tests, 320 行):
+  1. **完整链 walk**: 7 转移 OBSERVATION→CANDIDATE→REPLAY→HOLDOUT→
+     SHADOW→CANARY→PRODUCTION→MONITOR 全部 emit real PG, cockpit reader
+     按 DESC decided_at 读回, 反转后链路顺序对齐
+  2. **rollback 分支**: PRODUCTION→ROLLBACK→RETIRE, RETIRE 终态不让再转
+  3. **V7 §12.2 不变量**: CANARY→PRODUCTION 无 user_approval_ticket
+     → service 层 raise, DB 不会有 orphan row
+  4. **V7 §12.3 不变量**: CANDIDATE→REPLAY 缺三类证据任一 → service raise
+  5. **跳级 invariant** (parametrize 5): 任何非邻接转移 raise (OBS→REPLAY
+     / REPLAY→SHADOW / HOLDOUT→CANARY / SHADOW→PRODUCTION /
+     CANDIDATE→PRODUCTION)
+  6. **cockpit 过滤**: `to_stage='replay'` 过滤只返指定阶段
+- 真 PG 落地证据 (bypass_rls 探针):
+  ```
+  t-lcwalk-full:     14 行  (2 runs × 7 transitions)
+  t-lcwalk-rollback: 16 行  (2 runs × 8 transitions)
+  t-lcwalk-filter:    4 行  (2 runs × 2 transitions)
+  ```
+
+### X.C wave 数字 (到 LIFECYCLE-WALKER 为止)
+
+| 指标 | 起点 (TRIFECTA 前) | 终点 (LIFECYCLE-WALKER) |
+|---|---|---|
+| Tests | 2034 | **2052 passed** (+18, 0 failed) |
+| Ruff | green | **green** |
+| Commits | — | **5 commits** (b262624 + 2d8a6dc + e6bb123 + b66fa9a + LT-progress) |
+
+### X.C wave · 剩余 (loop 继续推)
+
+| # | 任务 | 状态 |
+|---|---|---|
+| P1-2 | **COLLAB-E2E**: CollaborationTicket human-in-the-loop e2e | ⏳ next |
+| P1-3 | **DOGFOOD-V11**: ultimate e2e 串 7 件 (MD daemon → ensemble → trifecta → lifecycle walk → checkpoint → auditor LLM → collab ticket) | ⏳ after P1-2 |
+
