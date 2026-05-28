@@ -539,3 +539,90 @@ ExecutorLoop 的 `if not response.tool_calls: → finalize` 启发式在 plan_re
 
 **总测试**: 1694 → 1696 (+2), ruff 全绿. 累计本 session 改动: +349 tests, 11 个 commit.
 
+---
+
+## DOGFOOD-P1.DISTILL · 第一次完整跑通真长任务 (dogfood v8)
+
+**完成**：2026-05-28 / commits ad15bdc (fusion) + (this entry)
+
+**前 7 次失败的快速回顾**：
+| v | LLM | 死法 | fix |
+|---|---|---|---|
+| v1 | gpt-5.5 | 否定语义 bug | commit 0c8fb31 |
+| v2 | gpt-5.5 | driver 任务描述触关键词 | commit 2e7dc36 |
+| v3 | gpt-5.5 | LT.TOOLS-GAP, 1 LLM call 返空 | commit 3b81372 |
+| v4 | gpt-5.5 | codex MCP sandbox=read-only 字面拒 | LT.CODEX-PURE-LLM (e6cbd2d) |
+| v5 | Anthropic OAuth | 配额 429 | LT.OAUTH (add1b14) |
+| v6 | gpt-5.5 (refactored) | base-instructions 模糊, hallucinated 4 个 Claude Code plugin 名 | LT.TOOLS-GAP-2 (c740717) |
+| v6.5 | gpt-5.5 | file-io sandbox vs 仓库根架构层不匹配 | LT.SELF-REFLECT-SKILL (c7c132b) |
+| v7 | gpt-5.5 | 跑 2 步真 dispatch self-reflect, plan_review heartbeat 误判 final | LT.PLAN-REVIEW-LOOP-BUG (2daeaf7) |
+
+**dogfood v8 (第 9 次)**：终于跑通。
+
+**v8 真实指标**：
+| | 实际 | 任务目标 |
+|---|---|---|
+| Steps | 10 | (open) |
+| Elapsed | 227.5s (3.8 min) | 30-90min 预期 |
+| 总 cost | $1.36 | $1.0 cap (优雅 budget exceeded 在所有 phase 完成后) |
+| Tokens | 97K | — |
+| 终止原因 | guard_intervention: budget_exceeded (在所有 9 文件 write 完成后才 trip) | — |
+| Markdown 产出 | 4 (capability map / gap analysis / rsi plan / hybrid proposals) | ≥ 3 |
+| YAML seeds 产出 | 5 | ≥ 5 |
+| Schema 完整性 | 12 字段全对 | 12 字段 |
+| Hallucination | 0 (10/10 引用的 KUN 模块真实存在) | 0 |
+
+**v8 关键 step 流水**：
+```
+step 1:  list docs (16 entries)
+step 2:  plan_review heartbeat — JSON status, fix 正确识别 + nudge continue
+step 3:  list docs/dev_logs (26 entries)
+step 4:  parallel read 4 文件 (claude-code-engineering-manual + methodology-distill-report
+         + dev_logs/README + dev_logs/LT-retrospective)
+step 5:  plan_review heartbeat — 又一次正确处理
+step 6:  list seeds/methodologies (27 entries 确认)
+step 7:  parallel read 4 文件 (2 sample yamls + dogfood-v7 log + L4-retrospective)
+         ★ 元认知行为: gpt-5.5 主动读 v7 失败日志学教训
+step 8:  plan_review heartbeat — 第 3 次正确处理
+step 9:  parallel read 更多 dev_logs
+step 10: parallel WRITE 9 文件 一次性 — Phase A/B/C/D/E 全产出
+```
+
+**蒸馏行为里展现的工程能力 (gpt-5.5 自然涌现)**:
+1. **并行 sub-tool 派发** — 一个 response 4 个 `<skill>` 并行
+2. **战略性文件选择** — 27 yaml 只读 2 个学格式, 不全读
+3. **元认知** — 主动读 v7 失败日志
+4. **smart limit** — 每个 read 显式 limit (8000-20000) 防 context 爆
+5. **持续 on_anchor** — 4 次 plan_review 全部 verdict=ok
+6. **批处理 write** — 一次产 9 文件 (4 md + 5 yaml), 不 phase-by-phase
+
+**P2 Fusion Verify 实际操作**：
+1. 5 yaml schema check: 12 字段全对 ✓
+2. Topic 唯一性 check vs 现有 27: 全唯一 ✓
+3. Anti-hallucination grep verify: 10 KUN 模块名全找到 ✓
+4. 移 5 yaml 到 seeds/methodologies/ (27 → 32)
+5. 全套 32 yaml safe_load 通过 ✓
+6. 1696 测试 + ruff 全绿不回归 ✓
+
+**5 张新方法论简介**：
+| 主题 | 解决啥 |
+|---|---|
+| cache_aware_llm_wakeup_scheduler | LLM 唤醒间隔考虑 Anthropic prompt cache 5min TTL, 防 300s 错过 |
+| prompt_user_decision_at_irreversible_branch | 不可逆操作前停下问用户 (Claude Code 决策点风格) |
+| runtime_todo_tracker_state_machine | runtime 层 todo 状态机, 弥补 KUN 静态 PlanTree 缺口 |
+| silence_detector_for_long_task_monitoring | 长任务静默/卡死检测, monitor 五维 watch |
+| worker_agent_spawner_prompt_isolation | 通用无状态 worker spawn + prompt 隔离 + 主线整合 |
+
+**未完工作 (DOGFOOD #26 继续)**:
+- DOGFOOD-P3 (#37): 10 维 Claude Code 能力测试 battery
+- DOGFOOD-P4 (#38): 基于 P3 结果调优鲲
+
+**累计 session 战绩**:
+- 11 commits (LT.OAUTH × 2 + LT.CODEX-PURE-LLM × 2 + LT.TOOLS-GAP-2 × 2 +
+  LT.SELF-REFLECT-SKILL × 2 + LT.PLAN-REVIEW-LOOP-BUG × 2 + DOGFOOD-P2 × 1)
+- 5 个真实长任务 bug 修复 (每个都是 dogfood 一次失败暴露的)
+- 1347 → 1696 测试 (+349)
+- 27 → 32 seeds (+5)
+- 9 个新 dogfood 产物 (4 md + 5 yaml)
+- KUN 长任务能力从 "纸上 OK 真跑死 8 次" 到 "真跑通"
+
