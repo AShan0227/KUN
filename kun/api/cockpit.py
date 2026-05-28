@@ -28,6 +28,7 @@ API 设计原则 (V7 §20.3):
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -42,6 +43,100 @@ from kun.api.cockpit_readers import (
 from kun.governance.capability_lifecycle import CapabilityLifecycleStage
 
 router = APIRouter(prefix="/cockpit", tags=["cockpit"])
+
+
+# ============================================================
+# V7 §16.6 MF-3 — writes_wired_status (no fake-success)
+# ============================================================
+
+
+def _truthy(env_name: str, default: bool = False) -> bool:
+    """Env var truthy check shared with the bridge module."""
+    raw = os.environ.get(env_name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"false", "0", "no", "off"}
+
+
+def _writes_wired_status() -> dict[str, dict[str, Any]]:
+    """Per-table writes-wired status — honest answer to "does this table真有
+    生产 writer?".
+
+    Phase X.B attacker-audit P1: cockpit was returning 真 DB 查询 even when
+    no production code emitted to the table. Empty list看起来像success but
+    means "wiring broken". This helper exposes the truth.
+
+    Updated as MF-* items land:
+      - mission_alignment_reviews: MF-1 wired ✅
+      - ensemble_calls: MF-2 wired ✅ (opt-in via env)
+      - lifecycle_transitions: still orphan (no MF yet)
+      - auditor_reports: still orphan (no MF yet)
+    """
+    md_bridge_on = _truthy(
+        "KUN_V7_MISSION_DIRECTOR_BRIDGE_ENABLED", default=True
+    )
+    ensemble_on = _truthy("KUN_V7_ENSEMBLE_ENABLED", default=False)
+    ensemble_tiers = os.environ.get("KUN_V7_ENSEMBLE_TIERS", "").strip()
+
+    return {
+        "mission_alignment_reviews": {
+            "writes_wired": md_bridge_on,
+            "writer": "kun.control_plane.MissionDirectorRunner.run() "
+            "→ kun.integration.mission_director_v7_bridge (X.B.MF-1)",
+            "env_gate": "KUN_V7_MISSION_DIRECTOR_BRIDGE_ENABLED",
+            "env_current_value_truthy": md_bridge_on,
+            "warning": (
+                None
+                if md_bridge_on
+                else (
+                    "Bridge disabled — mission_alignment_reviews 表不会有新行. "
+                    "set KUN_V7_MISSION_DIRECTOR_BRIDGE_ENABLED=true to enable."
+                )
+            ),
+        },
+        "ensemble_calls": {
+            "writes_wired": ensemble_on
+            and len([t for t in ensemble_tiers.split(",") if t.strip()]) >= 2,
+            "writer": "kun.engineering.orchestrator._run_long_task_branch "
+            "→ kun.integration.ensemble_invoker_factory (X.B.MF-2)",
+            "env_gate": (
+                "KUN_V7_ENSEMBLE_ENABLED=true AND "
+                "KUN_V7_ENSEMBLE_TIERS=<≥2 cross-family tiers>"
+            ),
+            "env_current_enabled": ensemble_on,
+            "env_current_tiers": ensemble_tiers or None,
+            "warning": (
+                None
+                if ensemble_on
+                else (
+                    "Ensemble disabled — ensemble_calls 表不会有新行. "
+                    "Default deployment is single-LLM. set "
+                    "KUN_V7_ENSEMBLE_ENABLED=true + KUN_V7_ENSEMBLE_TIERS='top,cheap' to enable."
+                )
+            ),
+        },
+        "lifecycle_transitions": {
+            "writes_wired": False,
+            "writer": None,
+            "warning": (
+                "ORPHAN: no production code emits to lifecycle_transitions yet. "
+                "Phase X.B.LC built the writer; MF-LC-wiring follow-up needed. "
+                "Cockpit /capabilities will always show empty until then."
+            ),
+            "mf_followup_required": "MF-LC-wiring (TBD)",
+        },
+        "auditor_reports": {
+            "writes_wired": False,
+            "writer": None,
+            "warning": (
+                "ORPHAN: no production code emits to auditor_reports yet. "
+                "Phase X.B.AR built the writer; auditor hat schedule wiring "
+                "(periodic / pre-release / Canary→Production gate) is "
+                "MF-AR-wiring follow-up."
+            ),
+            "mf_followup_required": "MF-AR-wiring (TBD)",
+        },
+    }
 
 
 # ============================================================
@@ -172,6 +267,7 @@ async def list_capabilities(
                 "transitions_count": 0,
             }
         by_cap[cap_id]["transitions_count"] += 1
+    status = _writes_wired_status()["lifecycle_transitions"]
     return {
         "capabilities": list(by_cap.values()),
         "transitions": transitions,
@@ -179,6 +275,8 @@ async def list_capabilities(
         "total_transitions": len(transitions),
         "tenant_id": tenant_id,
         "data_source": "lifecycle_transitions (V7 §15 9 阶段 lifecycle)",
+        "writes_wired_status": status,
+        "warning": status["warning"],
         "note": (
             "V7 Phase X.B 真 DB 查询. 完整 7 层激活证据视图 (capability_card "
             "+ runtime_capabilities 关联) 待 Phase E.C frontend UI."
@@ -205,6 +303,7 @@ async def get_capability(
             ),
         )
     current = transitions[0]  # ordered DESC
+    status = _writes_wired_status()["lifecycle_transitions"]
     return {
         "capability_id": capability_id,
         "tenant_id": tenant_id,
@@ -213,6 +312,8 @@ async def get_capability(
         "transitions": transitions,
         "total_transitions": len(transitions),
         "data_source": "lifecycle_transitions",
+        "writes_wired_status": status,
+        "warning": status["warning"],
     }
 
 
@@ -231,6 +332,7 @@ async def get_mission_alignment(
         tenant_id=tenant_id, task_id=task_id, limit=limit
     )
     latest = reviews[0] if reviews else None
+    status = _writes_wired_status()["mission_alignment_reviews"]
     return {
         "task_id": task_id,
         "tenant_id": tenant_id,
@@ -238,6 +340,8 @@ async def get_mission_alignment(
         "latest": latest,
         "total": len(reviews),
         "data_source": "mission_alignment_reviews (V7 §9.7 交付总监)",
+        "writes_wired_status": status,
+        "warning": status["warning"],
         "note": (
             "V7 Phase X.B 真 DB 查询. 空 list 可能是: tenant 没数据 / DB 不可用 "
             "(后者会在 log 警告)."
@@ -274,12 +378,48 @@ async def get_rsi_trifecta_status(task_id: str) -> dict[str, Any]:
 
 @router.get("/ensemble/recent")
 async def get_recent_ensemble_calls(limit: int = 20) -> dict[str, Any]:
-    """最近 multi-LLM ensemble_invoke 调用 + divergence_score."""
+    """最近 multi-LLM ensemble_invoke 调用 + divergence_score.
+
+    Phase X.B.MF-2 wired the writer (ensemble_calls table真有数据 when env on),
+    but a real DB reader for this endpoint is still pending. Status field
+    honestly says so instead of returning empty as "success".
+    """
+    status = _writes_wired_status()["ensemble_calls"]
     return {
         "ensemble_calls": [],
         "total": 0,
         "limit": limit,
-        "note": "V7 Phase E.A stub. Phase E.B 接 LLMRouter ensemble_invoke 日志.",
+        "writes_wired_status": status,
+        "warning": status["warning"]
+        or "Reader for /ensemble/recent not yet wired — schema in alembic 0017, "
+        "writer in X.B.MF-2, reader TBD.",
+        "note": (
+            "V7 Phase E.A stub for reader (writer wired in X.B.MF-2 — set "
+            "KUN_V7_ENSEMBLE_ENABLED=true to write rows; reader endpoint待补)."
+        ),
+    }
+
+
+@router.get("/writes-status")
+async def get_writes_wired_status() -> dict[str, Any]:
+    """Meta endpoint: which Phase X.B tables have真 production writers wired.
+
+    Use this to audit "claim done" vs "真接生产路径" without curl-ing
+    every endpoint. Per V7 §16.6 attacker-audit MF-3.
+    """
+    return {
+        "tables": _writes_wired_status(),
+        "mf_progress": {
+            "MF-1": "V6 MD bridge — done (commit cef3767 + 1819c8d)",
+            "MF-2": "LongTaskOrch ensemble wiring — done (commit 271c121)",
+            "MF-3": "writes_wired_status — done (this endpoint)",
+            "MF-LC-wiring": "lifecycle_transitions writer wiring — TBD",
+            "MF-AR-wiring": "auditor_reports writer wiring — TBD",
+            "MF-4": "AT-* acceptance tests — TBD",
+            "MF-5": "real PG CHECK violation tests — TBD",
+            "MF-6": "cockpit_readers error_kind — TBD",
+        },
+        "v7_doc_ref": "docs/v7/KUN-V7.md §16.6 attacker audit",
     }
 
 
@@ -322,6 +462,7 @@ async def get_auditor_reports(
         if rl in risk_dist:
             risk_dist[rl] += 1
     n_block_release = sum(1 for r in reports if not r["allow_release"])
+    status = _writes_wired_status()["auditor_reports"]
     return {
         "auditor_reports": reports,
         "total": len(reports),
@@ -330,6 +471,8 @@ async def get_auditor_reports(
         "risk_distribution": risk_dist,
         "block_release_count": n_block_release,
         "data_source": "auditor_reports (V7 §16.6 外部监督者 auditor hat)",
+        "writes_wired_status": status,
+        "warning": status["warning"],
     }
 
 

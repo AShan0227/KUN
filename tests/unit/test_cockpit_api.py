@@ -394,3 +394,119 @@ def test_auditor_reports_invalid_risk_level_returns_422(
     """pattern='^P[0-2]$' 拦截非法 risk_level."""
     resp = client.get("/cockpit/supervisor/auditor-reports?risk_level=P9")
     assert resp.status_code == 422
+
+
+# ============================================================
+# V7 Phase X.B.MF-3 — writes_wired_status field (no fake-success)
+# ============================================================
+
+
+@pytest.mark.unit
+def test_capabilities_response_includes_writes_wired_status(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    """MF-3: /capabilities must surface writes_wired_status so consumers see
+    that lifecycle_transitions has no production writer yet."""
+    resp = client.get("/cockpit/capabilities")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "writes_wired_status" in data
+    status = data["writes_wired_status"]
+    # Lifecycle is orphan — must be marked NOT wired
+    assert status["writes_wired"] is False
+    assert "ORPHAN" in status["warning"]
+    assert "warning" in data  # also surfaced at top-level for consumers
+
+
+@pytest.mark.unit
+def test_mission_alignment_response_includes_writes_wired_status(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    """MF-3: /missions/{id}/alignment surfaces the X.B.MF-1 bridge status."""
+    resp = client.get("/cockpit/missions/tk-x/alignment")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "writes_wired_status" in data
+    status = data["writes_wired_status"]
+    # X.B.MF-1 wired this — default env-on
+    assert status["writes_wired"] is True
+    assert "X.B.MF-1" in status["writer"]
+
+
+@pytest.mark.unit
+def test_mission_alignment_writes_wired_false_when_bridge_disabled(
+    client: TestClient,
+    fake_readers: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When KUN_V7_MISSION_DIRECTOR_BRIDGE_ENABLED=false, status surfaces it."""
+    monkeypatch.setenv("KUN_V7_MISSION_DIRECTOR_BRIDGE_ENABLED", "false")
+    resp = client.get("/cockpit/missions/tk-x/alignment")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["writes_wired_status"]["writes_wired"] is False
+    assert "Bridge disabled" in (data.get("warning") or "")
+
+
+@pytest.mark.unit
+def test_auditor_reports_response_includes_writes_wired_status(
+    client: TestClient, fake_readers: dict[str, Any]
+) -> None:
+    """MF-3: /supervisor/auditor-reports must reveal it's orphan."""
+    resp = client.get("/cockpit/supervisor/auditor-reports")
+    assert resp.status_code == 200
+    data = resp.json()
+    status = data["writes_wired_status"]
+    assert status["writes_wired"] is False
+    assert "ORPHAN" in status["warning"]
+    assert "MF-AR-wiring" in status.get("mf_followup_required", "")
+
+
+@pytest.mark.unit
+def test_ensemble_endpoint_writes_wired_false_when_env_off(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default deployment (env unset) → ensemble writes_wired = false."""
+    monkeypatch.delenv("KUN_V7_ENSEMBLE_ENABLED", raising=False)
+    monkeypatch.delenv("KUN_V7_ENSEMBLE_TIERS", raising=False)
+    resp = client.get("/cockpit/ensemble/recent")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["writes_wired_status"]["writes_wired"] is False
+    assert "Ensemble disabled" in (data["writes_wired_status"]["warning"] or "")
+
+
+@pytest.mark.unit
+def test_ensemble_endpoint_writes_wired_true_when_env_on(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Env on + ≥ 2 tiers → ensemble writes_wired = true."""
+    monkeypatch.setenv("KUN_V7_ENSEMBLE_ENABLED", "true")
+    monkeypatch.setenv("KUN_V7_ENSEMBLE_TIERS", "top,cheap")
+    resp = client.get("/cockpit/ensemble/recent")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["writes_wired_status"]["writes_wired"] is True
+
+
+@pytest.mark.unit
+def test_writes_status_meta_endpoint(client: TestClient) -> None:
+    """/cockpit/writes-status — meta endpoint listing all table wiring."""
+    resp = client.get("/cockpit/writes-status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "tables" in data
+    tables = data["tables"]
+    assert "mission_alignment_reviews" in tables
+    assert "ensemble_calls" in tables
+    assert "lifecycle_transitions" in tables
+    assert "auditor_reports" in tables
+    # Each entry must have writes_wired bool + writer description
+    for tname, status in tables.items():
+        assert isinstance(status["writes_wired"], bool), tname
+        # warning is None when wired, str when not
+        warning = status.get("warning")
+        assert warning is None or isinstance(warning, str)
+    # MF progress tracker
+    assert "mf_progress" in data
+    assert "MF-1" in data["mf_progress"]
