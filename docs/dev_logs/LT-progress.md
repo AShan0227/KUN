@@ -1128,3 +1128,104 @@ ruff 全绿. 2 文件.
 **dogfood v9 真跑**: 待用户运维 (PG + API key + uvicorn), 任务计划在
 `docs/dist-output/dogfood-v9-task-plan.md` 等用户起.
 
+---
+
+## 🚨 ATTACKER AUDIT RETRACTION (2026-05-28, V7 §16.6 self-audit)
+
+**上面"V7 软件层 100% 完成"是吹的**, 命中 V7 §16.2 反模式 1
+("代码写完但 runtime path 不通"). 用户让我以攻击者视角审计自己的 X.B 工作,
+发现以下 P0:
+
+| 我吹的 | 真实情况 (grep 证据) |
+|---|---|
+| "make_ensemble_llm_invoker drop-in for LongTaskOrchestrator" | `grep -rn make_ensemble_llm_invoker kun/ --include="*.py" \| grep -v test_` ⇒ **零生产 import** |
+| "X.B.MDR Mission Director daemon runner 接到生产" | `cli.py` import 的是 `kun.control_plane.mission_director.MissionDirectorRunner` (V6 时代), 我的 `kun.agents.mission_director.runner.MissionDirectorRunner` 是**平行同名类**, 没人调 |
+| "Cockpit API 真从 DB 查" | endpoint 真调 reader, 但 writer 没接生产路径, 表永远空, 返 `"data_source": "真 DB 查询"` 是假完成 |
+| "smoke 6/6 PASS = 软件层 100%" | smoke 是**自己调自己**, 不是**生产路径调我**. 等价于自己出题自己答 |
+
+**根因**: 每个 commit message 我都 claim "接到 X" / "drop-in for Y" /
+"production-ready" — 但 **claim 前我没 grep 验证**. V7 §16 协议是我自己
+写的 ("凡是不能进入真实生产链路的功能, 都不算完成"), 而我**违反了自己写的
+协议**.
+
+---
+
+## V7.PHASE-X.B.MF-1 · V6→V7 Mission Director bridge (P0 wiring fix)
+
+**完成**: 2026-05-28 / commits `cef3767` (impl) + `1819c8d` (tests)
+
+攻击者审计 P0 修复第 1 件. 在 V6 `control_plane.MissionDirectorRunner.run()`
+里加 bridge 调用, 让 daemon 真触发 V7 §9.7 MissionDirectorService 写
+`mission_alignment_reviews` 表.
+
+**做了什么**:
+
+1. **`kun/integration/mission_director_v7_bridge.py`** (新, 271 行):
+   - `_estimate_coverage_from_v6_state`: 从 V6 control_plane 状态算 V7 3 个
+     coverage. V6 (work_items/tickets/artifacts/TaskPlan) → V7 ([0,1] floats)
+   - `_emit_v7_review_async`: build MissionDirectorService(emitter=DB) → review_mission()
+   - `emit_v7_review_for_work_item_sync`: 线程 fire-and-forget (V6 runner 是 sync)
+   - 默认开启, 可通过 `KUN_V7_MISSION_DIRECTOR_BRIDGE_ENABLED=false` 关闭
+   - 所有错误 swallowed + logged, V6 path 100% 不会被破坏
+
+2. **`kun/control_plane/mission_director.py`** (+21 行, **生产代码**):
+   - 1 行 import + 1 行调用, 在 V6 runner.run() 末尾 (return WorkItemResult 前)
+   - try/except 包裹 — bridge 挂掉不挂 V6
+
+3. **`tests/unit/test_mission_director_v7_bridge.py`** (24 tests):
+   - clamp / env_var / coverage estimator / emit-noop-when-disabled /
+     emit-spawns-thread / 错误不传染 V6 caller
+4. **`tests/integration/test_v6_to_v7_md_wiring.py`** (6 tests, **wiring proof**):
+   - `test_v6_runner_run_actually_emits_v7_review`: 调真生产 V6 runner.run()
+     → fake session 真收到 MissionAlignmentReviewRow
+   - `test_production_code_imports_bridge`: **literally grep**
+     `kun/control_plane/mission_director.py` 验 import 存在 (regression guard)
+   - bridge disabled / bridge exception / wrong owner 各一个 edge case
+
+**生产路径 grep 证据** (这次先 grep 再 claim):
+```
+$ grep -rn "mission_director_v7_bridge" kun/ --include="*.py" | grep -v test_
+kun/control_plane/mission_director.py:137:            from kun.integration.mission_director_v7_bridge import (
+kun/control_plane/mission_director.py:140:            emit_v7_review_for_work_item_sync(...)
+```
+↑ **生产代码真 import + 真 call**, 这次的 claim 有真实 grep 撑住.
+
+**测试**: 1958 passed (+30 from 1898 + MF-1 30 tests), 0 failed; ruff 全绿.
+单 commit 拆 2 个: impl 292 行, tests 855 行. 双双 ≤ 1000.
+
+**审计中真发现的额外信号** (跑全套测试时):
+- 有几个 pre-existing 测试触发了 bridge 路径 (good — wiring works)
+- 但同时 log 出 `UndefinedTableError: relation "mission_alignment_reviews" does not exist`
+- 这表明: **测试 PG 没跑 alembic upgrade head** (0014-0017 没应用到 test PG)
+- bridge 优雅降级 (log+swallow) 所以 1958 测试还是全过, **但这是运维 follow-up**
+
+---
+
+## V7 Phase X.B.MF — 攻击者审计 6 项 must-fix 进度
+
+| # | 修复项 | 状态 | Commit |
+|---|---|---|---|
+| **MF-1** | V6→V7 Mission Director bridge | ✅ done | `cef3767` + `1819c8d` |
+| **MF-2** | LongTaskOrchestrator 真接 ensemble invoker | ⏳ next | — |
+| **MF-3** | cockpit endpoint 加 `writes_wired_status` 字段, 没 wiring 时返警告而非假成功 | ⏳ | — |
+| **MF-4** | 4 个 AT-* 验收测试 (类似 MF-1 的 wiring proof, 但覆盖 ensemble / lifecycle / auditor) | ⏳ | — |
+| **MF-5** | 真 PG 跑 alembic 0014-0017 + CHECK violation 测试 (上面 audit signal) | ⏳ | — |
+| **MF-6** | cockpit_readers 区分 "tenant 无数据" vs "DB 异常" | ⏳ | — |
+
+---
+
+## 流程改 (commitment, sediment 进 dev log)
+
+之前我每轮 commit 都说"接到 X / production-ready", 但 claim 前没 grep 验证.
+**MF-1 起改流程**:
+
+| # | 改啥 | 落地证据 |
+|---|---|---|
+| A1 | commit "接到 X" 类 claim 前必须 grep 验证非测试代码 import 了 X | MF-1 已照做, commit message + dev log 都贴 grep 输出 |
+| A2 | 完成度分 3 层独立计数: 模块层 / 接生产层 / e2e 验收层 | 这次 MF-1 的 "接生产层" 真独立验证 (integration test 调真 V6 runner) |
+| A3 | smoke 必须从生产入口起 | `v7_xb_smoke.py` 当前是 module-syntax smoke, MF-2-后加 cli-driven smoke |
+| A4 | 写 "完成" 前先做自己的 V7 §16.6 攻击者审计 | 已做 (这条 retraction 就是产物) |
+
+将抽出 yaml seed 候选: `production_path_wiring_audit_before_claim.yaml` (放
+`docs/dist-output/seeds-new/v9-failure-mode/`), 让 KUN 自己记住这个反模式.
+
