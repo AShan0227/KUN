@@ -73,6 +73,7 @@ from kun.agents.supervisor.plan_review_service import (
     PlanReviewOutcome,
     PlanReviewService,
 )
+from kun.agents.trifecta import TrifectaCoordinator
 from kun.core.logging import get_logger
 from kun.datamodel.task import TaskRef
 from kun.external_supervisor.service import ExternalSupervisorService
@@ -199,6 +200,16 @@ class LongTaskOrchestrator:
         # long_task.critique / long_task.drift_alarm based on verdict.
         # None (default) = critique hook disabled — backward compatible.
         critique_every_n_steps: int | None = None,
+        # V7 §12.4 Trifecta milestone cadence (X.E.TRIFECTA-WIRING).
+        # When set + trifecta_coordinator is wired, every N main-line steps
+        # the orchestrator fires TrifectaCoordinator.run() with the synthetic
+        # mid-task state and emits long_task.trifecta_tick with per-line state
+        # + cost multiplier + n_findings. Hooks are already baked into the
+        # injected coordinator (production callers wire real-LLM hooks).
+        # None (default) = trifecta hook disabled — backward compatible.
+        trifecta_coordinator: TrifectaCoordinator | None = None,
+        trifecta_every_n_steps: int | None = None,
+        trifecta_n_future_candidates: int = 3,
     ) -> None:
         # --- Auto-wire external_supervisor_verify from service when not given ---
         # If both are passed, the explicit verify wins (caller is being deliberate).
@@ -220,6 +231,16 @@ class LongTaskOrchestrator:
             )
         self._external_supervisor_service = external_supervisor_service
         self._critique_every_n_steps = critique_every_n_steps
+
+        # --- V7 §12.4 Trifecta hook ---
+        if trifecta_every_n_steps is not None and trifecta_every_n_steps < 1:
+            raise ValueError(
+                "trifecta_every_n_steps must be >= 1 when set; got "
+                f"{trifecta_every_n_steps!r}"
+            )
+        self._trifecta_coordinator = trifecta_coordinator
+        self._trifecta_every_n_steps = trifecta_every_n_steps
+        self._trifecta_n_future_candidates = trifecta_n_future_candidates
 
         # --- Stash heartbeat tuning so we can rebuild per-task when needed ---
         # When plan_review_writer_factory is provided, run_long_task rebuilds
@@ -498,6 +519,25 @@ class LongTaskOrchestrator:
             )
             self._executor._llm = wrapped_invoker
 
+        # ---- 1d. (Optional) Trifecta milestone wrapper (V7 §12.4) ----
+        # When trifecta_coordinator + trifecta_every_n_steps are wired, wrap
+        # the invoker (possibly already critique-wrapped) so every N steps
+        # we fire `TrifectaCoordinator.run()` with the running step summary
+        # as recent_steps + current_step. Hooks already baked into the
+        # injected coordinator. Restored in finally below.
+        trifecta_hook_active = (
+            self._trifecta_every_n_steps is not None
+            and self._trifecta_coordinator is not None
+        )
+        if trifecta_hook_active:
+            current_invoker = self._executor._llm
+            self._executor._llm = self._build_trifecta_wrapped_invoker(
+                original_invoker=current_invoker,
+                emit=_emit,
+                task_id=task_id,
+                anchor_dict=anchor_dict,
+            )
+
         try:
             # ---- 2. Optional: RecursivePlanner.expand → PlanTree ----
             plan_tree: PlanTree | None = None
@@ -563,8 +603,10 @@ class LongTaskOrchestrator:
                 self._heartbeat = original_heartbeat
                 self._plan_review = original_plan_review
                 self._executor._plan_review = original_plan_review
-            # Restore original LLM invoker if we wrapped it for critique.
-            if critique_hook_active:
+            # Restore original LLM invoker if we wrapped it for critique
+            # or trifecta. (We track via the original handle so stacked
+            # wrappers all unwind cleanly.)
+            if critique_hook_active or trifecta_hook_active:
                 self._executor._llm = original_llm_invoker
 
     # ----------------------------- internals --------------------------------
@@ -680,6 +722,124 @@ class LongTaskOrchestrator:
                         "verdict": verdict,
                         "rationale": rationale,
                         "recommended_action": recommended,
+                    },
+                )
+            return response
+
+        return _wrapped
+
+    def _build_trifecta_wrapped_invoker(
+        self,
+        *,
+        original_invoker: LLMInvoker,
+        emit: Callable[[str, dict[str, Any]], Awaitable[None]],
+        task_id: str,
+        anchor_dict: dict[str, Any] | None,
+    ) -> LLMInvoker:
+        """Build an LLM invoker wrapper that fires `TrifectaCoordinator.run()`
+        every N steps (V7 §12.4 RSI 三线 milestone).
+
+        Each call counts as one main-line step. When the counter is a multiple
+        of ``self._trifecta_every_n_steps``, we:
+          1. Build a synthetic ``recent_steps`` from the running step summary
+          2. Compose a ``current_step`` from the most recent assistant payload
+          3. Compose a ``future_plan`` from anchor_dict (goal_statement /
+             success_criteria) so the future-line hook has goal context
+          4. Call ``TrifectaCoordinator.run(...)`` — caller's pre-baked hooks
+             handle real-LLM dispatch
+          5. Emit ``long_task.trifecta_tick`` event with per-line state +
+             cost_multiplier_vs_baseline + n_findings
+
+        The wrapper never raises into the ExecutorLoop: if the coordinator
+        crashes we log + skip, so a flaky LLM provider in a trifecta line
+        doesn't kill the long task.
+        """
+        every = self._trifecta_every_n_steps
+        coord = self._trifecta_coordinator
+        n_candidates = self._trifecta_n_future_candidates
+        if every is None or coord is None:
+            raise RuntimeError(
+                "_build_trifecta_wrapped_invoker called without "
+                "trifecta_every_n_steps + trifecta_coordinator"
+            )
+        step_summaries: list[dict[str, Any]] = []
+        call_count = 0
+
+        async def _wrapped(messages: list[dict[str, Any]]) -> LLMStepResponse:
+            nonlocal call_count
+            response = await original_invoker(messages)
+            call_count += 1
+            # Capture this step's summary (prefer text content; fall back to
+            # tool-call digest if the model only emitted tools).
+            summary = (response.content or "").strip()
+            if not summary and response.tool_calls:
+                summary = "tool_calls=" + ",".join(
+                    tc.name for tc in response.tool_calls
+                )
+            step_summaries.append({"step_idx": call_count, "summary": summary})
+
+            if call_count % every != 0:
+                return response
+
+            # Trifecta milestone hit.
+            recent_window = list(step_summaries[-every:])
+            current_step = {
+                "step_idx": call_count,
+                "summary": summary[:500],
+            }
+            future_plan: dict[str, Any] = {}
+            if anchor_dict:
+                # Pass the goal + success_criteria so the future line knows
+                # what target to propose candidates against.
+                future_plan = {
+                    "goal": anchor_dict.get("goal_statement", ""),
+                    "success_criteria": list(
+                        anchor_dict.get("success_criteria", []) or []
+                    ),
+                }
+
+            try:
+                report = await coord.run(
+                    task_id=task_id,
+                    recent_steps=recent_window,
+                    current_step=current_step,
+                    future_plan=future_plan,
+                    n_future_candidates=n_candidates,
+                )
+            except Exception as e:
+                log.warning(
+                    "long_task_orchestrator.trifecta_failed",
+                    task_id=task_id,
+                    call_count=call_count,
+                    error=str(e),
+                )
+                return response
+
+            await emit(
+                "long_task.trifecta_tick",
+                {
+                    "task_id": task_id,
+                    "call_count": call_count,
+                    "past_state": report.past.state.value,
+                    "present_state": report.present.state.value,
+                    "future_state": report.future.state.value,
+                    "n_findings": report.n_findings,
+                    "total_cost_usd": round(report.total_cost_usd, 6),
+                    "cost_multiplier_vs_baseline": round(
+                        report.cost_multiplier_vs_baseline, 3
+                    ),
+                    "any_line_failed": report.any_line_failed,
+                },
+            )
+            if report.any_line_failed:
+                await emit(
+                    "long_task.trifecta_line_failed",
+                    {
+                        "task_id": task_id,
+                        "call_count": call_count,
+                        "past_error": report.past.error_detail,
+                        "present_error": report.present.error_detail,
+                        "future_error": report.future.error_detail,
                     },
                 )
             return response

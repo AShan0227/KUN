@@ -1216,3 +1216,297 @@ async def test_critique_llm_invoker_restored_after_run() -> None:
 
     # After run, the wrapper is gone — back to the original llm_invoker
     assert orch._executor._llm is original_llm
+
+
+# --------------------------------------------------------------------------- #
+# Trifecta wiring (V7 §12.4 — X.E.TRIFECTA-WIRING)                            #
+# --------------------------------------------------------------------------- #
+
+
+def _stub_trifecta_hooks(
+    past_cost: float = 0.001,
+    present_cost: float = 0.002,
+    future_cost: float = 0.005,
+) -> tuple[Any, Any, Any]:
+    async def _past(
+        _task_id: str, _recent: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], float, str | None]:
+        return ([{"finding": "past-stub"}], past_cost, None)
+
+    async def _present(
+        _task_id: str, _cur: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], float, str | None]:
+        return ([{"critique": "present-stub"}], present_cost, None)
+
+    async def _future(
+        _task_id: str, _plan: dict[str, Any], n: int
+    ) -> tuple[list[dict[str, Any]], float, str | None]:
+        return (
+            [{"candidate": f"f-{i}"} for i in range(n)],
+            future_cost,
+            None,
+        )
+
+    return _past, _present, _future
+
+
+def _make_trifecta_coordinator(*, past=None, present=None, future=None):
+    from kun.agents.trifecta import TrifectaCoordinator
+
+    p, q, r = _stub_trifecta_hooks()
+    return TrifectaCoordinator(
+        past_hook=past or p,
+        present_hook=present or q,
+        future_hook=future or r,
+    )
+
+
+async def test_trifecta_hook_fires_every_n_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """trifecta_every_n_steps=2 + 6 main-line steps → trifecta fires 3 times."""
+    monkeypatch.setenv("KUN_V7_TRIFECTA_ENABLED", "true")
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=5))  # 6 LLM calls total
+    store = _CheckpointStore()
+    coord = _make_trifecta_coordinator()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        trifecta_coordinator=coord,
+        trifecta_every_n_steps=2,
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+    sink = _EventCollector()
+
+    outcome = await orch.run_long_task(_ref_with_anchor(task_id="task-tri-1"), on_event=sink)
+
+    assert outcome.loop_result.status == "final"
+    ticks = sink.all_of("long_task.trifecta_tick")
+    assert len(ticks) == 3
+    call_counts = [ev.data["call_count"] for ev in ticks]
+    assert call_counts == [2, 4, 6]
+    # All 3 lines fired and reported OK in the synthetic stubs
+    for ev in ticks:
+        assert ev.data["past_state"] == "ok"
+        assert ev.data["present_state"] == "ok"
+        assert ev.data["future_state"] == "ok"
+        assert ev.data["n_findings"] == 1 + 1 + 3  # past + present + 3 future candidates
+        assert ev.data["any_line_failed"] is False
+
+
+async def test_trifecta_hook_below_threshold_does_not_fire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """trifecta_every_n_steps=10 + only 3 LLM calls → no trifecta tick fires."""
+    monkeypatch.setenv("KUN_V7_TRIFECTA_ENABLED", "true")
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=2))  # 3 LLM calls
+    store = _CheckpointStore()
+    coord = _make_trifecta_coordinator()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        trifecta_coordinator=coord,
+        trifecta_every_n_steps=10,
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+    sink = _EventCollector()
+
+    outcome = await orch.run_long_task(_ref_with_anchor(), on_event=sink)
+
+    assert outcome.loop_result.status == "final"
+    assert sink.all_of("long_task.trifecta_tick") == []
+
+
+async def test_trifecta_hook_failure_does_not_kill_main_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A line's hook raising → tick fires but reports FAILED state; main loop wins."""
+    monkeypatch.setenv("KUN_V7_TRIFECTA_ENABLED", "true")
+
+    async def _boom_past(
+        _task_id: str, _recent: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], float, str | None]:
+        raise RuntimeError("simulated past-line crash")
+
+    coord = _make_trifecta_coordinator(past=_boom_past)
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=1))  # 2 LLM calls
+    store = _CheckpointStore()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        trifecta_coordinator=coord,
+        trifecta_every_n_steps=2,
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+    sink = _EventCollector()
+
+    outcome = await orch.run_long_task(_ref_with_anchor(), on_event=sink)
+
+    # Main loop completed
+    assert outcome.loop_result.status == "final"
+    # Trifecta tick still emitted, but flags failure
+    ticks = sink.all_of("long_task.trifecta_tick")
+    assert len(ticks) == 1
+    assert ticks[0].data["past_state"] == "failed"
+    assert ticks[0].data["any_line_failed"] is True
+    # Line-failed event also emitted
+    failed = sink.all_of("long_task.trifecta_line_failed")
+    assert len(failed) == 1
+    assert "simulated past-line crash" in (failed[0].data["past_error"] or "")
+
+
+async def test_trifecta_env_master_off_does_not_fire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KUN_V7_TRIFECTA_ENABLED unset → coordinator runs all-DISABLED, no real fires."""
+    monkeypatch.delenv("KUN_V7_TRIFECTA_ENABLED", raising=False)
+    coord = _make_trifecta_coordinator()
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=3))  # 4 LLM calls
+    store = _CheckpointStore()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        trifecta_coordinator=coord,
+        trifecta_every_n_steps=2,
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+    sink = _EventCollector()
+
+    outcome = await orch.run_long_task(_ref_with_anchor(), on_event=sink)
+
+    # Wrapper still calls coord.run(), but coord returns all-DISABLED
+    # (master switch off), so emitted ticks all have state='disabled'
+    assert outcome.loop_result.status == "final"
+    ticks = sink.all_of("long_task.trifecta_tick")
+    # 2 ticks (at calls 2 and 4), each with all 3 lines DISABLED
+    assert len(ticks) == 2
+    for ev in ticks:
+        assert ev.data["past_state"] == "disabled"
+        assert ev.data["present_state"] == "disabled"
+        assert ev.data["future_state"] == "disabled"
+        assert ev.data["n_findings"] == 0
+
+
+async def test_trifecta_no_coordinator_means_no_wrapping() -> None:
+    """trifecta_coordinator=None disables the hook entirely (no wrapping)."""
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=3))
+    store = _CheckpointStore()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        trifecta_every_n_steps=2,  # cadence set, but no coordinator
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+    original_llm = orch._executor._llm
+    sink = _EventCollector()
+
+    await orch.run_long_task(_ref_with_anchor(), on_event=sink)
+
+    # No trifecta wrapping happened (coord=None short-circuits the activation)
+    assert orch._executor._llm is original_llm
+    assert sink.all_of("long_task.trifecta_tick") == []
+
+
+async def test_trifecta_wrapper_restored_after_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After run_long_task, _executor._llm is back to the original (no wrapper leak)."""
+    monkeypatch.setenv("KUN_V7_TRIFECTA_ENABLED", "true")
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=2))  # 3 LLM calls
+    store = _CheckpointStore()
+    coord = _make_trifecta_coordinator()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        trifecta_coordinator=coord,
+        trifecta_every_n_steps=2,
+        enable_recursive_planner=False,
+    )
+    original_llm = orch._executor._llm
+
+    await orch.run_long_task(_ref_with_anchor(), on_event=None)
+
+    assert orch._executor._llm is original_llm
+
+
+async def test_trifecta_invalid_every_n_steps_raises_at_construction() -> None:
+    """trifecta_every_n_steps=0 → ValueError at __init__."""
+    store = _CheckpointStore()
+    llm = _FakeLLM([_final_response("done")])
+
+    with pytest.raises(ValueError, match="trifecta_every_n_steps must be >= 1"):
+        LongTaskOrchestrator(
+            llm_invoker=llm,
+            tool_executor=_passthrough_tools,
+            checkpoint_writer=store.writer,
+            checkpoint_reader=store.reader,
+            checkpoint_status_marker=store.marker,
+            trifecta_coordinator=_make_trifecta_coordinator(),
+            trifecta_every_n_steps=0,
+            enable_recursive_planner=False,
+        )
+
+
+async def test_trifecta_and_critique_can_stack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both hooks active simultaneously: 6 LLM calls, critique@2,4,6 + trifecta@3,6."""
+    monkeypatch.setenv("KUN_V7_TRIFECTA_ENABLED", "true")
+    llm = _FakeLLM(_multi_step_responses(n_tool_steps=5))  # 6 LLM calls
+    store = _CheckpointStore()
+    critic = _CriticServiceStub(verdicts=["ok", "ok", "ok"])
+    coord = _make_trifecta_coordinator()
+
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        external_supervisor_service=critic,  # type: ignore[arg-type]
+        critique_every_n_steps=2,
+        trifecta_coordinator=coord,
+        trifecta_every_n_steps=3,
+        max_steps=10,
+        enable_recursive_planner=False,
+    )
+    sink = _EventCollector()
+
+    outcome = await orch.run_long_task(_ref_with_anchor(), on_event=sink)
+
+    assert outcome.loop_result.status == "final"
+    # Critique at calls 2, 4, 6
+    critiques = sink.all_of("long_task.critique")
+    assert [ev.data["call_count"] for ev in critiques] == [2, 4, 6]
+    # Trifecta at calls 3, 6
+    ticks = sink.all_of("long_task.trifecta_tick")
+    assert [ev.data["call_count"] for ev in ticks] == [3, 6]
