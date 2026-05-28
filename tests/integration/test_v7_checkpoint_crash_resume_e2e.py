@@ -50,9 +50,8 @@ async def _reset_engines_between_tests() -> Any:
 
 async def _skip_if_no_pg() -> None:
     try:
-        from sqlalchemy import text
-
         from kun.core.db import session_scope
+        from sqlalchemy import text
 
         async with session_scope(tenant_id="t-cp-probe") as s:
             await s.execute(text("SELECT 1"))
