@@ -774,7 +774,7 @@ emitter callback, 但 emitter 默认 None. 这条 commit 给 emitter 提供真�
 - [ ] daemon 默认注册 Mission Director runner (每 tick 跑 review)
 - [x] **Lifecycle ORM Row + alembic + writer** ✅ commit `a9c688b` (X.B.LC)
 - [x] **Auditor Reports ORM Row + alembic + writer** ✅ commit `85fae52` (X.B.AR)
-- [ ] Cockpit API endpoints 真从 DB 查 (替换 Phase E.A stub)
+- [x] **Cockpit API endpoints 真从 DB 查** ✅ commit `a3a2bb5` (X.B.UI)
 - [ ] Orchestrator 真用 ensemble_invoke (现在还是 single-LLM)
 - [ ] dogfood v9 走新 V7 protocols 真验证 trifecta + ensemble
 
@@ -858,4 +858,68 @@ retrospect 复盘. 本 commit 补齐.
 
 3 张 DB 表 + 3 套 frozen IO + 3 套 writer / factory + RLS 兜底全到位. 之后
 Cockpit API endpoint 就能从 stub 切到真 DB 查 — Phase E.A → E.B 切换.
+
+---
+
+## V7.PHASE-X.B.UI · Cockpit API 真从 DB 查 (Phase X.B 第 4 刀)
+
+**完成**: 2026-05-28 / commit `a3a2bb5`
+
+Phase E.A 给了 cockpit endpoints 但全是 stub. Phase X.B 把 4 个 endpoint 切
+到真 DB query (X.B.MD/LC/AR 三张表都已就绪).
+
+**做了什么**:
+
+1. **kun/api/cockpit_readers.py** (新, 225 行) — 3 个纯函数 reader:
+   - `list_recent_mission_reviews(tenant_id, task_id?, limit)`
+   - `list_recent_lifecycle_transitions(tenant_id, capability_id?, to_stage?, limit)`
+   - `list_recent_auditor_reports(tenant_id, audited_capability?, risk_level?, limit)`
+   - 返 JSON-serializable list[dict] (datetime → isoformat, Decimal → float)
+   - **graceful degradation**: DB 异常 → 返 [] + log warning (dashboard 不该硬错)
+   - limit clamp 到 1-100
+
+2. **kun/api/cockpit.py** 4 个 endpoint 改造:
+   - `GET /cockpit/capabilities` — 从 stub 改为 query lifecycle_transitions
+     按 `capability_id` 分组, `current_stage` = 最新 transition.to_stage
+   - `GET /cockpit/capabilities/{id}` — 从 501 stub 改为 404 (无历史) /
+     200 (返完整 transitions + current_stage_decided_at)
+   - `GET /cockpit/missions/{task_id}/alignment` — query mission_alignment_reviews,
+     返 reviews list + latest snapshot
+   - `GET /cockpit/supervisor/auditor-reports` — query auditor_reports +
+     聚合 risk_distribution + block_release_count
+   - 全部加 `tenant_id` Query param + 各自过滤 query (risk_level pattern="^P[0-2]$")
+
+3. **tests/unit/test_cockpit_api.py** 重写 — `fake_readers` fixture
+   monkey-patch 3 个 reader 为 in-memory fakes. 旧 stub 字符串 assertions 改成
+   "schema 保留" 风格. 加: capability 分组 / 404 / risk_distribution 聚合 /
+   filter 透传 / 非法 risk_level 422.
+
+4. **tests/unit/test_cockpit_readers.py** (新, 335 行) — 13 个 reader 单测:
+   - empty / dict shape 完整 / limit clamp / DB failure → []
+   - 每个 reader 都覆盖 3-4 个 tests
+
+**测试**: 1869 passed (+18 from 1851); ruff 全绿.
+
+RSI trifecta / ensemble / discipline 这 3 个 endpoint 还是 stub — 因为还没
+专门 DB 表 (trifecta 现在是 service 内存状态, ensemble 走 LLMRouter 日志,
+discipline 走 enforcer 调用). 这些等 Phase X.B 下半场 (daemon 接入 +
+Orchestrator 接 ensemble_invoke) 时再补.
+
+---
+
+## V7 Phase X.B 现状小结 (4/6 done) 更新
+
+| Subtask | Status | Commit |
+|---|---|---|
+| Mission Director DB | ✅ | `78313ad` |
+| Capability Lifecycle DB | ✅ | `a9c688b` |
+| Auditor Reports DB | ✅ | `85fae52` |
+| Cockpit API 真从 DB 查 | ✅ | `a3a2bb5` |
+| daemon 默认注册 Mission Director runner | ⏳ | — |
+| Orchestrator 真用 ensemble_invoke | ⏳ | — |
+| dogfood v9 走新 V7 protocols | ⏳ | — |
+
+DB 写入 (3 张表) + DB 读出 (4 endpoint 改造) 都到位了, **驾驶舱真能查真数据了** —
+Phase E.A "stub UI" 升到 Phase X.B "真 DB UI", 离 Phase E.C frontend 还差
+具体页面层.
 
