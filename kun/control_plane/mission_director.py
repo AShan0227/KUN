@@ -126,6 +126,27 @@ class MissionDirectorRunner:
             artifact=artifact,
         )
         followups = _followups_from_gate(work_item=work_item, gate=gate)
+
+        # V7 Phase X.B.MF-1: emit V7 §9.7 MissionAlignmentReview alongside the
+        # V6 payload so the new mission_alignment_reviews table真接到生产链路.
+        # Fire-and-forget; bridge handles its own error path / opt-out env var.
+        # See kun.integration.mission_director_v7_bridge for design rationale
+        # (closes attacker-audit P0 finding "production path 不必经").
+        try:
+            from kun.integration.mission_director_v7_bridge import (
+                emit_v7_review_for_work_item_sync,
+            )
+
+            emit_v7_review_for_work_item_sync(
+                control_plane=self.control_plane,
+                mission=mission,
+                work_item=work_item,
+                payload=payload,
+            )
+        except Exception:
+            # Defense in depth: V6 path must not break if bridge import / hook fails
+            pass
+
         return WorkItemResult(
             status="done",
             summary=str(payload["summary"]),
