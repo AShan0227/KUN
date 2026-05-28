@@ -24,6 +24,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from kun import __version__
 from kun.api.chat import router as chat_router
+from kun.api.cockpit import router as cockpit_router
 from kun.api.control_plane import router as control_plane_router
 from kun.api.health import router as health_router
 from kun.api.nuo import router as nuo_router
@@ -265,6 +266,8 @@ app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
 app.include_router(ws_router)
 app.include_router(nuo_router, prefix="/nuo", tags=["nuo"])
 app.include_router(control_plane_router)
+# V7 §20 cockpit endpoints (already has /cockpit prefix in router)
+app.include_router(cockpit_router)
 
 
 @app.get("/")
