@@ -104,18 +104,62 @@ async def emit_heuristic_auditor_report_for_capability(
     test_pass_rate: float | None = None,
     target_module: str | None = None,
 ) -> str | None:
-    """Emit a heuristic AuditorReport after a V7 lifecycle transition.
+    """Emit an AuditorReport after a V7 lifecycle transition.
+
+    Strategy (V7 §16.6 fallback chain, X.C.MF-AR-LLM):
+      1. If KUN_V7_AUDITOR_USE_LLM=true AND ensemble available, try
+         real LLM-driven 7-角度审计 via llm_audit_capability(). Returns
+         that report_id on success.
+      2. Otherwise fall back to the original heuristic (gate-derived).
 
     Returns the report_id when emitted, None when:
-      - bridge env-disabled
-      - emit failed (logged + swallowed)
+      - bridge env-disabled (KUN_V7_AUDITOR_REPORT_BRIDGE_ENABLED=false)
+      - both LLM AND heuristic failed (logged + swallowed)
 
-    Caller (capability_lifecycle_v7_bridge) should ignore the return — this
-    is observability, not gate-blocking.
+    Caller (capability_lifecycle_v7_bridge) ignores the return — this is
+    observability, not gate-blocking.
     """
     if not _bridge_enabled():
         return None
 
+    # V7 §16.6 MF-AR-LLM: try real LLM audit first when enabled
+    try:
+        from kun.integration.auditor_report_llm import llm_audit_capability
+
+        # Code paths derived from target_module (best-effort)
+        code_paths = [target_module] if target_module else []
+        # No specific test_files for a freshly promoted capability — pass empty
+        llm_report_id = await llm_audit_capability(
+            capability_id=capability_id,
+            capability_name=target_module or f"capability:{capability_id}",
+            design_promise=(
+                f"V7 §15 stage entry: → {target_stage}. "
+                f"Capability {capability_id} promoted via GateService.admit. "
+                f"Gate rule_results: {decision.rule_results}. "
+                f"Reasons: {'; '.join(decision.reasons[:5])}"
+            ),
+            code_paths_to_audit=code_paths,
+            test_files_to_audit=[],
+            tenant_id=tenant_id,
+            recent_dogfood_summary=None,
+        )
+        if llm_report_id is not None:
+            log.info(
+                "auditor_report_v7_bridge.llm_audit_succeeded",
+                capability_id=capability_id,
+                target_stage=target_stage,
+                llm_report_id=llm_report_id,
+            )
+            return llm_report_id
+        # llm_report_id is None → LLM path skipped or failed; continue to heuristic
+    except Exception as e:
+        log.warning(
+            "auditor_report_v7_bridge.llm_audit_failed_falling_back",
+            capability_id=capability_id,
+            error=f"{type(e).__name__}: {e}",
+        )
+
+    # Fallback: heuristic
     risk_level, allow_release = _classify_heuristic_risk(
         decision, test_pass_rate
     )

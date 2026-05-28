@@ -769,7 +769,76 @@ class ControlPlaneDaemon:
                         capability_policy=capability_policy,
                     )
         self._store_refresh_signature = self._current_store_signature()
+
+        # V7 Phase X.C.MD-DAEMON: fire V7 §9.7 Mission Director periodic review
+        # for each selected mission. Env-gated, default OFF (opt-in so existing
+        # daemon tests don't spawn threads). Fires fire-and-forget via the
+        # existing X.B.MF-1 bridge pattern. See:
+        #   docs/dist-output/seeds-new/v9/cross_loop_asyncpg_bridge_isolation.yaml
+        try:
+            import os
+
+            if os.environ.get(
+                "KUN_V7_MD_DAEMON_TICK_ENABLED", ""
+            ).strip().lower() in {"true", "1", "yes", "on"}:
+                self._fire_v7_mission_director_periodic_tick(
+                    mission_ids=selected_mission_ids,
+                    report=report,
+                )
+        except Exception:
+            # Defense in depth: V6 tick_once must not break if V7 hook fails
+            pass
+
         return report
+
+    def _fire_v7_mission_director_periodic_tick(
+        self,
+        *,
+        mission_ids: list[str],
+        report: DaemonTickReport,
+    ) -> None:
+        """V7 §9.7 Mission Director periodic review hook (X.C.MD-DAEMON).
+
+        For each active mission, fire the X.B.MF-1 V7 bridge as if a review
+        work item just landed. Uses the existing bridge pattern (thread
+        fire-and-forget + thread-local engine).
+        """
+        from kun.integration.mission_director_v7_bridge import (
+            emit_v7_review_for_work_item_sync,
+        )
+
+        for mission_id in mission_ids:
+            mission = self.control_plane.missions.get(mission_id)
+            if mission is None:
+                continue
+            # Synthetic "periodic review" work_item — not stored, just used
+            # as input to the bridge for coverage estimation.
+            try:
+                from kun.control_plane.v6 import WorkItem
+
+                synthetic_wi = WorkItem(
+                    work_item_id=f"work-md-tick-{mission_id[-8:]}",
+                    mission_id=mission_id,
+                    task_plan_version=mission.current_plan_version or "v0",
+                    type="review",
+                    owner="mission-director",
+                    expected_output="Periodic MD review (V7 §9.7 X.C.MD-DAEMON)",
+                )
+                emit_v7_review_for_work_item_sync(
+                    control_plane=self.control_plane,
+                    mission=mission,
+                    work_item=synthetic_wi,
+                    payload={
+                        "summary": (
+                            f"Daemon periodic MD review for mission_id={mission_id}"
+                        ),
+                    },
+                )
+            except Exception:  # noqa: S112
+                # Skip this mission, continue with others — daemon must NOT
+                # break on V7 fire-and-forget hook. Bridge already logs its
+                # own errors at warning level.
+                continue
 
     def _write_progress_artifacts(
         self,
