@@ -116,14 +116,31 @@ def _writes_wired_status() -> dict[str, dict[str, Any]]:
             ),
         },
         "lifecycle_transitions": {
-            "writes_wired": False,
-            "writer": None,
-            "warning": (
-                "ORPHAN: no production code emits to lifecycle_transitions yet. "
-                "Phase X.B.LC built the writer; MF-LC-wiring follow-up needed. "
-                "Cockpit /capabilities will always show empty until then."
+            "writes_wired": _truthy(
+                "KUN_V7_CAPABILITY_LIFECYCLE_BRIDGE_ENABLED", default=True
             ),
-            "mf_followup_required": "MF-LC-wiring (TBD)",
+            "writer": "kun.agents.gate.service.GateService.admit "
+            "→ kun.integration.capability_lifecycle_v7_bridge (X.B.MF-LC-wiring)",
+            "env_gate": "KUN_V7_CAPABILITY_LIFECYCLE_BRIDGE_ENABLED",
+            "env_current_value_truthy": _truthy(
+                "KUN_V7_CAPABILITY_LIFECYCLE_BRIDGE_ENABLED", default=True
+            ),
+            "warning": (
+                None
+                if _truthy(
+                    "KUN_V7_CAPABILITY_LIFECYCLE_BRIDGE_ENABLED", default=True
+                )
+                else (
+                    "Bridge disabled — lifecycle_transitions 表不会有新行 "
+                    "from GateService approvals."
+                )
+            ),
+            "note": (
+                "Only OBSERVATION→CANDIDATE wired automatically from "
+                "GateService approvals. Later stage transitions "
+                "(REPLAY/HOLDOUT/SHADOW/CANARY/PRODUCTION) must be emitted "
+                "by promotion_queue + manual gate flow (separate wiring)."
+            ),
         },
         "auditor_reports": {
             "writes_wired": False,
@@ -435,11 +452,12 @@ async def get_writes_wired_status() -> dict[str, Any]:
             "MF-1": "V6 MD bridge — done (commit cef3767 + 1819c8d)",
             "MF-2": "LongTaskOrch ensemble wiring — done (commit 271c121)",
             "MF-3": "writes_wired_status — done (this endpoint)",
-            "MF-LC-wiring": "lifecycle_transitions writer wiring — TBD",
+            "MF-LC-wiring": "lifecycle_transitions writer wiring — done "
+            "(GateService.admit approve → V7 OBSERVATION→CANDIDATE)",
             "MF-AR-wiring": "auditor_reports writer wiring — TBD",
-            "MF-4": "AT-* acceptance tests — TBD",
+            "MF-4": "AT-* acceptance tests — partial (MF-1/2/LC have wiring proofs)",
             "MF-5": "real PG CHECK violation tests — TBD",
-            "MF-6": "cockpit_readers error_kind — TBD",
+            "MF-6": "cockpit_readers error_kind classification — done (commit b1592e6)",
         },
         "v7_doc_ref": "docs/v7/KUN-V7.md §16.6 attacker audit",
     }

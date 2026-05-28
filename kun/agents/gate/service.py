@@ -359,6 +359,23 @@ class GateService:
                     error=str(e),
                     capability_id=capability_id,
                 )
+
+        # V7 Phase X.B.MF-LC-wiring: emit V7 §15 lifecycle transition
+        # (OBSERVATION → CANDIDATE) alongside the V6 promotion row.
+        # Fire-and-forget; bridge handles its own env opt-out + errors.
+        # Audit grep: kun.integration.capability_lifecycle_v7_bridge
+        try:
+            from kun.integration.capability_lifecycle_v7_bridge import (
+                emit_lifecycle_transition_for_gate_decision,
+            )
+
+            await emit_lifecycle_transition_for_gate_decision(
+                decision=decision, tenant_id=tenant_id
+            )
+        except Exception:
+            # Defense in depth: V6 gate must not break if V7 bridge import / hook fails
+            pass
+
         log.info(
             "gate.approved",
             decision_id=decision.decision_id,

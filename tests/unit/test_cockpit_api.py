@@ -422,17 +422,34 @@ def test_auditor_reports_invalid_risk_level_returns_422(
 def test_capabilities_response_includes_writes_wired_status(
     client: TestClient, fake_readers: dict[str, Any]
 ) -> None:
-    """MF-3: /capabilities must surface writes_wired_status so consumers see
-    that lifecycle_transitions has no production writer yet."""
+    """MF-3 + MF-LC-wiring: /capabilities surfaces writes_wired_status.
+    MF-LC-wiring made this default-on (was ORPHAN before)."""
     resp = client.get("/cockpit/capabilities")
     assert resp.status_code == 200
     data = resp.json()
     assert "writes_wired_status" in data
     status = data["writes_wired_status"]
-    # Lifecycle is orphan — must be marked NOT wired
-    assert status["writes_wired"] is False
-    assert "ORPHAN" in status["warning"]
-    assert "warning" in data  # also surfaced at top-level for consumers
+    # MF-LC-wiring landed — lifecycle_transitions now has production writer
+    # via GateService.admit
+    assert status["writes_wired"] is True
+    assert "GateService.admit" in status["writer"]
+    assert "X.B.MF-LC-wiring" in status["writer"]
+
+
+@pytest.mark.unit
+def test_capabilities_writes_wired_false_when_lc_bridge_disabled(
+    client: TestClient,
+    fake_readers: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Env kill switch works for MF-LC-wiring bridge."""
+    monkeypatch.setenv(
+        "KUN_V7_CAPABILITY_LIFECYCLE_BRIDGE_ENABLED", "false"
+    )
+    resp = client.get("/cockpit/capabilities")
+    data = resp.json()
+    assert data["writes_wired_status"]["writes_wired"] is False
+    assert "Bridge disabled" in (data["writes_wired_status"]["warning"] or "")
 
 
 @pytest.mark.unit
@@ -469,7 +486,7 @@ def test_mission_alignment_writes_wired_false_when_bridge_disabled(
 def test_auditor_reports_response_includes_writes_wired_status(
     client: TestClient, fake_readers: dict[str, Any]
 ) -> None:
-    """MF-3: /supervisor/auditor-reports must reveal it's orphan."""
+    """MF-3: /supervisor/auditor-reports — auditor still ORPHAN (MF-AR-wiring TBD)."""
     resp = client.get("/cockpit/supervisor/auditor-reports")
     assert resp.status_code == 200
     data = resp.json()
