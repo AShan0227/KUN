@@ -712,3 +712,69 @@ grep 验证", 但 KUN 没工具支持. LLM 只能降级用 shell-exec 跑 raw gr
 5 张 dogfood 蒸馏出的方法论 + 1 张 P4 加的 = **+6 张新方法论 (27 → 33)**.
 新 skill: self-reflect (LT.SELF-REFLECT-SKILL) + grep-verify (P4) = **+2 个一等 skill**.
 
+---
+
+## V7.PHASE-A → E + G · 产品方案 V7 落地骨架 (11 commits, 2026-05-27/28)
+
+| Commit | Phase | 内容 |
+|---|---|---|
+| `962f981` | V7.DOC | docs/v7/KUN-V7.md (121KB, 28 章 + 2 附录) |
+| `d652485` | V7.PHASE-0.1 | 撤回 dogfood v8 5 yaml 违规合并 (走 lifecycle) |
+| `7ca763d` | V7.PHASE-0.5 | 旧入口收口 — fixture-only 标识 + grep audit |
+| `3db2d32` | V7.PHASE-0.4 | V6 子系统实装层级评估写入 V7 §25 差异附录 |
+| `d62fbd0` | V7.PHASE-A | kun.agents.qi/ + kun.agents.nuo/ re-export 包 (命名迁移) |
+| `f865e40` | V7.PHASE-G | External Supervisor 升级 — cross-family + auditor hat |
+| `979fd0c` | V7.PHASE-C | multi-LLM ensemble — LLMRouter.ensemble_invoke |
+| `f57f6e4` | V7.PHASE-D | RSI 9 阶段 capability lifecycle + gate enforcement |
+| `59d67b6` | V7.PHASE-B | Mission Director 一级子系统 (V7 §9.7, 从 0 建) |
+| `023c93b` | V7.PHASE-F | Claude Code 工程纪律 enforcer (10 维 + 4 扩展项) |
+| `de91723` | V7.PHASE-E | 任务驾驶舱 API + CLI viewer (最小可行版) |
+
+**Phase A-G 全 done = V7 骨架完成 (Phase X.A)**. Service / IO / 单测 / API 都齐,
+但每个子系统的 **emitter callback 默认 None** —— 跑完不落 DB, 没进生产链路.
+
+V7 §16 production-loop hard rule: "凡是不能进入真实生产链路的功能, 都不算完成".
+所以 Phase X.B "接真 DB / daemon / runtime" 才是真正完成. 见下面 V7.PHASE-X.B.
+
+---
+
+## V7.PHASE-X.B.MD · Mission Director 接真 DB (Phase X.B 第 1 刀)
+
+**完成**: 2026-05-28 / commit `78313ad`
+
+V7 §9.7 Mission Director 在 Phase B (`59d67b6`) 有了 service + frozen IO +
+emitter callback, 但 emitter 默认 None. 这条 commit 给 emitter 提供真实现 —
+落 mission_alignment_reviews + plan_change_proposals 两张表.
+
+**做了什么**:
+
+1. **`kun/core/orm.py`** — 加 2 张 Row:
+   - `MissionAlignmentReviewRow` (verdict ∈ {ok/drifting/off_anchor/needs_human},
+     alignment_score / 3 coverage + CHECK [0,1], findings JSONB, proposal linkage)
+   - `PlanChangeProposalRow` (severity ∈ {low/medium/high}, triggered_by ∈
+     {mission_director/qi/nuo/external_supervisor}, change_type ∈
+     {scope/criteria/resource/risk}, candidate_changes ≥ 1, **不变量 CHECK:
+     high severity ⇒ user_approval_required=true**)
+2. **`alembic/versions/0014_mission_director.py`** — 两张表 + indexes + ADR-007
+   RLS (与 0011-0013 风格一致)
+3. **`kun/integration/mission_director_db.py`** —
+   - `write_mission_review` / `write_plan_change_proposal` (纯 dict → Row + flush)
+   - `make_mission_review_emitter` / `make_plan_change_proposal_emitter`
+     factory 返回 emitter, 给 `MissionDirectorService(review_emitter=...)` 一行装配
+4. **`tests/integration/test_integration_mission_director_db.py`** (16 tests):
+   - 4 verdict parametrize 全覆盖
+   - 3 severity parametrize, high → user_approval_required 不变量 verified
+   - emitter factory tenant_id 闭包 binding
+   - e2e: service.review_mission() 真触发 Row 构造 + session add
+   - schema sanity (列存在性, 防静默重命名)
+
+**测试**: 1820 passed, 0 failed (+16); ruff 全绿. 单 commit 982 行, 4 文件.
+
+**还要做的 Phase X.B**:
+- [ ] daemon 默认注册 Mission Director runner (每 tick 跑 review)
+- [ ] Lifecycle ORM Row + alembic + writer (类似套路)
+- [ ] Auditor Reports ORM Row + alembic + writer
+- [ ] Cockpit API endpoints 真从 DB 查 (替换 Phase E.A stub)
+- [ ] Orchestrator 真用 ensemble_invoke (现在还是 single-LLM)
+- [ ] dogfood v9 走新 V7 protocols 真验证 trifecta + ensemble
+
