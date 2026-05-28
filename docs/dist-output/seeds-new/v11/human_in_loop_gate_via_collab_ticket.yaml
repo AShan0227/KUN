@@ -1,0 +1,72 @@
+topic: human-in-loop
+title: "人在环上的决策点 = CollaborationTicket gate + fallback policy + idempotent terminal status"
+description: |
+  V7 §11 (协作) / §12.2 (production flip 需 user approval) 明确说: "不可逆动
+  作" 必须先开 CollaborationTicket, 等明确响应才能继续. 但实装时常见错误:
+    1. 只在 UI 里弹"是否继续" — 闭环没数据, audit log 拍不下来
+    2. 没 fallback_policy — 用户没响应就死等, mission 永远卡死
+    3. 用 boolean flag (approved=True/False) 代替 ticket — 没 ticket_id 没
+       responder 没 deadline 没 escalation 历史
+    4. ticket 答了 status=answered 后, 后面的 admin action 还能 respond 二
+       次 — replay attack 漏
+
+  Dogfood-v11 capstone 验证的模式: 不可逆动作之前一定有一个 V7 §11 标准
+  CollaborationTicket 对象, 走 open → (answered | escalated | overdue +
+  fallback) 状态机:
+    A. 创建 ticket: type='approval', decision_options=['approve','hold'],
+       fallback_policy={option:'hold|approve', reason:'...'},
+       deadline=now()+SLA
+    B. 用户响应 → respond() 写 CollaborationResponse, ticket.status=answered
+    C. 没响应 + deadline 过 → apply_fallback() 用 fallback_policy.option 自
+       动选, ticket.status=fallback_selected
+    D. 任何 terminal status (answered/cancelled/closed/fallback_selected) 之
+       后再 respond() → raise (idempotent)
+    E. 下游 action (CapabilityLifecycleService.transition / GateService) 通
+       过 user_approval_ticket_id 引用 ticket — service 层校验该字段非空
+       才允许执行
+
+  这套 pattern 让"人审"既是 V7 §11 标准 IO, 又落进 DB / cockpit 给 audit
+  log, 还有兜底 SLA 不死等.
+
+trigger:
+  - condition: "下游 service 有 'production flip / external action / scope expansion' 这类不可逆 transition"
+  - condition: "目前用 bool flag 或 hard-coded 'allow=True' 跳过人审"
+  - condition: "没 deadline / fallback / escalation 机制, mission 可能死等"
+
+action:
+  - "把不可逆 transition 的 service 参数加 `user_approval_ticket_id: str | None`, validate_X 里强校验非空"
+  - "调用前先 queue.submit(CollaborationTicket(type='approval', ...))"
+  - "deadline + fallback_policy 必填; recommended_option 标 'approve' 或 'hold' 给 UI 默认"
+  - "等用户 respond 或 daemon 自动 apply_fallback; 拿到 selected_option == 'approve' 才往下走"
+  - "把 ticket_id 传给下游 service 做 user_approval_ticket_id, service 写表把 ticket_id 落到 lifecycle_transitions / gate_decisions 行"
+  - "cancelled / hold / fallback='hold' 路径 → 下游不调用, capability 留在原 stage; UI 显示 reason"
+
+anti_pattern:
+  - "用 bool 'approved=True' 跳过 CollaborationTicket — 没 audit trail / 没 deadline / 没 responder"
+  - "ticket 没 fallback_policy — 用户离线/出差就卡死"
+  - "ticket answered 后还能 respond — replay attack, 旧 approval 二次使用"
+  - "cancelled 的 ticket 还把 ticket_id 传下游 — V7 §12.2 实质失效"
+  - "把 ticket 当成 'notification' 用 — 没等真响应就 transition"
+
+evidence:
+  - source: "kun/control_plane/collaboration.py:InMemoryCollaborationQueue (V7 §11 in-memory queue)"
+  - source: "kun/control_plane/v6.py:CollaborationTicket (V7 §11 frozen IO)"
+  - source: "kun/governance/capability_lifecycle.py:validate_transition (V7 §12.2 user_approval check)"
+  - source: "kun/core/orm.py:LifecycleTransitionRow lct_production_needs_user_approval CHECK"
+  - dogfood: "test_v7_collab_human_in_loop_e2e.py 9 tests (open→answered, overdue+fallback approve/hold, cancelled, summary buckets, escalate→answered, closed idempotent, resume_allowed)"
+  - dogfood: "test_v7_dogfood_v11_ultimate_e2e.py — ticket 答 'approve' 解锁 CANARY → PRODUCTION 真 PG 落行"
+
+confidence: high
+applicability:
+  - "V7 §12.2 production flip"
+  - "V7 §10.3.3 high-severity PlanChangeProposal"
+  - "V7 §11.2 任何 'external action' (邮件/支付/外部 API 调用)"
+  - "L6 adapter 'destructive action' gate (e.g., Shopify shop API write)"
+
+related_methodologies:
+  - "service_layer_invariant_plus_db_check_belt_and_suspenders"
+  - "production_loop_real_pg_e2e_chain"
+  - "prompt_user_decision_at_irreversible_branch"
+
+distilled_from: dogfood-v11
+created_at: "2026-05-29"

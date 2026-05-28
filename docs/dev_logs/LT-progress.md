@@ -1589,6 +1589,86 @@ V7 §15 lifecycle 9 阶段 各部件都齐了, 但没人把一个合成 capabili
 
 | # | 任务 | 状态 |
 |---|---|---|
-| P1-2 | **COLLAB-E2E**: CollaborationTicket human-in-the-loop e2e | ⏳ next |
-| P1-3 | **DOGFOOD-V11**: ultimate e2e 串 7 件 (MD daemon → ensemble → trifecta → lifecycle walk → checkpoint → auditor LLM → collab ticket) | ⏳ after P1-2 |
+| P1-2 | **COLLAB-E2E**: CollaborationTicket human-in-the-loop e2e | ✅ |
+| P1-3 | **DOGFOOD-V11**: ultimate e2e 串 7 件 (MD daemon → ensemble → trifecta → lifecycle walk → checkpoint → auditor LLM → collab ticket) | ✅ |
+
+### X.C-6 · COLLAB-E2E CollaborationTicket human-in-the-loop e2e
+
+**完成**: 2026-05-29 / commit `2ce4c95`
+
+V7 §12.2 production flip 必须 user_approval_ticket. CollaborationQueue +
+CapabilityLifecycleService 两个子系统单测在隔离里跑过, 但 **从没在一个
+test 里把"开 ticket → 用户答 approve → 拿 ticket_id 解锁 prod flip → 真
+PG 落 production 行" 串起来**.
+
+- `tests/integration/test_v7_collab_human_in_loop_e2e.py` (599 行, 9 tests):
+  1. headline happy path: ticket open→answered→prod row in PG with right
+     approval id
+  2. SLA fallback approve: deadline 过 + fallback_policy={approve}, 自动选
+     approve 解锁 prod flip
+  3. SLA fallback hold (default safe): fallback=hold, capability 留 CANARY
+  4. cancelled ticket 不能当 approval 用 (caller 检 ticket.status)
+  5. wrong decision_option 队列层拦下
+  6. queue.summary 5 个 status bucket 都对 (open/waiting/escalated/overdue/answered)
+  7. escalated→answered round-trip (escalation 是 flag 不是 terminal)
+  8. closed ticket 拒二次 respond (idempotency 防 replay)
+  9. resume_allowed 标识在 response 里正确传 (true/false 都验)
+
+### X.C-7 · DOGFOOD-V11 ultimate e2e 串 7 件 capstone
+
+**完成**: 2026-05-29 / commit pending (本 commit)
+
+V7 §16 production-loop hard rule: "凡是不能进入真实生产链路的功能, 都不
+算完成". 之前每个子系统在自己的 integration test 里碰过真 PG, 但**没把
+7 个子系统串成 1 个 test, 在同 mission_id / capability_id / task_id 下都
+落真 PG 行**. 这是 production loop 闭环最后缺的硬证据.
+
+- `tests/integration/test_v7_dogfood_v11_ultimate_e2e.py` (560 行, 3 tests):
+  - `test_dogfood_v11_full_production_loop_chain_lands_in_real_pg` — capstone:
+    1. Mission Director review → mission_alignment_reviews +1
+    2. Trifecta coordinator (3 lines parallel, 6 findings, 3x cost multiplier)
+    3. Lifecycle 9 阶段 walk → lifecycle_transitions +7 (OBS→...→MONITOR)
+    4. CollaborationTicket gates CANARY→PRODUCTION, ticket_id 落 lct row
+    5. AuditorReport (P2, allow_release=true) → auditor_reports +1
+    6. EnsembleCallRecord (2 providers, divergence=0.18) → ensemble_calls +1
+    7. Checkpoint × 3 + `del service` + fresh reader → task_checkpoints +3,
+       latest sequence=3 recovered
+  - `test_dogfood_v11_ensemble_and_checkpoint_rows_are_persistent` — 写完
+    手动 reset `kun.core.db._engine`, fresh reader 仍能拿到 (proves writes
+    are durable cross-session, not in-memory artifacts)
+  - `test_dogfood_v11_p0_auditor_report_blocks_release_at_construction` —
+    V7 §16.6 invariant double-check 在 capstone 上下文里也兜底
+
+- 修一个 bug 期间: `consensus_strategy='majority'` vs DB CHECK enum
+  `'majority_vote'` 不匹配, IntegrityError, 改 'majority_vote' 通过. 这是
+  service / DB 双源真理需要同步的活案例 (作为 yaml seed 之一蒸出).
+
+- 修一个数据类型: PG NUMERIC(10,6) `total_cost_usd` 读回是 Decimal, 不能
+  和 float `pytest.approx` 直接比, 加 `float(row.total_cost_usd)` cast.
+
+- 4 X.B 表总行数 (bypass_rls 探针): mar=119 / lct=240 / ar=165 / ec=17
+
+### X.C wave 终态数字
+
+| 指标 | 起点 (X.B 终) | 终点 (X.C 终) |
+|---|---|---|
+| Tests | 1998 | **2064 passed**, 0 failed, 1 skipped |
+| Ruff | green | green |
+| Commits | 15 | **~30** (X.B + X.C) |
+| 4 X.B 表行数 | 7 + 6 + 8 + 0 | **119 + 240 + 165 + 17** |
+| V7 §16 闭环硬证据 | dogfood v9 + v10 (4 表真有数据) | + **dogfood v11 1 个 test 串 7 件** |
+
+### X.C wave · yaml seed 蒸出 (≥3 份 ADR-025 强制)
+
+放 `docs/dist-output/seeds-new/v11/`:
+1. `production_loop_real_pg_e2e_chain.yaml`
+2. `service_layer_invariant_plus_db_check_belt_and_suspenders.yaml`
+3. `human_in_loop_gate_via_collab_ticket.yaml`
+
+待 ProcessAudit 复议 → 合入 `seeds/methodologies/`.
+
+### X.C wave · 收官
+
+- LT-retrospective.md 追加 V7 X.B + X.C 收官部分 (A-G 7 节)
+- 所有 P0/P1 任务 ✅, 下一 wave 由用户启动
 

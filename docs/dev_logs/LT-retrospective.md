@@ -204,3 +204,99 @@ LT 解决了 "service 层完整 + 联动验证", 但仍有"接到真实主路径
 6. **真实长任务 run**: 用户提供真 task → 跑 1+ 小时 → 验证 5 层 anti-drift + checkpoint resume + compaction 实际触发 + cost/budget 实际控住. 这是工程层之外的产品验证.
 
 整合是 ~100 行工程代码 + 用户提供测试场景. 已建议在 LT.G 完成后单独开 ticket.
+
+---
+
+# 追加 (2026-05-29): V7 Phase X.B + X.C 收官 retrospective
+
+> 用户指令 (沿着 LT.G 之后): "把欠缺的部分列个清单, 全部补齐" →
+> "继续, 设置个轮循任务直到全部完成, 盯好"
+>
+> 在原 LT.A-LT.G 工程层完整化基础上, 进一步落 V7 §16 production-loop 真闭环.
+
+## A. 范围 3 圈
+
+| 圈 | 内容 | 状态 |
+|---|---|---|
+| **V7 Phase X.B** | 4 X.B 表落 PG + 8 MF (P0/P1/P2 攻击者审计修复) + 真 LLM dogfood v9 + dogfood v10 + 真 PG CHECK 测试 | ✅ |
+| **V7 Phase X.C P0** | MF-AR-LLM 真 LLM auditor / MD-DAEMON 周期 tick / CHECKPOINT-E2E crash+resume / TRIFECTA 三线并行 / LIFECYCLE-WALKER 9 阶段 | ✅ |
+| **V7 Phase X.C P1** | COLLAB-E2E ticket-gated production flip / DOGFOOD-V11 ultimate 7-piece capstone | ✅ |
+
+## B. 终态数字
+
+| 指标 | LT.G 收官 | 本次 X.C 收官 |
+|---|---|---|
+| Tests | 1898 | **2064 passed**, 0 failed |
+| Ruff | green | green |
+| 4 X.B 表行数 | 0 (orphan) | mar=119 / lct=240 / ar=165 / ec=17 |
+| V7 §16 production-loop 闭环 | "声明" | **1 个 e2e test 串 7 子系统真 PG 链** |
+
+## C. V7 §16 production-loop 闭环硬证据
+
+下面 7 个子系统现在在 1 个 test 文件里串成一条链, 真 PG 落行 + 真 reader
+读回 (`tests/integration/test_v7_dogfood_v11_ultimate_e2e.py`):
+
+```
+mission "ship-feature-X"
+   │ piece 1 — Mission Director review
+   ▼ mission_alignment_reviews +1 row (verdict=ok, score=0.92)
+   │ piece 2 — Trifecta coordinator (3 lines parallel)
+   ▼ TrifectaRunReport (1+2+3 findings, 3x baseline cost)
+   │ piece 3 — Capability lifecycle 9 阶段 walk
+   ▼ lifecycle_transitions +7 rows (OBS→CAN→REP→HOL→SHA→CAN→PROD→MON)
+   │ piece 4 — CollaborationTicket gates production flip
+   ▼ queue.respond(approve) → ticket_id → service.transition()
+   │ piece 5 — AuditorReport on capability
+   ▼ auditor_reports +1 row (P2, allow_release=true)
+   │ piece 6 — Ensemble call recorded
+   ▼ ensemble_calls +1 row (2 providers, divergence=0.18)
+   │ piece 7 — Checkpoint × 3 + crash + resume
+   ▼ task_checkpoints +3 rows (latest sequence=3 recovered after `del service`)
+```
+
+## D. 关键 wins
+
+1. **三层完成度分开计数**: 模块层 / 接生产层 / e2e 验收层, 任何 "接到 X"
+   claim 前必须 grep 真 import 链路 + 贴证据 (X.B.MF-1 起改流程, 后续所有
+   X.B/X.C commit 都贴 grep 输出)
+2. **fake-session + 真-PG 双轨**: unit fake 跑得快 (0.1ms), integration 真
+   PG 兜底 alembic/RLS/CHECK syntax. X.B 时只跑 fake 漏了 cross-loop / 漏
+   mount router / enum mismatch, dogfood v10 真 PG 才暴露
+3. **service raise + DB CHECK 双保险**: 协议级不变量 2 处独立 enforce, 任
+   何绕过 service 的写入路径 (admin script / 新 service) 都被 DB 兜底
+4. **Human-in-loop = V7 §11 CollaborationTicket**, 不是 bool flag — 有
+   deadline + fallback + escalation + idempotent terminal status,
+   user_approval_ticket_id 落到 lifecycle_transitions 列做 audit trail
+5. **Trifecta = asyncio.gather 真并行, 不是协议口嗨**: 单线 raise 不杀其他
+   线, cost_multiplier_vs_baseline 真算 (V7 §12.4.4 5-6x estimate 对得上)
+
+## E. 反模式 (踩过的坑)
+
+1. **fake session 全过就 claim "接生产"** — X.B 早期错, MF-1 起改流程
+2. **跨 event-loop 共享 asyncpg engine** — bridge thread 起的 task 跟主
+   loop race, 3 次尝试后用 `use_thread_local_engine: bool` 旗子分流
+3. **ruff 自动 format 跟 impl change 混在一个 diff** — 先 `--fix` 跑一遍
+4. **"pytest X passed in 0.2s" 不等于真跑 PG** — 拿 bypass_rls 探针验
+5. **ensemble enum service 写 'majority', DB CHECK 写 'majority_vote'** —
+   双保险都该有 enum 来源真理 (同步 alembic + ORM + service enum)
+
+## F. 蒸馏方法论 yaml seeds (3 份, ADR-025 强制)
+
+放在 `docs/dist-output/seeds-new/v11/`:
+
+1. **`production_loop_real_pg_e2e_chain.yaml`** — 串多个真 PG e2e 测试证明
+   production loop 闭环, 链 N 个真 writer 等价 N 个 production wiring proof
+2. **`service_layer_invariant_plus_db_check_belt_and_suspenders.yaml`** —
+   V7 §12.2 / §12.3 / §16.6 协议级不变量 = service raise + DB CHECK 双保险
+3. **`human_in_loop_gate_via_collab_ticket.yaml`** — 不可逆动作必走 V7 §11
+   CollaborationTicket + fallback_policy + idempotent terminal status
+
+待 ProcessAudit 复议 → 合入 `seeds/methodologies/`.
+
+## G. V7 §16 hard rule 最后一句话
+
+"凡是不能进入真实生产链路的功能, 都不算完成" — 这条 hard rule 现在有 1
+个 test 文件能在 1 次跑里产出 7 子系统真 PG 链落行 + 读回硬证据. 从声明升
+级成可机器复制的 acceptance bar.
+
+Closes V7.PHASE-X.C (P0 + P1) 整个收官 wave. 下一 wave 由用户启动.
