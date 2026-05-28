@@ -58,6 +58,8 @@ log = get_logger("kun.integration.ensemble_invoker_factory")
 _ENABLED_ENV = "KUN_V7_ENSEMBLE_ENABLED"
 _TIERS_ENV = "KUN_V7_ENSEMBLE_TIERS"
 _STRATEGY_ENV = "KUN_V7_ENSEMBLE_STRATEGY"
+_LOCAL_MODEL_ENV = "KUN_V7_ENSEMBLE_LOCAL_MODEL_ID"
+_LOCAL_BASE_URL_ENV = "KUN_V7_ENSEMBLE_LOCAL_BASE_URL"
 
 
 def _truthy(value: str) -> bool:
@@ -121,6 +123,43 @@ def _has_cross_family_pair(providers: list[LLMProvider]) -> bool:
     return False
 
 
+def _maybe_build_local_provider() -> LLMProvider | None:
+    """V7 Phase X.B.QWEN-WIRE: optionally append a LocalLLMProvider to ensemble.
+
+    Env-driven:
+      KUN_V7_ENSEMBLE_LOCAL_MODEL_ID="qwen2.5:14b-instruct-q4_K_M"  # required
+      KUN_V7_ENSEMBLE_LOCAL_BASE_URL="http://localhost:11434/v1"   # optional, default
+    """
+    model_id = os.environ.get(_LOCAL_MODEL_ENV, "").strip()
+    if not model_id:
+        return None
+    base_url = (
+        os.environ.get(_LOCAL_BASE_URL_ENV, "").strip()
+        or "http://localhost:11434/v1"
+    )
+
+    try:
+        from kun.interface.llm.local_provider import LocalLLMProvider
+
+        provider = LocalLLMProvider(model_id=model_id, base_url=base_url)
+    except Exception as e:
+        log.warning(
+            "ensemble_invoker_factory.local_provider_construct_failed",
+            model_id=model_id,
+            base_url=base_url,
+            error=f"{type(e).__name__}: {e}",
+        )
+        return None
+
+    log.info(
+        "ensemble_invoker_factory.local_provider_added",
+        model_id=model_id,
+        base_url=base_url,
+        family=classify_family(model_id).value,
+    )
+    return provider
+
+
 def build_ensemble_invoker_from_settings(
     *,
     router: LLMRouter,
@@ -153,16 +192,31 @@ def build_ensemble_invoker_from_settings(
 
     tiers_raw = os.environ.get(_TIERS_ENV, "")
     tier_names = _parse_tiers_csv(tiers_raw)
-    if len(tier_names) < 2:
+
+    # V7 Phase X.B.QWEN-WIRE: local provider may bring the count to ≥ 2 even
+    # when only 1 tier is configured. Build providers list first, defer the
+    # min-2 check until after local provider is added.
+    has_local_env = bool(os.environ.get(_LOCAL_MODEL_ENV, "").strip())
+    if len(tier_names) < 1 or (len(tier_names) < 2 and not has_local_env):
         log.warning(
             "ensemble_invoker_factory.too_few_tiers",
             tiers_env=tiers_raw,
             required_min=2,
-            hint=f"set {_TIERS_ENV}='top,cheap' (or similar) for ≥ 2 providers",
+            hint=(
+                f"set {_TIERS_ENV}='top,cheap' for ≥2 from router, "
+                f"OR set {_LOCAL_MODEL_ENV} + ≥1 tier for cross-family"
+            ),
         )
         return None
 
     providers = _select_providers(router, tier_names)
+
+    # V7 Phase X.B.QWEN-WIRE: optionally extend ensemble with a local provider
+    # (e.g. Qwen via Ollama). Cross-family enforcement uses the extended list.
+    local_provider = _maybe_build_local_provider()
+    if local_provider is not None:
+        providers.append(local_provider)
+
     if len(providers) < 2:
         log.warning(
             "ensemble_invoker_factory.insufficient_providers_after_dedup",
