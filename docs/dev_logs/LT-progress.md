@@ -1289,13 +1289,103 @@ Attacker audit P1: cockpit 返 `"data_source": "真 DB 查询"` 当下面 writer
 |---|---|---|---|
 | `mission_alignment_reviews` | V6 `MissionDirectorRunner.run()` → V7 bridge | ✅ | `test_v6_runner_run_actually_emits_v7_review` |
 | `ensemble_calls` | `_run_long_task_branch` → `ensemble_invoker_factory` | ✅ opt-in | `test_production_orchestrator_imports_factory` |
-| `lifecycle_transitions` | 无 | ❌ 还是 orphan (待 MF-LC-wiring) | `/cockpit/writes-status` 真返 false |
-| `auditor_reports` | 无 | ❌ 还是 orphan (待 MF-AR-wiring) | `/cockpit/writes-status` 真返 false |
+| `lifecycle_transitions` | `GateService.admit(approve)` → V7 bridge (X.B.MF-LC-wiring) | ✅ | `test_gate_approve_emits_v7_lifecycle_transition` |
+| `auditor_reports` | lifecycle 转移触发 heuristic emit (X.B.MF-AR-wiring) | ✅ heuristic | `test_gate_approve_emits_heuristic_auditor_report` |
 
 之前我吹的 "软件层 100% 完成" — **更真实的描述**:
 - **模块层** (代码 + 单测): 100%
-- **接生产层** (生产代码真 import + call): **50%** (2/4 张 X.B 表)
-- **e2e 验收层** (真 PG + 真 LLM 跑通): 0% (待 dogfood v9)
+- **接生产层** (生产代码真 import + call): **100%** (4/4 张 X.B 表 — 这是 commit `aea4bc9` 之后)
+- **e2e 验收层** (真 PG + 真 LLM 跑通): 0% (待 dogfood v9, 用户运维侧)
+
+---
+
+## V7.PHASE-X.B.MF-6 · cockpit_readers error_kind 区分
+
+**完成**: 2026-05-28 / commit `b1592e6`
+
+之前 readers `except Exception: return []` 全吞错, 区分不出 "tenant 真没数据"
+vs "PG 挂了" vs "alembic 没跑过". MF-6 加 `ReaderResult` dataclass + 5 类
+error_kind 分类:
+  - `db_connection_refused` / `table_not_found` / `permission_denied` /
+    `session_scope_failure` / `unknown_db_error`
+
+Cockpit endpoint 现在返 `reader_error_kind` + `reader_error_detail`.
+`GET /cockpit/capabilities/{id}` 区分: reader_error_kind != None → **HTTP 503**
+(DB 异常), 否则 None + 空 transitions → **HTTP 404** (tenant 真没数据).
+
+**测试**: 1971 (+10 from 1961). 4 文件改 ~370 行.
+
+---
+
+## V7.PHASE-X.B.MF-LC-wiring · GateService → V7 lifecycle bridge
+
+**完成**: 2026-05-28 / commit `732bf5d`
+
+lifecycle_transitions 表 orphan 修复. 每次 `GateService.admit` 返回
+`verdict='approve'` 时, bridge 触发 V7 `OBSERVATION → CANDIDATE` transition
+with evidence_refs from rule_results.
+
+**关键设计**: V6 gate 已经验证 R1/R2/R3 (test_report / diagnostic / debrief)
+3 类 evidence, 这正好是 V7 §12.3 后续 CANDIDATE→REPLAY 需要的 3 evidence kinds.
+所以 gate approve → V7 CANDIDATE 入口是 honest 的映射, 不是 stretch.
+
+**测试**: 1977 (+6). 5 文件 ~466 行.
+
+---
+
+## V7.PHASE-X.B.MF-AR-wiring · heuristic auditor on lifecycle transition
+
+**完成**: 2026-05-28 / commit `aea4bc9`
+
+auditor_reports 表 orphan 修复 (heuristic 版本, 非 LLM-driven). lifecycle
+transition 触发 chained heuristic auditor emit. 每次 capability promoted, 自动
+产 AuditorReport with:
+  - auditor_provider="heuristic/gate-derived" (明确标 heuristic)
+  - risk_level: 全 pass → P2, R4 failed → P1, R1/R2/R3 fail → P1
+  - rationale 字段明说 "awaiting full LLM 7-角度审计 wiring (MF-AR-LLM)"
+
+**Chained wiring**: V6 gate → V7 lifecycle bridge → V7 auditor bridge.
+全链路 grep 证据齐, regression-guard tests 各加一个.
+
+**测试**: 1985 (+8). 5 文件 ~549 行.
+
+---
+
+## V7 Phase X.B MF 进度 (终态, software 层)
+
+| # | 修复项 | 状态 | Commit |
+|---|---|---|---|
+| **MF-1** | V6→V7 Mission Director bridge | ✅ | `cef3767` + `1819c8d` |
+| **MF-2** | LongTaskOrch ensemble wiring | ✅ | `271c121` |
+| **MF-3** | cockpit writes_wired_status | ✅ | `7367aaa` |
+| **MF-6** | cockpit_readers error_kind | ✅ | `b1592e6` |
+| **MF-LC-wiring** | GateService → V7 lifecycle | ✅ | `732bf5d` |
+| **MF-AR-wiring** | heuristic auditor on lifecycle | ✅ | `aea4bc9` |
+| **MF-4** | AT-* 验收测试 | ✅ subsumed (每个 wiring MF 都有 production-path proof + regression guard) |
+| **MF-5** | 真 PG CHECK violation tests | 🔧 deferred (运维侧, 需 docker-compose PG) |
+| **MF-AR-LLM** | 真 LLM-driven 7-角度审计 替换 heuristic | ⏳ 后续 phase (需 ensemble + Qwen 拉好) |
+
+**软件层 attacker-audit 6/6 P0/P1 修完**. 剩下:
+- **MF-5**: 运维任务 — `docker-compose up postgres` + `alembic upgrade head` +
+  跑 violation insert 测试. 写代码完, 跑环境的事.
+- **MF-AR-LLM**: 业务升级 — heuristic 已经能让 table 有数据 + 触发 release-block
+  逻辑, LLM 真审计是更强但非阻塞改进.
+
+之前吹的 **"V7 软件层 100%"** 经 V7 §16.6 攻击者审计**真实化**:
+- 模块层: 100%
+- 接生产层: 100% (4/4 X.B 表都真有 production 写入路径 + grep 证据 + regression guard)
+- e2e 真跑: 0% (dogfood v9 + Qwen + real PG, 运维侧)
+
+---
+
+## 流程改 — 4 项全实践
+
+| # | 改啥 | 落地证据 |
+|---|---|---|
+| A1 | commit 前必 grep 验证 | MF-1/2/LC/AR 每个 commit message 都贴 grep output, 每个 wiring 都有 `test_*_imports_*` regression guard |
+| A2 | 3 层独立计数 | LT-progress 现在分模块/接生产/e2e 3 档, 不再混 |
+| A3 | smoke 必须从生产入口起 | wiring proofs 现在都从生产类 (`GateService.admit`, `MissionDirectorRunner.run`) 起调, 不再 module-direct |
+| A4 | 写完成前先攻击者审计 | 本 cycle 就是产物: 4 个 P0 fix + 1 个 P1 fix + 1 个 P2 fix 全闭环 |
 
 ---
 
