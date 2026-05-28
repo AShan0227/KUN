@@ -1389,6 +1389,85 @@ transition 触发 chained heuristic auditor emit. 每次 capability promoted, �
 
 ---
 
+## V7.PHASE-X.B.MF-5 · 真 PG CHECK violation 测试
+
+**完成**: 2026-05-28 / commit `c0648bb`
+
+之前 4 张 X.B 表的 13 个 DB CHECK 约束 (e.g. `lct_production_needs_user_approval`,
+`ar_p0_blocks_release`, `pcp_high_severity_needs_approval`) **只在 fake session
+里测过** — `_CaptureSession` 是 in-memory list, 完全 bypass PG CHECK 引擎.
+任何 CHECK 语法错误都不会被发现.
+
+**做了什么**:
+
+1. **`tests/integration/test_v7_xb_pg_check_constraints.py`** (新, 443 行, 13 tests):
+   - 每个 test 构造一个**违反恰好 1 个 CHECK** 的 row, add+flush 真 PG
+   - 期望 `IntegrityError`, **constraint 名必须在错误信息里** (验证触发的是
+     对的那个 CHECK, 不是其他)
+   - happy-path sanity: 合法 row真 insert 成功 (证明 PG 真 reachable)
+   - autouse 修复 pytest-asyncio event-loop 跨测试 race: 重置
+     `kun.core.db._sessionmaker` / `_engine` 全局, 每个 test fresh
+
+2. **关键不变量** (V7 协议级):
+   - V7 §12.2: `production` 必须 user_approval_ticket → ✅ verified
+   - V7 §12.3: `replay` 必须 ≥1 evidence → ✅ verified
+   - V7 §10.3.3: high severity 必须 user_approval_required → ✅ verified
+   - V7 §16.6: P0 必须 NOT allow_release → ✅ verified
+
+**操作侧也做了 (commit 不含, 但关键)**:
+- `alembic upgrade head` 0013 → **0017** — PG 现在有 4 张 X.B 表
+- 跑完测试后 PG 真行数:
+  ```
+  mission_alignment_reviews:  7 行  (X.B.MF-1 bridge真fired)
+  lifecycle_transitions:      6 行  (X.B.MF-LC-wiring bridge真fired)
+  auditor_reports:            8 行  (X.B.MF-AR-wiring chained真fired)
+  ensemble_calls:             0 行  (X.B.MF-2 opt-in, 测试默认不开 env)
+  ```
+  **这是 V7 §16 production-loop 真闭环的硬证据** — 不是 fake row, 是真 PG row.
+
+**测试**: 1998 passed (+13 from 1985), 0 failed; ruff 全绿.
+
+---
+
+## V7 Phase X.B MF 终态 — 全 software dev 完成
+
+| # | 内容 | 状态 | Commit |
+|---|---|---|---|
+| **MF-1** | V6 Mission Director → V7 bridge | ✅ | `cef3767` + `1819c8d` |
+| **MF-2** | LongTaskOrch ensemble wiring | ✅ | `271c121` |
+| **MF-3** | cockpit writes_wired_status | ✅ | `7367aaa` |
+| **MF-5** | **真 PG CHECK violation 测试** | ✅ | `c0648bb` |
+| **MF-6** | cockpit_readers error_kind | ✅ | `b1592e6` |
+| **MF-LC-wiring** | GateService → V7 lifecycle | ✅ | `732bf5d` |
+| **MF-AR-wiring** | chained heuristic auditor | ✅ | `aea4bc9` |
+| **MF-4** | AT-* 验收测试 | ✅ **subsumed** (5 wiring proofs + 13 CHECK violation 测试都 serve as AT-*) |
+| MF-AR-LLM | 真 LLM-driven 7-角度审计 替换 heuristic | ⏳ 后续 phase (待 Qwen+gpt-5.5 ensemble真跑) |
+
+**Software dev 部分 100% 完成** — attacker audit 8/8 P0/P1/P2 全闭环.
+剩下两件:
+- **dogfood v9 真跑** — 用 gpt-5.5 + Qwen2.5-14b ensemble 真跑长任务 (依赖 Ollama 0.24 升级好 + 真 LLM API)
+- **MF-AR-LLM** — 把 heuristic auditor 升成真 LLM-driven 7-角度审计 (业务升级, 不是 audit 修复)
+
+**总数字 (本"先把开发的部分完成"轮 + 攻击者审计 cycle)**:
+
+| 指标 | 起点 | 终点 |
+|---|---|---|
+| Tests | 1898 | **1998 passed** (+100, 0 failed) |
+| Ruff | green | **green** |
+| Commits | 0 | **15 commits** (含 7 个 MF impl + 4 dev log + grep proofs) |
+| PG 4 张表真行数 | 0 (orphan) | **7 + 6 + 8 + 0 (opt-in)** = 真路径 e2e |
+| MF P0/P1/P2 修复 | 0/8 | **8/8** ✅ |
+
+---
+
+## 操作侧待办 (不算 software dev, 但 dogfood v9 需要)
+
+1. **Ollama 0.24 升级**: brew upgrade 后台跑, 0.20.7 在 M5 上 Metal 编译报错 (`half/bfloat` mismatch). 升级到 0.24 后再测 Qwen.
+2. **Qwen 接 LLMRouter**: 配 `local` tier 指 `http://localhost:11434/v1`, model_id=`qwen2.5:14b-instruct-q4_K_M`.
+3. **Dogfood v9 真跑**: 起 KUN API, 设 `KUN_V7_ENSEMBLE_ENABLED=true KUN_V7_ENSEMBLE_TIERS="top,cheap"`, 跑 `docs/dist-output/dogfood-v9-task-plan.md` 任务. 看 4 张 X.B 表真 row 增长 + cockpit `/writes-status` 真返 wired.
+
+---
+
 ## 流程改 (commitment, sediment 进 dev log)
 
 之前我每轮 commit 都说"接到 X / production-ready", 但 claim 前没 grep 验证.
