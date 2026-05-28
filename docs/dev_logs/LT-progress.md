@@ -1061,3 +1061,70 @@ V7 Phase A-G 骨架 + Phase X.B 接真 runtime 6 块全完成. 软件层从 "ske
 **剩 dogfood v9** 是真实任务跑 (用户已配 gpt-5.5 CLI), 不是代码交付; 跑一次
 就出 retrospective.md, 入 LT-progress 收尾.
 
+---
+
+## V7.PHASE-X.B.SMOKE · 收官 — smoke harness + dogfood v9 task plan
+
+**完成**: 2026-05-28 / commit `185425f`
+
+V7 Phase X.B 软件层 6/6 完成. 本 commit 给完成度加最后一道**真路径连通性**
+证据 — smoke harness 真在 runtime 跑过 X.B 6 块代码各一遍, + dogfood v9
+真跑的任务计划落到 docs (以后用户自己跑).
+
+**做了什么**:
+
+1. **`scripts/v7_xb_smoke.py`** — 端到端 smoke validator:
+   - stub provider + 内存 fake session_scope, **不打 PG / 不打真 LLM**
+   - 6 个 segment 一一调用 X.B 真 runtime 路径:
+     | # | 块 | 真调通的 |
+     |---|---|---|
+     | 1 | X.B.MD  | `MissionDirectorService(emitter=DB).review_mission()` → MARow 真写 |
+     | 2 | X.B.LC  | `CapabilityLifecycleService.transition(replay)` → LCTRow 真写 |
+     | 3 | X.B.AR  | `make_auditor_report_emitter.emit(AuditorReport)` → ARRow 真写 |
+     | 4 | X.B.UI  | `cockpit_readers.list_*` 3 个 reader 真调通 |
+     | 5 | X.B.MDR | `MissionDirectorRunner.tick()` → 2 个 MARow 加进去 |
+     | 6 | X.B.ENS | `make_ensemble_llm_invoker(...).call_log_emitter=DB` → ECRow 真写 |
+   - 退出码 0 = X.B 完成度 100% 可证; 1 = 任何路径不通
+   - 防 V7 §16.2 反模式 1 ("代码写了但 runtime path 不通")
+   - **实测输出**:
+     ```
+     [1/6] PASS  X.B.MD  Mission Director DB writer
+     [2/6] PASS  X.B.LC  Capability Lifecycle DB writer
+     [3/6] PASS  X.B.AR  Auditor Reports DB writer
+     [4/6] PASS  X.B.UI  Cockpit API readers
+     [5/6] PASS  X.B.MDR Mission Director runner tick
+     [6/6] PASS  X.B.ENS Ensemble invoker + DB log
+     All 6 X.B segments smoke-passed. Software layer V7 Phase X.B = 100%.
+     Captured rows: 6 (MAR=3, LCT=1, AR=1, EC=1)
+     ```
+
+2. **`docs/dist-output/dogfood-v9-task-plan.md`** — 真 dogfood v9 任务计划:
+   - 前提矩阵 (PG / alembic 0017 / gpt-5.5 CLI / Anthropic provider / uvicorn)
+   - X.B 6 块真 e2e 验证矩阵 (psql 看 row 计数 / curl 看 cockpit API 真返数据)
+   - 5 phase 任务设计 (~30-60 min 真跑): state check / ensemble verify /
+     mission director verify / lifecycle+auditor / retrospective + ≥3 yaml seed
+   - 成功标准 + 约束 (不改 service, dist-output 之外不写, 候选 yaml 不能直接合并)
+
+**测试**: 1898 passed (smoke 不加新 unit test, smoke 是 script-level e2e);
+ruff 全绿. 2 文件.
+
+---
+
+## V7 全 session 终态 (16 commits, +89 tests)
+
+| 阶段 | Status | 内容 |
+|---|---|---|
+| V7 Phase A-G 骨架 | ✅ 11 commits | 命名 / Mission Director / multi-LLM ensemble / RSI lifecycle / cockpit API / 工程纪律 / External Supervisor cross-family |
+| V7 Phase X.B.MD | ✅ | Mission Director DB 持久化 (ORM + alembic 0014 + writer) |
+| V7 Phase X.B.LC | ✅ | Capability Lifecycle DB (ORM + alembic 0015 + writer) |
+| V7 Phase X.B.AR | ✅ | Auditor Reports DB + frozen AuditorReport IO (alembic 0016) |
+| V7 Phase X.B.UI | ✅ | Cockpit API 4 endpoint 真从 DB 查 + 13 reader 单测 |
+| V7 Phase X.B.MDR | ✅ | Mission Director daemon runner (tick + run_forever + 错误隔离) |
+| V7 Phase X.B.ENS | ✅ | Ensemble invoker drop-in (ensemble_calls 表 + alembic 0017) |
+| V7 Phase X.B.SMOKE | ✅ | 6/6 runtime smoke + dogfood v9 任务计划 |
+
+**软件层**: 100% 完成. 1898 tests passing, ruff 全绿. 16 commits 本 session.
+
+**dogfood v9 真跑**: 待用户运维 (PG + API key + uvicorn), 任务计划在
+`docs/dist-output/dogfood-v9-task-plan.md` 等用户起.
+
