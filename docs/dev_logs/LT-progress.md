@@ -1672,3 +1672,118 @@ V7 §16 production-loop hard rule: "凡是不能进入真实生产链路的功�
 - LT-retrospective.md 追加 V7 X.B + X.C 收官部分 (A-G 7 节)
 - 所有 P0/P1 任务 ✅, 下一 wave 由用户启动
 
+---
+
+## V7 Phase X.D · ProcessAudit 复议 + 真长任务 e2e
+
+> 用户指令: "ProcessAudit 复议 3 份 seed → 合入正式 methodology 库;
+> 真长任务 (≥30 min, 真 LLM, 真 cost) 跑一次看 trifecta + checkpoint +
+> collab 在真任务表现; L6 内容分发 adapter 等用户决策 (用户决议: 滞后)."
+
+### X.D-1 · ProcessAudit 复议 + 合入 (3 张 v11 seed → seeds/methodologies/)
+
+**完成**: 2026-05-29 / commit `0416bc4`
+
+V7 §12.3 三类证据齐全, 3 张 v11 seed 全通过 audit:
+
+- `production_loop_real_pg_e2e_chain.yaml` → MERGE
+- `service_layer_invariant_plus_db_check_belt_and_suspenders.yaml` → MERGE
+- `human_in_loop_gate_via_collab_ticket.yaml` → MERGE
+
+`seeds/methodologies/`: 28 → 31 yaml. `tests/unit/test_methodology_distill.py`
+20/20 pass (确认 +3 yaml 没破).
+
+新增 V7 §12.3 证据 doc 2 份:
+- `docs/dist-output/seeds-new/v11/process_audit.md` — 每张 seed 反映的工程
+  缺口 + decision
+- `docs/dist-output/seeds-new/v11/strategy_replay_report.md` — baseline
+  (X.B 早期) vs replay (X.B+X.C 累计) 数字对比
+
+### X.D-2 · 真 LLM 长任务 e2e (dogfood v12)
+
+**完成**: 2026-05-29 / commit `52142e4`
+
+`scripts/dogfood_v12_real_trifecta_checkpoint_collab.py` — 第一次用**真
+Anthropic Haiku** 跑 trifecta hooks, 验证 V7 §12.4.4 cost model.
+
+**关键数字 (V7 §12.4 第一次真 LLM 实测)**:
+
+| 指标 | V7 §12.4.4 估值 | v12 实测 |
+|---|---|---|
+| Cost multiplier | 5-6x | **5.16x** ✅ |
+| Per-line state (3 ticks) | OK/OK/OK | OK/OK/OK ✅ |
+| Real PG | — | lifecycle +6, checkpoint +3 ✅ |
+| Total cost | — | $0.00144 |
+
+production 行 `user_approval_ticket_id` 真携带 ticket id (collab gate
+audit trail 闭环).
+
+**反模式 (诚实 audit)**: TrifectaCoordinator 当前是孤儿 — 主 orchestrator
+不调它. v12 是外部 script 调的. 写 `docs/dist-output/dogfood-v12-real-llm-
+retrospective.md` 显式标这 gap, 立 X.E.TRIFECTA-WIRING 候选任务 #77.
+
+### X.D-3 · L6 内容分发 ⏸️
+
+用户决议: 滞后, 把鲲先打磨好. task #8 保留 pending.
+
+---
+
+## V7 Phase X.E · TrifectaCoordinator orchestrator wiring
+
+### X.E-1 · LongTaskOrchestrator wire TrifectaCoordinator
+
+**完成**: 2026-05-29 / commit `9341c5c`
+
+- `kun/engineering/long_task_orchestrator.py` (+82 行):
+  - `__init__` 收 `trifecta_coordinator` / `trifecta_every_n_steps` /
+    `trifecta_n_future_candidates`
+  - `run_long_task` 在 critique wrap 之后再 wrap trifecta (两层 wrapper
+    stack, 都在 finally 里 restore)
+  - 新 `_build_trifecta_wrapped_invoker()`: 每 N 步 fire
+    `coordinator.run()` w/ synthetic recent_steps + current_step +
+    future_plan (从 anchor 提取 goal + criteria), emit
+    `long_task.trifecta_tick` (per-line state + multiplier + n_findings),
+    并在任一线 fail 时 emit `long_task.trifecta_line_failed`. 异常吞 +
+    log (不杀主任务).
+- 新加 8 unit tests (`tests/unit/test_long_task_orchestrator.py` 40 → 48 tests):
+  fires_every_n_steps / below_threshold_doesnt_fire / failure_doesnt_kill /
+  env_master_off_still_emits_DISABLED / no_coord_no_wrap /
+  wrapper_restored / invalid_steps_raises / stacks_with_critique
+
+**Production-path grep**:
+```
+$ grep -rln 'TrifectaCoordinator' kun/ --include='*.py'
+kun/agents/trifecta/__init__.py
+kun/agents/trifecta/coordinator.py
+kun/engineering/long_task_orchestrator.py    ← NEW
+```
+TrifectaCoordinator 不再是孤儿.
+
+### X.E-2 · dogfood v13 — 真 LLM trifecta 从 orchestrator 触发
+
+**完成**: 2026-05-29 / commit pending (本 commit)
+
+`scripts/dogfood_v13_orchestrator_trifecta_real_llm.py`:
+- Stub main-line LLM (3 tool steps + 1 final, 4 calls 0 cost)
+- 真 Anthropic Haiku trifecta hooks (past/present/future)
+- `LongTaskOrchestrator.run_long_task()` 调度
+
+**结果**:
+- 2 trifecta tick (call 2 + call 4), 每 tick 3 线全 OK
+- 4 findings/tick (past 1 + present 1 + future 2)
+- 真 Haiku 总 cost: **$0.00078**
+- outcome.loop_result.status = 'final'
+
+**这是 V7 §16 "进入真实生产链路" 对 trifecta 的最后一段证据**: orchestrator
+真在长任务里按步触发 trifecta, hooks 真调外部 LLM, 不是 stub 不是 mock.
+
+### X.E wave 数字
+
+| 指标 | 起点 (X.D 终) | 终点 (X.E 终) |
+|---|---|---|
+| Tests | 2064 | **2072** (+8) |
+| Ruff | green | green |
+| Commits | — | 2 (`9341c5c` wiring + 本 commit dogfood) |
+| Trifecta production-path | 孤儿 (只有 trifecta/ 自己) | **接入 LongTaskOrchestrator** |
+| 真 LLM trifecta cost (累计) | $0.00144 (v12) | + $0.00078 (v13) |
+
