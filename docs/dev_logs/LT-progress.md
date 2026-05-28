@@ -775,7 +775,7 @@ emitter callback, 但 emitter 默认 None. 这条 commit 给 emitter 提供真�
 - [x] **Lifecycle ORM Row + alembic + writer** ✅ commit `a9c688b` (X.B.LC)
 - [x] **Auditor Reports ORM Row + alembic + writer** ✅ commit `85fae52` (X.B.AR)
 - [x] **Cockpit API endpoints 真从 DB 查** ✅ commit `a3a2bb5` (X.B.UI)
-- [ ] Orchestrator 真用 ensemble_invoke (现在还是 single-LLM)
+- [x] **Orchestrator 接 ensemble_invoke (drop-in invoker)** ✅ `21a17e5`+`670ea7e` (X.B.ENS)
 - [ ] dogfood v9 走新 V7 protocols 真验证 trifecta + ensemble
 
 ---
@@ -984,4 +984,80 @@ Phase X.A 把 Mission Director service 建好了, 但 service 只是被动等 ca
 
 5 张牌全打完, 剩两张 (Orchestrator 接 ensemble_invoke 是更大动作, dogfood v9
 需要外部 API key). Phase X.B 真 runtime 接入度 ≈ 70-80% 了.
+
+---
+
+## V7.PHASE-X.B.ENS · Orchestrator 接 ensemble_invoke (Phase X.B 第 6 刀)
+
+**完成**: 2026-05-28 / commits `21a17e5` (schema) + `670ea7e` (impl+tests)
+
+Phase X.A 给了 ensemble_invoke API (kun/interface/llm/ensemble.py) 但只在
+单测里用; 主 runtime 的 ExecutorLoop 还是走 single-LLM (make_llm_invoker).
+本 commit 加 drop-in `make_ensemble_llm_invoker` — LongTaskOrchestrator(
+llm_invoker=...) 注入 multi-LLM ensemble path 不需要改 orchestrator 任何代码.
+
+**做了什么** (拆 2 commit, schema 234 行, impl 890 行, 总 1124 行避免单 commit
+超 1000):
+
+1. **Schema (commit `21a17e5`)**:
+   - `EnsembleCallRow` (kun/core/orm.py) + alembic 0017
+   - 14 列: providers JSONB / consensus_strategy / divergence_score (4,3) /
+     divergence_signals JSONB / consensus_provider / total_cost_usd / failure_count
+     / n_providers_total / request_hash / ...
+   - CHECK 不变量: strategy enum, divergence ∈ [0,1], n_providers ≥ 2,
+     0 ≤ failure_count ≤ n_providers_total
+   - indexes: ix_ec_invoked_at + ix_ec_high_divergence + ix_ec_purpose_recent
+   - `ensemble_call` EntityKind + `enc-` prefix (kun/core/ids.py)
+
+2. **impl (commit `670ea7e`)**:
+   - **EnsembleCallRecord** frozen IO (V7 §13.6) — metadata-only snapshot for
+     落 DB, 不带 EnsembleResponse 里完整 per-provider LLMResponse bodies
+   - **write_ensemble_call** + **make_ensemble_call_log_emitter(tenant_id)**
+     factory
+   - **`make_ensemble_llm_invoker(providers, ...)`** — drop-in for
+     `make_llm_invoker`. 每次 ExecutorLoop call:
+     1. 转 messages → LLMMessage (复用 _dict_to_llm_message)
+     2. ensemble_invoke(...) 跨 family 并行
+     3. Build EnsembleCallRecord + 触发 call_log_emitter (best-effort, emit
+        失败不挡 agent flow)
+     4. consensus → LLMStepResponse (consensus=None 时 fallback 第一个成功)
+     5. XML-tool fallback (mirror llm_invoker 给 codex/gpt-5.5)
+   - request_hash SHA256 stable across same messages (dedup/replay 用)
+
+3. **测试** (19 tests):
+   - 构造器 ≥2 providers 强校验
+   - happy path / message conversion / cross-family enforcement 3 维
+   - call log emitter shape + 失败 best-effort + request_hash 一致性
+   - DB writer 3 strategy parametrize + factory tenant binding + e2e
+   - XML-tool fallback (grep-verify skill)
+   - schema sanity 14 列
+
+**测试**: 1898 passed (+19 from 1879); ruff 全绿.
+
+**重要设计取舍** (为啥新建 ensemble_invoker.py, 不扩展 llm_invoker.py):
+- llm_invoker 用 LLMRouter (单 provider 路由); ensemble 用 list[LLMProvider]
+  直接 — 依赖面不同
+- llm_invoker.py 保持稳定, 单 LLM path 不受影响 (向后兼容, 不动主链路)
+- 测试隔离更干净 — ExecutorLoop 既有 1872 测试不需要任何调整
+
+---
+
+## V7 Phase X.B 现状小结 (6/6 软件层 done) — 终态
+
+| Subtask | Status | Commit |
+|---|---|---|
+| Mission Director DB | ✅ | `78313ad` |
+| Capability Lifecycle DB | ✅ | `a9c688b` |
+| Auditor Reports DB | ✅ | `85fae52` |
+| Cockpit API 真从 DB 查 | ✅ | `a3a2bb5` |
+| Mission Director daemon runner | ✅ | `2882168` |
+| Orchestrator 接 ensemble_invoke | ✅ | `21a17e5`+`670ea7e` |
+| dogfood v9 真 e2e (gpt-5.5 CLI) | ⏳ | — (validation, 不算软件交付) |
+
+V7 Phase A-G 骨架 + Phase X.B 接真 runtime 6 块全完成. 软件层从 "skeleton"
+升到 "production-ready connected" — 三张表 + 4 endpoint + 2 daemon hook +
+1 ensemble adapter, e2e 都通了.
+
+**剩 dogfood v9** 是真实任务跑 (用户已配 gpt-5.5 CLI), 不是代码交付; 跑一次
+就出 retrospective.md, 入 LT-progress 收尾.
 
