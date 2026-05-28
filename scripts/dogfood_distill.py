@@ -32,51 +32,63 @@ import websockets
 DOGFOOD_TASK = """\
 深度蒸馏 Claude Code 的工程能力, 融合鲲自己优势, 做出鲲专属升级.
 
+工具说明 (重要, 仔细读):
+你的所有 read / list / write 操作必须通过 **self-reflect** skill, 不要用
+file-io (它的 sandbox 是 /tmp/kun-skills, 跟仓库无关). self-reflect 设计就是
+给这种"鲲读自己 + 写蒸馏产物"的任务用的:
+
+  - 读: docs/ / seeds/ / kun/ / tests/ / scripts/ / alembic/ 都可以读, 用
+    `<skill name="self-reflect">{"op":"read","path":"docs/dev_logs/LT-progress.md"}</skill>`
+    大文件加 offset+limit (1-based 行号, 限制行数), e.g.
+    `<skill name="self-reflect">{"op":"read","path":"X","offset":1,"limit":200}</skill>`
+  - 列目录: `<skill name="self-reflect">{"op":"list","path":"docs/dev_logs"}</skill>`
+  - 写: 只能写到 `docs/dist-output/` 下面, 任何其他路径会被拒. 用
+    `<skill name="self-reflect">{"op":"write","path":"capability-map.md","content":"# ..."}</skill>`
+    (path 可省 `docs/dist-output/` 前缀)
+  - 不能 delete (本任务不需要, 现有文件保持 SHA 不变是硬约束)
+
 任务范围 (5 阶段, 全部完成才算 done):
 
-Phase A · 蒸馏: 读全部 docs/dev_logs/ 文件 (LT-progress / LT-retrospective /
-PH1-user-testing-report / L1-L6 progress + retrospective + phase-0). 识别
-Claude Code 在写代码过程中表现出的工程招数 (TodoWrite 拆任务 / 并行多 Agent /
-grep verify before assume / 测试驱动 / commit 纪律 ≤ 1000 行 / 错误立即修不藏 /
-ADR-025 dev log 沉淀 / 决策点停下问 / Read 行号定位不全文 cat / Bash 工具克制
-等). 按能力类型归类输出新文件 docs/claude-code-engineering-capabilities.md.
+Phase A · 蒸馏: 用 self-reflect list docs/dev_logs/, 然后 read 关键文件
+(LT-progress / LT-retrospective / PH1-user-testing-report / L1-L6 progress /
+phase-0-documentation). 大文件用 offset+limit 分块读. 识别 Claude Code 在写
+代码过程中表现出的工程招数 (TodoWrite 拆任务 / 并行多 Agent / grep verify
+before assume / 测试驱动 / commit 纪律 ≤ 1000 行 / 错误立即修不藏 / ADR-025
+dev log 沉淀 / 决策点停下问 / Read 行号定位不全文 cat / Bash 工具克制 等).
+按能力类型归类, 用 self-reflect write 输出新文件
+`claude-code-engineering-capabilities.md` 到 docs/dist-output/.
 
-Phase B · 对比: 把 Phase A 招数与现有 seeds/methodologies/ (27 张方法论, 跑
-ls 看) 对比, 找出鲲缺失的 ≥ 5 张 + 半有的 ≥ 5 张. 输出新文件
-docs/capability-gap-analysis.md.
+Phase B · 对比: 用 self-reflect list seeds/methodologies/ 列出现有 27 张
+方法论, read 每张的 topic+title+description. 对比 Phase A 招数, 找出鲲缺
+失的 ≥ 5 张 + 半有的 ≥ 5 张. write 输出新文件 `capability-gap-analysis.md`
+到 docs/dist-output/.
 
 Phase C · 写新 seeds: 每条 gap 写一张 yaml seed (含 topic / title /
 description / trigger / action / anti_pattern / evidence / confidence /
 applicability / related_methodologies / distilled_from / created_at). 至少 5
-张, 全部 yaml.safe_load 通过.
+张, 全部 yaml.safe_load 通过. 写到 docs/dist-output/seeds-new/ 下 (每张一个
+.yaml 文件). 鲲监督方后续会把这些 yaml 集成进 seeds/methodologies/.
 
-Phase D · RSI 验证: 用 Selector + External Supervisor + Gate 跑 mini 实验,
-≥ 3 张 seed 进 runtime_capabilities (state=merged 或 enabled).
+Phase D · RSI 验证: 输出 docs/dist-output/rsi-mini-experiment-plan.md 描述
+每张新 seed 应该怎么走 Selector + External Supervisor + Gate 的 mini 实验
+(不需要真跑, 描述清晰可执行即可). ≥ 3 张 seed 的实验方案.
 
-Phase E · 融会贯通: 新 seeds × 鲲已有硬能力 (RSI / Anti-drift / Adapter Router /
-RecursivePlanner / 七角色并行) 出 ≥ 3 个 hybrid 增强提案. 输出新文件
-docs/hybrid-capability-proposals.md.
+Phase E · 融会贯通: 新 seeds × 鲲已有硬能力 (RSI / Anti-drift / Adapter
+Router / RecursivePlanner / 七角色并行) 出 ≥ 3 个 hybrid 增强提案. write
+`hybrid-capability-proposals.md` 到 docs/dist-output/.
 
 成功标准 (全部满足才算 done):
 - 5 phase 全完成
-- 文件产物齐 (3 个新 md + ≥ 5 张新 yaml)
-- runtime_capabilities 新增 ≥ 3 行
-- 现有 1582 测试通过 (跑 pytest 验证)
-- 现有 27 seeds 全部保留 (只增不改, 数量只可增加)
-- dev_logs 全部保持只读 (任务期间所有 dev_logs 文件 SHA 不变)
+- self-reflect write 真产出 ≥ 3 个 md 文件 + ≥ 5 个 yaml 文件 (在 docs/dist-output/)
+- 现有 dev_logs / seeds / kun / tests 全部保持 SHA 不变 (self-reflect 设计就
+  保证这点 — 它白名单读 + 单写出目录)
 
-约束 (out_of_scope, 严格不做):
-- 现有 service / 模块的重构
-- schema / RLS / 基础设施的改动
-- Claude Code 非工程能力 (对话风格 / UI 偏好等)
+约束 (严格不做):
+- 不改现有 service / 模块代码
+- 不改 schema / RLS / 基础设施
+- 不蒸馏 Claude Code 非工程能力 (对话风格 / UI 偏好等)
 
-不变量 (全程保持):
-- 现有测试持续通过
-- 现有 seeds 持续可用 (数量 ≥ 27)
-- 现有 dev_logs 全部为只读
-- 任务全程产出新文件 only, 已有文件 SHA 保持
-
-预估: 5 phase 多步骤复杂任务, 估计 1-2 小时, 复杂度 complex, risk medium.
+预估: 5 phase 多步骤复杂任务, 30-90 min, 复杂度 complex, risk medium.
 """
 
 

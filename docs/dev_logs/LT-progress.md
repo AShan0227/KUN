@@ -430,3 +430,58 @@ gpt-5.5 返 (83 字符, 11.8s):
 
 **总测试**: 1680 (持平, 改的是 test contract 没新增数量), ruff 全绿.
 
+---
+
+## LT.SELF-REFLECT-SKILL · 新抽 self-reflect skill 让 KUN 自检自改
+
+**完成**：2026-05-28 / commit c7c132b (impl) + (latest, this entry)
+
+**dogfood v6 死因 (架构层, 跟 v5 prompt 层不同)**：
+
+gpt-5.5 v6 跑 25s 1 步 final answer, 字面回:
+> "无法完成该任务，因为当前工作目录是空的且环境为只读：
+> - 当前目录：/tmp/kun-codex-cwd
+> - 未找到 docs/、seeds/、service/、测试文件或仓库内容
+> - sandbox_mode=read-only，不能新增文件"
+
+跑 file-io diagnostic 才发现深层 bug:
+- file-io sandbox 默认 `/tmp/kun-skills`
+- KUN 仓库根 `/Users/petrarain/鲲/`
+- **就算 gpt-5.5 完美 emit `<skill name="file-io">`, file-io 也读不到仓库文件** (path escapes sandbox)
+
+dogfood 任务本质: 让 KUN 读自己 + 写新蒸馏文件回仓库 —— 这是 KUN file-io 架构**没设计过**的场景 (file-io 前提是处理用户数据, 不动 KUN 源码).
+
+**为什么不直接放宽 file-io**：file-io 有 delete op. 把它指向仓库根, gpt-5.5 可能误删源码, 违反用户 "destructive 操作要停下确认" 约束。
+
+**解 (Path 3, 用户选)**：新建 ``self-reflect`` skill, 专给 "KUN 读自己" 场景用, 严格 scope.
+
+**做了什么**：
+- `kun/skills/builtin/self_reflect.py` (新, ~250 行):
+  - 白名单 read: `docs / seeds / kun / tests / scripts / alembic` (覆盖 dogfood / RSI / methodology distill 真需要的, 不含 .git / .env / private)
+  - 单写出目录: `docs/dist-output/` 唯一允许写, 任何其他路径 reject
+  - 无 delete op: 永远保护 dev_logs / seeds invariant
+  - **offset + limit read** (Claude Code Read 模式): 大文件分块, 不一次塞爆 LLM context
+  - size caps: read 2 MiB, write 1 MiB
+  - path traversal 拒: `..` 段直接 reject
+  - repo root: `KUN_REPO_ROOT` env 或从 `__file__` 走 3 层 parent auto-detect
+- `kun/skills/builtin/__init__.py`: BUILTIN_MANIFESTS 加 ``self-reflect`` 条目
+- `kun/skills/dispatcher.py`: `autoload_builtins` 加 module import
+- `tests/unit/test_self_reflect_skill.py`: 14 个 unit test 覆盖所有 op + 所有 reject path
+- `scripts/dogfood_distill.py`: 任务描述明确告诉 gpt-5.5 用 self-reflect (不要用 file-io), 含具体 XML 示例 + offset/limit 用法 + 输出目录约束
+
+**关键决策**：
+- **新 skill 而非放宽 file-io**: 干净分离 "用户数据处理" (file-io) vs "鲲自检" (self-reflect). 两者沙箱独立, 互不影响.
+- **写白名单 = 单一 dir**: docs/dist-output/ 一个出口, 监督方 (Claude / 人类) 后续把内容人工评审 + 集成到 seeds/methodologies. 减少误伤面.
+- **offset + limit 是 Claude Code 工程招数移植**: 这本身就是个 distillation 产物 — 让 KUN 学到 "Read 行号定位不全 cat" 的模式, 不止靠任务读完产出, 还把模式编码进 skill API.
+- **不动 file-io**: 保持 file-io 用户数据安全模型不变. 用户写自己的 agent 应用接 file-io 还是安全的.
+- **KUN_REPO_ROOT env**: 测试好控制 (用 tmp_path), 生产可以 override, 默认靠相对路径 auto-detect.
+
+**未完工作 (DOGFOOD #26)**：
+- dogfood v7 启动 (gpt-5.5 用 self-reflect 跑 Phase A-E)
+- v7 跑完后:
+  - DOGFOOD-P2.FUSION-VERIFY (#36): 验证 docs/dist-output/ 产物真集成进 KUN
+  - DOGFOOD-P3.MULTI-DIM-TEST (#37): 10 维 Claude Code 能力测试 battery
+  - DOGFOOD-P4.TUNE (#38): 基于测试结果调优
+
+**总测试**: 1680 → 1694 (+14), ruff 全绿. 累计长任务相关代码改动: 1347 → 1694 (+347 tests).
+
