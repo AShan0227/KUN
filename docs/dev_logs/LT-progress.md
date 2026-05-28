@@ -772,9 +772,41 @@ emitter callback, 但 emitter 默认 None. 这条 commit 给 emitter 提供真�
 
 **还要做的 Phase X.B**:
 - [ ] daemon 默认注册 Mission Director runner (每 tick 跑 review)
-- [ ] Lifecycle ORM Row + alembic + writer (类似套路)
+- [x] **Lifecycle ORM Row + alembic + writer** ✅ commit `a9c688b` (X.B.LC)
 - [ ] Auditor Reports ORM Row + alembic + writer
 - [ ] Cockpit API endpoints 真从 DB 查 (替换 Phase E.A stub)
 - [ ] Orchestrator 真用 ensemble_invoke (现在还是 single-LLM)
 - [ ] dogfood v9 走新 V7 protocols 真验证 trifecta + ensemble
+
+---
+
+## V7.PHASE-X.B.LC · Capability Lifecycle 接真 DB (Phase X.B 第 2 刀)
+
+**完成**: 2026-05-28 / commit `a9c688b`
+
+V7 §15 9 阶段 lifecycle 在 Phase D (`f57f6e4`) 落了 service + 邻接表 + 三证据
++ user_approval 校验, 但 transition_emitter 默认 None. 这条 commit 给 emitter
+提供真实现 — 落 lifecycle_transitions 表.
+
+**做了什么**:
+
+1. **`kun/core/orm.py`** — `LifecycleTransitionRow`:
+   - from_stage / to_stage 用 V7 §15 9 阶段 enum (CHECK 兜底)
+   - evidence_refs JSONB / metrics_snapshot JSONB
+   - **DB 不变量**: `production` 必有 `user_approval_ticket_id`; `replay`
+     必有 `evidence_refs ≥ 1` (服务层管三类齐, DB 保底"不空")
+2. **`alembic/versions/0015_capability_lifecycle.py`** — 单表 + indexes +
+   4 个 CHECK + ADR-007 RLS
+3. **`kun/integration/capability_lifecycle_db.py`** —
+   - `write_lifecycle_transition` (LifecycleTransition → Row + flush)
+   - `make_lifecycle_transition_emitter(tenant_id)` factory
+4. **`tests/integration/test_integration_capability_lifecycle_db.py`** (16 tests):
+   - 7 stage transitions parametrize
+   - 三证据 + user_approval 透传
+   - metrics_snapshot / rationale 透传
+   - factory tenant_id binding + 跨 tenant 独立
+   - e2e: service.transition() 真触发 Row 构造
+   - schema sanity
+
+**测试**: 1836 passed, 0 failed (+16 from 1820); ruff 全绿. 单 commit 711 行, 4 文件.
 
