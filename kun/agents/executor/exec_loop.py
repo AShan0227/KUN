@@ -40,6 +40,35 @@ from kun.core.logging import get_logger
 log = get_logger("kun.agents.executor.exec_loop")
 
 
+# LT.PLAN-REVIEW-LOOP-BUG: keys that distinguish a plan_review heartbeat
+# status reply from a real final answer. The heartbeat prompt (see
+# render_plan_review_prompt) asks the model to emit JSON with these keys.
+# A response that doesn't carry any of them — even right after a heartbeat
+# injection — is treated as a genuine final answer.
+_HEARTBEAT_STATUS_KEYS: tuple[str, ...] = (
+    '"current_step"',
+    '"on_anchor"',
+    '"criteria_done_count"',
+    '"scope_creep_detected"',
+)
+
+
+def _looks_like_heartbeat_status(content: str | None) -> bool:
+    """Heuristic: does ``content`` look like a plan_review heartbeat reply?
+
+    Returns True only when the response starts with ``{`` (JSON-ish) AND
+    mentions at least one expected heartbeat key. Plain-prose responses
+    (e.g. ``"task done"``) return False even right after a heartbeat
+    injection — they semantically mean "real final answer".
+    """
+    if not content:
+        return False
+    stripped = content.strip()
+    if not stripped.startswith("{"):
+        return False
+    return any(key in stripped for key in _HEARTBEAT_STATUS_KEYS)
+
+
 # ---- Data types ----
 
 
@@ -161,6 +190,12 @@ class ExecutorLoop:
         consecutive_tool_fails = 0
         final_text = ""
 
+        # LT.PLAN-REVIEW-LOOP-BUG: track whether plan_review was injected
+        # on the current iteration. When set, a "no tool_calls" response is
+        # the heartbeat status reply (expected to be JSON without tool calls),
+        # NOT a real final answer — we acknowledge and continue the loop.
+        plan_review_just_injected = False
+
         while True:
             # ---- Termination checks ----
             if steps >= self._max_steps:
@@ -236,6 +271,9 @@ class ExecutorLoop:
                     # compaction 失败不阻塞主路径
 
             # ---- (LT.B) Maybe inject plan_review prompt ----
+            # Reset the heartbeat flag at the top of each iteration so it
+            # only stays set within the current step.
+            plan_review_just_injected = False
             if self._plan_review is not None and goal_anchor_id is not None:
                 try:
                     review_prompt = await self._plan_review.observe_step_and_maybe_render_prompt(
@@ -244,6 +282,7 @@ class ExecutorLoop:
                     )
                     if review_prompt is not None:
                         messages.append({"role": "system", "content": review_prompt})
+                        plan_review_just_injected = True
                         log.info(
                             "exec_loop.plan_review_injected",
                             task_id=task_id,
@@ -294,6 +333,41 @@ class ExecutorLoop:
 
             # ---- final answer? ----
             if not response.tool_calls:
+                # LT.PLAN-REVIEW-LOOP-BUG: when plan_review was just injected,
+                # the LLM may respond to the heartbeat with structured JSON
+                # status (current_step / on_anchor / criteria_done_count).
+                # That response has no tool_calls by design — but it's NOT a
+                # real final answer. We use a content-shape heuristic to
+                # distinguish heartbeat-status JSON from a real final summary:
+                # only treat as heartbeat if the response looks like the
+                # expected JSON status format. Plain-prose responses (even
+                # right after a heartbeat injection) are still treated as
+                # final — they semantically mean "I'm done".
+                if plan_review_just_injected and _looks_like_heartbeat_status(
+                    response.content
+                ):
+                    log.info(
+                        "exec_loop.plan_review_response_received",
+                        task_id=task_id,
+                        steps=steps,
+                        status_preview=(response.content or "")[:200],
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Status received. Continue working on the "
+                                "original task: emit <skill>...</skill> XML "
+                                "blocks to call host tools. Only respond "
+                                "without a <skill> block when ALL success "
+                                "criteria are fulfilled and you have nothing "
+                                "left to do."
+                            ),
+                        }
+                    )
+                    steps += 1
+                    continue
+
                 final_text = response.content
                 last_cp_id = await self._safe_save_checkpoint(
                     task_id=task_id,

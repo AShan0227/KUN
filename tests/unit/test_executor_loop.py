@@ -513,3 +513,100 @@ async def test_elapsed_seconds_populated() -> None:
         initial_messages=[],
     )
     assert result.elapsed_seconds >= 0.0
+
+
+# ---- LT.PLAN-REVIEW-LOOP-BUG: plan_review heartbeat response is NOT final ----
+
+
+@pytest.mark.asyncio
+async def test_plan_review_heartbeat_response_does_not_finalize() -> None:
+    """Regression: dogfood v7 died because the LLM's structured JSON response
+    to a plan_review heartbeat prompt has no tool_calls — and ExecutorLoop's
+    "no tool_calls = final answer" branch ran. Fix: when plan_review was just
+    injected, a no-tool-call response is the heartbeat reply, not a finalization.
+    Loop must add a nudge user message and continue.
+
+    Setup: step_interval=1 means plan_review fires EVERY step. With the fix,
+    a no-tool-call response is always interpreted as a heartbeat reply (the
+    flag was just set this iteration), so the loop only exits via max_steps.
+    Before the fix, the loop would exit on the FIRST no-tool-call response
+    (step 2 in this scenario) instead of running all 4 steps.
+    """
+    heartbeat = PlanReviewHeartbeat(step_interval=1, time_interval_sec=3600)
+    plan_review = PlanReviewService(heartbeat=heartbeat)
+    # 4 LLM turns alternating tool / heartbeat-JSON / tool / heartbeat-JSON.
+    # max_steps=4 forces termination after step 4.
+    llm = _FakeLLM(
+        [
+            _tool_response("t-1", "tc-1"),
+            _final_response(
+                '{"current_step":"working","on_anchor":true,"criteria_done_count":0}'
+            ),
+            _tool_response("t-2", "tc-2"),
+            _final_response(
+                '{"current_step":"still working","on_anchor":true,"criteria_done_count":1}'
+            ),
+        ]
+    )
+    loop = _make_loop(llm=llm, plan_review=plan_review, max_steps=4)
+    result = await loop.run(
+        task_id="tk-pr",
+        tenant_id="t-1",
+        initial_messages=[{"role": "user", "content": "go"}],
+        goal_anchor_id="ga-x",
+    )
+
+    # All 4 LLM turns must have happened (before the fix, loop bailed at turn 2)
+    assert len(llm.calls) >= 3, (
+        f"Expected ≥3 LLM calls but got {len(llm.calls)} — "
+        f"likely the heartbeat response was treated as final answer at step 2"
+    )
+    # Must exit via max_steps, NOT "final" — heartbeat responses don't finalize
+    assert result.status == "max_steps", (
+        f"Expected status='max_steps' but got {result.status!r}. "
+        f"A 'final' status would mean a heartbeat JSON was treated as the "
+        f"task's final answer."
+    )
+
+    # The messages going into call #3 (right after the first heartbeat
+    # response at call #2) must contain the nudge user message we added.
+    third_call_msgs = llm.calls[2]
+    nudges = [
+        m
+        for m in third_call_msgs
+        if m.get("role") == "user"
+        and "Status received" in str(m.get("content", ""))
+    ]
+    assert nudges, (
+        "Expected a 'Status received...' nudge user message after the "
+        "heartbeat response, but none found in messages going into call #3"
+    )
+
+
+@pytest.mark.asyncio
+async def test_plan_review_flag_resets_between_iterations() -> None:
+    """If plan_review never fires (no heartbeat triggers), a no-tool-call
+    response is still treated as the real final answer — the flag must
+    properly reset each iteration so old injections don't poison later steps.
+    """
+    # step_interval=5 + only 2 LLM responses → heartbeat never fires
+    heartbeat = PlanReviewHeartbeat(step_interval=5, time_interval_sec=3600)
+    plan_review = PlanReviewService(heartbeat=heartbeat)
+    llm = _FakeLLM(
+        [
+            _tool_response("t-1", "tc-1"),
+            _final_response("real final"),
+        ]
+    )
+    loop = _make_loop(llm=llm, plan_review=plan_review, max_steps=10)
+    result = await loop.run(
+        task_id="tk-pr2",
+        tenant_id="t-1",
+        initial_messages=[{"role": "user", "content": "go"}],
+        goal_anchor_id="ga-x",
+    )
+
+    # plan_review did NOT fire, so the no-tool-call response is real final
+    assert len(llm.calls) == 2
+    assert result.status == "final"
+    assert result.final_text == "real final"
