@@ -2045,6 +2045,38 @@ V7 明确**不做**的事：
 | 北极星 | 已定义 | 保留 | 无 |
 | 一级子系统 | 6 个 | 升级 7 个（加 Mission Director） | §9.7 新章节 |
 | 命名约定 | implicit | explicit §5 + 启傩独立可发布预留 | §5 新章节 + 代码层 V7-Phase A-D 迁移 |
+
+### V6 子系统当前实装层级 (V7 Phase 0.4 grep 评估, 按 §16.1 7 层证据)
+
+| 子系统 | 代码 module 数 | 当前最高 Layer | 备注 |
+|---|---|---|---|
+| 6.1 督师 (Director) — 任务理解 | 11 modules (含 planner / recursive_planner / intent / decision_point_classifier / long_task_router) | Layer 4 (真实消费) | dogfood v8 真用过 intent + planner; 但 RecursivePlanner 实际没被 LLM 用 (gpt-5.5 自己拆 phase) |
+| 6.2 Control Plane (Executor + Daemon) | 34 modules + ExecutorLoop + LongTaskOrchestrator | Layer 5 (闭环通过) | dogfood v8 跑通 multi-step + checkpoint + budget guard, 接近 Layer 6 |
+| 6.3 知识与证据 | self-reflect / grep-verify / file-io / shell-exec / web-search / pdf-read / csv-query / python-exec (8 个 builtin) | Layer 4 (真实消费) | dogfood v8 真用过 self-reflect 23 次 + grep-verify 单测覆盖 |
+| 6.4 协同与资源调度 | CollaborationTicket 在 control_plane/v6.py, worker_pool 部分实装 | Layer 3 (runner 可执行) | runner 在, 真实 ticket triggered 数 < 10, **需 dogfood v9 验证** |
+| 6.5 傩 (Nuo) — 质量治理 | SupervisorService + Watchtower 规则引擎 + ValidationPipeline + 4 个 Gate modules + RCDH 4 层 | Layer 4 (真实消费) | dogfood v8 真触发 PlanReview + 但 RCDH 4 层未端到端走过 |
+| 6.6 启 (Qi) — 能力进化 | StrategistService + 3 模式 Explorer Pool 架子 + CapabilityProfile (13 处引用) | Layer 3 (runner 可执行) | StrategistService 跑得通, 但 **Explorer Pool 多 LLM 没 wire** (残废态, V7 Phase C 修); capability lifecycle 9 阶段架子在, gate 没 enforce (V7 Phase D 修) |
+| **6.7 (V7 新) 交付总监 Mission Director** | **0 modules** | **Layer 0 (V7 方案能力)** | **完全没建, V7 Phase B 必须从 0 实装** |
+| External Supervisor (独立) | 2 modules + critique impl | Layer 3 (runner 可执行) | critique 实装, **持续 watchdog mode 没接 (V7 §10.2.3 升级要求)**, **cross-family 校验没强 enforce (V7 §11.2 要求)**, **auditor hat 没接 (V7 §16.6)** |
+
+**总体结论**:
+- V7 7 层证据角度: V6 大部分子系统在 Layer 3-4, **没一个到 Layer 6 (真实 mission e2e + 攻击型测试)**
+- 缺口最大的 3 个: **Mission Director (Layer 0)** / **External Supervisor 升级 (Layer 3 → Layer 4+)** / **Mission Director's auditor hat (新)**
+- Phase B (双线监督 protocol) 是工程量最大的 Phase, 因为要从 0 建 Mission Director
+
+### V6 → V7 Phase 工作量评估 (V7 Phase 0.4 输出)
+
+| Phase | V6 起点 | V7 目标 | 估时 | 风险 |
+|---|---|---|---|---|
+| Phase 0 | 5 yaml 违规已撤回 (Phase 0.1) + 旧入口标 fixture-only (Phase 0.5) + 本评估 (Phase 0.4) | 全部完成 | 已完成 | ✅ 全部已落地 |
+| Phase A 命名迁移 | strategist/ supervisor/ 旧 path | qi/ nuo/ 新 path + re-export | 1 周 | 中 (50+ files import 改) |
+| Phase B 双线监督 + Mission Director | 部分 (有 watchtower + tester + gate) | 全套 + Mission Director 一级子系统 (从 0 建) | 2-3 周 | 高 (新建 module + daemon 默认注册 + 状态机改) |
+| Phase C multi-LLM ensemble | LLMRouter + ab_alternates (单 LLM challenger) | ensemble_invoke API + cross-family 强 enforce + Haiku 二号 wire | 1-2 周 | 中 |
+| Phase D RSI 9 阶段 lifecycle | capability lifecycle 架子在 | gate 强 enforce + user approval ticket + 5 yaml 走完整 lifecycle | 2 周 | 中 |
+| Phase E UI 框架 + 6 层证据驾驶舱 | 几乎 0 | UI 框架 + 7 层证据可视化 | 3-4 周 | 高 (UI 工程量大) |
+| Phase F Claude Code 蒸馏到 multi-LLM | P3 10 维 battery 已 19/20 (单 LLM) | 多 LLM 模式 ≥ 19/20 | 1-2 周 | 中 (依赖 Phase C + D) |
+| Phase G External Supervisor 扩范围 | episodic critique | 持续 watchdog hat + auditor hat + 看所有监督角色 | 1 周 | 低 |
+| **总计** | — | — | **11-15 周** | — |
 | 任务方案先行 | CONVERSATION-LEARNING 提了 | 硬规则化 §10.1 | Control Plane 状态机加 enforce |
 | 双线监督 | 散落 | 集中 §10 | Watchtower / Mission Director / 启 接口统一 |
 | 方案动态优化 | PlanChangeProposal 提了 | 三档决策权 + 三级信号 §10.3 / §10.4 | 新 enum + 决策 logic |
