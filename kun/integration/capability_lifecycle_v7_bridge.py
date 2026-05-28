@@ -176,6 +176,26 @@ async def emit_lifecycle_transition_for_gate_decision(
         transition_id=record.transition_id,
         n_evidence=len(evidence_refs),
     )
+
+    # V7 Phase X.B.MF-AR-wiring: fire heuristic auditor report alongside the
+    # lifecycle transition. Strict-acceptance stage entries (REPLAY+) ideally
+    # want LLM-driven 7-角度审计; for now heuristic from gate rule_results.
+    # Fire-and-forget; bridge handles its own env opt-out + errors.
+    try:
+        from kun.integration.auditor_report_v7_bridge import (
+            emit_heuristic_auditor_report_for_capability,
+        )
+
+        await emit_heuristic_auditor_report_for_capability(
+            capability_id=decision.capability_id,
+            decision=decision,
+            target_stage=CapabilityLifecycleStage.CANDIDATE.value,
+            tenant_id=tenant_id,
+        )
+    except Exception:
+        # Defense in depth — auditor bridge failure does NOT propagate.
+        pass
+
     return record.transition_id
 
 

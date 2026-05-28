@@ -486,14 +486,29 @@ def test_mission_alignment_writes_wired_false_when_bridge_disabled(
 def test_auditor_reports_response_includes_writes_wired_status(
     client: TestClient, fake_readers: dict[str, Any]
 ) -> None:
-    """MF-3: /supervisor/auditor-reports — auditor still ORPHAN (MF-AR-wiring TBD)."""
+    """MF-3 + MF-AR-wiring: auditor_reports now has heuristic writer."""
     resp = client.get("/cockpit/supervisor/auditor-reports")
     assert resp.status_code == 200
     data = resp.json()
     status = data["writes_wired_status"]
-    assert status["writes_wired"] is False
-    assert "ORPHAN" in status["warning"]
-    assert "MF-AR-wiring" in status.get("mf_followup_required", "")
+    # MF-AR-wiring landed — heuristic writer fires on lifecycle transitions
+    assert status["writes_wired"] is True
+    assert "X.B.MF-AR-wiring" in status["writer"]
+    assert "heuristic" in status.get("note", "")
+
+
+@pytest.mark.unit
+def test_auditor_reports_writes_wired_false_when_ar_bridge_disabled(
+    client: TestClient,
+    fake_readers: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Env kill switch works for MF-AR-wiring bridge."""
+    monkeypatch.setenv("KUN_V7_AUDITOR_REPORT_BRIDGE_ENABLED", "false")
+    resp = client.get("/cockpit/supervisor/auditor-reports")
+    data = resp.json()
+    assert data["writes_wired_status"]["writes_wired"] is False
+    assert "Bridge disabled" in (data["writes_wired_status"]["warning"] or "")
 
 
 @pytest.mark.unit

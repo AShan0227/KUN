@@ -143,15 +143,32 @@ def _writes_wired_status() -> dict[str, dict[str, Any]]:
             ),
         },
         "auditor_reports": {
-            "writes_wired": False,
-            "writer": None,
-            "warning": (
-                "ORPHAN: no production code emits to auditor_reports yet. "
-                "Phase X.B.AR built the writer; auditor hat schedule wiring "
-                "(periodic / pre-release / Canary→Production gate) is "
-                "MF-AR-wiring follow-up."
+            "writes_wired": _truthy(
+                "KUN_V7_AUDITOR_REPORT_BRIDGE_ENABLED", default=True
             ),
-            "mf_followup_required": "MF-AR-wiring (TBD)",
+            "writer": "kun.integration.capability_lifecycle_v7_bridge "
+            "→ kun.integration.auditor_report_v7_bridge (X.B.MF-AR-wiring)",
+            "env_gate": "KUN_V7_AUDITOR_REPORT_BRIDGE_ENABLED",
+            "env_current_value_truthy": _truthy(
+                "KUN_V7_AUDITOR_REPORT_BRIDGE_ENABLED", default=True
+            ),
+            "warning": (
+                None
+                if _truthy(
+                    "KUN_V7_AUDITOR_REPORT_BRIDGE_ENABLED", default=True
+                )
+                else (
+                    "Bridge disabled — auditor_reports 表不会有新行 from "
+                    "lifecycle transitions."
+                )
+            ),
+            "note": (
+                "Heuristic auditor reports (auditor_provider="
+                "'heuristic/gate-derived') fired on each V7 lifecycle "
+                "transition. Full LLM-driven 7-角度审计 (MF-AR-LLM) is a "
+                "separate follow-up — that would emit P0 risk reports with "
+                "real attacker-found bypass_methods."
+            ),
         },
     }
 
@@ -454,7 +471,9 @@ async def get_writes_wired_status() -> dict[str, Any]:
             "MF-3": "writes_wired_status — done (this endpoint)",
             "MF-LC-wiring": "lifecycle_transitions writer wiring — done "
             "(GateService.admit approve → V7 OBSERVATION→CANDIDATE)",
-            "MF-AR-wiring": "auditor_reports writer wiring — TBD",
+            "MF-AR-wiring": "auditor_reports writer wiring — done "
+            "(heuristic auditor report on lifecycle transition)",
+            "MF-AR-LLM": "real LLM-driven 7-角度审计 (replaces heuristic) — TBD",
             "MF-4": "AT-* acceptance tests — partial (MF-1/2/LC have wiring proofs)",
             "MF-5": "real PG CHECK violation tests — TBD",
             "MF-6": "cockpit_readers error_kind classification — done (commit b1592e6)",
