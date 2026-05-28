@@ -156,9 +156,108 @@ def render_critique_prompt(
     )
 
 
+# ============================================================
+# V7 §16.6 auditor hat — 生产闭环攻击审计员 prompt
+# ============================================================
+#
+# External Supervisor 戴两顶帽子 (V7 §10.2.3 watchdog + §16.6 auditor):
+#   - watchdog hat: 持续 tick critique 主 Executor 行为 (这个 module 上半部分)
+#   - auditor hat: 周期/pre-release/dogfood 后 跑 7 角度生产闭环审计 (下面新增)
+#
+# 7 角度审计 prompt 来自用户 Claude Code 复盘里的"生产闭环攻击审计员"工程化.
+# V7 §16.6 强制 External Supervisor 周期 (默认每周 / dogfood 完成后 / capability
+# Canary→Production gate 前) 戴这顶帽子跑一次审计.
+
+AUDITOR_SYSTEM_PROMPT_TEMPLATE = """\
+═══ KUN 生产闭环攻击审计员 (V7 §16.6, immutable) ═══
+
+你是这个项目的"生产闭环攻击审计员". 目标不是证明功能存在, 是证明系统**不能被绕过**.
+
+请从攻击者视角检查方案、代码、测试、真实运行路径和产物.
+
+重点检查 (V7 §16.2 6 反模式衍生):
+
+1. 文档声称 done 的能力, 真实生产路径是否必经?
+2. 是否存在旧入口、脚本入口、调试入口、直接渲染入口绕过核心能力?
+3. 是否有 schema / helper / mock / fallback 被包装成真实完成?
+4. 测试是否只测模块成功, 还是测试坏样例必须失败?
+5. 每个产物是否有 trace: 输入、决策、门禁、评分、失败原因、修复记录?
+6. 如果某能力缺失, 系统是降级并阻断, 还是继续假装成功?
+7. 真实用户最关心的结果, 是否被端到端验收覆盖?
+
+═══ 审计输入 ═══
+{audit_input_block}
+
+═══ 你的输出 (严格 JSON) ═══
+{{
+  "design_promise": "<本次审计目标 capability 的设计承诺>",
+  "real_code_path": "<grep 验证的真实代码路径>",
+  "bypass_methods": ["<可绕过方式 1>", "<可绕过方式 2>", ...],
+  "min_repro_steps": "<最小复现绕过路径>",
+  "risk_level": "P0" | "P1" | "P2",
+  "must_fix": ["<必须修复项 1>", "<必须修复项 2>", ...],
+  "acceptance_tests": ["<新加的攻击型测试 1>", ...],
+  "allow_release": true | false,
+  "rationale": "<一段话总结>"
+}}
+
+只输出 JSON, 不要 prose.
+"""
+
+
+def render_auditor_prompt(
+    *,
+    capability_name: str,
+    design_doc_excerpt: str,
+    code_paths_to_audit: list[str],
+    test_files_to_audit: list[str],
+    recent_dogfood_summary: str | None = None,
+) -> str:
+    """Render the V7 §16.6 auditor hat prompt for External Supervisor.
+
+    Args:
+        capability_name: 被审计能力名 (e.g. "self-reflect skill", "Mission Director runner").
+        design_doc_excerpt: V7 / TaskPlan 里对此能力的设计承诺摘录 (≤ 500 字).
+        code_paths_to_audit: 跟此能力相关的代码路径列表 (e.g. ["kun/agents/director/planner.py"]).
+        test_files_to_audit: 跟此能力相关的测试文件 (e.g. ["tests/unit/test_planner.py"]).
+        recent_dogfood_summary: 可选, 最近一次 dogfood 任务里此能力实际表现摘要.
+
+    Returns:
+        完整渲染的 auditor prompt 字符串.
+    """
+    parts: list[str] = []
+    parts.append(f"被审计能力: {capability_name}")
+    parts.append("")
+    parts.append("=== 设计承诺 (文档摘录) ===")
+    parts.append(design_doc_excerpt[:1500] or "(无文档摘录)")
+    parts.append("")
+    parts.append("=== 待审计代码路径 ===")
+    if code_paths_to_audit:
+        for p in code_paths_to_audit:
+            parts.append(f"  - {p}")
+    else:
+        parts.append("  (无代码路径)")
+    parts.append("")
+    parts.append("=== 待审计测试文件 ===")
+    if test_files_to_audit:
+        for p in test_files_to_audit:
+            parts.append(f"  - {p}")
+    else:
+        parts.append("  (无测试文件)")
+    if recent_dogfood_summary:
+        parts.append("")
+        parts.append("=== 最近 dogfood 表现 ===")
+        parts.append(recent_dogfood_summary[:1500])
+    audit_input_block = "\n".join(parts)
+
+    return AUDITOR_SYSTEM_PROMPT_TEMPLATE.format(audit_input_block=audit_input_block)
+
+
 __all__ = [
+    "AUDITOR_SYSTEM_PROMPT_TEMPLATE",
     "CRITIQUE_SYSTEM_PROMPT_TEMPLATE",
     "MAX_CHARS_PER_STEP",
     "MAX_STEPS_IN_PROMPT",
+    "render_auditor_prompt",
     "render_critique_prompt",
 ]
