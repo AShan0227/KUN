@@ -912,3 +912,86 @@ class PlanChangeProposalRow(Base):
         Index("ix_pcp_task_triggered_at", "tenant_id", "task_id", "triggered_at"),
         Index("ix_pcp_severity_pending", "tenant_id", "severity", "user_decision"),
     )
+
+
+class LifecycleTransitionRow(Base):
+    """V7 §15 capability lifecycle stage transitions (alembic 0015).
+
+    启 (Qi) capability 在 9 阶段 lifecycle 间流转, 每次切阶段落一条 row.
+    用来:
+      - 驾驶舱 (V7 §20) 显示 capability 现阶段 + 历史
+      - 外部监督者 auditor hat (V7 §16.6) 审 lifecycle gate 是否被绕过
+      - 启 post-hoc retrospect 找 rollback 原因
+
+    V7 §15 9 阶段 enum:
+      observation / candidate / replay / holdout / shadow / canary /
+      production / monitor / rollback / retire
+
+    V7 §12.2 严格验收 5 阶段:
+      replay / holdout / shadow / canary / production
+
+    强 enforce 不变量 (服务层 + DB 双保险):
+      - production 阶段必须 user_approval_ticket_id (CANARY → PRODUCTION)
+      - replay 进入必须 ≥ 3 类 evidence (CANDIDATE → REPLAY)
+      - 邻接转移 (服务层校验, DB 不重复)
+    """
+
+    __tablename__ = "lifecycle_transitions"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    transition_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    capability_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    from_stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    to_stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    decision_rationale: Mapped[str] = mapped_column(
+        Text, nullable=False, default=""
+    )
+    user_approval_ticket_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    evidence_refs: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    """list[str], e.g. ['strategy_replay_report:rr-x', 'process_audit:pa-y', ...]."""
+    metrics_snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    """{baseline_score, candidate_score, replay_traces, ...}."""
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "from_stage IN ('observation', 'candidate', 'replay', 'holdout', "
+            "'shadow', 'canary', 'production', 'monitor', 'rollback', 'retire')",
+            name="lct_from_stage_valid",
+        ),
+        CheckConstraint(
+            "to_stage IN ('observation', 'candidate', 'replay', 'holdout', "
+            "'shadow', 'canary', 'production', 'monitor', 'rollback', 'retire')",
+            name="lct_to_stage_valid",
+        ),
+        # production 阶段必须有 user approval ticket (V7 §12.2)
+        CheckConstraint(
+            "NOT (to_stage = 'production' AND user_approval_ticket_id IS NULL)",
+            name="lct_production_needs_user_approval",
+        ),
+        # to_stage='replay' 必须至少 1 条 evidence (CANDIDATE → REPLAY 严格)
+        # 服务层会校验三类齐, DB 只保底 "不空"
+        CheckConstraint(
+            "NOT (to_stage = 'replay' AND "
+            "jsonb_array_length(evidence_refs) < 1)",
+            name="lct_replay_needs_evidence",
+        ),
+        Index(
+            "ix_lct_capability_decided_at",
+            "tenant_id",
+            "capability_id",
+            "decided_at",
+        ),
+        Index("ix_lct_to_stage", "tenant_id", "to_stage", "decided_at"),
+    )
