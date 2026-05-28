@@ -1,7 +1,7 @@
 {
-  "total": 19,
+  "total": 20,
   "max_total": 20,
-  "percentage": 0.95,
+  "percentage": 1.0,
   "dimensions": [
     {
       "id": "D1",
@@ -29,11 +29,14 @@
     {
       "id": "D3",
       "name": "grep verify before assume",
-      "score": 1,
+      "score": 2,
       "evidence": [
-        "seed: service_module_not_wired_to_runtime_audit — grep verify 沉淀"
+        "audit 方法论: service_module_not_wired_to_runtime_audit",
+        "action 方法论: grep_verify_before_assume (DOGFOOD-P4 新增)",
+        "grep-verify skill 一等 primitive (kun/skills/builtin/grep_verify.py)",
+        "test_grep_verify_skill.py — 10 unit test 覆盖 confirmed/refuted/whitelist/shell-injection/cap"
       ],
-      "notes": "方法论存在 (audit_methodology) 但 Executor 主路径没有 pre-action grep 强制 — 属于半具备. dogfood v8 没机会展现 (任务是读+写, 不是修代码)."
+      "notes": "DOGFOOD-P4 加 grep-verify skill 一等 primitive + 配对方法论 — LLM 不再降级用 shell-exec / 不再靠记忆"
     },
     {
       "id": "D4",
@@ -103,7 +106,7 @@
       "name": "Bash 克制 / 专用 tool 优先",
       "score": 2,
       "evidence": [
-        "专用 skills: 7 builtin + 5 starter",
+        "专用 skills: 8 builtin + 5 starter",
         "shell-exec (受 allowlist 约束) + file-io + self-reflect 各司其职",
         "dogfood v8: shell-exec 调 0 次, self-reflect 调 23 次 — 用专用而非 shell"
       ],

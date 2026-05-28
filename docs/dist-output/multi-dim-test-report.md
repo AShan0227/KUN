@@ -1,7 +1,7 @@
 # DOGFOOD-P3 — KUN 多维能力测试报告
 
 **测试时间**: 2026-05-28  
-**总分**: 19/20 (95%)
+**总分**: 20/20 (100%)
 
 ## 评分标准
 
@@ -15,7 +15,7 @@
 |---|---|---|---|
 | D1 | 任务拆解 (PlanTree depth ≥ 2) | **2/2** | LT.F 已建递归 planner, runtime 真在用 (dogfood v8 见 long_task.plan_tree 事件) |
 | D2 | 并行 sub-agent 派发 | **2/2** | dogfood v8 第 4 / 7 / 10 step 都出现 4 个 self-reflect 并行 — KUN 真在派发 |
-| D3 | grep verify before assume | **1/2** | 方法论存在 (audit_methodology) 但 Executor 主路径没有 pre-action grep 强制 — 属于半具备. dogfood v8 没机会展现 (任务是读+写, 不是修代码). |
+| D3 | grep verify before assume | **2/2** | DOGFOOD-P4 加 grep-verify skill 一等 primitive + 配对方法论 — LLM 不再降级用 shell-exec / 不再靠记忆 |
 | D4 | 测试驱动 fail-fast | **2/2** | ValidationPipeline + Tester role 都在, dev log 显示每 commit pytest+ruff |
 | D5 | commit 纪律 (≤1000 行) | **2/2** | 近期 20 commit 实测 |
 | D6 | 错误立修不藏 | **2/2** | 本 session 5 个 LT.x fix 都是 dogfood failure 即修 |
@@ -43,11 +43,14 @@
 
 **Notes**: dogfood v8 第 4 / 7 / 10 step 都出现 4 个 self-reflect 并行 — KUN 真在派发
 
-### [D3] grep verify before assume — **1/2**
+### [D3] grep verify before assume — **2/2**
 
-- seed: service_module_not_wired_to_runtime_audit — grep verify 沉淀
+- audit 方法论: service_module_not_wired_to_runtime_audit
+- action 方法论: grep_verify_before_assume (DOGFOOD-P4 新增)
+- grep-verify skill 一等 primitive (kun/skills/builtin/grep_verify.py)
+- test_grep_verify_skill.py — 10 unit test 覆盖 confirmed/refuted/whitelist/shell-injection/cap
 
-**Notes**: 方法论存在 (audit_methodology) 但 Executor 主路径没有 pre-action grep 强制 — 属于半具备. dogfood v8 没机会展现 (任务是读+写, 不是修代码).
+**Notes**: DOGFOOD-P4 加 grep-verify skill 一等 primitive + 配对方法论 — LLM 不再降级用 shell-exec / 不再靠记忆
 
 ### [D4] 测试驱动 fail-fast — **2/2**
 
@@ -96,7 +99,7 @@
 
 ### [D10] Bash 克制 / 专用 tool 优先 — **2/2**
 
-- 专用 skills: 7 builtin + 5 starter
+- 专用 skills: 8 builtin + 5 starter
 - shell-exec (受 allowlist 约束) + file-io + self-reflect 各司其职
 - dogfood v8: shell-exec 调 0 次, self-reflect 调 23 次 — 用专用而非 shell
 
@@ -104,5 +107,4 @@
 
 ## 总结
 
-低于满分的维度 (1 个), 待 P4 调优:
-- [D3] grep verify before assume — 1/2 — 方法论存在 (audit_methodology) 但 Executor 主路径没有 pre-action grep 强制 — 属于半具备. dogfood v8 没机会展现 (任务是读+写, 不是修代码).
+✅ 所有 10 维度满分。

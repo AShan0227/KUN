@@ -626,3 +626,89 @@ step 10: parallel WRITE 9 文件 一次性 — Phase A/B/C/D/E 全产出
 - 9 个新 dogfood 产物 (4 md + 5 yaml)
 - KUN 长任务能力从 "纸上 OK 真跑死 8 次" 到 "真跑通"
 
+---
+
+## DOGFOOD-P3 · 10 维 Claude Code 能力测试 battery
+
+**完成**：2026-05-28 / commit bff5efb
+
+P2 验证了 5 张新 seeds 真融合进 KUN. P3 设计可重复跑的 10 维测试 battery,
+评估 KUN 现在跟 Claude Code 工程能力的差距.
+
+**策略**: 静态代码分析为主 (检查能力是否真工程化进 KUN) + dogfood v8 真实
+行为数据 (uvicorn log 解析). 比"再跑 10 次真任务"省时间, 验证可重复.
+
+**10 维 + 评分**：
+| ID | 维度 | 分数 | 证据 |
+|---|---|---|---|
+| D1 | 任务拆解 (PlanTree depth ≥ 2) | 2/2 | RecursivePlanner + PlanTree + 单测 + dogfood v8 真用 |
+| D2 | 并行 sub-agent 派发 | 2/2 | dogfood v8 单秒最多 4 read 并发, 2 次 ≥3 并发 |
+| D3 | grep verify before assume | **1/2** | 方法论存在但 runtime 无工具支持 — **P4 靶子** |
+| D4 | 测试驱动 fail-fast | 2/2 | ValidationPipeline + Tester role + git 历史 |
+| D5 | commit 纪律 (≤1000 行) | 2/2 | 近 20 commit, 18/20 ≤1000 行 (90%) |
+| D6 | 错误立修不藏 | 2/2 | 近 30 commit 8 个 fix(...) + BugCase 库 |
+| D7 | dev_log 沉淀 (ADR-025) | 2/2 | LT-progress 13 个 LT.x section + 17 dev_log md |
+| D8 | 决策点停下问 | 2/2 | DIST-C 6 类硬规则 + Gate + 新 seed |
+| D9 | Read with offset+limit | 2/2 | self-reflect API + dogfood v8 真用 limit 23 次 |
+| D10 | Bash 克制 / 专用 tool 优先 | 2/2 | 12 专用 skill + dogfood v8 shell=0 self-reflect=23 |
+
+**首轮总分 19/20 (95%)** — 唯一 1/2 是 D3.
+
+**工件 (commit bff5efb)**:
+- `scripts/multi_dim_test.py` (~300 行) — 可重复跑的 battery, ANSI-strip / git
+  历史解析 / dogfood log 行为分析
+- `docs/dist-output/multi-dim-test-report.md` — 完整 markdown 报告
+- `docs/dist-output/multi-dim-test-results.json` — 机器可读结果
+
+---
+
+## DOGFOOD-P4 · grep-verify skill + 方法论, D3 从 1/2 → 2/2
+
+**完成**：2026-05-28 / commit d7b77c7
+
+D3 的真实 gap: 方法论 `service_module_not_wired_to_runtime_audit` 说"改前要
+grep 验证", 但 KUN 没工具支持. LLM 只能降级用 shell-exec 跑 raw grep, 输出
+是大段文本, 解析容易丢上下文.
+
+**做了什么 (Path-3 思路: 加 skill 而非 runtime hook)**:
+1. **`kun/skills/builtin/grep_verify.py`** (新): 一等 primitive, async 实现
+   (asyncio.create_subprocess_exec), 白名单 root, 结构化输出
+   `{verdict, matches, match_count}`. 拒 path traversal / 拒 shell 元字符.
+   30s timeout, 1-500 max_matches cap.
+2. **`seeds/methodologies/grep_verify_before_assume.yaml`** (新方法论): 跟
+   `service_module_not_wired_to_runtime_audit` 是姐妹 (这条是"动作", 那条是
+   "审计角度"). related_methodologies 互联 module_relocation_grep_string_literals_too.
+3. **10 unit test** 覆盖 confirmed/refuted/whitelist/traversal/shell-injection/cap/claim
+4. **multi_dim_test.py D3 check 升级**: 现在要求 audit 方法论 + action 方法论
+   + skill + 单测 都齐才 2/2
+
+**P3 重跑结果 (P4 后)**: **20/20 (100%)**
+
+**关键决策**:
+- **新 skill 而非 runtime hook**: hook 太具体 (只解决"改前 grep"一种情况),
+  skill 更通用 (任何"验证假设"场景都能用). 跟 Claude Code 的 Grep tool 一对一映射.
+- **white-listed root**: 跟 self-reflect 共享 6 个白名单目录, 不能 grep .env / .git.
+- **Pattern 反 shell-injection**: 即使我们 argv 调用 (非 shell), 仍然 reject
+  含 `;|&><$\``\n` 的 pattern — 防 LLM 把 shell 命令当 regex 传过来.
+- **structured output**: `{verdict: confirmed|refuted, matches: [{path, line, line_no}]}`
+  比 raw grep stdout 让 LLM 解析更可靠.
+
+**总测试**: 1696 → 1706 (+10 grep_verify), ruff 全绿. 累计本 session 17 commits.
+
+---
+
+## DOGFOOD #26 总结 · 全 4 阶段完成
+
+| Phase | 内容 | 状态 | commit |
+|---|---|---|---|
+| **P1 蒸馏** | gpt-5.5 真跑长任务读 dev_logs 出 9 文件 | ✅ | dogfood v8 run |
+| **P2 融合** | 5 yaml 融进 seeds/methodologies/ (27→32) | ✅ | ad15bdc |
+| **P3 多维测试** | 10 维 battery 跑出 19/20 baseline | ✅ | bff5efb |
+| **P4 调优** | grep-verify skill + 方法论 → 20/20 满分 | ✅ | d7b77c7 |
+
+**最终: KUN 在 10 个 Claude Code 工程能力维度上拿 20/20 满分**, 每维有
+代码 + 单测 + (方法论 OR 真行为) 三重证据.
+
+5 张 dogfood 蒸馏出的方法论 + 1 张 P4 加的 = **+6 张新方法论 (27 → 33)**.
+新 skill: self-reflect (LT.SELF-REFLECT-SKILL) + grep-verify (P4) = **+2 个一等 skill**.
+

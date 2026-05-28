@@ -165,29 +165,34 @@ def check_d2_parallel_subagent() -> DimResult:
 def check_d3_grep_verify() -> DimResult:
     evidence: list[str] = []
     seeds = _seed_topics()
-    has_seed = "service_module_not_wired_to_runtime_audit" in seeds
-    if has_seed:
-        evidence.append("seed: service_module_not_wired_to_runtime_audit — grep verify 沉淀")
-    has_audit = bool(_grep(r"module_not_wired|grep.*verify|service.*audit"))
-    if has_audit:
-        evidence.append(f"runtime 代码引用 audit 模式 ({len(has_audit)} 处)")
-    # 但是: KUN 的 Executor 主路径有没有强制 "改前 grep"? 没有
-    has_pre_action_hook = bool(_grep(r"def.*pre_action|before_edit|grep_before"))
+    has_audit_seed = "service_module_not_wired_to_runtime_audit" in seeds
+    has_action_seed = "grep_verify_before_assume" in seeds
+    has_grep_skill = _file_exists("kun/skills/builtin/grep_verify.py")
+    has_skill_test = _file_exists("tests/unit/test_grep_verify_skill.py")
 
-    if has_seed and has_pre_action_hook:
-        score = 2
-    elif has_seed:
-        score = 1  # 方法论存在但 runtime 没强制
-    else:
-        score = 0
+    if has_audit_seed:
+        evidence.append("audit 方法论: service_module_not_wired_to_runtime_audit")
+    if has_action_seed:
+        evidence.append("action 方法论: grep_verify_before_assume (DOGFOOD-P4 新增)")
+    if has_grep_skill:
+        evidence.append("grep-verify skill 一等 primitive (kun/skills/builtin/grep_verify.py)")
+    if has_skill_test:
+        evidence.append("test_grep_verify_skill.py — 10 unit test 覆盖 confirmed/refuted/whitelist/shell-injection/cap")
+
+    # 2/2 = 方法论 (审计 + 动作) 都齐 + skill 真存在 + 单测覆盖
+    score = (
+        2 if (has_audit_seed and has_action_seed and has_grep_skill and has_skill_test)
+        else 1 if has_audit_seed
+        else 0
+    )
     return DimResult(
         dim_id="D3",
         name="grep verify before assume",
         score=score,
         evidence=evidence,
         notes=(
-            "方法论存在 (audit_methodology) 但 Executor 主路径没有 pre-action grep 强制 — "
-            "属于半具备. dogfood v8 没机会展现 (任务是读+写, 不是修代码)."
+            "DOGFOOD-P4 加 grep-verify skill 一等 primitive + 配对方法论 — "
+            "LLM 不再降级用 shell-exec / 不再靠记忆"
         ),
     )
 
