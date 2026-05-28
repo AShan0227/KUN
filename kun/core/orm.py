@@ -995,3 +995,77 @@ class LifecycleTransitionRow(Base):
         ),
         Index("ix_lct_to_stage", "tenant_id", "to_stage", "decided_at"),
     )
+
+
+class AuditorReportRow(Base):
+    """External Supervisor auditor hat 周期审计报告 (V7 §16.6, alembic 0016).
+
+    V7 §16.6 强制 External Supervisor 周期 (每周 / dogfood 完成后 /
+    capability Canary→Production gate 前) 戴 auditor hat 跑 "生产闭环攻击
+    审计员" 7 角度审计, 产 AuditorReport.
+
+    9-field schema 完全对齐 AUDITOR_SYSTEM_PROMPT_TEMPLATE 里 JSON output
+    (kun/integration/external_supervisor_critique.py).
+
+    V7 §16.6 不变量 (DB CHECK 兜底):
+      - risk_level='P0' ⇒ allow_release=false (P0 风险必须不许发布)
+      - risk_level ∈ {'P0', 'P1', 'P2'}
+    """
+
+    __tablename__ = "auditor_reports"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    report_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    audited_capability: Mapped[str] = mapped_column(String(128), nullable=False)
+    audited_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    auditor_provider: Mapped[str] = mapped_column(String(128), nullable=False)
+    """e.g. 'anthropic/claude-opus' / 'openai/gpt-5.5' (cross-family
+    enforcement, V7 §11.4)."""
+    design_promise: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    real_code_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    bypass_methods: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    """list[str], 攻击者可绕过方式."""
+    min_repro_steps: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    risk_level: Mapped[str] = mapped_column(String(2), nullable=False)
+    # P0 / P1 / P2 (CHECK constraint)
+    must_fix: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    acceptance_tests: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    allow_release: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
+    rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "risk_level IN ('P0', 'P1', 'P2')",
+            name="ar_risk_level_valid",
+        ),
+        # V7 §16.6 不变量: P0 风险必须不许发布 (DB 兜底)
+        CheckConstraint(
+            "NOT (risk_level = 'P0' AND allow_release = true)",
+            name="ar_p0_blocks_release",
+        ),
+        Index(
+            "ix_ar_capability_audited_at",
+            "tenant_id",
+            "audited_capability",
+            "audited_at",
+        ),
+        Index(
+            "ix_ar_risk_level_recent",
+            "tenant_id",
+            "risk_level",
+            "audited_at",
+        ),
+    )
