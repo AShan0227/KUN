@@ -773,7 +773,7 @@ emitter callback, 但 emitter 默认 None. 这条 commit 给 emitter 提供真�
 **还要做的 Phase X.B**:
 - [ ] daemon 默认注册 Mission Director runner (每 tick 跑 review)
 - [x] **Lifecycle ORM Row + alembic + writer** ✅ commit `a9c688b` (X.B.LC)
-- [ ] Auditor Reports ORM Row + alembic + writer
+- [x] **Auditor Reports ORM Row + alembic + writer** ✅ commit `85fae52` (X.B.AR)
 - [ ] Cockpit API endpoints 真从 DB 查 (替换 Phase E.A stub)
 - [ ] Orchestrator 真用 ensemble_invoke (现在还是 single-LLM)
 - [ ] dogfood v9 走新 V7 protocols 真验证 trifecta + ensemble
@@ -809,4 +809,53 @@ V7 §15 9 阶段 lifecycle 在 Phase D (`f57f6e4`) 落了 service + 邻接表 + 
    - schema sanity
 
 **测试**: 1836 passed, 0 failed (+16 from 1820); ruff 全绿. 单 commit 711 行, 4 文件.
+
+---
+
+## V7.PHASE-X.B.AR · Auditor Reports IO + 接真 DB (Phase X.B 第 3 刀)
+
+**完成**: 2026-05-28 / commit `85fae52`
+
+V7 §16.6 External Supervisor auditor hat 周期审计在 Phase G (`f865e40`) 加了
+prompt template + render helper, **但没定义 IO contract 也没接 DB** — 审计跑完
+只剩 prompt 文本和 LLM JSON, 不能驾驶舱查, 不能 lifecycle gate 前查, 不能
+retrospect 复盘. 本 commit 补齐.
+
+**做了什么**:
+
+1. **AuditorReport frozen dataclass** (kun/integration/auditor_report_db.py):
+   - 9-field schema 完全对齐 AUDITOR_SYSTEM_PROMPT_TEMPLATE JSON output
+     (design_promise / real_code_path / bypass_methods / min_repro_steps /
+     risk_level / must_fix / acceptance_tests / allow_release / rationale)
+   - + 元数据 (report_id / audited_capability / audited_at / auditor_provider)
+   - **__post_init__ 强 enforce V7 §16.6 不变量**:
+     `risk_level='P0' ⇒ allow_release=False` (上层兜)
+2. **parse_auditor_json**: LLM JSON dict → AuditorReport, single source of
+   truth, 防 service 手搓 dataclass 出 schema drift.
+3. **AuditorReportRow** (kun/core/orm.py) + **alembic 0016** — 15 列 + indexes
+   + 4 个 CHECK constraint:
+   - `risk_level IN ('P0', 'P1', 'P2')`
+   - `NOT (risk_level='P0' AND allow_release=true)` (DB 兜底)
+4. **write_auditor_report** + **make_auditor_report_emitter(tenant_id)**.
+5. **15 测试**: 3 dataclass 不变量 + 3 parse + 4 risk_level matrix +
+   1 9-field 透传 + 1 factory + 1 frozen + 1 roundtrip + 1 schema sanity.
+
+**测试**: 1851 passed, 0 failed (+15 from 1836); ruff 全绿. 单 commit 799 行, 4 文件.
+
+---
+
+## V7 Phase X.B 现状小结 (3/6 done)
+
+| Subtask | Status | Commit |
+|---|---|---|
+| Mission Director DB | ✅ | `78313ad` |
+| Capability Lifecycle DB | ✅ | `a9c688b` |
+| Auditor Reports DB | ✅ | `85fae52` |
+| Cockpit API 真从 DB 查 | ⏳ | — |
+| daemon 默认注册 Mission Director runner | ⏳ | — |
+| Orchestrator 真用 ensemble_invoke | ⏳ | — |
+| dogfood v9 走新 V7 protocols | ⏳ | — |
+
+3 张 DB 表 + 3 套 frozen IO + 3 套 writer / factory + RLS 兜底全到位. 之后
+Cockpit API endpoint 就能从 stub 切到真 DB 查 — Phase E.A → E.B 切换.
 
