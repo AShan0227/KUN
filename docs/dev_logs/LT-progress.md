@@ -485,3 +485,57 @@ dogfood 任务本质: 让 KUN 读自己 + 写新蒸馏文件回仓库 —— 这
 
 **总测试**: 1680 → 1694 (+14), ruff 全绿. 累计长任务相关代码改动: 1347 → 1694 (+347 tests).
 
+---
+
+## LT.PLAN-REVIEW-LOOP-BUG · plan_review heartbeat 响应被误判 final answer
+
+**完成**：2026-05-28 / commit 2daeaf7
+
+**dogfood v7 死因 (越剥越深一层)**：
+
+v6 修了 file-io sandbox, v7 用 self-reflect 真跑动了 — 第一次看到:
+```
+self_reflect.list path=docs   count=16
+self_reflect.list path=seeds  count=2
+```
+
+但 25s 之后又 done 了, steps_taken=3. 看 uvicorn log:
+```
+self_reflect.list (step 1)
+self_reflect.list (step 2)
+plan_review.persisted action=continue verdict=ok
+exec_loop.plan_review_injected steps=2
+LLM call → returns JSON {"current_step":"locating source dirs", "on_anchor":true, ...}
+exec_loop: "no tool_calls = final answer", exit
+```
+
+ExecutorLoop 的 `if not response.tool_calls: → finalize` 启发式在 plan_review 注入 heartbeat 状态检查 prompt 时**误伤** — heartbeat 设计就要求模型出 JSON 状态不调工具, 但 ExecutorLoop 不懂这层语义。
+
+**做了什么**：
+1. **加 ``_looks_like_heartbeat_status(content)`` 启发式**:
+   - 返 True 仅当 content 以 `{` 开头 AND 含至少一个 heartbeat 关键字段 (current_step / on_anchor / criteria_done_count / scope_creep_detected)
+   - 普通 prose 返 False, 不影响"真完成"路径
+2. **ExecutorLoop 维护 ``plan_review_just_injected`` 标志**:
+   - 每个 iteration 顶部 reset 为 False
+   - plan_review 注入 prompt 时 set True
+3. **no-tool-calls 分支双重判定**:
+   - `if just_injected AND looks_like_heartbeat`: log + append nudge user message ("Status received. Continue task...") + `steps += 1` + `continue` (不退出)
+   - else: 当 final answer (原逻辑)
+
+**关键决策**：
+- **启发式而非纯标志**: `test_long_task_orchestrator` 里 fake LLM 在 plan_review 触发后返 "done" 字符串而非 JSON. 这种 case "模型真完成"是合法解读, 不该 catch. content-shape 启发式让两种都对: JSON 形 = 继续, prose = finalize.
+- **nudge user message 而非 system**: 让 LLM 视角清晰 — "你被 system 问了, 用户来催你继续". 比再加 system message 更不容易混淆 model 角色感.
+- **steps += 1 + continue**: heartbeat 算一个真实 LLM 调用, 计入 steps. 避免 LLM 反复回 JSON 无限循环耗 budget.
+- **常量定义出文件级**: `_HEARTBEAT_STATUS_KEYS` 元组定义在 module 顶, 方便未来更新 heartbeat 字段时单点改 (e.g. plan_review schema 升级加新字段).
+
+**Tests (2 new, all passing)**:
+- `test_plan_review_heartbeat_response_does_not_finalize`: 4 LLM 轮 alternating tool/JSON-heartbeat, step_interval=1 每步触发, max_steps=4 强制退出. 断 result.status=='max_steps' (不是 'final'). 断 call #3 (heartbeat 响应后) 的 messages 含 "Status received" nudge.
+- `test_plan_review_flag_resets_between_iterations`: step_interval=5 不触发, no-tool-call 响应正常当 final. 防 stale-flag bug.
+
+**未完工作 (DOGFOOD #26 接续)**：
+- 重启 uvicorn 加载新代码
+- 跑 dogfood v8, 预期: gpt-5.5 真完成 Phase A 输出 capability map markdown 到 docs/dist-output/, 进 Phase B / C / D / E
+- v8 跑完后启动 DOGFOOD-P2/P3/P4
+
+**总测试**: 1694 → 1696 (+2), ruff 全绿. 累计本 session 改动: +349 tests, 11 个 commit.
+
