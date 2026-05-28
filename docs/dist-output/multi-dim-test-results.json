@@ -1,0 +1,113 @@
+{
+  "total": 19,
+  "max_total": 20,
+  "percentage": 0.95,
+  "dimensions": [
+    {
+      "id": "D1",
+      "name": "任务拆解 (PlanTree depth ≥ 2)",
+      "score": 2,
+      "evidence": [
+        "TaskPlanner 存在 (kun/agents/director/planner.py)",
+        "RecursivePlanner 存在 (kun/agents/director/recursive_planner.py)",
+        "PlanTree/PlanNode 数据结构存在",
+        "test_recursive_planner.py 单测覆盖"
+      ],
+      "notes": "LT.F 已建递归 planner, runtime 真在用 (dogfood v8 见 long_task.plan_tree 事件)"
+    },
+    {
+      "id": "D2",
+      "name": "并行 sub-agent 派发",
+      "score": 2,
+      "evidence": [
+        "ExecutorLoop 单次 dispatch list[ToolCall] (并行能力)",
+        "dogfood v8 真实并行 dispatch: 单秒最多 4 个 read 并行, ≥3 并发的秒次 2 次",
+        "新 seed worker_agent_spawner_prompt_isolation 编码此模式"
+      ],
+      "notes": "dogfood v8 第 4 / 7 / 10 step 都出现 4 个 self-reflect 并行 — KUN 真在派发"
+    },
+    {
+      "id": "D3",
+      "name": "grep verify before assume",
+      "score": 1,
+      "evidence": [
+        "seed: service_module_not_wired_to_runtime_audit — grep verify 沉淀"
+      ],
+      "notes": "方法论存在 (audit_methodology) 但 Executor 主路径没有 pre-action grep 强制 — 属于半具备. dogfood v8 没机会展现 (任务是读+写, 不是修代码)."
+    },
+    {
+      "id": "D4",
+      "name": "测试驱动 fail-fast",
+      "score": 2,
+      "evidence": [
+        "ValidationPipeline 存在 (kun/agents/tester/validation.py)",
+        "Tester agent 模块: ['base.py', 'multi_judge.py', 'validation.py']",
+        "近 30 commit 里提到 pytest/ruff 的: 30 个 — 承诺持续兑现"
+      ],
+      "notes": "ValidationPipeline + Tester role 都在, dev log 显示每 commit pytest+ruff"
+    },
+    {
+      "id": "D5",
+      "name": "commit 纪律 (≤1000 行)",
+      "score": 2,
+      "evidence": [
+        "近 20 commits: 18 ≤1000 行, 2 >1000 行",
+        "≤1000 行率: 90%"
+      ],
+      "notes": "近期 20 commit 实测"
+    },
+    {
+      "id": "D6",
+      "name": "错误立修不藏",
+      "score": 2,
+      "evidence": [
+        "近 30 commits 中 fix(...) 型 commit: 8 个",
+        "BugCase 库存在 (DIST-E)"
+      ],
+      "notes": "本 session 5 个 LT.x fix 都是 dogfood failure 即修"
+    },
+    {
+      "id": "D7",
+      "name": "dev_log 沉淀 (ADR-025)",
+      "score": 2,
+      "evidence": [
+        "LT-progress.md 含 13 个 LT.x section",
+        "docs/dev_logs/ 共 17 个 md 文件"
+      ],
+      "notes": "LT-progress.md 每个 LT 任务后追加 section, dev_logs 全保留"
+    },
+    {
+      "id": "D8",
+      "name": "决策点停下问",
+      "score": 2,
+      "evidence": [
+        "decision_point_classifier 存在 (DIST-C, 6 类硬规则)",
+        "Gate agent 存在",
+        "pivot_handler / pivot_pause 路由存在 (LT.A)",
+        "新 seed prompt_user_decision_at_irreversible_branch (dogfood 蒸馏出)"
+      ],
+      "notes": "DIST-C 6 类硬规则 + Gate + 新 seed 三层覆盖"
+    },
+    {
+      "id": "D9",
+      "name": "Read with offset+limit",
+      "score": 2,
+      "evidence": [
+        "self-reflect skill 支持 offset + limit (LT.SELF-REFLECT-SKILL)",
+        "dogfood v8 真实使用 limit 参数 8 次"
+      ],
+      "notes": "Claude Code 工程模式已编码进 KUN 的 self-reflect skill API"
+    },
+    {
+      "id": "D10",
+      "name": "Bash 克制 / 专用 tool 优先",
+      "score": 2,
+      "evidence": [
+        "专用 skills: 7 builtin + 5 starter",
+        "shell-exec (受 allowlist 约束) + file-io + self-reflect 各司其职",
+        "dogfood v8: shell-exec 调 0 次, self-reflect 调 23 次 — 用专用而非 shell"
+      ],
+      "notes": "KUN 有 7 个专用 builtin + 5 个 starter, dogfood 真行为 100% 走专用"
+    }
+  ]
+}
