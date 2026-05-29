@@ -152,6 +152,7 @@ class ExecutorLoop:
         checkpoint_service: TaskCheckpointService | None = None,
         plan_review_service: PlanReviewService | None = None,
         compactor: ConversationCompactor | None = None,
+        runtime_features_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be >= 1")
@@ -170,6 +171,13 @@ class ExecutorLoop:
         self._checkpoint = checkpoint_service
         self._plan_review = plan_review_service
         self._compactor = compactor
+        # V7 Phase X.H.TRACE: runtime feature trace provider. When wired,
+        # each checkpoint save calls this to snapshot which X.E / X.G /
+        # DIST-D features fired so far (methodology ids, trifecta ticks,
+        # critique calls). This closes the audit cause "no forced trace":
+        # given a task_checkpoints PG row, you can ask "what features
+        # influenced this task?" and get a structured answer.
+        self._runtime_features_provider = runtime_features_provider
 
     async def run(
         self,
@@ -461,12 +469,28 @@ class ExecutorLoop:
         """落 checkpoint, 失败不打挂 loop (但 log)."""
         if self._checkpoint is None:
             return None
+        # V7 Phase X.H.TRACE: snapshot runtime features at save time so the
+        # PG row preserves causality (which methodology / trifecta tick /
+        # ticket gated this task) — the audit cause "no forced trace" fix.
+        working_state: dict[str, Any] = {}
+        if self._runtime_features_provider is not None:
+            try:
+                trace = self._runtime_features_provider()
+                if trace:
+                    working_state["runtime_features_used"] = dict(trace)
+            except Exception as e:  # pragma: no cover - provider must be robust
+                log.warning(
+                    "exec_loop.runtime_features_provider_failed",
+                    task_id=task_id,
+                    error=f"{type(e).__name__}: {e}",
+                )
         try:
             cp = await self._checkpoint.save(
                 tenant_id=tenant_id,
                 task_id=task_id,
                 step_idx=step_idx,
                 conversation_snapshot=messages,
+                working_state=working_state or None,
                 goal_anchor_id=goal_anchor_id,
                 cost_usd_so_far=cost,
                 tokens_used_so_far=tokens,

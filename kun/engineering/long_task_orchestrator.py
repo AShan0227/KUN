@@ -307,6 +307,13 @@ class LongTaskOrchestrator:
             sub_planner=recursive_sub_planner,
         )
 
+        # V7 Phase X.H.TRACE — mutable dict accumulating which X.E / X.G /
+        # DIST-D runtime features fired during this orchestrator instance.
+        # Methodology injection / trifecta ticks / critique calls update it;
+        # ExecutorLoop reads it via runtime_features_provider at each
+        # checkpoint save so the PG row preserves causality.
+        self._runtime_features_trace: dict[str, Any] = {}
+
         # --- LT.E: executor loop wiring all of the above ---
         self._executor = ExecutorLoop(
             llm_invoker=llm_invoker,
@@ -318,7 +325,13 @@ class LongTaskOrchestrator:
             checkpoint_service=self._checkpoint,
             plan_review_service=self._plan_review,
             compactor=self._compactor,
+            runtime_features_provider=self._snapshot_runtime_features,
         )
+
+    def _snapshot_runtime_features(self) -> dict[str, Any]:
+        """Read-side of the X.H.TRACE mutable dict — returns a shallow copy
+        so the ExecutorLoop never mutates the orchestrator's bookkeeping."""
+        return dict(self._runtime_features_trace)
 
     # ----------------------------- public entry -----------------------------
 
@@ -348,6 +361,9 @@ class LongTaskOrchestrator:
         """
         sink: EventSink = on_event if on_event is not None else _noop_event_sink
         events_emitted = 0
+        # X.H.TRACE — fresh trace dict per run so concurrent / sequential
+        # runs don't leak features into each other's checkpoints.
+        self._runtime_features_trace = {}
 
         async def _emit(kind: str, data: dict[str, Any]) -> None:
             nonlocal events_emitted
@@ -451,19 +467,25 @@ class LongTaskOrchestrator:
                 rendered = render_for_system_prompt(chosen)
                 if rendered:
                     system_prompt = system_prompt + "\n\n" + rendered
+                    # X.H.TRACE: record into the orchestrator's mutable trace
+                    # so subsequent checkpoint saves carry the methodology
+                    # IDs into PG.
+                    self._runtime_features_trace["methodologies"] = [
+                        {
+                            "title": m.title,
+                            "topic": m.topic,
+                            "score": round(m.score, 3),
+                            "file_path": m.file_path,
+                        }
+                        for m in chosen
+                    ]
                     await _emit(
                         "long_task.methodology_injected",
                         {
                             "task_id": task_id,
                             "n_methodologies": len(chosen),
-                            "methodologies": [
-                                {
-                                    "title": m.title,
-                                    "topic": m.topic,
-                                    "score": round(m.score, 3),
-                                    "file_path": m.file_path,
-                                }
-                                for m in chosen
+                            "methodologies": self._runtime_features_trace[
+                                "methodologies"
                             ],
                         },
                     )
@@ -882,6 +904,19 @@ class LongTaskOrchestrator:
                 )
                 return response
 
+            # X.H.TRACE — accumulate per-tick state into orchestrator trace
+            ticks = self._runtime_features_trace.setdefault("trifecta_ticks", [])
+            ticks.append(
+                {
+                    "call_count": call_count,
+                    "past_state": report.past.state.value,
+                    "present_state": report.present.state.value,
+                    "future_state": report.future.state.value,
+                    "n_findings": report.n_findings,
+                    "total_cost_usd": round(report.total_cost_usd, 6),
+                    "any_line_failed": report.any_line_failed,
+                }
+            )
             await emit(
                 "long_task.trifecta_tick",
                 {
