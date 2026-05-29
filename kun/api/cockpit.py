@@ -37,6 +37,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from kun.api.cockpit_readers import (
     list_recent_auditor_reports,
+    list_recent_ensemble_calls,
     list_recent_lifecycle_transitions,
     list_recent_mission_reviews,
 )
@@ -433,26 +434,26 @@ async def get_rsi_trifecta_status(task_id: str) -> dict[str, Any]:
 
 
 @router.get("/ensemble/recent")
-async def get_recent_ensemble_calls(limit: int = 20) -> dict[str, Any]:
-    """最近 multi-LLM ensemble_invoke 调用 + divergence_score.
+async def get_recent_ensemble_calls(
+    tenant_id: str = Query("default", description="RLS tenant scope"),
+    limit: int = Query(20, ge=1, le=100),
+) -> dict[str, Any]:
+    """最近 multi-LLM ensemble_invoke 调用 + divergence_score (V7 §11.4).
 
-    Phase X.B.MF-2 wired the writer (ensemble_calls table真有数据 when env on),
-    but a real DB reader for this endpoint is still pending. Status field
-    honestly says so instead of returning empty as "success".
+    Phase X.B.MF-2 wired writer; Phase X.F.COCKPIT-DAILY wires reader.
     """
+    result = await list_recent_ensemble_calls(tenant_id=tenant_id, limit=limit)
     status = _writes_wired_status()["ensemble_calls"]
     return {
-        "ensemble_calls": [],
-        "total": 0,
+        "ensemble_calls": result.rows,
+        "total": len(result.rows),
         "limit": limit,
+        "tenant_id": tenant_id,
+        "data_source": "ensemble_calls (V7 §11.4 cross-family ensemble)",
         "writes_wired_status": status,
-        "warning": status["warning"]
-        or "Reader for /ensemble/recent not yet wired — schema in alembic 0017, "
-        "writer in X.B.MF-2, reader TBD.",
-        "note": (
-            "V7 Phase E.A stub for reader (writer wired in X.B.MF-2 — set "
-            "KUN_V7_ENSEMBLE_ENABLED=true to write rows; reader endpoint待补)."
-        ),
+        "warning": status["warning"],
+        "reader_error_kind": result.error_kind,
+        "reader_error_detail": result.error_detail,
     }
 
 

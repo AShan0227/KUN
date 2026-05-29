@@ -293,9 +293,70 @@ async def list_recent_auditor_reports(
     )
 
 
+async def list_recent_ensemble_calls(
+    *,
+    tenant_id: str,
+    limit: int = 20,
+) -> ReaderResult:
+    """List EnsembleCall 行, 最新在前 (V7 §11.4).
+
+    Phase X.F.COCKPIT-DAILY: backfills the reader that X.B.MF-2 left as
+    'reader TBD' so the cockpit /ensemble/recent endpoint can return real
+    data alongside its writes_wired_status.
+    """
+    limit = max(1, min(100, limit))
+
+    try:
+        from sqlalchemy import select
+
+        from kun.core.db import session_scope
+        from kun.core.orm import EnsembleCallRow
+
+        async with session_scope(tenant_id=tenant_id) as s:
+            stmt = (
+                select(EnsembleCallRow)
+                .where(EnsembleCallRow.tenant_id == tenant_id)
+                .order_by(EnsembleCallRow.invoked_at.desc())
+                .limit(limit)
+            )
+            rows = (await s.execute(stmt)).scalars().all()
+    except Exception as e:
+        kind = _classify_db_error(e)
+        log.warning(
+            "cockpit_readers.ensemble_calls_failed",
+            tenant_id=tenant_id,
+            error_kind=kind,
+            error=f"{type(e).__name__}: {e}",
+        )
+        return ReaderResult(
+            rows=[], error_kind=kind, error_detail=f"{type(e).__name__}: {e}"
+        )
+
+    return ReaderResult(
+        rows=[
+            {
+                "call_id": r.call_id,
+                "invoked_at": r.invoked_at.isoformat(),
+                "purpose": r.purpose,
+                "providers": list(r.providers or []),
+                "consensus_strategy": r.consensus_strategy,
+                "divergence_score": float(r.divergence_score),
+                "divergence_signals": list(r.divergence_signals or []),
+                "consensus_provider": r.consensus_provider,
+                "total_cost_usd": float(r.total_cost_usd),
+                "failure_count": int(r.failure_count),
+                "n_providers_total": int(r.n_providers_total),
+                "request_hash": r.request_hash,
+            }
+            for r in rows
+        ]
+    )
+
+
 __all__ = [
     "ReaderResult",
     "list_recent_auditor_reports",
+    "list_recent_ensemble_calls",
     "list_recent_lifecycle_transitions",
     "list_recent_mission_reviews",
 ]

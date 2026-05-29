@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 from kun.api.cockpit_readers import (
     list_recent_auditor_reports,
+    list_recent_ensemble_calls,
     list_recent_lifecycle_transitions,
     list_recent_mission_reviews,
 )
@@ -350,6 +351,100 @@ async def test_auditor_reports_db_failure_returns_classified_error(
     assert out.rows == []
     assert out.error_kind is not None
     assert out.is_ok is False
+
+
+# ============================================================
+# list_recent_ensemble_calls (V7 Phase X.F.COCKPIT-DAILY)
+# ============================================================
+
+
+class _EnsembleCallRowFake:
+    def __init__(
+        self,
+        *,
+        call_id: str = "ec-1",
+        divergence_score: float = 0.42,
+        consensus_strategy: str = "majority_vote",
+        n_providers_total: int = 2,
+        total_cost_usd: float = 0.0125,
+    ) -> None:
+        self.call_id = call_id
+        self.invoked_at = datetime.now(UTC)
+        self.purpose = "dogfood-purpose"
+        self.providers = [
+            {"name": "openai", "model_id": "gpt-5.5", "family": "openai"},
+            {"name": "ollama", "model_id": "qwen2.5:14b", "family": "qwen"},
+        ]
+        self.consensus_strategy = consensus_strategy
+        self.divergence_score = Decimal(str(divergence_score))
+        self.divergence_signals = ["minor wording"]
+        self.consensus_provider = "openai/gpt-5.5"
+        self.total_cost_usd = Decimal(str(total_cost_usd))
+        self.failure_count = 0
+        self.n_providers_total = n_providers_total
+        self.request_hash = "hash-1"
+
+
+async def test_ensemble_calls_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    capture = _install_fake_session(monkeypatch, rows=[])
+    out = await list_recent_ensemble_calls(tenant_id="t-e")
+    assert out.rows == []
+    assert out.error_kind is None
+    assert out.is_empty_honest is True
+    assert capture["scope_kwargs"] == [{"tenant_id": "t-e"}]
+
+
+async def test_ensemble_calls_dict_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        _EnsembleCallRowFake(call_id="ec-a", divergence_score=0.7),
+        _EnsembleCallRowFake(call_id="ec-b", divergence_score=0.1),
+    ]
+    _install_fake_session(monkeypatch, rows=rows)
+    out = await list_recent_ensemble_calls(tenant_id="t-e")
+    assert len(out.rows) == 2
+    assert out.rows[0]["call_id"] == "ec-a"
+    assert out.rows[0]["divergence_score"] == pytest.approx(0.7)
+    assert out.rows[0]["total_cost_usd"] == pytest.approx(0.0125)
+    assert out.rows[0]["n_providers_total"] == 2
+    expected = {
+        "call_id",
+        "invoked_at",
+        "purpose",
+        "providers",
+        "consensus_strategy",
+        "divergence_score",
+        "divergence_signals",
+        "consensus_provider",
+        "total_cost_usd",
+        "failure_count",
+        "n_providers_total",
+        "request_hash",
+    }
+    assert expected.issubset(out.rows[0].keys())
+
+
+async def test_ensemble_calls_db_failure_returns_classified_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_failing_session(monkeypatch)
+    out = await list_recent_ensemble_calls(tenant_id="t-e")
+    assert out.rows == []
+    assert out.error_kind is not None
+    assert out.is_ok is False
+
+
+async def test_ensemble_calls_limit_clamps_to_100(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Out-of-range limit gets clamped to [1, 100]."""
+    capture = _install_fake_session(monkeypatch, rows=[])
+    out = await list_recent_ensemble_calls(tenant_id="t-e", limit=999)
+    assert out.rows == []
+    # Inspect the captured stmt; SQLAlchemy renders LIMIT in str()
+    stmt_str = str(capture["stmts"][0]).lower()
+    assert "limit" in stmt_str
 
 
 # ============================================================
