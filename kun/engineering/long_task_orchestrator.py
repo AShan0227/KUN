@@ -786,6 +786,7 @@ class LongTaskOrchestrator:
                                 1 for c in report.checks if c.passed
                             ),
                             failed_disciplines=failed_disciplines,
+                            tenant_id=tenant_id,  # X.S — PG write-through
                         )
                     except Exception as cache_err:  # pragma: no cover
                         log.warning(

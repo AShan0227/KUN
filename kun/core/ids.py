@@ -37,6 +37,7 @@ EntityKind = Literal[
     "bug_case",  # bc-  · BugRootCase (alembic 0013, RCDH 案例库)
     "lifecycle_transition",  # lct- · CapabilityLifecycleTransition (V7 §15 Phase D)
     "ensemble_call",  # enc- · EnsembleCall log (V7 §11.4 Phase X.B.ENS)
+    "discipline_report",  # dr-  · EngineeringDisciplineReport (V7.1 §4.3, X.S)
 ]
 
 _PREFIX: Final[dict[EntityKind, str]] = {
@@ -66,6 +67,7 @@ _PREFIX: Final[dict[EntityKind, str]] = {
     "bug_case": "bc",
     "lifecycle_transition": "lct",
     "ensemble_call": "enc",
+    "discipline_report": "dr",
 }
 
 

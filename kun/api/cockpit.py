@@ -535,25 +535,33 @@ async def get_writes_wired_status() -> dict[str, Any]:
 
 
 @router.get("/discipline/recent")
-async def get_recent_discipline_checks(limit: int = 20) -> dict[str, Any]:
-    """最近 EngineeringDiscipline 检查结果 (V7 §4.3 + Phase F).
+async def get_recent_discipline_checks(
+    limit: int = 20, tenant_id: str = "default"
+) -> dict[str, Any]:
+    """最近 EngineeringDiscipline 检查结果 (V7.1 §4.3 + Phase F/X.S).
 
-    X.O fix: previously this endpoint returned hardcoded ``[]`` even
-    when the enforcer was firing (X.I-0a wired it into LongTaskOrchestrator
-    via the bundle, but no persistence path existed). Now it reads from
-    the process-local discipline_store cache populated by
-    LongTaskOrchestrator at run completion.
+    X.O fix: previously this endpoint returned hardcoded ``[]`` even when
+    the enforcer was firing (X.I-0a wired it into LongTaskOrchestrator via
+    the bundle, but no persistence path existed).
+
+    X.S: now reads PG (``engineering_discipline_reports``, alembic 0018) so
+    reports survive multi-process deploys. ``list_recent_discipline_reports_pg``
+    falls back to the process-local cache if PG is unreachable, so the panel
+    never shows an empty table when reports exist in-process.
     """
-    from kun.api.discipline_store import list_recent_discipline_reports
+    from kun.api.discipline_store import list_recent_discipline_reports_pg
 
-    reports = list_recent_discipline_reports(limit=limit)
+    reports = await list_recent_discipline_reports_pg(
+        tenant_id=tenant_id, limit=limit
+    )
     return {
         "discipline_checks": reports,
         "total": len(reports),
         "limit": limit,
+        "tenant_id": tenant_id,
         "data_source": (
-            "process-local discipline_store cache (V7 §4.3 enforcer); "
-            "X.P will migrate to PG"
+            "engineering_discipline_reports PG table (V7.1 §4.3, alembic 0018); "
+            "falls back to process-local cache if PG unreachable"
         ),
     }
 

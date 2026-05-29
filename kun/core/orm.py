@@ -16,6 +16,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -1152,4 +1153,50 @@ class EnsembleCallRow(Base):
             "invoked_at",
         ),
         Index("ix_ec_purpose_recent", "tenant_id", "purpose", "invoked_at"),
+    )
+
+
+class EngineeringDisciplineReportRow(Base):
+    """V7.1 §4.3 + X.S — Claude Code 工程纪律 enforcer 报告 (alembic 0018).
+
+    X.O 给 discipline 加 process-local cache, X.S 升 PG 防多进程丢数据.
+    LongTaskOrchestrator 完成时跑 EngineeringDisciplineEnforcer →
+    record_discipline_report 写这张 → cockpit /discipline/recent 读.
+
+    不变量 (DB CHECK):
+      - 0 ≤ overall_score ≤ 1
+      - 0 ≤ n_passed ≤ n_total
+      - n_total ≥ 0
+    """
+
+    __tablename__ = "engineering_discipline_reports"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    report_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    overall_score: Mapped[float] = mapped_column(Float, nullable=False)
+    n_total: Mapped[int] = mapped_column(Integer, nullable=False)
+    n_passed: Mapped[int] = mapped_column(Integer, nullable=False)
+    failed_disciplines: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "overall_score >= 0 AND overall_score <= 1",
+            name="edr_score_in_range",
+        ),
+        CheckConstraint("n_total >= 0", name="edr_n_total_nonneg"),
+        CheckConstraint(
+            "n_passed >= 0 AND n_passed <= n_total",
+            name="edr_n_passed_bounds",
+        ),
+        Index("ix_edr_captured_at", "tenant_id", "captured_at"),
+        Index("ix_edr_task", "tenant_id", "task_id", "captured_at"),
     )

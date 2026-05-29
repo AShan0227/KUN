@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 from kun.api.discipline_store import (
     list_recent_discipline_reports,
+    list_recent_discipline_reports_pg,
     record_discipline_report,
     reset_for_tests,
 )
@@ -176,11 +177,26 @@ def test_discipline_store_limit_clamp() -> None:
 # ============================================================
 
 
-def test_cockpit_discipline_endpoint_returns_store_data() -> None:
-    """The /discipline/recent endpoint must read from the store, not
-    hardcoded []. We import the route handler and call it directly."""
+def _force_pg_unavailable(monkeypatch: Any) -> None:
+    """Make ``session_scope`` raise so the PG reader deterministically
+    falls back to the in-memory cache regardless of whether a real
+    Postgres happens to be reachable in the test environment (X.S)."""
+
+    def _raise(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("pg unavailable (test)")
+
+    monkeypatch.setattr("kun.core.db.session_scope", _raise)
+
+
+def test_cockpit_discipline_endpoint_returns_store_data(
+    monkeypatch: Any,
+) -> None:
+    """The /discipline/recent endpoint must read real data, not hardcoded
+    []. X.S: the endpoint now reads PG with a cache fallback — we force the
+    fallback so the test is deterministic without a live DB."""
     from kun.api.cockpit import get_recent_discipline_checks
 
+    _force_pg_unavailable(monkeypatch)
     record_discipline_report(
         task_id="t-cockpit",
         overall_score=0.5,
@@ -194,7 +210,55 @@ def test_cockpit_discipline_endpoint_returns_store_data() -> None:
     result = asyncio.run(get_recent_discipline_checks(limit=20))
     assert result["total"] == 1
     assert result["discipline_checks"][0]["task_id"] == "t-cockpit"
+    assert result["tenant_id"] == "default"
     assert "stub" not in result.get("data_source", "").lower()
+
+
+# ============================================================
+# X.S — PG write-through + reader fallback + tenant_id
+# ============================================================
+
+
+def test_record_discipline_report_accepts_tenant_id_without_loop() -> None:
+    """record_discipline_report takes tenant_id (X.S) and, called outside an
+    event loop, must NOT crash — the PG write-through silently no-ops and the
+    in-memory cache still receives the entry."""
+    record_discipline_report(
+        task_id="t-tenant",
+        overall_score=1.0,
+        n_total=3,
+        n_passed=3,
+        failed_disciplines=[],
+        tenant_id="acme",
+    )
+    listed = list_recent_discipline_reports()
+    assert len(listed) == 1
+    assert listed[0]["task_id"] == "t-tenant"
+
+
+def test_list_recent_pg_falls_back_to_cache_on_db_error(
+    monkeypatch: Any,
+) -> None:
+    """list_recent_discipline_reports_pg must fall back to the in-memory
+    cache when PG is unreachable, so the cockpit never shows an empty table
+    while reports exist in-process (X.S)."""
+    import asyncio
+
+    _force_pg_unavailable(monkeypatch)
+    record_discipline_report(
+        task_id="t-fallback",
+        overall_score=0.8,
+        n_total=5,
+        n_passed=4,
+        failed_disciplines=["coa"],
+    )
+
+    listed = asyncio.run(
+        list_recent_discipline_reports_pg(tenant_id="default", limit=20)
+    )
+    assert len(listed) == 1
+    assert listed[0]["task_id"] == "t-fallback"
+    assert listed[0]["failed_disciplines"] == ["coa"]
 
 
 # ============================================================
