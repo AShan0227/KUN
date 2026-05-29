@@ -18,25 +18,28 @@
 
 ## Table of Amendments
 
-| ID | V7.0 § target | Title | Severity |
-|---|---|---|---|
-| A1 | §4.3 | EngineeringDiscipline runtime wiring | P0 |
-| A2 | §11.4 | Ensemble cost multiplier real-LLM evidence | P1 |
-| A3 | §12.2 | TicketVerifier Protocol (CANARY → PRODUCTION) | **P0** |
-| A4 | §12.3 | RSI write-side ProcessAudit closure (X.M) | P1 |
-| A5 | §12.4.2 | Trifecta past line `bug_root_cause_cases` lookup | P1 |
-| A6 | §12.5 (new) | MethodologyRuntimeSelector read-side + methodology_to_gate_bridge write-side | **P0** |
-| A7 | §15.2 | Gate R6 production-path-reachability rule | **P0** |
-| A8 | §15.3 (new) | Production-entry diff check + ProductionEntryDiffChecker | P1 |
-| A9 | §16.2 | 6 anti-patterns ⇒ 6 + 5 root causes R1-R5 | **P0** |
-| A10 | §16.3 | PRODUCTION_ENTRIES.md inventory + LongTaskRuntimeBundle pattern | **P0** |
-| A11 | §16.5 | runtime_features_used trace shape | P1 |
-| A12 | §16.6 | Angle 8 production-path-traceability + hidden-orphan-audit template | **P0** |
-| A13 | §16.8 | X.H AST CI + X.N template lint as required automation | P1 |
-| A14 | §20 | Cockpit reader pattern + discipline_store + ensemble reader | P1 |
-| A15 | §23.2 | Acceptance: AST CI + template lint pass | P1 |
-| A16 | Appendix A | X.A → X.O phase entries | P2 |
-| A17 | Appendix B | New terms (hidden orphan / chain-reach / etc.) | P2 |
+**X.P (2026-05-29) merged 6 P0 amendments into V7.0 → V7.1 正式版.**
+Status legend: ✅ merged | ⏳ pending merge
+
+| ID | V7.0 § target | Title | Severity | Status |
+|---|---|---|---|---|
+| A1 | §4.3 | EngineeringDiscipline runtime wiring | P0 ⚠️ (downgraded) | ⏳ |
+| A2 | §11.4 | Ensemble cost multiplier real-LLM evidence | P1 | ⏳ |
+| A3 | §12.2 | TicketVerifier Protocol (CANARY → PRODUCTION) | **P0** | ✅ X.P |
+| A4 | §12.3 | RSI write-side ProcessAudit closure (X.M) | P1 | ⏳ |
+| A5 | §12.4.2 | Trifecta past line `bug_root_cause_cases` lookup | P1 | ⏳ |
+| A6 | §12.6 (new) | MethodologyRuntimeSelector read-side + methodology_to_gate_bridge write-side | **P0** | ✅ X.P |
+| A7 | §15.2 | Gate R6 production-path-reachability rule | **P0** | ✅ X.P |
+| A8 | §15.3 (new) | Production-entry diff check + ProductionEntryDiffChecker | P1 | ⏳ |
+| A9 | §16.2.5 (new) | 5 hidden-orphan root causes R1-R5 | **P0** | ✅ X.P |
+| A10 | §16.3 | PRODUCTION_ENTRIES.md inventory + LongTaskRuntimeBundle pattern | **P0** | ✅ X.P |
+| A11 | §16.5 | runtime_features_used trace shape | P1 | ⏳ |
+| A12 | §16.6 | Angle 8 production-path-traceability + hidden-orphan-audit template | **P0** | ✅ X.P |
+| A13 | §16.8 | X.H AST CI + X.N template lint as required automation | P1 | ⏳ |
+| A14 | §20 | Cockpit reader pattern + discipline_store + ensemble reader | P1 | ⏳ |
+| A15 | §23.2 | Acceptance: AST CI + template lint pass | P1 | ⏳ |
+| A16 | Appendix A | X.A → X.O phase entries | P2 | ⏳ |
+| A17 | Appendix B | New terms (hidden orphan / chain-reach / etc.) | P2 | ⏳ |
 
 ---
 

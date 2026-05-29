@@ -1,10 +1,12 @@
-# KUN V7 — 产品迭代方案
+# KUN V7.1 — 产品迭代方案
 
 > 文档身份：V7 是 V6 之后的迭代版本，**自洽 / 融合 / 严谨**。
+> V7.1 是 2026-05-29 X.P phase 把 X.A → X.O 实装的 P0 操作层细节 merge 进 V7.0 后的版本.
 >
-> V7 是后续开发的**唯一对齐锚点**。开发任何功能前必须先回看 V7 对应章节，发现 V7 不完整或自相矛盾，先改 V7 再写代码。
+> V7.1 是后续开发的**唯一对齐锚点**。开发任何功能前必须先回看 V7.1 对应章节，发现 V7.1 不完整或自相矛盾，先改 V7.1 再写代码。
 >
 > V6 文档归档作历史，不再作为开发对齐参考。
+> V7.0 与 V7.1 的 delta 见 `docs/v7/KUN-V7.1-amendments.md` (P0 6 条已 merge, P1+P2 11 条待按需 merge).
 
 ---
 
@@ -1204,6 +1206,38 @@ V6 把 RSI 概念散落，V7 把它集中并升级为**产品魂**:
 - KUN 在 user approval ticket 里**主动**附: candidate 的 replay_report + shadow vs production 指标对比 + 风险 / 回滚方案
 - 用户**默认 OK 一键 approve**, 看到红字才需要细看 — UI 设计原则: "不让用户失败前看不到 / 不让用户疲劳"
 
+**TicketVerifier 协议 (V7.1, X.H.TICKET-VERIFY)**:
+
+V7.0 仅要求 `user_approval_ticket_id` 非空字符串. 实测发现这是 honor-system,
+任何字符串都过 — 攻击者或 buggy admin script 可绕过. V7.1 强制完整校验:
+
+CANARY → PRODUCTION 必须 **ALL OF**:
+
+  1. `user_approval_ticket_id` (非空字符串)
+  2. **ticket 真在 InMemoryCollaborationQueue (或未来 PG queue) 存在**
+  3. `ticket.status ∈ {"answered", "fallback_selected"}`
+  4. `response.selected_option == "approve"`
+
+由 `kun.governance.capability_lifecycle.TicketVerifier` Protocol 强制;
+生产 wiring 是 `kun.integration.collab_ticket_verifier.InMemoryQueueTicketVerifier`.
+无 verifier wired 时退化为 legacy truthy-check (向后兼容). **生产 caller 必须
+传 verifier**.
+
+**攻击者矩阵 (V7.1 acceptance, 12 测试)**:
+
+| 输入 | 结果 |
+|---|---|
+| 伪造 ticket id (queue 里没有) | DENIED |
+| status='open' / 'waiting' / 'escalated' | DENIED |
+| status='cancelled' / 'closed' | DENIED |
+| answered + selected='hold' | DENIED |
+| fallback_selected + fallback='hold' | DENIED |
+| fallback_selected + fallback='approve' | ALLOWED |
+| answered + selected='approve' | ALLOWED |
+| verifier raise 异常 | fail-closed (CapabilityLifecycleError) |
+
+测试位置: `tests/integration/test_v7_ticket_verify_attacker_matrix.py`.
+
 ### 12.3 启 strategy replay 三类产物
 
 V6 既有，V7 升级为运行时强 enforce：
@@ -1308,6 +1342,47 @@ per-task override 在 TaskPlan 里, 驾驶舱实时切换。
 V6 既有：target_module ∈ {strategist.\*, supervisor.\*, gate.\*, director.\*, mission_director.\*, external_supervisor.\*} → 强制 `requires_human_review=True`。
 
 启不能自动修启自己，傩不能自动修傩自己，Mission Director 不能自动修自己，External Supervisor 不能自动修自己。
+
+### 12.6 RSI 闭环 wiring (V7.1, X.G + X.I-0b)
+
+V7.0 §12 描述了 RSI 协议但未规定**读侧 (蒸馏的方法论怎么影响下次任务)**
+和**写侧 (蒸馏候选怎么进 Gate)**. V7.1 两侧都接通了.
+
+**读侧 (X.G — 已 promote 的 methodology 到达下次任务 LLM)**:
+
+```
+promoted yaml 在 seeds/methodologies/
+    ↓ kun.engineering.methodology_runtime_loader.load_methodologies
+    ↓ MethodologyRuntimeSelector.select_for(TaskContext, top_k=3)
+    ↓ render_for_system_prompt (engineering-first 关键词重合打分)
+    ↓ append 进 LongTaskOrchestrator system prompt
+    ↓ LLM真 在对话上下文里看到方法论
+    ↓ emit long_task.methodology_injected event 给 cockpit
+```
+
+Env: `KUN_V7_METHODOLOGY_INJECT_ENABLED=true` + `KUN_V7_METHODOLOGY_TOP_K=N`.
+
+**写侧 (X.I-0b — 蒸馏候选进 Gate)**:
+
+```
+MethodologyDistillStep.run (位于 kun.engineering.idle_batch,
+   由 kun/api/main.py:152 launch 的 idle_batch_worker 周期触发)
+    ↓ 对每个 novel candidate (来自 methodology_distill.distill())
+    ↓ kun.integration.methodology_to_gate_bridge.
+       admit_methodology_candidate_via_gate
+    ↓ GateService.admit 用合成 payload
+    ↓ 如果 approve: chain capability_lifecycle_v7_bridge → lifecycle_transitions 真行
+    ↓ chain auditor_report_v7_bridge → auditor_reports 真行
+```
+
+X.I-0b 之前, GateService.admit 只被 `kun/integration/prompt_ab.py` (A/B
+框架, 非用户路径) 调过. X.I-0b 让整个 V7 §15 lifecycle **写侧**通过既有
+daemon 生产激活.
+
+Env: `KUN_V7_METHODOLOGY_TO_GATE_BRIDGE_ENABLED=true` (默认开).
+
+这一节闭合了 V7 §1.1 "每跑一次都让自己略变更聪明" 产品魂 — 不再只是声明,
+而是**写侧 + 读侧双向 wired**.
 
 ---
 
@@ -1550,6 +1625,20 @@ Observation → Candidate → Replay → Holdout → Shadow → Canary → Produ
 - **速度和成本提升不能掩盖结果质量下降**。
 - **production flip 必须 explicit user approval**（V7 新增）。
 
+**Gate 5 条 engineering 规则 (V7.0 既有 R1-R4) + R6 production reachability (V7.1, X.I-2)**:
+
+| 规则 | 含义 | 失败处理 |
+|---|---|---|
+| R1 test_report | 测试通过率 ≥ `_DEFAULT_MIN_PASS_RATE` | reject |
+| R2 diagnostic | 诊断证据存在 | reject |
+| R3 debrief | debrief evidence_quality ≥ threshold | reject |
+| R4 self_referential | 监督角色 / 启 / 傩 / MD 自指 | awaiting_human_review |
+| **R6 production_reachability (V7.1)** | 当 `experiment.kind ∈ {runtime, capability}`, `target_module` 必须能从 `docs/PRODUCTION_ENTRIES.md` 列的入口至少一处可达 (由 `kun.governance.production_path_traceability.check_symbol_reachable` 实例化检查). methodology kind 不强制. Legacy caller 不带 kind 字段不影响 | reject if R6 fails on runtime kind |
+
+R6 是 V7.1 加的"防 X.H/X.I 静默孤儿"协议级护栏 — 之前 3 次 release
+(X.E/X.G/DIST-D) shipped runtime feature 但生产 entry 不调用, R6 在 Gate
+入口拦下这种 nominal-wired 但实际孤儿 candidate.
+
 ### 15.3 启 strategy replay 三类产物（重申）
 
 V6 line 377 + §9.6 + §12.3：
@@ -1605,6 +1694,24 @@ V6 6 层 + Claude Code 5 层闭合 (方案 → 模块 → 入口 → 真实数�
 | 5 | **fallback 被当真实能力** (无 VLM 用规则猜) | Layer 4 receipt 必须严格 + fallback 必须显式 declare + §6.5 信息缺口主动协同 (缺真能力时阻断, 不静默降级假装成功) |
 | 6 | **缺强制 trace** (产物看不出来源/决策/门禁) | §16.5 强制 trace 协议 + StateLedger + ArtifactRecord 强 enforce |
 
+### 16.2.5 5 个 hidden-orphan 根因 (V7.1, X.H 自检蒸出)
+
+§16.2 6 个反模式描述**实装**的失败形状. X.H 自检 (2026-05-29) 发现了
+5 个**审计本身**的失败根因 — LLM (Claude / gpt / Qwen) 和工程师在审计 6
+反模式时会**反复犯**这 5 条而导致漏审. 完整分析: `docs/dev_logs/
+X.H-self-audit-rootcause.md`.
+
+| # | 根因 | KUN 防御机制 |
+|---|---|---|
+| **R1** | **grep-verify 颗粒度错**: `import X` ≠ runtime 真用 X | `docs/templates/hidden-orphan-audit-prompt.md` §4 Step 4 + Step 7 chain-reach; `kun.governance.production_path_traceability.check_symbol_reachable` |
+| **R2** | **没生产入口 inventory**: "生产是哪几个文件?" 无答案 | `docs/PRODUCTION_ENTRIES.md` mandate (§16.3) |
+| **R3** | **opt-in 默认 OFF + 无消费者强制 = 静默孤儿** | `LongTaskRuntimeBundle` pattern + `EXPECTED_BUNDLE_KEYS` CI audit |
+| **R4** | **测试 fixture caller 语法上 == 生产 caller** | AST 测试仅解析生产 entry 文件 (`tests/integration/test_production_entry_runtime_bundle.py`) |
+| **R5** | **retrospective 漏 entry-level grep** | 模板 §7 banned phrases + §6 强制元自审 |
+
+每个 retrospective 在 claim "feature done" 前必须验证全部 5 个根因
+safe=true. 模板提供结构化 JSON `root_cause_check.{R1..R5}.safe: bool`.
+
 ### 16.3 唯一生产入口强制
 
 任务执行**只能有一个入口**: 用户输入 → API / WS / CLI → Control Plane → `Orchestrator` → `ExecutorLoop` / `LongTaskOrchestrator`。
@@ -1631,6 +1738,30 @@ V6 6 层 + Claude Code 5 层闭合 (方案 → 模块 → 入口 → 真实数�
 | `scripts/codex_pure_llm_smoke.py` | ❌ 直接调 provider | OK (smoke test, 不产 capability) |
 
 **附录 A Phase 0.5 必做**: scripts/e2e_rsi_demo.py 类的脚本必须**标注 `# FIXTURE-ONLY`**, 产物加 `metadata.fixture_only=true` flag, capability_card 写入时门禁拒。
+
+**V7.1 PRODUCTION_ENTRIES.md inventory + LongTaskRuntimeBundle pattern (X.H)**:
+
+V7.0 列了入口表但不是单一权威源, 也无自动化强制. V7.1 升级:
+
+1. **生产入口清单** `docs/PRODUCTION_ENTRIES.md` (X.H R2 fix) — 唯一权威源.
+   每个 blessed 生产入口必须:
+   - 在文件里登记 (file path + purpose + bundle wired?)
+   - 由 `tests/integration/test_production_entry_runtime_bundle.py` AST audit
+     解析验证
+   - 对 LongTaskOrchestrator-using 入口, 必须 spread
+     `**runtime_bundle.as_orchestrator_kwargs()` 或显式命名每个 opt-in 特性
+
+2. **`LongTaskRuntimeBundle` pattern** (X.H, V7.1) — opt-in runtime feature
+   的唯一中枢:
+   - 所有 `LongTaskOrchestrator` opt-in ctor 参数走 bundle
+   - `LongTaskRuntimeBundle.as_orchestrator_kwargs()` 投影到 ctor kwargs
+   - `from_env_defaults()` 工厂统一读 env 开关
+   - `enabled_flags` 报告**实际激活** vs precondition-missing (不只 ctor 设了)
+   - CI 测试 `EXPECTED_BUNDLE_KEYS` 集合强制: 任何新 opt-in 特性必须接 bundle
+
+   没有 bundle 之前, 三次 release (X.E trifecta / X.G methodology /
+   DIST-D critique) shipped class-level opt-in 但生产 WS entry 静默漏传,
+   成为 runtime 孤儿. Bundle 让此模式**不可重复**.
 
 ### 16.4 攻击型测试硬规则
 
@@ -1712,6 +1843,31 @@ V7 明确 **External Supervisor 戴两顶帽子**:
 ```
 
 **审计输出存档**: 写入 `audit_reports/<date>.md`, 进 NUO panel 显示, 严重项 (P0 / P1) 触发 CollaborationTicket 等人审。
+
+**Angle 8 — Production-path traceability (V7.1, X.I-1)**:
+
+V7.0 §16.6 列了 7 角度. X.I-1 加 Angle 8:
+
+> 对每个声称完成的 capability, 审计员必须验证它从 `docs/PRODUCTION_ENTRIES.md`
+> 列的入口至少一处真实例化或调用. 如果只能从 `tests/` 或 `scripts/dogfood_*`
+> 到达, capability 是**nominal-wired 但实际孤儿** — 必须 `risk_level ≥ P1`,
+> `allow_release=false`, `must_fix` 加 "wire to at least one production entry".
+
+实装自动计算 reachability 经 `kun.governance.production_path_traceability.
+check_symbol_reachable`, 喂给 LLM auditor render (`render_auditor_prompt`
+的 `production_path_check` arg). Heuristic auditor 在 target_module 是
+symbol-shape 但 unreachable 时也自动 escalate.
+
+**Audit prompt template (V7.1, X.N)**:
+`docs/templates/hidden-orphan-audit-prompt.md` 是可复用的 §1-§8 prompt,
+任何 LLM (Claude / gpt / Qwen / 本地) 拿到 + 一份代码库都能跑同款审计.
+结构化 lint 守卫: `tests/unit/test_hidden_orphan_audit_template.py`.
+任意-LLM 驱动脚本: `scripts/run_audit_prompt_on_capability.py`.
+
+**Step 7 chain-reach (V7.1.1, X.O)**: 模板 §4 原本是直接符号 grep, 有
+R1 颗粒度 bug — 漏 chain wiring. X.O 加 Step 7: 走符号的 caller, 检查
+caller 的 host file 是否生产入口, 2-hop 终止判定 chain-wired (不是孤儿).
+强制 §6 元自审承认 Step 7 catch 出的 R1 false positive.
 
 ### 16.7 与其他子系统的关系
 
