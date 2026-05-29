@@ -33,7 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 
 from kun.core.logging import get_logger
 
@@ -141,6 +141,35 @@ class CapabilityLifecycleError(ValueError):
     """Raised when lifecycle transition violates V7 §12.2 / §15 rules."""
 
 
+class TicketVerifier(Protocol):
+    """V7 Phase X.H.TICKET-VERIFY contract.
+
+    The lifecycle service must NOT blindly trust a ``user_approval_ticket_id``
+    string. Before X.H, ``validate_transition`` only checked the field was
+    truthy — meaning an attacker (or buggy caller) could pass ANY string and
+    successfully transition CANARY → PRODUCTION.
+
+    Implementations must reject (return False or raise) when ANY of:
+      - ticket does not exist
+      - ticket.status is not "answered" or "fallback_selected"
+      - selected_option != "approve"
+
+    Production wiring is
+    ``kun.integration.collab_ticket_verifier.CollaborationQueueVerifier``;
+    tests use a hand-rolled stub for the attacker matrix.
+    """
+
+    def verify_approval(self, ticket_id: str) -> bool:
+        """Return True iff ticket_id corresponds to a genuinely answered
+        approval ticket with selected_option == 'approve'.
+
+        Implementations may also raise ``CapabilityLifecycleError`` with a
+        precise reason; either ``False`` or raising is acceptable for the
+        service to treat the transition as unauthorized.
+        """
+        ...
+
+
 class CapabilityLifecycleService:
     """启 (Qi) 能力 lifecycle 治理服务 (V7 §9.6 / §12 / §15).
 
@@ -160,10 +189,18 @@ class CapabilityLifecycleService:
         transition_emitter: Callable[[LifecycleTransition], Any] | None = None,
         require_user_approval_for_production: bool = True,
         require_three_evidence_for_replay: bool = True,
+        ticket_verifier: TicketVerifier | None = None,
     ) -> None:
         self._emitter = transition_emitter
         self._require_user_approval = require_user_approval_for_production
         self._require_three_evidence = require_three_evidence_for_replay
+        # V7 Phase X.H.TICKET-VERIFY: When wired, verifier resolves the
+        # ticket_id string and asserts (status, selected_option) match
+        # a genuine 'approve' answer. Without a verifier wired, the
+        # service falls back to the legacy "non-empty string" check —
+        # this preserves backward-compat for unit tests that don't care,
+        # but production callers MUST pass a verifier.
+        self._ticket_verifier = ticket_verifier
 
     def can_transition(
         self,
@@ -225,13 +262,38 @@ class CapabilityLifecycleService:
             from_stage == CapabilityLifecycleStage.CANARY
             and to_stage == CapabilityLifecycleStage.PRODUCTION
             and self._require_user_approval
-            and not user_approval_ticket_id
         ):
-            raise CapabilityLifecycleError(
-                "CANARY → PRODUCTION requires explicit user approval ticket "
-                "(V7 §12.2). Pass user_approval_ticket_id from a closed "
-                "CollaborationTicket."
-            )
+            if not user_approval_ticket_id:
+                raise CapabilityLifecycleError(
+                    "CANARY → PRODUCTION requires explicit user approval ticket "
+                    "(V7 §12.2). Pass user_approval_ticket_id from a closed "
+                    "CollaborationTicket."
+                )
+            # V7 Phase X.H.TICKET-VERIFY: if a verifier is wired, the ticket
+            # id must resolve to a genuine 'approve' answer. Without this
+            # check the field is honor-system — an attacker could pass any
+            # string and pass.
+            if self._ticket_verifier is not None:
+                try:
+                    is_valid = self._ticket_verifier.verify_approval(
+                        user_approval_ticket_id
+                    )
+                except CapabilityLifecycleError:
+                    # Verifier may pre-raise with a precise reason; propagate.
+                    raise
+                except Exception as e:
+                    raise CapabilityLifecycleError(
+                        f"CANARY → PRODUCTION ticket verification failed "
+                        f"({type(e).__name__}: {e}). Treat as unauthorized."
+                    ) from e
+                if not is_valid:
+                    raise CapabilityLifecycleError(
+                        f"CANARY → PRODUCTION ticket_id="
+                        f"{user_approval_ticket_id!r} did not pass approval "
+                        f"verification (V7 §12.2: ticket must exist, be in "
+                        f"'answered' or 'fallback_selected' status, and have "
+                        f"selected_option='approve')."
+                    )
 
     async def transition(
         self,
@@ -315,4 +377,5 @@ __all__ = [
     "CapabilityLifecycleService",
     "CapabilityLifecycleStage",
     "LifecycleTransition",
+    "TicketVerifier",
 ]
