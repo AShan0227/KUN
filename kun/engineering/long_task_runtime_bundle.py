@@ -56,6 +56,7 @@ ENV_METHODOLOGY_ENABLED = "KUN_V7_METHODOLOGY_INJECT_ENABLED"
 ENV_METHODOLOGY_TOP_K = "KUN_V7_METHODOLOGY_TOP_K"
 ENV_METHODOLOGY_DIR = "KUN_V7_METHODOLOGY_DIR"
 ENV_CRITIQUE_EVERY_N = "KUN_V7_CRITIQUE_EVERY_N_STEPS"
+ENV_DISCIPLINE_ENABLED = "KUN_V7_DISCIPLINE_ENFORCER_ENABLED"
 
 # Defaults — small enough that turning ON is safe for early adopters but
 # big enough that the feature actually fires multiple times in a normal
@@ -121,6 +122,10 @@ class LongTaskRuntimeBundle:
     critique_every_n_steps: int | None = None
     """DIST-D External Supervisor critique cadence. None=disabled."""
 
+    discipline_enforcer: Any | None = None
+    """V7 §4.3 Phase F EngineeringDisciplineEnforcer. None=disabled
+    (orphan pre-X.I-0)."""
+
     # Diagnostic — captured at construction time so cockpit / audit logs
     # can see exactly which features fired without rebuilding context.
     enabled_flags: dict[str, bool] = field(default_factory=dict)
@@ -133,6 +138,7 @@ class LongTaskRuntimeBundle:
                 "trifecta": False,
                 "methodology": False,
                 "critique": False,
+                "discipline": False,
             }
         )
 
@@ -162,6 +168,7 @@ class LongTaskRuntimeBundle:
             "trifecta": False,
             "methodology": False,
             "critique": False,
+            "discipline": False,
         }
 
         # ---- Trifecta ----
@@ -229,11 +236,22 @@ class LongTaskRuntimeBundle:
                 critique_every_n = critique_value
                 flags["critique"] = True
 
+        # ---- Discipline enforcer (X.I-0) ----
+        discipline_enf = None
+        if _truthy(os.environ.get(ENV_DISCIPLINE_ENABLED)):
+            from kun.governance.engineering_discipline import (
+                EngineeringDisciplineEnforcer,
+            )
+
+            discipline_enf = EngineeringDisciplineEnforcer()
+            flags["discipline"] = True
+
         log.info(
             "long_task_runtime_bundle.built",
             trifecta_enabled=flags["trifecta"],
             methodology_enabled=flags["methodology"],
             critique_enabled=flags["critique"],
+            discipline_enabled=flags["discipline"],
         )
         return cls(
             trifecta_coordinator=trifecta_coord,
@@ -241,6 +259,7 @@ class LongTaskRuntimeBundle:
             methodology_selector=methodology_sel,
             methodology_top_k=methodology_topk,
             critique_every_n_steps=critique_every_n,
+            discipline_enforcer=discipline_enf,
             enabled_flags=flags,
         )
 
@@ -261,6 +280,7 @@ class LongTaskRuntimeBundle:
             "methodology_selector": self.methodology_selector,
             "methodology_top_k": self.methodology_top_k,
             "critique_every_n_steps": self.critique_every_n_steps,
+            "discipline_enforcer": self.discipline_enforcer,
         }
 
 

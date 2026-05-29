@@ -82,6 +82,9 @@ from kun.engineering.methodology_runtime_loader import (
     render_for_system_prompt,
 )
 from kun.external_supervisor.service import ExternalSupervisorService
+from kun.governance.engineering_discipline import (
+    EngineeringDisciplineEnforcer,
+)
 from kun.integration.external_supervisor import make_external_supervisor_verify
 from kun.integration.external_supervisor_critique import render_critique_prompt
 from kun.integration.plan_review_db import PlanReviewWriter
@@ -224,6 +227,12 @@ class LongTaskOrchestrator:
         # None (default) = no methodology injection — backward compatible.
         methodology_selector: MethodologyRuntimeSelector | None = None,
         methodology_top_k: int = 3,
+        # V7 §4.3 + Phase F + X.I-0 — Claude Code 10-维 engineering discipline.
+        # When wired, runs the enforcer at run completion over the final
+        # answer + step summary; emits ``long_task.discipline_report``.
+        # Before X.I-0 this was a TOTAL ORPHAN: defined in governance/, no
+        # production caller. cockpit /discipline/recent returned [].
+        discipline_enforcer: EngineeringDisciplineEnforcer | None = None,
     ) -> None:
         # --- Auto-wire external_supervisor_verify from service when not given ---
         # If both are passed, the explicit verify wins (caller is being deliberate).
@@ -263,6 +272,9 @@ class LongTaskOrchestrator:
             )
         self._methodology_selector = methodology_selector
         self._methodology_top_k = methodology_top_k
+
+        # --- X.I-0: Engineering discipline enforcer (V7 §4.3 / Phase F) ---
+        self._discipline_enforcer = discipline_enforcer
 
         # --- Stash heartbeat tuning so we can rebuild per-task when needed ---
         # When plan_review_writer_factory is provided, run_long_task rebuilds
@@ -678,6 +690,51 @@ class LongTaskOrchestrator:
 
             # ---- 5. Map LoopResult.status → OrchestratorEvent(s) ----
             await self._emit_terminal_events(loop_result, task_id, _emit)
+
+            # ---- 5b. (Optional) Engineering discipline enforcer (X.I-0) ----
+            # V7 §4.3 + Phase F: every long-task run now passes its final
+            # answer + skill calls + cost / token / file change context
+            # through the discipline enforcer. Was a TOTAL ORPHAN before
+            # X.I-0 — defined but never called from production.
+            if self._discipline_enforcer is not None:
+                try:
+                    discipline_ctx = {
+                        "answer_text": loop_result.final_text or "",
+                        "skill_calls_in_response": [],  # extracted from messages
+                        "has_code_changes": False,
+                        "commit_message": "",
+                        "cost_usd_total": float(loop_result.total_cost_usd),
+                        "tokens_total": int(loop_result.total_tokens),
+                        "step_count": int(loop_result.steps_taken),
+                    }
+                    report = self._discipline_enforcer.check(discipline_ctx)
+                    failed_disciplines = [
+                        c.discipline.value
+                        for c in report.checks
+                        if not c.passed
+                    ]
+                    await _emit(
+                        "long_task.discipline_report",
+                        {
+                            "task_id": task_id,
+                            "overall_score": round(report.overall_score, 3),
+                            "n_total": len(report.checks),
+                            "n_passed": sum(
+                                1 for c in report.checks if c.passed
+                            ),
+                            "failed_disciplines": failed_disciplines,
+                        },
+                    )
+                    self._runtime_features_trace["discipline_report"] = {
+                        "overall_score": round(report.overall_score, 3),
+                        "failed_disciplines": failed_disciplines,
+                    }
+                except Exception as e:  # pragma: no cover
+                    log.warning(
+                        "long_task_orchestrator.discipline_enforcer_failed",
+                        task_id=task_id,
+                        error=f"{type(e).__name__}: {e}",
+                    )
 
             # ---- 6. Return outcome ----
             return LongTaskRunOutcome(

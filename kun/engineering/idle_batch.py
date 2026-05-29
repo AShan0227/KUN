@@ -199,14 +199,54 @@ class MethodologyDistillStep(IdleBatchStep):
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from kun.engineering.methodology_distill import distill
+        from kun.integration.methodology_to_gate_bridge import (
+            admit_methodology_candidate_via_gate,
+        )
 
         report = distill()
+
+        # V7 Phase X.I-0b — route each novel candidate through GateService.
+        # Before X.I-0b GateService was an ORPHAN (only A/B test framework
+        # called it); pushing methodology candidates through here flips
+        # both Gate AND the auditor chain into a production-active state
+        # via the existing daemon (idle_batch_worker is launched in
+        # kun/api/main.py).
+        admissions: list[dict[str, Any]] = []
+        for cand in report.novel_candidates[:10]:
+            try:
+                result = await admit_methodology_candidate_via_gate(
+                    candidate_title=cand.title,
+                    candidate_topic=cand.topic_slug,
+                    candidate_rationale=cand.rationale,
+                    source_file=cand.source_file,
+                    tenant_id=tenant_id,
+                )
+                admissions.append(
+                    {
+                        "title": result.candidate_title,
+                        "gate_verdict": result.gate_verdict,
+                        "lifecycle_emitted": result.lifecycle_emitted,
+                        "auditor_emitted": result.auditor_emitted,
+                    }
+                )
+            except Exception as e:
+                admissions.append(
+                    {
+                        "title": cand.title,
+                        "gate_verdict": "error",
+                        "lifecycle_emitted": False,
+                        "auditor_emitted": False,
+                        "error": f"{type(e).__name__}: {e}",
+                    }
+                )
+
         return {
             "total_scanned": report.total_scanned,
             "novel_candidates": len(report.novel_candidates),
             "duplicates_skipped": report.duplicates_skipped,
             "candidate_titles": [c.title for c in report.novel_candidates[:10]],
             "sources_scanned": len(report.sources),
+            "admissions": admissions,
             "next_action": "review_novel_candidates"
             if report.novel_candidates
             else "no_distillation_action",

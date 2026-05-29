@@ -68,6 +68,7 @@ EXPECTED_BUNDLE_KEYS = frozenset(
         "methodology_selector",
         "methodology_top_k",
         "critique_every_n_steps",
+        "discipline_enforcer",
     }
 )
 
@@ -188,6 +189,7 @@ def test_from_env_defaults_off_when_no_env_set(
         "KUN_V7_TRIFECTA_ORCHESTRATOR_ENABLED",
         "KUN_V7_METHODOLOGY_INJECT_ENABLED",
         "KUN_V7_CRITIQUE_EVERY_N_STEPS",
+        "KUN_V7_DISCIPLINE_ENFORCER_ENABLED",
     ):
         monkeypatch.delenv(env_name, raising=False)
 
@@ -198,10 +200,12 @@ def test_from_env_defaults_off_when_no_env_set(
         "trifecta": False,
         "methodology": False,
         "critique": False,
+        "discipline": False,
     }
     assert bundle.trifecta_coordinator is None
     assert bundle.methodology_selector is None
     assert bundle.critique_every_n_steps is None
+    assert bundle.discipline_enforcer is None
 
 
 def test_from_env_defaults_trifecta_requires_llm_router(
