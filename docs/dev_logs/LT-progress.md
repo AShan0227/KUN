@@ -1956,6 +1956,57 @@ kun/integration/auditor_report_llm.py (LLM auditor render)
 | Production-path-traceability 接 governance 层 | 不存在 | **1 原语 + 4 V7 子系统接** |
 | cockpit UI 真浏览器渲染验证 | ESLint 过 | **真 HTML 19KB + 4 API 真响应** |
 
+## V7 Phase X.P–X.S · spec 100% 同步 + P2/P3 代码清理
+
+X.I+X.K 之后是"收尾对齐"波: 把 X.A-O 的所有产物补进产品 spec, 再清掉两处
+P2/P3 技术债. 目标是让 spec 与代码 100% 对齐, 仓库没有"开发了但接不进生产
+链路"的孤儿——为接真用户任务 (X.J) 做最后准备.
+
+### X.P + X.R · V7.0 → V7.1 spec 同步 (doc-only)
+
+- X.P (`950a797`): 写 `docs/v7/KUN-V7.1-amendments.md` — 盘 X.A-O 在产品 spec
+  里缺的 14 处 (Gate R6 / Auditor Angle 8 / production-path-traceability /
+  LongTaskRuntimeBundle / TicketVerifier / RSI 双侧 wiring / trace shape /
+  5 根因 / 5.16x trifecta cost …), 整理成 17 条 amendment (6 P0 + 11 P1/P2).
+- `ae10c4f`: 6 个 P0 amendment 真插入 `KUN-V7.md` 主体, header 升 V7.1.
+- X.R (`5553574`): 11 个 P1/P2 amendment 全 merge 进 V7.md — §12.2/§12.6/
+  §15.2/§15.4/§16.2.5/§16.3/§16.5/§16.6/§4.3/§11.4/§12.3/§12.4/§16.8/§20/
+  §23.2 + Appendix A (X.A-S phases) + Appendix B (9 新术语). spec 2547 行.
+  amendments status table 17/17 ✅.
+
+### X.S · discipline → PG + 删 rsi_loop dead 骨架 (code cleanup)
+
+两处 P2/P3 技术债清理:
+
+1. **discipline reports → PG** (`735f6bd`): X.O 给 EngineeringDiscipline
+   报告加的 process-local cache 重启即丢、多进程不可见. X.S 升 PG 写穿:
+   - alembic 0018 + `EngineeringDisciplineReportRow` (ADR-007 RLS +
+     CHECK 不变量 0≤score≤1 / 0≤n_passed≤n_total / n_total≥0)
+   - `discipline_store`: best-effort 异步 PG 写穿 (无事件循环时干净跳过,
+     如同步调用方 / 单测); `list_recent_*_pg` reader PG 不可达时回落
+     in-memory cache, 面板永不空白
+   - cockpit `/discipline/recent` 读 PG (tenant-scoped) + cache fallback
+   - LongTaskOrchestrator 把 `tenant_id` 传进写入
+   - 专用 `dr-` id 前缀 (原来复用 `pr-`)
+   - 顺手修一个潜伏 bug: discipline_store 用了 `log` 却没定义 (NameError)
+2. **删 rsi_loop.py** (`755b99b`): X.Q 已 fence `trigger_rsi_loop` 为
+   NOT-WIRED (0 生产调用方, 真 RSI 闭环是 §12.6 路径). X.S 整文件删除——
+   其 `is_self_referential`/`SELF_REFERENTIAL_TARGETS` 是
+   `kun.governance.self_referential` (唯一 source of truth, __init__.py
+   与 5 个监督角色都从这里 import) 的陈旧副本. 重复的 source-of-truth 本身
+   就是孤儿陷阱, 留 shadow copy 不如整删. grep 确认 0 import.
+
+### X.P–X.S wave 数字
+
+| 指标 | 起点 (X.I+X.K 终) | 终点 (X.S 终) |
+|---|---|---|
+| Tests | 2138 | **1949 unit passed** (X.S touch, 全绿) |
+| Ruff | green | **green** |
+| Commits | — | 5 (X.P `950a797` + P0 `ae10c4f` + X.R `5553574` + X.S 2: `735f6bd` PG + `755b99b` del) |
+| spec ↔ 代码 对齐 | 14 gap | **0 gap** (17/17 amendment merged) |
+| discipline 报告持久化 | process-local cache (重启丢) | **PG write-through + cache fallback** |
+| 孤儿/dead code | rsi_loop.py (0 caller) | **删除** |
+
 ### 剩余 (X.J 真用户任务 — 等用户)
 
 - `#88 V7.PHASE-X.J.REAL-USER-TASK`: 真用户真业务任务跑 ≥30 min, 验证 X.E/G/H/I 所有护栏在真任务里 fire
