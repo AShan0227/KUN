@@ -1309,6 +1309,24 @@ class Orchestrator:
                 self.llm_router, purpose="execution", profile=llm_profile
             )
 
+        # V7 Phase X.H.PROD-ENTRY-WIRE: the runtime feature bundle is the
+        # **single hub** that ensures every opt-in long-task feature
+        # (trifecta / methodology / critique cadence) is plumbed at this
+        # production entry. Before X.H this entry silently omitted these
+        # three features even though they existed as ctor params; the
+        # bundle makes omission impossible without a code review-visible
+        # deletion. See docs/dev_logs/X.H-self-audit-rootcause.md for the
+        # 5 root causes this addresses, and
+        # tests/integration/test_production_entry_runtime_bundle.py for
+        # the CI guard that asserts bundle keys ⊆ orchestrator ctor params.
+        from kun.engineering.long_task_runtime_bundle import (
+            LongTaskRuntimeBundle,
+        )
+
+        runtime_bundle = LongTaskRuntimeBundle.from_env_defaults(
+            llm_router=self.llm_router,
+            external_supervisor=external_supervisor,
+        )
         lt_orch = LongTaskOrchestrator(
             llm_invoker=chosen_invoker,
             tool_executor=make_tool_executor(),
@@ -1322,6 +1340,8 @@ class Orchestrator:
             compactor_summarizer=make_llm_summarizer(
                 self.llm_router, purpose="compression"
             ),
+            # X.H.PROD-ENTRY-WIRE: every opt-in runtime feature flows through here
+            **runtime_bundle.as_orchestrator_kwargs(),
         )
 
         # Collect events from LongTaskOrchestrator (they have identical
