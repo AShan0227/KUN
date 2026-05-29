@@ -1886,3 +1886,77 @@ V7 §16.6 攻击审计要求"production capability 怎么 promote 的因果可�
 | checkpoint 可追因果链 | working_state empty | **runtime_features_used 真落** |
 | `seeds/methodologies/` | 31 yaml | **33 yaml** (+ X.H 蒸出 2 张) |
 
+---
+
+## V7 Phase X.I + X.K · 8-机制深度审 + 4 产品级护栏 + cockpit 真浏览器验
+
+> 用户拷问: "8 个机制是可用的么? 别又出现开发了没激活. 你深度盘点和审核".
+> 自检发现 X.H 修的是单点 (orchestrator.py), X.I 升级为产品级护栏:
+> 不止 trifecta/methodology, 任何 KUN 子系统都自动被 production-path
+> traceability 保护.
+
+### X.I-0 · 3 个真孤儿修
+
+**commit `132b948`**
+
+自检 V7 §16.6 8 个机制 vs 生产入口实例化, 发现 **3 个真孤儿**:
+
+| # | 机制 | 真孤儿点 | 修复 |
+|---|---|---|---|
+| 5 | **Gate (GateService.admit)** | 只 `kun/integration/prompt_ab.py` (A/B 框架, 非用户路径) 调过 | 新 `kun/integration/methodology_to_gate_bridge.py` → 接 `idle_batch.MethodologyDistillStep.run()` (生产 daemon 必跑) |
+| 6 | **Auditor 链式** | 经 capability_lifecycle_v7_bridge 接 Gate, Gate 孤 → 也孤 | 跟随 Gate 修复后自动链上 |
+| 7 | **EngineeringDiscipline** | cockpit `/discipline/recent` 返 `[]`, **零生产调用** | 接 `LongTaskOrchestrator` 完成时跑 enforcer + emit `long_task.discipline_report` + 进 X.H trace, bundle 加 env 开关 |
+
+production-path grep proof:
+```
+$ grep 'GateService\|EngineeringDisciplineEnforcer' kun/engineering/ kun/api/
+kun/engineering/idle_batch.py: → admit_methodology_candidate_via_gate (chains GateService)
+kun/engineering/long_task_runtime_bundle.py: from_env_defaults builds EngineeringDisciplineEnforcer
+kun/engineering/long_task_orchestrator.py: ctor accepts + invokes discipline_enforcer
+```
+
+### X.I-1+2+3+4 · 4 产品级护栏 — 共享一个 production-path-traceability 原语
+
+**commit `00e3afc`**
+
+把 X.H 单文件 AST audit 升级为 governance 层原语 `check_symbol_reachable`,
+四条 V7 subsystem 都接上:
+
+| ID | 哪里加 | 效果 |
+|---|---|---|
+| **X.I-1** | Auditor `AUDITOR_SYSTEM_PROMPT_TEMPLATE` 加 Angle 8 + heuristic auditor 自动计算 | LLM auditor 必问"production-path reachable?", heuristic auditor 对 symbol-shape target_module 自动从 P2 escalate 到 P1 + allow_release=False |
+| **X.I-2** | `GateService` 加 R6 rule `_check_production_path_reachability` | `kind='runtime'`/`'capability'` 的实验, target_module 不在生产入口里 → 直接 reject. methodology kind 不强制 |
+| **X.I-3** | `TaskSpec` 加 `production_entry_changes_required: list[str]` pydantic 字段 | 任何"接 runtime"任务必须明示要改哪些 entry, MD 后续 tick 可比对 |
+| **X.I-4** | 新 `kun/integration/bug_root_cause_lookup.py` + 生产 trifecta 的 past hook 真接 | past line 不再返写死 finding, 真查 `bug_root_cause_cases` 表 keyword overlap, DB 命中 = 0 cost, 没命中才 fallback LLM |
+
+production-path grep proof:
+```
+$ grep 'check_symbol_reachable' kun/
+kun/governance/production_path_traceability.py (定义)
+kun/agents/gate/service.py (Gate R6)
+kun/integration/auditor_report_v7_bridge.py (heuristic auditor)
+kun/integration/auditor_report_llm.py (LLM auditor render)
+```
+
+### X.K · cockpit 真浏览器验证
+
+新 `scripts/cockpit_browser_verify.py` (+ 19337 bytes 真渲染证明):
+- `npm run build` → /cockpit page 4.35 kB 编译成
+- `npm run dev` 起 + curl → 19337 bytes HTML 6 个面板 heading 全在
+- 4 个后端 cockpit API endpoint 真返 JSON (capabilities=5, transitions=15, ensemble_calls=11)
+
+### X.I + X.K wave 数字
+
+| 指标 | 起点 (X.H 终) | 终点 (X.I + X.K 终) |
+|---|---|---|
+| Tests | 2117 | **2138** (+21) |
+| Ruff | green | green |
+| Commits | — | 3 (`132b948` X.I-0 + `00e3afc` X.I-1234 + X.K 本 commit) |
+| 8 机制真生产接 | 5/8 | **8/8** ✅ |
+| Production-path-traceability 接 governance 层 | 不存在 | **1 原语 + 4 V7 子系统接** |
+| cockpit UI 真浏览器渲染验证 | ESLint 过 | **真 HTML 19KB + 4 API 真响应** |
+
+### 剩余 (X.J 真用户任务 — 等用户)
+
+- `#88 V7.PHASE-X.J.REAL-USER-TASK`: 真用户真业务任务跑 ≥30 min, 验证 X.E/G/H/I 所有护栏在真任务里 fire
+
