@@ -41,13 +41,27 @@ SELF_REFERENTIAL_TARGETS = {
 async def trigger_rsi_loop(
     request: Any,  # StrategySearchRequest
 ) -> Any:
-    """从 strategy_search_request 触发完整 RSI 闭环.
+    """从 strategy_search_request 触发完整 RSI 闭环 (ORIGINAL L2 SKELETON).
 
-    L2 阶段编排 10 步; 现在是骨架.
+    ⚠️ NOT-WIRED-BY-DESIGN (V7.1, X.Q audit): this 10-step orchestration
+    skeleton was never implemented. The **real** production RSI loop is
+    now wired differently (V7.1 §12.6):
+      - write side: methodology_distill → methodology_to_gate_bridge →
+        GateService.admit → lifecycle_transitions (X.I-0b)
+      - read side: MethodologyRuntimeSelector injects promoted methodologies
+        into the next task's system prompt (X.G)
+
+    grep confirms 0 production callers of this function. It is kept only
+    as a design reference for a future fully-orchestrated RSI runner. If
+    you reach this NotImplementedError, you are calling the wrong entry —
+    use the §12.6 path.
     """
-    # TODO L2: 编排 step 1-10
     log.info("rsi_loop.triggered", request_id=getattr(request, "request_id", "?"))
-    raise NotImplementedError("L2 阶段实装")
+    raise NotImplementedError(
+        "trigger_rsi_loop is a not-wired design skeleton (V7.1 §12.6 is the "
+        "real RSI loop: methodology_to_gate_bridge write-side + "
+        "MethodologyRuntimeSelector read-side). 0 production callers."
+    )
 
 
 def is_self_referential(target_module: str) -> bool:

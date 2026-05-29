@@ -41,8 +41,10 @@ from kun.api.cockpit_readers import (
     list_recent_lifecycle_transitions,
     list_recent_mission_reviews,
 )
+from kun.core.logging import get_logger
 from kun.governance.capability_lifecycle import CapabilityLifecycleStage
 
+log = get_logger("kun.api.cockpit")
 router = APIRouter(prefix="/cockpit", tags=["cockpit"])
 
 
@@ -407,29 +409,78 @@ async def get_mission_alignment(
 
 
 @router.get("/missions/{task_id}/rsi-trifecta")
-async def get_rsi_trifecta_status(task_id: str) -> dict[str, Any]:
-    """V7 §12.4 RSI 三线并行 trifecta status."""
+async def get_rsi_trifecta_status(
+    task_id: str,
+    tenant_id: str = Query("default", description="RLS tenant scope"),
+) -> dict[str, Any]:
+    """V7 §12.4 RSI 三线并行 trifecta status.
+
+    X.Q fix: previously this returned a hardcoded all-disabled stub even
+    after X.E wired trifecta into LongTaskOrchestrator + X.H.TRACE recorded
+    trifecta_ticks into checkpoint working_state. Now it reads the latest
+    checkpoint's runtime_features_used.trifecta_ticks (real data when the
+    orchestrator fired trifecta during the task).
+    """
+    from kun.integration.checkpoint_db import make_checkpoint_reader
+
+    ticks: list[dict[str, Any]] = []
+    reader_error: str | None = None
+    try:
+        reader = make_checkpoint_reader()
+        cp = await reader(tenant_id, task_id)
+        if cp is not None:
+            rfu = (cp.working_state or {}).get("runtime_features_used", {})
+            ticks = list(rfu.get("trifecta_ticks", []))
+    except Exception as e:
+        reader_error = f"{type(e).__name__}: {e}"
+        log.warning(
+            "cockpit.rsi_trifecta_read_failed",
+            task_id=task_id,
+            tenant_id=tenant_id,
+            error=reader_error,
+        )
+
+    fired = len(ticks)
+    last_tick = ticks[-1] if ticks else {}
+    any_ok = any(
+        t.get("past_state") == "ok"
+        or t.get("present_state") == "ok"
+        or t.get("future_state") == "ok"
+        for t in ticks
+    )
+    total_findings = sum(int(t.get("n_findings", 0)) for t in ticks)
     return {
         "task_id": task_id,
+        "tenant_id": tenant_id,
         "trifecta": {
             "past_line": {
-                "enabled": False,
-                "findings_count": 0,
-                "note": "启 (Qi) post-hoc retrospect, bug_root_cause_cases 库",
+                "enabled": any_ok,
+                "findings_count": total_findings,
+                "last_state": last_tick.get("past_state"),
+                "note": "启 (Qi) post-hoc retrospect, bug_root_cause_cases 库 (X.I-4)",
             },
             "present_line": {
-                "enabled": False,
-                "tick_interval_sec": None,
+                "enabled": any_ok,
+                "last_state": last_tick.get("present_state"),
                 "note": "外部监督者 watchdog hat (V7 §10.2.3)",
             },
             "future_line": {
-                "enabled": False,
-                "candidates_count": 0,
+                "enabled": any_ok,
+                "last_state": last_tick.get("future_state"),
                 "note": "启 (Qi) Explorer Pool 3 模式并行 (V7 §9.6)",
             },
         },
-        "cost_multiplier_estimate": 1.0,
-        "note": "V7 Phase E.A stub. Phase E.B 接真 runtime 状态.",
+        "ticks_fired": fired,
+        "total_findings": total_findings,
+        "data_source": (
+            "task_checkpoints.working_state.runtime_features_used.trifecta_ticks "
+            "(X.E + X.H.TRACE)"
+        ),
+        "reader_error": reader_error,
+        "note": (
+            "实数据来自 checkpoint trace; ticks_fired=0 表示该任务未触发 "
+            "trifecta (env opt-in 或无 checkpoint)"
+        ),
     }
 
 

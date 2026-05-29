@@ -276,7 +276,12 @@ def test_mission_alignment_with_data(
 
 @pytest.mark.unit
 def test_rsi_trifecta_returns_three_lines(client: TestClient) -> None:
-    """V7 §12.4 RSI 三线 — 还没有专门表, 仍为 stub schema."""
+    """V7 §12.4 RSI 三线 — X.Q: now reads real checkpoint trace.
+
+    With no checkpoint for tk-001 (or PG unavailable), ticks_fired=0 and
+    lines disabled — but the schema + data_source reflect the real reader,
+    not a hardcoded stub.
+    """
     resp = client.get("/cockpit/missions/tk-001/rsi-trifecta")
     assert resp.status_code == 200
     data = resp.json()
@@ -287,6 +292,10 @@ def test_rsi_trifecta_returns_three_lines(client: TestClient) -> None:
     assert "启" in data["trifecta"]["past_line"]["note"]
     assert "外部监督者" in data["trifecta"]["present_line"]["note"]
     assert "Explorer Pool" in data["trifecta"]["future_line"]["note"]
+    # X.Q — real reader fields present (not the old hardcoded stub)
+    assert "ticks_fired" in data
+    assert "data_source" in data
+    assert "trifecta_ticks" in data["data_source"]
 
 
 # ============================================================
