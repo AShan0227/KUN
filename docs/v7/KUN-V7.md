@@ -2239,3 +2239,30 @@ V7 写完后的实施阶段。**Phase 0 是前置, 必须完成才允许进 Phas
 > 发现 V7 不完整、自相矛盾、不可执行时，先改 V7 再写代码。
 >
 > V7 实施阶段（附录 A）由开发任务排期决定，本文档不涉及具体时间表。
+
+---
+
+## V7.1 Amendments (X.P, 2026-05-29)
+
+X.A → X.O 15 implementation waves shipped operational specifics that
+V7.0 didn't cover (verified via grep: 0 hits on 13/14 X.A-O concepts in
+this file). The amendments live in:
+
+  **`docs/v7/KUN-V7.1-amendments.md`** — 17 amendments (A1-A17),
+  P0/P1/P2 prioritized, each with V7.0 § pointer + exact INSERT text.
+
+From X.P onward, any new wave (X.Q+) MUST:
+  1. First merge relevant amendments into V7.0 if applicable
+  2. Then implement
+  3. Then add the wave's own amendments back to KUN-V7.1-amendments.md
+
+This makes V7 itself part of the RSI loop — the protocol doc evolves
+with the implementation instead of falling behind.
+
+Critical P0 amendments (deferred merge):
+  - A3 — TicketVerifier protocol for §12.2 production flip (security)
+  - A6 — MethodologyRuntimeSelector + Gate bridge for §12 RSI loop
+  - A7 — Gate R6 production-path-reachability rule for §15.2
+  - A9 — 5 hidden-orphan root causes (R1-R5) for §16.2
+  - A10 — PRODUCTION_ENTRIES.md + LongTaskRuntimeBundle for §16.3
+  - A12 — Angle 8 + audit prompt template for §16.6
