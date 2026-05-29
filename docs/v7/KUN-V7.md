@@ -205,6 +205,13 @@ KUN 的架构形态、工程纪律和独特价值来自三方对标。**不是�
 | ruff + pytest 全过才 commit | Tester pipeline pre-commit gate |
 | `git status` / `git diff` 优先 | Engineering 工具优先级表 |
 
+**Runtime enforcement (V7.1, A1 / X.I-0a)**: `kun.governance.engineering_discipline.
+EngineeringDisciplineEnforcer` 在每个 long-task 完成时跑 (env
+`KUN_V7_DISCIPLINE_ENFORCER_ENABLED=true`, 经 `LongTaskRuntimeBundle`).
+失败 disciplines emit `long_task.discipline_report` event, 落 PG
+`engineering_discipline_reports` 表 (X.S), cockpit `/cockpit/discipline/recent`
+可见.
+
 ### 4.4 三方对照 + KUN 目标
 
 | 能力维度 | OpenClaw | Hermes | Claude Code | KUN V7 目标 |
@@ -1111,6 +1118,16 @@ V7 支持的 provider family 至少 (cross-family 定义见附录 B):
 - Mission Director：高风险决策点用 ensemble，divergence_score > 0.5 → 升 user。
 - 任务方案生成：复杂任务 TaskPlanDraft 由 ensemble 产 3 个方案，督师选最优。
 
+**Cost multiplier — 真 LLM 实测 (V7.1, A2 / X.D-2 dogfood v12)**:
+
+| 配置 | §12.4.4 估值 | 真 LLM 实测 (Anthropic Haiku) |
+|---|---|---|
+| 全 trifecta (3 lines) | 5-6x | **5.16x** ✅ |
+| Single-LLM baseline | 1.0x | $0.00008 / call |
+
+来源: `scripts/dogfood_v12_real_trifecta_checkpoint_collab.py`. §12.4.4 估值
+第一次被真 LLM 实证.
+
 ### 11.5 Claude Code 工程纪律到 multi-LLM 蒸馏
 
 **核心目标**：让 ensemble 内每个 LLM 都按 Claude Code 工程纪律行事，整个 ensemble 输出工程可信。
@@ -1249,6 +1266,12 @@ V6 既有，V7 升级为运行时强 enforce：
 | **capability_candidate** | 只记录可复用改进，不进入默认 runtime | 缺 → 没东西可走 lifecycle |
 
 **缺任一证据** → 只能算"启已诊断"，**不能算"启已沉淀"**。
+
+**RSI 写侧自身闭环 (V7.1, A4 / X.M)**: §12.3 三证据规则也适用于 KUN
+**自己** dev_log 蒸出的 methodology 候选 — 不允许 short-circuit cp 进
+`seeds/methodologies/`. 任何 methodology 候选必须先过 ProcessAudit +
+StrategyReplayReport. 实例: `docs/dist-output/seeds-new/v12-xh/` 事后
+追溯审计了 2 张 X.H 蒸的 seed. 让 RSI 写侧**自审**.
 
 ### 12.4 RSI 三线并行 trifecta (V7 核心新增)
 
@@ -1649,6 +1672,18 @@ V6 line 377 + §9.6 + §12.3：
 
 缺任一证据：只能算"启已诊断"，不能算"启已沉淀"。
 
+### 15.4 Production-entry diff check (V7.1, A8 / X.I-3-FIX + X.O)
+
+`TaskSpec.production_entry_changes_required: list[str]` 声明任务打算改哪些
+生产入口文件. long-task 完成时 `LongTaskOrchestrator` 调
+`kun.governance.production_entry_diff_check.ProductionEntryDiffChecker.
+check_against_actual(declared, actual)`, emit `long_task.production_entry_diff`
+event, verdict ∈ {match, drift, no_declaration, undeclared_changes}.
+
+`actual` paths 由生产 WS 入口 (`orchestrator.py`) 走 executor final_messages
+里 tool_calls 的 path arg 提取 (`extract_changed_paths_from_messages`, X.O).
+任何 LLM 声明要改 X 但实际没改 → verdict='drift', 给后续 MD review 信号.
+
 ---
 
 ## 16. 生产闭环协议 (V7 大改, 合并 V6 6 层证据 + Claude Code 5 层闭合)
@@ -1807,6 +1842,23 @@ trace:
 - 不允许进 DeliveryManifest
 - 不允许进 capability_card
 
+**runtime_features_used trace shape (V7.1, A11 / X.H.TRACE)**: long-task
+的 `TaskCheckpoint.working_state["runtime_features_used"]` 落:
+
+```python
+{
+    "methodologies": [{"title", "topic", "score", "file_path"}],   # X.G
+    "trifecta_ticks": [{"call_count", "past_state", "present_state",
+                        "future_state", "n_findings", "total_cost_usd"}],  # X.E
+    "discipline_report": {"overall_score", "failed_disciplines"},  # X.I-0a
+    "production_entry_diff": {"verdict", "has_drift", "declared_count",
+                              "actual_count"},  # X.I-3-FIX
+}
+```
+
+经 `ExecutorLoop.runtime_features_provider` callback 落 PG. 任何
+`task_checkpoints` 行可查"这次任务用了哪些 feature" — 闭 §16 cause #6.
+
 ### 16.6 生产闭环攻击审计员 — External Supervisor auditor hat
 
 V7 明确 **External Supervisor 戴两顶帽子**:
@@ -1889,6 +1941,15 @@ caller 的 host file 是否生产入口, 2-hop 终止判定 chain-wired (不是�
 - 标记 `runtime_enabled=true`
 
 7 层有任一层不过 → **该能力对外是"未完成", 内部走启 / 傩治理**, 不允许在驾驶舱 / 文档 / commit message 里宣称 done。
+
+**V7.1 自动化验收要求 (A13 / X.H + X.N)**:
+
+- `tests/integration/test_production_entry_runtime_bundle.py` 必须 8/8 过 —
+  这是防 R1/R5 复发的 CI 守卫 (AST audit 生产入口文件确保 bundle plumbing).
+- `tests/unit/test_hidden_orphan_audit_template.py` 必须 8/8 过 — 确保
+  audit 模板结构不静默漂移.
+- 每个 §16.8 "approved" capability **应**至少跑过一次 audit-prompt 模板
+  (人工或 CI), response 存 dev_logs.
 
 ---
 
@@ -2011,7 +2072,25 @@ dogfood 任务 = KUN 在自己代码库 / 自己 dev_logs / 自己设计文档�
 
 ## 20. 任务驾驶舱
 
-⚠️ **现状说明 (V7 攻击审视修复)**: 当前 KUN 任务驾驶舱 UI **几乎不存在** (V6 dev plan 阶段 7 没完成). V7 §20 描述的是**目标 UI**, 不是现有 UI 升级。V7 实施时需先建 UI 框架, 详见附录 A 新增 UI Phase。
+⚠️ **现状说明 (V7.1 X.F/X.K 更新)**: V7.0 写时驾驶舱 UI 几乎不存在.
+X.B/X.F/X.K 后已建: `frontend/src/app/cockpit/page.tsx` 6 面板 8s 自动刷新,
+真浏览器渲染验证过 (X.K, 19KB HTML). **仍缺**: 真用户日用 (没人在 cockpit
+上做过真决策). 下面 §20.1-20.3 是完整目标视图.
+
+**V7.1 cockpit reader layer (A14 / X.B + X.F + X.O)**:
+
+| Endpoint | 数据源 | reader | wave |
+|---|---|---|---|
+| /cockpit/capabilities | `lifecycle_transitions` | `list_recent_lifecycle_transitions` | X.B+X.F |
+| /cockpit/missions/{id}/alignment | `mission_alignment_reviews` | `list_recent_mission_reviews` | X.B |
+| /cockpit/missions/{id}/rsi-trifecta | `task_checkpoints.working_state.runtime_features_used` | checkpoint reader | X.Q |
+| /cockpit/supervisor/auditor-reports | `auditor_reports` | `list_recent_auditor_reports` | X.B |
+| /cockpit/ensemble/recent | `ensemble_calls` | `list_recent_ensemble_calls` | X.F |
+| /cockpit/discipline/recent | `engineering_discipline_reports` PG (X.S) | `list_recent_discipline_reports` | X.O+X.S |
+| /cockpit/writes-status | meta | `_writes_wired_status` | X.B.MF-3 |
+
+所有 reader 返 `ReaderResult` 带 `error_kind` 区分 "tenant 真无数据" vs
+"DB 不可达" (X.B.MF-6).
 
 ### 20.1 用户看到的内容（普通用户视图）
 
@@ -2142,6 +2221,9 @@ V7 产品验收必须满足以下硬指标：
 | **强制 trace (V7 §16.5 新增)** | 每个产物 100% 含 input_refs / decision / gates_passed / scores / failures / repairs / fallback_used 字段 |
 | **唯一生产入口 (V7 §16.3 新增)** | scripts/e2e_rsi_demo.py 等 fixture-only 脚本 100% 标 `# FIXTURE-ONLY`, 产物 0 进 capability_card |
 | dogfood 规范 | dogfood 产物 100% 进 dist-output，0 直接合并到主路径 |
+| **AST production-entry audit pass (V7.1, A15 / X.H)** | `tests/integration/test_production_entry_runtime_bundle.py` 8/8 green; 生产 WS 入口 spread `**bundle.as_orchestrator_kwargs()` |
+| **Audit prompt template lint (V7.1, A15 / X.N)** | `tests/unit/test_hidden_orphan_audit_template.py` 8/8 green |
+| **8 机制 env-all-on 真 fire (V7.1, A15 / X.L)** | `scripts/dogfood_v15_all_8_mechanisms_on.py` exit 0; enabled_flags 4/4 True; 5 event 类型 fire |
 
 ### 23.2 Claude Code 工程纪律 10 维（acceptance criteria）
 
@@ -2415,10 +2497,51 @@ From X.P onward, any new wave (X.Q+) MUST:
 This makes V7 itself part of the RSI loop — the protocol doc evolves
 with the implementation instead of falling behind.
 
-Critical P0 amendments (deferred merge):
-  - A3 — TicketVerifier protocol for §12.2 production flip (security)
-  - A6 — MethodologyRuntimeSelector + Gate bridge for §12 RSI loop
-  - A7 — Gate R6 production-path-reachability rule for §15.2
-  - A9 — 5 hidden-orphan root causes (R1-R5) for §16.2
-  - A10 — PRODUCTION_ENTRIES.md + LongTaskRuntimeBundle for §16.3
-  - A12 — Angle 8 + audit prompt template for §16.6
+**Merge status (X.R, 2026-05-29 — 全 17 条已 merge)**:
+  - P0 (6): A3 §12.2 / A6 §12.6 / A7 §15.2 / A9 §16.2.5 / A10 §16.3 /
+    A12 §16.6 — ✅ merged in X.P-followup commit ae10c4f
+  - P1 (9): A1 §4.3 / A2 §11.4 / A4 §12.3 / A5 §12.4 / A8 §15.4 /
+    A11 §16.5 / A13 §16.8 / A14 §20 / A15 §23.2 — ✅ merged in X.R
+  - P2 (2): A16 Appendix A / A17 Appendix B — ✅ merged below (X.R)
+
+V7.1 spec 现 100% 同步 X.A → X.Q 实装. KUN-V7.1-amendments.md 留作 merge
+审计轨迹.
+
+### 附录 A 补充: X.A → X.Q 实装 phase (A16 / X.R)
+
+| Phase | 内容 | 状态 |
+|---|---|---|
+| X.A | qi/ + nuo/ rename re-export | ✅ |
+| X.B | 4 X.B 表 + bridges + writes_wired_status (MF-1..MF-6) | ✅ |
+| X.C | LLM auditor / crash resume / trifecta class / lifecycle walker / collab e2e / capstone v11 | ✅ |
+| X.D | ProcessAudit merge + dogfood v12 (5.16x 实测) | ✅ |
+| X.E | Trifecta 接 orchestrator + dogfood v13 | ✅ |
+| X.F | Cockpit daily UI + ensemble reader | ✅ |
+| X.G | Methodology 读侧 selector + dogfood v14 | ✅ |
+| X.H | 5 根因 + bundle + ticket verify + trace + META | ✅ |
+| X.I-0..4 | 3 孤儿修 + production-path 原语 4 子系统接 | ✅ |
+| X.I-3-FIX | 半孤儿 diff checker consumer | ✅ |
+| X.J | 真用户真任务 ≥30 min | ⏳ 等用户 |
+| X.K | Cockpit 浏览器验证 | ✅ |
+| X.L | dogfood v15 8 机制全开 | ✅ |
+| X.M | ProcessAudit X.H seeds | ✅ |
+| X.N | CI 模板 lint + driver | ✅ |
+| X.O | 2 self-audit bug + Step 7 chain-reach | ✅ |
+| X.P | V7.1 amendments doc | ✅ |
+| X.Q | full-review (rsi-trifecta stub fix + rsi_loop fence) | ✅ |
+| X.R | 11 P1/P2 amendments merge (本节) | ✅ |
+| X.S | discipline→PG + 删 dead 骨架 | ⏳ |
+
+### 附录 B 补充: V7.1 新术语 (A17 / X.R)
+
+| 术语 | 定义 |
+|---|---|
+| **hidden orphan** | capability 名义上 wired (class signature / 测试 / 引用) 但生产入口从不实例化或调用. X.H 前 KUN 5 次 release 复发率. |
+| **chain-reach** | 经 1+ caller 跳的间接生产 wiring. Step 4 直接 grep 漏, Step 7 显式 walk 抓 (X.O). |
+| **production entry** | `docs/PRODUCTION_ENTRIES.md` 列的文件. Audit / Gate / 模板对此集合查 reachability. |
+| **LongTaskRuntimeBundle** | opt-in `LongTaskOrchestrator` 特性的唯一中枢. CI 守卫防新 opt-in 绕过 bundle. |
+| **TicketVerifier** | 解析 `user_approval_ticket_id` 对 queue 校验 status + selected_option=='approve' 的 Protocol (§12.2). |
+| **Angle 8** | V7 §16.6 攻击审计的 production-path-traceability 轴. X.I-1 加. |
+| **R1-R5 根因** | 5 个 LLM 复发审计失败 (grep 颗粒度 / 无 inventory / opt-in 无消费者 / fixture-as-prod / module-not-entry). |
+| **MethodologyRuntimeSelector** | RSI 读侧 — 加载 `seeds/methodologies/*.yaml`, 关键词重合打分, top-K 注入 system prompt. |
+| **production_entry_diff_check** | 比对 TaskSpec.production_entry_changes_required (声明) vs tool_calls 提取的实际改动路径. verdict ∈ {match, drift, no_declaration, undeclared_changes}. |
