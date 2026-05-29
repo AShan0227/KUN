@@ -13,16 +13,15 @@ trigger:
     - LLM agent 即将基于"我记得 KUN 里有 Z" 这种说法做改动
 action:
   pattern:
-    - emit <skill name="grep-verify">{"pattern": "...", "root": "kun", "claim": "I think X is …"}</skill>
-    - 看 verdict 字段: "confirmed" → 假设成立, 继续; "refuted" → 立刻 stop, 重新评估
-    - 多处 match 时核对 path / line_no, 确认是同一个符号不是同名
-    - 找不到时考虑: 拼写错? 模块迁移过? 真的没有?
+    - 'emit <skill name="grep-verify">{"pattern": "...", "root": "kun", "claim": "I think X is …"}</skill>'
+    - '看 verdict 字段: "confirmed" → 假设成立, 继续; "refuted" → 立刻 stop, 重新评估'
+    - '多处 match 时核对 path / line_no, 确认是同一个符号不是同名'
+    - '找不到时考虑: 拼写错? 模块迁移过? 真的没有?'
   anti_patterns:
-    - "我记得 KUN 里有 ContextPacker, 直接引用" → 应先 grep_verify
-    - 用 shell-exec 跑 grep, 没结构化输出, LLM 解析容易丢上下文
-    - grep 只找一个文件, 假设全 codebase 一致
-    - 假设单测覆盖 = runtime 真用 (service_module_not_wired_to_runtime_audit
-      是这条的姐妹方法论)
+    - '"我记得 KUN 里有 ContextPacker, 直接引用" → 应先 grep_verify'
+    - '用 shell-exec 跑 grep, 没结构化输出, LLM 解析容易丢上下文'
+    - 'grep 只找一个文件, 假设全 codebase 一致'
+    - '假设单测覆盖 = runtime 真用 (service_module_not_wired_to_runtime_audit 是这条的姐妹方法论)'
 rationale: |
   dogfood v8 蒸馏出来的 capability gap analysis 显示 KUN 缺 "改前 grep" 这个
   runtime 一等动作; 之前只有审计方法论 (service_module_not_wired_to_runtime_audit),
