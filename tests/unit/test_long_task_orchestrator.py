@@ -488,9 +488,10 @@ async def test_event_count_matches_events_emitted_outcome() -> None:
     outcome = await orch.run_long_task(ref, on_event=sink)
 
     assert outcome.events_emitted == len(sink.events)
-    # We expect: started, plan_tree, answer, long_task.completed, done = 5
-    # (no plan_tree if recursion disabled; here it's enabled)
-    assert outcome.events_emitted == 5
+    # X.I-3-FIX added a 6th emit: started, plan_tree,
+    # production_entry_diff (no_declaration), answer, long_task.completed,
+    # done = 6
+    assert outcome.events_emitted == 6
 
 
 # --------------------------------------------------------------------------- #

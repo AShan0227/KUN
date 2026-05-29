@@ -85,6 +85,9 @@ from kun.external_supervisor.service import ExternalSupervisorService
 from kun.governance.engineering_discipline import (
     EngineeringDisciplineEnforcer,
 )
+from kun.governance.production_entry_diff_check import (
+    ProductionEntryDiffChecker,
+)
 from kun.integration.external_supervisor import make_external_supervisor_verify
 from kun.integration.external_supervisor_critique import render_critique_prompt
 from kun.integration.plan_review_db import PlanReviewWriter
@@ -353,6 +356,7 @@ class LongTaskOrchestrator:
         *,
         on_event: EventSink | None = None,
         extra_system_segments: list[str] | None = None,
+        actual_production_entry_changes: list[str] | None = None,
     ) -> LongTaskRunOutcome:
         """Run the long-task pipeline end-to-end.
 
@@ -688,14 +692,52 @@ class LongTaskOrchestrator:
                 anchor_dict=anchor_dict,
             )
 
-            # ---- 5. Map LoopResult.status → OrchestratorEvent(s) ----
-            await self._emit_terminal_events(loop_result, task_id, _emit)
+            # ---- 5pre. (X.I-3-FIX + X.I-0) Audit events fire BEFORE terminal events
+            # so 'done' remains the very last emit (consumer contract).
 
             # ---- 5b. (Optional) Engineering discipline enforcer (X.I-0) ----
             # V7 §4.3 + Phase F: every long-task run now passes its final
             # answer + skill calls + cost / token / file change context
             # through the discipline enforcer. Was a TOTAL ORPHAN before
             # X.I-0 — defined but never called from production.
+            # ---- 5c. (Always) X.I-3-FIX consume production_entry_changes_required ----
+            # If task_ref.spec declared `production_entry_changes_required`,
+            # we check it against the actual paths touched. Actual paths come
+            # from the caller via `actual_production_entry_changes` argument
+            # to run_long_task (defaults to empty list — caller may pull from
+            # git diff / tool-call ledger). The check fires regardless of
+            # whether either list is set so we always emit a verdict (incl.
+            # the "no_declaration" case for honesty).
+            declared_entries = (
+                list(getattr(task_ref.spec, "production_entry_changes_required", []) or [])
+                if task_ref.spec is not None
+                else []
+            )
+            actual_entries = list(actual_production_entry_changes or [])
+            diff_report = ProductionEntryDiffChecker.check_against_actual(
+                declared_entries, actual_entries
+            )
+            await _emit(
+                "long_task.production_entry_diff",
+                {
+                    "task_id": task_id,
+                    "verdict": diff_report.verdict,
+                    "declared": diff_report.declared,
+                    "actual": diff_report.actual,
+                    "matched": diff_report.matched,
+                    "declared_but_unchanged": diff_report.declared_but_unchanged,
+                    "changed_but_undeclared": diff_report.changed_but_undeclared,
+                    "has_drift": diff_report.has_drift,
+                },
+            )
+            # Store in X.H.TRACE so the checkpoint row carries this evidence.
+            self._runtime_features_trace["production_entry_diff"] = {
+                "verdict": diff_report.verdict,
+                "has_drift": diff_report.has_drift,
+                "declared_count": len(diff_report.declared),
+                "actual_count": len(diff_report.actual),
+            }
+
             if self._discipline_enforcer is not None:
                 try:
                     discipline_ctx = {
@@ -735,6 +777,11 @@ class LongTaskOrchestrator:
                         task_id=task_id,
                         error=f"{type(e).__name__}: {e}",
                     )
+
+            # ---- 5final. Map LoopResult.status → terminal OrchestratorEvent(s) ----
+            # Terminal events ('answer', 'done') MUST be the last emits so
+            # downstream consumers can treat 'done' as the close signal.
+            await self._emit_terminal_events(loop_result, task_id, _emit)
 
             # ---- 6. Return outcome ----
             return LongTaskRunOutcome(
