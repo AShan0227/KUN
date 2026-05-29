@@ -114,9 +114,32 @@ api/main.py).
   $ grep -rn '[ENV_VAR]' --include='*.py'
   $ grep -rn '[ENV_VAR]=' deployment/ docker-compose*.yml .env*
 
+**Step 7 — Chain-reach 检查 (X.O 升级, 修 §4 自己 R1 颗粒度盲区)**
+
+Step 4 的"直接符号 grep"只 catch 名字字面引用. 但很多产品级 wiring
+是**chain**: SymbolX 在 production entry 不 grep 到, 但它的方法
+被 SymbolY 调, SymbolY 在 production entry grep 到. 这种 case Step 4
+会给假阳 (judged orphan, 实际接通了).
+
+X.O 升级强制 Step 7 chain-reach 检查:
+
+  $ # 找 SymbolX 的所有非测试 caller (符号 -- 不是 import)
+  $ grep -rn '[SYMBOL]\.\|[SYMBOL](' src/ kun/ \
+      | grep -v test_ | grep -v dogfood | grep -v 'scripts/' | grep -v __pycache__
+  $ # 对每个 caller 的 host class/function 名, 用 Step 4 模板查它是否
+  $ # 在生产入口里 reachable
+  $ # 至少 N=2 跳, 直到命中生产入口或耗尽 caller
+
+Step 7 的结论:
+  - 找到至少 1 条 caller chain 终止于生产入口 → 真 wired ✅
+  - 所有 chain 都终止于 test / dogfood / 死路 → 真孤儿 ❌
+
 每条 grep 后必须**贴粘真实输出** (不允许"我跑了 grep, 没有结果"凭口说).
-如果 grep 在生产入口文件里输出**为空**或**只出现在 import 行**, 这就是
-**孤儿**, 必须 risk_level≥P1.
+如果 grep 在生产入口文件里输出**为空** AND Step 7 chain-reach 也**找
+不到生产 caller**, 这就是**孤儿**, 必须 risk_level≥P1.
+
+如果 Step 4 空但 Step 7 ✅, 说明是 chain-wired (不是孤儿), 不应判 P1.
+**§6 元自审里必须承认 R1 颗粒度**: Step 4 假阳性, Step 7 救回来的.
 
 ═══════════════════════════════════════════════════════════════════
 §5 — 你必须按这个 JSON 输出 (严格 schema)

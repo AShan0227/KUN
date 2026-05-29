@@ -1355,11 +1355,69 @@ class Orchestrator:
 
         # LT.TOOLS-GAP: inject skill_directive so LLM sees tool schemas.
         extra_segments = [skill_directive] if skill_directive else []
+        # X.O Bug-1 fix — the production WS entry now extracts the actual
+        # changed file paths from the executor's tool-call history and
+        # feeds them into the X.I-3-FIX ProductionEntryDiffChecker. Before
+        # this, the checker received actual=[] and always emitted
+        # 'no_declaration' — exactly the failure mode the X.O self-audit
+        # caught.
+        #
+        # The data source is the LoopResult's final_messages. Since we
+        # need the messages BEFORE calling run_long_task (chicken-and-egg),
+        # we capture them via a post-run pre-pass and call run_long_task
+        # again? No — simpler: run_long_task now accepts a callback that
+        # the orchestrator calls with the executor's running message log.
+        # For minimal-touch impl in this commit we extract from the
+        # outcome's loop_result.final_messages after the run, then
+        # re-evaluate diff there. The fix lives inside run_long_task
+        # itself so the WS path doesn't have to know the details — but the
+        # entry STILL must pass actual_production_entry_changes so the
+        # plumbing is end-to-end. We do a 2-phase: first run, then post-
+        # run extract + emit a delayed event.
         outcome = await lt_orch.run_long_task(
             task_ref,
             on_event=_on_lt_event,
             extra_system_segments=extra_segments,
+            actual_production_entry_changes=None,  # X.O: post-run via outcome
         )
+        # X.O: now extract from outcome and emit a post-run diff event so
+        # subscribers see the verdict with REAL actual paths, not None.
+        try:
+            from kun.engineering.extract_changed_paths import (
+                extract_changed_paths_from_messages,
+            )
+            from kun.governance.production_entry_diff_check import (
+                ProductionEntryDiffChecker,
+            )
+
+            actual_paths = extract_changed_paths_from_messages(
+                outcome.loop_result.final_messages or []
+            )
+            declared_paths = list(
+                getattr(task_ref.spec, "production_entry_changes_required", []) or []
+            ) if task_ref.spec is not None else []
+            post_report = ProductionEntryDiffChecker.check_against_actual(
+                declared_paths, actual_paths
+            )
+            collected.append(
+                OrchestratorEvent(
+                    kind="long_task.production_entry_diff_postrun",
+                    data={
+                        "verdict": post_report.verdict,
+                        "declared": post_report.declared,
+                        "actual": post_report.actual,
+                        "matched": post_report.matched,
+                        "declared_but_unchanged": post_report.declared_but_unchanged,
+                        "changed_but_undeclared": post_report.changed_but_undeclared,
+                        "has_drift": post_report.has_drift,
+                    },
+                )
+            )
+        except Exception as e:
+            log.warning(
+                "orchestrator.post_run_diff_failed",
+                error=f"{type(e).__name__}: {e}",
+            )
 
         # Replay collected events into the main stream
         for ev in collected:

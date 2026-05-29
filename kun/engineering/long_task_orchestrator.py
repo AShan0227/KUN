@@ -771,6 +771,28 @@ class LongTaskOrchestrator:
                         "overall_score": round(report.overall_score, 3),
                         "failed_disciplines": failed_disciplines,
                     }
+                    # X.O Bug-2 fix — push to cockpit-visible cache so
+                    # /discipline/recent returns real data instead of [].
+                    try:
+                        from kun.api.discipline_store import (
+                            record_discipline_report,
+                        )
+
+                        record_discipline_report(
+                            task_id=task_id,
+                            overall_score=round(report.overall_score, 3),
+                            n_total=len(report.checks),
+                            n_passed=sum(
+                                1 for c in report.checks if c.passed
+                            ),
+                            failed_disciplines=failed_disciplines,
+                        )
+                    except Exception as cache_err:  # pragma: no cover
+                        log.warning(
+                            "long_task_orchestrator.discipline_cache_push_failed",
+                            task_id=task_id,
+                            error=f"{type(cache_err).__name__}: {cache_err}",
+                        )
                 except Exception as e:  # pragma: no cover
                     log.warning(
                         "long_task_orchestrator.discipline_enforcer_failed",

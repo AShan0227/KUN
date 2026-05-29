@@ -485,12 +485,25 @@ async def get_writes_wired_status() -> dict[str, Any]:
 
 @router.get("/discipline/recent")
 async def get_recent_discipline_checks(limit: int = 20) -> dict[str, Any]:
-    """最近 EngineeringDiscipline 检查结果."""
+    """最近 EngineeringDiscipline 检查结果 (V7 §4.3 + Phase F).
+
+    X.O fix: previously this endpoint returned hardcoded ``[]`` even
+    when the enforcer was firing (X.I-0a wired it into LongTaskOrchestrator
+    via the bundle, but no persistence path existed). Now it reads from
+    the process-local discipline_store cache populated by
+    LongTaskOrchestrator at run completion.
+    """
+    from kun.api.discipline_store import list_recent_discipline_reports
+
+    reports = list_recent_discipline_reports(limit=limit)
     return {
-        "discipline_checks": [],
-        "total": 0,
+        "discipline_checks": reports,
+        "total": len(reports),
         "limit": limit,
-        "note": "V7 Phase E.A stub. Phase E.B 接 Claude Code 工程纪律 enforcer 日志.",
+        "data_source": (
+            "process-local discipline_store cache (V7 §4.3 enforcer); "
+            "X.P will migrate to PG"
+        ),
     }
 
 
