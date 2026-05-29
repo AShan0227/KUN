@@ -76,6 +76,11 @@ from kun.agents.supervisor.plan_review_service import (
 from kun.agents.trifecta import TrifectaCoordinator
 from kun.core.logging import get_logger
 from kun.datamodel.task import TaskRef
+from kun.engineering.methodology_runtime_loader import (
+    MethodologyRuntimeSelector,
+    TaskContext,
+    render_for_system_prompt,
+)
 from kun.external_supervisor.service import ExternalSupervisorService
 from kun.integration.external_supervisor import make_external_supervisor_verify
 from kun.integration.external_supervisor_critique import render_critique_prompt
@@ -210,6 +215,15 @@ class LongTaskOrchestrator:
         trifecta_coordinator: TrifectaCoordinator | None = None,
         trifecta_every_n_steps: int | None = None,
         trifecta_n_future_candidates: int = 3,
+        # V7 §12 RSI runtime methodology selector (X.G.RSI-CLOSED-LOOP).
+        # When wired, at the start of each long-task run we score the
+        # `seeds/methodologies/` entries against the task context and inject
+        # the top-K rendered text as an extra system-prompt segment. This is
+        # the read-side of the closed loop — promoted capabilities actually
+        # influence subsequent tasks.
+        # None (default) = no methodology injection — backward compatible.
+        methodology_selector: MethodologyRuntimeSelector | None = None,
+        methodology_top_k: int = 3,
     ) -> None:
         # --- Auto-wire external_supervisor_verify from service when not given ---
         # If both are passed, the explicit verify wins (caller is being deliberate).
@@ -241,6 +255,14 @@ class LongTaskOrchestrator:
         self._trifecta_coordinator = trifecta_coordinator
         self._trifecta_every_n_steps = trifecta_every_n_steps
         self._trifecta_n_future_candidates = trifecta_n_future_candidates
+
+        # --- V7 §12 RSI runtime methodology selector ---
+        if methodology_top_k < 0:
+            raise ValueError(
+                f"methodology_top_k must be >= 0; got {methodology_top_k!r}"
+            )
+        self._methodology_selector = methodology_selector
+        self._methodology_top_k = methodology_top_k
 
         # --- Stash heartbeat tuning so we can rebuild per-task when needed ---
         # When plan_review_writer_factory is provided, run_long_task rebuilds
@@ -406,6 +428,51 @@ class LongTaskOrchestrator:
             for segment in extra_system_segments:
                 if segment and segment.strip():
                     system_prompt = system_prompt + "\n\n" + segment
+
+        # ---- 1c. (Optional) Inject runtime methodology context (V7 §12) ----
+        # Pull from MethodologyRuntimeSelector if wired. Closes the RSI loop:
+        # promoted seeds in seeds/methodologies/ actually reach the LLM.
+        if (
+            self._methodology_selector is not None
+            and self._methodology_top_k > 0
+        ):
+            method_ctx = TaskContext(
+                task_type=getattr(task_ref.meta, "task_type", "") or "",
+                goal_statement=anchor_dict.get("goal_statement", "")
+                if anchor_dict
+                else "",
+                goal_keywords=(anchor_dict or {}).get("success_criteria", []),
+                extra_keywords=[user_text],
+            )
+            try:
+                chosen = self._methodology_selector.select_for(
+                    method_ctx, top_k=self._methodology_top_k
+                )
+                rendered = render_for_system_prompt(chosen)
+                if rendered:
+                    system_prompt = system_prompt + "\n\n" + rendered
+                    await _emit(
+                        "long_task.methodology_injected",
+                        {
+                            "task_id": task_id,
+                            "n_methodologies": len(chosen),
+                            "methodologies": [
+                                {
+                                    "title": m.title,
+                                    "topic": m.topic,
+                                    "score": round(m.score, 3),
+                                    "file_path": m.file_path,
+                                }
+                                for m in chosen
+                            ],
+                        },
+                    )
+            except Exception as e:
+                log.warning(
+                    "long_task_orchestrator.methodology_inject_failed",
+                    task_id=task_id,
+                    error=f"{type(e).__name__}: {e}",
+                )
 
         initial_messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},

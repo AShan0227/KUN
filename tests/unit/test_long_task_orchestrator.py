@@ -1510,3 +1510,183 @@ async def test_trifecta_and_critique_can_stack(
     # Trifecta at calls 3, 6
     ticks = sink.all_of("long_task.trifecta_tick")
     assert [ev.data["call_count"] for ev in ticks] == [3, 6]
+
+
+# --------------------------------------------------------------------------- #
+# Methodology runtime injection (V7 §12 RSI — X.G.RSI-CLOSED-LOOP)             #
+# --------------------------------------------------------------------------- #
+
+
+def _make_methodology_selector(tmp_dir):
+    from kun.engineering.methodology_runtime_loader import (
+        MethodologyRuntimeSelector,
+        load_methodologies,
+    )
+
+    return MethodologyRuntimeSelector(load_methodologies(tmp_dir))
+
+
+async def test_methodology_inject_appends_to_system_prompt_and_emits_event(
+    tmp_path,
+) -> None:
+    """When a selector is wired + a yaml seed matches the task, the system
+    prompt sent to the LLM contains the rendered methodology block AND
+    we emit long_task.methodology_injected."""
+    seeds = tmp_path / "methodologies"
+    seeds.mkdir()
+    (seeds / "test_seed.yaml").write_text(
+        """
+topic: testing-acceptance
+title: real PG e2e proves wiring not just unit
+description: chain real PG e2e tests to prove production wiring closure
+trigger:
+  - condition: new database-backed subsystem
+action:
+  - write one ultimate e2e that walks all subsystems
+  - assert row counts after the run
+applicability:
+  - V7 Phase X.B / X.C wiring proofs
+confidence: high
+""",
+        encoding="utf-8",
+    )
+
+    selector = _make_methodology_selector(seeds)
+    assert selector.n_entries == 1
+
+    llm = _FakeLLM([_final_response("done")])
+    store = _CheckpointStore()
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        methodology_selector=selector,
+        methodology_top_k=1,
+        enable_recursive_planner=False,
+    )
+    ref = _ref_with_anchor(
+        goal_statement="prove production wiring closure via real PG e2e",
+        success_criteria=["real PG row delta", "e2e wiring proof"],
+    )
+    sink = _EventCollector()
+
+    outcome = await orch.run_long_task(ref, on_event=sink)
+    assert outcome.loop_result.status == "final"
+
+    # The first LLM call's system message must contain the injected block
+    assert len(llm.calls) >= 1
+    system_msg = next((m for m in llm.calls[0] if m.get("role") == "system"), None)
+    assert system_msg is not None
+    assert "RSI 进化产物" in system_msg["content"]
+    assert "real PG e2e proves wiring not just unit" in system_msg["content"]
+
+    # Event was emitted
+    injected = sink.all_of("long_task.methodology_injected")
+    assert len(injected) == 1
+    assert injected[0].data["n_methodologies"] == 1
+    assert injected[0].data["methodologies"][0]["title"].startswith("real PG")
+
+
+async def test_methodology_inject_skipped_when_no_match(tmp_path) -> None:
+    """If no methodology matches the task context, nothing is injected and
+    no event is emitted — but main task still completes normally."""
+    seeds = tmp_path / "methodologies"
+    seeds.mkdir()
+    (seeds / "unrelated.yaml").write_text(
+        """
+topic: quantum-physics
+title: schrodinger wavefunction collapse pattern
+description: handle wave function collapse in quantum experiments
+trigger:
+  - condition: building quantum interpreter
+action:
+  - do not use in classical computing
+applicability:
+  - quantum compilers
+confidence: low
+""",
+        encoding="utf-8",
+    )
+    selector = _make_methodology_selector(seeds)
+
+    llm = _FakeLLM([_final_response("done")])
+    store = _CheckpointStore()
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        methodology_selector=selector,
+        methodology_top_k=3,
+        enable_recursive_planner=False,
+    )
+    sink = _EventCollector()
+    outcome = await orch.run_long_task(_ref_with_anchor(), on_event=sink)
+
+    assert outcome.loop_result.status == "final"
+    # No injection event
+    assert sink.all_of("long_task.methodology_injected") == []
+    # System prompt did NOT contain the RSI header
+    system_msg = next((m for m in llm.calls[0] if m.get("role") == "system"), None)
+    assert system_msg is not None
+    assert "RSI 进化产物" not in system_msg["content"]
+
+
+async def test_methodology_top_k_zero_disables_inject(tmp_path) -> None:
+    """methodology_top_k=0 disables injection even if selector is wired."""
+    seeds = tmp_path / "methodologies"
+    seeds.mkdir()
+    (seeds / "match.yaml").write_text(
+        """
+topic: testing-acceptance
+title: real PG wiring closure
+description: real PG e2e test pattern
+trigger:
+  - condition: new test
+action:
+  - write e2e
+applicability:
+  - V7 Phase X.G
+confidence: high
+""",
+        encoding="utf-8",
+    )
+    selector = _make_methodology_selector(seeds)
+    assert selector.n_entries == 1
+
+    llm = _FakeLLM([_final_response("done")])
+    store = _CheckpointStore()
+    orch = LongTaskOrchestrator(
+        llm_invoker=llm,
+        tool_executor=_passthrough_tools,
+        checkpoint_writer=store.writer,
+        checkpoint_reader=store.reader,
+        checkpoint_status_marker=store.marker,
+        methodology_selector=selector,
+        methodology_top_k=0,
+        enable_recursive_planner=False,
+    )
+    sink = _EventCollector()
+    outcome = await orch.run_long_task(
+        _ref_with_anchor(goal_statement="real PG wiring"), on_event=sink
+    )
+    assert outcome.loop_result.status == "final"
+    assert sink.all_of("long_task.methodology_injected") == []
+
+
+async def test_methodology_negative_top_k_raises_at_construction(tmp_path) -> None:
+    store = _CheckpointStore()
+    llm = _FakeLLM([_final_response("done")])
+    with pytest.raises(ValueError, match="methodology_top_k must be >= 0"):
+        LongTaskOrchestrator(
+            llm_invoker=llm,
+            tool_executor=_passthrough_tools,
+            checkpoint_writer=store.writer,
+            checkpoint_reader=store.reader,
+            checkpoint_status_marker=store.marker,
+            methodology_top_k=-1,
+            enable_recursive_planner=False,
+        )
