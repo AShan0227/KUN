@@ -1,0 +1,69 @@
+topic: opt-in-feature-must-be-consumed
+title: "新加的 opt-in 运行时特性必须在某个 production entry 真被 consume, 否则就是孤儿"
+description: |
+  V7 §16 hard rule 的实操推论: "class signature 加了 opt-in 参数" 不等于
+  "feature 已 wire". 默认 OFF + caller 没传 = 永远不会 fire = 孤儿.
+
+  V7 X.E (trifecta), X.G (methodology), DIST-D (critique) 三次连续犯
+  同一种错: 在 LongTaskOrchestrator class 加了 ctor 参数, 写了 unit test
+  显式传, 写了 dogfood script 显式传, 但生产 WS 入口 (orchestrator.py)
+  从来不传. 真用户跑任务时, 这些 feature 永远是孤儿.
+
+  X.H 把这条升级成强约束:
+
+  当一个新的 opt-in 运行时特性被加入 LongTaskOrchestrator 时, **必须**
+  同时:
+    (a) 加入 `LongTaskRuntimeBundle` 字段
+    (b) `as_orchestrator_kwargs()` 返回 dict 包含它
+    (c) `LongTaskRuntimeBundle.from_env_defaults` 有 env 开关 + 默认 OFF
+    (d) `tests/integration/test_production_entry_runtime_bundle.py` 的
+        `EXPECTED_BUNDLE_KEYS` 集合包含它 (CI 强制)
+    (e) `enabled_flags` 反映真激活状态, 不是 nominal "wired"
+
+  做完 (a)-(e) → CI 跑过 → 这个 feature 自动从 WS 真用户路径上 fire (env
+  开关一开就 fire), 不再依赖任何人记得改 orchestrator.py.
+
+trigger:
+  - condition: "在 LongTaskOrchestrator.__init__ 加新参数 (opt-in 或必传)"
+  - condition: "想让 KUN 某个 capability 在长任务里被 caller 主动开启"
+  - condition: "写 'KUN_V7_X_ENABLED=true' 这类 env 开关"
+  - condition: "考虑用 default None 表示'未启用'的可选 service"
+
+action:
+  - "Step 1: 在 LongTaskRuntimeBundle 加 frozen 字段 (默认 None / 0 / False, 视语义而定)"
+  - "Step 2: as_orchestrator_kwargs() 返回 dict 加入该字段"
+  - "Step 3: from_env_defaults 加 env 开关读取 + precondition 校验 (如果 precondition fail, enabled_flags 反映 False)"
+  - "Step 4: EXPECTED_BUNDLE_KEYS 加入新字段, CI 测试自动跑"
+  - "Step 5: docs/PRODUCTION_ENTRIES.md 不动 (entry 不变, 只是 bundle 内容多了一项)"
+  - "Step 6: 写 dev_log 时贴 grep 输出证明新 feature 在生产 entry 真被 spread 进去"
+
+anti_pattern:
+  - "加 ctor 参数 default None, 写 unit test 显式传, 不进 bundle → 必然成孤儿"
+  - "用 env 直接读 (`os.environ.get(...)` 在 service 里), 不走 bundle → 跨 entry 行为不一致"
+  - "在 dogfood script 里直接 instantiate orchestrator 传新参数, 算 '生产已 wire' → 脚本不是生产 entry"
+  - "在 retrospective 写 'feature wired' 因为 class 改了 → R1 + R5 是这条的根因"
+  - "把 fixture caller (test 文件) 当 production caller — test 文件可以传任意 kwargs, 不影响 audit"
+
+evidence:
+  - dogfood: "X.H 自检 (2026-05-29) 在 X.E / X.G / DIST-D 三个 release 上发现同一失败模式, 3 个 feature 全部 nominal wired / 实际 production 孤儿"
+  - source: "kun/engineering/long_task_runtime_bundle.py — LongTaskRuntimeBundle frozen + as_orchestrator_kwargs + from_env_defaults"
+  - source: "kun/engineering/orchestrator.py 现在 spread `**runtime_bundle.as_orchestrator_kwargs()`"
+  - source: "tests/integration/test_production_entry_runtime_bundle.py 8 个 CI 守卫测试"
+  - source: "docs/PRODUCTION_ENTRIES.md 生产入口清单"
+  - source: "docs/dev_logs/X.H-self-audit-rootcause.md R3 + R4 chapters"
+
+confidence: high
+applicability:
+  - "LongTaskOrchestrator 新 opt-in 特性"
+  - "未来 X.H 以后任何 'KUN_V7_X_ENABLED' env 开关"
+  - "需要按租户 / 按 risk_level 动态开关的特性"
+  - "成本敏感的特性 (默认 OFF, 真用要 opt-in)"
+
+related_methodologies:
+  - "production_path_wiring_audit_before_claim"
+  - "grep_verify_before_assume"
+  - "service_module_not_wired_to_runtime_audit"
+  - "feature_complete_flag_default_off"
+
+distilled_from: "X.H self-audit wave"
+created_at: "2026-05-29"

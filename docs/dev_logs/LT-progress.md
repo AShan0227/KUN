@@ -1787,3 +1787,102 @@ TrifectaCoordinator 不再是孤儿.
 | Trifecta production-path | 孤儿 (只有 trifecta/ 自己) | **接入 LongTaskOrchestrator** |
 | 真 LLM trifecta cost (累计) | $0.00144 (v12) | + $0.00078 (v13) |
 
+---
+
+## V7 Phase X.H · Self-Audit & Fix Wave
+
+> 用户用 V7 §16.6 攻击者审计 6 维拷问 X.E + X.G + X.F. 我自检后发现 5
+> 个根因, 写完 4 个 commit 修. 详细 root-cause 分析在
+> `docs/dev_logs/X.H-self-audit-rootcause.md`.
+
+### X.H-1 · PROD-ENTRY-WIRE (commit `5270750`)
+
+**找到的失败**: X.E (trifecta) / X.G (methodology) / DIST-D (critique
+cadence) 三个 release 在 LongTaskOrchestrator 加了 ctor 参数 + 写了
+unit test 显式传 + dogfood script 显式传, 但生产 WS 入口
+(orchestrator.py:1312) 从来不传. 真用户跑任务时三个 feature 全是孤儿.
+
+**修复**:
+- 新 `kun/engineering/long_task_runtime_bundle.py` (~280 行):
+  LongTaskRuntimeBundle frozen dataclass + from_env_defaults factory +
+  as_orchestrator_kwargs 投影
+- `kun/engineering/orchestrator.py:1312` 现在 spread
+  `**runtime_bundle.as_orchestrator_kwargs()` — 真生产 WS 入口接全部
+  X.E / X.G / DIST-D 特性
+- `tests/integration/test_production_entry_runtime_bundle.py` (8 tests):
+  **AST 解析 orchestrator.py** 强制 audit. 未来 engineer 加新 opt-in
+  特性但忘了 plumb → CI 失败. 不再静默孤儿.
+
+**Production-path grep proof**:
+```
+$ grep -n "as_orchestrator_kwargs" kun/engineering/orchestrator.py
+1335:    **runtime_bundle.as_orchestrator_kwargs(),
+```
+
+### X.H-2 · TICKET-VERIFY (commit `71e13c0`)
+
+**找到的失败**: CapabilityLifecycleService.validate_transition 只校验
+`user_approval_ticket_id != None`. 任何字符串都过 — 攻击者可以伪造
+ticket id 直接 PRODUCTION transition.
+
+**修复**:
+- `kun/governance/capability_lifecycle.py`:
+  + `TicketVerifier` Protocol 强校验 ticket 真存在 + status ∈ {answered,
+    fallback_selected} + selected_option == 'approve'
+  + service 收 verifier 参数; verifier 返 False 或 raise → 转
+    CapabilityLifecycleError
+  + 无 verifier wired → 保留 legacy 行为 (backward compat, 但 production
+    callers 必须传)
+- 新 `kun/integration/collab_ticket_verifier.py`:
+  InMemoryQueueTicketVerifier 对 InMemoryCollaborationQueue 真校验
+- 新 `tests/integration/test_v7_ticket_verify_attacker_matrix.py` (12 tests):
+  攻击者矩阵: 假 ticket id / open / waiting / escalated / cancelled /
+  closed / answered-hold / fallback-hold / fallback-approve / 正常
+  approve / verifier 爆炸 / legacy 无 verifier
+
+### X.H-3 · TRACE (commit `b7cb07b`)
+
+**找到的失败**: 拿一行 task_checkpoints PG row, 无法回答"这次任务用了
+哪些 methodologies / trifecta tick 在哪步 fire 的 / 哪个 ticket gate 的".
+V7 §16.6 攻击审计要求"production capability 怎么 promote 的因果可追", 之前
+缺这个.
+
+**修复**:
+- `kun/agents/executor/exec_loop.py`:
+  ctor 新 `runtime_features_provider: Callable[[], dict]`, 每个 checkpoint
+  save 时调它把当前 runtime trace 写进 `working_state["runtime_features_used"]`
+- `kun/engineering/long_task_orchestrator.py`:
+  `self._runtime_features_trace` mutable dict, 每 `run_long_task`
+  开始时 reset; methodology 注入时写 methodologies 字段; trifecta
+  tick wrapper 写 trifecta_ticks 字段
+- 新 `tests/unit/test_runtime_feature_trace.py` (4 tests): trace 真落
+  / 多次 tick 累积 / 无 wire 不漏写 / 多次 run 不串扰
+
+### X.H-4 · META (本 commit)
+
+**5 根因 + 自检过程产物**:
+
+- `docs/dev_logs/X.H-self-audit-rootcause.md` — 完整 R1-R5 根因分析:
+  - R1 grep-verify 颗粒度错 (audit methodology 自己写错了)
+  - R2 没生产入口 inventory
+  - R3 opt-in 默认 OFF + 无消费者强制
+  - R4 测试 fixture 形态等于生产 caller
+  - R5 retrospective 不查 entry-level
+- `docs/PRODUCTION_ENTRIES.md` (新) — 生产入口 inventory, 唯一权威源
+- `seeds/methodologies/production_path_wiring_audit_before_claim.yaml`
+  (新) — X.B.MF-1 答应过要写但从没真写, X.H 补上
+- `seeds/methodologies/opt_in_feature_must_be_consumed_at_production_entry.yaml`
+  (新) — X.H 蒸出的方法论: opt-in 特性必须接 bundle, 不接 = 孤儿
+
+### X.H wave 数字
+
+| 指标 | 起点 (X.G 终) | 终点 (X.H 终) |
+|---|---|---|
+| Tests | 2093 | **2117** (+24) |
+| Ruff | green | green |
+| Commits | — | 4 (`5270750` + `71e13c0` + `b7cb07b` + 本 META) |
+| 生产 WS 入口接 X.E + X.G + DIST-D 特性 | ❌ 孤儿 | ✅ **bundle 强制** |
+| V7 §12.2 ticket gate 真校验 | honor-system | **12 攻击者测试全过** |
+| checkpoint 可追因果链 | working_state empty | **runtime_features_used 真落** |
+| `seeds/methodologies/` | 31 yaml | **33 yaml** (+ X.H 蒸出 2 张) |
+
