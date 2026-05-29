@@ -290,8 +290,15 @@ def _build_real_llm_trifecta_coordinator(*, llm_router: Any) -> Any:
     Past/present/future each call llm_router.invoke with a tiny prompt;
     cheap model is preferred for cost control. Failure in any line is
     swallowed by the coordinator (V7 §12.4 protocol).
+
+    X.I-4 — the past hook is now backed by bug_root_cause_cases (with
+    an LLM augmentation when DB returns no matches). Free if DB has
+    matches; falls back to a tiny LLM call otherwise.
     """
     from kun.agents.trifecta import TrifectaCoordinator
+    from kun.integration.bug_root_cause_lookup import (
+        lookup_similar_root_cause_cases,
+    )
     from kun.interface.llm.base import LLMMessage, LLMRequest
 
     async def _call(prompt: str, max_tokens: int = 120) -> tuple[str, float]:
@@ -306,7 +313,23 @@ def _build_real_llm_trifecta_coordinator(*, llm_router: Any) -> Any:
         except Exception as e:
             return f"trifecta_call_failed: {type(e).__name__}: {e}", 0.0
 
-    async def _past_hook(task_id, _recent):
+    async def _past_hook(task_id, recent):
+        # X.I-4 — try bug_root_cause_cases lookup first (zero cost).
+        try:
+            findings = await lookup_similar_root_cause_cases(
+                tenant_id="default",
+                recent_steps=recent or [],
+                limit=3,
+            )
+            if findings:
+                return (findings, 0.0, None)
+        except Exception as e:
+            log.warning(
+                "long_task_runtime_bundle.past_hook_lookup_failed",
+                task_id=task_id,
+                error=f"{type(e).__name__}: {e}",
+            )
+        # No matches in DB → small LLM call as fallback
         text, cost = await _call(
             f"V7 §12.4 trifecta past line. task={task_id}. "
             f"Find 1 potential root-cause signal in 1 sentence ≤40 字.",

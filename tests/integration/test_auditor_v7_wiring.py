@@ -219,12 +219,15 @@ async def test_heuristic_risk_classification_p2_when_all_pass(
             "R4_self_referential": True,
         },
     )
+    # X.I-1 — pass a real production-reachable target_module so the
+    # heuristic auditor's auto-escalation (P2→P1 when orphan) doesn't fire.
     report_id = await emit_heuristic_auditor_report_for_capability(
         capability_id="cap-test",
         decision=decision,
         target_stage="candidate",
         tenant_id="t-heur",
         test_pass_rate=0.98,
+        target_module="LongTaskOrchestrator",
     )
     assert report_id is not None
     ar_rows = [r for r in added if isinstance(r, AuditorReportRow)]

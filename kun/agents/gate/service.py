@@ -110,6 +110,56 @@ def _check_debrief(
     return True, f"debrief_ok quality={quality:.2f}"
 
 
+def _check_production_path_reachability(
+    experiment: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    """X.I-2 — V7 §15 RSI gate must reject candidates whose target_module
+    isn't reachable from any production entry.
+
+    Without this check, an LLM could propose a "runtime capability" that
+    only its own tests / dogfood scripts call — exactly the X.H failure
+    mode. The check uses the shared production_path_traceability
+    primitive against the entries listed in docs/PRODUCTION_ENTRIES.md.
+
+    Returns (passed, reason). Passed=True when reachable or when the
+    candidate is a non-code methodology (kind='methodology' / topic
+    starts with 'docs:').
+    """
+    if experiment is None:
+        return True, "no_experiment"
+    # Methodologies (yaml seeds) are docs-side capabilities — they don't
+    # need a production caller; their consumer is the
+    # MethodologyRuntimeSelector at long-task start.
+    kind = (experiment or {}).get("kind")
+    if kind == "methodology":
+        return True, "methodology_skips_reachability"
+    # Backward compat — only enforce R6 when caller explicitly sets
+    # kind='runtime' (or 'capability'). Legacy callers without a kind
+    # pass through unaffected.
+    if kind not in {"runtime", "capability"}:
+        return True, f"reachability_only_enforced_for_runtime_kind got={kind!r}"
+    target_module = (experiment or {}).get("target_module")
+    if not target_module or target_module == "unknown":
+        return True, "no_target_module_to_check"
+    try:
+        from kun.governance.production_path_traceability import (
+            check_symbol_reachable,
+        )
+
+        reach = check_symbol_reachable(str(target_module))
+    except Exception as e:
+        # Don't block on traceability failure — log and pass through.
+        return True, f"reachability_check_skipped: {type(e).__name__}: {e}"
+    if reach.reachable:
+        return True, (
+            f"production_path_reachable entries={len(reach.entries_hit)}"
+        )
+    return False, (
+        f"production_path_unreachable: {target_module!r} not found at any "
+        f"production entry. X.H failure mode: nominal wired but orphan."
+    )
+
+
 def _check_self_referential(experiment: dict[str, Any] | None) -> tuple[bool, str]:
     """L3.5 强化: 两条独立检查 →
       1. experiment.requires_human_review 字段
@@ -206,6 +256,14 @@ class GateService:
         reasons.append(reason)
         # R4 不直接 reject; 转人审
         self_referential = not ok
+
+        # X.I-2 R6 — production-path reachability. Reject when the candidate
+        # target_module can't be found at any production entry.
+        ok, reason = _check_production_path_reachability(experiment)
+        rule_results["R6_production_reachability"] = ok
+        reasons.append(reason)
+        if not ok:
+            all_passed = False
 
         if not all_passed:
             decision = GateDecision(

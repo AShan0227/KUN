@@ -135,6 +135,21 @@ class TaskSpec(BaseModel):
     fallback_plan: str | None = None
     parent_task_id: str | None = None
     blocking_task_ids: list[str] = Field(default_factory=list)
+    # V7 Phase X.I-3 — production_entry_changes_required.
+    # Any task that intends to "接 runtime" (wire a new capability into
+    # the orchestrator / daemon / etc) must list the production-entry
+    # files it will modify. Mission Director compares this against the
+    # actual diff at tick time (X.I-3 verdict=drifting if mismatch).
+    # Default empty = task does not touch production entries.
+    production_entry_changes_required: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Paths (relative to repo root) of production entries this task "
+            "will modify. Validated by MD against PRODUCTION_ENTRIES.md. "
+            "If non-empty, X.I-3 enforces that the listed entries are also "
+            "actually changed in the diff."
+        ),
+    )
 
 
 class TaskRef(BaseModel):

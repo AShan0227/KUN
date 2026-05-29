@@ -136,9 +136,21 @@ async def llm_audit_capability(
         return None
 
     # Render the V7 §16.6 prompt
+    from kun.governance.production_path_traceability import (
+        check_symbol_reachable,
+    )
     from kun.integration.external_supervisor_critique import (
         render_auditor_prompt,
     )
+
+    # X.I-1 — compute production-path reachability automatically; feed
+    # the result to the LLM auditor so it doesn't have to grep itself.
+    reach = check_symbol_reachable(capability_name)
+    production_path_check = {
+        "symbol": reach.symbol,
+        "reachable": reach.reachable,
+        "entries_hit": reach.entries_hit,
+    }
 
     prompt = render_auditor_prompt(
         capability_name=capability_name,
@@ -146,6 +158,7 @@ async def llm_audit_capability(
         code_paths_to_audit=code_paths_to_audit,
         test_files_to_audit=test_files_to_audit,
         recent_dogfood_summary=recent_dogfood_summary,
+        production_path_check=production_path_check,
     )
 
     # Run the audit

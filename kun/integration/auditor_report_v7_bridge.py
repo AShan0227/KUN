@@ -170,6 +170,39 @@ async def emit_heuristic_auditor_report_for_capability(
         target_module or f"capability:{capability_id}"
     )
 
+    # X.I-1 — heuristic auditor also runs reachability for symbol-shaped
+    # target_module hints. Dotted module paths (e.g. "kun.test.target.x")
+    # are NOT checked — the symbol-grep primitive operates on Python
+    # symbol names, not import paths. If unreachable, auto-escalate:
+    # risk_level ≥ P1, allow_release=False, must_fix gains the X.I-1 note.
+    if (
+        target_module
+        and "." not in target_module
+        and target_module not in {"unknown", ""}
+    ):
+        try:
+            from kun.governance.production_path_traceability import (
+                check_symbol_reachable,
+            )
+
+            reach = check_symbol_reachable(target_module)
+            if not reach.reachable:
+                if risk_level == "P2":
+                    risk_level = "P1"
+                allow_release = False
+                bypass_methods = [
+                    *bypass_methods,
+                    f"X.I-1 production-path unreachable: '{target_module}' "
+                    f"not found at any production entry "
+                    f"(orchestrator.py / daemon.py / idle_batch.py / api/*.py)",
+                ]
+        except Exception as e:  # pragma: no cover
+            log.warning(
+                "auditor_report_v7_bridge.reachability_check_failed",
+                capability_id=capability_id,
+                error=f"{type(e).__name__}: {e}",
+            )
+
     try:
         from datetime import UTC, datetime
 

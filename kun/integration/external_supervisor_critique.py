@@ -175,7 +175,7 @@ AUDITOR_SYSTEM_PROMPT_TEMPLATE = """\
 
 请从攻击者视角检查方案、代码、测试、真实运行路径和产物.
 
-重点检查 (V7 §16.2 6 反模式衍生):
+重点检查 (V7 §16.2 6 反模式衍生 + X.I-1 production-path traceability):
 
 1. 文档声称 done 的能力, 真实生产路径是否必经?
 2. 是否存在旧入口、脚本入口、调试入口、直接渲染入口绕过核心能力?
@@ -184,6 +184,7 @@ AUDITOR_SYSTEM_PROMPT_TEMPLATE = """\
 5. 每个产物是否有 trace: 输入、决策、门禁、评分、失败原因、修复记录?
 6. 如果某能力缺失, 系统是降级并阻断, 还是继续假装成功?
 7. 真实用户最关心的结果, 是否被端到端验收覆盖?
+8. **(Angle 8 / X.I-1)** **Production-path traceability**: 这个能力是否能从 docs/PRODUCTION_ENTRIES.md 列的真生产入口 (orchestrator.py / daemon.py / idle_batch.py / api/main.py / api/ws.py / api/chat.py) 至少一处真实例化或调用? 如果"在 class signature 中存在"但"没有任何生产入口调用 (只有 test / dogfood script 调)", 则**这是 X.H 自检的核心失败模式**: nominal wired 但实际孤儿. 必须 risk_level≥P1, allow_release=false, must_fix 加上 "wire to at least one production entry".
 
 ═══ 审计输入 ═══
 {audit_input_block}
@@ -212,6 +213,7 @@ def render_auditor_prompt(
     code_paths_to_audit: list[str],
     test_files_to_audit: list[str],
     recent_dogfood_summary: str | None = None,
+    production_path_check: dict[str, object] | None = None,
 ) -> str:
     """Render the V7 §16.6 auditor hat prompt for External Supervisor.
 
@@ -248,6 +250,26 @@ def render_auditor_prompt(
         parts.append("")
         parts.append("=== 最近 dogfood 表现 ===")
         parts.append(recent_dogfood_summary[:1500])
+    if production_path_check:
+        parts.append("")
+        parts.append("=== X.I-1 Production-path Reachability (auto-computed) ===")
+        parts.append(
+            f"symbol audited: {production_path_check.get('symbol', '?')}"
+        )
+        parts.append(
+            f"reachable from production entry? "
+            f"{production_path_check.get('reachable', False)}"
+        )
+        entries_hit = production_path_check.get("entries_hit") or []
+        if entries_hit:
+            parts.append("entries hit:")
+            for ent in entries_hit[:8]:
+                parts.append(f"  - {ent}")
+        else:
+            parts.append(
+                "entries hit: NONE — this is the X.H 'class wired but orphan' "
+                "pattern. risk_level must reflect this."
+            )
     audit_input_block = "\n".join(parts)
 
     return AUDITOR_SYSTEM_PROMPT_TEMPLATE.format(audit_input_block=audit_input_block)
