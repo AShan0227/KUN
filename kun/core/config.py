@@ -40,8 +40,11 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # Qdrant
-    qdrant_url: str = "http://localhost:16333"
+    qdrant_url: str = "http://127.0.0.1:16333"
     qdrant_api_key: str | None = None
+    embedding_provider: Literal["local", "openai", "voyage", "qdrant_fastembed"] = "local"
+    embedding_model: str | None = None
+    embedding_timeout_sec: float = 6.0
 
     # NATS
     nats_url: str = "nats://localhost:4222"

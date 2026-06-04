@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from pydantic import BaseModel, Field
 
 from kun.context.assets import AssetKind, LayeredAsset
+from kun.context.importance import ImportanceScorer
 from kun.context.storage import AssetStore, get_store
 from kun.datamodel.task import TaskRef
 
@@ -50,8 +51,14 @@ class ContextPack(BaseModel):
 class ContextPacker:
     """Select relevant context assets without calling an LLM."""
 
-    def __init__(self, store: AssetStore | None = None) -> None:
+    def __init__(
+        self,
+        store: AssetStore | None = None,
+        *,
+        importance_scorer: ImportanceScorer | None = None,
+    ) -> None:
         self._store = store or get_store()
+        self._importance_scorer = importance_scorer or ImportanceScorer()
 
     async def pack(
         self,
@@ -61,8 +68,8 @@ class ContextPacker:
         kinds: Iterable[AssetKind] | None = None,
         limit: int = 5,
     ) -> ContextPack:
-        query_terms = _task_terms(task_ref)
-        if not query_terms:
+        query = _task_query(task_ref)
+        if not _terms(query):
             return ContextPack()
 
         candidates: list[LayeredAsset] = []
@@ -73,7 +80,7 @@ class ContextPacker:
 
         scored: list[tuple[float, LayeredAsset]] = []
         for asset in candidates:
-            score = _score_asset(asset, query_terms)
+            score = _score_asset(asset, query, self._importance_scorer)
             if score > 0:
                 scored.append((score, asset))
 
@@ -95,7 +102,7 @@ class ContextPacker:
         )
 
 
-def _task_terms(task_ref: TaskRef) -> set[str]:
+def _task_query(task_ref: TaskRef) -> str:
     parts = [
         task_ref.meta.task_type,
         task_ref.meta.success_criteria_short,
@@ -109,26 +116,18 @@ def _task_terms(task_ref: TaskRef) -> set[str]:
                 " ".join(task_ref.spec.required_tools),
             ]
         )
-    return _terms(" ".join(parts))
+    return " ".join(parts)
 
 
-def _score_asset(asset: LayeredAsset, query_terms: set[str]) -> float:
-    asset_terms = _terms(
-        " ".join(
-            [
-                asset.asset_kind,
-                " ".join(asset.tags),
-                asset.l2_summary or "",
-                " ".join(str(v) for v in asset.l1_metadata.values()),
-            ]
-        )
-    )
-    overlap = len(query_terms & asset_terms)
-    if overlap == 0:
+def _score_asset(
+    asset: LayeredAsset,
+    query: str,
+    scorer: ImportanceScorer | None = None,
+) -> float:
+    score = (scorer or ImportanceScorer()).score(asset=asset, query=query)
+    if score.semantic <= 0:
         return 0.0
-    tag_bonus = len(query_terms & {tag.lower() for tag in asset.tags})
-    access_bonus = min(asset.access_count, 10) / 20.0
-    return float(overlap + tag_bonus + access_bonus)
+    return score.overall
 
 
 def _metadata_summary(asset: LayeredAsset) -> str:
