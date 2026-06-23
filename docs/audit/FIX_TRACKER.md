@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 48 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 90
+**总计 173 项** — ✅done 49 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 89
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -176,7 +176,7 @@
 | F154 | low | fix | ⬜ | 单测非密闭: mission_director 单测真连 localhost:55432，错误被静默吞掉 | `kun/control_plane/mission_director.py:135-148` |
 | F155 | low | fix | ⬜ | 5 个有生产调用方的模块在 unit+integration 双套件下覆盖率为 0% | `kun/governance/evidence_ledger.py:1` |
 | F156 | low | fix | ⬜ | spark_world_run.py 注释与代码互相矛盾, env 操作埋下回切陷阱 | `scripts/spark_world_run.py:49-60` |
-| F157 | low | fix | ⬜ | bug_root_cause_cases 唯一性约束：ORM 用 UniqueConstraint，迁移用 uniq | `kun/core/orm.py:708` |
+| F157 | low | fix | ✅ | bug_root_cause_cases 唯一性约束：ORM 用 UniqueConstraint，迁移用 uniq | `kun/core/orm.py:708` |
 | F158 | low | fix | ⬜ | events 子系统 emit 在生产 outbox worker 路径（确认为真产数，非测试） | `kun/core/events.py:160` |
 | F159 | low | fix | ⬜ | watchtower 与 task 生命周期 emit 在生产路径（确认为真产数） | `kun/engineering/orchestrator.py:683` |
 | F160 | low | fix | ⬜ | 依赖真 PG/LLM 的脚本在 Docker 停机时无优雅降级，且无任何脚本对'是否真跑了真实依赖'留下可审计的运行 | `scripts/dogfood_v9.py:133-167` |

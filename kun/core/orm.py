@@ -713,7 +713,11 @@ class BugRootCaseRow(Base):
             "length(fix_pattern) > 0",
             name="bug_case_fix_pattern_not_empty",
         ),
-        UniqueConstraint("tenant_id", "trace_signature", name="ix_bug_cases_signature"),
+        # Audit F157: migration 0013 creates this as a *unique index*
+        # (op.create_index(..., unique=True)), not a unique constraint. Declaring
+        # a UniqueConstraint here made the ORM diverge from the DB so `alembic check`
+        # would flag a drift. Match the migration with a unique Index.
+        Index("ix_bug_cases_signature", "tenant_id", "trace_signature", unique=True),
         Index("ix_bug_cases_hit_count", "tenant_id", "hit_count"),
     )
 

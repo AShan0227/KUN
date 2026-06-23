@@ -2043,9 +2043,9 @@
       "detail": "ORM BugRootCaseRow 用 `UniqueConstraint('tenant_id','trace_signature', name='ix_bug_cases_signature')`（orm.py:708-710），生成的是表级 UNIQUE 约束（pg_constraint 里的 unique constraint）。迁移 0013 用 `op.create_index('ix_bug_cases_signature', ..., unique=True)`（0013:94-99），生成的是 unique INDEX（pg_class 里的索引，不在 pg_constraint）。二者在 Postgres 里是不同对象：autogenerate 会判定为 drift（缺一个 UNIQUE constraint、多一个独立 unique index）。功能上都能防重，但名字撞在同一个 'ix_bug_cases_signature' 上，且若有人按 ORM 跑 create_all 再叠迁移会冲突。影响有限（同库只会建其中一条路径），属约束形态不一致。建议两边统一为 UniqueConstraint 或 unique index。",
       "evidence": "orm.py:708 UniqueConstraint(\"tenant_id\", \"trace_signature\", name=\"ix_bug_cases_signature\") ；0013:94 op.create_index(\"ix_bug_cases_signature\", \"bug_root_cause_cases\", [...], unique=True)",
       "source": "extra:db_schema_orm_migration_drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "4a69d33",
+      "notes": "ORM 把 bug_root_cause_cases 的 UniqueConstraint(ix_bug_cases_signature) 改为 unique Index，对齐迁移 0013 的 create_index(unique=True)，消除 alembic check 漂移。+2 漂移守卫测试。"
     },
     {
       "id": "F158",
