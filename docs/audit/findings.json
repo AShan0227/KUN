@@ -1588,9 +1588,9 @@
       "detail": "本次 diff 的修复方向正确(Opus 4.7 起 temperature/top_p/top_k 已移除, 送了即 400), 当前 router 只实例化 opus-4-7/sonnet-4-6/haiku-4-5 三个模型所以暂时够用。但 `if not any(s in self.model_id for s in (\"opus-4-7\",))` 是脆弱的黑名单: 一旦把 top tier 升到 claude-opus-4-8 或更新模型(同样拒绝 temperature), 400 立刻回归, 而且报错点离配置点很远难排查。同时 caller 传的 temperature(spark run 传 0.4)被静默丢弃, 无任何日志。建议: 改成模型能力表/白名单(明确哪些旧模型还接受 temperature), 丢参时 log.debug 一行, 并在注释里写清 4.7+ 全系移除而非\"deprecated\"。",
       "evidence": "diff: + if not any(s in self.model_id for s in (\"opus-4-7\",)):\n+     kwargs[\"temperature\"] = request.temperature —— 黑名单只含 opus-4-7 一个子串",
       "source": "diff-and-llm",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "73c55b4",
+      "notes": "temperature 黑名单从仅 opus-4-7 扩为 _NO_SAMPLING_PARAM_MODELS(opus-4-7/4-8/fable-5/mythos)，按 claude-api 权威信息；抽 _accepts_temperature。+8 测试。"
     },
     {
       "id": "F123",

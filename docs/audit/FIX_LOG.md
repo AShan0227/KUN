@@ -36,3 +36,4 @@
 2026-06-23 F010/F011/F014/F015 📐 — needs-design 并发/多副本一致性方案 docs/audit/proposals/concurrency-multi-replica.md（CAS/lease 续期/ledger 序列/单写者）
 2026-06-23 F124 ✅ — finish_reason 映射(refusal→error/ctx→length)，失败不再伪装成功，+9 测试
 2026-06-23 F092/F121/F136/F097/F138 ✅ — 核实为已修项的重复(F046/F024/F020/F055/F005)，标 done 引用
+2026-06-23 F122 ✅ — temperature 拒绝模型集补全(opus-4-8/fable-5/mythos)，防误发 400，+8 测试

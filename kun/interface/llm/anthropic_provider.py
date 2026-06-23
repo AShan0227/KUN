@@ -58,6 +58,24 @@ _PRICING: dict[str, dict[str, float]] = {
 }
 
 
+# Model families that REMOVED sampling params — sending `temperature` 400s
+# (claude-api skill, 2026-06): Fable 5 / Mythos 5 / Opus 4.7 / Opus 4.8. Matched
+# as substrings of the model id. Audit F122: the old check only listed
+# "opus-4-7", so opus-4-8 / fable-5 would still send temperature and 400.
+_NO_SAMPLING_PARAM_MODELS: tuple[str, ...] = (
+    "opus-4-7",
+    "opus-4-8",
+    "fable-5",
+    "mythos-5",
+    "mythos-preview",
+)
+
+
+def _accepts_temperature(model_id: str) -> bool:
+    """Whether this model still accepts the `temperature` sampling param."""
+    return not any(s in model_id for s in _NO_SAMPLING_PARAM_MODELS)
+
+
 def _map_finish_reason(
     stop_reason: str | None, *, has_tool_calls: bool
 ) -> Literal["stop", "tool_use", "length", "error"]:
@@ -170,9 +188,9 @@ class AnthropicProvider(LLMProvider):
             "max_tokens": request.max_tokens,
             "messages": messages,
         }
-        # Newer models (e.g. claude-opus-4-7) deprecated `temperature` and the
-        # API 400s if it is sent. Only include it for models that still accept it.
-        if not any(s in self.model_id for s in ("opus-4-7",)):
+        # Fable 5 / Opus 4.7 / 4.8 removed `temperature` and 400 if it is sent
+        # (audit F122). Only include it for models that still accept it.
+        if _accepts_temperature(self.model_id):
             kwargs["temperature"] = request.temperature
         if system_text:
             kwargs["system"] = system_text

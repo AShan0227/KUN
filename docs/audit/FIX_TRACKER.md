@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 33 ｜ ⛔blocked 0 ｜ 📐needs-design 25 ｜ ⬜pending 115
+**总计 173 项** — ✅done 34 ｜ ⛔blocked 0 ｜ 📐needs-design 25 ｜ ⬜pending 114
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -140,7 +140,7 @@
 | F119 | medium | fix | ⬜ | .env.example 与代码实际读取的环境变量严重脱节(约 50 个未文档化) | `.env.example:1` |
 | F120 | medium | fix | ⬜ | Dockerfile: --frozen 失败时静默回退到非锁定安装 + 镜像缺 seeds/ 目录 | `Dockerfile:19` |
 | F121 | medium | fix | ✅ | 定价表过时: Opus 4.7 高估 3 倍、Haiku 4.5 低估 4 倍, cache 写入未计费 | `kun/interface/llm/anthropic_provider.py:42-58` |
-| F122 | medium | fix | ⬜ | temperature 修复用硬编码子串黑名单, opus-4-8/后续模型不覆盖且静默丢参 | `kun/interface/llm/anthropic_provider.py:151-154` |
+| F122 | medium | fix | ✅ | temperature 修复用硬编码子串黑名单, opus-4-8/后续模型不覆盖且静默丢参 | `kun/interface/llm/anthropic_provider.py:151-154` |
 | F123 | medium | fix | ⬜ | CodexMcpProvider 工具调用示例与解析器格式矛盾 → bad_json 静默丢工具调用 | `kun/interface/llm/codex_mcp_provider.py:462-465` |
 | F124 | medium | fix | ✅ | finish_reason 把 refusal/上下文超限折叠为 "stop", 失败被当成功完成 | `kun/interface/llm/anthropic_provider.py:201-203` |
 | F125 | medium | fix | ⬜ | [文档漂移] ADR-023 Mode A 'NATS 订阅 + 独立进程持续监管' 实为 stub runner  | `kun/external_supervisor/runner.py:44` |
