@@ -49,6 +49,21 @@ ADR-024 的闭环 = **检测 → 策略 → 安全实验 → 门禁落地 → �
 8. **调度 sweeper（F050）**。把 `PromotionTimeoutSweeper.sweep()` 接进 daemon 治理 pass / idle-batch，注入 DB-backed reader/writer/emitter。
 9. **落库脊柱表其余项（F042）**：`diagnostic_records`(rcdh 落库)、`goal_anchors`(director 写库)。
 
+## 2b. 就绪未接线的旁路组件（F063/F064/F065/F099/F101/F103/F104/F114）
+
+与主链同根的"引擎/组件写好了但生产零接线"实例——接通时按对应环一并落地，落地前不应宣称其能力可用：
+
+| ID | 现状（已核实） | 接线条件 |
+|----|------|------|
+| **F063** | `kun/context/storage.py:82` `RedisAssetStore` 真实，但全仓无运行时写入方/接线 —— Context 资产层实际只有进程内内存实现，重启即丢、跨进程不一致 | 把资产读写接到 `RedisAssetStore`(生产装配注入)，加跨进程持久化测试。 |
+| **F064** | `kun/governance/capability_lifecycle.py` CANARY→PRODUCTION 审批校验器写好但从未接线，生产晋级路径仍是 honor-system | 第 4 环门禁落地时，把 lifecycle 审批校验接进 promotion 路径(与 F041 capability_writer 同处)。 |
+| **F065** | `kun/governance/evidence_ledger.py` 是空 stub：`append` 只打日志、`get_trace` 返回 [] —— ADR-024 审计链不存在(已有契约测试 F155 固化 stub 行为) | 第 5 环落 `evidence_ledger` 表(0011)真读写；契约测试(F155)同步升级断言。 |
+| **F099** | `kun/evaluation/industry_suite.py` L6 行业评测套件孤儿且度量浅 | 与 F114 一并接入(或明确归档)。 |
+| **F101** | `kun/governance/{resource_quota.py:86,exploration_penalty.py:102}` `ResourceQuota`/`ExplorationPenalty` 从未注入生产 Strategist，且单进程内存态 | 第 2 环策略消费者装配 Strategist 时注入这二者(DB backed)；F146 已让 Strategist 透传真实 tenant，接线即生效。 |
+| **F103** | `kun/engineering/proactive_tools.py:300` Layer 1a 强制工具分支只 `seen.add` 从不真正 dispatch，反而抑制同名技能的关键词触发 | 让 Layer 1a 真 dispatch(或不抢占 seen)，加"强制工具确被调用"测试。 |
+| **F104** | `kun/integration/prompt_ab.py:195,305` `PromptABService` 调 Strategist 私有 `_emit_and_adjust`，且模块生产无调用方 | 改调公开 API + 接生产调用方(第 2/5 环 PromptAB 读 enabled capability)；F091/F146 已为 `_emit_and_adjust` 加 tenant 形参。 |
+| **F114** | `kun/evaluation/__init__.py` L6 评测框架(446 行)生产调用方为零，仅测试引用 | 接 L6 评测入生产度量，或明确标注为"离线评测工具、非生产路径"(同 F099)。 |
+
 ## 3. 总体风险 / 排期建议
 
 - **不要一次接完**：按上面 1→9 单步上线，每步加集成测试断言"数据真流动了"。第 3 环(安全实验)是最大不确定项，建议先影子运行。
@@ -56,7 +71,7 @@ ADR-024 的闭环 = **检测 → 策略 → 安全实验 → 门禁落地 → �
 - **诚信优先**：在任一环真正接通前，PROGRESS/decisions 里相关"已闭环/已达成"措辞应保持 F047/F049/F050 那样的如实标注，避免 L5"RSI 真闭合 ✅"的过度宣称。
 
 ## 4. 本方案覆盖的 findings
-F021, F022, F025, F039, F040, F041, F042, F089, F091, F100, F117, F127（标 needs-design 指向本文件）；F050 已在 ADR-024 注记并在第 8 步接线。
+F021, F022, F025, F039, F040, F041, F042, F063, F064, F065, F089, F091, F099, F100, F101, F103, F104, F114, F117, F127（标 needs-design 指向本文件）；F050 已在 ADR-024 注记并在第 8 步接线。F063/F064/F065/F099/F101/F103/F104/F114 见 §2b。
 
 > F089 落地说明：在第 4/5 环接通 gate→`runtime_capabilities` enable 路径时，`enable_capability` 的自指门禁改为：metadata 由权威源保证、缺失即 fail-closed；`human_approval_token` 对照真实签发/验证方案校验（不再"非空即过"）。当前路径无生产调用方，无 live 风险。
 

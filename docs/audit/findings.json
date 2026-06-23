@@ -821,9 +821,9 @@
       "detail": "get_store() 永远返回 InMemoryAssetStore；build_redis_store()/set_store() 在整个代码库无任何调用方(已 grep 确认)，docstring『Defaults to InMemoryAssetStore if Redis URL isn't reachable』名不副实——根本不会尝试 Redis。后果：(1) seeds 在 api/main.py lifespan 注入的资产只存在于 API 进程内存，control_plane daemon 等其他进程的 ContextPacker 永远空手；(2) 重启全丢；(3) seeds.py docstring 承诺『new assets accumulate on top from real task outcomes (idle-batch methodology distill)』，但全库除 seeds 外没有任何代码调用 store.put()/LayeredAsset.build——所谓积累的方法论资产不存在，context preheat 永远只有种子下限。(4) 附带：lifespan 里 `settings().default_tenant_id or \"u-sylvan\"` 意味着 production 多租户场景只给 u-sylvan 种种子，真实租户 ContextPack 恒为空。ADR-018 §16.7 的统一资产层目前是个空架子，建议要么落 Postgres/Redis 后端并接线，要么在文档里降级承诺。",
       "evidence": "storage.py:171-173: `if _store is None: _store = InMemoryAssetStore()`；grep 全库 set_store/build_redis_store 仅 storage.py 自身定义；grep AssetStore/LayeredAsset 在 engineering/agents/api 下 0 命中(写入方不存在)",
       "source": "core-data",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "09e8fbb",
+      "notes": "RedisAssetStore 从未接线、无运行时写入方；引擎/组件就绪但生产零接线，并入 docs/audit/proposals/rsi-mainline-wiring.md（接通对应环时一并落地，落地前不宣称可用）。"
     },
     {
       "id": "F064",
@@ -834,9 +834,9 @@
       "detail": "X.H.TICKET-VERIFY 专门修过 '攻击者可传任意字符串当 user_approval_ticket_id' 的洞, 交付了 CollaborationQueueVerifier(kun/integration/collab_ticket_verifier.py), 但 grep 全仓库(含 tests)该类零实例化。两个生产构造点 capability_lifecycle_v7_bridge.py:141-145 与 capability_lifecycle_db.py 的 usage 模板都不传 ticket_verifier, 服务回退到 legacy 非空检查(capability_lifecycle.py:196-203 注释自己承认 'production callers MUST pass a verifier' 却没人传)。等价问题还有 Gate R2: _check_diagnostic 只验 diagnostic_record dict 里 diagnostic_id 字段非空(gate/service.py:88-90), 不回查 DB, 调用方传 {\"diagnostic_id\": \"fake\"} 即可绕过 '拒绝裸修'。修过的洞实际还开着, 且同一 honor-system 模式在 Gate 复制了一份。",
       "evidence": "grep CollaborationQueueVerifier 全仓库仅 collab_ticket_verifier.py 自身 + capability_lifecycle.py docstring; v7_bridge.py:141-145 构造时只传 transition_emitter; capability_lifecycle.py:199-202 '...falls back to the legacy \"non-empty string\" check'",
       "source": "gov-sec-watch",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "09e8fbb",
+      "notes": "CANARY→PRODUCTION 审批校验器写好但从未接线(honor-system)；引擎/组件就绪但生产零接线，并入 docs/audit/proposals/rsi-mainline-wiring.md（接通对应环时一并落地，落地前不宣称可用）。"
     },
     {
       "id": "F065",
@@ -847,9 +847,9 @@
       "detail": "作为 'Gate 准入决策 + RSI 合议 + 审计回放' 三个场景的数据底座, append() 里只有 `# TODO L1.3: 真写入 evidence_ledger 表` + log.debug 后返回一个没人能查到的 entry_id; get_trace() 硬编码返回 []。kun/core/orm.py:636 的 EvidenceLedgerRow 表已建(alembic 0011 宣称实装), 但本模块从不写它, 也没有别的写入方。模块 docstring 与 governance/__init__.py 都把它描述为已实装('这些模块在 L1.2/L1.3 阶段获得真实现'), 与事实不符。后果: external_supervisor_debrief_id / diagnostic_id 等 '必填' 审计字段没有落点, RCDH backward 回溯与复盘读到的永远是空 trace。",
       "evidence": "evidence_ledger.py:51-59 `# TODO L1.3: 真写入...` return entry_id(仅 log); :62-65 `async def get_trace(...): return []`; governance/__init__.py:11 '这些模块在 L1.2...阶段获得真实现'",
       "source": "gov-sec-watch",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "09e8fbb",
+      "notes": "evidence_ledger 空 stub(append 只打日志/get_trace 返回[])；引擎/组件就绪但生产零接线，并入 docs/audit/proposals/rsi-mainline-wiring.md（接通对应环时一并落地，落地前不宣称可用）。"
     },
     {
       "id": "F066",
@@ -1289,9 +1289,9 @@
       "detail": "IndustryEvalSuite 与 build_shopify_eval_suite 在全仓只被单测引用,无任何生产调用,即 ADR-011 与 ADR-026 所称行业上线跑标准任务达标即能力卡冷启动校准 在生产从未发生。即便跑度量也很弱: Shopify 任务多用 keys_present 只判顶层 product 或 orders 键存在而不校验内容;缺 id 用例用空 golden 加 exact_key_match,_metric_exact_key_match 对空 golden 直接返回 1.0(industry_suite.py 第 97 到 102 行),该任务永远满分恒过等于不度量。建议接入真实 KUN executor 定期回归,把度量升级到字段级断言并删除恒过的空 golden 用例。",
       "evidence": "_metric_exact_key_match 在 golden 为空时返回 1.0;缺 id 用例 golden 为空且 metric 为 exact_key_match;生产侧搜索仅命中 tests 目录",
       "source": "eng-eval",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "09e8fbb",
+      "notes": "L6 行业评测套件孤儿且度量浅；引擎/组件就绪但生产零接线，并入 docs/audit/proposals/rsi-mainline-wiring.md（接通对应环时一并落地，落地前不宣称可用）。"
     },
     {
       "id": "F100",
@@ -1315,9 +1315,9 @@
       "detail": "两个 L4.5/L4.6 护栏(防 RSI token 爆炸、防失败策略死循环)是 StrategistService 的可选 DI 参数(strategist/service.py:602-603, 默认 None), 全仓库 grep `resource_quota=`/`exploration_penalty=` 零注入点 — prompt_ab.py:206 与 e2e demo 都是裸 StrategistService()。即使将来注入, 两者状态都是进程内 dict/deque(代码注释自己说 'production 用 Redis' 但没做), 多进程部署(近期 commit 735f6bd 已在向多进程演进)下每个 worker 各算各的预算, 限流可被进程数放大 N 倍, 重启即清零。当前状态: 防爆护栏既没装上, 装上也防不住多进程。",
       "evidence": "grep -rn 'resource_quota=|exploration_penalty=' kun/ scripts/ 除 self._ 赋值外 0 命中; resource_quota.py:11 '全 in-memory state (production 用 Redis)'; prompt_ab.py:206 `self._strategist = strategist or StrategistService()`",
       "source": "gov-sec-watch",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "09e8fbb",
+      "notes": "ResourceQuota/ExplorationPenalty 从未注入生产 Strategist；引擎/组件就绪但生产零接线，并入 docs/audit/proposals/rsi-mainline-wiring.md（接通对应环时一并落地，落地前不宣称可用）。"
     },
     {
       "id": "F102",
@@ -1341,9 +1341,9 @@
       "detail": "intent 层通过 required_tools_hint 传入本任务必须用的技能。Layer 1a 循环对每个 required_skill 检查注册后只执行 seen.add，注释自承会用空字典 dispatch，但代码里根本没有 dispatch 调用。结果是被 intent 层标为必需的技能既没在 1a 真正执行，又因为进了 seen 集合而在 Layer 1b 关键词扫描的 in seen continue 处被跳过，即把本该触发的技能彻底静默掉。这与该模块把主动用工具的责任从 LLM 移到工程化的设计目标相悖：越是 intent 层确信需要的工具，越不会被预跑。属于技能调度机制的正确性 bug。",
       "evidence": "for required_skill in required_tools_hint 循环体内仅 seen.add 无 dispatch；Layer 1b 起始 if trigger.skill_id in seen continue",
       "source": "integration-skills",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "09e8fbb",
+      "notes": "proactive Layer 1a 只标 seen 从不 dispatch，反抑制同名技能；引擎/组件就绪但生产零接线，并入 docs/audit/proposals/rsi-mainline-wiring.md（接通对应环时一并落地，落地前不宣称可用）。"
     },
     {
       "id": "F104",
@@ -1354,9 +1354,9 @@
       "detail": "propose_variants 的 fallback 路径里直接 await self._strategist._emit_and_adjust 调用 StrategistService 的私有方法（前导下划线）。注释承认是有意复用私有 helper，但这是跨模块对私有 API 的硬耦合：Strategist 一旦重构该 helper 名或签名，prompt A/B 会在运行时炸而非编译期暴露。同时全仓 grep 确认 PromptABService 与 prompt_ab 仅被 tests/unit/test_integration_prompt_ab.py 引用，无任何生产入口（orchestrator、daemon、api、idle_batch）调用，按本仓 V7 16.6 自己的孤儿判定标准这是名义接通实则孤儿的整模块（563 行）。要么接生产入口，要么明确标注实验性。",
       "evidence": "adjusted 经 await self._strategist._emit_and_adjust 取得；grep PromptABService 与 prompt_ab 生产侧 0 命中，仅测试文件",
       "source": "integration-skills",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "09e8fbb",
+      "notes": "PromptABService 调 Strategist 私有 _emit_and_adjust 且生产无调用方；引擎/组件就绪但生产零接线，并入 docs/audit/proposals/rsi-mainline-wiring.md（接通对应环时一并落地，落地前不宣称可用）。"
     },
     {
       "id": "F105",
@@ -1484,9 +1484,9 @@
       "detail": "evaluation/ 自述为 'L6/ADR-011/ADR-026 行业评测集框架'(电商 Shopify golden tasks + 能力卡冷启动校准)，方向与当前 L6 商业化演进一致，属计划中模块而非遗弃物。但全仓 grep 显示生产代码对它的 import 为零，唯二调用方是 tests/unit/test_evaluation_industry_suite.py 和 test_ecommerce_shopify_eval.py——即'EvalReport 喂 capability_card 冷启动'的链路尚未接线，框架处于'有测试、无消费者'状态。风险在于进度评估失真：若按文件存在性盘点会误判 L6 评测能力已具备。建议在 L6 落地清单里显式挂'evaluation→capability_card 写入链路'为未完成项，或在 PROGRESS.md 标注其 wiring 状态。",
       "evidence": "grep -rln 'from kun.evaluation' 全仓(排除自身) 仅命中 tests/unit/test_evaluation_industry_suite.py 和 tests/unit/test_ecommerce_shopify_eval.py; evaluation/__init__.py 自述 \"跑完一次 KUN.execute(task)...喂 capability_card 冷启动\" 但无生产 caller",
       "source": "architecture",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "09e8fbb",
+      "notes": "evaluation/ L6 框架生产调用方为零；引擎/组件就绪但生产零接线，并入 docs/audit/proposals/rsi-mainline-wiring.md（接通对应环时一并落地，落地前不宣称可用）。"
     },
     {
       "id": "F115",
@@ -1497,9 +1497,9 @@
       "detail": "落地程度分层评估：(1) ExternalSupervisorService.analyze_observation 真实（LocalLLMProvider 调 ollama、JSON 解析+文本兜底、信号量限并发），且通过 integration/external_supervisor.py 真接入生产长任务链路（plan review drift verify + 每 N 步 critique，orchestrator.py:1285-1338 lazy build）——这部分是真的，但是 in-process 运行，不是 ADR-023 承诺的独立进程物理隔离（模型隔离保留了：不走主 router）。(2) 独立进程 runner（python -m kun.external_supervisor）是占位：启动→健康检查一次→等 SIGTERM，注释自认 'L2.5 实装: 订阅 NATS …——目前: 健康检查一次 + 等待 SIGTERM'，起来后什么都不做。(3) mode_a_gate_review / mode_b_task_debrief / check_self_aggrandizement 三个上层 API 除 __init__ re-export 外 0 生产 caller——ADR-023 'Gate 准入逻辑必须读 debrief' 不成立。(4) docker-compose.dev.yml 只有 profile-gated ollama service（165-175 行），ADR 承诺的 external-supervisor service 容器不存在；承诺的 supervisor_observations 表无任何迁移。(5) 默认 external_supervisor_enabled=False（config.py:70），生产默认整条监督线关闭。",
       "evidence": "runner.py:46-53 '主循环占位 — L2.4 只是 stub … 目前: 健康检查一次 + 等待 SIGTERM'；grep mode_a_gate_review/mode_b_task_debrief 生产 caller 0 命中；grep supervisor_observations 仅命中 supervisor/base.py 一处 docstring",
       "source": "rsi-claims",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "09e8fbb",
+      "notes": "External Supervisor 独立进程占位 stub、Mode A/B 零调用；引擎/组件就绪但生产零接线，并入 docs/audit/proposals/external-supervisor.md（接通对应环时一并落地，落地前不宣称可用）。"
     },
     {
       "id": "F116",

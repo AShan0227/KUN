@@ -69,4 +69,6 @@ ADR-023 把"独立进程"标为 Phase 2 目标态。
 - fail-close 守卫落地后，回填 decisions.md ADR-023 的状态注记(目前 F047 标"未实现")。
 
 ## 5. 覆盖 findings
-F030, F031, F032（标 needs-design 指向本文件）；F047 已在 ADR-023 注记。
+F030, F031, F032, F115（标 needs-design 指向本文件）；F047 已在 ADR-023 注记。
+
+> F115：`kun/external_supervisor/runner.py:46` 主循环自承是 L2.4 占位 stub（"健康检查一次 + 等 SIGTERM"，行 11-12 注释明示 NATS 订阅 + Mode A/B 路由是 L2.5 未做），Mode A/B 零调用、配套基础设施缺。即本方案 §3 步骤 4（选项 B：独立进程 runner + NATS 订阅）要落地的对象——与 F030/F125 同根，落地条件见上表。

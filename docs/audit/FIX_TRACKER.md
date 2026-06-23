@@ -2,9 +2,9 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 67 ｜ ⛔blocked 0 ｜ 📐needs-design 54 ｜ ⬜pending 52
+**总计 173 项** — ✅done 67 ｜ ⛔blocked 0 ｜ 📐needs-design 63 ｜ ⬜pending 43
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
-剩余 pending+fix：41（high 0 / medium 36 / low 5）
+剩余 pending+fix：32（high 0 / medium 27 / low 5）
 
 | id | sev | class | 状态 | 标题 | 文件 |
 |---|---|---|---|---|---|
@@ -82,9 +82,9 @@
 | F055a | medium | fix | ⬜ | 实现 prompt-cache/成本超支/rubric-p50 特性时，重新加回对应指标并接 emit | `kun/core/metrics.py` |
 | F061 | medium | fix | ✅ | 同名函数重复定义，前一组被静默遮蔽成死代码且语义不同 | `kun/control_plane/daemon.py:5633` |
 | F062 | medium | fix | 📐 | worker_pool>1 时 runner 在线程池内无锁迭代共享 dict，与 finish 写入并发可抛 Ru | `kun/control_plane/runtime.py:1326-1341` |
-| F063 | medium | fix | ⬜ | Context 资产层实际只有进程内内存实现：RedisAssetStore 从未接线，资产重启即丢、跨进程不一致， | `kun/context/storage.py:166-174` |
-| F064 | medium | fix | ⬜ | CANARY→PRODUCTION 审批校验器写好了但从未接线, 生产路径仍是 '非空字符串即通过' 的 honor | `kun/governance/capability_lifecycle.py:196` |
-| F065 | medium | fix | ⬜ | evidence_ledger 是空 stub: append 只打日志, get_trace 返回空列表, ADR | `kun/governance/evidence_ledger.py:51` |
+| F063 | medium | fix | 📐 | Context 资产层实际只有进程内内存实现：RedisAssetStore 从未接线，资产重启即丢、跨进程不一致， | `kun/context/storage.py:166-174` |
+| F064 | medium | fix | 📐 | CANARY→PRODUCTION 审批校验器写好了但从未接线, 生产路径仍是 '非空字符串即通过' 的 honor | `kun/governance/capability_lifecycle.py:196` |
+| F065 | medium | fix | 📐 | evidence_ledger 是空 stub: append 只打日志, get_trace 返回空列表, ADR | `kun/governance/evidence_ledger.py:51` |
 | F066 | medium | fix | 📐 | 零鉴权 + 租户/用户身份三处硬编码, 审批按钮可被任意访问者点击执行真实副作用 | `frontend/src/app/page.tsx:40` |
 | F067 | medium | fix | 📐 | layout 与 control-plane 页面使用的 kun-* 组件样式类在整个仓库 (含全部 git 历史) | `frontend/src/app/globals.css:1` |
 | F068 | medium | fix | ✅ | PG skip guard 字符串匹配错误，13 个约束测试在无 Docker 时失败而非跳过 | `tests/integration/test_v7_xb_pg_check_constraint` |
@@ -118,12 +118,12 @@
 | F096 | medium | fix | ✅ | TaskMeta 的 L1 字段 complexity / priority_profile / estimated | `kun/datamodel/task.py:57-62` |
 | F097 | medium | fix | ✅ | 5 个 ADR-016 指标定义后从未被更新，其中含安全告警指标 tenant_cross_access_attem | `kun/core/metrics.py:19-92` |
 | F098 | medium | architecture | ⬜ | ImportanceScorer(中央重要度打分器)无任何生产调用方，packer 另起炉灶用重复的词法打分 | `kun/context/importance.py:43` |
-| F099 | medium | fix | ⬜ | L6 行业评测套件是孤儿且度量很浅,无法支撑真实在度量 | `kun/evaluation/industry_suite.py:164` |
+| F099 | medium | fix | 📐 | L6 行业评测套件是孤儿且度量很浅,无法支撑真实在度量 | `kun/evaluation/industry_suite.py:164` |
 | F100 | medium | fix | 📐 | RCDH 诊断、PromotionTimeoutSweeper、promotion advance 均无生产接线 — | `kun/governance/rcdh.py:303` |
-| F101 | medium | fix | ⬜ | ResourceQuota / ExplorationPenalty 从未注入生产 Strategist, 且为单进 | `kun/governance/resource_quota.py:86` |
+| F101 | medium | fix | 📐 | ResourceQuota / ExplorationPenalty 从未注入生产 Strategist, 且为单进 | `kun/governance/resource_quota.py:86` |
 | F102 | medium | fix | ⬜ | 红队套件只打 mock, 从未对准真实系统 — security/ 子系统整体是测试夹具 | `kun/cli.py:1876` |
-| F103 | medium | fix | ⬜ | proactive_dispatch 的 Layer 1a 强制工具分支只标记 seen 从不真正 dispatch | `kun/engineering/proactive_tools.py:301` |
-| F104 | medium | fix | ⬜ | PromptABService 直接调用 Strategist 私有方法 _emit_and_adjust，且整个模 | `kun/integration/prompt_ab.py:305` |
+| F103 | medium | fix | 📐 | proactive_dispatch 的 Layer 1a 强制工具分支只标记 seen 从不真正 dispatch | `kun/engineering/proactive_tools.py:301` |
+| F104 | medium | fix | 📐 | PromptABService 直接调用 Strategist 私有方法 _emit_and_adjust，且整个模 | `kun/integration/prompt_ab.py:305` |
 | F105 | medium | fix | 📐 | 主工作区 WS 协议覆盖不全: 长任务双线交互的 5 种服务端消息类型被静默丢弃 (后端对应链路同样未接通) | `frontend/src/app/page.tsx:68-99` |
 | F106 | medium | fix | 📐 | 导航包含两个 404 死链 (/billing、/account), 用对象字面量 href 绕过 typedRou | `frontend/src/app/layout.tsx:34-42` |
 | F107 | medium | fix | 📐 | cockpit 与 control-plane 页面无请求取消/竞态防护, 每个输入框 keystroke 触发整组 | `frontend/src/app/cockpit/page.tsx:206-229` |
@@ -133,8 +133,8 @@
 | F111 | medium | fix | ⬜ | integration marker 覆盖率 6/26，marker 隔离机制形同虚设 | `tests/integration/` |
 | F112 | medium | fix | ⬜ | 六组循环依赖靠延迟 import/TYPE_CHECKING 压制，engineering↔skills 为模块级硬 | `/Users/petrarain/鲲/kun/skills/calibration.py:39` |
 | F113 | medium | fix | ⬜ | daemon.py 6,927 行：12 个类 5 类职责堆在单文件，属真实复杂度但缺模块边界 | `/Users/petrarain/鲲/kun/control_plane/daemon.py:1` |
-| F114 | medium | fix | ⬜ | evaluation/ 446 行 L6 评测框架生产调用方为零，仅测试文件引用 | `/Users/petrarain/鲲/kun/evaluation/__init__.py:1` |
-| F115 | medium | fix | ⬜ | External Supervisor（ADR-023）：service 真实但'独立进程'模式是占位，Mode A | `kun/external_supervisor/runner.py:45` |
+| F114 | medium | fix | 📐 | evaluation/ 446 行 L6 评测框架生产调用方为零，仅测试文件引用 | `/Users/petrarain/鲲/kun/evaluation/__init__.py:1` |
+| F115 | medium | fix | 📐 | External Supervisor（ADR-023）：service 真实但'独立进程'模式是占位，Mode A | `kun/external_supervisor/runner.py:45` |
 | F116 | medium | fix | ⬜ | e2e_rsi_demo.py 是半剧本：链路中段与验证证据写死；fixture_only 强制标注未实装 | `scripts/e2e_rsi_demo.py:195` |
 | F117 | medium | fix | 📐 | RCDH 诊断引擎与 heavy-drift 后续动作未接线：rsi_trigger 只是落库字符串 | `kun/governance/rcdh.py:303` |
 | F118 | medium | fix | ⬜ | 锁定的运行时依赖含 7 个已知 CVE(starlette/urllib3/idna/mako) | `uv.lock:1` |
