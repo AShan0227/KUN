@@ -1900,9 +1900,9 @@
       "detail": "_emit_and_adjust 中 ExplorationPenalty.filter_candidates 与 ResourceQuota.check_and_record_experiment 的 tenant_id 都写死 'default'(代码注释自己承认'从 emitter caller 拿 tenant 不现实')。strategy_search_request payload 里明明带 tenant_id 字段却没有透传。后果：所有租户的实验数量共享同一个 default 配额桶(一个租户可耗尽全局额度，或反之配额形同虚设)，失败 signature 惩罚也记错租户。修复很小：propose_candidates 从 request['tenant_id'] 取值传入。",
       "evidence": "tenant_id = \"default\"  # 从 emitter caller 拿 tenant 不现实, 用 candidate metadata 或默认; 而 propose_candidates 入参 request 含 'tenant_id' 字段未被使用",
       "source": "agents-brain",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "58a86f0",
+      "notes": "propose_candidates 从 request.tenant_id 取真实 tenant 透传给 _emit_and_adjust(tenant_id kw 默认 default 保 PromptAB 等外部调用兼容)，配额/探索惩罚不再硬编码 default、多租户限流/惩罚按 tenant 生效。+2 测试。"
     },
     {
       "id": "F147",

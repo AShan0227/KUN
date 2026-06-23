@@ -62,3 +62,4 @@
 2026-06-24 F152 ✅ — skills/watchtower 默认路径缺失时回退 repo-root 锚定，非 repo-root 启动不再静默零加载，+3 测试
 2026-06-24 F154 ✅ — mission_director V6 单测关闭 V7 桥(autouse)，不再后台连 55432，单测密闭化，断言不变
 2026-06-24 F149 ✅ — shopify browser 读操作区分真成功/降级(page_confirmed)，加载失败→failed、成功标 navigation_only，+4 测试
+2026-06-24 F146 ✅ — strategist 配额/探索惩罚透传真实 tenant(替代硬编码 default)，多租户限流生效，+2 测试

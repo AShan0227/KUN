@@ -190,10 +190,7 @@ def _candidates_for_llm_fallback_spike(
                     },
                 ],
                 explorer_mode="aggressive",
-                rationale=(
-                    f"fallback={fallback_provider} 命中率高 "
-                    f"→ 升 primary, 看是否更稳."
-                ),
+                rationale=(f"fallback={fallback_provider} 命中率高 → 升 primary, 看是否更稳."),
             )
         )
 
@@ -220,9 +217,7 @@ def _candidates_for_llm_fallback_spike(
                 },
             ],
             explorer_mode="performance",
-            rationale=(
-                "primary 可能只是临时抖动 → 重试 3 次, shadow 验证不引入 P95 增长."
-            ),
+            rationale=("primary 可能只是临时抖动 → 重试 3 次, shadow 验证不引入 P95 增长."),
         )
     )
 
@@ -260,9 +255,7 @@ def _candidates_for_task_failure_spike(
                 {"metric": "task_success_rate", "operator": "<", "value": 0.5},
             ],
             explorer_mode="conservative",
-            rationale=(
-                f"task_type={task_type} 失败率上升 → 临时提 tier 看是否模型能力问题."
-            ),
+            rationale=(f"task_type={task_type} 失败率上升 → 临时提 tier 看是否模型能力问题."),
         )
     ]
 
@@ -337,8 +330,7 @@ def _candidates_for_context_oversized_spike(
             ],
             explorer_mode="aggressive",
             rationale=(
-                "input_tokens 严重超阈 → 硬截断保留最近 20 轮 + anchor pinning. "
-                "风险: 丢中间上下文."
+                "input_tokens 严重超阈 → 硬截断保留最近 20 轮 + anchor pinning. 风险: 丢中间上下文."
             ),
         )
     )
@@ -364,9 +356,7 @@ def _candidates_for_context_oversized_spike(
                 {"metric": "latency_p95_ms", "operator": ">", "value": 3000},
             ],
             explorer_mode="performance",
-            rationale=(
-                "改 RAG 检索相关历史而不传全部. shadow 验证检索相关度不掉."
-            ),
+            rationale=("改 RAG 检索相关历史而不传全部. shadow 验证检索相关度不掉."),
         )
     )
 
@@ -437,9 +427,7 @@ def _candidates_for_skill_mismatch_spike(
             change_spec={
                 "kind": "task_type_split",
                 "task_type": task_type,
-                "split_rationale": (
-                    "frequent failure suggests task_type is too coarse — split"
-                ),
+                "split_rationale": ("frequent failure suggests task_type is too coarse — split"),
                 "requires_director_assistance": True,
             },
             rollout_mode="shadow",
@@ -487,9 +475,7 @@ def _candidates_for_skill_mismatch_spike(
     return candidates
 
 
-_CANDIDATE_GENERATORS: dict[
-    str, Callable[[dict[str, Any]], list[StrategyExperiment]]
-] = {
+_CANDIDATE_GENERATORS: dict[str, Callable[[dict[str, Any]], list[StrategyExperiment]]] = {
     "llm_fallback_spike": _candidates_for_llm_fallback_spike,
     "task_failure_spike": _candidates_for_task_failure_spike,
     "context_oversized_spike": _candidates_for_context_oversized_spike,
@@ -523,9 +509,7 @@ def _candidate_for_backward_rollback(
         },
         rollout_mode="direct",  # 回滚不 canary, 直接关
         sampling_rate=1.0,
-        success_metric=request.get("evidence", [{}])[0].get(
-            "type", "anomaly_rate"
-        ),
+        success_metric=request.get("evidence", [{}])[0].get("type", "anomaly_rate"),
         acceptance_threshold=0.5,  # 异常率减半即视为成功
         rollback_on=[
             # "回滚的回滚" — 如果异常率反而升 → re-enable capability
@@ -629,6 +613,10 @@ class StrategistService:
         """
         anomaly_kind = request.get("anomaly_kind") or ""
         target_module = str(request.get("target_module") or "")
+        # Audit F146: thread the request's tenant through to quota / exploration
+        # penalty so multi-tenant rate-limiting isn't collapsed into one "default"
+        # bucket. strategy_search_requests carries tenant_id; fall back to "default".
+        tenant_id = str(request.get("tenant_id") or "default")
 
         # Forward / Backward 决策
         capability_history: list[dict[str, Any]] | None = None
@@ -646,9 +634,7 @@ class StrategistService:
         direction = select_repair_direction(request, capability_history)
         if direction == "backward":
             entry = (
-                _most_recent_enabled_capability(capability_history)
-                if capability_history
-                else None
+                _most_recent_enabled_capability(capability_history) if capability_history else None
             )
             if entry is not None:
                 candidates = [_candidate_for_backward_rollback(request, entry)]
@@ -657,7 +643,7 @@ class StrategistService:
                     target_module=target_module,
                     capability_id=entry.get("capability_id"),
                 )
-                return await self._emit_and_adjust(candidates, anomaly_kind)
+                return await self._emit_and_adjust(candidates, anomaly_kind, tenant_id=tenant_id)
 
         # Forward — Explorer Pool
         generator = _CANDIDATE_GENERATORS.get(anomaly_kind)
@@ -676,12 +662,14 @@ class StrategistService:
         from kun.agents.strategist.deliberation import deliberate
 
         candidates = deliberate(candidates)
-        return await self._emit_and_adjust(candidates, anomaly_kind)
+        return await self._emit_and_adjust(candidates, anomaly_kind, tenant_id=tenant_id)
 
     async def _emit_and_adjust(
         self,
         candidates: list[StrategyExperiment],
         anomaly_kind: str,
+        *,
+        tenant_id: str = "default",
     ) -> list[StrategyExperiment]:
         """共用: 自指标 human review + 强制 target_level=0 + emit 落库.
 
@@ -713,16 +701,12 @@ class StrategistService:
 
         # L4.6 Exploration Penalty — 失败 signature 短期内不重复
         if self._exploration_penalty is not None and adjusted:
-            tenant_id = "default"
             adjusted = await self._exploration_penalty.filter_candidates(
                 tenant_id=tenant_id, candidates=adjusted
             )
 
-        # L4.5 Resource Quota 检查 — 按 tenant 限流 experiment 总数
+        # L4.5 Resource Quota 检查 — 按 tenant 限流 experiment 总数 (audit F146: 用真实 tenant)
         if self._resource_quota is not None and adjusted:
-            tenant_id = "default"
-            # 从 emitter caller 拿 tenant 不现实, 用 candidate metadata 或默认
-            # (caller 注入 quota 时一般同 tenant scope, 默认 "default" 足够)
             quota_passed: list[StrategyExperiment] = []
             for c in adjusted:
                 result = await self._resource_quota.check_and_record_experiment(
