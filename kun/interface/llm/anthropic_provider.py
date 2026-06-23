@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any
+from typing import Any, Literal
 
 from anthropic import AsyncAnthropic
 
@@ -56,6 +56,24 @@ _PRICING: dict[str, dict[str, float]] = {
         "cache_write": 1.25,
     },
 }
+
+
+def _map_finish_reason(
+    stop_reason: str | None, *, has_tool_calls: bool
+) -> Literal["stop", "tool_use", "length", "error"]:
+    """Map Anthropic stop_reason → LLMResponse.finish_reason (audit F124).
+
+    The old mapping folded everything except max_tokens/tool_use into "stop", so
+    a ``refusal`` (safety decline) or ``model_context_window_exceeded`` was
+    reported as a normal successful stop — a failure masquerading as success.
+    """
+    if has_tool_calls:
+        return "tool_use"
+    if stop_reason in ("max_tokens", "model_context_window_exceeded"):
+        return "length"
+    if stop_reason == "refusal":
+        return "error"
+    return "stop"
 
 
 class AnthropicProvider(LLMProvider):
@@ -202,9 +220,7 @@ class AnthropicProvider(LLMProvider):
         cost_actual = self.compute_cost(usage, equivalent=False)
         cost_equiv = self.compute_cost(usage, equivalent=True)
 
-        finish_reason = (
-            "tool_use" if tool_calls else ("length" if resp.stop_reason == "max_tokens" else "stop")
-        )
+        finish_reason = _map_finish_reason(resp.stop_reason, has_tool_calls=bool(tool_calls))
 
         # Metrics
         llm_request_total.labels(

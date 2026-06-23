@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 27 ｜ ⛔blocked 0 ｜ 📐needs-design 25 ｜ ⬜pending 121
+**总计 173 项** — ✅done 33 ｜ ⛔blocked 0 ｜ 📐needs-design 25 ｜ ⬜pending 115
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -110,12 +110,12 @@
 | F089 | medium | fix | ⬜ | Gate 自指能力 enable 强门禁可被绕过：metadata_lookup 缺省即跳过检查，approval  | `/Users/petrarain/鲲/kun/agents/gate/service.py:44` |
 | F090 | medium | fix | ⬜ | MultiJudge '多判官'实为同一模型同温度调 N 次，票相关性极高，多数票独立性假设不成立 | `/Users/petrarain/鲲/kun/agents/tester/multi_judge` |
 | F091 | medium | fix | ⬜ | StrategyExperiment.to_row_payload 丢弃 requires_human_review | `/Users/petrarain/鲲/kun/agents/strategist/service` |
-| F092 | medium | fix | ⬜ | _invoke_with_retry 无差别重试，叠加 SDK 内建重试与 CLI 长超时，最坏情况单次调用阻塞 2 | `kun/interface/llm/router.py:572-574` |
+| F092 | medium | fix | ✅ | _invoke_with_retry 无差别重试，叠加 SDK 内建重试与 CLI 长超时，最坏情况单次调用阻塞 2 | `kun/interface/llm/router.py:572-574` |
 | F093 | medium | fix | ⬜ | V6 Control Plane 全内存 + 本地 JSON 文件持久化：无租户隔离、无跨进程一致性，daemon  | `kun/api/control_plane.py:176-214,363-372;` |
 | F094 | medium | fix | ⬜ | Automation 层 Action.timeout_sec / max_retries 契约未实现；Shopif | `kun/interface/automation/api_base.py:25-96;` |
 | F095 | medium | fix | ⬜ | Event.build 生成的 NATS subject 域名段重复，与文档约定不符且已被测试固化 | `kun/datamodel/events.py:104-105` |
 | F096 | medium | fix | ⬜ | TaskMeta 的 L1 字段 complexity / priority_profile / estimated | `kun/datamodel/task.py:57-62` |
-| F097 | medium | fix | ⬜ | 5 个 ADR-016 指标定义后从未被更新，其中含安全告警指标 tenant_cross_access_attem | `kun/core/metrics.py:19-92` |
+| F097 | medium | fix | ✅ | 5 个 ADR-016 指标定义后从未被更新，其中含安全告警指标 tenant_cross_access_attem | `kun/core/metrics.py:19-92` |
 | F098 | medium | architecture | ⬜ | ImportanceScorer(中央重要度打分器)无任何生产调用方，packer 另起炉灶用重复的词法打分 | `kun/context/importance.py:43` |
 | F099 | medium | fix | ⬜ | L6 行业评测套件是孤儿且度量很浅,无法支撑真实在度量 | `kun/evaluation/industry_suite.py:164` |
 | F100 | medium | fix | ⬜ | RCDH 诊断、PromotionTimeoutSweeper、promotion advance 均无生产接线 — | `kun/governance/rcdh.py:303` |
@@ -139,10 +139,10 @@
 | F118 | medium | fix | ⬜ | 锁定的运行时依赖含 7 个已知 CVE(starlette/urllib3/idna/mako) | `uv.lock:1` |
 | F119 | medium | fix | ⬜ | .env.example 与代码实际读取的环境变量严重脱节(约 50 个未文档化) | `.env.example:1` |
 | F120 | medium | fix | ⬜ | Dockerfile: --frozen 失败时静默回退到非锁定安装 + 镜像缺 seeds/ 目录 | `Dockerfile:19` |
-| F121 | medium | fix | ⬜ | 定价表过时: Opus 4.7 高估 3 倍、Haiku 4.5 低估 4 倍, cache 写入未计费 | `kun/interface/llm/anthropic_provider.py:42-58` |
+| F121 | medium | fix | ✅ | 定价表过时: Opus 4.7 高估 3 倍、Haiku 4.5 低估 4 倍, cache 写入未计费 | `kun/interface/llm/anthropic_provider.py:42-58` |
 | F122 | medium | fix | ⬜ | temperature 修复用硬编码子串黑名单, opus-4-8/后续模型不覆盖且静默丢参 | `kun/interface/llm/anthropic_provider.py:151-154` |
 | F123 | medium | fix | ⬜ | CodexMcpProvider 工具调用示例与解析器格式矛盾 → bad_json 静默丢工具调用 | `kun/interface/llm/codex_mcp_provider.py:462-465` |
-| F124 | medium | fix | ⬜ | finish_reason 把 refusal/上下文超限折叠为 "stop", 失败被当成功完成 | `kun/interface/llm/anthropic_provider.py:201-203` |
+| F124 | medium | fix | ✅ | finish_reason 把 refusal/上下文超限折叠为 "stop", 失败被当成功完成 | `kun/interface/llm/anthropic_provider.py:201-203` |
 | F125 | medium | fix | ⬜ | [文档漂移] ADR-023 Mode A 'NATS 订阅 + 独立进程持续监管' 实为 stub runner  | `kun/external_supervisor/runner.py:44` |
 | F126 | medium | fix | ⬜ | [文档漂移] ADR-019 '生产模式不允许 query 参数租户' 为假——WS 闸门仅是 opt-in 环境变 | `kun/api/ws.py:88` |
 | F127 | medium | fix | ⬜ | [文档漂移] RCDH 诊断链路（含 narrow_scope 护栏）在生产中无人调用——DiagnosticRun | `kun/agents/supervisor/service.py:104` |
@@ -154,9 +154,9 @@
 | F133 | medium | fix | ⬜ | unit-tests 无覆盖率门槛:测试可空心化而流水线仍绿 | `.github/workflows/ci.yml:47` |
 | F134 | medium | fix | ⬜ | 无 branch protection / required checks 配置、无 CODEOWNERS:门禁强制 | `.github/workflows/ci.yml:13-124` |
 | F135 | medium | fix | ⬜ | TaskMeta.complexity / priority_profile / estimated_steps 写 | `kun/core/orm.py:75` |
-| F136 | medium | fix | ⬜ | ValidatorKind 枚举不含运行时产出的 'ensemble' | `kun/agents/tester/validation.py:343` |
+| F136 | medium | fix | ✅ | ValidatorKind 枚举不含运行时产出的 'ensemble' | `kun/agents/tester/validation.py:343` |
 | F137 | medium | architecture | ⬜ | CI 从不跑 alembic check，且无 DB 时无法运行 → 漂移长期无人发现 | `alembic/env.py:26` |
-| F138 | medium | fix | ⬜ | /metrics 端点导出默认 registry，未 emit 的 series 在抓取时不出现 | `kun/api/main.py:261` |
+| F138 | medium | fix | ✅ | /metrics 端点导出默认 registry，未 emit 的 series 在抓取时不出现 | `kun/api/main.py:261` |
 | F139 | medium | fix | ⬜ | v7_xb_smoke.py：用 StubProvider + 内存 fake session 跑一遍即 print | `scripts/v7_xb_smoke.py:296-372` |
 | F140 | medium | fix | ⬜ | dogfood_v10：lifecycle/auditor 表增长依赖手喂的'必过'GateService 输入；M | `scripts/dogfood_v10_trigger_xb_tables.py:104-131` |
 | F141 | medium | fix | ⬜ | spark_world_run.py 未提交改动坦承 claude CLI OAuth 路径曾'silent stu | `scripts/spark_world_run.py:49-60` |

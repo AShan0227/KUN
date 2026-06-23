@@ -1198,9 +1198,9 @@
       "detail": "@retry(stop_after_attempt(3), wait_exponential) 对所有异常一律重试：包括必然复现的 4xx（如本次未提交 diff 修的 temperature 400）、参数校验错、auth 失败。Anthropic/OpenAI SDK 自身默认还各带 2 次重试 → 一个不可重试错误最多打 9 次真实 API 请求才进 fallback。CLI provider 单次 invoke 超时 180s（claude）/240s（codex），primary 3 次 + fallback 3 次理论上 ~21 分钟无上层 deadline（TaskProfile.max_duration_sec 由 orchestrator 另行强制，但 router 这层自身无界）。建议 retry_if_exception_type 白名单（超时/连接/5xx/429），4xx 直接 fail-fast 进 fallback。",
       "evidence": "@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))\\nasync def _invoke_with_retry(provider, request): return await provider.invoke(request) — 无 retry= 异常过滤",
       "source": "api-interface",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "(F046)",
+      "notes": "与 F046 同一问题(_invoke_with_retry 无差别重试)，已由 F046 修复(只重试传输错误，HTTP status 交 SDK)。核实重复。"
     },
     {
       "id": "F093",
@@ -1263,9 +1263,9 @@
       "detail": "grep 全库确认 context_cache_hit_rate、context_cache_cost_savings_usd、tenant_cross_access_attempt、quality_rubric_score_p50、llm_cost_runaway_total 定义后零调用。最要紧的是 tenant_cross_access_attempt 自述『Cross-tenant access attempts (CRITICAL alert)』——即 ADR-007 的跨租户访问告警在指标层根本不可能触发，监控/告警规则若按 ADR-016 配置会一直是空序列，给人『没有越权尝试』的虚假安全感。其余几个意味着 prompt cache 收益、成本跑飞率等驾驶舱数据无源。建议要么接线要么删除，避免观测面假象。",
       "evidence": "`for m in ...; grep -rn $m kun --exclude metrics.py | wc -l` → 全部为 0(task_surprise_score 有 2 处为对照)",
       "source": "core-data",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "(F055/F005)",
+      "notes": "ADR-016 死指标，已由 F055(删 4 个无 producer 死指标)+F005(接线 tenant_cross_access_attempt) 处理。核实重复。"
     },
     {
       "id": "F098",
@@ -1575,9 +1575,9 @@
       "detail": "_PRICING 写的是 claude-opus-4-7 $15/$75 per MTok, 实际官方价 $5/$25; claude-haiku-4-5 写 $0.25/$1.25, 实际 $1/$5(sonnet-4-6 $3/$15 正确)。cost_usd_actual/equivalent 直接喂给 llm_cost_usd 指标、ADR-008 预算闸门(force_fallback 日预算 kill switch)和 NUO 面板——Opus 成本虚高 3 倍会让预算闸门过早触发降级, Haiku 低估 4 倍则反向。另外 base.py compute_cost(176-189) 完全没用 cache_creation_input_tokens(实际按 1.25× input 计费), 系统性少算。修复: 更新价表(或改为从 Models API 拉取), compute_cost 补 cache 写入项。",
       "evidence": "\"claude-opus-4-7\": {\"input\": 15.0, \"output\": 75.0, \"cached\": 1.5} —— 官方现价 $5/$25; compute_cost 只有 input/cache_read/output 三项, 无 cache_creation",
       "source": "diff-and-llm",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "(F024)",
+      "notes": "与 F024 同一问题(定价表过时+cache 写入未计费)，已由 F024 修正(权威定价+cache_write)。核实重复。"
     },
     {
       "id": "F122",
@@ -1614,9 +1614,9 @@
       "detail": "finish_reason 映射只识别 max_tokens→length 和 tool_use, 其余一律 \"stop\"。Claude 4+ 会返回 stop_reason=\"refusal\"(安全拒答)和 \"model_context_window_exceeded\"(上下文窗口耗尽, 4.5+), 这两种都会被报成正常完成——orchestrator 把拒答文本或被截断的半截输出当 final answer 收尾。同时整个 LLM 层没有任何上下文超限的防御: 请求侧超限是 400, 按当前重试策略会被原样重试 3 次再降级到上下文更小的 MiniMax-M2.7, 大概率连环失败。修复: refusal/model_context_window_exceeded 映射到 finish_reason=\"error\"(或新增枚举), 让 exec_loop 能区分; 长任务侧考虑在 invoker 层加消息裁剪。",
       "evidence": "finish_reason = (\"tool_use\" if tool_calls else (\"length\" if resp.stop_reason == \"max_tokens\" else \"stop\")) —— refusal 落入 else 分支",
       "source": "diff-and-llm",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "a5ed30a",
+      "notes": "抽出 _map_finish_reason：refusal→error、max_tokens/model_context_window_exceeded→length、tool→tool_use、其余→stop。失败不再伪装成 stop 成功。+9 测试。"
     },
     {
       "id": "F125",
@@ -1770,9 +1770,9 @@
       "detail": "validation.py:340-343 在多 validator 参与时硬编码 validator_kind='ensemble'（`kinds[0] if len(set(kinds))==1 else \"ensemble\"`），但 ValidatorKind = Literal['single_judge','multi_judge','debate','ab_test','redteam','benchmark']（validation.py:29-35）里没有 'ensemble'。ValidationResult.validator_kind 的类型注解是 ValidatorKind（validation.py:44），赋 'ensemble' 在 Pydantic（若 strict）或类型检查下都是越界值。该字段当前未落任何 DB CHECK（无对应迁移列），所以不是 schema 漂移而是纯代码层 enum bug，但同样属「Literal 与实际取值不一致」家族，且会污染下游按 validator_kind 聚合的统计。建议把 'ensemble' 加进 ValidatorKind，或改用已存在的 'multi_judge'。",
       "evidence": "validation.py:343 validator_kind=kinds[0] if len(set(kinds)) == 1 else \"ensemble\" ；validation.py:29-35 ValidatorKind Literal 不含 'ensemble'",
       "source": "extra:db_schema_orm_migration_drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "(F020)",
+      "notes": "与 F020 同一问题(ValidatorKind 缺 ensemble)，已由 F020 修复。核实重复。"
     },
     {
       "id": "F137",
@@ -1796,9 +1796,9 @@
       "detail": "/metrics 端点（main.py:258-261）实现为 `return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)`，generate_latest() 无参数即导出 prometheus_client 默认全局 REGISTRY。metrics.py 里的指标都注册到这个默认 registry，但带 label 的 Counter/Gauge/Histogram 只有在首次 .labels(...) 被调用后才会为该 label 组合创建并暴露 series。因此那 5 个零 emit 指标在抓取响应里完全缺席（不是输出 0，而是整条不存在）。对 Grafana 表现为 'No data'，对 PromQL rate()/increase() 表现为空向量，容易被误判为'该事件没发生=健康'。这是'定义即摆设'在抓取层面的技术坐实：监控面看不到指标存在与否的区别。建议对关键安全/成本指标在启动时预初始化 0 样本（.labels(...).inc(0) 或改用无 label 设计），否则缺席与零无法区分。",
       "evidence": "main.py:261 `return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)`；import 行 main.py:23 `from prometheus_client import CONTENT_TYPE_LATEST, generate_latest`，无自定义 CollectorRegistry。",
       "source": "extra:observability_metrics_emission_gap",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "(F055)",
+      "notes": "/metrics 默认 registry 未 emit series 不出现——根因是死指标，F055 删除后存活指标均有 emit。核实由 F055 解决。"
     },
     {
       "id": "F139",
