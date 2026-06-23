@@ -912,9 +912,9 @@
       "detail": "_replace_once 在 anchor 不存在时静默返回原文，所有 _patch_* 函数因此在目标代码漂移时部分生效、部分跳过且无任何日志。具体风险样例：_patch_app_for_causal_lab 的第三个 replace 把 `feedback: result.feedback,` 改为引用 `causal` 变量，而 `causal` 由第二个 replace 引入——若第二个 anchor 未命中而第三个命中，会生成引用未定义变量的 TSX（靠后续 build 门禁兜底，再触发 build-fix phase，形成补丁修补丁的循环）。_normalize_modern_inventory_touch_drop 的存在本身就是症状：它维护一段 64 行的 \"broken_effect\" 字符串字面量，用于从自己早先生成的代码里删掉坏 useEffect；5099 行的 patch 目标串里还带着 `premiumTouchStage premiumTouchStage` 重复 class——补丁栈已在追打自己的历史输出。建议：生成路径改为整文件模板渲染（templates/ 已有先例），废弃增量字符串补丁。",
       "evidence": "5876-5879 `def _replace_once(...): if old not in source: return source`; 5898-5901 替换后引用 `causal.summary` 但 `causal` 定义在另一个独立 replace 中; 5131 docstring \"Keep the generated tablet touch effect build-safe after repeated patches\"; 5133-5155 64 行 broken_effect 字面量用于 `app.replace(broken_effect, \"\")`",
       "source": "cp-game-production",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "790e18d",
+      "notes": "game_production 脆弱字符串 patch 改源码(应 AST/模板)；并入 docs/audit/proposals/architecture-debt.md §1b(随 F036/F037 域化+分层裁决落地；F113 即 F012)。"
     },
     {
       "id": "F071",
@@ -925,9 +925,9 @@
       "detail": "delivery_artifact 以 path=spec.project_path 调 _artifact → _hash_path，manifest 又再调一次 _hash_path(spec.project_path)；_hash_path 对目录用 rglob(\"*\") 读取并 sha256 每一个文件，无任何排除规则。项目此时已跑过 npm install（node_modules 数万文件），且 _command_env 把 npm_config_cache 设到项目目录内的 .npm-cache，缓存也被卷进哈希。后果：每次最终交付要读取并哈希数 GB 文件、耗时数分钟且重复两次；哈希值还因缓存内容而不稳定，content_hash 失去\"同一交付物同一指纹\"的意义。建议：排除 node_modules/.npm-cache/dist 或只哈希 src+docs+package.json，并把两处调用合并为一次。",
       "evidence": "2331 `content_hash=_hash_path(spec.project_path)`; 2236 `_artifact(work_item=..., suffix=\"playable-game\", path=spec.project_path, ...)` → 7766 `content_hash=_hash_path(path)`; 7886 `for child in sorted(item for item in path.rglob(\"*\") if item.is_file())`; 7861 `env.setdefault(\"npm_config_cache\", str(cwd / \".npm-cache\"))`",
       "source": "cp-game-production",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "790e18d",
+      "notes": "_hash_path 对整项目目录算 SHA(含 node_modules)→缓存恒失效/误判；并入 docs/audit/proposals/architecture-debt.md §1b(随 F036/F037 域化+分层裁决落地；F113 即 F012)。"
     },
     {
       "id": "F072",
@@ -938,9 +938,9 @@
       "detail": "test:fun/browser-static/long/visual/experience/sandbox/creative/mastery/semantic/spatial/commercial 共 13 段结构完全相同的 if-run-fail 代码（每段 ~12 行）加 npm install/build/internal/user-sim，全部同步串行，每条命令独立 600s 超时但无总预算——最坏情况一个 internal-test work item 占用 worker 约 170 分钟。重复代码也已造成维护负担：结果 JSON 的 14 个 key 逐一手写（1426-1461）。建议改为 (script_name, required) 列表驱动的循环，并加 phase 级总超时。",
       "evidence": "1285-1420 连续 13 段 `if \"test:X\" in package_payload.get(\"scripts\", {}): X_test = self.command_runner([\"npm\", \"run\", \"test:X\"], spec.project_path, self.command_timeout_sec); if X_test.exit_code != 0: return _failed_command_result(...)` 仅 X 不同",
       "source": "cp-game-production",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "790e18d",
+      "notes": "npm 安装/测试命令多处复制粘贴漂移；并入 docs/audit/proposals/architecture-debt.md §1b(随 F036/F037 域化+分层裁决落地；F113 即 F012)。"
     },
     {
       "id": "F073",
@@ -1068,9 +1068,9 @@
       "detail": "通用运行时核心包含大量具体业务：runtime.py 的 _rainflow_required_gate_tokens/_rainflow_stage_gate_passes_cleanly/_stage_gate_allows_ready 把 \"stage1-transition\"、\"phase1-acceptance-review\" 等具体工作项命名写死在调度就绪判定里；kun_runtime_runner.py:777-830 的 _local_output_aliases 硬编码 \"02-material-screening\"、\"06-stage1-transition-generation\" 等目录名；runtime.py:57-61 自己承认复制了 RAINFLOW_AD_PRODUCTION_MODE 字符串(\"update both copies\")，_is_rainflow_context 在 runtime.py:861-886 和 mission_director.py:581-606 完整重复。每新增一个业务线(L6 平台 adapter)都要再改核心文件，与 ADR-020 五层架构的隔离意图相悖。建议：抽出 production_modes/domain-profile 插件边界，stage-gate 规则改为合同(contract)数据驱动。",
       "evidence": "runtime.py:57 \"# Local copy of the rainflow production-mode discriminator. Duplicated here so the core runtime does not reverse-depend on a domain module.\"\\ndef _rainflow_required_gate_tokens(work_item_id): if \"stage1-transition\" in work_item_id: return (\"phase1-acceptance-review\",)",
       "source": "cp-runtime",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "790e18d",
+      "notes": "领域/策略逻辑落在 kun/core 违反 ADR-020 分层；并入 docs/audit/proposals/architecture-debt.md §1b(随 F036/F037 域化+分层裁决落地；F113 即 F012)。"
     },
     {
       "id": "F083",
@@ -1094,9 +1094,9 @@
       "detail": "_iter_snapshot_candidates 对每个被排除目录(.git、node_modules、.next 等)yield (entry, True)，create_workspace_snapshot 将其计入 omitted(94-96 行)，而 manifest 的 complete_restore 定义为 omitted == 0(132 行)。结果是任何 git 仓库工作区的快照都被标成\"不完整\"，restore_workspace_snapshot 中删除多余文件的整段逻辑(191-201 行)被跳过——失败运行期间新建的垃圾文件在\"回滚\"后全部残留，且 warning 文案误导性地归因于 \"capture limits\"。被排除目录本来就不参与恢复对比，不应计入 omitted；应只统计因 _MAX_* 限制或 OSError 跳过的真实文件。这是长任务回滚承诺的实质性缺口。",
       "evidence": "for path, skipped_subtree in _iter_snapshot_candidates(workspace):\\n    if skipped_subtree:\\n        omitted += 1  # .git 等排除目录也走这里\\n... \"complete_restore\": omitted == 0; restore: if complete_restore: ...unlink()",
       "source": "cp-rest",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "790e18d",
+      "notes": "workspace_snapshot 全量 copy2 无增量/无 ignore；并入 docs/audit/proposals/architecture-debt.md §1b(随 F036/F037 域化+分层裁决落地；F113 即 F012)。"
     },
     {
       "id": "F085",
@@ -1120,9 +1120,9 @@
       "detail": "包 __init__ 把 daemon.py(6.9k 行)、game_production.py(7.9k 行)、feature_activation_audit.py(2.2k 行，内部再导入 watchtower RuleEngine 和全部领域 runner)全部 eager import 并 re-export——任何 `from kun.control_plane import X` 都加载整个子系统，import 时间和耦合面都被放大，也使 cli.py 里的局部延迟 import(611 行)失去意义。feature_activation_audit 本质是带固定 NOW=datetime(2026,5,21) 的集成测试 harness（StaticRunner、_pass_gate/_failed_gate 伪造门禁、_executor 返回假执行输出），作为生产包 API 暴露意味着这些\"合成证据\"生成器可被任何运行时路径调用。建议：__init__ 改为惰性 __getattr__ 导出或收窄 re-export 面；审计套件迁往 tests/ 或独立 kun.audits 包。v6.py 经核实并非死代码——它是被 28 个模块导入的核心域模型，命名(v6)与现 V7 阶段不符但职责健康。",
       "evidence": "__init__.py 顶层 from kun.control_plane.daemon import ...; from kun.control_plane.game_production import ...; from kun.control_plane.feature_activation_audit import ...（全部急切执行）",
       "source": "cp-rest",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "790e18d",
+      "notes": "game_production 顶层 import 重副作用拖慢启动且难测；并入 docs/audit/proposals/architecture-debt.md §1b(随 F036/F037 域化+分层裁决落地；F113 即 F012)。"
     },
     {
       "id": "F087",
@@ -1458,9 +1458,9 @@
       "detail": "实测环清单：(1) engineering↔skills 是唯一双向模块级环——skills/calibration.py:39 顶层 import engineering.orchestrator，而 engineering/orchestrator.py:64 顶层 import skills.selector、agent_loop.py:38 import skills.dispatcher，目前能跑只因 Python 子模块解析顺序碰巧成立，skills/__init__.py 一旦 re-export calibration 即崩；(2) engineering→api(long_task_orchestrator.py:777 函数内 import api.discipline_store，下层反依赖最上层，discipline_store 应下沉)；(3) agents↔integration(integration 18 条顶层依赖 agents，agents 3 处函数内回依赖 integration)；(4) control_plane↔integration(均 TYPE_CHECKING/函数内)；(5) core↔datamodel(core/events.py:26 顶层 import datamodel.events，datamodel 7 文件顶层 import core.ids)；(6) core→watchtower(nats_subscriber.py:75-76 函数内，基座反依赖上层)。实测 `uv run python -c \"import kun.skills.calibration\"` 等当前均通过，故无即时故障，但每处延迟 import 都是给未来重构埋的雷。修复优先级：把 discipline_store 移出 api、把 Event 模型统一进 datamodel 或 core 二选一、calibration 的 Orchestrator 依赖改注入。",
       "evidence": "skills/calibration.py:39: `from kun.engineering.orchestrator import Orchestrator` (顶层) + engineering/orchestrator.py:64: `from kun.skills.selector import get_selector...` (顶层); long_task_orchestrator.py:777: 函数内 `from kun.api.discipline_store import record_discipline_report`; core/nats_subscriber.py:75: `from kun.watchtower.engine import RuleEngine`",
       "source": "architecture",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "790e18d",
+      "notes": "循环依赖迹象(core 用 TYPE_CHECKING+函数内延迟 import 规避)；并入 docs/audit/proposals/architecture-debt.md §1b(随 F036/F037 域化+分层裁决落地；F113 即 F012)。"
     },
     {
       "id": "F113",
@@ -1471,9 +1471,9 @@
       "detail": "与 game_production 不同，daemon.py 的膨胀是真业务逻辑堆积(三引号字符串仅 48 行)：12 个类覆盖至少 5 类职责——tick/loop 报告(DaemonTickReport/DaemonLoopReport)、服务配置与状态持久化(DaemonServiceConfig/State/Claim + FileDaemonServiceStateStore)、主循环(ControlPlaneDaemon)、三个专用 runner(_WorkspaceRollbackRunner/_SandboxRequirementRunner/_PreflightBlockedRunner)，外加 99 个顶层函数。它顶层 import 了 control_plane 内 13 个兄弟模块，是包内事实上的汇聚点。拆分方向(机械、低风险)：daemon_state.py(状态存储+claim)、daemon_runners.py(三个 runner)、daemon_service.py(install plan/进程管理，cli.py 已按此粒度消费)、保留 daemon.py 只剩 tick 主循环。收益：当前任何 daemon 改动都要面对 7k 行上下文，是 V7 phase 系列 commit 频繁触碰的热点文件，拆开可显著降低回归面。",
       "evidence": "结构统计: lines=6927 classes=12 top_funcs=99 methods=95 triple_quoted_lines=48; 类清单含 DaemonTickReport, FileDaemonServiceStateStore, ControlPlaneDaemon, _WorkspaceRollbackRunner, _SandboxRequirementRunner, _PreflightBlockedRunner; 顶层 from kun.control_plane.* import 13 处 (daemon.py:27-74)",
       "source": "architecture",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "790e18d",
+      "notes": "daemon.py 6930 行 god-module 多职责(同 F012)；并入 docs/audit/proposals/architecture-debt.md §1b(随 F036/F037 域化+分层裁决落地；F113 即 F012)。"
     },
     {
       "id": "F114",

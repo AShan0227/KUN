@@ -2,9 +2,9 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 67 ｜ ⛔blocked 0 ｜ 📐needs-design 63 ｜ ⬜pending 43
+**总计 173 项** — ✅done 67 ｜ ⛔blocked 0 ｜ 📐needs-design 71 ｜ ⬜pending 35
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
-剩余 pending+fix：32（high 0 / medium 27 / low 5）
+剩余 pending+fix：24（high 0 / medium 19 / low 5）
 
 | id | sev | class | 状态 | 标题 | 文件 |
 |---|---|---|---|---|---|
@@ -89,9 +89,9 @@
 | F067 | medium | fix | 📐 | layout 与 control-plane 页面使用的 kun-* 组件样式类在整个仓库 (含全部 git 历史) | `frontend/src/app/globals.css:1` |
 | F068 | medium | fix | ✅ | PG skip guard 字符串匹配错误，13 个约束测试在无 Docker 时失败而非跳过 | `tests/integration/test_v7_xb_pg_check_constraint` |
 | F069 | medium | fix | ⬜ | PROGRESS.md 宣称 'L5 已达成=RSI 真闭合的标志' 与代码现实不符 | `PROGRESS.md:140` |
-| F070 | medium | fix | ⬜ | 字符串补丁机制对生成代码逐字节耦合，anchor 漂移时静默跳过并可产出引用未定义变量的源码 | `kun/control_plane/game_production.py:5876-5908,` |
-| F071 | medium | fix | ⬜ | _final_delivery 对整个项目目录（含 node_modules 与 .npm-cache）做两次递归全 | `kun/control_plane/game_production.py:2233-2243,` |
-| F072 | medium | fix | ⬜ | _run_internal_tests 13 个 copy-paste 命令块，串行最多 ~17 个 npm 命令、 | `kun/control_plane/game_production.py:1285-1465` |
+| F070 | medium | fix | 📐 | 字符串补丁机制对生成代码逐字节耦合，anchor 漂移时静默跳过并可产出引用未定义变量的源码 | `kun/control_plane/game_production.py:5876-5908,` |
+| F071 | medium | fix | 📐 | _final_delivery 对整个项目目录（含 node_modules 与 .npm-cache）做两次递归全 | `kun/control_plane/game_production.py:2233-2243,` |
+| F072 | medium | fix | 📐 | _run_internal_tests 13 个 copy-paste 命令块，串行最多 ~17 个 npm 命令、 | `kun/control_plane/game_production.py:1285-1465` |
 | F073 | medium | fix | ✅ | tick 无异常隔离 + 用 float() 解析业务 workspace 的未校验 JSON，一条坏数据即可杀死常 | `kun/control_plane/daemon.py:5440` |
 | F074 | medium | fix | 📐 | 每 tick 为每个 mission 生成 2 个带时间戳的新 artifact 且无任何清理，叠加全量 JSON  | `kun/control_plane/daemon.py:4394` |
 | F075 | medium | fix | 📐 | 单任务批次与多任务批次的异常隔离不一致：单批次时 finish_work_item_run 异常会击穿整个守护循环 | `kun/control_plane/daemon.py:1373` |
@@ -101,11 +101,11 @@
 | F079 | medium | fix | ✅ | mission_director._latest_gate 取 dict 迭代序最后一个，'最新门禁'判断不可靠 | `kun/control_plane/mission_director.py:498-507` |
 | F080 | medium | fix | ✅ | 确定性 gate_evaluation_id 跨重试复写历史评估，审计追溯失真 | `kun/control_plane/kun_runtime_runner.py:1537` |
 | F081 | medium | fix | 📐 | mission.ledger_refs 无界增长 + 每条 ledger 事件全 mission 重写 + 文件存储 | `kun/control_plane/runtime.py:2536-2541` |
-| F082 | medium | fix | ⬜ | RainFlow/游戏生产域逻辑硬编码进'通用'控制面核心，违反分层并已三处复制 | `kun/control_plane/runtime.py:889-934` |
+| F082 | medium | fix | 📐 | RainFlow/游戏生产域逻辑硬编码进'通用'控制面核心，违反分层并已三处复制 | `kun/control_plane/runtime.py:889-934` |
 | F083 | medium | fix | ✅ | activation.py 用 plan 版本号查按 plan_id 键控的字典，task_plan 恒为 None | `kun/control_plane/activation.py:56` |
-| F084 | medium | fix | ⬜ | workspace_snapshot：含 .git/node_modules 的工作区 complete_resto | `kun/control_plane/workspace_snapshot.py:94` |
+| F084 | medium | fix | 📐 | workspace_snapshot：含 .git/node_modules 的工作区 complete_resto | `kun/control_plane/workspace_snapshot.py:94` |
 | F085 | medium | fix | 📐 | RedisResourceLockStore.release_holder 非原子 get→delete，可能误删其 | `kun/control_plane/work_item_governance.py:668` |
-| F086 | medium | fix | ⬜ | control_plane/__init__.py 急切导入全部 ~45k 行，含 2200 行测试夹具型审计套件混 | `kun/control_plane/__init__.py:90` |
+| F086 | medium | fix | 📐 | control_plane/__init__.py 急切导入全部 ~45k 行，含 2200 行测试夹具型审计套件混 | `kun/control_plane/__init__.py:90` |
 | F087 | medium | fix | ⬜ | SupervisorPool fan-out 双发同一异常：维度实例不按维度过滤检查项，与自述'不互扰'矛盾；且 P | `/Users/petrarain/鲲/kun/agents/supervisor/pool.py` |
 | F088 | medium | fix | 📐 | TaskCheckpointService sequence 仅进程内单调，重启/多进程下产生重复 sequence | `/Users/petrarain/鲲/kun/agents/executor/checkpoin` |
 | F089 | medium | fix | 📐 | Gate 自指能力 enable 强门禁可被绕过：metadata_lookup 缺省即跳过检查，approval  | `/Users/petrarain/鲲/kun/agents/gate/service.py:44` |
@@ -131,8 +131,8 @@
 | F109 | medium | fix | ⬜ | shell-exec/python-exec 沙箱仅为 cwd 目录边界且可被调用方 cwd 放大，无进程隔离 | `kun/skills/sandbox.py:43-63` |
 | F110 | medium | fix | ⬜ | curl|bash 一键部署无完整性校验并安装常驻 daemon | `scripts/one_click_deploy.sh:5` |
 | F111 | medium | fix | ⬜ | integration marker 覆盖率 6/26，marker 隔离机制形同虚设 | `tests/integration/` |
-| F112 | medium | fix | ⬜ | 六组循环依赖靠延迟 import/TYPE_CHECKING 压制，engineering↔skills 为模块级硬 | `/Users/petrarain/鲲/kun/skills/calibration.py:39` |
-| F113 | medium | fix | ⬜ | daemon.py 6,927 行：12 个类 5 类职责堆在单文件，属真实复杂度但缺模块边界 | `/Users/petrarain/鲲/kun/control_plane/daemon.py:1` |
+| F112 | medium | fix | 📐 | 六组循环依赖靠延迟 import/TYPE_CHECKING 压制，engineering↔skills 为模块级硬 | `/Users/petrarain/鲲/kun/skills/calibration.py:39` |
+| F113 | medium | fix | 📐 | daemon.py 6,927 行：12 个类 5 类职责堆在单文件，属真实复杂度但缺模块边界 | `/Users/petrarain/鲲/kun/control_plane/daemon.py:1` |
 | F114 | medium | fix | 📐 | evaluation/ 446 行 L6 评测框架生产调用方为零，仅测试文件引用 | `/Users/petrarain/鲲/kun/evaluation/__init__.py:1` |
 | F115 | medium | fix | 📐 | External Supervisor（ADR-023）：service 真实但'独立进程'模式是占位，Mode A | `kun/external_supervisor/runner.py:45` |
 | F116 | medium | fix | ⬜ | e2e_rsi_demo.py 是半剧本：链路中段与验证证据写死；fixture_only 强制标注未实装 | `scripts/e2e_rsi_demo.py:195` |

@@ -77,3 +77,4 @@
 2026-06-24 F066/F067/F105/F106/F107/F108 📐 — 前端缺口合并方案 docs/audit/proposals/frontend-gaps.md(鉴权/样式/WS协议+重连/死链/竞态)
 2026-06-24 F074/F075/F076/F077/F081/F093 📐 — 并发/资源簇并入 concurrency-multi-replica.md §4b(膨胀/隔离/进程级一致性)
 2026-06-24 F063/F064/F065/F099/F101/F103/F104/F114 📐 — 孤儿/接线簇并入 rsi-mainline-wiring.md §2b；F115 并入 external-supervisor.md
+2026-06-24 F070/F071/F072/F082/F084/F086/F112/F113 📐 — 架构/分层簇并入 architecture-debt.md §1b(实现质量+模块化债)
