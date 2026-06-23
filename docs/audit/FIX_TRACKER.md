@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 27 ｜ ⛔blocked 0 ｜ 📐needs-design 16 ｜ ⬜pending 130
+**总计 173 项** — ✅done 27 ｜ ⛔blocked 0 ｜ 📐needs-design 21 ｜ ⬜pending 125
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -27,7 +27,7 @@
 | F009 | high | fix | 📐 | 7907 行单文件中约 60% 是单一游戏项目的内嵌源码/SVG/CSS/逐版本补丁，control plane 内 | `kun/control_plane/game_production.py:2913-6026,` |
 | F010 | high | fix | ⬜ | 长任务运行期间不刷新 work-item 心跳/lease/资源锁 TTL，多副本部署下必然误判超时并重复执行 | `kun/control_plane/daemon.py:3238` |
 | F011 | high | fix | ⬜ | 多进程共享 store 下大量治理方法用『tick 起点内存快照 + 无条件 put』写回，存在 last-writ | `kun/control_plane/daemon.py:1156` |
-| F012 | high | architecture | ⬜ | 6927 行 god-module：通用控制面守护进程内嵌两个具体产品(游戏/RainFlow 广告)的业务剧本与文 | `kun/control_plane/daemon.py:5926` |
+| F012 | high | architecture | 📐 | 6927 行 god-module：通用控制面守护进程内嵌两个具体产品(游戏/RainFlow 广告)的业务剧本与文 | `kun/control_plane/daemon.py:5926` |
 | F013 | high | fix | ✅ | 人工验收自由文本解析把否定句误判为 accepted，直接错误关闭任务 | `kun/control_plane/runtime.py:947-970` |
 | F014 | high | fix | ⬜ | 多写者(API 进程/多 daemon 副本)下 ledger 序列冲突，审计事件被静默丢弃 | `kun/control_plane/runtime.py:2508-2542` |
 | F015 | high | fix | ⬜ | API 进程持有从不刷新的控制面副本：读到陈旧状态、写回时整记录覆盖 daemon 新状态 | `kun/api/control_plane.py:176-185` |
@@ -52,9 +52,9 @@
 | F034 | high | fix | ✅ | 方法论 runtime loader 与 seeds YAML schema 不匹配，28/33 条方法论的 act | `kun/engineering/methodology_runtime_loader.py:20` |
 | F035 | high | fix | ✅ | shell-exec 与 python-exec 对 LLM 生成命令无命令级过滤；SkillManifest 的  | `kun/skills/builtin/shell_exec.py:46` |
 | F035a | high | architecture | ⬜ | python-exec 进程/容器隔离 + 清理死的 SkillManifest.allowed_commands | `kun/skills/builtin/python_exec.py,` |
-| F036 | high | architecture | ⬜ | ADR-020 钦定架构与实际代码根本背离：control_plane 应消失却翻倍至全包 50% | `/Users/petrarain/鲲/decisions.md:380` |
-| F037 | high | architecture | ⬜ | game_production.py 膨胀根因：平台层硬编码特定游戏的产品代码补丁与交付物，非业务复杂度 | `/Users/petrarain/鲲/kun/control_plane/game_produc` |
-| F038 | high | architecture | ⬜ | 架构治理链断裂：V6/V7 两代架构无任何 ADR，decisions.md/PROGRESS.md 已失效为权威文 | `/Users/petrarain/鲲/decisions.md:1076` |
+| F036 | high | architecture | 📐 | ADR-020 钦定架构与实际代码根本背离：control_plane 应消失却翻倍至全包 50% | `/Users/petrarain/鲲/decisions.md:380` |
+| F037 | high | architecture | 📐 | game_production.py 膨胀根因：平台层硬编码特定游戏的产品代码补丁与交付物，非业务复杂度 | `/Users/petrarain/鲲/kun/control_plane/game_produc` |
+| F038 | high | architecture | 📐 | 架构治理链断裂：V6/V7 两代架构无任何 ADR，decisions.md/PROGRESS.md 已失效为权威文 | `/Users/petrarain/鲲/decisions.md:1076` |
 | F039 | high | fix | 📐 | RSI 第 1 环断电：Supervisor 异常检测引擎没有接入任何生产事件流 | `kun/agents/supervisor/service.py:154` |
 | F040 | high | fix | 📐 | RSI 第 3 环（安全实验）整体缺失：runtime_experiments 生产零读写，Executor 是 P | `kun/agents/executor/base.py:35` |
 | F041 | high | fix | 📐 | RSI 第 4/5 环半假：Gate 唯一生产调用方喂合成证据，runtime_capabilities 生产零写零 | `kun/integration/methodology_to_gate_bridge.py:10` |
@@ -69,7 +69,7 @@
 | F050 | high | fix | ✅ | [文档漂移] promotion_queue 超时 sweeper 无任何生产调度——'超时自动 expired + | `kun/governance/promotion_queue.py:173` |
 | F051 | high | fix | ✅ | integration-tests 软失败:集成层回归不阻断合并,核心流程退化无法被 CI 拦截 | `.github/workflows/ci.yml:91` |
 | F052 | high | fix | ✅ | 无 alembic check / autogenerate-diff 步骤:ORM 模型与迁移漂移不被拦截 | `.github/workflows/ci.yml:89` |
-| F053 | high | architecture | ⬜ | 0011/0012 八张 RSI 表的 DB CHECK 约束在 ORM 完全缺失（系统性漂移） | `kun/core/orm.py:486` |
+| F053 | high | architecture | 📐 | 0011/0012 八张 RSI 表的 DB CHECK 约束在 ORM 完全缺失（系统性漂移） | `kun/core/orm.py:486` |
 | F054 | high | fix | ✅ | EntityType 枚举与 capability_cards.entity_type CHECK 双向不一致 | `kun/datamodel/capability.py:22` |
 | F055 | high | fix | ✅ | 5 个 Prometheus 指标定义后全仓零引用——纯摆设，抓取时 series 根本不存在 | `kun/core/metrics.py:19` |
 | F056 | high | fix | ⬜ | 全部 dogfood/e2e/smoke 脚本在 CI 之外，无人持续校验，却是 RSI/L5-L6 叙事的主要证据 | `.github/workflows/ci.yml:1-120` |

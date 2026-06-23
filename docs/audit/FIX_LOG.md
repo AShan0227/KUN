@@ -32,3 +32,4 @@
 2026-06-23 F021/F022/F025/F039/F040/F041/F042 📐 — needs-design 合并方案 docs/audit/proposals/rsi-mainline-wiring.md（RSI 闭环生产化：逐环断点+最小接线顺序）
 2026-06-23 F030/F031/F032 📐 — needs-design 合并方案 docs/audit/proposals/external-supervisor.md（外部监督落地：fail-close 守卫/独立进程/裁决强制力）
 2026-06-23 F029 ✅ — NATS watchtower handler 加载真实规则集(缓存单例)，跨进程规则不再永不触发，+3 测试
+2026-06-23 F012/F036/F037/F038/F053 📐 — needs-design 架构债合并方案 docs/audit/proposals/architecture-debt.md（平台/产品分离+治理链补 ADR+ORM CHECK 对齐）

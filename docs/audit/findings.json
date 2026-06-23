@@ -158,9 +158,9 @@
       "detail": "daemon.py 本应是通用调度/恢复循环，实际混入了大量产品特定逻辑：_acceptance_rework_work_items(5926-6236) 硬编码 Scribblenauts 游戏 9 步与 RainFlow 广告 12 步返工剧本(含 owner 字面量 \"kun-game-production-runner\"、\"external-supervisor-gpt5.5\"、production_mode==\"scribble_adventure_functional_parity_v1\")；_restore_cancelled_rainflow_phase1_acceptance_reviews(2251)、_is_rainflow_* 系列(6276-6590)、_GAME_REWORK_BRANCH_RE(101) 等 rainflow/game 专用补丁；_blocked_work_item_allows_clean_retest(3893-3948) 用中英文关键词(\"npm\"、\"ts2304\"、\"写入\"、\"权限\")在自由文本上做语义判断；_latest_product_pressure_evidence_allows_waiting(5406) 直接读取业务 workspace 下 docs/*.json。粗估 1500+ 行属于应下沉到 mission/contract 策略层或独立 policy 模块的内容。每接一个新业务(L6 平台 adapter)都会继续往这里打补丁，且配套测试文件已膨胀到 8913 行。这是该文件最大的架构债，建议按『通用 tick 引擎 / 治理 pass 插件 / 产品 playbook』拆分。",
       "evidence": "5949 `game_mode = production_mode == \"scribble_adventure_functional_parity_v1\"`；6016 owner=\"external-supervisor-gpt5.5\"；3913-3933 clean_retest_tokens=(\"workspace\",\"write\",...,\"ts2304\",\"写入\",\"权限\",...)；5431 `_read_json_file(docs_path / \"final-player-experience-gate.json\")`",
       "source": "cp-daemon",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "af6c68b",
+      "notes": "daemon 6927 行 god-module；架构债合并方案见 docs/audit/proposals/architecture-debt.md（先裁决 ADR→F053 独立 PR→域化拆分 epic）。"
     },
     {
       "id": "F013",
@@ -470,9 +470,9 @@
       "detail": "ADR-020(accepted 2026-05-26) 明文规定 kun/control_plane/、kun/brain/、kun/engineering/orchestrator.py 三处'在 L1 阶段重组后消失，功能分散到对应位置'。实际情况：control_plane 从 ADR 当时的 22k 行涨到 45,313 行/41 文件，占 kun 包总量 90,239 行的 50.2%，且其 __init__.py 自称 'KUN V6 control-plane product contract' 另立合同；engineering/orchestrator.py 不但没消失，至今仍是核心执行路径(cli.py:413、skills/calibration.py:39、control_plane/kun_runtime_runner.py:430 三方依赖)。PROGRESS.md L1.1 标记目录重组'已完成(commit 80c5c34)'，但 ADR-020 的核心退役条款实际只完成了 brain/ 一处(还剩 shim)。决策建议：要么补 ADR 正式废除该条款并承认 control_plane 为 L2 运行层实现，要么按既有 docs/CONTROL_PLane_DOMAINS.md 方案执行拆迁；现状是文档与代码互相矛盾，任何新人/审计都无法判断哪个是真架构。",
       "evidence": "decisions.md:380: \"`kun/control_plane/` `kun/brain/` `kun/engineering/orchestrator.py` 三处现有目录/文件**在 L1 阶段重组后消失**\" — 实测: control_plane 45,313 行 (find|wc), kun 总量 90,239 行; control_plane/__init__.py: \"This package is the strict code surface for the V6 product plan.\"",
       "source": "architecture",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "af6c68b",
+      "notes": "ADR-020 钦定架构与实际背离/control_plane 占50%/agents↔cp 零import；架构债合并方案见 docs/audit/proposals/architecture-debt.md（先裁决 ADR→F053 独立 PR→域化拆分 epic）。"
     },
     {
       "id": "F037",
@@ -483,9 +483,9 @@
       "detail": "7,907 行中实质是单一游戏(huohutu/Scribblenauts 仿制品)的硬编码产物：(1) 17 个按版本号命名的 _patch_app_for_product_gamefeel_v32~v55 函数，对目标游戏 App.tsx 源码做字面 string-replace 手术(v53 在 3970-4144 行共 175 行)；(2) 2,298 行藏在三引号字符串里的 markdown 交付物(_scribblenauts_deep_decomposition_markdown、_final_delivery_markdown 等)；(3) 硬编码 SVG 精灵图(_burger_sprite_svg:4264、_wolf_sprite_svg:4278)；(4) 另有 templates/ 目录 4,019 行 {path: content} 游戏文件模板。这意味着'自主游戏生产'流水线的产出大量是人手预写在平台代码里的，对 RSI/Agent OS 的产品主张构成诚信风险——docs/CONTROL_PLANE_DOMAINS.md 自己也承认这些域代码 'Not in any ADR's acceptance criteria'。拆分方向：按该文档既有方案迁入 kun/domains/game_production/，硬编码补丁函数应整体废弃(它们是某次 dogfood 的一次性产物，不可复用)，markdown 模板降为数据文件。整文件仅 3 个类+152 个顶层函数，无状态耦合，机械拆迁风险低。",
       "evidence": "game_production.py:3980-3998: `app = app_path.read_text(...)` 后对 'className=\"tabletWorkbench' / 'productGamefeelV52' 等做 app.replace(...) 字面替换; grep -c \"_patch_app_for_product_gamefeel\" = 17; 三引号字符串共 2,298 行 (re 统计)",
       "source": "architecture",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "af6c68b",
+      "notes": "game_production 硬编码逐版本游戏补丁；架构债合并方案见 docs/audit/proposals/architecture-debt.md（先裁决 ADR→F053 独立 PR→域化拆分 epic）。"
     },
     {
       "id": "F038",
@@ -496,9 +496,9 @@
       "detail": "decisions.md 实际只有 26 个 ADR(grep '^## ADR' = 26，止于 ADR-026 Phase 2 接入层，并非任务背景所述 36 个)，全文搜 'V6'/'V7' 零命中；PROGRESS.md 同样对 V6/V7 零提及。但最近 25 个 commit 全部冠名 V7-PHASE-X.*，control_plane/__init__.py 自称 V6 product contract，真正的现行规格藏在 docs/v6/KUN-V6.md 和 docs/v7/KUN-V7.md。也就是说项目至少历经 汇总版V2.docx→KUN-V1.md→ADR-020 五层→V6→V7 五代'权威方案'，每代都留下半迁移代码(docs/PROGRESS_VS_PLAN.md 还在对照 2026-04 的汇总版V2)。对 CTO 的直接影响：'KUN-V1.md+decisions.md+PROGRESS.md 为权威'这一前提已不成立，任何依据它们做的架构审计/招人培训/外部协作都会得出错误结论。建议立即补 1 份 ADR-027 明确 V7 与 ADR-020 五层的映射关系及 control_plane 的最终地位，并恢复'重大架构变更必须过 ADR'的纪律。",
       "evidence": "grep -c '^## ADR' decisions.md = 26; grep 'V6\\|V7' decisions.md → 0 命中; grep 'V6\\|V7' PROGRESS.md → 0 命中; git log 最近 25 条均为 feat/fix/docs(V7-PHASE-X.*)",
       "source": "architecture",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "af6c68b",
+      "notes": "治理链断裂 V6/V7 无 ADR；架构债合并方案见 docs/audit/proposals/architecture-debt.md（先裁决 ADR→F053 独立 PR→域化拆分 epic）。"
     },
     {
       "id": "F039",
@@ -691,9 +691,9 @@
       "detail": "迁移 0011_rsi_data_spine.py 与 0012_task_checkpoints.py 为 8 张表写了大量 CHECK 约束，但对应 ORM 模型（orm.py 486-761）全部没有 `__table_args__`，一条 CHECK 都没声明：\n- runtime_capabilities（ORM 486-511）缺 `runtime_capabilities_state_valid`、`runtime_capabilities_sampling_range`（0011:95-103）\n- runtime_experiments（ORM 514-538）缺 level_range/rollout_valid/status_valid/sampling_range（0011:148-163）\n- strategy_search_requests（ORM 541-559）缺 priority/status/triggered_by 三个 valid（0011:199-210）\n- diagnostic_records（ORM 562-584）缺 root_cause_level_range/recommended_action_valid/scope_max_5/repeat_history_nonneg（0011:246-262）\n- goal_anchors（ORM 587-605）缺 `goal_anchor_statement_max_200`（0011:299-302）\n- plan_reviews（ORM 608-633）缺 verdict_valid/action_valid（0011:345-352）\n- evidence_ledger（ORM 636-655）缺 kind_valid/level_range（0011:383-391）\n- task_checkpoints（ORM 715-761）缺 status_valid/sequence_nonneg/step_idx_nonneg/cost_nonneg/tokens_nonneg 共 5 个（0012:78-97）\n对比 0013-0018 的表两边都声明了 CHECK，说明这是 0011/0012 时期遗漏。影响：(1) `alembic check`（CI 从不跑，见 env.py:26 本意靠 autogenerate 对齐）一旦接 DB 必报 diff；(2) ORM 层无这些不变量定义，后续若有人用 metadata.create_all 起测试库（绕过迁移）将丢掉全部约束；(3) 双轨维护，再加列/改 enum 极易漏一边。",
       "evidence": "orm.py 486-511 class RuntimeCapabilityRow 无 __table_args__；而 0011:95 sa.CheckConstraint(\"promotion_state IN (...)\", name=\"runtime_capabilities_state_valid\") + 0011:100 sampling_range。task_checkpoints 同理：orm.py 757 status 列默认 'active' 但 ORM 无 CHECK，0012:78 sa.CheckConstraint(\"status IN ('active','final','failed_resume')\")",
       "source": "extra:db_schema_orm_migration_drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "af6c68b",
+      "notes": "8 张 RSI 表 CHECK 在 ORM 缺失(可机械修但需逐表+全套件门禁)；架构债合并方案见 docs/audit/proposals/architecture-debt.md（先裁决 ADR→F053 独立 PR→域化拆分 epic）。"
     },
     {
       "id": "F054",
