@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 22 ｜ ⛔blocked 0 ｜ 📐needs-design 6 ｜ ⬜pending 145
+**总计 173 项** — ✅done 25 ｜ ⛔blocked 0 ｜ 📐needs-design 6 ｜ ⬜pending 142
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -63,9 +63,9 @@
 | F044 | high | fix | ⬜ | AnthropicProvider 将 role="tool" 消息原样透传, 多轮工具循环必 400 | `kun/interface/llm/anthropic_provider.py:127-150` |
 | F045 | high | fix | ⬜ | 生产 fallback 链兜底是 StubProvider, 失败时伪造成功响应(已造成事故) | `kun/interface/llm/router.py:716-748` |
 | F046 | high | fix | ✅ | 路由层对所有异常无差别重试 ×3, 叠加 SDK 重试放大 429/卡死/确定性 400 | `kun/interface/llm/router.py:572-574` |
-| F047 | high | fix | ⬜ | [文档漂移] ADR-023 External Supervisor '3 条硬约束 fail-close' 纯属文 | `kun/core/config.py:71` |
-| F048 | high | fix | ⬜ | [文档漂移] L6.AuthScaffold 'flag flip 即切生产 posture' 为假——JWT au | `kun/api/main.py:237` |
-| F049 | high | fix | ⬜ | [文档漂移] L6.E 'Director.intent → Executor → AdapterRouter e2 | `kun/api/ws.py:46` |
+| F047 | high | fix | ✅ | [文档漂移] ADR-023 External Supervisor '3 条硬约束 fail-close' 纯属文 | `kun/core/config.py:71` |
+| F048 | high | fix | ✅ | [文档漂移] L6.AuthScaffold 'flag flip 即切生产 posture' 为假——JWT au | `kun/api/main.py:237` |
+| F049 | high | fix | ✅ | [文档漂移] L6.E 'Director.intent → Executor → AdapterRouter e2 | `kun/api/ws.py:46` |
 | F050 | high | fix | ⬜ | [文档漂移] promotion_queue 超时 sweeper 无任何生产调度——'超时自动 expired + | `kun/governance/promotion_queue.py:173` |
 | F051 | high | fix | ✅ | integration-tests 软失败:集成层回归不阻断合并,核心流程退化无法被 CI 拦截 | `.github/workflows/ci.yml:91` |
 | F052 | high | fix | ✅ | 无 alembic check / autogenerate-diff 步骤:ORM 模型与迁移漂移不被拦截 | `.github/workflows/ci.yml:89` |

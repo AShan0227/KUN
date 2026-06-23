@@ -613,9 +613,9 @@
       "detail": "decisions.md:663-681 声称启动时强制校验三条硬约束（必须 multiprocessing.Process、必须显式配 KUN_SUPERVISOR_MODEL、必须不同 model family），'任一不满足启动失败，不允许 silent 跑同模型监督自己'。实际：(1) 全仓无任何 multiprocessing.Process 用法，该词只出现在 kun/agents/external_supervisor/base.py:3,11 的 docstring；(2) KUN_SUPERVISOR_MODEL 这个 env var 代码从未读取，实际读的 external_supervisor_model_id 在 config.py:71 带 silent 默认值 \"qwen2.5:32b\"，与'必须显式配'直接矛盾；(3) model-family 校验函数 validate_cross_family_config（kun/interface/llm/cross_family.py:120）存在但全仓唯一调用方是 tests/unit/test_cross_family.py，无任何生产代码调用。监督独立性是 RSI 安全叙事的核心护栏，目前为零实现——系统完全可以用同一个模型监督自己而不会报任何错。建议：要么在 settings 的 model_validator 里实装三条 assert，要么修订 ADR-023 降级该承诺。",
       "evidence": "config.py:71 `external_supervisor_model_id: str = Field(default=\"qwen2.5:32b\")`；grep KUN_SUPERVISOR_MODEL 全仓唯一命中 kun/agents/external_supervisor/base.py:12（注释）；grep validate_cross_family_config 生产调用方 0 个",
       "source": "docs-drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "e3d6fac",
+      "notes": "decisions.md ADR-023 加状态修正注记：3 条 fail-close 硬约束尚未实现(同进程/默认关/静默跳过)，目标态≠现状；真正落地见 F030/F031/F032。"
     },
     {
       "id": "F048",
@@ -626,9 +626,9 @@
       "detail": "PROGRESS.md:182-185 宣称 Auth 脚手架 '默认 KUN_AUTH_ENABLED=false, flag flip 即切换到生产 posture'。kun/api/auth/（jwt_token.py/middleware.py/rls.py）库代码和 56 个相关单测确实存在，但 grep 'from kun.api.auth' 在 kun/ 下（auth 目录自身之外）命中为 0——middleware.py 里的 resolve_tenant_id 是没人调用的纯函数。生产请求实际走的是 main.py:227-255 的 tenant_middleware，它直接信任明文 X-Tenant-Id header（kun/core/tenancy.py 无任何 jwt/Bearer 逻辑）；ws.py 同样直接读 query param。也就是说把 KUN_AUTH_ENABLED 翻成 true 只会触发 config 校验（要求配 secret，config.py:125-130），对任何 HTTP/WS 请求的鉴权行为零影响。这是仓库已知的 'silently orphan' 失败模式在安全声明上的复现，商业化（L6 多租户对外）前必须补接线。",
       "evidence": "main.py:237 `tenant_id = resolve_tenant_id(request.headers.get(\"X-Tenant-Id\"))`（来自 kun.core.tenancy 而非 kun.api.auth）；grep -rn 'from kun.api.auth' kun/ 除 auth 自身外 0 命中",
       "source": "docs-drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "(F007)",
+      "notes": "已由 F007 修真：main.py 现 import kun.api.auth.middleware，KUN_AUTH_ENABLED flag flip 确实切换 JWT 强校验 posture。PROGRESS 声明现已准确，无需改文档。本轮核实。"
     },
     {
       "id": "F049",
@@ -639,9 +639,9 @@
       "detail": "PROGRESS.md:186-190 把 L6.E 标为 [x] 'e2e wiring（34 tests + 6 个 integration test 跑通）'。三个符号（extract_automation_action / AutomationRunner / action_result_to_artifact）确实存在且测试真实，但 grep 全仓：它们的引用只在 kun/agents/director/__init__.py 与 kun/agents/executor/__init__.py 的 re-export，kun/api/ 全目录 0 个文件提到 automation，生产编排器 kun/engineering/orchestrator.py 同样 0 命中。tests/integration/test_e2e_automation_wiring.py 是用 DI 替身手工串链（stub LLMRouter + fake http_caller），不经过 WS/orchestrator 生产入口。即用户通过真实 WS 通道说'在 Shopify 创建产品'时，这条链路根本不会被触发——L6 '商业化 e2e' 实为 leaf library + 自串测试。这正是 X.H 已修过的 orphan 模式（commit 5270750）。建议把 automation 分支挂进 orchestrator 的任务执行路径并加 production-entry diff check。",
       "evidence": "ws.py 生产链路 import 仅 long_task_intake + engineering/orchestrator（ws.py:37-46）；grep extract_automation_action|AutomationRunner|action_result_to_artifact 在 kun/api、kun/engineering、scripts 命中 0；orchestrator.py grep 'automation' 命中 0",
       "source": "docs-drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "e3d6fac",
+      "notes": "PROGRESS.md L6.E 由 [x] 降级为 [~]，加修正注记：符号+测试真实但未接入生产编排路径(kun/api 0 引用)，属库就绪未接线。"
     },
     {
       "id": "F050",

@@ -680,6 +680,11 @@ class ExternalSupervisor:
 
 任一条件不满足，启动失败。**不允许 silent 跑同模型监督自己**。
 
+> ⚠️ **实现状态修正 (2026-06-23, audit F047)**：上述 3 条 fail-close 硬约束**尚未实现**。
+> 全仓无 `multiprocessing.Process` 用法（该词仅出现在 docstring）；`KUN_SUPERVISOR_MODEL`
+> 环境变量代码从不读取；启动时也无 model-family 校验。实际运行是**同进程、默认关闭、失败静默跳过**。
+> 本节描述目标态，不代表当前实现；真正落地见 F030/F031/F032（needs-design）。
+
 ### 双模式
 
 ```

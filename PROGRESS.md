@@ -183,11 +183,14 @@
   - HS256 JWT 用 stdlib hmac (无 PyJWT 依赖)
   - `resolve_tenant_id` 纯函数 + `bind_tenant_to_session` RLS helper
   - 默认 `KUN_AUTH_ENABLED=false`, flag flip 即切换到生产 posture
-- [x] **L6.E** Director.intent → Executor → AdapterRouter e2e wiring（34 tests）
+- [~] **L6.E** Director.intent → Executor → AdapterRouter（库 + 测试就绪，**未接入生产编排**）
   - `extract_automation_action(parsed_intent, *, tenant_id) → Action | None` (Director 侧, 纯函数)
   - `AutomationRunner.run(action) → RouterDecision` (Executor 侧, emit action.* 事件)
   - `action_result_to_artifact()` Phase 2 → Phase 1 转换
   - 6 个 integration test 跑通 (parsed → Action → Router → Shopify → ActionResult)
+  - ⚠️ 修正 (2026-06-23, audit F049)：上述符号与 34/6 测试真实存在，但**未接入生产路径**——
+    `kun/api/` 全目录 0 处引用 automation，Director→Executor→AdapterRouter 不在 `/chat` 或 `/ws`
+    的生产链上。属"库就绪、未接线"，不应记为已 e2e 接通。
 - [ ] **L6.D-内容分发** 第二个垂直 (用户选了微信公众号/小红书/抖音, 都无官方 API → 全 Browser path)
 - [ ] **L6.D-投放** / **L6.D-CRM** 其他垂直 (待用户决策)
 - [ ] ADR-019 Auth posture 升级到 Phase 2 / Phase 3
