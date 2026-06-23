@@ -31,3 +31,4 @@
 2026-06-23 F050 ✅ — promotion sweeper 未调度：ADR-024/PROGRESS L5.2 如实修订(逻辑就绪未在生产调度)，接线归 RSI 主链方案
 2026-06-23 F021/F022/F025/F039/F040/F041/F042 📐 — needs-design 合并方案 docs/audit/proposals/rsi-mainline-wiring.md（RSI 闭环生产化：逐环断点+最小接线顺序）
 2026-06-23 F030/F031/F032 📐 — needs-design 合并方案 docs/audit/proposals/external-supervisor.md（外部监督落地：fail-close 守卫/独立进程/裁决强制力）
+2026-06-23 F029 ✅ — NATS watchtower handler 加载真实规则集(缓存单例)，跨进程规则不再永不触发，+3 测试

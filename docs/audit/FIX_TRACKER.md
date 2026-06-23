@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 26 ｜ ⛔blocked 0 ｜ 📐needs-design 16 ｜ ⬜pending 131
+**总计 173 项** — ✅done 27 ｜ ⛔blocked 0 ｜ 📐needs-design 16 ｜ ⬜pending 130
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -44,7 +44,7 @@
 | F026 | high | fix | ✅ | session_scope(bypass_rls=True) 仍强制要求租户上下文，生产环境 outbox/订阅者每 | `kun/core/db.py:114-123` |
 | F027 | high | fix | ✅ | 长任务分支重复发出 answer 与 done 终结事件,并使非流式 run 崩溃 | `kun/engineering/orchestrator.py:1422` |
 | F028 | high | fix | ⬜ | proactive 层在无审批且仅 cwd 沙箱下自动执行用户消息中的 python 代码块 | `kun/engineering/proactive_tools.py:250` |
-| F029 | high | fix | ⬜ | Watchtower 跨进程路径评估的是一台零规则引擎 — NATS 链路上的所有规则永远不会触发 | `kun/core/nats_subscriber.py:80` |
+| F029 | high | fix | ✅ | Watchtower 跨进程路径评估的是一台零规则引擎 — NATS 链路上的所有规则永远不会触发 | `kun/core/nats_subscriber.py:80` |
 | F030 | high | fix | 📐 | ADR-023 '独立进程 + fail-close 三硬约束' 完全未落地 — 实际是同进程、默认关闭、失败静默跳 | `kun/external_supervisor/runner.py:45` |
 | F031 | high | fix | 📐 | Mode A / Mode B / 自嗨检测 / ExternalSupervisorPool 全是死代码, Gat | `kun/external_supervisor/modes.py:134` |
 | F032 | high | fix | 📐 | 监督裁决全程 advisory-only: alarming 只发事件, 无任何消费者会暂停/终止主线 | `kun/engineering/long_task_orchestrator.py:931` |

@@ -379,9 +379,9 @@
       "detail": "watchtower_handler 对每条 NATS 事件新建 `RuleEngine()`(无参构造 = rules=[]), 从不调 load_rules(\"rules\")。后果一: 任何只能经 NATS 链路到达的规则(如 rules/anomaly/llm_fallback_spike.yaml 监听 llm.fallback.triggered)在系统里没有任何评估点, 永远不可能 fire — kun/api/main.py:88 虽然 load_rules 进了共享引擎, 但那台引擎只在 orchestrator 内部对 task.step.completed 评估(orchestrator.py:937)。后果二: 即使补上规则加载, 每事件新建实例也会让 cooldown 防抖表(实例字段)每次清零失效。后果三: subscriber 注入的 namespace 是 {event_type, tenant_id, task_ref, payload} 顶层结构, 而 YAML 规则表达式写的是 event['payload'].get(...), 两者 shape 不匹配, eval 必抛 KeyError 被吞为 False。三层叠加意味着 ADR-004 的'守望'在跨进程方向是纯装饰。修复: subscriber 启动时 load_rules 一次构建长生命周期引擎, 并统一 namespace 契约。",
       "evidence": "kun/core/nats_subscriber.py:80 `engine = RuleEngine()` + :81-86 namespace 无 \"event\" 键; rules/anomaly/llm_fallback_spike.yaml `when: \"event['payload'].get('rolling_rate_10min', 0) > 0.1\"`; RuleEngine.__init__ `self.rules = rules or []`",
       "source": "gov-sec-watch",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "ff5c266",
+      "notes": "watchtower_handler 改用 _watchtower_engine() 缓存单例(load_rules(\"rules\")，2 条规则)，NATS 跨进程路径现在真评估规则(此前每事件 new RuleEngine() 空引擎)；加载失败 fail-open 空引擎+日志。+3 测试。"
     },
     {
       "id": "F030",
