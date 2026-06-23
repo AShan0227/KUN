@@ -31,6 +31,16 @@ from kun.skills.dispatcher import dispatch as skill_dispatch
 log = get_logger("kun.proactive_tools")
 
 
+# Security guard (audit F003): skills that execute arbitrary code or run shell
+# commands must NEVER be auto-dispatched from raw prompt text. Proactive prefetch
+# fires with no human/LLM confirmation, so auto-running these turns any text that
+# reaches a prompt (incl. injected upstream content) into RCE + secret exfil.
+# Code/command execution must go through the explicit approval gate instead.
+# Enforced across ALL trigger layers, so a misconfigured proactive_triggers.yaml
+# or SKILL.md auto_trigger_when cannot re-enable the path.
+NEVER_PROACTIVE: frozenset[str] = frozenset({"python-exec", "shell-exec"})
+
+
 @dataclass
 class ToolTrigger:
     """A pre-defined rule that says "if prompt looks like X, run Y skill"."""
@@ -100,13 +110,6 @@ class ProactiveScanResult:
 def _extract_pdf_path(match: re.Match[str], _prompt: str) -> dict[str, Any] | None:
     path = match.group(0).strip()
     return {"path": path}
-
-
-def _extract_python_code(match: re.Match[str], _prompt: str) -> dict[str, Any] | None:
-    code = match.group(1).strip()
-    if len(code) < 4 or len(code) > 4000:
-        return None
-    return {"code": code, "timeout_sec": 30}
 
 
 def _extract_search_query(_match: re.Match[str], prompt: str) -> dict[str, Any] | None:
@@ -246,13 +249,9 @@ DEFAULT_TRIGGERS: list[ToolTrigger] = [
         pattern=re.compile(r"\S*\.csv\b", re.IGNORECASE),
         extract_params=_extract_csv_path,
     ),
-    # ```python ... ``` block → python-exec
-    ToolTrigger(
-        skill_id="python-exec",
-        description="prompt 含 Python 代码块 → 自动执行",
-        pattern=re.compile(r"```python\s*\n([\s\S]*?)```", re.MULTILINE),
-        extract_params=_extract_python_code,
-    ),
+    # NOTE: a ```python``` block trigger used to live here and auto-ran
+    # python-exec. Removed (audit F003 RCE) — code execution is never proactive;
+    # it must go through the explicit approval gate. See NEVER_PROACTIVE.
     # "最新 / 现在 / 今天 / 当前 / 实时" 等时效性词 → web-search
     ToolTrigger(
         skill_id="web-search",
@@ -302,6 +301,14 @@ async def proactive_dispatch(
     for required_skill in required_tools_hint or []:
         if required_skill in seen:
             continue
+        if required_skill in NEVER_PROACTIVE:
+            log.warning(
+                "proactive.blocked_dangerous_skill",
+                skill_id=required_skill,
+                layer="required_hint",
+            )
+            seen.add(required_skill)
+            continue
         if not is_registered(required_skill):
             log.info("proactive.required_skill_unregistered", skill_id=required_skill)
             continue
@@ -313,6 +320,14 @@ async def proactive_dispatch(
     # Layer 1b: keyword trigger scan
     for trigger in triggers:
         if trigger.skill_id in seen:
+            continue
+        if trigger.skill_id in NEVER_PROACTIVE:
+            log.warning(
+                "proactive.blocked_dangerous_skill",
+                skill_id=trigger.skill_id,
+                layer="keyword",
+            )
+            seen.add(trigger.skill_id)
             continue
         match = trigger.pattern.search(prompt)
         if match is None:
@@ -383,6 +398,14 @@ async def proactive_dispatch(
 
         for skill_id, pattern_str, extract_cfg in hits:
             if skill_id in seen:
+                continue
+            if skill_id in NEVER_PROACTIVE:
+                log.warning(
+                    "proactive.blocked_dangerous_skill",
+                    skill_id=skill_id,
+                    layer="skill_manifest",
+                )
+                seen.add(skill_id)
                 continue
             if not is_registered(skill_id):
                 # SkillRegistry 里有, 但 dispatcher 没注册 executor —
@@ -459,6 +482,7 @@ async def proactive_dispatch(
 
 __all__ = [
     "DEFAULT_TRIGGERS",
+    "NEVER_PROACTIVE",
     "ProactiveDispatch",
     "ProactiveScanResult",
     "ToolTrigger",

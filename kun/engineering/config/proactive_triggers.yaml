@@ -46,18 +46,10 @@ triggers:
       extra_params:
         sql: "SELECT * FROM data LIMIT 10"
 
-  # Python 代码块 → python-exec
-  - skill_id: python-exec
-    description: "prompt 含 ```python 代码块 → 自动执行"
-    pattern: '```python\s*\n([\s\S]*?)```'
-    confidence: high
-    extract:
-      kind: match_group_1
-      param_name: code
-      min_len: 4
-      max_len: 4000
-      extra_params:
-        timeout_sec: 30
+  # NOTE: a python-exec trigger used to live here (auto-ran ```python``` blocks).
+  # Removed — audit F003 RCE. Code execution is never proactive; it must go
+  # through the explicit approval gate. python-exec / shell-exec are also
+  # hard-blocked in proactive_tools.NEVER_PROACTIVE even if re-added here.
 
   # 时效性词 → web-search
   - skill_id: web-search
