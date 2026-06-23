@@ -47,6 +47,33 @@ from sqlalchemy.exc import IntegrityError
 pytestmark = pytest.mark.asyncio
 
 
+# Audit F068: substrings (lowercased) that indicate PG/Docker is simply not
+# reachable, so the test should SKIP rather than fail. asyncio's connector
+# raises `OSError: Multiple exceptions: [Errno 61] Connect call failed (...)`
+# (or [Errno 111] on Linux) which the old two-pattern guard missed.
+_PG_UNAVAILABLE_MARKERS = (
+    "could not connect",
+    "connection refused",
+    "connect call failed",  # asyncio OSError [Errno 61/111]
+    "multiple exceptions",  # asyncio happy-eyeballs aggregate
+    "connection failed",
+    "could not translate host",
+    "name or service not known",
+    "no route to host",
+    "errno 61",
+    "errno 111",
+    "operation timed out",
+)
+
+
+def _is_pg_unavailable(exc: Exception) -> bool:
+    """True when `exc` looks like 'Postgres/Docker is not reachable'."""
+    if isinstance(exc, (ConnectionError, OSError, TimeoutError)):
+        return True
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _PG_UNAVAILABLE_MARKERS)
+
+
 # Each test gets a fresh engine + sessionmaker — avoids the "Event loop is
 # closed" race where a connection from test N's loop is reused in test N+1's
 # (different) loop. pytest-asyncio defaults to function-scoped loops, so we
@@ -101,12 +128,14 @@ async def _expect_check_violation(
     except IntegrityError as e:
         raised = e
     except Exception as e:
-        # PG unavailable / RLS / network → re-raise so we don't false-positive
-        # claim "CHECK active" when really nothing was tested.
-        if "could not connect" in str(e).lower() or "connection refused" in str(e).lower():
-            pytest.skip(
-                f"PG unavailable (connection error): {type(e).__name__}: {e}"
-            )
+        # PG unavailable / RLS / network → skip; re-raise anything else so we don't
+        # false-positive claim "CHECK active" when really nothing was tested.
+        # Audit F068: the old guard only matched "could not connect"/"connection
+        # refused", but asyncio's connector raises e.g. `OSError: Multiple
+        # exceptions: [Errno 61] Connect call failed (...)` when Docker/PG is down,
+        # so all 13 tests *errored* instead of skipping. Match the real markers.
+        if _is_pg_unavailable(e):
+            pytest.skip(f"PG unavailable (connection error): {type(e).__name__}: {e}")
         raise
 
     assert raised is not None, (
@@ -423,21 +452,26 @@ async def test_ec_min_2_providers() -> None:
 async def test_happy_path_valid_mission_alignment_row_inserts() -> None:
     """Sanity: a fully valid row passes all CHECKs and inserts cleanly."""
     review_id = f"mar-mf5-happy-{datetime.now(UTC).timestamp()}"
-    async with session_scope(tenant_id="t-mf5-happy") as s:
-        s.add(
-            MissionAlignmentReviewRow(
-                tenant_id="t-mf5-happy",
-                review_id=review_id,
-                task_id="tk-mf5",
-                task_plan_version="v1",
-                reviewed_at=_utcnow(),
-                verdict="ok",
-                alignment_score=0.85,
-                findings=["sanity test"],
-                info_gap_coverage=0.9,
-                decomposition_coverage=0.85,
-                evidence_coverage=0.7,
-                plan_change_proposed=False,
+    try:
+        async with session_scope(tenant_id="t-mf5-happy") as s:
+            s.add(
+                MissionAlignmentReviewRow(
+                    tenant_id="t-mf5-happy",
+                    review_id=review_id,
+                    task_id="tk-mf5",
+                    task_plan_version="v1",
+                    reviewed_at=_utcnow(),
+                    verdict="ok",
+                    alignment_score=0.85,
+                    findings=["sanity test"],
+                    info_gap_coverage=0.9,
+                    decomposition_coverage=0.85,
+                    evidence_coverage=0.7,
+                    plan_change_proposed=False,
+                )
             )
-        )
-        await s.flush()
+            await s.flush()
+    except Exception as e:
+        if _is_pg_unavailable(e):
+            pytest.skip(f"PG unavailable (connection error): {type(e).__name__}: {e}")
+        raise

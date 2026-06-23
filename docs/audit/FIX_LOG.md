@@ -50,3 +50,5 @@
 2026-06-23 F128/F129/F130 📐 — ADR-020/022 治理链漂移枚举并入 architecture-debt.md F038(追溯补 ADR)
 2026-06-23 F125/F131 ✅ — decisions.md ADR-023 Mode A stub 注记 + PROGRESS.md 陈旧横幅(以 git log/docs/audit 为准)
 2026-06-23 F127/F100/F117 📐 — RCDH 引擎就绪零接线并入 rsi-mainline-wiring.md
+2026-06-23 F068 ✅ — PG check-constraint 测试 skip-guard 扩为 _is_pg_unavailable(类型+11子串)，无 Docker 时 13 项全 SKIP 不再 FAIL
+2026-06-23 F150 ✅ — 核实为 F054 重复(EntityType vs capability_cards CHECK)，标 done 引用

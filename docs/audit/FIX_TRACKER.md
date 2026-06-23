@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 45 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 93
+**总计 173 项** — ✅done 47 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 91
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -86,7 +86,7 @@
 | F065 | medium | fix | ⬜ | evidence_ledger 是空 stub: append 只打日志, get_trace 返回空列表, ADR | `kun/governance/evidence_ledger.py:51` |
 | F066 | medium | fix | ⬜ | 零鉴权 + 租户/用户身份三处硬编码, 审批按钮可被任意访问者点击执行真实副作用 | `frontend/src/app/page.tsx:40` |
 | F067 | medium | fix | ⬜ | layout 与 control-plane 页面使用的 kun-* 组件样式类在整个仓库 (含全部 git 历史) | `frontend/src/app/globals.css:1` |
-| F068 | medium | fix | ⬜ | PG skip guard 字符串匹配错误，13 个约束测试在无 Docker 时失败而非跳过 | `tests/integration/test_v7_xb_pg_check_constraint` |
+| F068 | medium | fix | ✅ | PG skip guard 字符串匹配错误，13 个约束测试在无 Docker 时失败而非跳过 | `tests/integration/test_v7_xb_pg_check_constraint` |
 | F069 | medium | fix | ⬜ | PROGRESS.md 宣称 'L5 已达成=RSI 真闭合的标志' 与代码现实不符 | `PROGRESS.md:140` |
 | F070 | medium | fix | ⬜ | 字符串补丁机制对生成代码逐字节耦合，anchor 漂移时静默跳过并可产出引用未定义变量的源码 | `kun/control_plane/game_production.py:5876-5908,` |
 | F071 | medium | fix | ⬜ | _final_delivery 对整个项目目录（含 node_modules 与 .npm-cache）做两次递归全 | `kun/control_plane/game_production.py:2233-2243,` |
@@ -169,7 +169,7 @@
 | F147 | low | fix | ⬜ | SupervisorService.observe 全程持单把全局锁跨 await DB/通知调用，监督线吞吐被串行 | `/Users/petrarain/鲲/kun/agents/supervisor/service` |
 | F148 | low | fix | ⬜ | Cockpit 端点用 query 参数 tenant_id（默认 "default"）绕过租户中间件，discip | `kun/api/cockpit.py:282-296,328-339;` |
 | F149 | low | fix | ⬜ | 平台 browser adapter 的读操作仅导航即返回 status=ok，假成功污染 AdapterRoute | `kun/interface/automation/shopify/browser.py:161-` |
-| F150 | low | fix | ⬜ | EntityType 枚举与 capability_cards DB CHECK 约束双向不一致(company v | `kun/datamodel/capability.py:22-28` |
+| F150 | low | fix | ✅ | EntityType 枚举与 capability_cards DB CHECK 约束双向不一致(company v | `kun/datamodel/capability.py:22-28` |
 | F151 | low | fix | ⬜ | External Supervisor 自身可被提示词注入 + 解析兜底 fail-open + LLM 自由文本可 | `kun/external_supervisor/service.py:207` |
 | F152 | low | fix | ⬜ | 技能注册表与 watchtower 规则用 cwd 相对默认路径，非 repo-root 启动时静默不加载 | `kun/skills/loader.py:162` |
 | F153 | low | fix | ⬜ | /cockpit 页面的 API 路径未配置 rewrite, 同源部署下整页必然 404; dev 端口 3001 | `frontend/next.config.mjs:7-11` |
