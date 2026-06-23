@@ -2030,9 +2030,9 @@
       "detail": "新注释块的英文部分说 \"Fix: disable both flaky CLI subprocess paths so the router uses the direct AnthropicProvider\", 但代码设 KUN_CODEX_ONLY=1——把所有 tier 钉到 Codex MCP(gpt-5.5), 即注释第一条 bullet 里刚描述过 TLS 握手失败的那条路。真实决策只在最后两行中文里(\"Anthropic 订阅被限流, 用户选 Codex\")。这是两次决策叠写没清理的半成品注释, 下一个读者无法判断脚本实际用哪个 provider。另外 `os.environ[\"KUN_DISABLE_CODEX_CLI\"]=\"0\"` 硬覆盖(非 setdefault)且 pop 掉 KUN_DISABLE_CLI_OAUTH——重新启用了注释里自己记录\"挂 180s×3 → stub 伪成功\"的 claude CLI 路径; 在 CODEX_ONLY=1 下不可达, 但只要有人把 CODEX_ONLY 翻回 0, router 会优先选回那条已知会挂的路径。建议: 删掉过时英文段, 只保留当前决策; 若 claude CLI 路径确认不可靠, 应显式设 KUN_DISABLE_CLI_OAUTH=1 而不是 pop。",
       "evidence": "注释: \"Fix: disable both flaky CLI subprocess paths so the router uses the direct AnthropicProvider\" 紧跟代码: os.environ[\"KUN_CODEX_ONLY\"] = \"1\"; os.environ.pop(\"KUN_DISABLE_CLI_OAUTH\", None)",
       "source": "diff-and-llm",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "e93e831",
+      "notes": "对齐 _setup_env 的矛盾注释：删除\"禁用 CLI→走 AnthropicProvider\"的过时描述(与实际 KUN_CODEX_ONLY=1 钉 Codex 相反)，改为如实记录 Codex-pin 决策+历史。脚本入口级、env 非导入复用(进程退出即释放)，故注明不复原。纯注释、零行为变更。"
     },
     {
       "id": "F157",

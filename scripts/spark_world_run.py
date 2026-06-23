@@ -46,15 +46,17 @@ def _setup_env() -> None:
     # 鲲's executable skills build in the Spark World workspace
     os.environ["KUN_SKILL_EXEC_ROOTS"] = str(WORKSPACE)
     os.environ["KUN_SKILL_FILE_ROOT"] = str(WORKSPACE)
-    # Supervisor optimization (two provider failures observed):
-    #  - codex_only (gpt-5.5 via Codex MCP): TLS-handshake EOF to chatgpt.com
-    #  - claude CLI OAuth (`claude -p` subprocess): hung 180s × 3 → RetryError →
-    #    silent stub fallback that echoed the prompt (a no-op masquerading as success)
-    # Fix: disable both flaky CLI subprocess paths so the router uses the direct
-    # AnthropicProvider (api.anthropic.com + the sk-ant-oat0 subscription token):
-    # reliable transport, same subscription, no metered cost.
-    # 用户选择 gpt-5.5 (Codex) —— Anthropic 订阅被限流, Codex 有独立配额。
-    # KUN_CODEX_ONLY=1 把所有 tier 钉到 Codex MCP (gpt-5.5)。需 codex CLI 已登录。
+    # Provider selection (audit F156: this comment must match the env set below).
+    # History — two paths proved flaky during dogfood:
+    #  - claude CLI OAuth (`claude -p` subprocess): hung 180s × 3 → RetryError → a
+    #    silent stub fallback that echoed the prompt (a no-op masquerading as success);
+    #  - earlier codex_only runs hit a TLS-handshake EOF to chatgpt.com.
+    # Current decision: the user's Anthropic subscription is rate-limited and Codex
+    # (gpt-5.5) has separate quota, so we PIN ALL tiers to the Codex MCP provider.
+    # KUN_CODEX_ONLY=1 routes everything to Codex MCP (gpt-5.5); requires codex CLI
+    # logged in. We intentionally do NOT disable the codex CLI path here
+    # (KUN_DISABLE_CODEX_CLI=0) and clear any stale KUN_DISABLE_CLI_OAUTH override.
+    # (Process-scoped run script: these env writes are intentionally not restored.)
     os.environ["KUN_CODEX_ONLY"] = "1"
     os.environ["KUN_DISABLE_CODEX_CLI"] = "0"
     os.environ.pop("KUN_DISABLE_CLI_OAUTH", None)
