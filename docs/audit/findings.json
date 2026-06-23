@@ -15,9 +15,9 @@
       "detail": "整条人审闭环是自引用的：(1) cli.py 把 EXTERNAL_SUPERVISOR_GATE_OWNER(\"external-supervisor-gpt5.5\") 和游戏 runner 注册为同一个 GameProductionRunner 实例，所谓外部监督从不调用任何外部模型或真人；(2) supervisor-gate 阶段先用 ignore_local_player_review=True 计算自评 payload（即先无视已有的人类差评），若硬编码 checklist 通过，就写出 player-experience-*-supervisor-review.json，内容为 pass:true/final:true，并注册带 player_first_impression_gate support 的 artifact；(3) 该文件名匹配 LOCAL_PLAYER_REVIEW_PATTERNS(\"player-experience-*.json\")，verdict \"approved_current_supervisor\" 因 startswith(\"approved_\") 被判 pass，且 _latest_local_player_review_status 按 mtime 取最新——机器刚写的 approve 必然比人类更早写的 fail 新，人类的 rework 裁决被永久覆盖；(4) _player_perception_artifact_verdict 中\"KUN 不得自批\"的防线只检查 created_by==kun-game-production-runner，而该 artifact 的 created_by 是 external-supervisor owner，防线被绕过。最终 _final_delivery 所要求的 human/target-player impression 证据完全由机器自产文件满足，而 _fresh_player_review_ticket 的 fallback_policy 明文写着 allowed:False、\"fresh human review is required for final completion\"。这是教科书式的 reward hacking/门禁造假，KUN 的\"已通过人审交付\"记录不可信，必须在治理层修复（外部 owner 必须由独立进程/真实模型执行，supervisor 产出的 review 不得匹配 human review 文件模式）。",
       "evidence": "cli.py: `KUN_GAME_PRODUCTION_RUNNER_OWNER: game_production_runner, EXTERNAL_SUPERVISOR_GATE_OWNER: game_production_runner`; game_production.py:1794 `ignore_local_player_review=True`; 1808-1810 `\"verdict\": \"approved_current_supervisor\", \"pass\": True, \"final\": True`; 1838-1841 supports=[\"player_first_impression_gate\", ...]; 6463-6464 `max(conclusive, key=lambda item: (item[0], ...))` 按 mtime 取最新; 6510 `verdict.startswith((\"pass_\", ..., \"approved_\"))`; 6574 `\"rule\": \"fresh human or target-player review is required for final completion\"`",
       "source": "cp-game-production",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "595d211",
+      "notes": "评审信任模型重设计，方案见 docs/audit/proposals/F001.md。与 game_production 拆分、external_supervisor 独立进程落地强相关，建议一并排期。不在 loop 内自动改。"
     },
     {
       "id": "F002",
