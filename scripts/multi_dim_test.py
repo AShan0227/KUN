@@ -1,5 +1,7 @@
 """DOGFOOD-P3 — 10 维 Claude Code 能力测试 battery.
 
+⚠️ FIXTURE/DEMO (audit F060): the 10-dimension 'scores' are file-existence greps + git-log counts + /tmp log reads, not behavioral verification. See docs/audit/proposals/demo-script-honesty.md.
+
 每维 score 0/1/2:
   2 = 真工程化进 KUN, 有 code 路径 + (测试 OR 方法论 OR 真行为) 三选二验证
   1 = 半具备 — 存在某层 (e.g. 有 methodology 但 runtime 不强制, 或反过来)

@@ -1,5 +1,7 @@
 """端到端 RSI 闭环 demo (Phase 1.D 验收).
 
+⚠️ FIXTURE/DEMO (audit F057): mid-chain anomaly data is hardcoded and Gate inputs are hand-fed to pass; a green run does NOT prove real RSI closure. See docs/audit/proposals/demo-script-honesty.md.
+
 # FIXTURE-ONLY (V7 §16.3 + Phase 0.5 标注)
 #
 # 本脚本**绕过** Orchestrator 直接调内部 services, 仅用于:

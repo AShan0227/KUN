@@ -1,5 +1,7 @@
 """Dogfood v12 — real LLM trifecta + real PG checkpoint + real collab ticket.
 
+⚠️ FIXTURE/DEMO (audit F059): PASS only checks TrifectaState==OK (hooks ran), not output quality; not run in CI. A green run does NOT prove real RSI closure. See docs/audit/proposals/demo-script-honesty.md.
+
 V7 Phase X.D.REAL-LONGTASK: the dogfood-v11 capstone proved 7-piece wiring
 via 1 test with stub hooks. v12 takes the 3 X.C P0/P1 pieces (trifecta /
 checkpoint / collab) and runs them with **real LLM** + **real PG**, so we

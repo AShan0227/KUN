@@ -1,5 +1,7 @@
 """Dogfood v15 — 8 V7 mechanisms env all-on real run (X.L closure).
 
+⚠️ FIXTURE/DEMO (audit F058): runs the orchestrator on a _StubLLM, so the 'all mechanisms on' closure it asserts is stubbed, not real; not run in CI. See docs/audit/proposals/demo-script-honesty.md.
+
 X.I-0 fixed 3 mechanism orphans (Gate / Auditor / EngineeringDiscipline).
 But "fixed in code" ≠ "fires under real env". X.L proves that turning
 **every** env switch ON makes the runtime bundle's `enabled_flags`

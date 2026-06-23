@@ -1,5 +1,7 @@
 """Dogfood v13 — real orchestrator path firing trifecta with real LLM hooks.
 
+⚠️ FIXTURE/DEMO (audit F059): PASS only checks TrifectaState==OK (hooks ran), not output quality; not run in CI. A green run does NOT prove real RSI closure. See docs/audit/proposals/demo-script-honesty.md.
+
 V7 Phase X.E.TRIFECTA-WIRING evidence: previously TrifectaCoordinator was
 orphan; v12 proved it works in isolation with real Haiku; **v13 proves it
 fires from inside LongTaskOrchestrator.run_long_task** when wired.

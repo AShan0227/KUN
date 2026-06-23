@@ -730,9 +730,9 @@
       "detail": "已确认 ci.yml 的 job 仅为 Lint(ruff)/Typecheck(mypy)/Unit tests(pytest tests/unit)/Integration tests(pytest tests/integration)/Frontend checks/Starter skill license scan，对全 .github 目录 grep 'scripts/' 命中 0。即 scripts/ 下这 16 个 dogfood/e2e/smoke/multi_dim/spark 脚本没有任何一个进 CI。它们被设计为'手动跑一次→看到 ✅→写进 PROGRESS.md/dev_log'的一次性证据。一旦底层代码漂移（provider 改名、表结构变更、env 开关重命名），这些脚本会静默失效或退化为 stub，而进度文档里的'已验证'结论不会被任何自动门禁推翻。这是把'活文档/验收证据'建立在无回归保护的沙地上。",
       "evidence": "ci.yml steps: `uv run pytest tests/unit -q` / `uv run pytest tests/integration -q`，无 scripts/ 调用；`grep -rn 'scripts/' .github/` → none",
       "source": "extra:dogfood_scripts_honesty_audit",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "82a7352",
+      "notes": "全部 dogfood/e2e/smoke 脚本在 CI 外、无人持续校验却是 RSI/L5-L6 主要证据；演示脚本诚实化合并方案见 docs/audit/proposals/demo-script-honesty.md（已给脚本头加 FIXTURE/DEMO 横幅、不删脚本；真验证依赖 RSI 主链接通 rsi-mainline-wiring + PASS 判据基于真实证据 + 入 CI）。"
     },
     {
       "id": "F057",
@@ -743,9 +743,9 @@
       "detail": "这是唯一一个串起 Supervisor→Strategist→Gate→runtime_capability 全链的脚本，也是'RSI 闭环'最直接的证据候选。但：(1) L196-211 注释明写'requests_to_process[0] 仅作存在性 sentinel — 实际 anomaly 数据下面写死'，喂给 Strategist 的是手工构造的 llm_fallback_spike，Supervisor 真实输出被丢弃；(2) L237-247 喂给 Gate.admit 的 test_report={pass_rate:0.95}、debrief={verdict:'ok',evidence_quality_score:0.8} 全是手填值，正好分别满足 gate/service.py 的 R1(pass_rate≥0.9)、R3(verdict≠alarming)、R4(evidence_quality≥0.5)——'approve'是工程出来的，不是真实测试/裁决挣来的；Tester 环节完全不存在（注释 L221'模拟 Tester'）。脚本头部 L3-16 自己标注'FIXTURE-ONLY'、'不是 production 路径'、'不是验收依据'。但最后仍 print '✅ 端到端 RSI 闭环 demo 完成'(L310)。把这个脚本当作 RSI 闭合证据即构成误导。",
       "evidence": "L197 `# (requests_to_process[0] 仅作存在性 sentinel — 实际 anomaly 数据下面写死)`；L237-246 `test_report={'pass_rate':0.95,...}` `debrief={'verdict':'ok',...,'evidence_quality_score':0.8}`；L310 `print(\"✅ 端到端 RSI 闭环 demo 完成\")`",
       "source": "extra:dogfood_scripts_honesty_audit",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "82a7352",
+      "notes": "e2e_rsi_demo 中段写死 anomaly + Gate 手喂必过；演示脚本诚实化合并方案见 docs/audit/proposals/demo-script-honesty.md（已给脚本头加 FIXTURE/DEMO 横幅、不删脚本；真验证依赖 RSI 主链接通 rsi-mainline-wiring + PASS 判据基于真实证据 + 入 CI）。"
     },
     {
       "id": "F058",
@@ -756,9 +756,9 @@
       "detail": "v14 标题即'RSI closed-loop demo'，结尾 print 'V7 §1.1 每跑一次都让自己略变更聪明 闭环已可达'。但全程用 _StubLLM（L127-144 返回写死的 'real-PG wiring closure demo done'，cost_usd=0.0），真正的成功判据只有两条：methodology_injected 事件触发(L208) + system prompt 字符串包含 'RSI 进化产物'(L218)。这只证明了'选中的方法论文本被拼进了 system prompt'这一字符串操作，没有任何真实 LLM 消费它、没有任何'下一个任务因此表现更好'的度量。v15(dogfood_v15_all_8_mechanisms_on.py:103-159,208-251) 同样用 _StubRouter/_StubLLM/_StubSupervisor，把'8/8 机制 active under real env'坐实为'5 个事件 kind 出现 + 3 个模块 importlib 可导入'——'真在 runtime 跑'被偷换成'事件发射了/模块能 import'。stub 跑出来的 8/8 不能支撑 PROGRESS 的能力主张。",
       "evidence": "v14 L138-143 StubLLM 返回 `content=\"real-PG wiring closure demo done\", cost_usd=0.0`；L218 `if \"RSI 进化产物\" not in sys_prompt:` 作为唯一硬判据；L244 `print(\"  V7 §1.1 '每跑一次都让自己略变更聪明' 闭环已可达 (read side).\")`；v15 L78-90 `_StubSupervisor`/`_StubRouter` + L236-243 importlib 'importable' 当作机制 fires",
       "source": "extra:dogfood_scripts_honesty_audit",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "82a7352",
+      "notes": "dogfood_v14/v15 用 _StubLLM 跑 orchestrator 坐实闭环；演示脚本诚实化合并方案见 docs/audit/proposals/demo-script-honesty.md（已给脚本头加 FIXTURE/DEMO 横幅、不删脚本；真验证依赖 RSI 主链接通 rsi-mainline-wiring + PASS 判据基于真实证据 + 入 CI）。"
     },
     {
       "id": "F059",
@@ -769,9 +769,9 @@
       "detail": "v12/v13 宣称'用真 LLM 验证 trifecta 三线'。真调 Haiku 这点是真实的（v13 L61-72、v12 L90-103）。但 coordinator.py L207/238/269 显示 line.state = OK if err is None else FAILED，而 err 只在 hook 抛异常时非空——也就是说只要 Haiku 返回任意文本不报错，三线就全 OK。v13 的 PASS 条件(L288-294) `all(past_state=='ok')...` 与 v12 的 Summary 判据因此是'只要网络通+API 不挂就过'，LLM 实际吐的 finding/critique/candidate(v13 L86/95/106) 只被 print、从不与任何期望比对。所以'trifecta 用真 LLM 跑通'成立于管道层，但'trifecta 产出有意义/能纠偏/能改进任务'是这两个脚本宣称却没测的部分。这是一种隐蔽的自证：用真 LLM 制造'真实感'，但验证标准恒真。",
       "evidence": "coordinator.py:207 `state=TrifectaState.OK if err is None else TrifectaState.FAILED`；v13:291-293 `all(d[\"data\"][\"past_state\"] == \"ok\" for d in ticks)`（present/future 同）作为 ok 判据；v13:84-86 finding 内容仅 `text.strip()[:200]` 后 print，无断言",
       "source": "extra:dogfood_scripts_honesty_audit",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "82a7352",
+      "notes": "dogfood_v12/v13 PASS 仅看 TrifectaState==OK 未验证产出质量；演示脚本诚实化合并方案见 docs/audit/proposals/demo-script-honesty.md（已给脚本头加 FIXTURE/DEMO 横幅、不删脚本；真验证依赖 RSI 主链接通 rsi-mainline-wiring + PASS 判据基于真实证据 + 入 CI）。"
     },
     {
       "id": "F060",
@@ -782,9 +782,9 @@
       "detail": "该脚本产出 docs/dist-output/multi-dim-test-report.md（满分/接近满分的能力评分），被当作'KUN 多维能力已具备'的证据。但每一维的 score=2 判据几乎都是弱代理：D1/D3/D4 等靠 _grep('class X') 文件里有没有这个类名(L98-101,170-180)；D5 commit 纪律靠 git log --shortstat 行数(L239-261)；D6 错误立修靠 git log --grep='fix(' 计数≥3(L277-289)；D2/D9 '真实并行/真实使用 limit'靠读 /tmp/kun-uvicorn-v*.log 这种开发期临时文件(L34-51,135-146,364-368)——这些文件机器重启即消失，离线/换机必然取不到，证据不可复现。'有这个类 + git 里有 fix commit'离'这个能力真工程化进 runtime 且有效'相距甚远。这是一个倾向于给自己打高分的自评工具，不能作为能力验收证据。",
       "evidence": "L49 `if p.exists() and \"self_reflect\" in p.read_text(...)`（读 /tmp 临时日志）；L289 `score = 2 if (fix_count >= 3 and has_bug_lib)`；L405 `score = 2 if (builtin_count >= 5 and shell_uses == 0 and self_reflect_uses > 0)`；报告写死 L462 `**测试时间**: 2026-05-28`",
       "source": "extra:dogfood_scripts_honesty_audit",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "82a7352",
+      "notes": "multi_dim_test 打分=grep 文件+git log 计数，非行为验证；演示脚本诚实化合并方案见 docs/audit/proposals/demo-script-honesty.md（已给脚本头加 FIXTURE/DEMO 横幅、不删脚本；真验证依赖 RSI 主链接通 rsi-mainline-wiring + PASS 判据基于真实证据 + 入 CI）。"
     },
     {
       "id": "F061",

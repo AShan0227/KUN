@@ -1,5 +1,7 @@
 """Dogfood v14 — V7 §12 RSI closed-loop demo (X.G.RSI-CLOSED-LOOP).
 
+⚠️ FIXTURE/DEMO (audit F058): runs the orchestrator on a _StubLLM, so the 'RSI closed loop' it asserts is stubbed, not real; not run in CI. See docs/audit/proposals/demo-script-honesty.md.
+
 The V7 §1.1 product 魂: "每跑一次都让自己略变更聪明". This script proves
 the closed loop on the **read side** for the first time:
 
