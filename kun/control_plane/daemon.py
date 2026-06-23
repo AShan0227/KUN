@@ -778,9 +778,12 @@ class ControlPlaneDaemon:
         try:
             import os
 
-            if os.environ.get(
-                "KUN_V7_MD_DAEMON_TICK_ENABLED", ""
-            ).strip().lower() in {"true", "1", "yes", "on"}:
+            if os.environ.get("KUN_V7_MD_DAEMON_TICK_ENABLED", "").strip().lower() in {
+                "true",
+                "1",
+                "yes",
+                "on",
+            }:
                 self._fire_v7_mission_director_periodic_tick(
                     mission_ids=selected_mission_ids,
                     report=report,
@@ -829,9 +832,7 @@ class ControlPlaneDaemon:
                     mission=mission,
                     work_item=synthetic_wi,
                     payload={
-                        "summary": (
-                            f"Daemon periodic MD review for mission_id={mission_id}"
-                        ),
+                        "summary": (f"Daemon periodic MD review for mission_id={mission_id}"),
                     },
                 )
             except Exception:  # noqa: S112
@@ -5403,6 +5404,21 @@ def _is_acceptance_rework_plan_version(plan_version: str | None) -> bool:
     return bool(plan_version and "-acceptance-rework-" in plan_version)
 
 
+def _safe_float(value: object, default: float = 0.0) -> float:
+    """Coerce a JSON-derived value to float, falling back on non-numeric data.
+
+    Audit F073: gate evidence files (final-player-experience-gate.json etc.) are
+    written by the business workspace and are not schema-validated, so a value like
+    ``"score": "n/a"`` made a bare ``float(...)`` raise ValueError inside the daemon
+    tick and kill the long-running process. Coercing here keeps malformed evidence
+    conservative (callers pass a default that fails the gate) instead of crashing.
+    """
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 def _latest_product_pressure_evidence_allows_waiting(
     contract: ExecutionContract | None,
     *,
@@ -5437,22 +5453,23 @@ def _latest_product_pressure_evidence_allows_waiting(
     if final_required:
         if not final_payload:
             return False
-        final_threshold = float(
+        final_threshold = _safe_float(
             final_payload.get(
                 "threshold",
                 delivery_policy.get("final_player_experience_threshold", 0.95),
-            )
+            ),
+            default=0.95,
         )
         if final_payload.get("pass") is not True:
             return False
-        if float(final_payload.get("score", 0.0)) < final_threshold:
+        if _safe_float(final_payload.get("score", 0.0)) < final_threshold:
             return False
         dimensions = final_payload.get("dimensions")
         dimension_floor = final_payload.get("dimension_floor")
         if isinstance(dimensions, dict) and dimension_floor is not None:
-            floor = float(dimension_floor)
+            floor = _safe_float(dimension_floor)
             for value in dimensions.values():
-                if isinstance(value, dict) and float(value.get("score", 0.0)) < floor:
+                if isinstance(value, dict) and _safe_float(value.get("score", 0.0)) < floor:
                     return False
 
     residual_payload = _read_json_file(docs_path / "benchmark-residual-audit.json")
@@ -5460,15 +5477,19 @@ def _latest_product_pressure_evidence_allows_waiting(
     if residual_required:
         if not residual_payload:
             return False
-        residual_threshold = float(
+        residual_threshold = _safe_float(
             residual_payload.get(
                 "threshold",
                 delivery_policy.get("benchmark_residual_threshold", 0.003),
-            )
+            ),
+            default=0.003,
         )
         if residual_payload.get("pass") is not True:
             return False
-        if float(residual_payload.get("overall_residual", 1.0)) > residual_threshold:
+        if (
+            _safe_float(residual_payload.get("overall_residual", 1.0), default=1.0)
+            > residual_threshold
+        ):
             return False
 
     return final_required or residual_required

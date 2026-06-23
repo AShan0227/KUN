@@ -951,9 +951,9 @@
       "detail": "run_managed_loop(1077) 捕获到任意异常后写 unhealthy 状态并 re-raise，进程退出，重启完全依赖 systemd/launchd KeepAlive；tick_once 内部除 V7 hook 和一处 transition(4220) 外没有任何 per-pass 异常隔离。同时 _latest_product_pressure_evidence_allows_waiting 对 runner(LLM)写入的 docs/final-player-experience-gate.json、benchmark-residual-audit.json 直接 `float(payload.get(\"threshold\", ...))`/`float(value.get(\"score\", 0.0))`(5440-5471)，字段是非数值字符串或 None 时抛 ValueError/TypeError → 整个 tick 崩溃 → 守护进程死亡，且每次重启后读到同一文件会再次崩溃(crash loop)。类似的还有 transition_mission 在多个未守护调用点可能抛 ValueError(如 _move_feedback_rework_to_queue:2032)。建议：tick_once 内按 mission/pass 粒度 try-except 降级记录 observation，外部 JSON 解析全部加类型守护。",
       "evidence": "5440 `final_threshold = float(final_payload.get(\"threshold\", delivery_policy.get(...)))`，_read_json_file 只防 OSError/JSONDecodeError 不防类型；1077-1098 `except Exception as exc: ...写 unhealthy state... raise`",
       "source": "cp-daemon",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "f943842",
+      "notes": "_latest_product_pressure_evidence_allows_waiting 的 6 处 float() 解析未校验 gate JSON 改用 _safe_float(保守默认：坏数据→不放行门禁，绝不抛异常)，一条坏 workspace 数据不再杀死 daemon tick。+9 测试。仅处理非数值边界，不吞系统级错误。"
     },
     {
       "id": "F074",

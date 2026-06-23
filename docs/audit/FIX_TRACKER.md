@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 51 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 87
+**总计 173 项** — ✅done 52 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 86
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -91,7 +91,7 @@
 | F070 | medium | fix | ⬜ | 字符串补丁机制对生成代码逐字节耦合，anchor 漂移时静默跳过并可产出引用未定义变量的源码 | `kun/control_plane/game_production.py:5876-5908,` |
 | F071 | medium | fix | ⬜ | _final_delivery 对整个项目目录（含 node_modules 与 .npm-cache）做两次递归全 | `kun/control_plane/game_production.py:2233-2243,` |
 | F072 | medium | fix | ⬜ | _run_internal_tests 13 个 copy-paste 命令块，串行最多 ~17 个 npm 命令、 | `kun/control_plane/game_production.py:1285-1465` |
-| F073 | medium | fix | ⬜ | tick 无异常隔离 + 用 float() 解析业务 workspace 的未校验 JSON，一条坏数据即可杀死常 | `kun/control_plane/daemon.py:5440` |
+| F073 | medium | fix | ✅ | tick 无异常隔离 + 用 float() 解析业务 workspace 的未校验 JSON，一条坏数据即可杀死常 | `kun/control_plane/daemon.py:5440` |
 | F074 | medium | fix | ⬜ | 每 tick 为每个 mission 生成 2 个带时间戳的新 artifact 且无任何清理，叠加全量 JSON  | `kun/control_plane/daemon.py:4394` |
 | F075 | medium | fix | ⬜ | 单任务批次与多任务批次的异常隔离不一致：单批次时 finish_work_item_run 异常会击穿整个守护循环 | `kun/control_plane/daemon.py:1373` |
 | F076 | medium | fix | ⬜ | claim_start 抢占 daemon 槽位是 load→check→save 的 TOCTOU，无进程间锁 | `kun/control_plane/daemon.py:321` |
