@@ -24,3 +24,4 @@
 2026-06-23 F046 ✅ — router 重试只针对传输错误，HTTP status 交 SDK(消除429放大/确定性400空转)+reraise，+8 测试
 2026-06-23 F051 ✅ — 已由 G01 修复(集成测试去 soft-fail)，本轮核实
 2026-06-23 F052 ✅ — CI 加 alembic check 步骤捕获 ORM↔迁移漂移(纯 CI 配置)
+2026-06-23 F055 ✅ — 删除 4 个无 producer 死指标(避免空 series 假绿)，+5 守卫测试；再加回需带 emit→F055a

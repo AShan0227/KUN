@@ -2,8 +2,8 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 172 项** — ✅done 21 ｜ ⛔blocked 0 ｜ 📐needs-design 6 ｜ ⬜pending 145
-严重度：critical 6 / high 57 / medium 82 / low 19 / meta 8（另 54 低危暂缓）
+**总计 173 项** — ✅done 22 ｜ ⛔blocked 0 ｜ 📐needs-design 6 ｜ ⬜pending 145
+严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
 |---|---|---|---|---|---|
@@ -71,13 +71,14 @@
 | F052 | high | fix | ✅ | 无 alembic check / autogenerate-diff 步骤:ORM 模型与迁移漂移不被拦截 | `.github/workflows/ci.yml:89` |
 | F053 | high | architecture | ⬜ | 0011/0012 八张 RSI 表的 DB CHECK 约束在 ORM 完全缺失（系统性漂移） | `kun/core/orm.py:486` |
 | F054 | high | fix | ✅ | EntityType 枚举与 capability_cards.entity_type CHECK 双向不一致 | `kun/datamodel/capability.py:22` |
-| F055 | high | fix | ⬜ | 5 个 Prometheus 指标定义后全仓零引用——纯摆设，抓取时 series 根本不存在 | `kun/core/metrics.py:19` |
+| F055 | high | fix | ✅ | 5 个 Prometheus 指标定义后全仓零引用——纯摆设，抓取时 series 根本不存在 | `kun/core/metrics.py:19` |
 | F056 | high | fix | ⬜ | 全部 dogfood/e2e/smoke 脚本在 CI 之外，无人持续校验，却是 RSI/L5-L6 叙事的主要证据 | `.github/workflows/ci.yml:1-120` |
 | F057 | high | fix | ⬜ | e2e_rsi_demo.py：RSI 全链中段 anomaly 数据写死 + Gate 输入手喂使其必过，链路自评 | `scripts/e2e_rsi_demo.py:194-248` |
 | F058 | high | fix | ⬜ | dogfood_v14 / dogfood_v15：用 _StubLLM 跑 orchestrator，把'RSI  | `scripts/dogfood_v14_rsi_closed_loop_demo.py:127-` |
 | F059 | high | fix | ⬜ | dogfood_v12 / v13：调真 Haiku 但 PASS 判据只看 TrifectaState==OK，而 | `scripts/dogfood_v13_orchestrator_trifecta_real_l` |
 | F060 | high | fix | ⬜ | multi_dim_test.py：10 维能力'打分'本质是 grep 文件是否存在 + git log 计数 + | `scripts/multi_dim_test.py:96-412` |
 | G09 | high | fix | ⬜ | 清理 152 个 mypy 错误后把 CI typecheck 设为硬门禁 | `kun/` |
+| F055a | medium | fix | ⬜ | 实现 prompt-cache/成本超支/rubric-p50 特性时，重新加回对应指标并接 emit | `kun/core/metrics.py` |
 | F061 | medium | fix | ⬜ | 同名函数重复定义，前一组被静默遮蔽成死代码且语义不同 | `kun/control_plane/daemon.py:5633` |
 | F062 | medium | fix | ⬜ | worker_pool>1 时 runner 在线程池内无锁迭代共享 dict，与 finish 写入并发可抛 Ru | `kun/control_plane/runtime.py:1326-1341` |
 | F063 | medium | fix | ⬜ | Context 资产层实际只有进程内内存实现：RedisAssetStore 从未接线，资产重启即丢、跨进程不一致， | `kun/context/storage.py:166-174` |

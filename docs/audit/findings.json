@@ -717,9 +717,9 @@
       "detail": "对全仓（含 tests/scripts，不止 kun/）逐一 grep，以下 5 个采集器零引用、零 import、零 emit：context_cache_hit_rate(metrics.py:19)、context_cache_cost_savings_usd(:25)、llm_cost_runaway_total(:58)、quality_rubric_score_p50(:80)、tenant_cross_access_attempt(:88)。prometheus_client 的带 label 指标只有首次 .labels(...) 后才实例化 series，所以 /metrics 抓取响应里这 5 个指标连一行都不会出现。值得注意：context_cache_hit_rate/cost_savings 对应的 prompt 缓存子系统、llm_cost_runaway 的'成本超 1.2x'判定、quality_rubric_score 的质量评分——这些都是 ADR 里宣称的核心能力（缓存省钱、成本失控保护、质量门禁），指标定义存在但产数逻辑从未接线，说明这些能力要么未实现要么未接入可观测性。占 16 个指标的 5/16≈31% 是空定义。",
       "evidence": "`grep -rn 'context_cache_hit_rate|context_cache_cost_savings_usd|llm_cost_runaway_total|quality_rubric_score_p50|tenant_cross_access_attempt' --include=*.py /Users/petrarain/鲲 | grep -v metrics.py` 返回空。",
       "source": "extra:observability_metrics_emission_gap",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "6d18c6e",
+      "notes": "删除 4 个无 producer 的死指标(context_cache_hit_rate/cost_savings、llm_cost_runaway_total、quality_rubric_score_p50)，避免空 series 假绿；tenant_cross_access 已由 F005 接线。其余指标确认有真实 emit 点。+5 守卫测试。再添回需带 emit→F055a。"
     },
     {
       "id": "F056",
@@ -2241,6 +2241,19 @@
       "status": "pending",
       "commit": "",
       "notes": "需设计；与持久层/沙箱隔离专项一并排期"
+    },
+    {
+      "id": "F055a",
+      "severity": "medium",
+      "class": "fix",
+      "title": "实现 prompt-cache/成本超支/rubric-p50 特性时，重新加回对应指标并接 emit",
+      "file": "kun/core/metrics.py",
+      "detail": "F055 删除的 4 个指标对应未实现/未接线的特性(prompt 缓存收益、actual>1.2x estimated 成本超支检测、rubric p50 滚动窗)。这些特性落地时，重新定义对应指标并在产生点 emit。",
+      "evidence": "",
+      "source": "F055-split",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
     }
   ],
   "low_deferred": [
