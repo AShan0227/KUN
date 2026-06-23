@@ -2,8 +2,8 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 170 项** — ✅done 6 ｜ ⛔blocked 0 ｜ 📐needs-design 1 ｜ ⬜pending 163
-严重度：critical 6 / high 55 / medium 82 / low 19 / meta 8（另 54 低危暂缓）
+**总计 171 项** — ✅done 8 ｜ ⛔blocked 0 ｜ 📐needs-design 5 ｜ ⬜pending 158
+严重度：critical 6 / high 56 / medium 82 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
 |---|---|---|---|---|---|
@@ -21,23 +21,24 @@
 | F004 | critical | fix | ✅ | 被审分支 鲲V1.1-dev 从未触发过 CI:门禁只认 main,而 main 已停更三周成废弃线 | `.github/workflows/ci.yml:4-7` |
 | F005 | critical | fix | ✅ | 安全指标 tenant_cross_access_attempt 零 emit 且应用层无越权检测逻辑——越权告警永 | `kun/core/metrics.py:88` |
 | F006 | critical | fix | ✅ | logging.py 的 _add_tenant 只捕获 LookupError，生产环境 MissingTenan | `kun/core/logging.py:20` |
-| F007 | high | fix | ⬜ | 生产 API 无任何鉴权：JWT 鉴权模块未接线，请求头 X-Tenant-Id/X-Scopes 被直接信任 | `kun/api/main.py:226-255` |
-| F008 | high | fix | ⬜ | 全部质量评分与门禁是硬编码常量+生成代码字符串指纹自检，RSI 评估信号为虚构 | `kun/control_plane/game_production.py:6653-6974,` |
-| F009 | high | fix | ⬜ | 7907 行单文件中约 60% 是单一游戏项目的内嵌源码/SVG/CSS/逐版本补丁，control plane 内 | `kun/control_plane/game_production.py:2913-6026,` |
+| F007 | high | fix | ✅ | 生产 API 无任何鉴权：JWT 鉴权模块未接线，请求头 X-Tenant-Id/X-Scopes 被直接信任 | `kun/api/main.py:226-255` |
+| F007a | high | fix | ⬜ | 生产环境 auth 关闭应 fail-closed（拒绝启动或拒绝请求） | `kun/core/config.py,` |
+| F008 | high | fix | 📐 | 全部质量评分与门禁是硬编码常量+生成代码字符串指纹自检，RSI 评估信号为虚构 | `kun/control_plane/game_production.py:6653-6974,` |
+| F009 | high | fix | 📐 | 7907 行单文件中约 60% 是单一游戏项目的内嵌源码/SVG/CSS/逐版本补丁，control plane 内 | `kun/control_plane/game_production.py:2913-6026,` |
 | F010 | high | fix | ⬜ | 长任务运行期间不刷新 work-item 心跳/lease/资源锁 TTL，多副本部署下必然误判超时并重复执行 | `kun/control_plane/daemon.py:3238` |
 | F011 | high | fix | ⬜ | 多进程共享 store 下大量治理方法用『tick 起点内存快照 + 无条件 put』写回，存在 last-writ | `kun/control_plane/daemon.py:1156` |
 | F012 | high | architecture | ⬜ | 6927 行 god-module：通用控制面守护进程内嵌两个具体产品(游戏/RainFlow 广告)的业务剧本与文 | `kun/control_plane/daemon.py:5926` |
 | F013 | high | fix | ⬜ | 人工验收自由文本解析把否定句误判为 accepted，直接错误关闭任务 | `kun/control_plane/runtime.py:947-970` |
 | F014 | high | fix | ⬜ | 多写者(API 进程/多 daemon 副本)下 ledger 序列冲突，审计事件被静默丢弃 | `kun/control_plane/runtime.py:2508-2542` |
 | F015 | high | fix | ⬜ | API 进程持有从不刷新的控制面副本：读到陈旧状态、写回时整记录覆盖 daemon 新状态 | `kun/api/control_plane.py:176-185` |
-| F016 | high | fix | ⬜ | 质量门禁分数全为硬编码常量：finalize_mission 无条件自评 pass 并 ready_to_deliv | `kun/control_plane/kun_runtime_runner.py:338-368` |
-| F017 | high | fix | ⬜ | productization.py 用硬编码评估结果把外部行为信号直通 production 能力，RSI 闭环自证 | `kun/control_plane/productization.py:2351` |
+| F016 | high | fix | 📐 | 质量门禁分数全为硬编码常量：finalize_mission 无条件自评 pass 并 ready_to_deliv | `kun/control_plane/kun_runtime_runner.py:338-368` |
+| F017 | high | fix | 📐 | productization.py 用硬编码评估结果把外部行为信号直通 production 能力，RSI 闭环自证 | `kun/control_plane/productization.py:2351` |
 | F018 | high | fix | ⬜ | run_feature_activation_audit 对用户传入目录无条件 shutil.rmtree，存在数据 | `kun/control_plane/feature_activation_audit.py:21` |
 | F019 | high | fix | ⬜ | FileControlPlaneStore 每次单条写入都全量重读+全量重写快照，O(N²) 累积成本，且静默丢弃未 | `kun/control_plane/file_store.py:432` |
 | F020 | high | fix | ⬜ | tier3 验证聚合必崩：'ensemble' 不在 ValidatorKind Literal 中，Pydanti | `/Users/petrarain/鲲/kun/agents/tester/validation.` |
 | F021 | high | fix | ⬜ | ADR-022 Layer4 防漂移闭环断链：Executor 自评 JSON 从不被解析，submit_self_ | `/Users/petrarain/鲲/kun/agents/exec_loop.py` |
 | F022 | high | fix | ⬜ | 监督线 RSI 主链(Supervisor→Strategist→Gate)无生产事件源接线，只在 demo 脚本里 | `/Users/petrarain/鲲/kun/agents/supervisor/service` |
-| F023 | high | fix | ⬜ | JWT 鉴权 + RLS 子系统是死代码，生产 API/WS 完全信任客户端自报的租户与权限头 | `kun/api/main.py:226-255;` |
+| F023 | high | fix | ✅ | JWT 鉴权 + RLS 子系统是死代码，生产 API/WS 完全信任客户端自报的租户与权限头 | `kun/api/main.py:226-255;` |
 | F024 | high | fix | ⬜ | Anthropic 定价表错误：Opus 4.7 高估 3 倍、Haiku 4.5 低估 4 倍，污染 ADR-00 | `kun/interface/llm/anthropic_provider.py:42-58` |
 | F025 | high | fix | ⬜ | WS 长任务输入路由（ADR-022 Layer 3）永远不触发：task_state 没有任何填充路径 | `kun/api/ws.py:112-115,141,160;` |
 | F026 | high | fix | ⬜ | session_scope(bypass_rls=True) 仍强制要求租户上下文，生产环境 outbox/订阅者每 | `kun/core/db.py:114-123` |

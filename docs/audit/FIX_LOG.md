@@ -9,3 +9,4 @@
 2026-06-23 F001 📐 — needs-design：门禁自批+覆盖人审是信任模型缺陷，写方案 docs/audit/proposals/F001.md（不在巨型文件里盲改）
 2026-06-23 F005 ✅ — 跨租户越权检测：session_scope 显式 tenant_id≠ambient(非bypass)→ emit 指标+CRITICAL log(+5 测试)
 2026-06-23 F007+F023 ✅ — 接通 JWT 鉴权中间件(auth on→JWT强校验/忽略自报头/401；auth off→dev现状)，抽 resolve_request_tenant 纯函数+7测试
+2026-06-23 F008/F009/F016/F017 📐 — needs-design 合并方案 docs/audit/proposals/F008-F009-F016-F017.md（RSI 自产证据/硬编码门禁分数+god-module 拆分，不盲改）

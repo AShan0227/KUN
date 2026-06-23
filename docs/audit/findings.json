@@ -106,9 +106,9 @@
       "detail": "_final_player_experience_payload 与 _benchmark_residual_payload 的\"评估\"是检查本文件 patch 函数刚写进游戏源码的确切字符串，包括逐字节 CSS 像素值（如 'height:clamp(360px,calc(100vh - 334px),600px)'、'.productGamefeelV36 .stagePanel{position:fixed;inset:72px 10px 10px'）和 marker（'productGamefeelV53' in app）；命中则给 0.992/0.996 等硬编码分数，未命中给 0.35/0.55。残差审计是 spatial_ready→0.998、semantic_ready→0.996 的写死阶梯。所有写入 GateEvaluation 的 result_quality/risk/evidence_quality（0.88/0.95/0.45 等）也全是常量。后果：(1) 门禁与实现同源，patch 写什么门禁就查什么，永真或永假，测不出任何真实产品质量；(2) control plane 的治理/学习循环消费的 north-star 指标全部是虚构数字，任何基于这些 GateEvaluation 做的 L6 商业化决策都建立在假数据上。建议：评分必须来自独立信号（真实 LLM 评审、真人评分、运行时行为指标），禁止 runner 给自己的 GateEvaluation 填写常量分数。",
       "evidence": "6716-6722 `\"commercial_game_polish\": (... and \"productGamefeelV52\" in app and \"productGamefeelV53\" in app ...)`; 6757-6759 `\"height:clamp(360px,calc(100vh - 334px),600px)\" in styles and \"bottom:126px\" in styles`; 6232-6247 `0.998 if spatial_ready else 0.996 if semantic_ready else 0.992 if mastery_ready ...`; 1938 `result_quality=0.95 if passed else max(0.0, min(0.65, final_score))`",
       "source": "cp-game-production",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "d423180",
+      "notes": "RSI 信号是字符串指纹+硬编码分数；合并方案见 docs/audit/proposals/F008-F009-F016-F017.md（RSI 质量信号真实化 + game_production 拆分专项）"
     },
     {
       "id": "F009",
@@ -119,9 +119,9 @@
       "detail": "文件含 177 个模块级函数，其中 ~3100 行（2913-6026）是火火兔/WordForge 专属的 markdown 模板、_patch_app_for_product_gamefeel_v32~v55 等逐版本字符串补丁、各 test:*.mjs 脚本全文；7050-7613 是完整的 package.json/App.tsx/storage.ts 等 TS 源码字符串；4232-4292 是汉堡、狼、桥等 SVG sprite。硬编码细节深入到 'scribblenauts-deep-decomposition-v28.md' 这样的具体文件名和版本号。这不是可复用的\"游戏生产能力\"，而是一次具体任务执行历史被固化进平台内核：换任何一个新游戏/新产品，该 runner 全部失效。它还污染依赖图——control_plane/__init__.py 与 feature_activation_audit.py 直接 import 它。a4b75df 已把部分模板抽到 templates/，但主体仍在。建议：把火火兔专属内容全部移入 templates/（或独立 mission 工件仓库），game_production.py 仅保留与产品无关的 phase 调度、命令执行、证据登记骨架（约 800-1000 行）；同时在 decisions.md 补 ADR——目前三份权威文档对全仓库最大文件零提及，治理盲区。",
       "evidence": "grep 统计：177 个模块级 def；94 处 火火兔/huohutu/scribble/Scribblenauts/wordforge 引用；436-439 硬编码 `research_dir / \"scribblenauts-deep-decomposition-v28.md\"`；3919-4231 _patch_app_for_product_gamefeel_v50/v52/v53/v55 连续逐版本补丁；grep decisions.md/PROGRESS.md/KUN-V1.md 'game_production|火火兔' 零命中",
       "source": "cp-game-production",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "d423180",
+      "notes": "游戏源码内嵌 god-module，需拆分；合并方案见 docs/audit/proposals/F008-F009-F016-F017.md（RSI 质量信号真实化 + game_production 拆分专项）"
     },
     {
       "id": "F010",
@@ -210,9 +210,9 @@
       "detail": "finalize_mission 只要所有 active 项 done/partial 且存在 task_output 工件，就自产 review/rollback 工件并发出 result_quality=0.82、north_star_verdict=pass、next_action=ready_to_deliver 的 delivery gate——分数与实际质量零关联。同样模式遍布全链路：_runtime_validation_gate(runtime.py:765-791)对任何有 summary 或工件的结果给 0.82 pass；_pass_gate(runtime_followups.py:82-125)默认 0.86；_supervisor_recovery_result 给 0.84 并宣称\"recovery executed\"实际只输出一段固定文案；_work_item_gate 的证据校验靠 _looks_like_test_evidence(答案里含 \"test\"/\"pass\" 即算测试证据，kun_runtime_runner.py:1720-1744)和 _expected_output_addressed(回答≥240 字符即算覆盖，1698-1704)。这些常量分数会进入 gate 阈值比较、observation 弱门禁判定和 Qi 学习信号，使\"递归自我改进\"建立在自我宣称之上。mission_director 是唯一补偿层但本身也是确定性规则。建议：把 rubric 分数标记为 self_reported 并在 gate schema 中区分测量值与宣称值，关键 stage(delivery/acceptance)禁止 runner 自评 pass。",
       "evidence": "gate = GateEvaluation(... north_star_verdict=\"pass\", result_quality=0.82, ... next_action=\"ready_to_deliver\", next_state=\"delivering\", score_breakdown={\"all_work_items_completed\": 1.0})\\n_looks_like_test_evidence: return any(token in text for token in (\"test\",\"pytest\",\"pass\",...))",
       "source": "cp-runtime",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "d423180",
+      "notes": "finalize_mission 无条件 pass+硬编码分数；合并方案见 docs/audit/proposals/F008-F009-F016-F017.md（RSI 质量信号真实化 + game_production 拆分专项）"
     },
     {
       "id": "F017",
@@ -223,9 +223,9 @@
       "detail": "_external_behavior_evaluation 为 replay/holdout/shadow/canary/production 全部 5 个阶段批量生成 passed=True、result_quality=0.92/0.9 等硬编码的 CapabilityEvaluation，喂给 capability_evolution.build_capability_promotion(target_stage=\"production\")，产出 runtime_enabled=True 的 production CapabilityProfile（capability_evolution.py:267）。该路径已通过 API 暴露(kun/api/control_plane.py:573 productionize_external_behavior)，且 daemon 每个 tick 用 list_default_runtime_capabilities() 构建全局执行策略(daemon.py:486)——即凭关键词从外部源码 distill 出的行为信号，无任何真实回放/holdout 运行即成为全任务默认运行时能力。同一文件还有多处自证逻辑：_successful_dogfood_work_item_result/_pass_gate 硬编码 result_quality=0.95 pass 门禁；_present_subsystems 用恒真条件 `progress.total_work_items >= 0` 判定 mission_dashboard 子系统\"已具备\"(1876 行)；close_productization_collaboration_loop 以 responder=\"user\" 默认参数自动应答本应人工的 approval 票据(1181-1210 行)；accept_productization_dogfood_delivery 默认 satisfaction=0.95 自动验收。这与 Nuo 反污染、Qi 阶段门禁的核心设计直接矛盾：capability_evolution 的门禁本身实现严谨，但它信任调用方提供的评估记录，而 productization 把整条证据链伪造了。CTO 决策建议：要么把这条 production 直通路径降级为 review_only/replay 上限，要么强制评估记录必须引用真实 RunRecord/GateEvaluation 才可作为晋升输入。",
       "evidence": "productization.py:2358 \"passed\": True, \"result_quality\": 0.92 if comparison.decision == \"adopt\" else 0.9 ... for stage in (\"replay\", \"holdout\", \"shadow\", \"canary\", \"production\"); :1126 target_stage=\"production\"; :1876 if progress.total_work_items >= 0: present.add(\"mission_dashboard\")",
       "source": "cp-rest",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "d423180",
+      "notes": "productization passed:True 硬编码；合并方案见 docs/audit/proposals/F008-F009-F016-F017.md（RSI 质量信号真实化 + game_production 拆分专项）"
     },
     {
       "id": "F018",
