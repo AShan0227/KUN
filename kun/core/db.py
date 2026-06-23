@@ -133,7 +133,11 @@ async def session_scope(
     maker = get_admin_sessionmaker() if bypass_rls else get_sessionmaker()
     async with maker() as s:
         try:
-            await _set_rls_context(s, tenant_id=tenant_id)
+            # bypass_rls = admin/system session (outbox poller, NATS subscriber,
+            # GC) that is intentionally cross-tenant; it must NOT fall back to
+            # current_tenant() — in production that raises MissingTenantContext
+            # and crashed those workers every tick (audit F026).
+            await _set_rls_context(s, tenant_id=tenant_id, require_tenant=not bypass_rls)
             yield s
             await s.commit()
         except Exception:
@@ -145,8 +149,18 @@ async def _set_rls_context(
     session: AsyncSession,
     *,
     tenant_id: str | None = None,
+    require_tenant: bool = True,
 ) -> None:
-    effective_tenant_id = (tenant_id or "").strip() or current_tenant().tenant_id
+    explicit = (tenant_id or "").strip()
+    if explicit:
+        effective_tenant_id = explicit
+    elif require_tenant:
+        # App session: a tenant is mandatory (raises in production if absent).
+        effective_tenant_id = current_tenant().tenant_id
+    else:
+        # bypass_rls system session with no explicit tenant — don't scope to a
+        # tenant GUC at all (admin role; intentionally cross-tenant).
+        return
     await session.execute(
         text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
         {"tenant_id": effective_tenant_id},

@@ -340,9 +340,9 @@
       "detail": "_set_rls_context 在 tenant_id=None 时回落到 current_tenant().tenant_id。outbox_worker(events.py:182)和 nats_subscriber._default_fetcher 都用 session_scope(bypass_rls=True) 且不传 tenant_id——这类系统级 worker 本来就是跨租户的，没有也不该有单一租户。production 下 current_tenant() 抛 MissingTenantContextError，即使修复了上面的日志 bug，outbox worker 也会每 0.5s 报错循环，事件永远无法从 Postgres outbox 发布到 NATS，watchtower/反向链路全部失效。修复方向：bypass_rls=True 时跳过 set_config(admin 角色本就绕过 RLS，0007 的 policy 只看 app.tenant_id)，或允许显式空租户。这是与日志 bug 独立的第二处『dev 默认租户掩盖、production 必炸』。",
       "evidence": "db.py:119: `effective_tenant_id = (tenant_id or \"\").strip() or current_tenant().tenant_id`；events.py:182: `async with session_scope(bypass_rls=True) as s:`(outbox_worker 不传 tenant_id)",
       "source": "core-data",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "b4c6ec9",
+      "notes": "bypass_rls(admin/系统)session 不再回退 current_tenant()：_set_rls_context 加 require_tenant，bypass+无显式 tenant→跳过 GUC(不 scope)，修生产 outbox/NATS/GC 每 tick 崩溃；app session 仍强制租户。+4 测试。"
     },
     {
       "id": "F027",

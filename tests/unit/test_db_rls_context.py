@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from kun.core import db as db_module
 from kun.core.db import session_scope
-from kun.core.tenancy import TenantContext, tenant_scope
+from kun.core.tenancy import MissingTenantContextError, TenantContext, tenant_scope
 
 
 class _FakeSession:
@@ -72,3 +72,26 @@ async def test_session_scope_can_bypass_rls_for_system_workers(
     assert admin_maker.session.calls == [
         {"tenant_id": "system"},
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_bypass_rls_without_tenant_does_not_crash_or_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Audit F026: outbox poller / NATS subscriber / GC open bypass sessions with
+    # no tenant every tick. In production current_tenant() raises — the bypass
+    # path must not call it, must not crash, and must not set a tenant GUC.
+    admin_maker = _FakeMaker()
+    monkeypatch.setattr(db_module, "_admin_sessionmaker", admin_maker)
+
+    def _boom() -> TenantContext:
+        raise MissingTenantContextError("no tenant in production")
+
+    monkeypatch.setattr(db_module, "current_tenant", _boom)
+
+    async with session_scope(bypass_rls=True):  # no tenant_id, no tenant_scope
+        pass
+
+    assert admin_maker.session.calls == []  # no GUC scoping for admin/bypass
+    assert admin_maker.session.committed is True
