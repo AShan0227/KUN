@@ -392,9 +392,9 @@
       "detail": "ADR-023 明文要求: 1) multiprocessing.Process 独立进程 2) 必须显式配 KUN_SUPERVISOR_MODEL 3) 必须不同 model family, 任一不满足启动 fail-close。现实: 这三条只存在于 kun/agents/external_supervisor/base.py:10-13 的 docstring 里, 全仓库没有一行 enforcement 代码(grep model_family/KUN_SUPERVISOR_MODEL/multiprocessing 仅命中无关的 nuo.py)。独立进程 runner 本身是个空壳: _run_until_signal 只做一次 health_check 然后等 SIGTERM, 没有 NATS 订阅、没有 Mode 路由; main() 甚至不调用 _run_until_signal; docstring 宣称的启动方式 `python -m kun.external_supervisor` 会直接失败(包内无 __main__.py, 只有 runner.py 带 __main__ 块); docker-compose.dev.yml 也没有 supervisor service。生产真实接线是 orchestrator 同进程 lazy build(orchestrator.py:289-300), 配置默认 external_supervisor_enabled=False(config.py:70), build 失败仅 log warning 后返回 None 并'silently skips drift cross-check' — 与 ADR 的 fail-close 完全相反, 是 fail-open。物理隔离/模型隔离两个设计核心都不存在。",
       "evidence": "runner.py:79-87 main() 返回 {\"started\": True} 不进主循环; runner.py docstring line 4 `python -m kun.external_supervisor` 但 ls kun/external_supervisor/ 无 __main__.py; orchestrator.py:258 注释 'When None, LongTaskOrchestrator silently skips drift cross-check'; config.py:70 `external_supervisor_enabled: bool = Field(default=False)`",
       "source": "gov-sec-watch",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "eed70fd",
+      "notes": "ADR-023 独立进程+fail-close 未落地；外部监督落地合并方案见 docs/audit/proposals/external-supervisor.md（选项A 同进程 fail-close 守卫 / 选项B 真独立进程 + 裁决强制力接线点）。关联 F047。"
     },
     {
       "id": "F031",
@@ -405,9 +405,9 @@
       "detail": "mode_a_gate_review、mode_b_task_debrief、check_self_aggrandizement、ExternalSupervisorPool 四个 API 在 kun/ 与 scripts/ 下零生产调用方(仅 tests/unit/test_external_supervisor_modes.py 和 test_l4_external_supervisor_pool.py 引用)。ADR-023 说 '自嗨/假通过检测每次任务必跑'、'Mode B debrief 不过关 → Gate 拒绝准入', 但因为 Mode B 从未被任何任务尾调用, Gate 的 R3/R4 检查里 debrief 永远是 None, 而 _check_debrief(None) 直接放行('no_debrief_required', gate/service.py:96-100)。即 'External Supervisor 否决权' 这个 RSI 不退化的命门规则在生产中是空集。真正接线的只有 analyze_observation 经 PlanReviewService drift_check 和 long_task critique 两条路, 且 dogfood 脚本(spark_world_run.py:232/242, dogfood_v15:89/156)里连这两条都用 _StubSupervisor() 替代。建议要么删除 modes/pool 死代码, 要么在 long_task 收尾真正接 Mode B → Gate。",
       "evidence": "grep mode_a_gate_review|mode_b_task_debrief|check_self_aggrandizement|ExternalSupervisorPool( 在 kun/ scripts/ 除 kun/external_supervisor/ 自身外 0 命中; gate/service.py:96-99 `if debrief is None: return True, \"no_debrief_required\"`; scripts/spark_world_run.py:232 `external_supervisor=_StubSupervisor()`",
       "source": "gov-sec-watch",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "eed70fd",
+      "notes": "Mode A/B/自嗨/Pool 死代码；外部监督落地合并方案见 docs/audit/proposals/external-supervisor.md（选项A 同进程 fail-close 守卫 / 选项B 真独立进程 + 裁决强制力接线点）。关联 F047。"
     },
     {
       "id": "F032",
@@ -418,9 +418,9 @@
       "detail": "唯一存活的监督路径(critique hook)在 verdict==alarming 时仅 emit `long_task.drift_alarm` 事件, 注释说 'so the caller (main Orchestrator) can decide to abort', 但全仓库 grep drift_alarm 只有发射方和 docstring, 没有任何消费者据此 pause/abort。ADR-023 规定的三级响应里 'high → 强制 Gate pause 主线(主线必须停)' 不存在。叠加 finding 1 (watchtower pause_task handler 在 NATS 链路不可达), 整个监督线对主线没有任何强制力 — 主线漂移/自嗨时系统最多留一条事件记录, 任务照跑。这是'真护栏 vs 装饰'问题的核心答案: 当前所有监督信号都是只读遥测。",
       "evidence": "long_task_orchestrator.py:931-942 emit(\"long_task.drift_alarm\", {...}) 后直接 `return response`; grep -rn drift_alarm kun/ 仅 5 处全为发射方/注释",
       "source": "gov-sec-watch",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "eed70fd",
+      "notes": "监督裁决 advisory-only 无强制力；外部监督落地合并方案见 docs/audit/proposals/external-supervisor.md（选项A 同进程 fail-close 守卫 / 选项B 真独立进程 + 裁决强制力接线点）。关联 F047。"
     },
     {
       "id": "F033",
