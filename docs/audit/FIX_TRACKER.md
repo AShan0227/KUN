@@ -2,8 +2,9 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 67 ｜ ⛔blocked 0 ｜ 📐needs-design 40 ｜ ⬜pending 66
+**总计 173 项** — ✅done 67 ｜ ⛔blocked 0 ｜ 📐needs-design 41 ｜ ⬜pending 65
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
+剩余 pending+fix：54（其中 high：0）
 
 | id | sev | class | 状态 | 标题 | 文件 |
 |---|---|---|---|---|---|
@@ -77,7 +78,7 @@
 | F058 | high | fix | 📐 | dogfood_v14 / dogfood_v15：用 _StubLLM 跑 orchestrator，把'RSI  | `scripts/dogfood_v14_rsi_closed_loop_demo.py:127-` |
 | F059 | high | fix | 📐 | dogfood_v12 / v13：调真 Haiku 但 PASS 判据只看 TrifectaState==OK，而 | `scripts/dogfood_v13_orchestrator_trifecta_real_l` |
 | F060 | high | fix | 📐 | multi_dim_test.py：10 维能力'打分'本质是 grep 文件是否存在 + git log 计数 + | `scripts/multi_dim_test.py:96-412` |
-| G09 | high | fix | ⬜ | 清理 152 个 mypy 错误后把 CI typecheck 设为硬门禁 | `kun/` |
+| G09 | high | fix | 📐 | 清理 152 个 mypy 错误后把 CI typecheck 设为硬门禁 | `kun/` |
 | F055a | medium | fix | ⬜ | 实现 prompt-cache/成本超支/rubric-p50 特性时，重新加回对应指标并接 emit | `kun/core/metrics.py` |
 | F061 | medium | fix | ✅ | 同名函数重复定义，前一组被静默遮蔽成死代码且语义不同 | `kun/control_plane/daemon.py:5633` |
 | F062 | medium | fix | 📐 | worker_pool>1 时 runner 在线程池内无锁迭代共享 dict，与 finish 写入并发可抛 Ru | `kun/control_plane/runtime.py:1326-1341` |
