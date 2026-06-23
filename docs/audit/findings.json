@@ -2004,9 +2004,9 @@
       "detail": "MissionDirectorRunner 在 V6 review 路径里 fire-and-forget 调用 mission_director_v7_bridge(后台线程真连 PG)，外层 try/except Exception: pass 全吞。tests/conftest.py 的 autouse fixture 只 stub 了 LLM router，没有 stub DB，导致跑 tests/unit 时日志里出现多条 'mission_director.review_emit_failed ... Connect call failed (127.0.0.1, 55432)'——单测在真实发起 TCP 连接。两个风险: ① 如果开发机/CI 恰好跑着 dev PG，'单测'会真往 mission_alignment_reviews 表写行，污染本地数据且测试结果依赖环境状态; ② V7 bridge 这条 P0 wiring(attacker audit 反模式 1 的修复)的'写库成功'路径在单测里从未被断言过——emit 失败测试照样绿，恰好复刻了它本来要修的'代码写了但没验证真通'反模式。建议: conftest 增加 autouse fixture 设 KUN_V7_MISSION_DIRECTOR_BRIDGE_ENABLED=false(bridge 已支持该开关)，另写专门测试用 fake emitter 断言 bridge 真的发出了 review。",
       "evidence": "mission_director.py: emit_v7_review_for_work_item_sync(...) 包在 except Exception: pass 里; unit 跑批日志: [warning] mission_director.review_emit_failed error=\"Multiple exceptions: [Errno 61] Connect call failed ('127.0.0.1', 55432)...\"",
       "source": "test-health",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "81bf98c",
+      "notes": "test_control_plane_mission_director_v6.py 加 autouse fixture 关闭 V7 桥(KUN_V7_MISSION_DIRECTOR_BRIDGE_ENABLED=false)，8 处 .run() 不再在后台线程尝试连 localhost:55432；V6 断言不受影响(桥是 fire-and-forget，且 V7 桥另有 mock 覆盖)。单测密闭化，未弱化断言。"
     },
     {
       "id": "F155",

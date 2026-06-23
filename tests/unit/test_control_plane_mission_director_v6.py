@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+import pytest
 from kun.control_plane import (
     MISSION_DIRECTOR_OWNER,
     ArtifactManifest,
@@ -21,6 +22,20 @@ from kun.control_plane import (
 )
 
 NOW = datetime(2026, 5, 23, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _disable_v7_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep these V6 runner tests hermetic (audit F154).
+
+    MissionDirectorRunner.run() fires the V7 review bridge, which (enabled by
+    default) spawns a thread that opens a real Postgres session (localhost:55432).
+    Under unit tests that connection attempt failed silently in a background thread,
+    making the suite non-hermetic and slow. The bridge has its own mocked coverage in
+    test_mission_director_v7_bridge.py; here we just opt out so no DB is touched.
+    The V6 result asserted below is unaffected (the bridge is fire-and-forget).
+    """
+    monkeypatch.setenv("KUN_V7_MISSION_DIRECTOR_BRIDGE_ENABLED", "false")
 
 
 def _submit_product_mission(control_plane: InMemoryControlPlane) -> Mission:
