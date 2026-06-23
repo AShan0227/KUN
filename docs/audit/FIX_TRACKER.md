@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 66 ｜ ⛔blocked 0 ｜ 📐needs-design 40 ｜ ⬜pending 67
+**总计 173 项** — ✅done 67 ｜ ⛔blocked 0 ｜ 📐needs-design 40 ｜ ⬜pending 66
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -59,7 +59,7 @@
 | F040 | high | fix | 📐 | RSI 第 3 环（安全实验）整体缺失：runtime_experiments 生产零读写，Executor 是 P | `kun/agents/executor/base.py:35` |
 | F041 | high | fix | 📐 | RSI 第 4/5 环半假：Gate 唯一生产调用方喂合成证据，runtime_capabilities 生产零写零 | `kun/integration/methodology_to_gate_bridge.py:10` |
 | F042 | high | fix | 📐 | 6 张数据脊柱表中 5 张 + evidence_ledger 生产零流动，仅 plan_reviews 真接通 | `alembic/versions/0011_rsi_data_spine.py:37` |
-| F043 | high | fix | ⬜ | one_click_deploy.sh 在新机器上部署出的 launchd daemon 没有任何可用 LLM pr | `scripts/one_click_deploy.sh:52` |
+| F043 | high | fix | ✅ | one_click_deploy.sh 在新机器上部署出的 launchd daemon 没有任何可用 LLM pr | `scripts/one_click_deploy.sh:52` |
 | F044 | high | fix | ✅ | AnthropicProvider 将 role="tool" 消息原样透传, 多轮工具循环必 400 | `kun/interface/llm/anthropic_provider.py:127-150` |
 | F045 | high | fix | ✅ | 生产 fallback 链兜底是 StubProvider, 失败时伪造成功响应(已造成事故) | `kun/interface/llm/router.py:716-748` |
 | F046 | high | fix | ✅ | 路由层对所有异常无差别重试 ×3, 叠加 SDK 重试放大 429/卡死/确定性 400 | `kun/interface/llm/router.py:572-574` |

@@ -561,9 +561,9 @@
       "detail": "一键部署链路有三个叠加缺口，导致新机器上 daemon 能启动但无法干活：(1) install_dependencies 只做 `uv sync --extra dev` + mkdir logs，从不 `cp .env.example .env`(bootstrap.sh 会做这步但 one_click 不调用它)，所以 KUN_OFOX_API_KEY/ANTHROPIC_API_KEY/OPENAI_API_KEY 全部为空；(2) launchd plist 只有在传入 environment 参数时才写 EnvironmentVariables(daemon_service.py:391)，而 cli.py 的 daemon-service-install 命令(1356 行起)根本没有暴露 --environment 选项，永远传空；(3) launchd GUI agent 的默认 PATH 是 /usr/bin:/bin:/usr/sbin:/sbin，而 CLI OAuth provider 靠 shutil.which(\"claude\")/which(\"codex\") 在 PATH 上找二进制(codex_cli_provider.py:73, claude_code_provider.py:84)，Homebrew/npm 装的 CLI 在 /opt/homebrew/bin 或 ~/.local/bin，which 必然失败，CLI OAuth 档位静默不可用。三者叠加 = ADR-002 的全部五档(top/strong/cheap/coding/fallback)在常驻服务里都没有凭据。修复方向：daemon-service-install 暴露 --environment(至少注入 PATH)，one_click_deploy 补 .env 引导步骤并在结尾做一次真实 LLM 探活而不只是 `kun --help`。",
       "evidence": "one_click_deploy.sh install_dependencies(){ uv sync --extra dev; mkdir -p .kun-local/logs; } 无 .env 处理; daemon_service.py:391 `if environment: payload[\"EnvironmentVariables\"]=...` 但 cli.py daemon-service-install 的参数列表无 environment; codex_cli_provider.py:73 `self._cli = cli_path or shutil.which(\"codex\") or \"codex\"`",
       "source": "infra-deps",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "4fe4c37",
+      "notes": "one_click_deploy.sh 加 precheck_provider：装 daemon 前检查至少一个 provider(KUN_OFOX/ANTHROPIC/OPENAI/MINIMAX_API_KEY 或 claude/codex CLI)，缺失则醒目 fail+退出(可 KUN_ALLOW_NO_PROVIDER=1 显式覆盖)，不再静默装出永远兜不出真回答的 daemon。bash -n + 3 案例行为冒烟通过。"
     },
     {
       "id": "F044",

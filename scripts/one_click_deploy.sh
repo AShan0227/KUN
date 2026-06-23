@@ -94,6 +94,33 @@ install_daemon() {
   esac
 }
 
+precheck_provider() {
+  # Audit F043: a daemon with no LLM provider can never produce real answers —
+  # the router silently falls back to a stub. Refuse to install the daemon unless
+  # at least one provider credential is configured (or the user opts in).
+  if [[ "$KUN_INSTALL_DAEMON" != "1" ]]; then
+    return
+  fi
+  local have_provider=0 var
+  for var in KUN_OFOX_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY MINIMAX_API_KEY; do
+    if [[ -n "${!var:-}" ]]; then have_provider=1; fi
+  done
+  if command -v claude >/dev/null 2>&1; then have_provider=1; fi
+  if command -v codex >/dev/null 2>&1; then have_provider=1; fi
+  if [[ "$have_provider" == "1" ]]; then
+    log "LLM provider detected — daemon can serve real requests"
+    return
+  fi
+  if [[ "${KUN_ALLOW_NO_PROVIDER:-0}" == "1" ]]; then
+    warn "no LLM provider credential detected, but KUN_ALLOW_NO_PROVIDER=1 — installing the daemon anyway. It will NOT produce real answers until you configure a provider."
+    return
+  fi
+  fail "No LLM provider configured — the daemon would fall back to a stub and never produce real answers.
+  Set ONE of: ANTHROPIC_API_KEY, KUN_OFOX_API_KEY, OPENAI_API_KEY, MINIMAX_API_KEY,
+  or log in the 'claude' or 'codex' CLI, then rerun.
+  To install the daemon now and configure a provider later, rerun with KUN_ALLOW_NO_PROVIDER=1."
+}
+
 print_next_steps() {
   cd "$KUN_DIR"
   log "verifying KUN CLI"
@@ -119,5 +146,6 @@ need_git
 ensure_uv
 clone_or_update
 install_dependencies
+precheck_provider
 install_daemon
 print_next_steps

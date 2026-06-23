@@ -71,3 +71,4 @@
 2026-06-24 F045 ✅ — StubProvider 生产(KUN_ENV=production)下 fail-closed，不再伪造成功响应，+4 测试
 2026-06-24 F056-F060 📐 — 演示脚本诚实化方案 docs/audit/proposals/demo-script-honesty.md + 6 脚本头加 FIXTURE/DEMO 横幅(不删/不改逻辑)
 2026-06-24 F007a ✅ — 生产 auth 关闭 fail-closed(KUN_ENV=production+auth off→拒启动)，+3 测试
+2026-06-24 F043 ✅ — one_click_deploy 加 provider 预检(缺凭据拒装 daemon，可显式覆盖)，bash -n + 行为冒烟通过
