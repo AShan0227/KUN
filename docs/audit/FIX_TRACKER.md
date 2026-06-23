@@ -2,9 +2,9 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 67 ｜ ⛔blocked 0 ｜ 📐needs-design 41 ｜ ⬜pending 65
+**总计 173 项** — ✅done 67 ｜ ⛔blocked 0 ｜ 📐needs-design 42 ｜ ⬜pending 64
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
-剩余 pending+fix：54（其中 high：0）
+剩余 pending+fix：53（high 0 / medium 48 / low 5）
 
 | id | sev | class | 状态 | 标题 | 文件 |
 |---|---|---|---|---|---|
@@ -108,7 +108,7 @@
 | F086 | medium | fix | ⬜ | control_plane/__init__.py 急切导入全部 ~45k 行，含 2200 行测试夹具型审计套件混 | `kun/control_plane/__init__.py:90` |
 | F087 | medium | fix | ⬜ | SupervisorPool fan-out 双发同一异常：维度实例不按维度过滤检查项，与自述'不互扰'矛盾；且 P | `/Users/petrarain/鲲/kun/agents/supervisor/pool.py` |
 | F088 | medium | fix | 📐 | TaskCheckpointService sequence 仅进程内单调，重启/多进程下产生重复 sequence | `/Users/petrarain/鲲/kun/agents/executor/checkpoin` |
-| F089 | medium | fix | ⬜ | Gate 自指能力 enable 强门禁可被绕过：metadata_lookup 缺省即跳过检查，approval  | `/Users/petrarain/鲲/kun/agents/gate/service.py:44` |
+| F089 | medium | fix | 📐 | Gate 自指能力 enable 强门禁可被绕过：metadata_lookup 缺省即跳过检查，approval  | `/Users/petrarain/鲲/kun/agents/gate/service.py:44` |
 | F090 | medium | fix | ⬜ | MultiJudge '多判官'实为同一模型同温度调 N 次，票相关性极高，多数票独立性假设不成立 | `/Users/petrarain/鲲/kun/agents/tester/multi_judge` |
 | F091 | medium | fix | 📐 | StrategyExperiment.to_row_payload 丢弃 requires_human_review | `/Users/petrarain/鲲/kun/agents/strategist/service` |
 | F092 | medium | fix | ✅ | _invoke_with_retry 无差别重试，叠加 SDK 内建重试与 CLI 长超时，最坏情况单次调用阻塞 2 | `kun/interface/llm/router.py:572-574` |

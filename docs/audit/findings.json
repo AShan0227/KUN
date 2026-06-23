@@ -1159,9 +1159,9 @@
       "detail": "enable_capability 的 L3.5 '自指 capability 必须人审 token'强制逻辑仅在调用方传入 metadata_lookup 时生效；该参数默认 None，缺省调用路径完全跳过 promotion_block_self_referential 检查即可把自指 capability flip 成 enabled=True。且 human_approval_token 不做任何校验(任意非空字符串通过，只 log 前 8 位)。ADR-024 约束 1(改监督角色自身必须人审)在执行层是君子协定。配套问题：admit() 中 capability_writer 落库失败仅 log warning，verdict 仍返回 approve，调用方可能误以为已持久化。建议：enable_capability 缺 metadata_lookup 时 fail-close；token 至少对接一个一次性审批记录表。",
       "evidence": "if metadata_lookup is not None: ...检查...  # None 时直接走到 payload={...,'enabled': True} ; if not human_approval_token: raise PermissionError — token 内容不校验",
       "source": "agents-brain",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "7c70f64",
+      "notes": "enable_capability 自指门禁两处绕过(metadata_lookup=None 静默跳过 fail-open；token 非空即过)。但该函数全仓无生产调用方(orphan)、且无 approval-token 签发/验证机制——真修需随 gate→runtime_capabilities enable 路径接通(权威 metadata 必到 + fail-closed + 真 token 验证)，孤儿函数上加长度检查是 security theater。并入 rsi-mainline-wiring.md(第4/5环)。"
     },
     {
       "id": "F090",

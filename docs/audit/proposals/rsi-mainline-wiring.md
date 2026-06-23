@@ -22,6 +22,7 @@ ADR-024 的闭环 = **检测 → 策略 → 安全实验 → 门禁落地 → �
 | 3 实验 schema | **F091** | `StrategyExperiment.to_row_payload`(`strategist/service.py:59`)丢 `requires_human_review`/`explorer_mode`/`rationale`——因为 `runtime_experiments` 表(0011)/`RuntimeExperimentRow`(orm.py:522)**根本没有这三列**。其中 `requires_human_review` 是 Gate 自指审查输入(`gate/service.py:174`)，一旦实验环接通(本表开始被生产读写)，落库再读回就会丢这个安全标记。**当前无 live 风险**：to_row_payload 无生产消费者，且 Gate 有 L3.5 独立 `target_module` 自指检查兜底。修法：接线本环时给 `runtime_experiments` 补 `requires_human_review bool / explorer_mode / rationale` 三列(迁移+ORM)并补全 payload，加 round-trip 测试。 |
 | 4 门禁落地 | **F041** | `GateService.admit` 的 R1-R6 真实，但唯一生产调用链(`api/main.py` → idle_batch_worker → MethodologyDistillStep → `methodology_to_gate_bridge`)喂的 `test_report` 是写死 `pass_rate=1.0`(`bridge.py:107`)、`debrief evidence_quality=0.75`——验证的是合成数据，必放行；且该路径 `GateService()` 不带 `capability_writer`(`bridge.py:151-153`)，approve 也**不写** `runtime_capabilities`。 |
 | 5 影响下次 | **F041/F042** | `runtime_capabilities.enabled` 读侧唯一消费者是 `prompt_ab.pick_active_variant`(且 PromptAB 自身生产无调用方)。6 张脊柱表(0011)中 `runtime_capabilities/runtime_experiments/strategy_search_requests` 仅 demo 读写；`diagnostic_records` 0 写入(`rcdh.run_diagnostic` 只返回对象不落库)；`goal_anchors` 0 写入(`director/intent.py:165` 注释自认未做，anchor 只在内存 pin)；`evidence_ledger` 0 流动。 |
+| 5 enable 门禁 | **F089** | `GateService.enable_capability`(`gate/service.py:444`)的自指强门禁有两个绕过：①整段 self-referential 检查被 `if metadata_lookup is not None:` 包住——调用方不传 `metadata_lookup` 就**静默跳过**(fail-open)；②`human_approval_token` 校验只看"非空"——任意非空串即放行。**当前无 live 风险**：`enable_capability` 全仓**无生产调用方**(仅注释"人审完成后 caller 可调")，且无任何 approval-token 签发/验证机制。修法(随本环接通时)：metadata 必须来自权威源、缺失时 fail-closed(拒绝而非跳过)；token 改为对照真实签发方案(promotion_queue 一次性 nonce / 签名)，而非"非空"。**不要**在孤儿函数上加共享密钥长度检查充数(security theater)。 |
 | 输入路由 | **F025** | `kun/api/ws.py` 的 `task_state` 从无赋值真值的代码(只 置 None + 读取)，`if task_state["goal_anchor"] is None` 恒真 → 长任务期追加消息永远走"task already running"拒绝分支，`handle_long_task_input` 的 6-bucket 路由(off_topic/scope_expansion/pivot/cancel)在 WS 生产路径是死代码。 |
 | 晋级超时 | **F050** | `PromotionTimeoutSweeper.sweep()` 实现真实但生产无调度器调用(见 ADR-024 修正注记)。 |
 
@@ -55,7 +56,9 @@ ADR-024 的闭环 = **检测 → 策略 → 安全实验 → 门禁落地 → �
 - **诚信优先**：在任一环真正接通前，PROGRESS/decisions 里相关"已闭环/已达成"措辞应保持 F047/F049/F050 那样的如实标注，避免 L5"RSI 真闭合 ✅"的过度宣称。
 
 ## 4. 本方案覆盖的 findings
-F021, F022, F025, F039, F040, F041, F042, F091, F100, F117, F127（标 needs-design 指向本文件）；F050 已在 ADR-024 注记并在第 8 步接线。
+F021, F022, F025, F039, F040, F041, F042, F089, F091, F100, F117, F127（标 needs-design 指向本文件）；F050 已在 ADR-024 注记并在第 8 步接线。
+
+> F089 落地说明：在第 4/5 环接通 gate→`runtime_capabilities` enable 路径时，`enable_capability` 的自指门禁改为：metadata 由权威源保证、缺失即 fail-closed；`human_approval_token` 对照真实签发/验证方案校验（不再"非空即过"）。当前路径无生产调用方，无 live 风险。
 
 > **RCDH 接线（F100/F117/F127）**：`kun/governance/rcdh.py` 的 `run_diagnostic` 只返回对象、不落 `diagnostic_records`(第 5 环已点)；`rsi_trigger` 仅落库字符串、无 heavy-drift 后续动作；`supervisor/service.py` 的 RCDH 诊断链路(含 `narrow_scope` 护栏)生产无人调用。三条同属「RCDH 引擎就绪、生产零接线」——在第 1 环(检测器接 observe)+第 9 步(diagnostic_records 落库)接通时一并落地：诊断结果落 `diagnostic_records`、`rsi_trigger` 触发真实策略搜索、narrow_scope 护栏在生产诊断路径生效。
 

@@ -73,3 +73,4 @@
 2026-06-24 F007a ✅ — 生产 auth 关闭 fail-closed(KUN_ENV=production+auth off→拒启动)，+3 测试
 2026-06-24 F043 ✅ — one_click_deploy 加 provider 预检(缺凭据拒装 daemon，可显式覆盖)，bash -n + 行为冒烟通过
 2026-06-24 G09 📐 — mypy 类型债方案 docs/audit/proposals/typecheck-debt.md(实测145错/42文件，5批清理→CI硬门禁)
+2026-06-24 F089 📐 — Gate enable_capability 自指绕过：函数 orphan + 无 token 验证机制，并入 rsi-mainline-wiring.md(接通时 fail-closed+真 token 验证)
