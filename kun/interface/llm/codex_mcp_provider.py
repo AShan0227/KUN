@@ -456,13 +456,14 @@ class CodexMcpProvider(LLMProvider):
             for tool in request.tools:
                 schema = tool.schema_ or {}
                 tools_lines.append(
-                    f"  - <skill name=\"{tool.name}\">: {tool.description}\n"
-                    f"    schema: {schema}"
+                    f'  - <skill name="{tool.name}">: {tool.description}\n    schema: {schema}'
                 )
-            tools_lines.append(
-                "Emit XML like: "
-                "<skill name=\"NAME\"><param>value</param></skill>"
-            )
+            # Audit F123: the body MUST be a JSON object — KUN's host parser
+            # (agent_loop.parse_skill_calls, _CALL_RE) only matches
+            # <skill name="X">{json}</skill>. The old <param>value</param> example
+            # contradicted both the base instructions and the parser, so tool
+            # calls following it were silently dropped.
+            tools_lines.append('Emit like: <skill name="NAME">{"param": "value"}</skill>')
             parts.append("\n".join(tools_lines))
         for m in request.messages:
             if m.role == "system":

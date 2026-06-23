@@ -1601,9 +1601,9 @@
       "detail": "_build_prompt 在 tools 段末尾教模型 `Emit XML like: <skill name=\"NAME\"><param>value</param></skill>`(嵌套 XML 参数), 但同一请求的 base-instructions(_PURE_LLM_BASE_INSTRUCTIONS:123-129)明确要求 body 是单个 JSON 对象且\"NOT nested XML elements\", host 解析器 parse_skill_calls(agent_loop.py:83-101)也只接受 json.loads 能解析的 body, 否则 log \"bad_json\" 后直接丢弃该工具调用。同一上下文里给模型两套互斥的 wire format, 模型跟错示例时工具调用静默蒸发。KUN_CODEX_ONLY=1 后该 provider 承载全部 tier, 影响面放大; 本次 spark diff 在 SKILL_DIRECTIVE 里加的\"容易触发 bad_json\"提示正是在 prompt 层治这个症状。修复: 把 462-465 行示例改成 JSON body 格式, 一行改动。",
       "evidence": "codex_mcp_provider.py:463-465: \"Emit XML like: <skill name=\\\"NAME\\\"><param>value</param></skill>\" vs 同文件 :125 \"the body between the tags is a single JSON object — NOT nested XML elements\"; agent_loop.py:89: params = json.loads(body) → JSONDecodeError 即丢弃",
       "source": "diff-and-llm",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "c148429",
+      "notes": "_build_prompt 工具示例从 <skill><param>value</param> 改为 <skill name=NAME>{json} ，与基础指令(line124)及 host 解析器 agent_loop._CALL_RE(只认 JSON body)对齐；不再因格式矛盾静默丢工具调用。+2 测试(用解析器自身正则断言)。"
     },
     {
       "id": "F124",
