@@ -18,6 +18,8 @@ API 覆盖 daemon 新状态。这 4 条 + F019(单文件全量重写/丢字段)�
 | **F014** | `runtime.py` `_record_ledger_event`(~2535)：ledger 序列/id 由进程内状态分配 | 多写者(API 进程 / 多 daemon)并发 append → 序列冲突 → **审计事件静默丢弃**(ledger 不是唯一真理源)。 |
 | **F015** | `api/control_plane.py`(~176)：API 持有 `InMemoryControlPlane` 副本，从不 `refresh_from_store` | API 读到陈旧状态；API 写回时**整记录覆盖** daemon 刚写的新状态 → 双向丢更新。 |
 | **F085** | `work_item_governance.py` `RedisResourceLockStore.release_holder`(~668)：`get(key)`→比对 holder→`delete(key)` 非原子 | 锁过期后被新 holder 抢占，本陈旧 release 在 get/delete 间隙把**新 holder 的锁误删**。修法：Lua compare-and-delete（仅当 stored holder_id 仍等于本 holder 才 DEL），与 acquire 的 WATCH/MULTI 同族。**本机无 fakeredis/真 redis + 手写 FakeRedis 的 watch/multi 是 no-op，离线单测无法忠实复现 TOCTOU 窗口**，故并入本方案随 lease 续期(F010)一起带集成测试落地。 |
+| **F062** | `daemon.py` `_run_prepared_work_items_in_parallel`：worker_pool>1 时 `ThreadPoolExecutor` 多线程对**同一个** `InMemoryControlPlane` 调 `start_work_item_run`/`finish_work_item_run`（写共享 dict），而别处 `_mission_work_items`(`runtime.py:2439` 等)正 `for item in self.work_items.values()` 迭代 | 进程内线程不安全：迭代中被改 → `RuntimeError: dict changed size during iteration`；更深是 read-modify-write 竞态丢更新。**单线程(worker_pool=1)默认路径无此问题**。修法二选一：①给 `InMemoryControlPlane` 状态访问加 `threading.RLock`；②把状态变更收回主线程、线程池只跑纯 `runner.run()`（单写者）。逐点 `list(...)` 快照只挡 size-change crash、挡不住数据竞态，且**离线无法忠实复现线程时序**——故并入本方案带并发测试落地。 |
+| **F088** | `agents/executor/checkpoint.py` `TaskCheckpointService`：sequence 仅进程内单调 | 重启/多进程下产生重复 sequence，resume 取错 checkpoint。与 F014(ledger 序列)同族。修法：sequence 交 DB 序列，或 `(task_id, sequence)` 唯一约束 + 冲突重取。需真 DB 验证。 |
 | (关联)**F019** | `file_store.py`：单条 put 全量重读+重写、丢未知字段 | 见 docs/audit/proposals/F019.md。 |
 
 ## 2. 一致性方案选项
@@ -54,10 +56,11 @@ API 覆盖 daemon 新状态。这 4 条 + F019(单文件全量重写/丢字段)�
 ## 4. 风险 / 排期
 - 这是「把 demo 级单写者状态机升级为生产级多副本一致存储」的系统工程，建议作为一个 epic，与 F019(持久层重设计)
   同排期——CAS/版本号需要持久层支持。
-- 在落地前，**生产应限制为单 daemon 单写者部署**(文档明确)，避免现状下多副本数据打架；不要在多副本下跑。
+- 在落地前，**生产应限制为单 daemon 单写者 + worker_pool=1 部署**(文档明确)，避免现状下多副本/多线程数据打架；不要在多副本或 worker_pool>1 下跑。
 - 与持久层(F019)、ledger 作为 RSI 证据源(rsi-mainline-wiring 第 5 环 evidence_ledger)耦合。
+- F062 是**进程内**线程安全(单进程多线程共享一个 CP)，与 F010/F011/F015 的**跨进程**一致性是同族两面；建议同一 epic 内一并设计（进程内用 RLock/单写线程，跨进程用 CAS/版本号）。
 
 ## 5. 覆盖 findings
-F010, F011, F014, F015, F085（标 needs-design 指向本文件）；F019 见其自身方案。
+F010, F011, F014, F015, F062, F085, F088（标 needs-design 指向本文件）；F019 见其自身方案。
 
 > F085 落地说明：`release_holder` 改为 Lua compare-and-delete（atomic CAS-DEL）+ acquire 路径已有的 WATCH/MULTI 复用；与 F010 lease 续期同 PR，在 CI(真 redis) 下做并发释放不变量测试（断言陈旧 release 不删新 holder 的锁）。

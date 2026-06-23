@@ -45,3 +45,4 @@
 2026-06-23 F091 📐 — StrategyExperiment.to_row_payload 字段缺失=runtime_experiments 缺列(实验环 orphan)，并入 rsi-mainline-wiring.md 第2/3环接通时补列+补payload
 2026-06-23 F123 ✅ — CodexMcpProvider 工具示例改 JSON body，对齐 host 解析器 _CALL_RE，不再静默丢工具调用，+2 测试
 2026-06-23 F094 ✅ — Automation APIAdapter 落实 timeout_sec+max_retries 契约(仅 transient 重试、业务失败不重试、注幂等前提)，+4 测试
+2026-06-23 F062/F088 📐 — 进程内线程安全(daemon worker_pool>1)+checkpoint sequence 并入 concurrency-multi-replica.md(离线无法忠实复现线程时序，带并发测试落地)

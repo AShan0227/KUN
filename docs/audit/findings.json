@@ -808,9 +808,9 @@
       "detail": "runtime 的 _lock 只覆盖 start_work_item_run/finish_work_item_run(注释明言\"让 daemon 并行运行多个已认领工作项\")。但 runner.run 本身在 ThreadPoolExecutor 线程里无锁直接迭代 control_plane.artifacts.values()/work_items.values()/gate_evaluations.values()(如 kun_runtime_runner._merge_work_item_result:2160-2169、finalize 路径、mission_director._build_director_payload:175-207、runtime_followups._requeue_failed_subjects_after_clean_retest)。另一 worker 的 finish_work_item_run 持锁向同一 dict 插入条目时，迭代方会抛 RuntimeError(\"dictionary changed size during iteration\")，daemon 把它 normalize 成 status=failed/tool_failure(daemon.py:1431-1432)，进而触发虚假的 Nuo 修复+Qi 治理跟进循环——错误被洗白成\"能力失败\"，极难排查。CLI 支持 worker_pool_size 最高 256。建议：给 runner 提供持锁快照读接口，或读路径统一走 store 副本。",
       "evidence": "runtime.py:1334 \"This is the boundary that lets the daemon run multiple already-claimed work items in parallel\"(锁只管状态变更)\\nkun_runtime_runner.py:2162 for artifact in control_plane.artifacts.values()  # 无锁，daemon.py:1378 ThreadPoolExecutor 并行执行",
       "source": "cp-runtime",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "a42c3fe",
+      "notes": "daemon worker_pool>1 线程池多线程共享一个 InMemoryControlPlane 无锁→dict changed size during iteration + read-modify-write 竞态；单线程默认路径无此问题；离线无法忠实复现线程时序。并入 concurrency-multi-replica.md（RLock 或单写线程，带并发测试）。"
     },
     {
       "id": "F063",
@@ -1146,9 +1146,9 @@
       "detail": "sequence 计数器是 service 实例内存字典(_sequences)，只有走 resume() 才会从 DB 对齐基线。若进程重启后对同一 task 直接 save()(未先 resume)，或多进程同时跑同一 task(近期提交说明已是 multi-process 部署形态)，sequence 会从 0 重新计数与既有行撞号。task_checkpoints 表(kun/core/orm.py:715)对 (task_id, sequence) 无唯一约束，重复行静默共存；reader 按 max(sequence) 取'最新 active'时遇到平号结果不确定，可能 resume 到旧快照导致长任务回退/重复执行。ORM docstring 自称'每个 task 内部单调递增—跨 step 也唯一'但无任何机制保证。建议：DB 唯一约束 + sequence 改为 DB 侧分配(或 save 前强制 resume 基线)。",
       "evidence": "_advance_sequence: last=self._sequences.get(task_id,-1); nxt=last+1 (纯内存)。orm.py TaskCheckpointRow: sequence: Mapped[int] = mapped_column(Integer, nullable=False) — 无 UniqueConstraint",
       "source": "agents-brain",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "a42c3fe",
+      "notes": "TaskCheckpointService sequence 仅进程内单调→重启/多进程重复，与 F014 同族。并入 concurrency-multi-replica.md（DB 序列或 (task_id,sequence) 唯一约束，需真 DB 验证）。"
     },
     {
       "id": "F089",
