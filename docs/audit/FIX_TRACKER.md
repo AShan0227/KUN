@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 25 ｜ ⛔blocked 0 ｜ 📐needs-design 6 ｜ ⬜pending 142
+**总计 173 项** — ✅done 26 ｜ ⛔blocked 0 ｜ 📐needs-design 6 ｜ ⬜pending 141
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -66,7 +66,7 @@
 | F047 | high | fix | ✅ | [文档漂移] ADR-023 External Supervisor '3 条硬约束 fail-close' 纯属文 | `kun/core/config.py:71` |
 | F048 | high | fix | ✅ | [文档漂移] L6.AuthScaffold 'flag flip 即切生产 posture' 为假——JWT au | `kun/api/main.py:237` |
 | F049 | high | fix | ✅ | [文档漂移] L6.E 'Director.intent → Executor → AdapterRouter e2 | `kun/api/ws.py:46` |
-| F050 | high | fix | ⬜ | [文档漂移] promotion_queue 超时 sweeper 无任何生产调度——'超时自动 expired + | `kun/governance/promotion_queue.py:173` |
+| F050 | high | fix | ✅ | [文档漂移] promotion_queue 超时 sweeper 无任何生产调度——'超时自动 expired + | `kun/governance/promotion_queue.py:173` |
 | F051 | high | fix | ✅ | integration-tests 软失败:集成层回归不阻断合并,核心流程退化无法被 CI 拦截 | `.github/workflows/ci.yml:91` |
 | F052 | high | fix | ✅ | 无 alembic check / autogenerate-diff 步骤:ORM 模型与迁移漂移不被拦截 | `.github/workflows/ci.yml:89` |
 | F053 | high | architecture | ⬜ | 0011/0012 八张 RSI 表的 DB CHECK 约束在 ORM 完全缺失（系统性漂移） | `kun/core/orm.py:486` |

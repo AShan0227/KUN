@@ -947,6 +947,12 @@ class RuntimeCapability(BaseModel):
 
 **超时规则**：候选能力 > N 天未晋级 → 自动写 strategy_search_request 重新评估（Strategist 判断"过期 / 污染 / 低价值" → 合并 / 降级 / 删除 / 重新排队）。
 
+> ⚠️ **实现状态修正 (2026-06-23, audit F050)**：`PromotionTimeoutSweeper.sweep()`
+> (`kun/governance/promotion_queue.py`) 实现真实，但**生产中没有任何调度器周期调用它**——
+> 唯一调用方是 `scripts/e2e_rsi_demo.py`（演示）和单测。所以"超时自动 expired + 重审"在生产
+> **从不触发**。需把 sweep() 接进 daemon 治理 pass 或 idle-batch（DB-backed reader/writer/emitter）；
+> 该接线属 RSI 主链生产化的一部分，见 docs/audit/proposals/rsi-mainline-wiring.md。
+
 ### 与其他 ADR 的关系
 
 - **ADR-020**: 6 张表是 L5 治理层的数据脊柱；10 步流程贯穿 7 agent 协作

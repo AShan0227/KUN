@@ -144,7 +144,9 @@
 ### 实施细节
 
 - [x] **L5.1** Supervisor 异常聚类 → 自动写 strategy_search_request（commits 78f79ac + bf87d6d · +15 tests）
-- [x] **L5.2** 自动晋级 promotion_queue 超时规则（commit 7a9d79a · +16 tests）
+- [~] **L5.2** 自动晋级 promotion_queue 超时规则（commit 7a9d79a · +16 tests；逻辑就绪但**未在生产调度**）
+  - ⚠️ 修正 (2026-06-23, audit F050)：`PromotionTimeoutSweeper.sweep()` 实现+测试真实，但生产无周期调用方
+    （仅 e2e_rsi_demo + 单测），"超时自动 expired/重审"在生产从不触发；接线见 RSI 主链方案。
 - [x] **L5.3** 监督线给 Strategist 的高优触发通道（commit b4df983 · +18 tests）
 - [x] **L5.4** 自创 RSI 请求生成（cluster + RCDH diagnostic → rich strategy_search_request）（commit 29e84b3 · +11 tests）
 - [x] **L5.5** End-to-end wiring: Supervisor cluster + RCDH → Strategist auto-trigger（commit 53aaca7 · +5 tests）

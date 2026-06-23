@@ -652,9 +652,9 @@
       "detail": "ADR-024 约束 3 / PROGRESS L5.2 宣称 capability 超过 promotion_deadline 自动置 expired 并写 strategy_search_request 重审，这是 'L5 RSI 真闭合' 叙事的关键件。PromotionTimeoutSweeper.sweep()（promotion_queue.py:173）实现真实，但 grep 全仓调用方只有 scripts/e2e_rsi_demo.py:280（演示脚本）和 tests/unit/test_l5_promotion_timeout.py；kun/engineering/idle_batch.py 与任何 scheduler/cron 均不调用它。Gate 写入的 promotion_deadline（gate/service.py:292,375）在生产中没有任何东西去检查，到期 capability 会永远停在原状态，'自动晋级闭环' 实际是断的。建议把 sweeper 注册进 idle_batch steps（与 MethodologyDistillStep 同模式）即可闭合，改动量小。",
       "evidence": "grep -rn PromotionTimeoutSweeper → 仅 scripts/e2e_rsi_demo.py:280 + tests；idle_batch.py grep 'promotion_queue|sweep' 0 命中",
       "source": "docs-drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "aac2c17",
+      "notes": "文档诚实化：decisions.md ADR-024 约束3 + PROGRESS L5.2 标注 sweeper 实现真实但生产无调度(仅 demo+单测调用)，超时自动 expired/重审生产从不触发；实际接线归入 RSI 主链生产化方案。"
     },
     {
       "id": "F051",
