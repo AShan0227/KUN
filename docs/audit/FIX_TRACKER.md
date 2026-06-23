@@ -2,9 +2,9 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 67 ｜ ⛔blocked 0 ｜ 📐needs-design 48 ｜ ⬜pending 58
+**总计 173 项** — ✅done 67 ｜ ⛔blocked 0 ｜ 📐needs-design 54 ｜ ⬜pending 52
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
-剩余 pending+fix：47（high 0 / medium 42 / low 5）
+剩余 pending+fix：41（high 0 / medium 36 / low 5）
 
 | id | sev | class | 状态 | 标题 | 文件 |
 |---|---|---|---|---|---|
@@ -93,14 +93,14 @@
 | F071 | medium | fix | ⬜ | _final_delivery 对整个项目目录（含 node_modules 与 .npm-cache）做两次递归全 | `kun/control_plane/game_production.py:2233-2243,` |
 | F072 | medium | fix | ⬜ | _run_internal_tests 13 个 copy-paste 命令块，串行最多 ~17 个 npm 命令、 | `kun/control_plane/game_production.py:1285-1465` |
 | F073 | medium | fix | ✅ | tick 无异常隔离 + 用 float() 解析业务 workspace 的未校验 JSON，一条坏数据即可杀死常 | `kun/control_plane/daemon.py:5440` |
-| F074 | medium | fix | ⬜ | 每 tick 为每个 mission 生成 2 个带时间戳的新 artifact 且无任何清理，叠加全量 JSON  | `kun/control_plane/daemon.py:4394` |
-| F075 | medium | fix | ⬜ | 单任务批次与多任务批次的异常隔离不一致：单批次时 finish_work_item_run 异常会击穿整个守护循环 | `kun/control_plane/daemon.py:1373` |
-| F076 | medium | fix | ⬜ | claim_start 抢占 daemon 槽位是 load→check→save 的 TOCTOU，无进程间锁 | `kun/control_plane/daemon.py:321` |
-| F077 | medium | fix | ⬜ | V7 Mission Director 周期 hook 每 tick 每 mission 起一个未节流的线程 + 独 | `kun/control_plane/daemon.py:794` |
+| F074 | medium | fix | 📐 | 每 tick 为每个 mission 生成 2 个带时间戳的新 artifact 且无任何清理，叠加全量 JSON  | `kun/control_plane/daemon.py:4394` |
+| F075 | medium | fix | 📐 | 单任务批次与多任务批次的异常隔离不一致：单批次时 finish_work_item_run 异常会击穿整个守护循环 | `kun/control_plane/daemon.py:1373` |
+| F076 | medium | fix | 📐 | claim_start 抢占 daemon 槽位是 load→check→save 的 TOCTOU，无进程间锁 | `kun/control_plane/daemon.py:321` |
+| F077 | medium | fix | 📐 | V7 Mission Director 周期 hook 每 tick 每 mission 起一个未节流的线程 + 独 | `kun/control_plane/daemon.py:794` |
 | F078 | medium | fix | ⬜ | 中英文子串匹配作为核心控制流，误匹配直接改变状态机走向 | `kun/control_plane/runtime.py:169-226` |
 | F079 | medium | fix | ✅ | mission_director._latest_gate 取 dict 迭代序最后一个，'最新门禁'判断不可靠 | `kun/control_plane/mission_director.py:498-507` |
 | F080 | medium | fix | ✅ | 确定性 gate_evaluation_id 跨重试复写历史评估，审计追溯失真 | `kun/control_plane/kun_runtime_runner.py:1537` |
-| F081 | medium | fix | ⬜ | mission.ledger_refs 无界增长 + 每条 ledger 事件全 mission 重写 + 文件存储 | `kun/control_plane/runtime.py:2536-2541` |
+| F081 | medium | fix | 📐 | mission.ledger_refs 无界增长 + 每条 ledger 事件全 mission 重写 + 文件存储 | `kun/control_plane/runtime.py:2536-2541` |
 | F082 | medium | fix | ⬜ | RainFlow/游戏生产域逻辑硬编码进'通用'控制面核心，违反分层并已三处复制 | `kun/control_plane/runtime.py:889-934` |
 | F083 | medium | fix | ✅ | activation.py 用 plan 版本号查按 plan_id 键控的字典，task_plan 恒为 None | `kun/control_plane/activation.py:56` |
 | F084 | medium | fix | ⬜ | workspace_snapshot：含 .git/node_modules 的工作区 complete_resto | `kun/control_plane/workspace_snapshot.py:94` |
@@ -112,7 +112,7 @@
 | F090 | medium | fix | ⬜ | MultiJudge '多判官'实为同一模型同温度调 N 次，票相关性极高，多数票独立性假设不成立 | `/Users/petrarain/鲲/kun/agents/tester/multi_judge` |
 | F091 | medium | fix | 📐 | StrategyExperiment.to_row_payload 丢弃 requires_human_review | `/Users/petrarain/鲲/kun/agents/strategist/service` |
 | F092 | medium | fix | ✅ | _invoke_with_retry 无差别重试，叠加 SDK 内建重试与 CLI 长超时，最坏情况单次调用阻塞 2 | `kun/interface/llm/router.py:572-574` |
-| F093 | medium | fix | ⬜ | V6 Control Plane 全内存 + 本地 JSON 文件持久化：无租户隔离、无跨进程一致性，daemon  | `kun/api/control_plane.py:176-214,363-372;` |
+| F093 | medium | fix | 📐 | V6 Control Plane 全内存 + 本地 JSON 文件持久化：无租户隔离、无跨进程一致性，daemon  | `kun/api/control_plane.py:176-214,363-372;` |
 | F094 | medium | fix | ✅ | Automation 层 Action.timeout_sec / max_retries 契约未实现；Shopif | `kun/interface/automation/api_base.py:25-96;` |
 | F095 | medium | fix | ✅ | Event.build 生成的 NATS subject 域名段重复，与文档约定不符且已被测试固化 | `kun/datamodel/events.py:104-105` |
 | F096 | medium | fix | ✅ | TaskMeta 的 L1 字段 complexity / priority_profile / estimated | `kun/datamodel/task.py:57-62` |

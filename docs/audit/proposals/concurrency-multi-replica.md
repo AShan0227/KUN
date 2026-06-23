@@ -60,7 +60,22 @@ API 覆盖 daemon 新状态。这 4 条 + F019(单文件全量重写/丢字段)�
 - 与持久层(F019)、ledger 作为 RSI 证据源(rsi-mainline-wiring 第 5 环 evidence_ledger)耦合。
 - F062 是**进程内**线程安全(单进程多线程共享一个 CP)，与 F010/F011/F015 的**跨进程**一致性是同族两面；建议同一 epic 内一并设计（进程内用 RLock/单写线程，跨进程用 CAS/版本号）。
 
+## 4b. 资源膨胀 / 异常隔离 / 进程级一致性（F074/F075/F076/F077/F081/F093）
+
+同一根因家族的另一面——单进程内存状态机在长跑/并发下的资源与隔离问题：
+
+| ID | 断点（已核实） | 修法 |
+|----|------|------|
+| **F074** | `daemon.py` 每 tick 为每 mission 生成进度 artifact(~:1121)，**无清理**，叠加 file_store 全量 JSON 重写 → store 随时间无界膨胀 | artifact 加保留窗口/上限(只留最近 N 或按 TTL 清)；配合 F019 持久层防全量重写。 |
+| **F075** | `daemon.py`(~:1373) 单任务批次路径 `finish_work_item_run` 抛异常会击穿整个守护循环；多任务批次有 try 隔离——两路异常隔离不一致 | 把多批次的 per-item try/except 隔离对齐到单批次路径，一个 work item 失败不杀守护循环。 |
+| **F076** | `daemon.py` `claim_start`(:321，调用 :990) 抢占 daemon 槽位是 load→check→save 的 **TOCTOU**，无进程间锁 | 用原子 CAS（store 版本号，见本方案 §2.1）或文件锁/DB 唯一约束保证单副本拥有槽位。 |
+| **F077** | `daemon.py`(~:4581) V7 Mission Director 周期 hook 每 tick 每 mission 起一个**未节流** `threading.Thread` + 独立 asyncpg engine | hook 用有界线程池(或 asyncio 任务)、复用单个 engine/连接池，按 mission 节流。 |
+| **F081** | `runtime.py:2572` `ledger_refs` 每事件 `[*mission.ledger_refs, event.event_id]` **无界增长**，且每条 ledger 事件全 mission 重写 + 文件存储每 put 全文件读写 → 长任务 O(N²) | ledger_refs 不内联进 mission(改为按 mission_id 查 ledger 表)；append-only 写(见 §2.3 F014)；配合 F019。 |
+| **F093** | `api/control_plane.py:176-183` V6 Control Plane 全内存 `InMemoryControlPlane` + 本地 JSON：无租户隔离、无跨进程一致性、daemon 状态可被任意覆写 | 落 DB(带 RLS 租户隔离) + 走 §2 的 CAS 写；与 F015(API 持陈旧副本)、F011 同一接线。 |
+
+> 这 6 条都随「demo 级内存状态机 → 生产级持久/一致存储」epic 一并解决；落地前生产仍应单 daemon + worker_pool=1。
+
 ## 5. 覆盖 findings
-F010, F011, F014, F015, F062, F085, F088（标 needs-design 指向本文件）；F019 见其自身方案。
+F010, F011, F014, F015, F062, F074, F075, F076, F077, F081, F085, F088, F093（标 needs-design 指向本文件）；F019 见其自身方案。
 
 > F085 落地说明：`release_holder` 改为 Lua compare-and-delete（atomic CAS-DEL）+ acquire 路径已有的 WATCH/MULTI 复用；与 F010 lease 续期同 PR，在 CI(真 redis) 下做并发释放不变量测试（断言陈旧 release 不删新 holder 的锁）。

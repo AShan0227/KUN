@@ -964,9 +964,9 @@
       "detail": "_progress_artifact/_observation_artifact 的 artifact_id 含秒级时间戳(artifact-daemon-progress-{mission}-{ts})，30s 轮询下每 mission 每天新增约 5760 条 artifact，外加每次状态变更的 ledger event；全仓 grep 未发现任何 prune/retention 逻辑。文件 store 每次非事务 put 都『从磁盘整载 → 全量 JSON 序列化 → fsync 重写』(file_store.py:454-475)，单个 tick 中各治理 pass 的逐条 _persist_work_item 都在事务外，意味着一个 tick 触发几十次全文件重写，I/O 成本随历史记录线性增长，长期运行(数天)后 tick 延迟和磁盘写入会显著恶化，内存中的 control_plane.artifacts dict 也同步无界增长。建议：progress/observation 改为固定 id upsert(保留最近 N 份)或引入 retention pass；治理 pass 包进 store.transaction()。",
       "evidence": "4394 `artifact_id=f\"artifact-daemon-progress-{mission_id}-{_compact_time(now)}\"`；4438 observation 同模式；file_store.py:443-447 事务外每次 put: `self._load_from_disk_locked(); ...; self._persist_unlocked()`(全量重写+fsync)",
       "source": "cp-daemon",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "b80b681",
+      "notes": "每 tick 每 mission 生成 artifact 无清理+全量 JSON 重写→store 无界膨胀；并入 docs/audit/proposals/concurrency-multi-replica.md §4b(资源膨胀/异常隔离/进程级一致性)，与并发/持久层 epic 同排期(落地前生产单 daemon+worker_pool=1)。"
     },
     {
       "id": "F075",
@@ -977,9 +977,9 @@
       "detail": "_run_prepared_work_items_in_parallel 在 len==1 时直接同步调用 _execute_prepared_work_item；该方法内只有 runner.run 被 try/except 包住(1429-1432)，finish_work_item_run(1433) 抛出的异常(例如 store 写失败、apply_work_item_result 内的校验 ValueError)会直接向上传播 → tick 崩溃 → run_managed_loop 退出。而 ≥2 个任务走 ThreadPoolExecutor 路径时，同样的异常被 future.result() 的 except 吞掉并做 lease/锁回收(1390-1397)。也就是说同一种故障在并发批次里是『静默回收继续跑』，在单任务批次里是『进程死亡』。worker_pool_size 默认 1，单任务批次恰恰是默认形态。建议把 finish 也纳入 _execute_prepared_work_item 的统一异常处理，行为对齐。",
       "evidence": "1373-1375 `if len(prepared_runs) == 1: run = self._execute_prepared_work_item(prepared_runs[0])`(无 try)；1433-1437 `return self.control_plane.finish_work_item_run(...)` 不在 1429 的 try 块内；1386-1397 并发路径 `except Exception: ...release...continue`",
       "source": "cp-daemon",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "b80b681",
+      "notes": "单批次 finish_work_item_run 异常击穿守护循环(异常隔离不一致)；并入 docs/audit/proposals/concurrency-multi-replica.md §4b(资源膨胀/异常隔离/进程级一致性)，与并发/持久层 epic 同排期(落地前生产单 daemon+worker_pool=1)。"
     },
     {
       "id": "F076",
@@ -990,9 +990,9 @@
       "detail": "FileDaemonServiceStateStore.claim_start 先 load() 判断旧状态是否 stale/进程存活，再 save() 写入 starting 状态，中间没有 flock(对比 file_store.py 的 _interprocess_locked 有 flock)。同一 state_path 的两个进程同时启动(如 systemd 重启竞态、手工 + 服务双启)会双双 accepted，两个 daemon 以相同 daemon_id 并行 tick 同一 store；后续两者互写同一心跳文件，配合 _lease_owned_by_daemon(5054) 按 daemon_id 前缀识别『自己的』lease，会把对方持有的未过期 lease 当作自己的孤儿 lease 释放(_recover_stale_work:3030-3033)，放大并发问题。建议 claim_start 全程持 flock，或改用 O_EXCL 锁文件。",
       "evidence": "333 `previous = self.load()` … 375 `self.save(starting_state)` 之间无任何互斥；3030 `lease_owned_by_this_daemon = _lease_owned_by_daemon(item.lease, self.daemon_id)` 仅按 `lease:{daemon_id}:` 前缀判断",
       "source": "cp-daemon",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "b80b681",
+      "notes": "claim_start 抢 daemon 槽位 load→check→save TOCTOU 无进程间锁；并入 docs/audit/proposals/concurrency-multi-replica.md §4b(资源膨胀/异常隔离/进程级一致性)，与并发/持久层 epic 同排期(落地前生产单 daemon+worker_pool=1)。"
     },
     {
       "id": "F077",
@@ -1003,9 +1003,9 @@
       "detail": "KUN_V7_MD_DAEMON_TICK_ENABLED 打开后，tick_once 末尾对每个活跃 mission 调 emit_v7_review_for_work_item_sync；bridge 内每次调用 spawn 一个 daemon 线程执行 asyncio.run 并建 thread-local 引擎(mission_director_v7_bridge.py:331-337)。daemon 侧没有任何节流/去重/冷却：30s 轮询 × N 个 mission = 每分钟 2N 个线程与 DB 连接建立。PG 慢或不可达时(当前 Docker 就是停的)线程会按连接超时时长堆积，错误仅 log.warning 吞掉，daemon 对积压完全无感知。好在默认 OFF。建议在 daemon 侧加 per-mission 冷却间隔(如复用 §9.7 的 review 周期)再放开。",
       "evidence": "810 `for mission_id in mission_ids:` 每 mission 调 emit；bridge 312-318 `asyncio.run(_emit_v7_review_async(..., use_thread_local_engine=True))`，331 `threading.Thread(..., daemon=True).start()` 不 join、无限速",
       "source": "cp-daemon",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "b80b681",
+      "notes": "Mission Director hook 每 tick 每 mission 起未节流线程+独立 engine；并入 docs/audit/proposals/concurrency-multi-replica.md §4b(资源膨胀/异常隔离/进程级一致性)，与并发/持久层 epic 同排期(落地前生产单 daemon+worker_pool=1)。"
     },
     {
       "id": "F078",
@@ -1055,9 +1055,9 @@
       "detail": "_record_ledger_event 每次都把 event_id 追加进 mission.ledger_refs 并整条 persist mission；file_store._put_and_persist(file_store.py:432-448)在非事务路径上每次 put 都重新加载整个 JSON 再全量重写(temp+fsync+replace)。一次 finish_work_item_run 产生多个事件=多次全文件重写，mission 记录本身随事件数线性膨胀，长 dogfood 任务(数千事件)下存储与序列化成本二次方增长，且 v6-control-plane.json 单文件会变得巨大。事务批量只覆盖 start/finish，apply_gate/transition_mission/record_collaboration_* 等路径均为逐 put。建议：ledger_refs 改为查询派生(按 mission_id 索引事件)不再存于 mission；推进 PG store 落地后弃用全量快照。",
       "evidence": "self.missions[mission_id] = mission.model_copy(update={\"ledger_refs\": [*mission.ledger_refs, event.event_id]})\\nself._persist_mission(...)  # 每个事件触发一次整 mission + 整文件重写",
       "source": "cp-runtime",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "b80b681",
+      "notes": "ledger_refs 无界增长+每事件全 mission 重写+文件 put 全文件读写 O(N²)；并入 docs/audit/proposals/concurrency-multi-replica.md §4b(资源膨胀/异常隔离/进程级一致性)，与并发/持久层 epic 同排期(落地前生产单 daemon+worker_pool=1)。"
     },
     {
       "id": "F082",
@@ -1211,9 +1211,9 @@
       "detail": "整个 /api/control-plane/v6 路由读写 app.state.v6_control_plane（InMemoryControlPlane + FileControlPlaneStore 指向 .kun-local/v6-control-plane.json）：(1) 完全不经过 TenantContext，mission/work_item/collaboration ticket 无租户列，任何租户可读写全部任务状态；(2) 多 uvicorn worker / 多进程部署时每个进程各持一份内存态、共写同一个 JSON 文件，互相覆盖丢更新（项目自己已在 X.S 把 discipline reports 迁 PG，理由正是 'survives multi-process deploys'，control plane 是同一类问题但量级更大）；(3) PUT /daemon-service/status 接受任意 DaemonServiceState 覆写，结合无鉴权现状，外部可伪造 daemon 心跳让驾驶舱误判无人值守健康。单进程 dev 可用，进 L6 多进程/多租户前需要迁 PG + 租户列。",
       "evidence": "control_plane.py:179-182 runtime = getattr(request.app.state, 'v6_control_plane', None); if None: runtime = InMemoryControlPlane()；:368 request.app.state.v6_daemon_service_state = payload.state；main.py:64 KUN_V6_CONTROL_PLANE_STORE 默认 '.kun-local/v6-control-plane.json'",
       "source": "api-interface",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "b80b681",
+      "notes": "V6 Control Plane 全内存+本地 JSON：无租户隔离/无跨进程一致性；并入 docs/audit/proposals/concurrency-multi-replica.md §4b(资源膨胀/异常隔离/进程级一致性)，与并发/持久层 epic 同排期(落地前生产单 daemon+worker_pool=1)。"
     },
     {
       "id": "F094",
