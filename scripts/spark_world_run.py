@@ -46,10 +46,18 @@ def _setup_env() -> None:
     # 鲲's executable skills build in the Spark World workspace
     os.environ["KUN_SKILL_EXEC_ROOTS"] = str(WORKSPACE)
     os.environ["KUN_SKILL_FILE_ROOT"] = str(WORKSPACE)
-    # Supervisor optimization: the configured codex_only (gpt-5.5 via Codex MCP)
-    # hit TLS-handshake failures to chatgpt.com mid-run → aborted M1 after 1 step.
-    # Force reliable Anthropic Claude (ANTHROPIC_API_KEY + api.anthropic.com).
-    os.environ["KUN_CODEX_ONLY"] = "0"
+    # Supervisor optimization (two provider failures observed):
+    #  - codex_only (gpt-5.5 via Codex MCP): TLS-handshake EOF to chatgpt.com
+    #  - claude CLI OAuth (`claude -p` subprocess): hung 180s × 3 → RetryError →
+    #    silent stub fallback that echoed the prompt (a no-op masquerading as success)
+    # Fix: disable both flaky CLI subprocess paths so the router uses the direct
+    # AnthropicProvider (api.anthropic.com + the sk-ant-oat0 subscription token):
+    # reliable transport, same subscription, no metered cost.
+    # 用户选择 gpt-5.5 (Codex) —— Anthropic 订阅被限流, Codex 有独立配额。
+    # KUN_CODEX_ONLY=1 把所有 tier 钉到 Codex MCP (gpt-5.5)。需 codex CLI 已登录。
+    os.environ["KUN_CODEX_ONLY"] = "1"
+    os.environ["KUN_DISABLE_CODEX_CLI"] = "0"
+    os.environ.pop("KUN_DISABLE_CLI_OAUTH", None)
     # Turn on the 4 opt-in long-task mechanisms (trifecta/methodology/critique/discipline)
     os.environ.setdefault("KUN_V7_TRIFECTA_ENABLED", "true")
     os.environ.setdefault("KUN_V7_TRIFECTA_ORCHESTRATOR_ENABLED", "true")
@@ -70,6 +78,9 @@ SKILL_DIRECTIVE = """\
 - grep-verify: 在写代码前先查证, 不要凭记忆。{"pattern":"...", "path":"src"}
 - web-search: 查外部资料/开源/文档。{"query":"..."}
 
+写大文件/代码: 优先用 shell-exec heredoc (cat > path <<'EOF' ... EOF) 更稳;
+file-io 适合小文件和读取 —— 把大段代码塞进 JSON content 容易触发 bad_json。
+
 纪律: 先查证再动手; 改完用 shell-exec 跑起来验证; 不要假设, 用工具确认。
 完成当前目标后, 直接给出 final answer (不要再调用工具)。"""
 
@@ -88,11 +99,36 @@ def _build_ref(mode: str) -> Any:
         )
         goal_statement = "校验 鲲 能在 SparkWorld 工作区用真 LLM + shell/file 工具跑通"
         criteria = ["shell-exec 真跑出 node 版本和文件列表", "读到 产品执行方案.md", "给出现状总结"]
+    elif mode == "plan":
+        goal_detail = (
+            "把火花世界的产品方案做到极致 —— 这一轮**只做方案, 不写任何游戏代码**。"
+            "输入材料都在工作区里: docs/source/ 下有 3 份原始产品思考 "
+            "(火火兔的火花🔥 / 火花新进展 / 火火兔商务思考), 产品执行方案.md 是一份很薄的初稿。\n"
+            "步骤: (1) file-io 逐份读 docs/source/ 三份 + 产品执行方案.md, 吃透愿景与约束; "
+            "(2) web-search 深度调研外部参考并记录来源: 儿童 AI 安全/COPPA、AI 世界导演/生成式交互、"
+            "端侧 STT + 小模型成本架构、Toca Boca / Sago Mini / Khanmigo / Roblox 等前沿儿童产品打法、"
+            "相关论文与可复用开源引擎; (3) 改代码/断言前一律 grep-verify, 不靠记忆; "
+            "(4) 综合写一份 CTO / 产品总监级的完整方案到 docs/产品方案-vNext.md, 必须覆盖 8 大块: "
+            "①完整世界架构 (10 世界 × 3 年龄段重返机制) ②AI 世界导演设计 (三层 AI + 安全转译 + 高容错通感) "
+            "③Spark 成长系统 ④商业模式 (Spark Pass) ⑤技术架构 (端侧 STT+LLM + 成本/缓存/沙箱) "
+            "⑥分阶段开发路线图 ⑦风险与监管 ⑧验收标准。"
+            "要求: 深、具体、可执行, 不要泛泛而谈; 每节先想清楚再落笔; 标注外部来源。"
+            "完成后 final answer 给出方案大纲 + 文件路径 + 关键决策摘要。"
+        )
+        goal_statement = "火花世界产品方案做到极致 (CTO/PM 级完整 spec)"
+        criteria = [
+            "读全 docs/source/ 3 份源文档",
+            "web-search 真调研外部参考并标来源",
+            "产出 docs/产品方案-vNext.md, 8 大块全覆盖、深且可执行",
+        ]
     else:  # m1
         goal_detail = (
             "在工作区 ~/Desktop/SparkWorld 里推进火花世界 M1 (颜色岛 MVP)。"
+            "工作区已有脚手架: src/ (Phaser 颜色岛场景/小火花/导演客户端) + server/ "
+            "(导演服务) + public/。**尽量复用现有代码, 别从零重写**; 目标是让 demo 真的能在"
+            "浏览器打开、颜色岛核心环 (点彩虹树→拖色种→湖变色) 可玩。"
             "先 file-io read `产品执行方案.md` 看 GoalAnchor 和硬不变量 I1-I6, "
-            "再 shell-exec `ls -R src public server` 看已有代码, grep-verify 关键实现。"
+            "再 shell-exec `ls -R src public server` + 读关键文件看已有代码, grep-verify 关键实现。"
             "然后: 用 `npm install` 确保依赖在, `npm start` 起服务并 curl http://localhost:8787/health 验证, "
             "修掉任何让 demo 跑不起来的问题。每改一处都 shell-exec 验证。"
             "完成后 final answer 报告: 改了什么 + demo 是否能跑起来 + 验证证据。"
@@ -175,7 +211,7 @@ async def main() -> int:
         purpose="execution",
         profile=profile,
         temperature=0.4,
-        max_tokens=8192 if mode == "m1" else 1024,
+        max_tokens=8192 if mode in ("m1", "plan") else 1024,
     )
 
     class _Store:
@@ -205,7 +241,10 @@ async def main() -> int:
         checkpoint_status_marker=store.marker,
         external_supervisor_service=_StubSupervisor(),
         enable_recursive_planner=False,
-        max_steps=max_steps_override or (4 if mode == "smoke" else 60),
+        max_steps=max_steps_override or {"smoke": 4, "plan": 80}.get(mode, 60),
+        # KUN runs on CLI + local models (OAuth/local) — cost is not metered per
+        # token, so we don't gate on budget (user). max_steps is the runaway guard.
+        max_budget_usd=1000.0,
         **bundle.as_orchestrator_kwargs(),
     )
 

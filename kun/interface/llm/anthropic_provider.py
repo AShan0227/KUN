@@ -146,9 +146,12 @@ class AnthropicProvider(LLMProvider):
         kwargs: dict[str, Any] = {
             "model": self.model_id,
             "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
             "messages": messages,
         }
+        # Newer models (e.g. claude-opus-4-7) deprecated `temperature` and the
+        # API 400s if it is sent. Only include it for models that still accept it.
+        if not any(s in self.model_id for s in ("opus-4-7",)):
+            kwargs["temperature"] = request.temperature
         if system_text:
             kwargs["system"] = system_text
         if request.stop:
