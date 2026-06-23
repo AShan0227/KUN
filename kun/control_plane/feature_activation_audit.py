@@ -202,6 +202,39 @@ class ConcurrentProbeRunner(StaticRunner):
                 self.current_running -= 1
 
 
+_AUDIT_MARKER = "feature-activation-audit.json"
+
+
+def _prepare_audit_output_dir(root: Path) -> None:
+    """Make ``root`` a fresh audit output dir, refusing to wipe unsafe targets.
+
+    Audit F018: the previous ``shutil.rmtree(root)`` deleted ANY existing
+    directory unconditionally, so a stray ``output_dir="/"`` (or ~, or any real
+    directory) was a data-destruction footgun. Guards:
+      - never wipe the filesystem root, $HOME, the cwd, or an ancestor of cwd;
+      - never wipe a very shallow path;
+      - only wipe a directory that is empty or is a prior audit dir (carries the
+        audit marker file). A non-empty non-audit directory is refused.
+    """
+    cwd = Path.cwd().resolve()
+    home = Path.home().resolve()
+    anchor = Path(root.anchor).resolve() if root.anchor else None
+    if root in (anchor, home, cwd) or root in cwd.parents:
+        raise ValueError(f"refusing to wipe unsafe audit output dir: {root}")
+    if len(root.parts) < 3:
+        raise ValueError(f"refusing to use shallow path as audit output dir: {root}")
+    if root.exists():
+        if not root.is_dir():
+            raise ValueError(f"audit output path exists and is not a directory: {root}")
+        if list(root.iterdir()) and not (root / _AUDIT_MARKER).exists():
+            raise ValueError(
+                f"refusing to wipe non-empty non-audit directory: {root} "
+                "(point output_dir at a fresh or prior-audit directory)"
+            )
+        shutil.rmtree(root)
+    root.mkdir(parents=True, exist_ok=True)
+
+
 def run_feature_activation_audit(
     *,
     output_dir: str | Path,
@@ -211,9 +244,7 @@ def run_feature_activation_audit(
     """Run all feature activation cases and persist JSON/Markdown evidence."""
 
     root = Path(output_dir).expanduser().resolve()
-    if root.exists():
-        shutil.rmtree(root)
-    root.mkdir(parents=True, exist_ok=True)
+    _prepare_audit_output_dir(root)
     cases: list[FeatureActivationCase] = []
     for case_fn in _CASE_FUNCTIONS:
         try:

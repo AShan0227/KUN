@@ -236,9 +236,9 @@
       "detail": "审计入口对 output_dir 做 `root = Path(output_dir).expanduser().resolve(); if root.exists(): shutil.rmtree(root)`，没有任何防护：不要求目录为空、不校验 marker 文件、不拒绝 home/仓库根等敏感路径。该函数由 CLI `kun control-plane feature-activation-audit --output-dir ...` 直接暴露(kun/cli.py:600-618)，而本项目的运行模式是 agent 自主构造并执行 CLI 命令——一次 --output-dir 拼错（如 `.` 或某业务目录）即整树递归删除。建议：仅当目录内存在上次审计产物(如 feature-activation-audit.json)时才允许清空，否则要求空目录。",
       "evidence": "root = Path(output_dir).expanduser().resolve()\\nif root.exists():\\n    shutil.rmtree(root)\\nroot.mkdir(parents=True, exist_ok=True)",
       "source": "cp-rest",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "c4a6531",
+      "notes": "加 _prepare_audit_output_dir 守卫：拒绝 /、$HOME、cwd 及其祖先、过浅路径；只清空目录或含审计标记的旧审计目录，非审计的非空目录拒删保数据。+8 测试。"
     },
     {
       "id": "F019",
