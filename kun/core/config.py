@@ -124,9 +124,7 @@ class Settings(BaseSettings):
         """Auth enabled requires a strong JWT secret."""
         if self.auth_enabled:
             if not self.auth_jwt_secret:
-                raise ValueError(
-                    "KUN_AUTH_ENABLED=true but KUN_AUTH_JWT_SECRET is unset"
-                )
+                raise ValueError("KUN_AUTH_ENABLED=true but KUN_AUTH_JWT_SECRET is unset")
             if len(self.auth_jwt_secret) < 32:
                 raise ValueError(
                     "KUN_AUTH_JWT_SECRET must be at least 32 characters "
@@ -150,6 +148,14 @@ class Settings(BaseSettings):
             violations.append(
                 f"KUN_DEFAULT_TENANT_ID={self.default_tenant_id!r} — must be unset "
                 "in production so missing X-Tenant-Id fails closed"
+            )
+        if not self.auth_enabled:
+            # Audit F007a: with auth off, the API trusts an unverified X-Tenant-Id
+            # header — any caller can claim any tenant. Production must fail closed:
+            # refuse to start unless real auth (KUN_AUTH_ENABLED) is on.
+            violations.append(
+                "KUN_AUTH_ENABLED is false — production must enable auth so requests "
+                "fail closed (an unverified X-Tenant-Id header must not grant access)"
             )
         if violations:
             joined = "\n  - ".join(violations)

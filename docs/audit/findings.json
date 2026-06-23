@@ -2225,9 +2225,9 @@
       "detail": "F007 已让 KUN_AUTH_ENABLED 真正生效，但默认仍 false；生产(env=production)且 auth 关闭时应直接 fail-closed，而非回退到 dev 头部信任路径（dev 因有 default_tenant_id 才走头部）。",
       "evidence": "",
       "source": "F007-followup",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "c6df9df",
+      "notes": "_production_safety 新增 fail-closed 检查：KUN_ENV=production 且 auth_enabled=false → InsecureProductionConfigError 拒启动(与 dev 默认拒绝同风格)，因 auth 关时 API 信任未验签 X-Tenant-Id=任意租户可冒充。+3 测试(prod+auth off→raise；prod+auth on→ok；dev→ok)。"
     },
     {
       "id": "F035a",

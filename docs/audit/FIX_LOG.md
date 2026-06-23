@@ -70,3 +70,4 @@
 2026-06-24 F028 ✅ — 核实为 F003 重复(proactive 自动执行 python 代码块 RCE)，NEVER_PROACTIVE 已覆盖，标 done 引用
 2026-06-24 F045 ✅ — StubProvider 生产(KUN_ENV=production)下 fail-closed，不再伪造成功响应，+4 测试
 2026-06-24 F056-F060 📐 — 演示脚本诚实化方案 docs/audit/proposals/demo-script-honesty.md + 6 脚本头加 FIXTURE/DEMO 横幅(不删/不改逻辑)
+2026-06-24 F007a ✅ — 生产 auth 关闭 fail-closed(KUN_ENV=production+auth off→拒启动)，+3 测试

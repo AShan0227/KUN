@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 65 ｜ ⛔blocked 0 ｜ 📐needs-design 40 ｜ ⬜pending 68
+**总计 173 项** — ✅done 66 ｜ ⛔blocked 0 ｜ 📐needs-design 40 ｜ ⬜pending 67
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -22,7 +22,7 @@
 | F005 | critical | fix | ✅ | 安全指标 tenant_cross_access_attempt 零 emit 且应用层无越权检测逻辑——越权告警永 | `kun/core/metrics.py:88` |
 | F006 | critical | fix | ✅ | logging.py 的 _add_tenant 只捕获 LookupError，生产环境 MissingTenan | `kun/core/logging.py:20` |
 | F007 | high | fix | ✅ | 生产 API 无任何鉴权：JWT 鉴权模块未接线，请求头 X-Tenant-Id/X-Scopes 被直接信任 | `kun/api/main.py:226-255` |
-| F007a | high | fix | ⬜ | 生产环境 auth 关闭应 fail-closed（拒绝启动或拒绝请求） | `kun/core/config.py,` |
+| F007a | high | fix | ✅ | 生产环境 auth 关闭应 fail-closed（拒绝启动或拒绝请求） | `kun/core/config.py,` |
 | F008 | high | fix | 📐 | 全部质量评分与门禁是硬编码常量+生成代码字符串指纹自检，RSI 评估信号为虚构 | `kun/control_plane/game_production.py:6653-6974,` |
 | F009 | high | fix | 📐 | 7907 行单文件中约 60% 是单一游戏项目的内嵌源码/SVG/CSS/逐版本补丁，control plane 内 | `kun/control_plane/game_production.py:2913-6026,` |
 | F010 | high | fix | 📐 | 长任务运行期间不刷新 work-item 心跳/lease/资源锁 TTL，多副本部署下必然误判超时并重复执行 | `kun/control_plane/daemon.py:3238` |
