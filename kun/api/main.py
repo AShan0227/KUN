@@ -23,6 +23,8 @@ from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from kun import __version__
+from kun.api.auth.middleware import AuthError, AuthSettings, build_auth_settings
+from kun.api.auth.middleware import resolve_tenant_id as auth_resolve_identity
 from kun.api.chat import router as chat_router
 from kun.api.cockpit import router as cockpit_router
 from kun.api.control_plane import router as control_plane_router
@@ -223,35 +225,87 @@ app.add_middleware(
 )
 
 
-@app.middleware("http")
-async def tenant_middleware(
-    request: Request,
-    call_next: Callable[[Request], Awaitable[Response]],
-) -> Response:
-    """ADR-007: resolve tenant from X-Tenant-Id, with fallback disabled in production.
+def _parse_scopes_claim(claim: object) -> tuple[str, ...]:
+    """Normalise a JWT 'scopes' claim (str CSV/space-separated or list) to a tuple."""
+    if isinstance(claim, str):
+        return tuple(s.strip() for s in claim.replace(",", " ").split() if s.strip())
+    if isinstance(claim, (list, tuple)):
+        return tuple(str(s).strip() for s in claim if str(s).strip())
+    return ()
 
-    Also threads X-Scopes (comma-separated) into TenantContext so endpoints can
-    enforce permission checks (R-A12). Empty / missing scopes = empty tuple.
+
+def resolve_request_tenant(
+    *,
+    auth_settings: AuthSettings,
+    authorization: str | None,
+    x_tenant_id: str | None,
+    x_user_id: str | None,
+    x_scopes: str | None,
+    x_audience: str | None,
+) -> TenantContext | tuple[int, str]:
+    """Resolve the per-request tenant identity.
+
+    Pure (no Request object) so it is unit-testable offline. Returns a
+    TenantContext on success, or an ``(http_status, detail)`` tuple the caller
+    maps to a JSONResponse.
+
+    When auth is enabled, identity comes ONLY from the verified JWT — client
+    X-Tenant-Id / X-Scopes / X-User-Id are ignored (audit F007/F023). When auth
+    is disabled (dev/staging) the legacy header-based resolution is preserved, so
+    flipping the flag switches posture without changing local behaviour.
     """
-    try:
-        tenant_id = resolve_tenant_id(request.headers.get("X-Tenant-Id"))
-    except MissingTenantContextError:
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "X-Tenant-Id header is required"},
+    if auth_settings.auth_enabled:
+        try:
+            identity = auth_resolve_identity(
+                authorization_header=authorization,
+                settings=auth_settings,
+            )
+        except AuthError as exc:
+            return (401, str(exc))
+        tenant_id = identity.tenant_id
+        user_id = identity.sub
+        scopes = _parse_scopes_claim(
+            identity.payload.extra.get("scopes") if identity.payload else None
         )
-    user_id = request.headers.get("X-User-Id")
-    raw_scopes = request.headers.get("X-Scopes") or ""
-    scopes = tuple(s.strip() for s in raw_scopes.split(",") if s.strip())
-    raw_audience = (request.headers.get("X-Audience") or "developer").lower()
+    else:
+        try:
+            tenant_id = resolve_tenant_id(x_tenant_id)
+        except MissingTenantContextError:
+            return (400, "X-Tenant-Id header is required")
+        user_id = x_user_id
+        scopes = tuple(s.strip() for s in (x_scopes or "").split(",") if s.strip())
+    raw_audience = (x_audience or "developer").lower()
     audience = raw_audience if raw_audience in {"novice", "developer", "expert"} else "developer"
-    ctx = TenantContext(
+    return TenantContext(
         tenant_id=tenant_id,
         user_id=user_id,
         scopes=scopes,
         audience=audience,  # type: ignore[arg-type]
     )
-    with tenant_scope(ctx):
+
+
+@app.middleware("http")
+async def tenant_middleware(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    """ADR-019: when KUN_AUTH_ENABLED, identity comes from a verified JWT and
+    client-supplied X-Tenant-Id / X-Scopes / X-User-Id headers are IGNORED
+    (audit F007/F023 — header trust was the production zero-auth hole). When auth
+    is disabled (dev/staging default) header-based resolution is preserved.
+    """
+    resolved = resolve_request_tenant(
+        auth_settings=build_auth_settings(settings()),
+        authorization=request.headers.get("Authorization"),
+        x_tenant_id=request.headers.get("X-Tenant-Id"),
+        x_user_id=request.headers.get("X-User-Id"),
+        x_scopes=request.headers.get("X-Scopes"),
+        x_audience=request.headers.get("X-Audience"),
+    )
+    if isinstance(resolved, tuple):
+        status_code, detail = resolved
+        return JSONResponse(status_code=status_code, content={"detail": detail})
+    with tenant_scope(resolved):
         return await call_next(request)
 
 

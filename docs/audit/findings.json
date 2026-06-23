@@ -93,9 +93,9 @@
       "detail": "kun/api/auth/ 下完整实现了 JWT 签发/校验(jwt_token.py)与鉴权中间件(middleware.py resolve_tenant_id)，但全仓 grep 显示 `from kun.api.auth` 只出现在 tests/ 里——它从未被 kun.api.main 装配为 FastAPI 中间件或依赖。真正生效的是 main.py 的 tenant_middleware：它用 kun.core.tenancy.resolve_tenant_id(request.headers.get('X-Tenant-Id')) 解析租户，并把 X-Scopes 直接 split 成权限作用域、X-User-Id/X-Audience 也照单全收(main.py:243-253)，全程没有任何 token 校验。所有路由(/api/chat、/nuo、/control-plane、/cockpit)都是裸挂载，无 auth 依赖(main.py:264-270)。后果：Dockerfile 以 KUN_ENV=production、KUN_API_HOST=0.0.0.0、EXPOSE 8000 跑的正是这个 app(Dockerfile:40-49)，任何网络可达的客户端都能：(a) 无凭据访问全部 API；(b) 把 X-Tenant-Id 设成任意租户即冒充该租户，RLS 会忠实地把会话 scope 到攻击者声明的租户，多租户隔离被请求头欺骗彻底绕过；(c) 用 X-Scopes 自授任意作用域；(d) 调 POST /control-plane/daemon-service/start-claim、stop-request、/missions、/capability-rollbacks(control_plane.py:363-619) 以及 /nuo/action/{id}/decision 审批高危副作用动作(action_panel.py:80-122)——人工审批闸门同样被绕过。WS 端点更是源码自注 'There is no real authentication on the WS endpoint'(ws.py:79-86)。config 的 _production_safety 只要求生产环境清空 default_tenant_id，使'缺 X-Tenant-Id→400'，但对'伪造 X-Tenant-Id'毫无防护。团队意图疑似靠外部反代鉴权(KUN_WS_REQUIRE_AUTH_HEADER)，但 Dockerfile/one_click_deploy.sh/PRODUCTION_ENTRIES.md 都没有强制反代，默认部署即无鉴权暴露。",
       "evidence": "main.py:237 `tenant_id = resolve_tenant_id(request.headers.get(\"X-Tenant-Id\"))`; main.py:244-245 `raw_scopes = request.headers.get(\"X-Scopes\") or \"\"; scopes = tuple(...)`; grep `from kun.api.auth` 仅命中 tests/unit/*; Dockerfile:40-49 `KUN_ENV=production ... CMD [\"uvicorn\",\"kun.api.main:app\",\"--host\",\"0.0.0.0\",...]`; ws.py:81 注释 'no real authentication on the WS endpoint'",
       "source": "security",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "0309163",
+      "notes": "接通 JWT 鉴权中间件：KUN_AUTH_ENABLED=true 时身份只来自验签 JWT(忽略可伪造的 X-Tenant-Id/X-Scopes/X-User-Id)，缺/坏 token→401；关闭时保持 dev 现状(flag flip 真正切换 posture)。抽出纯函数 resolve_request_tenant + 7 离线测试。后续硬化：生产+auth关闭应 fail-closed(单列)。"
     },
     {
       "id": "F008",
@@ -301,9 +301,9 @@
       "detail": "kun/api/auth/ 下 JWT(HS256) encode/decode、Bearer 提取、RLS SET LOCAL 三件套实现完整且有单测，但全仓 grep 证实生产代码零调用——唯一引用方是 auth/__init__.py 和 tests/。main.py 的 tenant_middleware 用的是 kun.core.tenancy.resolve_tenant_id（直接信任 X-Tenant-Id），X-User-Id / X-Scopes / X-Audience 同样原样采信；即使设 KUN_AUTH_ENABLED=true，请求路径行为也不变（config 校验只检查 secret 存在）。后果：任何能访问 API 的客户端可冒充任意租户、自授任意 scopes，并通过 POST /nuo/actions/{id}/decision 审批并立即执行副作用动作（execute_approved_action_once 在审批后真执行）；WS 同理（ws.py 注释自己承认无鉴权，KUN_WS_REQUIRE_AUTH_HEADER 严格模式也只是拒绝 query 传租户）。auth/__init__.py 声称的 'flag flip 即可启用' 与事实不符——flip 后中间件仍不验 token，bind_tenant_to_session 仍无人调用。单租户 dev + CORS 限 localhost 下风险可控，但这是 L6 商业化前必须接线的架构债，且文档性误导（让人误以为已有鉴权兜底）应立即修正。",
       "evidence": "grep 'from kun.api.auth' 全仓只命中 auth/__init__.py 与 tests/unit/test_auth_*；main.py:237 tenant_id = resolve_tenant_id(request.headers.get(\"X-Tenant-Id\"))；ws.py:81-83 '# SECURITY: There is no real authentication on the WS endpoint'；grep bind_tenant_to_session 无生产调用方",
       "source": "api-interface",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "0309163",
+      "notes": "接通 JWT 鉴权中间件：KUN_AUTH_ENABLED=true 时身份只来自验签 JWT(忽略可伪造的 X-Tenant-Id/X-Scopes/X-User-Id)，缺/坏 token→401；关闭时保持 dev 现状(flag flip 真正切换 posture)。抽出纯函数 resolve_request_tenant + 7 离线测试。后续硬化：生产+auth关闭应 fail-closed(单列)。"
     },
     {
       "id": "F024",
@@ -2215,6 +2215,19 @@
       "status": "pending",
       "commit": "",
       "notes": "需确认 pytest-cov 配置"
+    },
+    {
+      "id": "F007a",
+      "severity": "high",
+      "class": "fix",
+      "title": "生产环境 auth 关闭应 fail-closed（拒绝启动或拒绝请求）",
+      "file": "kun/core/config.py, kun/api/main.py",
+      "detail": "F007 已让 KUN_AUTH_ENABLED 真正生效，但默认仍 false；生产(env=production)且 auth 关闭时应直接 fail-closed，而非回退到 dev 头部信任路径（dev 因有 default_tenant_id 才走头部）。",
+      "evidence": "",
+      "source": "F007-followup",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
     }
   ],
   "low_deferred": [
