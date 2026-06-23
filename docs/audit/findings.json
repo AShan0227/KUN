@@ -353,9 +353,9 @@
       "detail": "_run_long_task_branch 把 LongTaskOrchestrator 在 _emit_terminal_events 里产生的 answer、long_task.completed、done 全部收进 collected,再在 1422 到 1424 行原样回放,紧接着在 1530 到 1537 行又自己发一次 answer 和 done。结果 WS 流出现两次 done 两次 answer,且 LT 的 done 早于其后追加的 production_entry_diff_postrun 事件,破坏了 long_task_orchestrator.py 第 805 行承诺的 done 必须最后一个发出 的契约。更严重的是非流式入口 run 在 307 到 309 行对每个 done 取 ev.data 的 result 键构造 TaskResult,而 LT 的 done 数据没有 result 键(long_task_orchestrator.py 第 1106 行),遍历到第一个 LT done 就 KeyError。kun/api/chat.py 第 28 行的 POST run 正是走 run,任何复杂且带 goal_anchor 的长任务经该端点会 500。现有测试只覆盖 _is_long_task_branch_eligible,端到端长任务流与 run 无覆盖。修复方向是 LT 终结事件与外层终结事件二选一。",
       "evidence": "run 中 done 分支取 ev.data 的 result 键;LT done 的 data 为 common 字典无 result 键;分支尾部先回放 collected 再发一次带 result 的 done",
       "source": "eng-eval",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "81ab426",
+      "notes": "双修复：_on_lt_event 丢弃 LT 自己的 answer/done(分支末尾已发 canonical 终结事件)，避免重复；run() 仅消费带 result 的 done，防 KeyError 崩溃。+2 测试。"
     },
     {
       "id": "F028",

@@ -288,14 +288,13 @@ class Orchestrator:
             return None
         try:
             from kun.external_supervisor.runner import build_service
+
             svc = await build_service()
             self._external_supervisor_cached = svc
             log.info("long_task.external_supervisor.built")
             return svc
         except Exception as e:
-            log.warning(
-                "long_task.external_supervisor.build_failed", error=str(e)
-            )
+            log.warning("long_task.external_supervisor.build_failed", error=str(e))
             self._external_supervisor_cached = None
             return None
 
@@ -305,7 +304,11 @@ class Orchestrator:
         """Non-streaming entry. Useful for tests / HTTP POST."""
         final: TaskResult | None = None
         async for ev in self.stream(user_message, output_kind=output_kind):
-            if ev.kind == "done":
+            # Only the canonical terminal carries a TaskResult under "result".
+            # The long-task path can surface a second "done" with a different
+            # shape ({...,"cancelled":...}); guarding on the key avoids a
+            # KeyError crash if one slips through (audit F027).
+            if ev.kind == "done" and "result" in ev.data:
                 final = TaskResult.model_validate(ev.data["result"])
         if final is None:
             raise RuntimeError("orchestrator exited without a done event")
@@ -1261,9 +1264,7 @@ class Orchestrator:
             for s in skill_candidates
             if _skill_is_registered(s.skill_id)
         ]
-        skill_directive = (
-            build_skill_directive(skill_summaries) if skill_summaries else ""
-        )
+        skill_directive = build_skill_directive(skill_summaries) if skill_summaries else ""
 
         # Build LLM profile reflecting current task + budget posture
         llm_profile = TaskProfile(
@@ -1275,9 +1276,7 @@ class Orchestrator:
 
         # plan_review_writer_factory expects (tenant_id, task_id, anchor_id)
         # — adapt make_plan_review_writer's signature.
-        def _make_pr_writer(
-            *, tenant_id: str, task_id: str, anchor_id: str
-        ) -> Any:
+        def _make_pr_writer(*, tenant_id: str, task_id: str, anchor_id: str) -> Any:
             return make_plan_review_writer(tenant_id, task_id, anchor_id)
 
         # LT.WIRE-2: resolve external supervisor service — caller-injected wins,
@@ -1337,9 +1336,7 @@ class Orchestrator:
             plan_review_writer_factory=_make_pr_writer,
             external_supervisor_service=external_supervisor,
             # LT.WIRE-2: real LLM summarizer for compaction (replaces rule-based)
-            compactor_summarizer=make_llm_summarizer(
-                self.llm_router, purpose="compression"
-            ),
+            compactor_summarizer=make_llm_summarizer(self.llm_router, purpose="compression"),
             # X.H.PROD-ENTRY-WIRE: every opt-in runtime feature flows through here
             **runtime_bundle.as_orchestrator_kwargs(),
         )
@@ -1349,9 +1346,14 @@ class Orchestrator:
         collected: list[OrchestratorEvent] = []
 
         async def _on_lt_event(lt_ev: Any) -> None:
-            collected.append(
-                OrchestratorEvent(kind=lt_ev.kind, data=dict(lt_ev.data))
-            )
+            # The branch emits its own canonical terminal answer/done (with the
+            # "result" shape) at the end. The LongTaskOrchestrator also emits its
+            # own answer/done ({...,"cancelled":...}, no "result"); replaying
+            # those duplicated the terminal events and crashed non-streaming
+            # run() on ev.data["result"]. Drop LT terminals here (audit F027).
+            if lt_ev.kind in ("answer", "done"):
+                return
+            collected.append(OrchestratorEvent(kind=lt_ev.kind, data=dict(lt_ev.data)))
 
         # LT.TOOLS-GAP: inject skill_directive so LLM sees tool schemas.
         extra_segments = [skill_directive] if skill_directive else []
@@ -1393,9 +1395,11 @@ class Orchestrator:
             actual_paths = extract_changed_paths_from_messages(
                 outcome.loop_result.final_messages or []
             )
-            declared_paths = list(
-                getattr(task_ref.spec, "production_entry_changes_required", []) or []
-            ) if task_ref.spec is not None else []
+            declared_paths = (
+                list(getattr(task_ref.spec, "production_entry_changes_required", []) or [])
+                if task_ref.spec is not None
+                else []
+            )
             post_report = ProductionEntryDiffChecker.check_against_actual(
                 declared_paths, actual_paths
             )
@@ -1440,10 +1444,13 @@ class Orchestrator:
         task_status: TaskStatus = status_map.get(loop_result.status, "failed")
         # Capability writeback wants 'pass' / 'partial' / 'fail'
         outcome_label: Outcome = (
-            "pass" if loop_result.status == "final"
-            else ("partial" if loop_result.status in
-                  ("max_steps", "budget_exceeded", "wall_clock_exceeded")
-                  else "fail")
+            "pass"
+            if loop_result.status == "final"
+            else (
+                "partial"
+                if loop_result.status in ("max_steps", "budget_exceeded", "wall_clock_exceeded")
+                else "fail"
+            )
         )
 
         # Translate answer for output audience — compute raw_answer first so
