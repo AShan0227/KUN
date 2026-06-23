@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 170 项** — ✅done 1 ｜ ⛔blocked 0 ｜ 📐needs-design 0 ｜ ⬜pending 169
+**总计 170 项** — ✅done 5 ｜ ⛔blocked 0 ｜ 📐needs-design 0 ｜ ⬜pending 165
 严重度：critical 6 / high 55 / medium 82 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -16,11 +16,11 @@
 | G07 | meta | process | ⬜ | 错误预算/降级/背压未被审查: LLM 路由层已知有无差别重试×3 叠加 SDK 重试(上一轮报过),但更广的降级策略缺 | `` |
 | G08 | meta | process | ⬜ | 并发/幂等的端到端验证缺位: idempotency_keys 表 + control_plane/store.py 的 | `` |
 | F001 | critical | fix | ⬜ | "外部监督+真人评审"门禁被同进程代码自批通过，且能覆盖人类的 fail 裁决 | `kun/control_plane/game_production.py:1791-1845` |
-| F002 | critical | fix | ⬜ | 生产环境下日志处理器必然抛 MissingTenantContextError，进程级核心流程(启动/后台 worker | `kun/core/logging.py:26` |
-| F003 | critical | fix | ⬜ | 提示词中的 ```python``` 代码块被自动执行(python-exec)，可达 RCE 与密钥外泄 | `kun/engineering/config/proactive_triggers.yaml:5` |
-| F004 | critical | fix | ⬜ | 被审分支 鲲V1.1-dev 从未触发过 CI:门禁只认 main,而 main 已停更三周成废弃线 | `.github/workflows/ci.yml:4-7` |
+| F002 | critical | fix | ✅ | 生产环境下日志处理器必然抛 MissingTenantContextError，进程级核心流程(启动/后台 worker | `kun/core/logging.py:26` |
+| F003 | critical | fix | ✅ | 提示词中的 ```python``` 代码块被自动执行(python-exec)，可达 RCE 与密钥外泄 | `kun/engineering/config/proactive_triggers.yaml:5` |
+| F004 | critical | fix | ✅ | 被审分支 鲲V1.1-dev 从未触发过 CI:门禁只认 main,而 main 已停更三周成废弃线 | `.github/workflows/ci.yml:4-7` |
 | F005 | critical | fix | ⬜ | 安全指标 tenant_cross_access_attempt 零 emit 且应用层无越权检测逻辑——越权告警永不触 | `kun/core/metrics.py:88` |
-| F006 | critical | fix | ⬜ | logging.py 的 _add_tenant 只捕获 LookupError，生产环境 MissingTenantC | `kun/core/logging.py:20` |
+| F006 | critical | fix | ✅ | logging.py 的 _add_tenant 只捕获 LookupError，生产环境 MissingTenantC | `kun/core/logging.py:20` |
 | F007 | high | fix | ⬜ | 生产 API 无任何鉴权：JWT 鉴权模块未接线，请求头 X-Tenant-Id/X-Scopes 被直接信任 | `kun/api/main.py:226-255` |
 | F008 | high | fix | ⬜ | 全部质量评分与门禁是硬编码常量+生成代码字符串指纹自检，RSI 评估信号为虚构 | `kun/control_plane/game_production.py:6653-6974,` |
 | F009 | high | fix | ⬜ | 7907 行单文件中约 60% 是单一游戏项目的内嵌源码/SVG/CSS/逐版本补丁，control plane 内核被 | `kun/control_plane/game_production.py:2913-6026,` |
