@@ -587,9 +587,9 @@
       "detail": "get_router() 在无 MINIMAX_API_KEY 时把 fallback tier 配成 StubProvider, top/strong/cheap 无任何凭据时也落到 stub。StubProvider._default_builder 返回 \"[stub echo] <用户消息>\" 且 finish_reason=\"stop\"(stub_provider.py:27-38)——对 orchestrator 来说这是一次完全成功的 LLM 调用。spark_world_run.py 本次 diff 注释里记录的事故正是这条链: claude CLI 挂 180s×3 → RetryError → 静默降级到 stub → \"回声伪装成成功\"跑完整个任务。后果不只是浪费时间: 伪成功结果还会被 capability_writeback 写进能力卡, 污染 ADR-024 路由闭环的数据。修复: 生产路径上 fallback 缺凭据时应 fail-fast 抛错(或要求显式 KUN_ALLOW_STUB=1), 至少让 LLMResponse 带可识别的 provider=stub 标记并让 orchestrator 拒绝。",
       "evidence": "router.py:746-748: providers[\"fallback\"] = StubProvider(model_id=\"stub-minimax-m2.7\", tier=\"fallback\"); stub_provider.py:31: content = f\"[stub echo] {last_user.content...}\"; spark_world_run.py diff 注释: \"silent stub fallback that echoed the prompt (a no-op masquerading as success)\"",
       "source": "diff-and-llm",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "8feccd1",
+      "notes": "StubProvider.invoke 在 KUN_ENV=production 下 raise，不再伪造成功响应(router 仅在无真 provider 凭据时才把 stub 接进链，含 fallback tier)。生产里 stub 被调用=真失败上抛、走上层失败处置，绝不 finish_reason=stop 假成功。dev/test 路径不变(不设 production)。+4 测试。按 claude-api 权威语义(确定性失败应暴露而非伪装成功)。"
     },
     {
       "id": "F046",
