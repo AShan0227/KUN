@@ -704,9 +704,9 @@
       "detail": "应用层 EntityType = Literal['role_template','human','external_agent','company','model']（capability.py:22-28）。DB CHECK（orm.py:320 与 0008_harden_core_constraints.py:86 一致）= entity_type IN ('role_template','model','skill','tool','human','external_agent')。双向不一致：(1) 'company' 是合法 EntityType，且 EntityRef(entity_type='company') 能构造，但写 capability_cards 时会被 DB CHECK 拒 → IntegrityError；(2) 'skill'、'tool' 被 DB 允许但 EntityType 里没有，代码永远不会写也无法构造。capability_writeback.py:123 直接把 outcome.entity_type 透传进 CapabilityCardRow.entity_type，所以一旦上游产生 'company' 类型的 capability outcome（如人类/公司协作实体打分回写），落库即崩。影响：协作调度（human/company 维度）的 capability 回写在 'company' 这条路径上是隐藏的运行时炸弹。建议：统一为单一真理源——把 'company' 加进 CHECK，并删掉 CHECK 里无人使用的 'skill'/'tool'，或反之收敛枚举。",
       "evidence": "capability.py:22 EntityType = Literal['role_template','human','external_agent','company','model'] ；orm.py:320 \"entity_type IN ('role_template', 'model', 'skill', 'tool', 'human', 'external_agent')\" — 'company' 缺、'skill'/'tool' 多",
       "source": "extra:db_schema_orm_migration_drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "b3324dc",
+      "notes": "EntityType 枚举、ORM CHECK、迁移 0019 三方对齐为并集(role_template/model/human/external_agent/company/skill/tool)。新增迁移 0019 + 漂移守卫测试(枚举==ORM check==迁移)。+3 测试。"
     },
     {
       "id": "F055",

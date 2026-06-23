@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 172 项** — ✅done 17 ｜ ⛔blocked 0 ｜ 📐needs-design 6 ｜ ⬜pending 149
+**总计 172 项** — ✅done 18 ｜ ⛔blocked 0 ｜ 📐needs-design 6 ｜ ⬜pending 148
 严重度：critical 6 / high 57 / medium 82 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -70,7 +70,7 @@
 | F051 | high | fix | ⬜ | integration-tests 软失败:集成层回归不阻断合并,核心流程退化无法被 CI 拦截 | `.github/workflows/ci.yml:91` |
 | F052 | high | fix | ⬜ | 无 alembic check / autogenerate-diff 步骤:ORM 模型与迁移漂移不被拦截 | `.github/workflows/ci.yml:89` |
 | F053 | high | architecture | ⬜ | 0011/0012 八张 RSI 表的 DB CHECK 约束在 ORM 完全缺失（系统性漂移） | `kun/core/orm.py:486` |
-| F054 | high | fix | ⬜ | EntityType 枚举与 capability_cards.entity_type CHECK 双向不一致 | `kun/datamodel/capability.py:22` |
+| F054 | high | fix | ✅ | EntityType 枚举与 capability_cards.entity_type CHECK 双向不一致 | `kun/datamodel/capability.py:22` |
 | F055 | high | fix | ⬜ | 5 个 Prometheus 指标定义后全仓零引用——纯摆设，抓取时 series 根本不存在 | `kun/core/metrics.py:19` |
 | F056 | high | fix | ⬜ | 全部 dogfood/e2e/smoke 脚本在 CI 之外，无人持续校验，却是 RSI/L5-L6 叙事的主要证据 | `.github/workflows/ci.yml:1-120` |
 | F057 | high | fix | ⬜ | e2e_rsi_demo.py：RSI 全链中段 anomaly 数据写死 + Gate 输入手喂使其必过，链路自评 | `scripts/e2e_rsi_demo.py:194-248` |

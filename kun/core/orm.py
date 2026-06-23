@@ -317,7 +317,10 @@ class CapabilityCardRow(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "entity_type IN ('role_template', 'model', 'skill', 'tool', 'human', 'external_agent')",
+            # Kept in sync with EntityType (kun/datamodel/capability.py) +
+            # migration 0019. Audit F054: 'company' was missing here. Union set.
+            "entity_type IN ('role_template', 'model', 'human', 'external_agent', "
+            "'company', 'skill', 'tool')",
             name="capability_entity_type_valid",
         ),
         CheckConstraint(
@@ -705,9 +708,7 @@ class BugRootCaseRow(Base):
             "length(fix_pattern) > 0",
             name="bug_case_fix_pattern_not_empty",
         ),
-        UniqueConstraint(
-            "tenant_id", "trace_signature", name="ix_bug_cases_signature"
-        ),
+        UniqueConstraint("tenant_id", "trace_signature", name="ix_bug_cases_signature"),
         Index("ix_bug_cases_hit_count", "tenant_id", "hit_count"),
     )
 
@@ -738,13 +739,9 @@ class TaskCheckpointRow(Base):
         JSONB, nullable=False, default=list
     )
     """LLM messages list (role/content). 用 list[dict] 而非 frozen — JSONB 落库."""
-    working_state: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, nullable=False, default=dict
-    )
+    working_state: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     """任意 caller 自定义的中间状态 (tool 已用过的、未完成 sub-task list 等)."""
-    artifact_refs: Mapped[list[str]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
+    artifact_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     """已产 artifact 的 MinIO key / file path."""
 
     # Verification / resume help
@@ -792,21 +789,15 @@ class MissionAlignmentReviewRow(Base):
     )
     verdict: Mapped[str] = mapped_column(String(32), nullable=False)
     # ok / drifting / off_anchor / needs_human (CHECK constraint enforces enum)
-    alignment_score: Mapped[float] = mapped_column(
-        Numeric(4, 3), nullable=False
-    )
+    alignment_score: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
     """0.000 - 1.000, weighted average of 3 coverages."""
     findings: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     """list[str] 观察明细 (info_gap 未补 / 拆解漏 / 证据缺 etc.)."""
     info_gap_coverage: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
     decomposition_coverage: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
     evidence_coverage: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
-    plan_change_proposed: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False
-    )
-    plan_change_proposal_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True
-    )
+    plan_change_proposed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    plan_change_proposal_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
@@ -864,26 +855,16 @@ class PlanChangeProposalRow(Base):
     # scope / criteria / resource / risk
     severity: Mapped[str] = mapped_column(String(16), nullable=False)
     # low / medium / high (CHECK constraint enforces enum)
-    affected_work_items: Mapped[list[Any]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
-    affected_deliverables: Mapped[list[Any]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
-    candidate_changes: Mapped[list[Any]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
+    affected_work_items: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    affected_deliverables: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    candidate_changes: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     """list[dict], ≥ 1 候选方案 (CHECK constraint: jsonb_array_length >= 1)."""
     rollback_condition: Mapped[str] = mapped_column(Text, nullable=False, default="")
     rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    user_approval_required: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False
-    )
+    user_approval_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # 用户审批结果 (None=待审, True=通过, False=拒绝)
     user_decision: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    user_decided_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    user_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
@@ -947,19 +928,11 @@ class LifecycleTransitionRow(Base):
     decided_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
-    decision_rationale: Mapped[str] = mapped_column(
-        Text, nullable=False, default=""
-    )
-    user_approval_ticket_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True
-    )
-    evidence_refs: Mapped[list[Any]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
+    decision_rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    user_approval_ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence_refs: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     """list[str], e.g. ['strategy_replay_report:rr-x', 'process_audit:pa-y', ...]."""
-    metrics_snapshot: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, nullable=False, default=dict
-    )
+    metrics_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     """{baseline_score, candidate_score, replay_traces, ...}."""
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
@@ -984,8 +957,7 @@ class LifecycleTransitionRow(Base):
         # to_stage='replay' 必须至少 1 条 evidence (CANDIDATE → REPLAY 严格)
         # 服务层会校验三类齐, DB 只保底 "不空"
         CheckConstraint(
-            "NOT (to_stage = 'replay' AND "
-            "jsonb_array_length(evidence_refs) < 1)",
+            "NOT (to_stage = 'replay' AND jsonb_array_length(evidence_refs) < 1)",
             name="lct_replay_needs_evidence",
         ),
         Index(
@@ -1026,22 +998,14 @@ class AuditorReportRow(Base):
     enforcement, V7 §11.4)."""
     design_promise: Mapped[str] = mapped_column(Text, nullable=False, default="")
     real_code_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    bypass_methods: Mapped[list[Any]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
+    bypass_methods: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     """list[str], 攻击者可绕过方式."""
     min_repro_steps: Mapped[str] = mapped_column(Text, nullable=False, default="")
     risk_level: Mapped[str] = mapped_column(String(2), nullable=False)
     # P0 / P1 / P2 (CHECK constraint)
-    must_fix: Mapped[list[Any]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
-    acceptance_tests: Mapped[list[Any]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
-    allow_release: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True
-    )
+    must_fix: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    acceptance_tests: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    allow_release: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
@@ -1096,29 +1060,17 @@ class EnsembleCallRow(Base):
     )
     purpose: Mapped[str] = mapped_column(String(64), nullable=False, default="execution")
     # e.g. "execution" / "intent" / "summarize" / "critique" / ...
-    providers: Mapped[list[Any]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
+    providers: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     """list[dict] — [{name, model_id, family}, ...] (V7 §11.1 cross-family 记录)."""
     consensus_strategy: Mapped[str] = mapped_column(String(32), nullable=False)
     # majority_vote / weighted / pick_best_by_metric
-    divergence_score: Mapped[float] = mapped_column(
-        Numeric(4, 3), nullable=False, default=0.0
-    )
+    divergence_score: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False, default=0.0)
     """0.000-1.000, 0=全一致, 1=完全分歧."""
-    divergence_signals: Mapped[list[Any]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
-    consensus_provider: Mapped[str | None] = mapped_column(
-        String(128), nullable=True
-    )
+    divergence_signals: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    consensus_provider: Mapped[str | None] = mapped_column(String(128), nullable=True)
     """共识胜出 provider id, e.g. 'anthropic/claude-opus' (None 当 consensus 算不出)."""
-    total_cost_usd: Mapped[float] = mapped_column(
-        Numeric(10, 6), nullable=False, default=0.0
-    )
-    failure_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0
-    )
+    total_cost_usd: Mapped[float] = mapped_column(Numeric(10, 6), nullable=False, default=0.0)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     """Providers 中失败的数量 (asyncio.gather return_exceptions=True 后)."""
     n_providers_total: Mapped[int] = mapped_column(Integer, nullable=False)
     request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -1129,8 +1081,7 @@ class EnsembleCallRow(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "consensus_strategy IN ('majority_vote', 'weighted', "
-            "'pick_best_by_metric')",
+            "consensus_strategy IN ('majority_vote', 'weighted', 'pick_best_by_metric')",
             name="ec_strategy_valid",
         ),
         CheckConstraint(
@@ -1180,9 +1131,7 @@ class EngineeringDisciplineReportRow(Base):
     overall_score: Mapped[float] = mapped_column(Float, nullable=False)
     n_total: Mapped[int] = mapped_column(Integer, nullable=False)
     n_passed: Mapped[int] = mapped_column(Integer, nullable=False)
-    failed_disciplines: Mapped[list[Any]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
+    failed_disciplines: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )

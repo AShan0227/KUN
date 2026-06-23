@@ -19,12 +19,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from kun.core.ids import new_id
 from kun.core.scoring import ScoreDescriptor, wilson_ci95
 
+# Kept in sync with the capability_cards.entity_type DB CHECK constraint
+# (kun/core/orm.py + migration 0019). Audit F054: the enum and the CHECK had
+# diverged — the enum had 'company' (which the CHECK rejected) and the CHECK
+# allowed 'skill'/'tool' (which the enum rejected), so a write or read could
+# pass one layer and fail the other. The set below is the union; the drift guard
+# lives in tests/unit/test_entity_type_consistency.py.
 EntityType = Literal[
     "role_template",
+    "model",
     "human",
     "external_agent",
     "company",
-    "model",
+    "skill",
+    "tool",
 ]
 
 Maturity = Literal["cold_start", "warming_up", "mature"]

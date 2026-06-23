@@ -20,3 +20,4 @@
 2026-06-23 F033 ✅ — 自指护栏覆盖 RSI 判定真实路径(external_supervisor/governance/watchtower)，+3 测试
 2026-06-23 F035 ✅ — shell-exec 命令级策略守卫(默认拦灾难命令+env deny/allow)，python-exec 隔离+死 allowed_commands 拆 F035a，+6 测试
 2026-06-23 F026 ✅ — bypass_rls 系统 session 不再强制 current_tenant()，修生产 outbox/NATS/GC 每 tick 崩溃，+4 测试
+2026-06-23 F054 ✅ — EntityType 枚举↔DB CHECK 对齐为并集 + 迁移 0019 + 漂移守卫，+3 测试
