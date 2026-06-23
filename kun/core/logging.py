@@ -14,7 +14,7 @@ from opentelemetry import trace
 from structlog.typing import EventDict, Processor
 
 from kun.core.config import settings
-from kun.core.tenancy import current_tenant
+from kun.core.tenancy import MissingTenantContextError, current_tenant
 
 
 def _add_tenant(_logger: Any, _name: str, event_dict: EventDict) -> EventDict:
@@ -23,7 +23,11 @@ def _add_tenant(_logger: Any, _name: str, event_dict: EventDict) -> EventDict:
         event_dict.setdefault("tenant_id", ctx.tenant_id)
         if ctx.user_id:
             event_dict.setdefault("user_id", ctx.user_id)
-    except LookupError:
+    except (LookupError, MissingTenantContextError):
+        # A log processor must never crash. In production current_tenant()
+        # raises MissingTenantContextError (RuntimeError) when called outside an
+        # explicit tenant scope (e.g. startup logs, background workers); emit the
+        # log line without tenant labels rather than taking the process down.
         pass
     return event_dict
 

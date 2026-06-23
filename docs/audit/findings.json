@@ -28,9 +28,9 @@
       "detail": "logging._add_tenant 只捕获 LookupError，但 current_tenant() 在无租户上下文且无默认租户时抛的是 MissingTenantContextError(RuntimeError 子类)。dev/staging 因 default_tenant_id='u-sylvan' 被掩盖；production 按设计 default_tenant_id 必须为 None(config._production_safety 强制)，于是任何在租户上下文之外的日志调用都会直接抛异常。已在本机用 KUN_ENV=production 复现：log.info() 抛 MissingTenantContextError。影响面：API lifespan 启动日志、outbox_worker、nats subscriber、idempotency_gc 的首条 log 全部命中——更糟的是这些 worker 的 except 块里调 log.exception() 会再次抛出，异常逃逸出 except，后台任务静默死亡。结论：当前代码一上 production 配置就无法正常启动/运行，必须把 except LookupError 改为同时捕获 MissingTenantContextError(或让 _add_tenant 走不抛异常的 peek 接口)。",
       "evidence": "logging.py: `try: ctx = current_tenant() ... except LookupError: pass`；tenancy.py:35: `class MissingTenantContextError(RuntimeError)`；复现输出: `LOG RAISED: MissingTenantContextError explicit tenant context is required`",
       "source": "core-data",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "c56cbac",
+      "notes": "与 F006 同一 bug，一并修复：_add_tenant 现捕获 (LookupError, MissingTenantContextError)。"
     },
     {
       "id": "F003",
@@ -54,9 +54,9 @@
       "detail": "这是本次补查最核心的元缺口。CI 仅在 main 的 push/PR 上触发(on.push.branches=[main] / pull_request.branches=[main]),而 git 核实表明实际开发线 鲲V1.1-dev(HEAD b2e8ab6,2026-05-29)与 origin/main(efd800c,2026-05-21)的关系是:merge-base == origin/main 的 tip(efd800c),即 HEAD 是 main 的严格线性后继;git log --oneline origin/main..HEAD = 221、HEAD..origin/main = 0;这 221 个提交里包含 V7-PHASE 全套且 0 个进过 main(grep 'V7-PHASE' origin/main 日志 = 0)。换言之:近三周、221 个提交、orm.py +725 行、8 个新迁移,全部代码从未触发过任何一条流水线。origin/main 是一条事实废弃的旧线,真正在跑的分支裸奔无门禁。CTO 决策:这套 CI 对当前开发线的有效门禁覆盖率为 0;必须立刻把触发分支改为实际开发分支(或把 鲲V1.1-dev 提升为受保护主干并配 branch protection required checks),否则所有'绿灯'都是从未点亮过的灯。",
       "evidence": "ci.yml L4-7: `push: branches:[main]` / `pull_request: branches:[main]`;git: merge-base origin/main HEAD == efd800c (== origin/main tip);ahead 221 / behind 0;origin/main 含 V7-PHASE 提交 0 个;origin/main tip 日期 2026-05-21,HEAD 2026-05-29",
       "source": "extra:ci_gate_posture_and_branch_lineage",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "(G01)",
+      "notes": "与 G01 同一问题（CI 只在 main 触发），已由 G01 修复。"
     },
     {
       "id": "F005",
@@ -80,9 +80,9 @@
       "detail": "_add_tenant structlog processor 在每条日志上调用 current_tenant() 取租户标签，只 `except LookupError: pass`。但 kun/core/tenancy.py:35 `class MissingTenantContextError(RuntimeError)` 继承的是 RuntimeError 而非 LookupError；在生产环境（config.py: env==production 时 default_tenant_id() 返回 None），current_tenant()（tenancy.py:42-49）在无显式租户上下文时抛 MissingTenantContextError。该异常不被 _add_tenant 捕获，会从 structlog processor 链向上抛出，使得任何在缺租户上下文中发出的日志调用直接崩溃——这恰恰发生在最需要日志兜底的边界场景（后台任务、启动期、鉴权前中间件）。这同时摧毁了'用结构化日志补指标空缺'的方案：日志侧自身在生产会炸。修复：将 except 扩为 `except (LookupError, MissingTenantContextError)`。",
       "evidence": "logging.py:21-27 `try: ctx = current_tenant() ... except LookupError: pass`；tenancy.py:35 `class MissingTenantContextError(RuntimeError)`；tenancy.py:48-49 `if tenant_id is None: raise MissingTenantContextError(...)`；config.py:56-57 production 时 default_tenant_id 返回 None。",
       "source": "extra:observability_metrics_emission_gap",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "c56cbac",
+      "notes": "同 F002。"
     },
     {
       "id": "F007",
