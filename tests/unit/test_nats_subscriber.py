@@ -14,7 +14,7 @@ def _fake_event(event_id: str = "evt-1") -> EventRow:
         event_id=event_id,
         tenant_id="t-test",
         event_type="task.tool_skipped",
-        subject="kun.t-test.task.task.tool_skipped",
+        subject="kun.t-test.task.tool_skipped",
         payload={"foo": "bar"},
         task_ref="task-001",
     )

@@ -1237,9 +1237,9 @@
       "detail": "约定(模块 docstring + Event.subject 字段说明)是 kun.{tenant}.{domain}.{event}，例 'kun.u-sylvan.task.started'；实现是 subject = f\"kun.{tenant_id}.{domain}.{event_type}\" 而 event_type 本身已含 domain，实际产出 'kun.u-sylvan.task.task.started'(已运行验证)。当前唯一订阅是 'kun.>' 所以不报错，但 (1) 两个测试已把错误格式写死(test_watchtower_tool_skipped.py:25)，(2) 未来任何按域过滤的订阅如 'kun.*.task.*' 或 'kun.*.task.created' 会静默匹配不到任何消息——这类 bug 极难排查。建议尽早定准格式(去重或改文档)并迁移，events 表里已落库的 subject 是历史数据要兼容。",
       "evidence": "运行验证: Event.build('u-sylvan','task.started').subject == 'kun.u-sylvan.task.task.started'；docstring 例: 'kun.u-sylvan.task.started'",
       "source": "core-data",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "d846a91",
+      "notes": "subject 改为 kun.{tenant}.{event_type}（去掉重复的 domain 段），符合模块约定 kun.{tenant}.{domain}.{event}。订阅用 kun.> 通配不受影响、无处反解析 subject。同步修正 4 处测试固化的双段。"
     },
     {
       "id": "F096",

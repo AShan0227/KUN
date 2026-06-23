@@ -20,7 +20,8 @@ def test_event_subject_format() -> None:
         payload={"task_id": "tk-xxx"},
         task_ref="tk-xxx",
     )
-    assert ev.subject == "kun.u-sylvan.task.task.started"
+    # Audit F095: subject is kun.{tenant}.{event_type}, no duplicated domain segment.
+    assert ev.subject == "kun.u-sylvan.task.started"
     assert ev.event_id.startswith("ev-")
     assert ev.task_ref == "tk-xxx"
 
