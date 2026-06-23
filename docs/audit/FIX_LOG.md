@@ -65,3 +65,4 @@
 2026-06-24 F146 ✅ — strategist 配额/探索惩罚透传真实 tenant(替代硬编码 default)，多租户限流生效，+2 测试
 2026-06-24 F156 ✅ — spark_world_run 矛盾注释对齐实际 Codex-pin 决策(纯注释，零行为变更)
 2026-06-24 F158/F159 ✅ — 正向确认 11 个指标为生产真产数(非缺陷)，加 live-metrics 守护测试防误删(补 F055 删死指标的反向守护)
+2026-06-24 F155 ✅ — evidence_ledger 补契约单测(零覆盖→有覆盖)，notifications/idempotency_gc 因需 DB 留 CI；接线属 RSI 方案

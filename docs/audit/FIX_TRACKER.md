@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 61 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 77
+**总计 173 项** — ✅done 62 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 76
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -174,7 +174,7 @@
 | F152 | low | fix | ✅ | 技能注册表与 watchtower 规则用 cwd 相对默认路径，非 repo-root 启动时静默不加载 | `kun/skills/loader.py:162` |
 | F153 | low | fix | ⬜ | /cockpit 页面的 API 路径未配置 rewrite, 同源部署下整页必然 404; dev 端口 3001 | `frontend/next.config.mjs:7-11` |
 | F154 | low | fix | ✅ | 单测非密闭: mission_director 单测真连 localhost:55432，错误被静默吞掉 | `kun/control_plane/mission_director.py:135-148` |
-| F155 | low | fix | ⬜ | 5 个有生产调用方的模块在 unit+integration 双套件下覆盖率为 0% | `kun/governance/evidence_ledger.py:1` |
+| F155 | low | fix | ✅ | 5 个有生产调用方的模块在 unit+integration 双套件下覆盖率为 0% | `kun/governance/evidence_ledger.py:1` |
 | F156 | low | fix | ✅ | spark_world_run.py 注释与代码互相矛盾, env 操作埋下回切陷阱 | `scripts/spark_world_run.py:49-60` |
 | F157 | low | fix | ✅ | bug_root_cause_cases 唯一性约束：ORM 用 UniqueConstraint，迁移用 uniq | `kun/core/orm.py:708` |
 | F158 | low | fix | ✅ | events 子系统 emit 在生产 outbox worker 路径（确认为真产数，非测试） | `kun/core/events.py:160` |

@@ -2017,9 +2017,9 @@
       "detail": "分别用 --cov=kun 跑完 unit 和 integration 两个套件后，以下模块两边都是 0% 覆盖: kun/context/seeds.py(72 stmts)、kun/skills/calibration.py(56)、kun/core/idempotency_gc.py(28)、kun/governance/evidence_ledger.py(21)、kun/engineering/notifications.py(13)。其中 evidence_ledger 被 kun/agents/gate/base.py、kun/agents/mission_director/runner.py、kun/api/main.py 等多个生产路径 import——一个治理/证据账本模块零测试，对一个以'证据链'为卖点的 RSI 系统是讽刺性的盲区。另外 kun/api/ws.py 仅 16-23%(121 stmts, WebSocket 运行时)、kun/api/main.py 仅 27-33%(FastAPI 装配)。注意大头核心模块反而覆盖良好: daemon.py 88%、game_production.py 79%、runtime.py 86%、kun/ 总体 82%——盲区集中在边角模块而非核心。",
       "evidence": "coverage(unit): kun/context/seeds.py 72 stmts 0%; kun/governance/evidence_ledger.py 21 stmts 0%; coverage(integration) 相同模块仍 0%; TOTAL 28597 stmts 82%(unit 套件)",
       "source": "test-health",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "b7eb78f",
+      "notes": "给零覆盖的 evidence_ledger(被 gate/mission_director/api 生产 import)补契约单测(EvidenceEntry 必填校验/append 返回 id/get_trace 返回 list/_new_id 前缀)。其仍是 stub，真持久化接线属 RSI 主链(F065/F042)，测试已注明接线时更新。notifications/idempotency_gc 需 DB(session_scope)，离线不补，待 CI integration 覆盖。"
     },
     {
       "id": "F156",
