@@ -52,3 +52,4 @@
 2026-06-23 F127/F100/F117 📐 — RCDH 引擎就绪零接线并入 rsi-mainline-wiring.md
 2026-06-23 F068 ✅ — PG check-constraint 测试 skip-guard 扩为 _is_pg_unavailable(类型+11子串)，无 Docker 时 13 项全 SKIP 不再 FAIL
 2026-06-23 F150 ✅ — 核实为 F054 重复(EntityType vs capability_cards CHECK)，标 done 引用
+2026-06-23 F145 ✅ — cockpit._current_plan 计划版本改数值排序(v10>v9)，+3 测试

@@ -1887,9 +1887,9 @@
       "detail": "`max(plans, key=lambda item: item.version, default=None)` 对 \"v0\"/\"v1\".../\"v10\" 做字符串比较，第 10 次 plan_change 之后回退路径会选中 v9 而不是 v10——长任务多次 changing_plan 正是该产品的核心场景。当 mission.current_plan_version 命中时不受影响，但 version 失配时（见 activation.py 同类问题，这种失配真实存在）就走错误回退。附带两处代码异味：301-302 行 `(user_summary.ready_work_item_ids and progress.latest_gate_ref) or progress.latest_gate_ref` 两个分支恒等于 latest_gate_ref，是无效表达式；326 行直接调用 InMemoryControlPlane._latest_gate 私有方法，跨模块越界。",
       "evidence": "return max(plans, key=lambda item: item.version, default=None)  # \"v10\" < \"v9\" 字典序",
       "source": "cp-rest",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "1786dc7",
+      "notes": "cockpit._current_plan 的 fallback max 改用 _plan_version_sort_key(从 v<N> 取整数排序，数值版本优先于非规范标签)，v10>v9 正确；+3 测试。"
     },
     {
       "id": "F146",

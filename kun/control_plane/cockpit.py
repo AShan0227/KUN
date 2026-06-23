@@ -9,6 +9,7 @@ gate is trustworthy.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -308,6 +309,20 @@ def build_task_cockpit_view(
     )
 
 
+def _plan_version_sort_key(version: str) -> tuple[int, int, str]:
+    """Order plan versions numerically (audit F145).
+
+    Versions are ``v<N>`` strings; the old ``max(..., key=item.version)`` compared
+    them lexicographically, so ``v10`` ranked below ``v9``. Numeric ``v<N>`` versions
+    rank above any non-conforming label and tie-break by the integer; non-conforming
+    labels tie-break by raw string for determinism.
+    """
+    match = re.fullmatch(r"v(\d+)", version or "")
+    if match:
+        return (1, int(match.group(1)), "")
+    return (0, 0, version or "")
+
+
 def _current_plan(
     control_plane: InMemoryControlPlane,
     *,
@@ -319,7 +334,7 @@ def _current_plan(
         for plan in plans:
             if plan.version == version:
                 return plan
-    return max(plans, key=lambda item: item.version, default=None)
+    return max(plans, key=lambda item: _plan_version_sort_key(item.version), default=None)
 
 
 def _latest_gate(control_plane: InMemoryControlPlane, mission_id: str) -> GateEvaluation | None:
