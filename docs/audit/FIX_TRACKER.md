@@ -2,9 +2,9 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 69 ｜ ⛔blocked 0 ｜ 📐needs-design 88 ｜ ⬜pending 16
+**总计 173 项** — ✅done 69 ｜ ⏸deferred 1 ｜ ⛔blocked 0 ｜ 📐needs-design 92 ｜ ⬜pending 11
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
-剩余 pending+fix：5（high 0 / medium 3 / low 2）
+**剩余 pending+fix：0**（high 0 / medium 0 / low 0）
 
 | id | sev | class | 状态 | 标题 | 文件 |
 |---|---|---|---|---|---|
@@ -79,7 +79,7 @@
 | F059 | high | fix | 📐 | dogfood_v12 / v13：调真 Haiku 但 PASS 判据只看 TrifectaState==OK，而 | `scripts/dogfood_v13_orchestrator_trifecta_real_l` |
 | F060 | high | fix | 📐 | multi_dim_test.py：10 维能力'打分'本质是 grep 文件是否存在 + git log 计数 + | `scripts/multi_dim_test.py:96-412` |
 | G09 | high | fix | 📐 | 清理 152 个 mypy 错误后把 CI typecheck 设为硬门禁 | `kun/` |
-| F055a | medium | fix | ⬜ | 实现 prompt-cache/成本超支/rubric-p50 特性时，重新加回对应指标并接 emit | `kun/core/metrics.py` |
+| F055a | medium | fix | ⏸ | 实现 prompt-cache/成本超支/rubric-p50 特性时，重新加回对应指标并接 emit | `kun/core/metrics.py` |
 | F061 | medium | fix | ✅ | 同名函数重复定义，前一组被静默遮蔽成死代码且语义不同 | `kun/control_plane/daemon.py:5633` |
 | F062 | medium | fix | 📐 | worker_pool>1 时 runner 在线程池内无锁迭代共享 dict，与 finish 写入并发可抛 Ru | `kun/control_plane/runtime.py:1326-1341` |
 | F063 | medium | fix | 📐 | Context 资产层实际只有进程内内存实现：RedisAssetStore 从未接线，资产重启即丢、跨进程不一致， | `kun/context/storage.py:166-174` |
@@ -106,10 +106,10 @@
 | F084 | medium | fix | 📐 | workspace_snapshot：含 .git/node_modules 的工作区 complete_resto | `kun/control_plane/workspace_snapshot.py:94` |
 | F085 | medium | fix | 📐 | RedisResourceLockStore.release_holder 非原子 get→delete，可能误删其 | `kun/control_plane/work_item_governance.py:668` |
 | F086 | medium | fix | 📐 | control_plane/__init__.py 急切导入全部 ~45k 行，含 2200 行测试夹具型审计套件混 | `kun/control_plane/__init__.py:90` |
-| F087 | medium | fix | ⬜ | SupervisorPool fan-out 双发同一异常：维度实例不按维度过滤检查项，与自述'不互扰'矛盾；且 P | `/Users/petrarain/鲲/kun/agents/supervisor/pool.py` |
+| F087 | medium | fix | 📐 | SupervisorPool fan-out 双发同一异常：维度实例不按维度过滤检查项，与自述'不互扰'矛盾；且 P | `/Users/petrarain/鲲/kun/agents/supervisor/pool.py` |
 | F088 | medium | fix | 📐 | TaskCheckpointService sequence 仅进程内单调，重启/多进程下产生重复 sequence | `/Users/petrarain/鲲/kun/agents/executor/checkpoin` |
 | F089 | medium | fix | 📐 | Gate 自指能力 enable 强门禁可被绕过：metadata_lookup 缺省即跳过检查，approval  | `/Users/petrarain/鲲/kun/agents/gate/service.py:44` |
-| F090 | medium | fix | ⬜ | MultiJudge '多判官'实为同一模型同温度调 N 次，票相关性极高，多数票独立性假设不成立 | `/Users/petrarain/鲲/kun/agents/tester/multi_judge` |
+| F090 | medium | fix | 📐 | MultiJudge '多判官'实为同一模型同温度调 N 次，票相关性极高，多数票独立性假设不成立 | `/Users/petrarain/鲲/kun/agents/tester/multi_judge` |
 | F091 | medium | fix | 📐 | StrategyExperiment.to_row_payload 丢弃 requires_human_review | `/Users/petrarain/鲲/kun/agents/strategist/service` |
 | F092 | medium | fix | ✅ | _invoke_with_retry 无差别重试，叠加 SDK 内建重试与 CLI 长超时，最坏情况单次调用阻塞 2 | `kun/interface/llm/router.py:572-574` |
 | F093 | medium | fix | 📐 | V6 Control Plane 全内存 + 本地 JSON 文件持久化：无租户隔离、无跨进程一致性，daemon  | `kun/api/control_plane.py:176-214,363-372;` |
@@ -167,13 +167,13 @@
 | F144 | low | fix | ✅ | frontier50_external：默认 workdir 硬编码他人机器绝对路径，can_run 用 "ab"  | `kun/control_plane/frontier50_external.py:34` |
 | F145 | low | fix | ✅ | cockpit._current_plan 用字典序比较计划版本，v10 < v9，多次改版后驾驶舱显示错误计划 | `kun/control_plane/cockpit.py:322` |
 | F146 | low | fix | ✅ | Strategist 配额与探索惩罚硬编码 tenant_id='default'，多租户限流/惩罚失效 | `/Users/petrarain/鲲/kun/agents/strategist/service` |
-| F147 | low | fix | ⬜ | SupervisorService.observe 全程持单把全局锁跨 await DB/通知调用，监督线吞吐被串行 | `/Users/petrarain/鲲/kun/agents/supervisor/service` |
+| F147 | low | fix | 📐 | SupervisorService.observe 全程持单把全局锁跨 await DB/通知调用，监督线吞吐被串行 | `/Users/petrarain/鲲/kun/agents/supervisor/service` |
 | F148 | low | fix | 📐 | Cockpit 端点用 query 参数 tenant_id（默认 "default"）绕过租户中间件，discip | `kun/api/cockpit.py:282-296,328-339;` |
 | F149 | low | fix | ✅ | 平台 browser adapter 的读操作仅导航即返回 status=ok，假成功污染 AdapterRoute | `kun/interface/automation/shopify/browser.py:161-` |
 | F150 | low | fix | ✅ | EntityType 枚举与 capability_cards DB CHECK 约束双向不一致(company v | `kun/datamodel/capability.py:22-28` |
 | F151 | low | fix | 📐 | External Supervisor 自身可被提示词注入 + 解析兜底 fail-open + LLM 自由文本可 | `kun/external_supervisor/service.py:207` |
 | F152 | low | fix | ✅ | 技能注册表与 watchtower 规则用 cwd 相对默认路径，非 repo-root 启动时静默不加载 | `kun/skills/loader.py:162` |
-| F153 | low | fix | ⬜ | /cockpit 页面的 API 路径未配置 rewrite, 同源部署下整页必然 404; dev 端口 3001 | `frontend/next.config.mjs:7-11` |
+| F153 | low | fix | 📐 | /cockpit 页面的 API 路径未配置 rewrite, 同源部署下整页必然 404; dev 端口 3001 | `frontend/next.config.mjs:7-11` |
 | F154 | low | fix | ✅ | 单测非密闭: mission_director 单测真连 localhost:55432，错误被静默吞掉 | `kun/control_plane/mission_director.py:135-148` |
 | F155 | low | fix | ✅ | 5 个有生产调用方的模块在 unit+integration 双套件下覆盖率为 0% | `kun/governance/evidence_ledger.py:1` |
 | F156 | low | fix | ✅ | spark_world_run.py 注释与代码互相矛盾, env 操作埋下回切陷阱 | `scripts/spark_world_run.py:49-60` |

@@ -63,6 +63,8 @@ ADR-024 的闭环 = **检测 → 策略 → 安全实验 → 门禁落地 → �
 | **F103** | `kun/engineering/proactive_tools.py:300` Layer 1a 强制工具分支只 `seen.add` 从不真正 dispatch，反而抑制同名技能的关键词触发 | 让 Layer 1a 真 dispatch(或不抢占 seen)，加"强制工具确被调用"测试。 |
 | **F104** | `kun/integration/prompt_ab.py:195,305` `PromptABService` 调 Strategist 私有 `_emit_and_adjust`，且模块生产无调用方 | 改调公开 API + 接生产调用方(第 2/5 环 PromptAB 读 enabled capability)；F091/F146 已为 `_emit_and_adjust` 加 tenant 形参。 |
 | **F114** | `kun/evaluation/__init__.py` L6 评测框架(446 行)生产调用方为零，仅测试引用 | 接 L6 评测入生产度量，或明确标注为"离线评测工具、非生产路径"(同 F099)。 |
+| **F087** | `kun/agents/supervisor/pool.py:36-49` SupervisorPool fan-out：同一事件被多维度消费(`_DEFAULT_AUDIT_DIMENSIONS`)，但维度实例**不按维度过滤检查项**(与自述"维度间不互扰"矛盾)，同一异常被双发；且 Pool 本身**0 生产调用方**。 | 接线本环监督池时：每个维度实例只跑该维度的 check、emit 前按 (dedup_key) 去重；先证明 Pool 有真实生产入口再启用。 |
+| **F090** | `kun/agents/tester/multi_judge.py:140-156` MultiJudge"多判官"实为**同一模型、同 `temperature=0.1`** 调 N 次——票高度相关，多数票的独立性假设不成立。**模型约束(claude-api 权威)**：temperature/top_p 在 Opus 4.7/4.8/Fable 5 已移除(传入 400)，"变温度去相关"在现模型**不可行**。 | 去相关只能靠**不同模型**或**不同提示视角(角色/评分维度各异的 panel)**；否则不要宣称"独立多数票"，应如实表述为"单模型多次采样的自一致性检查"。作为质量信号接入 gate/RSI 时一并改造。 |
 
 ## 3. 总体风险 / 排期建议
 
@@ -71,7 +73,7 @@ ADR-024 的闭环 = **检测 → 策略 → 安全实验 → 门禁落地 → �
 - **诚信优先**：在任一环真正接通前，PROGRESS/decisions 里相关"已闭环/已达成"措辞应保持 F047/F049/F050 那样的如实标注，避免 L5"RSI 真闭合 ✅"的过度宣称。
 
 ## 4. 本方案覆盖的 findings
-F021, F022, F025, F039, F040, F041, F042, F063, F064, F065, F089, F091, F099, F100, F101, F103, F104, F114, F117, F127（标 needs-design 指向本文件）；F050 已在 ADR-024 注记并在第 8 步接线。F063/F064/F065/F099/F101/F103/F104/F114 见 §2b。
+F021, F022, F025, F039, F040, F041, F042, F063, F064, F065, F087, F089, F090, F091, F099, F100, F101, F103, F104, F114, F117, F127（标 needs-design 指向本文件）；F050 已在 ADR-024 注记并在第 8 步接线。F063/F064/F065/F087/F090/F099/F101/F103/F104/F114 见 §2b。
 
 > F089 落地说明：在第 4/5 环接通 gate→`runtime_capabilities` enable 路径时，`enable_capability` 的自指门禁改为：metadata 由权威源保证、缺失即 fail-closed；`human_approval_token` 对照真实签发/验证方案校验（不再"非空即过"）。当前路径无生产调用方，无 live 风险。
 

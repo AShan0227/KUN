@@ -1133,9 +1133,9 @@
       "detail": "task.done 同时路由给 latency_audit 与 safety_audit 两个 SupervisorService 实例，而 SupervisorService.observe 对 task.done 固定同时跑 _check_anomaly_score 和 _check_duration_outlier(service.py:177-183)，不感知自己所属维度 → 同一个异常会被两个实例各 emit 一份 strategy_search_request(request_id 不同、dedup 状态各自独立，跨实例去重不存在)。pool.py 头注释声称'每 instance 自己 dedup_key 命名空间(前缀含 audit_dim)'但 _make_instance 并未传入任何 dim 前缀。当前 Pool 除 kun/agents/nuo re-export 外 0 调用方，所以暂未造成线上重复，但接线即触雷。修复方向：给 SupervisorService 加 enabled_checks 参数，由 Pool 按维度注入。",
       "evidence": "_DEFAULT_AUDIT_DIMENSIONS: latency_audit={'task.done'}, safety_audit={'task.failed','skill.invocation.completed','task.done'}; service.observe: elif event_type=='task.done': _check_anomaly_score + _check_duration_outlier 两项都跑",
       "source": "agents-brain",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "d6bc7f7",
+      "notes": "SupervisorPool 维度不过滤+双发异常+0 生产调用方；并入 docs/audit/proposals/rsi-mainline-wiring.md。"
     },
     {
       "id": "F088",
@@ -1172,9 +1172,9 @@
       "detail": "jury_evaluate 的 judge_models 实际只是标签(validation.py:154 传入 'judge_1'..'judge_n')，每个 judge 走同一个 router、同一 purpose='judge'、temperature=0.1、几乎相同 prompt(仅 judge_id/position/seed 注入差异)。3-5 票来自近确定性的同一模型 → 多数票/spread 统计学上几乎等价于单判官，但成本 ×N。模块自述目标'与人类评审 Spearman 0.80+'在此机制下不可达。tier2/tier3 的评估档位差异(3 票 vs 5 票)也因此名不副实。建议：router 按 judge 序号路由到不同 provider/model tier，或至少升温+prompt 变体。",
       "evidence": "validation.py: judge_models=[f\"judge_{i+1}\" for i in range(self._n)], router=self._router; _run_judge: 所有 judge 共用 router.invoke(..., temperature=0.1, purpose=\"judge\")",
       "source": "agents-brain",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "d6bc7f7",
+      "notes": "MultiJudge 同模型同温 N 调,多数票独立性不成立(temperature 现模型已移除,去相关靠多模型/多视角)；并入 docs/audit/proposals/rsi-mainline-wiring.md。"
     },
     {
       "id": "F091",
@@ -1913,9 +1913,9 @@
       "detail": "observe() 用一把实例级 asyncio.Lock 包住从事件记录、阈值检查、RCDH diagnostic_runner、emitter 落库到 notification 推送的全部 await。所有 tenant 的所有事件共享这把锁：一次慢 DB 写或慢 RCDH 诊断会阻塞整条监督线的事件消费，事件高峰期形成队头阻塞。对照组 SupervisorPool 特意把 gather 放锁外('避免持锁等 LLM 调用')，说明作者意识到该问题但单实例路径未改。建议：锁只保护内存状态变更，emit/notify/diagnostic 移到锁外执行。",
       "evidence": "async with self._lock: state.record(...); ...; cluster_requests = await self._enrich_cluster_requests(...); for req in triggered: await self._emitter(req); await self._safe_notify({...})  — 全部在 with 块内",
       "source": "agents-brain",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "d6bc7f7",
+      "notes": "SupervisorService.observe 持全局锁跨 await(DB/通知)致串行化；并入 docs/audit/proposals/concurrency-multi-replica.md。"
     },
     {
       "id": "F148",
@@ -1991,9 +1991,9 @@
       "detail": "next.config.mjs rewrites 只代理 /api/:path*、/nuo/:path* 和 /ws, 而 cockpit 页面经 kunApiClient 请求的是 /cockpit/writes-status 等裸前缀路径 (后端 cockpit.py:48 prefix=\"/cockpit\")。kunApiClient.apiOrigin (kunApiClient.ts:11-19) 仅当 http + 端口 3000/3001 时直连 :8000, 其余情况返回同源——即任何不设 NEXT_PUBLIC_API_ORIGIN 的生产/预发同源部署下, cockpit 页面 5 个面板全部打到 Next 自身 404, r.json() 抛 SyntaxError。另外 dev fallback 里的 3001 端口与后端默认 CORS (config.py:102 api_cors_origins=\"http://localhost:3000\") 不匹配, 3001 起的 dev 实例请求会被浏览器拦截。修法很简单: rewrites 加一条 /cockpit/:path*, 或 cockpit 端点统一挂到 /api 前缀下; 同时建议统一 '直连 vs rewrite' 两套策略 (目前 HTTP dev 直连、WS 与 nuo 页走 rewrite, 三种姿势并存)。",
       "evidence": "next.config.mjs rewrites 仅 `/api/:path*`、`/nuo/:path*`、`/ws` 三条; cockpit/page.tsx:124 `apiFetch(`/cockpit/writes-status`)`; kunApiClient.ts:15-18 `if (protocol === \"http:\" && (port === \"3000\" || port === \"3001\")) return ...:8000; return `${protocol}//${host}``",
       "source": "frontend",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "d6bc7f7",
+      "notes": "/cockpit/* 无 rewrite 同源必 404 + dev 3001 被 CORS 拒(near-trivial 一行修复)；并入 docs/audit/proposals/frontend-gaps.md。"
     },
     {
       "id": "F154",
@@ -2251,9 +2251,9 @@
       "detail": "F055 删除的 4 个指标对应未实现/未接线的特性(prompt 缓存收益、actual>1.2x estimated 成本超支检测、rubric p50 滚动窗)。这些特性落地时，重新定义对应指标并在产生点 emit。",
       "evidence": "",
       "source": "F055-split",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "deferred",
+      "commit": "-",
+      "notes": "非缺陷:prompt-cache/成本超支/rubric-p50 指标是特性未做的占位;实现对应特性时再接回 metrics 并 emit。暂缓。"
     }
   ],
   "low_deferred": [

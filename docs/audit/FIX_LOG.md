@@ -82,3 +82,4 @@
 2026-06-24 F110/F111/F119/F120/F133/F134/G10 📐 — 新建 ci-and-supplychain.md(CI 门禁强制力+供应链)；F139/F140/F141 📐 并入 demo-script-honesty.md §1b
 2026-06-24 F069 ✅ — PROGRESS.md L5 'RSI 真闭合已达成' 诚实化为'代码路径存在、主链未接通'(引 rsi-mainline-wiring)
 2026-06-24 F102/F109/F148/F151 📐 — 新建 security-posture.md;F078 📐 并入 architecture-debt §1b;F116/F160 📐 并入 demo-script-honesty §1b
+2026-06-24 F087 📐 rsi-mainline §2b;F090 📐 rsi-mainline §2b(判官独立性,模型约束);F147 📐 concurrency §4b(锁粒度);F153 📐 frontend-gaps(/cockpit rewrite);F055a ⏸ deferred(特性未做占位)

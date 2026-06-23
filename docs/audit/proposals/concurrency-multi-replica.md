@@ -72,10 +72,11 @@ API 覆盖 daemon 新状态。这 4 条 + F019(单文件全量重写/丢字段)�
 | **F077** | `daemon.py`(~:4581) V7 Mission Director 周期 hook 每 tick 每 mission 起一个**未节流** `threading.Thread` + 独立 asyncpg engine | hook 用有界线程池(或 asyncio 任务)、复用单个 engine/连接池，按 mission 节流。 |
 | **F081** | `runtime.py:2572` `ledger_refs` 每事件 `[*mission.ledger_refs, event.event_id]` **无界增长**，且每条 ledger 事件全 mission 重写 + 文件存储每 put 全文件读写 → 长任务 O(N²) | ledger_refs 不内联进 mission(改为按 mission_id 查 ledger 表)；append-only 写(见 §2.3 F014)；配合 F019。 |
 | **F093** | `api/control_plane.py:176-183` V6 Control Plane 全内存 `InMemoryControlPlane` + 本地 JSON：无租户隔离、无跨进程一致性、daemon 状态可被任意覆写 | 落 DB(带 RLS 租户隔离) + 走 §2 的 CAS 写；与 F015(API 持陈旧副本)、F011 同一接线。 |
+| **F147** | `kun/agents/supervisor/service.py:160-243` `SupervisorService.observe` 全程 `async with self._lock:`(:160) 跨多个 await(`_enrich_cluster_requests`:200、`_emitter`:209、`_safe_notify`:221——DB/通知 I/O)→ 监督线吞吐被**全局串行化**，一个慢 await 阻塞所有租户的观察处理。 | 缩小临界区：锁只护内存状态读改(`state.record`/计数)，await DB/通知**不持锁**；或按 tenant_id 用 per-key 锁，去掉单把全局锁。 |
 
-> 这 6 条都随「demo 级内存状态机 → 生产级持久/一致存储」epic 一并解决；落地前生产仍应单 daemon + worker_pool=1。
+> 这 7 条都随「demo 级内存状态机 → 生产级持久/一致存储」epic 一并解决；落地前生产仍应单 daemon + worker_pool=1。F147 的锁粒度可较早独立优化(不依赖持久层)。
 
 ## 5. 覆盖 findings
-F010, F011, F014, F015, F062, F074, F075, F076, F077, F081, F085, F088, F093（标 needs-design 指向本文件）；F019 见其自身方案。
+F010, F011, F014, F015, F062, F074, F075, F076, F077, F081, F085, F088, F093, F147（标 needs-design 指向本文件）；F019 见其自身方案。
 
 > F085 落地说明：`release_holder` 改为 Lua compare-and-delete（atomic CAS-DEL）+ acquire 路径已有的 WATCH/MULTI 复用；与 F010 lease 续期同 PR，在 CI(真 redis) 下做并发释放不变量测试（断言陈旧 release 不删新 holder 的锁）。
