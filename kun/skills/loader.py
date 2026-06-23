@@ -159,9 +159,22 @@ def parse_skill(content: str, source_path: str) -> SkillRecord:
     )
 
 
+def _repo_anchored(root: Path, name: str) -> Path:
+    """Fall back to a repo-root-anchored dir when a cwd-relative one is missing.
+
+    Audit F152: the default ``"skills"`` is cwd-relative, so launching from a
+    non-repo-root directory silently loaded zero skills. When the given root does
+    not exist, try ``<repo-root>/<name>`` (two levels above this package).
+    """
+    if root.exists():
+        return root
+    anchored = Path(__file__).resolve().parents[2] / name
+    return anchored if anchored.exists() else root
+
+
 def load_skills_from_dir(root: str | Path = "skills") -> SkillRegistry:
     """Scan `root` recursively for SKILL.md files and register each."""
-    root = Path(root)
+    root = _repo_anchored(Path(root), "skills")
     registry = SkillRegistry()
     if not root.exists():
         log.info("skills.dir_missing", path=str(root))

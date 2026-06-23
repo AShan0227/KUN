@@ -27,12 +27,24 @@ from kun.watchtower.rules import GuardRule, RuleKind
 log = get_logger("kun.watchtower.engine")
 
 
+def _repo_anchored_rules(root: Path) -> Path:
+    """Fall back to ``<repo-root>/rules`` when a cwd-relative root is missing.
+
+    Audit F152: the default ``"rules"`` is cwd-relative, so launching from a
+    non-repo-root directory silently loaded zero watchtower rules.
+    """
+    if root.exists():
+        return root
+    anchored = Path(__file__).resolve().parents[2] / "rules"
+    return anchored if anchored.exists() else root
+
+
 def load_rules(
     root: str | Path = "rules",
     kinds: Iterable[RuleKind] | None = None,
 ) -> list[GuardRule]:
     """Load all rules from rules/<kind>/*.yaml files."""
-    root = Path(root)
+    root = _repo_anchored_rules(Path(root))
     if not root.exists():
         return []
 

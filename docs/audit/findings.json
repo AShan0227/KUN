@@ -1978,9 +1978,9 @@
       "detail": "get_registry 调用 load_skills_from_dir 用默认 root 为 skills 的相对路径；load_rules 用 rules（api/main.py 88 行）同样相对 cwd。而 long_task_runtime_bundle 的 DEFAULT_METHODOLOGY_DIR 用 Path(__file__) 向上三级再拼 seeds 与 methodologies，是 repo-root 锚定、稳健的。三者不一致：若任一生产入口（daemon 或 api）工作目录不是仓库根，starter SKILL.md 包与 watchtower 规则会静默不加载，loader 只记 skills.dir_missing，load_rules 直接返回空列表，不报错也不降级提示。selector、activation、proactive layer3 随后拿到的注册表只剩 builtin，外部 curated 技能与守护异常规则全部失效，且难以察觉。",
       "evidence": "loader.py load_skills_from_dir 默认 root 为 skills，root 不存在时记 skills.dir_missing 后返回空注册表；engine.py root 不存在时返回空列表；对比 bundle.py 用 Path(__file__).resolve().parent.parent.parent 拼 seeds methodologies",
       "source": "integration-skills",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "1969054",
+      "notes": "load_skills_from_dir / watchtower load_rules 默认 cwd 相对路径在缺失时回退到 repo-root 锚定(<pkg>/../../skills|rules)；非 repo-root 启动不再静默加载零项;显式存在路径仍优先。+3 测试(含异 cwd 加载)。"
     },
     {
       "id": "F153",

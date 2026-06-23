@@ -59,3 +59,4 @@
 2026-06-24 F073 ✅ — daemon gate 证据 JSON 的 float() 解析改 _safe_float(保守默认/不抛)，坏数据不再杀死 tick，+9 测试
 2026-06-24 F144 ✅ — frontier50 workdir 改 env 可配置 + can_run 'ab' 改词边界匹配，消除误触+硬编码他人路径，+2 组测试
 2026-06-24 F143 ✅ — record_plan_change 状态变更走 assert_transition_allowed(消除状态机绕过)，零行为变更，+6 测试
+2026-06-24 F152 ✅ — skills/watchtower 默认路径缺失时回退 repo-root 锚定，非 repo-root 启动不再静默零加载，+3 测试
