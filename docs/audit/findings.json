@@ -457,9 +457,9 @@
       "detail": "shell-exec 直接 create_subprocess_shell 执行 LLM 决定的任意 shell 命令，唯一约束是 cwd 落在沙箱根目录（文档明确承认不是 chroot 或 container 边界）；python-exec 同理跑 python3 代码，seed 自述同进程权限可见整个 host 文件系统。两个技能经 dispatcher.autoload_builtins 注册、由 tool_executor 暴露给 LLM 作为工具，因此任务输入里的 prompt injection 可导致任意主机命令执行或读取进程环境变量里的 API key 等机密外泄，对号称数小时自主运行的 Agent OS 是重大暴露面。雪上加霜：SkillManifest 声明了 allowed_commands、denied_patterns、denied_domains 三个字段（loader.py 56 到 58 行），builtin __init__ 还把 shell-exec 描述成受 allowlist 约束（31 到 34 行），但全仓 grep 确认这三字段除定义外无任何读取或强制点，是纯死代码。声称的防护根本不存在，调用方会误以为有 allowlist。",
       "evidence": "shell_exec 中 create_subprocess_shell(command) 无命令校验；builtin __init__ 中 shell-exec 描述含 受 allowlist 约束；grep allowed_commands 与 denied_patterns 与 denied_domains 仅命中 loader.py 56-58 定义处",
       "source": "integration-skills",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "ed4ca79",
+      "notes": "加 kun/skills/command_policy.py：shell-exec 命令级守卫（默认拦灾难性命令 rm -rf //fork bomb/mkfs/dd-of-dev/shutdown 等 + KUN_SHELL_EXEC_DENY 额外denylist + KUN_SHELL_EXEC_ALLOW 白名单模式）。python-exec 模式过滤=安全剧场（易绕过），与死字段 allowed_commands 一并拆 F035a(needs-design)。+6 测试。"
     },
     {
       "id": "F036",
@@ -2228,6 +2228,19 @@
       "status": "pending",
       "commit": "",
       "notes": ""
+    },
+    {
+      "id": "F035a",
+      "severity": "high",
+      "class": "architecture",
+      "title": "python-exec 进程/容器隔离 + 清理死的 SkillManifest.allowed_commands",
+      "file": "kun/skills/builtin/python_exec.py, kun/skills/loader.py",
+      "detail": "python-exec 的任意代码无法靠模式过滤安全约束（__import__/getattr 等可绕过），需真隔离（子进程降权/seccomp/容器）。SkillManifest.allowed_commands 字段从未被强制读取（死代码）——要么接线到 command_policy，要么删除。",
+      "evidence": "loader.py:56 allowed_commands 全仓零读取",
+      "source": "F035-split",
+      "status": "pending",
+      "commit": "",
+      "notes": "需设计；与持久层/沙箱隔离专项一并排期"
     }
   ],
   "low_deferred": [

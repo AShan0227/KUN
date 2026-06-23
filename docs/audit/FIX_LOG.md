@@ -18,3 +18,4 @@
 2026-06-23 F034 ✅ — 方法论 loader 支持 dict 形字段(_listify 递归)，恢复 RSI 读侧丢失的 action，+4 测试
 2026-06-23 F019 📐 — needs-design：FileControlPlaneStore O(N²) 写放大 + 静默丢未知字段，写方案 docs/audit/proposals/F019.md（持久层重设计，不硬改）
 2026-06-23 F033 ✅ — 自指护栏覆盖 RSI 判定真实路径(external_supervisor/governance/watchtower)，+3 测试
+2026-06-23 F035 ✅ — shell-exec 命令级策略守卫(默认拦灾难命令+env deny/allow)，python-exec 隔离+死 allowed_commands 拆 F035a，+6 测试

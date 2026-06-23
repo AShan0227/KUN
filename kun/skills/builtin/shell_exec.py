@@ -20,6 +20,7 @@ import asyncio
 import time
 from typing import Any
 
+from kun.skills.command_policy import CommandRejectedError, check_shell_command
 from kun.skills.dispatcher import SkillResult, register
 from kun.skills.sandbox import SandboxPathError, resolve_execution_cwd, sandbox_metadata
 
@@ -31,6 +32,19 @@ async def execute(params: dict[str, Any]) -> SkillResult:
     command = str(params.get("command") or "").strip()
     if not command:
         return SkillResult(skill_id="shell-exec", ok=False, error="command is required")
+
+    # Command-level policy (audit F035): reject catastrophic / disallowed
+    # commands before spawning a subprocess. Guard rail, not a sandbox.
+    try:
+        check_shell_command(command)
+    except CommandRejectedError as exc:
+        return SkillResult(
+            skill_id="shell-exec",
+            ok=False,
+            error=f"command rejected by policy: {exc}",
+            duration_sec=time.perf_counter() - started,
+            metadata={"command": command[:80], "policy_rejected": True},
+        )
 
     timeout = max(1.0, min(300.0, float(params.get("timeout_sec") or 30)))
     try:
