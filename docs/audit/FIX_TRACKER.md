@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 50 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 88
+**总计 173 项** — ✅done 51 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 87
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -98,7 +98,7 @@
 | F077 | medium | fix | ⬜ | V7 Mission Director 周期 hook 每 tick 每 mission 起一个未节流的线程 + 独 | `kun/control_plane/daemon.py:794` |
 | F078 | medium | fix | ⬜ | 中英文子串匹配作为核心控制流，误匹配直接改变状态机走向 | `kun/control_plane/runtime.py:169-226` |
 | F079 | medium | fix | ✅ | mission_director._latest_gate 取 dict 迭代序最后一个，'最新门禁'判断不可靠 | `kun/control_plane/mission_director.py:498-507` |
-| F080 | medium | fix | ⬜ | 确定性 gate_evaluation_id 跨重试复写历史评估，审计追溯失真 | `kun/control_plane/kun_runtime_runner.py:1537` |
+| F080 | medium | fix | ✅ | 确定性 gate_evaluation_id 跨重试复写历史评估，审计追溯失真 | `kun/control_plane/kun_runtime_runner.py:1537` |
 | F081 | medium | fix | ⬜ | mission.ledger_refs 无界增长 + 每条 ledger 事件全 mission 重写 + 文件存储 | `kun/control_plane/runtime.py:2536-2541` |
 | F082 | medium | fix | ⬜ | RainFlow/游戏生产域逻辑硬编码进'通用'控制面核心，违反分层并已三处复制 | `kun/control_plane/runtime.py:889-934` |
 | F083 | medium | fix | ✅ | activation.py 用 plan 版本号查按 plan_id 键控的字典，task_plan 恒为 None | `kun/control_plane/activation.py:56` |

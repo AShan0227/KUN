@@ -55,3 +55,4 @@
 2026-06-23 F145 ✅ — cockpit._current_plan 计划版本改数值排序(v10>v9)，+3 测试
 2026-06-23 F157 ✅ — bug_root_cause_cases ORM 改 unique Index 对齐迁移 0013，消除 alembic check 漂移，+2 测试
 2026-06-23 F061 ✅ — 删 daemon.py 被遮蔽的重复死函数(_ready/_has_ready_current_plan_product_work 前组)，零行为变更，全套件绿
+2026-06-24 F080 ✅ — runtime gate_evaluation_id 纳入输出 content_hash，重试不再复写历史评估；+4 测试，10 处现有测试改 subject_ref 定位(保留断言)

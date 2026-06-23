@@ -1042,9 +1042,9 @@
       "detail": "_work_item_gate 生成 gate-kun-runtime-{slug(work_item_id)}，mission_director 用 gate-mission-director-{slug}(mission_director.py:393)，runtime_followups._pass_gate 用 gate-{created_by}-{slug}(runtime_followups.py:97)。同一工作项重试/重评时新评估覆盖旧记录：旧 RunRecord.gate_evaluation_ref 指向的 gate 内容已变成新评估，先 fail 后 pass 的历史被抹平；runtime_observation._gate_order_keys(runtime_observation.py:454-485)中多个 run 指向同一 gate ref 也使排序歧义。对一个以 ledger 审计为卖点的系统，这是证据链断点。建议：gate id 加 run_id 或时间戳成分，按 subject 查询时再做 latest 折叠。",
       "evidence": "gate_evaluation_id=f\"gate-kun-runtime-{_slug(work_item.work_item_id)}\"  # 同一 item 每次重跑同 id，dict/store 直接覆盖",
       "source": "cp-runtime",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "ab512e6",
+      "notes": "抽 _runtime_gate_id(work_item_id, content_hash)，gate_evaluation_id 纳入输出 content_hash → 改了输出的重试不再复写历史评估(审计可追溯)；字节相同的重试仍合并(同一评估，无损)。+4 helper 测试；同步把 10 处按旧硬编码 key 查找的现有测试改为按 subject_ref 定位(保留全部断言，未弱化)。"
     },
     {
       "id": "F081",

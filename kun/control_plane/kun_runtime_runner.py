@@ -1517,6 +1517,19 @@ def _executor_exception_failure_category(summary: str) -> str:
     return "tool_failure"
 
 
+def _runtime_gate_id(work_item_id: str, content_hash: str) -> str:
+    """Gate-evaluation id for a runtime work-item evaluation (audit F080).
+
+    The old id was ``gate-kun-runtime-{work_item_id}`` — deterministic on only the
+    work item, so a retry reused the same id and **overwrote** the prior gate
+    evaluation, erasing audit history. Including the output ``content_hash`` makes a
+    retry whose output changed get a distinct evaluation record. (A byte-identical
+    retry still coalesces, which is fine — it is the same evaluation.)
+    """
+    suffix = (content_hash or "nohash")[:12]
+    return f"gate-kun-runtime-{_slug(work_item_id)}-{suffix}"
+
+
 def _work_item_gate(
     *,
     work_item: WorkItem,
@@ -1534,7 +1547,7 @@ def _work_item_gate(
     passed = not failures
     artifact_refs = [artifact.artifact_id, *[item.artifact_id for item in local_evidence_artifacts]]
     return GateEvaluation(
-        gate_evaluation_id=f"gate-kun-runtime-{_slug(work_item.work_item_id)}",
+        gate_evaluation_id=_runtime_gate_id(work_item.work_item_id, artifact.content_hash),
         mission_id=work_item.mission_id,
         task_plan_version=work_item.task_plan_version,
         subject_ref=work_item.work_item_id,

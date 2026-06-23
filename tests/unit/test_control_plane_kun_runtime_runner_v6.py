@@ -24,6 +24,24 @@ from kun.control_plane.work_item_governance import normalize_resource_lock_ref
 NOW = datetime(2026, 5, 20, 10, 0, tzinfo=UTC)
 
 
+def _runtime_gate(control_plane: InMemoryControlPlane, work_item_id: str):
+    """Locate the single runtime gate evaluation for a work item.
+
+    Audit F080: gate ids now include the output content hash (so retries don't
+    overwrite history), so we look the gate up by its stable subject_ref rather
+    than by the old hardcoded ``gate-kun-runtime-{work_item_id}`` key.
+    """
+    gates = [
+        g
+        for g in control_plane.gate_evaluations.values()
+        if g.subject_ref == work_item_id and g.gate_evaluation_id.startswith("gate-kun-runtime-")
+    ]
+    assert len(gates) == 1, (
+        f"expected exactly one runtime gate for {work_item_id}, got {len(gates)}"
+    )
+    return gates[0]
+
+
 def _runtime() -> tuple[InMemoryControlPlane, Mission]:
     control_plane = InMemoryControlPlane()
     mission = Mission(
@@ -438,7 +456,7 @@ def test_kun_runtime_runner_blocks_when_local_evidence_rejects_demo(tmp_path: Pa
     assert report.ran_work_item_ids == [work.work_item_id]
     assert control_plane.work_items[work.work_item_id].status == "failed"
     assert control_plane.missions[mission.mission_id].status == "repairing"
-    gate = control_plane.gate_evaluations[f"gate-kun-runtime-{work.work_item_id}"]
+    gate = _runtime_gate(control_plane, work.work_item_id)
     assert gate.north_star_verdict == "fail"
     assert "local_human_simulation_rejected" in gate.hard_gate_failures
     assert "local_deliverable_demo_blocked" in gate.hard_gate_failures
@@ -507,7 +525,7 @@ def test_kun_runtime_runner_ignores_superseded_failed_attempt_when_recovered(
 
     assert report.ran_work_item_ids == [work.work_item_id]
     assert control_plane.work_items[work.work_item_id].status == "done"
-    gate = control_plane.gate_evaluations[f"gate-kun-runtime-{work.work_item_id}"]
+    gate = _runtime_gate(control_plane, work.work_item_id)
     assert gate.north_star_verdict == "pass"
     assert not gate.hard_gate_failures
     assert any(
@@ -588,7 +606,7 @@ def test_kun_runtime_runner_ignores_unselected_phase1_candidate_blockers(
 
     assert report.ran_work_item_ids == [work.work_item_id]
     assert control_plane.work_items[work.work_item_id].status == "done"
-    gate = control_plane.gate_evaluations[f"gate-kun-runtime-{work.work_item_id}"]
+    gate = _runtime_gate(control_plane, work.work_item_id)
     assert gate.north_star_verdict == "pass"
     assert not gate.hard_gate_failures
     assert any(
@@ -668,7 +686,7 @@ def test_kun_runtime_runner_prefers_real_output_root_over_draft_blockers(
 
     assert report.ran_work_item_ids == [work.work_item_id]
     assert control_plane.work_items[work.work_item_id].status == "done"
-    gate = control_plane.gate_evaluations[f"gate-kun-runtime-{work.work_item_id}"]
+    gate = _runtime_gate(control_plane, work.work_item_id)
     assert gate.north_star_verdict == "pass"
     assert not gate.hard_gate_failures
     assert any(
@@ -751,7 +769,7 @@ def test_kun_runtime_runner_ignores_candidate_reports_when_rendered_package_acce
 
     assert report.ran_work_item_ids == [work.work_item_id]
     assert control_plane.work_items[work.work_item_id].status == "done"
-    gate = control_plane.gate_evaluations[f"gate-kun-runtime-{work.work_item_id}"]
+    gate = _runtime_gate(control_plane, work.work_item_id)
     assert gate.north_star_verdict == "pass"
     assert not gate.hard_gate_failures
     assert any(
@@ -841,7 +859,7 @@ def test_kun_runtime_runner_does_not_apply_delivery_blockers_to_material_screeni
 
     assert report.ran_work_item_ids == [work.work_item_id]
     assert control_plane.work_items[work.work_item_id].status == "done"
-    gate = control_plane.gate_evaluations[f"gate-kun-runtime-{work.work_item_id}"]
+    gate = _runtime_gate(control_plane, work.work_item_id)
     assert gate.north_star_verdict == "pass"
     assert not any(failure.startswith("local_") for failure in gate.hard_gate_failures)
 
@@ -928,7 +946,7 @@ def test_kun_runtime_runner_blocks_when_browser_player_gate_is_blocked(
         item for item in control_plane.runs.values() if item.work_item_id == work.work_item_id
     )
     assert run.failure_category == "environment_failure"
-    gate = control_plane.gate_evaluations[f"gate-kun-runtime-{work.work_item_id}"]
+    gate = _runtime_gate(control_plane, work.work_item_id)
     assert gate.north_star_verdict == "fail"
     assert "local_browser_player_gate_blocked" in gate.hard_gate_failures
 
@@ -1636,7 +1654,7 @@ def test_kun_runtime_runner_prefers_explicit_output_lock_over_stale_k_output(
     report = daemon.tick_once(mission_ids=[mission.mission_id], now=NOW, max_work_items=1)
 
     assert report.ran_work_item_ids == [work.work_item_id]
-    gate = control_plane.gate_evaluations[f"gate-kun-runtime-{work.work_item_id}"]
+    gate = _runtime_gate(control_plane, work.work_item_id)
     assert gate.north_star_verdict == "pass"
     assert "local_browser_player_gate_blocked" not in gate.hard_gate_failures
     assert any(
@@ -1726,7 +1744,7 @@ def test_kun_runtime_runner_blocks_real_provider_probe_when_output_missing(
 
     assert report.ran_work_item_ids == [work.work_item_id]
     assert control_plane.work_items[work.work_item_id].status == "failed"
-    gate = control_plane.gate_evaluations[f"gate-kun-runtime-{work.work_item_id}"]
+    gate = _runtime_gate(control_plane, work.work_item_id)
     assert gate.north_star_verdict == "fail"
     assert gate.failure_category == "environment_failure"
     assert "local_provider_network_blocked" in gate.hard_gate_failures
@@ -1765,7 +1783,7 @@ def test_kun_runtime_runner_requires_local_evidence_for_rainflow_product_stage(
 
     assert report.ran_work_item_ids == [work.work_item_id]
     assert control_plane.work_items[work.work_item_id].status == "failed"
-    gate = control_plane.gate_evaluations[f"gate-kun-runtime-{work.work_item_id}"]
+    gate = _runtime_gate(control_plane, work.work_item_id)
     assert gate.north_star_verdict == "fail"
     assert "local_runtime_evidence_missing" in gate.hard_gate_failures
     assert "did not produce local RainFlow evidence files" in (gate.root_cause or "")
