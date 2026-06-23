@@ -38,22 +38,22 @@ from kun.interface.llm.base import (
 log = get_logger("kun.llm.anthropic")
 
 
-# Pricing in USD per million tokens (approximate; update periodically)
+# Pricing in USD per million tokens. Source: Anthropic pricing table (claude-api
+# skill, 2026-06). cached = cache *read* (~0.1x input); cache_write = 5-min-TTL
+# cache *write* (1.25x input). Audit F024: the old table had Opus at $15/$75
+# (3x too high) and Haiku at $0.25/$1.25 (4x too low), and omitted cache-write —
+# corrupting the ADR-008 cost loop and budget kill-switch.
 _PRICING: dict[str, dict[str, float]] = {
-    "claude-opus-4-7": {
-        "input": 15.0,
-        "output": 75.0,
-        "cached": 1.5,  # 90% discount on cache hit
-    },
-    "claude-sonnet-4-6": {
-        "input": 3.0,
-        "output": 15.0,
-        "cached": 0.3,
-    },
+    "claude-fable-5": {"input": 10.0, "output": 50.0, "cached": 1.0, "cache_write": 12.5},
+    "claude-opus-4-8": {"input": 5.0, "output": 25.0, "cached": 0.5, "cache_write": 6.25},
+    "claude-opus-4-7": {"input": 5.0, "output": 25.0, "cached": 0.5, "cache_write": 6.25},
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cached": 0.3, "cache_write": 3.75},
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cached": 0.1, "cache_write": 1.25},
     "claude-haiku-4-5-20251001": {
-        "input": 0.25,
-        "output": 1.25,
-        "cached": 0.025,
+        "input": 1.0,
+        "output": 5.0,
+        "cached": 0.1,
+        "cache_write": 1.25,
     },
 }
 
@@ -75,6 +75,10 @@ class AnthropicProvider(LLMProvider):
         self.price_input_per_mtok = pricing.get("input", 3.0)
         self.price_output_per_mtok = pricing.get("output", 15.0)
         self.price_cached_per_mtok = pricing.get("cached", 0.3)
+        # Cache-write premium; default to 1.25x input for unknown models.
+        self.price_cache_write_per_mtok = pricing.get(
+            "cache_write", self.price_input_per_mtok * 1.25
+        )
 
         # For ADR-008 equivalent pricing — same as actual for now
         self.equivalent_price_input_per_mtok = self.price_input_per_mtok

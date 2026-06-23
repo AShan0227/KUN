@@ -314,9 +314,9 @@
       "detail": "_PRICING 写的是 claude-opus-4-7 $15/$75、claude-haiku-4-5-20251001 $0.25/$1.25（每 MTok），经官方 API 参考核实实际为 Opus 4.7 $5/$25、Haiku 4.5 $1/$5（Sonnet 4.6 $3/$15 正确）。这些数字直接进 cost_usd_actual/equivalent → llm_cost_usd 指标 → NUO budget panel（ADR-008）→ orchestrator 的 force_fallback 日预算 kill-switch。Opus 成本 3 倍高估会让预算开关过早触发、全天被锁死在 MiniMax fallback；Haiku 4 倍低估则反向漏报。CLI 订阅路径（claude_code_provider 用 CLI 自报的 total_cost_usd）不受影响，但 API key 路径与等效成本核算全错。同文件 _PRICING 的 fallback 默认值（input 3.0/output 15.0）也应同步复核。",
       "evidence": "_PRICING = {\"claude-opus-4-7\": {\"input\": 15.0, \"output\": 75.0, ...}, \"claude-haiku-4-5-20251001\": {\"input\": 0.25, \"output\": 1.25, ...}} — 官方现价 Opus 4.7 = $5/$25, Haiku 4.5 = $1/$5 per MTok",
       "source": "api-interface",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "5ef4c1f",
+      "notes": "按 claude-api 权威定价修正：Opus 4.7 15/75→5/25、Haiku 0.25/1.25→1/5，新增 opus-4-8/fable-5；cached 统一为 0.1×input；新增 cache_write(1.25×input) 字段并在 compute_cost 计入 cache_creation_input_tokens（此前漏计）。+6 测试。"
     },
     {
       "id": "F025",

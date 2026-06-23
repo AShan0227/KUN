@@ -12,3 +12,4 @@
 2026-06-23 F008/F009/F016/F017 📐 — needs-design 合并方案 docs/audit/proposals/F008-F009-F016-F017.md（RSI 自产证据/硬编码门禁分数+god-module 拆分，不盲改）
 2026-06-23 F018 ✅ — feature_activation_audit rmtree 脚枪：加 _prepare_audit_output_dir 守卫(拒危险根/只清自有目录)+8 测试
 2026-06-23 F020 ✅ — ValidatorKind 加 'ensemble'，修复 tier3 聚合 Pydantic 必崩 +3 测试
+2026-06-23 F024 ✅ — 修正 Anthropic 定价表(权威来源)+计入 cache-write 成本(此前漏计)，+6 测试

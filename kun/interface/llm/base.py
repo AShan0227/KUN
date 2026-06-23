@@ -151,7 +151,8 @@ class LLMProvider(ABC):
     # Per-token prices (USD per million tokens) — for cost_usd_actual
     price_input_per_mtok: float = 0.0
     price_output_per_mtok: float = 0.0
-    price_cached_per_mtok: float = 0.0
+    price_cached_per_mtok: float = 0.0  # cache *read* (~0.1x input)
+    price_cache_write_per_mtok: float = 0.0  # cache *write* (≈1.25x input, 5-min TTL)
 
     # For subscription models, equivalent pricing (ADR-008)
     equivalent_price_input_per_mtok: float = 0.0
@@ -183,10 +184,15 @@ class LLMProvider(ABC):
             pout = self.price_output_per_mtok
 
         input_cost = (usage.input_tokens / 1_000_000) * pin
-        # Cached tokens at a discount
+        # Cached tokens served from cache at a deep discount (read).
         cache_cost = (usage.cached_input_tokens / 1_000_000) * self.price_cached_per_mtok
+        # Cache *writes* cost a premium over base input (≈1.25x for the 5-min TTL).
+        # Previously omitted (audit F024), which under-counted cost on cache-heavy runs.
+        cache_write_cost = (
+            usage.cache_creation_input_tokens / 1_000_000
+        ) * self.price_cache_write_per_mtok
         output_cost = (usage.output_tokens / 1_000_000) * pout
-        return input_cost + cache_cost + output_cost
+        return input_cost + cache_cost + cache_write_cost + output_cost
 
     async def health_check(self) -> bool:
         """Quick probe: is the provider up & reachable?"""
