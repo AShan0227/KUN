@@ -143,9 +143,15 @@
 
 ---
 
-## L5 · 自创任务（✅ 已达成 2026-05-27，RSI 真闭合的标志）
+## L5 · 自创任务（[~] 代码路径存在，RSI 主链生产未接通）
 
-**交付标志**：监督线发现的系统性问题 → 自动转 Strategist 任务（无需人提）→ 闭环跑完产出 capability → 自动晋级。
+> ⚠️ 修正 (2026-06-24, audit F069)：原标题「✅ 已达成 2026-05-27，RSI 真闭合的标志」与代码现实不符。
+> 下述各环的符号/测试真实存在，但**监督→Strategist→capability→晋级**这条主链在生产**未接线**（脊柱表
+> 仅 demo 读写、evidence_ledger 空 stub、gate enable 无生产调用方等）——详见
+> [docs/audit/proposals/rsi-mainline-wiring.md](docs/audit/proposals/rsi-mainline-wiring.md)（F021/F022/F039/F040/F041/F042 等）。
+> 在该方案 1→9 步接通前，「RSI 真闭合已达成」是**过度宣称**，应按本注记如实表述（同 F047/F049/F050）。
+
+**交付标志（设计目标，非现状）**：监督线发现的系统性问题 → 自动转 Strategist 任务（无需人提）→ 闭环跑完产出 capability → 自动晋级。
 
 ### 实施细节
 

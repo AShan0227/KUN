@@ -80,3 +80,5 @@
 2026-06-24 F070/F071/F072/F082/F084/F086/F112/F113 📐 — 架构/分层簇并入 architecture-debt.md §1b(实现质量+模块化债)
 2026-06-24 F118 ✅ 16af265 — 升级 4 个传递依赖避开 7 个已知 CVE(starlette/urllib3/idna/mako),全套件绿
 2026-06-24 F110/F111/F119/F120/F133/F134/G10 📐 — 新建 ci-and-supplychain.md(CI 门禁强制力+供应链)；F139/F140/F141 📐 并入 demo-script-honesty.md §1b
+2026-06-24 F069 ✅ — PROGRESS.md L5 'RSI 真闭合已达成' 诚实化为'代码路径存在、主链未接通'(引 rsi-mainline-wiring)
+2026-06-24 F102/F109/F148/F151 📐 — 新建 security-posture.md;F078 📐 并入 architecture-debt §1b;F116/F160 📐 并入 demo-script-honesty §1b

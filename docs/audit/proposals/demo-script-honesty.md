@@ -39,6 +39,8 @@ dogfood / e2e / smoke 脚本是项目对外宣称「RSI 闭环已达成 / L5-L6 
 | **F139** | `scripts/v7_xb_smoke.py:296-372` | 脚本头**已**诚实标注 SCOPE(stub provider + in-memory fake session)——这点优于他者；但结论措辞越界：6 段全过后 `print('全部 6 块 X.B 真在 runtime 走通. 软件层完成度 100%')`(L21,360-363)，且 Segment6 用两个 StubProvider 调 ensemble、断言只看 `EnsembleCallRow` 被 add + `n_providers_total==2`——把"代码能调通"偷换成"功能完成 100%"。 | 把"软件层完成度 100%"改为"6 段代码路径在 stub 下可调通(非功能完成、非真 LLM/PG 验证)"；ensemble 段加"stub provider，不构成 ensemble 行为验证"。一行措辞级真修复。 |
 | **F140** | `scripts/dogfood_v10_trigger_xb_tables.py:104-131,287-289` | row-delta 框架本身真实(真 SELECT count 前后快照)，但被削弱：(1) Step1 `GateService.admit` 输入 `pass_rate=0.97/evidence_quality=0.92` 是手填**必过**值→ +1 行是"喂必过参数触发桥"而非真实裁决；(2) Step2 MissionDirector 桥是 fire-and-forget 线程 + `await sleep(3.0)` 探测落库→时序竞态，慢机可能漏 row、PARTIAL 仍可能退出码 0。 | 注明 Step1 是"桥连通性"非"裁决质量"验证；Step2 改为对落库的确定性等待(轮询/事件)而非固定 sleep，PARTIAL 必须非零退出。 |
 | **F141** | `scripts/spark_world_run.py:49-60` | 工作树对该 runner 的**未提交**改动注释直书历史事故：claude CLI OAuth subprocess `hung 180s ×3 → RetryError → silent stub fallback that echoed the prompt (a no-op masquerading as success)`——"调 stub 却当成功"反模式的当事人书面确认；同一改动把 `max_budget_usd` 提到 1000.0。 | 这是 F045(stub 生产 fail-closed)的真实事故印证：runner 的 provider 失败必须 fail-closed(报错/退出非零)，**绝不**静默回退 echo-prompt stub；未提交改动应作为线索纳入 F045 接线验证，不要把 stub 回退当兜底。 |
+| **F116** | `scripts/e2e_rsi_demo.py:195` | 半剧本：链路中段与验证证据**写死**，`fixture_only` 强制标注未实装段；通篇 PASS 不代表真链路。 | 同 F056-F060：PASS 判据基于真证据(非 stub/非写死)，或明确归类为"手动调试、非验证"；真验证依赖 RSI 主链接通(rsi-mainline-wiring)。 |
+| **F160** | `scripts/dogfood_v9.py:133-167` | 依赖真 PG/LLM 的脚本在 Docker 停机时**无优雅降级**(直接炸或误判)，且无任何脚本对"是否真跑了真实依赖"留下**可审计运行指纹**(provider/DB 实连证据)。 | 启动前探测依赖、缺失则显式 skip/标注(而非伪装跑过)；运行产物记录 provider 实型 + DB 实连指纹(同 F139 的"代码调通≠功能完成"诚实化)。 |
 
 > 这三条与 F056-F060 同处理：F139 是一行措辞级真修复(可随手做)；F140/F141 涉及判据/控制流与 F045 接线，随 RSI 主链 + F045 落地。
 
@@ -47,4 +49,4 @@ dogfood / e2e / smoke 脚本是项目对外宣称「RSI 闭环已达成 / L5-L6 
 - PASS 判据加固 + 入 CI：依赖 RSI 主链接通(rsi-mainline-wiring epic)与 F008/F016/F017(去硬编码门禁分数)，同排期。
 
 ## 4. 覆盖 findings
-F056, F057, F058, F059, F060, F139, F140, F141（标 needs-design 指向本文件；关联 rsi-mainline-wiring.md、F045）。F139/F140/F141 见 §1b。
+F056, F057, F058, F059, F060, F116, F139, F140, F141, F160（标 needs-design 指向本文件；关联 rsi-mainline-wiring.md、F045）。F116/F139/F140/F141/F160 见 §1b。

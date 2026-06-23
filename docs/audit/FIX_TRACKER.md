@@ -2,9 +2,9 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 68 ｜ ⛔blocked 0 ｜ 📐needs-design 81 ｜ ⬜pending 24
+**总计 173 项** — ✅done 69 ｜ ⛔blocked 0 ｜ 📐needs-design 88 ｜ ⬜pending 16
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
-剩余 pending+fix：13（high 0 / medium 8 / low 5）
+剩余 pending+fix：5（high 0 / medium 3 / low 2）
 
 | id | sev | class | 状态 | 标题 | 文件 |
 |---|---|---|---|---|---|
@@ -88,7 +88,7 @@
 | F066 | medium | fix | 📐 | 零鉴权 + 租户/用户身份三处硬编码, 审批按钮可被任意访问者点击执行真实副作用 | `frontend/src/app/page.tsx:40` |
 | F067 | medium | fix | 📐 | layout 与 control-plane 页面使用的 kun-* 组件样式类在整个仓库 (含全部 git 历史) | `frontend/src/app/globals.css:1` |
 | F068 | medium | fix | ✅ | PG skip guard 字符串匹配错误，13 个约束测试在无 Docker 时失败而非跳过 | `tests/integration/test_v7_xb_pg_check_constraint` |
-| F069 | medium | fix | ⬜ | PROGRESS.md 宣称 'L5 已达成=RSI 真闭合的标志' 与代码现实不符 | `PROGRESS.md:140` |
+| F069 | medium | fix | ✅ | PROGRESS.md 宣称 'L5 已达成=RSI 真闭合的标志' 与代码现实不符 | `PROGRESS.md:140` |
 | F070 | medium | fix | 📐 | 字符串补丁机制对生成代码逐字节耦合，anchor 漂移时静默跳过并可产出引用未定义变量的源码 | `kun/control_plane/game_production.py:5876-5908,` |
 | F071 | medium | fix | 📐 | _final_delivery 对整个项目目录（含 node_modules 与 .npm-cache）做两次递归全 | `kun/control_plane/game_production.py:2233-2243,` |
 | F072 | medium | fix | 📐 | _run_internal_tests 13 个 copy-paste 命令块，串行最多 ~17 个 npm 命令、 | `kun/control_plane/game_production.py:1285-1465` |
@@ -97,7 +97,7 @@
 | F075 | medium | fix | 📐 | 单任务批次与多任务批次的异常隔离不一致：单批次时 finish_work_item_run 异常会击穿整个守护循环 | `kun/control_plane/daemon.py:1373` |
 | F076 | medium | fix | 📐 | claim_start 抢占 daemon 槽位是 load→check→save 的 TOCTOU，无进程间锁 | `kun/control_plane/daemon.py:321` |
 | F077 | medium | fix | 📐 | V7 Mission Director 周期 hook 每 tick 每 mission 起一个未节流的线程 + 独 | `kun/control_plane/daemon.py:794` |
-| F078 | medium | fix | ⬜ | 中英文子串匹配作为核心控制流，误匹配直接改变状态机走向 | `kun/control_plane/runtime.py:169-226` |
+| F078 | medium | fix | 📐 | 中英文子串匹配作为核心控制流，误匹配直接改变状态机走向 | `kun/control_plane/runtime.py:169-226` |
 | F079 | medium | fix | ✅ | mission_director._latest_gate 取 dict 迭代序最后一个，'最新门禁'判断不可靠 | `kun/control_plane/mission_director.py:498-507` |
 | F080 | medium | fix | ✅ | 确定性 gate_evaluation_id 跨重试复写历史评估，审计追溯失真 | `kun/control_plane/kun_runtime_runner.py:1537` |
 | F081 | medium | fix | 📐 | mission.ledger_refs 无界增长 + 每条 ledger 事件全 mission 重写 + 文件存储 | `kun/control_plane/runtime.py:2536-2541` |
@@ -121,21 +121,21 @@
 | F099 | medium | fix | 📐 | L6 行业评测套件是孤儿且度量很浅,无法支撑真实在度量 | `kun/evaluation/industry_suite.py:164` |
 | F100 | medium | fix | 📐 | RCDH 诊断、PromotionTimeoutSweeper、promotion advance 均无生产接线 — | `kun/governance/rcdh.py:303` |
 | F101 | medium | fix | 📐 | ResourceQuota / ExplorationPenalty 从未注入生产 Strategist, 且为单进 | `kun/governance/resource_quota.py:86` |
-| F102 | medium | fix | ⬜ | 红队套件只打 mock, 从未对准真实系统 — security/ 子系统整体是测试夹具 | `kun/cli.py:1876` |
+| F102 | medium | fix | 📐 | 红队套件只打 mock, 从未对准真实系统 — security/ 子系统整体是测试夹具 | `kun/cli.py:1876` |
 | F103 | medium | fix | 📐 | proactive_dispatch 的 Layer 1a 强制工具分支只标记 seen 从不真正 dispatch | `kun/engineering/proactive_tools.py:301` |
 | F104 | medium | fix | 📐 | PromptABService 直接调用 Strategist 私有方法 _emit_and_adjust，且整个模 | `kun/integration/prompt_ab.py:305` |
 | F105 | medium | fix | 📐 | 主工作区 WS 协议覆盖不全: 长任务双线交互的 5 种服务端消息类型被静默丢弃 (后端对应链路同样未接通) | `frontend/src/app/page.tsx:68-99` |
 | F106 | medium | fix | 📐 | 导航包含两个 404 死链 (/billing、/account), 用对象字面量 href 绕过 typedRou | `frontend/src/app/layout.tsx:34-42` |
 | F107 | medium | fix | 📐 | cockpit 与 control-plane 页面无请求取消/竞态防护, 每个输入框 keystroke 触发整组 | `frontend/src/app/cockpit/page.tsx:206-229` |
 | F108 | medium | fix | 📐 | 主工作区 WS 无重连机制, 消息数组无上限增长; 后端重启后 UI 永久停在 '未连接' | `frontend/src/app/page.tsx:51-66` |
-| F109 | medium | fix | ⬜ | shell-exec/python-exec 沙箱仅为 cwd 目录边界且可被调用方 cwd 放大，无进程隔离 | `kun/skills/sandbox.py:43-63` |
+| F109 | medium | fix | 📐 | shell-exec/python-exec 沙箱仅为 cwd 目录边界且可被调用方 cwd 放大，无进程隔离 | `kun/skills/sandbox.py:43-63` |
 | F110 | medium | fix | 📐 | curl|bash 一键部署无完整性校验并安装常驻 daemon | `scripts/one_click_deploy.sh:5` |
 | F111 | medium | fix | 📐 | integration marker 覆盖率 6/26，marker 隔离机制形同虚设 | `tests/integration/` |
 | F112 | medium | fix | 📐 | 六组循环依赖靠延迟 import/TYPE_CHECKING 压制，engineering↔skills 为模块级硬 | `/Users/petrarain/鲲/kun/skills/calibration.py:39` |
 | F113 | medium | fix | 📐 | daemon.py 6,927 行：12 个类 5 类职责堆在单文件，属真实复杂度但缺模块边界 | `/Users/petrarain/鲲/kun/control_plane/daemon.py:1` |
 | F114 | medium | fix | 📐 | evaluation/ 446 行 L6 评测框架生产调用方为零，仅测试文件引用 | `/Users/petrarain/鲲/kun/evaluation/__init__.py:1` |
 | F115 | medium | fix | 📐 | External Supervisor（ADR-023）：service 真实但'独立进程'模式是占位，Mode A | `kun/external_supervisor/runner.py:45` |
-| F116 | medium | fix | ⬜ | e2e_rsi_demo.py 是半剧本：链路中段与验证证据写死；fixture_only 强制标注未实装 | `scripts/e2e_rsi_demo.py:195` |
+| F116 | medium | fix | 📐 | e2e_rsi_demo.py 是半剧本：链路中段与验证证据写死；fixture_only 强制标注未实装 | `scripts/e2e_rsi_demo.py:195` |
 | F117 | medium | fix | 📐 | RCDH 诊断引擎与 heavy-drift 后续动作未接线：rsi_trigger 只是落库字符串 | `kun/governance/rcdh.py:303` |
 | F118 | medium | fix | ✅ | 锁定的运行时依赖含 7 个已知 CVE(starlette/urllib3/idna/mako) | `uv.lock:1` |
 | F119 | medium | fix | 📐 | .env.example 与代码实际读取的环境变量严重脱节(约 50 个未文档化) | `.env.example:1` |
@@ -168,10 +168,10 @@
 | F145 | low | fix | ✅ | cockpit._current_plan 用字典序比较计划版本，v10 < v9，多次改版后驾驶舱显示错误计划 | `kun/control_plane/cockpit.py:322` |
 | F146 | low | fix | ✅ | Strategist 配额与探索惩罚硬编码 tenant_id='default'，多租户限流/惩罚失效 | `/Users/petrarain/鲲/kun/agents/strategist/service` |
 | F147 | low | fix | ⬜ | SupervisorService.observe 全程持单把全局锁跨 await DB/通知调用，监督线吞吐被串行 | `/Users/petrarain/鲲/kun/agents/supervisor/service` |
-| F148 | low | fix | ⬜ | Cockpit 端点用 query 参数 tenant_id（默认 "default"）绕过租户中间件，discip | `kun/api/cockpit.py:282-296,328-339;` |
+| F148 | low | fix | 📐 | Cockpit 端点用 query 参数 tenant_id（默认 "default"）绕过租户中间件，discip | `kun/api/cockpit.py:282-296,328-339;` |
 | F149 | low | fix | ✅ | 平台 browser adapter 的读操作仅导航即返回 status=ok，假成功污染 AdapterRoute | `kun/interface/automation/shopify/browser.py:161-` |
 | F150 | low | fix | ✅ | EntityType 枚举与 capability_cards DB CHECK 约束双向不一致(company v | `kun/datamodel/capability.py:22-28` |
-| F151 | low | fix | ⬜ | External Supervisor 自身可被提示词注入 + 解析兜底 fail-open + LLM 自由文本可 | `kun/external_supervisor/service.py:207` |
+| F151 | low | fix | 📐 | External Supervisor 自身可被提示词注入 + 解析兜底 fail-open + LLM 自由文本可 | `kun/external_supervisor/service.py:207` |
 | F152 | low | fix | ✅ | 技能注册表与 watchtower 规则用 cwd 相对默认路径，非 repo-root 启动时静默不加载 | `kun/skills/loader.py:162` |
 | F153 | low | fix | ⬜ | /cockpit 页面的 API 路径未配置 rewrite, 同源部署下整页必然 404; dev 端口 3001 | `frontend/next.config.mjs:7-11` |
 | F154 | low | fix | ✅ | 单测非密闭: mission_director 单测真连 localhost:55432，错误被静默吞掉 | `kun/control_plane/mission_director.py:135-148` |
@@ -180,4 +180,4 @@
 | F157 | low | fix | ✅ | bug_root_cause_cases 唯一性约束：ORM 用 UniqueConstraint，迁移用 uniq | `kun/core/orm.py:708` |
 | F158 | low | fix | ✅ | events 子系统 emit 在生产 outbox worker 路径（确认为真产数，非测试） | `kun/core/events.py:160` |
 | F159 | low | fix | ✅ | watchtower 与 task 生命周期 emit 在生产路径（确认为真产数） | `kun/engineering/orchestrator.py:683` |
-| F160 | low | fix | ⬜ | 依赖真 PG/LLM 的脚本在 Docker 停机时无优雅降级，且无任何脚本对'是否真跑了真实依赖'留下可审计的运行 | `scripts/dogfood_v9.py:133-167` |
+| F160 | low | fix | 📐 | 依赖真 PG/LLM 的脚本在 Docker 停机时无优雅降级，且无任何脚本对'是否真跑了真实依赖'留下可审计的运行 | `scripts/dogfood_v9.py:133-167` |

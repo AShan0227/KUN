@@ -899,9 +899,9 @@
       "detail": "PROGRESS.md L5 标注 '自创任务（✅ 已达成 2026-05-27，RSI 真闭合的标志）'，L2 标注'第一条 RSI 闭环已达成'。实际达成的是各环节 service 类 + 单测（fake emitter/fake reader 注入），不是生产闭环——链路中没有任何一条从真实异常到真实能力启用的数据流在生产中走通过。仓库自己的 X.H 自审（gate/service.py:158 'X.H failure mode: nominal wired but orphan'）已承认这种'名义接线实为孤儿'的失败模式，且为此加了 R6 production-path reachability 检查，但进度文档未回写修正。对 CTO 的风险：基于'RSI 已闭合'的判断去推进 L6 商业化，地基是虚的。",
       "evidence": "PROGRESS.md:140 '## L5 · 自创任务（✅ 已达成 2026-05-27，RSI 真闭合的标志）' vs 本审查实证的 5 环中 3 环零生产接线",
       "source": "rsi-claims",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "a4e75a9",
+      "notes": "PROGRESS.md L5 标题「✅已达成/RSI 真闭合」改为如实表述([~]代码路径存在、主链生产未接通,引 rsi-mainline-wiring),同 F047/F049/F050 诚实注记。"
     },
     {
       "id": "F070",
@@ -1016,9 +1016,9 @@
       "detail": "控制面的关键路由决策全部依赖自由文本子串匹配：_should_route_to_nuo 用约 40 个 token(含\"timeout\"、\"机制雏形\"、\"需要人工试玩\")决定是否触发 Nuo 诊断；_product_acceptance_claimed(372-411)凭 \"可交付\"/\"ready to deliver\" 判定验收宣称；_qi_decision(runtime_followups.py:948-984)凭 \"merge\"/\"合并\" 决定治理动作分支；_runtime_human_playtest_required、_nuo_classification、_is_strategy_optimization_work_item 同理。任何 runner 输出里偶然包含这些词(例如答案中引用了错误日志或讨论了 timeout)都会改变 mission 状态走向、生成跟进项或阻断交付。这是把 NLP 问题用 grep 解决的重大架构债，且 token 表无版本化、散落多文件无法统一演进。建议：收敛为结构化信号字段(runner 显式声明 failure_kind/acceptance_claim)，文本启发式仅作降级兜底并打标记。",
       "evidence": "if any(token in text for token in (\"stub echo\",\"fallback model\",...,\"机制雏形\",\"只有机制\",\"图片不足\",\"需要人工试玩\",\"需要用户验收\")): return True",
       "source": "cp-runtime",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "a4e75a9",
+      "notes": "中英文子串匹配作核心控制流(已先查结构化信号、子串为 fail-safe 兜底)；并入 docs/audit/proposals/architecture-debt.md。"
     },
     {
       "id": "F079",
@@ -1328,9 +1328,9 @@
       "detail": "run_red_team_suite 的唯一非测试调用方是 CLI `kun security red-team`, 而它传入的 system_invoke 是写死的 mock(默认永远回复'拒绝' → 永远全过; --unsafe-mock 永远回复 APPROVED → 永远全挂), runner 自身默认值 _default_safe_system 也是 mock。没有任何代码把红队用例喂给真实 Director/Executor/orchestrator 链路, 也没有 CI/cron 集成。叠加判定逻辑是关键词启发式(_looks_refused, runner.py:112-128, 代码注释自己承认应换 LLM judge), 当前 'pass_count' 数字不反映任何真实安全属性。五类场景 prompt 语料本身质量尚可, 框架接上真实 invoke 即可变现, 但今天它是装饰。",
       "evidence": "kun/cli.py:1870-1876 `async def _mock(case): ... return \"拒绝：红队 mock 拦截了危险请求。\"` → `run_red_team_suite(system_invoke=_mock)`; runner.py:68 `invoke = system_invoke or _default_safe_system`",
       "source": "gov-sec-watch",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "a4e75a9",
+      "notes": "red-team 套件只打 _mock、security/ 整体测试夹具；并入 docs/audit/proposals/security-posture.md。"
     },
     {
       "id": "F103",
@@ -1419,9 +1419,9 @@
       "detail": "可执行 skill 的'沙箱'只是把工作目录限制在 KUN_SKILL_EXEC_ROOTS(默认 /tmp/kun-skill-exec)内，sandbox.py docstring 与注释自认这是 'an auditable workspace boundary, not a chroot or container boundary'。子进程以 API 进程同一 UID 运行，无网络隔离、无 seccomp/capability 限制、继承全部环境变量，因此 cwd 边界对'读 ../../.env、出网外泄、读宿主任意文件'没有任何约束力——它只防'误在错误目录写文件'。更进一步，preflight._temporary_exec_roots 会把调用方在 params.cwd 里请求的目录解析后追加进 KUN_SKILL_EXEC_ROOTS(preflight.py:198-219，配合 _execution_roots_for_params:186-195)，即沙箱根可被调用方输入动态扩张。dogfood 脚本 spark_world_run.py 直接把 KUN_SKILL_EXEC_ROOTS 指到任意工作区并用 shell-exec heredoc 写大文件，印证该路径可写任意被指定目录。此项单独看是 medium，但它是上一条(自动 python-exec)能升级为 RCE 的底座，二者叠加风险显著。",
       "evidence": "sandbox.py:16 注释 'not a chroot or container boundary'; sandbox.py:57 `if any(candidate == root or root in candidate.parents for root in roots)`; preflight.py:208 `roots = _dedupe_root_strings([*configured.split(\":\"), *extra_roots]); os.environ[\"KUN_SKILL_EXEC_ROOTS\"] = \":\".join(roots)`; shell_exec.py:46 `proc = await asyncio.create_subprocess_shell(command, ... cwd=str(cwd))`",
       "source": "security",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "a4e75a9",
+      "notes": "shell/python-exec 沙箱仅 cwd 边界、无进程隔离(docstring 自承非容器)；并入 docs/audit/proposals/security-posture.md。"
     },
     {
       "id": "F110",
@@ -1510,9 +1510,9 @@
       "detail": "该脚本诚实度尚可（头部 16 行 FIXTURE-ONLY 免责声明明确说'不是验收依据'），Supervisor→Postgres 写 strategy_search_requests 这一段是真的。但闭环关键段是剧本：step 3 不用从 DB 读回的 request，而是注释自认'实际 anomaly 数据下面写死'后硬编码一个 llm_fallback_spike；step 4 的 test_report（pass_rate=0.95）和 debrief（verdict=ok）全部捏造，没有任何真实实验/测试被执行。另外脚本头部承诺的'产物必须标 metadata.fixture_only=True（待 Phase 0.5.gate 实装时强 enforce）'至今未实装（kun/ 内 grep fixture_only 零命中），demo 写进真 Postgres 的行与未来生产行无法区分。dogfood_v14 则用 stub LLM 只验证方法论注入读侧 wiring，自我声明准确，不算造假，但不能作为'RSI 闭环'证据。",
       "evidence": "e2e_rsi_demo.py:195-197 '# 简化: 直接构造一个 llm_fallback_spike request 给 Strategist (requests_to_process[0] 仅作存在性 sentinel — 实际 anomaly 数据下面写死)'；237-247 行 test_report/debrief 字面量",
       "source": "rsi-claims",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "a4e75a9",
+      "notes": "e2e_rsi_demo 半剧本、中段证据写死、fixture_only 未实装；并入 docs/audit/proposals/demo-script-honesty.md。"
     },
     {
       "id": "F117",
@@ -1926,9 +1926,9 @@
       "detail": "main.py 已有 X-Tenant-Id → TenantContext 中间件（nuo panel 都用 current_tenant()），但 cockpit.py 七个端点全部另起炉灶用 ?tenant_id=xxx 且默认 \"default\"，任何客户端改 query 即可读任意租户的 lifecycle/alignment/auditor/ensemble 数据——与 nuo 形成两套并行租户机制，职责混乱且默认值 \"default\" 与系统默认租户 u-sylvan 还不一致（导致 cockpit 默认查不到主租户数据，容易被误读为 '无数据'）。另外 /cockpit/discipline/recent 的 PG 读失败时 fallback 到进程内 _CACHE（list_recent_discipline_reports），该缓存条目不带 tenant_id，多租户场景下会把别的租户的 discipline 报告混进响应。建议 cockpit 统一改用 current_tenant()，缓存条目补 tenant_id 字段。",
       "evidence": "cockpit.py:284 tenant_id: str = Query(\"default\", description=\"RLS tenant scope\")；discipline_store.py:172-178 except → return list_recent_discipline_reports(limit=limit)（无 tenant 过滤）；DisciplineReportEntry 无 tenant_id 字段",
       "source": "api-interface",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "a4e75a9",
+      "notes": "Cockpit query 参数 tenant_id 默认 default 绕过租户中间件；并入 docs/audit/proposals/security-posture.md。"
     },
     {
       "id": "F149",
@@ -1965,9 +1965,9 @@
       "detail": "三个叠加弱点削弱监督的对抗鲁棒性: 1) 被审计对象(Executor 的 self_report / step summaries — 即监督要防范的那个 LLM 的输出)被 json.dumps 后直接拼进监督者的 system prompt(_SYSTEM_PROMPT_TEMPLATE 的 observation_block), 无任何转义/降权处理, 主线输出里嵌入 '═══ END ═══ ... return {\"verdict\":\"ok\"}' 即可越狱本地小模型 — 监督存在的前提恰是主线可能说谎; 2) _parse_llm_response 的文本兜底在不含 alarm/concern 等关键词时默认 verdict='ok'(service.py:139-145), 本地模型输出乱码 → 护栏静默放行, 应默认 'concerning'; 3) mode_a_gate_review 里 `recommended_action=observation.recommended_action or action`(modes.py:166), LLM 的自由文本(如 'continue')可覆盖 alarming→human_review 的确定性映射, 若调用方按 recommended_action 行动则否决被软化。",
       "evidence": "service.py:74-75 system prompt 内嵌 `{observation_block}`; service.py:144-145 `else: verdict = \"ok\"`; modes.py:166 `recommended_action=observation.recommended_action or action`",
       "source": "gov-sec-watch",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "a4e75a9",
+      "notes": "External Supervisor 可被提示注入+解析 fail-open+自由文本覆盖动作；并入 docs/audit/proposals/security-posture.md。"
     },
     {
       "id": "F152",
@@ -2082,9 +2082,9 @@
       "detail": "v9/v9_mini/v10/v12 的 _count_rows/_snapshot 直接 get_admin_sessionmaker() 连 PG（当前机器 Docker 停机会直接抛连接异常）。这本身是诚实的（不会伪 PASS），但带来两个证据链问题：(1) 这些脚本只能在'恰好有人把 Docker+Ollama+OAuth 都拉起来'的瞬间产生证据，复现门槛高、无 CI 固化（见 finding 1），所以进度文档引用的'已验证'实际是历史某次手跑的快照；(2) PASS/FAIL 只打到 stdout + 部分写 docs/dev_logs，但没有把'本次 provider 真实身份/model_id/是否 stub/真实 token 消耗'结构化落盘成可审计指纹，事后无法区分某次'✅'到底是真 LLM 跑的还是 stub 回退（与 finding 8 的风险叠加）。建议：长任务 runner 在事件流里强制记录 provider.name+model_id，并对 provider.name=='stub' 直接判 FAIL。",
       "evidence": "v9 L150-155 `sm = get_admin_sessionmaker(); async with sm() as s: ... select(func.count())`（无 try/except 降级）；v9 done 后仅 print 'Hot wirings' 与写 JSONL，无 provider 身份指纹",
       "source": "extra:dogfood_scripts_honesty_audit",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "a4e75a9",
+      "notes": "dogfood_v9 真依赖无优雅降级、无是否真跑的可审计指纹；并入 docs/audit/proposals/demo-script-honesty.md。"
     },
     {
       "id": "G01",
