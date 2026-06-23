@@ -17,7 +17,7 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from kun.core.logging import get_logger
 from kun.core.metrics import llm_fallback_total
@@ -569,7 +569,28 @@ def _tenant_id_for_capability_routing() -> str:
     return os.getenv("KUN_TENANT_ID", "default")
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
+def _should_retry_llm_error(exc: BaseException) -> bool:
+    """Router-level retry predicate (audit F046).
+
+    Any exception carrying an HTTP status was already handled by the provider
+    SDK's own retry policy — it retries 429/5xx with retry-after awareness and
+    surfaces deterministic 4xx. Re-retrying those here amplifies rate limits and
+    pointlessly repeats deterministic 400s. So only retry *uncategorized
+    transport* errors (no HTTP status) that the SDK didn't classify.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        resp = getattr(exc, "response", None)
+        status = getattr(resp, "status_code", None)
+    return not isinstance(status, int)
+
+
+@retry(
+    retry=retry_if_exception(_should_retry_llm_error),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.5, max=8),
+    reraise=True,
+)
 async def _invoke_with_retry(provider: LLMProvider, request: LLMRequest) -> LLMResponse:
     return await provider.invoke(request)
 

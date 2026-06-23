@@ -600,9 +600,9 @@
       "detail": "_invoke_with_retry 用 @retry(stop=stop_after_attempt(3), wait=wait_exponential(0.5, max=8)) 且没有 retry= 异常过滤器: (a) 确定性失败(400 上下文超限、role 非法、401 凭据错)被原样重试 3 次, 纯浪费; (b) claude CLI 挂死 180s 超时 × 3 = 先烧 9 分钟才降级——正是 diff 注释记录的事故形态; (c) 429 时 anthropic SDK 自己已带 max_retries=2 的指数退避(尊重 retry-after), tenacity 再叠 3 次且无视 retry-after, 对已被限流的订阅(注释明言 \"Anthropic 订阅被限流\")是雪上加霜。全仓 grep 确认除 shopify adapter 外没有任何 RateLimitError/retry-after 感知逻辑, quota_tracker 也只是计数不读 429。修复: 按 anthropic.APIStatusError 状态码分类——4xx(除 408/429)不重试直接降级或上抛; 429 读 retry-after 并联动 quota_tracker 冷却。",
       "evidence": "@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))\nasync def _invoke_with_retry(provider, request): return await provider.invoke(request) —— 无 retry_if_exception_type 过滤",
       "source": "diff-and-llm",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "bedcd82",
+      "notes": "router _invoke_with_retry 改为只重试无 HTTP status 的传输错误；带 status 的(4xx/429/5xx)交给 SDK 自带重试(retry-after 感知)，消除放大与确定性400空转。reraise=True 让上层拿到真实异常。+8 测试。"
     },
     {
       "id": "F047",
