@@ -29,3 +29,4 @@
 2026-06-23 F048 ✅ — 已由 F007 修真(auth 中间件接线，flag flip 生效)，本轮核实
 2026-06-23 F049 ✅ — PROGRESS L6.E 降级[~]+修正注记(库就绪未接线)
 2026-06-23 F050 ✅ — promotion sweeper 未调度：ADR-024/PROGRESS L5.2 如实修订(逻辑就绪未在生产调度)，接线归 RSI 主链方案
+2026-06-23 F021/F022/F025/F039/F040/F041/F042 📐 — needs-design 合并方案 docs/audit/proposals/rsi-mainline-wiring.md（RSI 闭环生产化：逐环断点+最小接线顺序）

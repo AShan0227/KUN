@@ -275,9 +275,9 @@
       "detail": "心跳链路只走了一半：PlanReviewService.observe_step_and_maybe_render_prompt 被 ExecutorLoop 调用时 executor_self_report 恒为 None(空 dict)，规则评判 evaluate_executor_self_report({}) 永远返回 aligned；ExecutorLoop 收到模型的心跳自评 JSON 后只回一句 'Status received. Continue working...' 就继续循环，从不解析该 JSON、从不调 submit_self_report。长任务编排层自己也注释承认 'We do not yet parse the Executor's self_report JSON'(kun/engineering/long_task_orchestrator.py:546)。全仓 grep submit_self_report( 只有 tests/ 调用。后果：内外 verdict 合并、drifting→pause_for_anchor_recheck、off_track→trigger_rcdh_level_0 整套动作机在生产 loop 中永远不触发——Layer4 anti-drift 实际只剩'定期给模型发提醒 prompt'的安慰剂效果，检测与干预能力为零。这是核心卖点(长任务防漂移)的实质性缺口。",
       "evidence": "exec_loop.py: if plan_review_just_injected and _looks_like_heartbeat_status(...): messages.append({\"role\":\"user\",\"content\":\"Status received. Continue working...\"}); steps += 1; continue  — 无任何 JSON 解析/submit_self_report 调用。grep submit_self_report( → 仅 plan_review_service.py 定义 + tests/unit + tests/integration",
       "source": "agents-brain",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "afdeaa2",
+      "notes": "ADR-022 防漂移自评未消费；同根因(RSI 闭环生产未通电)合并方案见 docs/audit/proposals/rsi-mainline-wiring.md（逐环断点+最小接线顺序+每步验证）。"
     },
     {
       "id": "F022",
@@ -288,9 +288,9 @@
       "detail": "SupervisorService(监督线核心、'RSI 触发起点')全仓唯一实例化点是 scripts/e2e_rsi_demo.py:133；base.py 声称'订阅 kun.* NATS subjects'但不存在任何 NATS/事件总线 subscriber 调 observe()。StrategistService 的生产调用方只有 kun/integration/prompt_ab.py(且默认无 emitter，候选不落库)。即：异常检测→strategy_search_request→候选实验→Gate 准入这条 ADR-024 十步闭环，生产 runtime 中事件根本流不进来，等同于整条监督线是'演示级可用、生产级未通电'。鉴于 PROGRESS 正向 L6 商业化推进，这是最大的架构债：要么尽快接 NATS subscriber/事件 hook，要么在文档明确标注监督线尚未上线，避免对 RSI 能力的错误预期。",
       "evidence": "grep \"SupervisorService(\" 全仓(排除 agents 内部) → 仅 scripts/e2e_rsi_demo.py:133。base.py 职责自述: '1. 订阅 event stream (订阅 kun.* NATS subjects)' 但 kun/ 内无任何调用 supervisor.observe 的订阅器",
       "source": "agents-brain",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "afdeaa2",
+      "notes": "监督线无生产事件源；同根因(RSI 闭环生产未通电)合并方案见 docs/audit/proposals/rsi-mainline-wiring.md（逐环断点+最小接线顺序+每步验证）。"
     },
     {
       "id": "F023",
@@ -327,9 +327,9 @@
       "detail": "ws.py:112-115 注释声称 task_state 由 _run_task_stream 在 orchestrator 事件出现时填充，但 _run_task_stream(ws, content, send_lock, output_kind) 根本拿不到 task_state 引用；全仓 grep 'task_state[' 只有置 None 和读取，无任何赋值 goal_anchor/task_id 的代码。因此 ws.py:141 的 'if task_state[\"goal_anchor\"] is None' 恒为真，长任务期间的追加消息永远走旧 'task already running' 拒绝分支，handle_long_task_input 及其整套 6-bucket 路由（off_topic/scope_expansion/pivot_pause/cancel）在 WS 生产路径上是死代码——只有单测在养它。另外 ws.py:160 start_new_task=lambda _msg: asyncio.create_task(asyncio.sleep(0)) 是 no-op 桩，即使将来接通，pivot 后也不会真正启动新任务。建议要么补上 orchestrator 事件→task_state 的回填（长任务事件里带 goal_anchor），要么把注释改成 TODO 以免误导后续开发。",
       "evidence": "grep 'task_state\\[' 全部命中: ws.py:125,126 置 None / 141,156,157 读取 / 164,165 置 None — 无赋值真值的行；ws.py:160 start_new_task=lambda _msg: asyncio.create_task(asyncio.sleep(0))",
       "source": "api-interface",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "afdeaa2",
+      "notes": "WS task_state 永不填充；同根因(RSI 闭环生产未通电)合并方案见 docs/audit/proposals/rsi-mainline-wiring.md（逐环断点+最小接线顺序+每步验证）。"
     },
     {
       "id": "F026",
@@ -509,9 +509,9 @@
       "detail": "SupervisorService.observe() 是 RSI 闭环的入口（异常阈值检测→写 strategy_search_request），代码质量高、6 种异常类型+dedup+聚类+升级路径齐全，且 LLMRouter 确实在生产中 emit llm.fallback.triggered 事件到 events 表（router.py:615）。但全仓库检索后，observe() 的调用方只有 unit tests、scripts/e2e_rsi_demo.py 和 SupervisorPool（Pool 本身同样 0 生产 caller）。没有任何 NATS/outbox 消费者把真实事件喂给它，emitter（写 strategy_search_requests 表的 DB writer）在生产中从未注入。结论：异常检测在生产中永远不会触发，RSI 从源头就不会启动。",
       "evidence": "grep 'SupervisorService(' 全仓库命中：kun/agents/supervisor/pool.py:107（Pool 内部）、scripts/e2e_rsi_demo.py:133、tests/* 共 10+ 处——无任何 kun/api、kun/control_plane、kun/engineering 生产路径实例化；service.py:93 注释自认 'L2.7 给 Strategist 接 Supervisor 时, 用真正的 DB writer; 测试用 fake'",
       "source": "rsi-claims",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "afdeaa2",
+      "notes": "异常检测未接事件流；同根因(RSI 闭环生产未通电)合并方案见 docs/audit/proposals/rsi-mainline-wiring.md（逐环断点+最小接线顺序+每步验证）。"
     },
     {
       "id": "F040",
@@ -522,9 +522,9 @@
       "detail": "ADR-024 step 7（Safe Experimentation：Strategist 编排实验、KUN Runner 实现候选方案、Tester 验证）在代码中不存在。RuntimeExperimentRow 在生产代码里无任何 insert/select（仅 orm.py 定义 + strategist 注释引用）；StrategistService 的 ExperimentEmitter 在生产中从未注入 DB writer；Executor '读 runtime_experiments 应用候选策略 override' 只是 Protocol 上的 docstring，没有任何实现。这是整条 RSI 链中最空的一环——即使前两环接通，候选策略也没有任何代码去真跑、真测。",
       "evidence": "executor/base.py 通篇只有 `class Executor(Protocol)` + `async def run(...) -> Any: ...`；strategist/service.py:77-78 'ExperimentEmitter — 真写 runtime_experiments 表. L3 接 DB writer; 测试用 fake'；grep RuntimeExperimentRow 生产代码 0 命中",
       "source": "rsi-claims",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "afdeaa2",
+      "notes": "安全实验环整体缺失；同根因(RSI 闭环生产未通电)合并方案见 docs/audit/proposals/rsi-mainline-wiring.md（逐环断点+最小接线顺序+每步验证）。"
     },
     {
       "id": "F041",
@@ -535,9 +535,9 @@
       "detail": "GateService.admit 的 R1-R6 规则真实，但唯一生产调用链（api/main.py 启 idle_batch_worker → MethodologyDistillStep → methodology_to_gate_bridge）构造的 test_report 是写死的 pass_rate=1.0、debrief evidence_quality=0.75——门禁'验证'环节验证的是合成数据，必然放行（除非自指）。且该路径 GateService() 不带 capability_writer（bridge.py:151-153），所以即使 approve 也不写 runtime_capabilities 表；全仓库唯一写该表的是 e2e_rsi_demo.py。读侧同样为零：prompt_ab.pick_active_variant 是唯一消费 enabled capability 的代码，而 PromptABService 0 生产 caller。promotion_queue.advance() 自认 '实装留给上层服务接 DB writer; 当前仅 stub log'（promotion_queue.py:292-298），PromotionTimeoutSweeper 无任何调度器调用。capability '合入→replay→shadow→canary→enabled→影响行为' 的治理闭环整体是 PPT。",
       "evidence": "bridge.py:107 '\"pass_rate\": 1.0,  # methodologies have no automated AB pass-rate'；gate/service.py:411 'if self._writer is not None'——生产路径 writer 恒为 None；promotion_queue.py:296 '当前仅 stub log'",
       "source": "rsi-claims",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "afdeaa2",
+      "notes": "Gate 吃合成证据+不写能力表；同根因(RSI 闭环生产未通电)合并方案见 docs/audit/proposals/rsi-mainline-wiring.md（逐环断点+最小接线顺序+每步验证）。"
     },
     {
       "id": "F042",
@@ -548,9 +548,9 @@
       "detail": "建表层面 ADR-024 完全兑现：0011 迁移真实创建 7 张表（含 evidence_ledger），ORM Row 类齐全（orm.py:486-657），RLS 也做了。但按 ADR-024 自己的定义'闭环=数据流动'核查生产读写：runtime_capabilities / runtime_experiments / strategy_search_requests 仅 e2e demo 脚本读写；diagnostic_records 全仓库 0 写入（rcdh.run_diagnostic 只返回 pydantic 对象不落库，且 0 生产 caller）；goal_anchors 0 写入（director/intent.py:165 注释自认 'L1.8 阶段把 anchor 写入 goal_anchors 表'未做，anchor 只在内存里 pin 进 prompt）；evidence_ledger 的 governance 封装 append()/get_trace() 是 TODO stub（evidence_ledger.py:51 '# TODO L1.3: 真写入'，get_trace 恒返回 []）。唯一真实流动的是 plan_reviews：生产长任务路径 orchestrator.py:1330 注入 plan_review_writer_factory → integration/plan_review_db.py:139 真写 PlanReviewRow。",
       "evidence": "grep StrategySearchRequestRow/RuntimeCapabilityRow/RuntimeExperimentRow/DiagnosticRecordRow/GoalAnchorRow/EvidenceLedgerRow 在 kun/ 生产代码中除 orm.py 定义外 0 个 DB 读写点；evidence_ledger.py:62-65 'async def get_trace(...): # TODO L1.3: 真读  return []'",
       "source": "rsi-claims",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "afdeaa2",
+      "notes": "5张脊柱表+evidence_ledger 生产零流动；同根因(RSI 闭环生产未通电)合并方案见 docs/audit/proposals/rsi-mainline-wiring.md（逐环断点+最小接线顺序+每步验证）。"
     },
     {
       "id": "F043",

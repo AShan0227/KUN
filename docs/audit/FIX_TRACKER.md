@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 26 ｜ ⛔blocked 0 ｜ 📐needs-design 6 ｜ ⬜pending 141
+**总计 173 项** — ✅done 26 ｜ ⛔blocked 0 ｜ 📐needs-design 13 ｜ ⬜pending 134
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -36,11 +36,11 @@
 | F018 | high | fix | ✅ | run_feature_activation_audit 对用户传入目录无条件 shutil.rmtree，存在数据 | `kun/control_plane/feature_activation_audit.py:21` |
 | F019 | high | fix | 📐 | FileControlPlaneStore 每次单条写入都全量重读+全量重写快照，O(N²) 累积成本，且静默丢弃未 | `kun/control_plane/file_store.py:432` |
 | F020 | high | fix | ✅ | tier3 验证聚合必崩：'ensemble' 不在 ValidatorKind Literal 中，Pydanti | `/Users/petrarain/鲲/kun/agents/tester/validation.` |
-| F021 | high | fix | ⬜ | ADR-022 Layer4 防漂移闭环断链：Executor 自评 JSON 从不被解析，submit_self_ | `/Users/petrarain/鲲/kun/agents/exec_loop.py` |
-| F022 | high | fix | ⬜ | 监督线 RSI 主链(Supervisor→Strategist→Gate)无生产事件源接线，只在 demo 脚本里 | `/Users/petrarain/鲲/kun/agents/supervisor/service` |
+| F021 | high | fix | 📐 | ADR-022 Layer4 防漂移闭环断链：Executor 自评 JSON 从不被解析，submit_self_ | `/Users/petrarain/鲲/kun/agents/exec_loop.py` |
+| F022 | high | fix | 📐 | 监督线 RSI 主链(Supervisor→Strategist→Gate)无生产事件源接线，只在 demo 脚本里 | `/Users/petrarain/鲲/kun/agents/supervisor/service` |
 | F023 | high | fix | ✅ | JWT 鉴权 + RLS 子系统是死代码，生产 API/WS 完全信任客户端自报的租户与权限头 | `kun/api/main.py:226-255;` |
 | F024 | high | fix | ✅ | Anthropic 定价表错误：Opus 4.7 高估 3 倍、Haiku 4.5 低估 4 倍，污染 ADR-00 | `kun/interface/llm/anthropic_provider.py:42-58` |
-| F025 | high | fix | ⬜ | WS 长任务输入路由（ADR-022 Layer 3）永远不触发：task_state 没有任何填充路径 | `kun/api/ws.py:112-115,141,160;` |
+| F025 | high | fix | 📐 | WS 长任务输入路由（ADR-022 Layer 3）永远不触发：task_state 没有任何填充路径 | `kun/api/ws.py:112-115,141,160;` |
 | F026 | high | fix | ✅ | session_scope(bypass_rls=True) 仍强制要求租户上下文，生产环境 outbox/订阅者每 | `kun/core/db.py:114-123` |
 | F027 | high | fix | ✅ | 长任务分支重复发出 answer 与 done 终结事件,并使非流式 run 崩溃 | `kun/engineering/orchestrator.py:1422` |
 | F028 | high | fix | ⬜ | proactive 层在无审批且仅 cwd 沙箱下自动执行用户消息中的 python 代码块 | `kun/engineering/proactive_tools.py:250` |
@@ -55,10 +55,10 @@
 | F036 | high | architecture | ⬜ | ADR-020 钦定架构与实际代码根本背离：control_plane 应消失却翻倍至全包 50% | `/Users/petrarain/鲲/decisions.md:380` |
 | F037 | high | architecture | ⬜ | game_production.py 膨胀根因：平台层硬编码特定游戏的产品代码补丁与交付物，非业务复杂度 | `/Users/petrarain/鲲/kun/control_plane/game_produc` |
 | F038 | high | architecture | ⬜ | 架构治理链断裂：V6/V7 两代架构无任何 ADR，decisions.md/PROGRESS.md 已失效为权威文 | `/Users/petrarain/鲲/decisions.md:1076` |
-| F039 | high | fix | ⬜ | RSI 第 1 环断电：Supervisor 异常检测引擎没有接入任何生产事件流 | `kun/agents/supervisor/service.py:154` |
-| F040 | high | fix | ⬜ | RSI 第 3 环（安全实验）整体缺失：runtime_experiments 生产零读写，Executor 是 P | `kun/agents/executor/base.py:35` |
-| F041 | high | fix | ⬜ | RSI 第 4/5 环半假：Gate 唯一生产调用方喂合成证据，runtime_capabilities 生产零写零 | `kun/integration/methodology_to_gate_bridge.py:10` |
-| F042 | high | fix | ⬜ | 6 张数据脊柱表中 5 张 + evidence_ledger 生产零流动，仅 plan_reviews 真接通 | `alembic/versions/0011_rsi_data_spine.py:37` |
+| F039 | high | fix | 📐 | RSI 第 1 环断电：Supervisor 异常检测引擎没有接入任何生产事件流 | `kun/agents/supervisor/service.py:154` |
+| F040 | high | fix | 📐 | RSI 第 3 环（安全实验）整体缺失：runtime_experiments 生产零读写，Executor 是 P | `kun/agents/executor/base.py:35` |
+| F041 | high | fix | 📐 | RSI 第 4/5 环半假：Gate 唯一生产调用方喂合成证据，runtime_capabilities 生产零写零 | `kun/integration/methodology_to_gate_bridge.py:10` |
+| F042 | high | fix | 📐 | 6 张数据脊柱表中 5 张 + evidence_ledger 生产零流动，仅 plan_reviews 真接通 | `alembic/versions/0011_rsi_data_spine.py:37` |
 | F043 | high | fix | ⬜ | one_click_deploy.sh 在新机器上部署出的 launchd daemon 没有任何可用 LLM pr | `scripts/one_click_deploy.sh:52` |
 | F044 | high | fix | ⬜ | AnthropicProvider 将 role="tool" 消息原样透传, 多轮工具循环必 400 | `kun/interface/llm/anthropic_provider.py:127-150` |
 | F045 | high | fix | ⬜ | 生产 fallback 链兜底是 StubProvider, 失败时伪造成功响应(已造成事故) | `kun/interface/llm/router.py:716-748` |
