@@ -504,7 +504,10 @@ def _latest_gate(
         for gate in control_plane.gate_evaluations.values()
         if gate.mission_id == mission.mission_id
     ]
-    return gates[-1] if gates else None
+    # Audit F079: dict insertion order is not a reliable "latest" — after a store
+    # reload the order is arbitrary. gate_evaluation_id is a time-sortable ULID, so
+    # order by it (matching runtime.py's two _latest-gate sites).
+    return max(gates, key=lambda gate: gate.gate_evaluation_id, default=None)
 
 
 def _final_product_contract(contract: ExecutionContract | None) -> bool:

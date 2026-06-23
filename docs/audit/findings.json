@@ -1029,9 +1029,9 @@
       "detail": "该函数直接返回过滤后 gates[-1]，即 dict 插入序最后一个。但确定性 gate id(见另一 finding)被复写时保留原插入位置(_RecordBucket.put 对已有 key 原位更新)，且 store hydrate 后顺序为快照文件顺序，与时间序不保证一致。结果是 director 的 gate_pass_not_product_done 判定(_build_director_payload:252-257 依赖 latest_gate.next_action)可能基于一个早已被覆盖/过期的 gate，产生误阻断或漏阻断。讽刺的是 runtime.py:2463-2479 的 InMemoryControlPlane._latest_gate 已经实现了基于 ledger sequence 的正确版本却未被复用。建议：复用 runtime 的实现或给 GateEvaluation 加 created_at 排序。",
       "evidence": "gates = [gate for gate in control_plane.gate_evaluations.values() if gate.mission_id == mission.mission_id]\\nreturn gates[-1] if gates else None",
       "source": "cp-runtime",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "4964975",
+      "notes": "_latest_gate 改为 max(key=gate_evaluation_id)（ULID 时序可排），替代 gates[-1] 的 dict 插入序依赖，与 runtime.py 两处一致。+2 测试。"
     },
     {
       "id": "F080",
