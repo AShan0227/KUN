@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 34 ｜ ⛔blocked 0 ｜ 📐needs-design 25 ｜ ⬜pending 114
+**总计 173 项** — ✅done 35 ｜ ⛔blocked 0 ｜ 📐needs-design 25 ｜ ⬜pending 113
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -101,7 +101,7 @@
 | F080 | medium | fix | ⬜ | 确定性 gate_evaluation_id 跨重试复写历史评估，审计追溯失真 | `kun/control_plane/kun_runtime_runner.py:1537` |
 | F081 | medium | fix | ⬜ | mission.ledger_refs 无界增长 + 每条 ledger 事件全 mission 重写 + 文件存储 | `kun/control_plane/runtime.py:2536-2541` |
 | F082 | medium | fix | ⬜ | RainFlow/游戏生产域逻辑硬编码进'通用'控制面核心，违反分层并已三处复制 | `kun/control_plane/runtime.py:889-934` |
-| F083 | medium | fix | ⬜ | activation.py 用 plan 版本号查按 plan_id 键控的字典，task_plan 恒为 None | `kun/control_plane/activation.py:56` |
+| F083 | medium | fix | ✅ | activation.py 用 plan 版本号查按 plan_id 键控的字典，task_plan 恒为 None | `kun/control_plane/activation.py:56` |
 | F084 | medium | fix | ⬜ | workspace_snapshot：含 .git/node_modules 的工作区 complete_resto | `kun/control_plane/workspace_snapshot.py:94` |
 | F085 | medium | fix | ⬜ | RedisResourceLockStore.release_holder 非原子 get→delete，可能误删其 | `kun/control_plane/work_item_governance.py:668` |
 | F086 | medium | fix | ⬜ | control_plane/__init__.py 急切导入全部 ~45k 行，含 2200 行测试夹具型审计套件混 | `kun/control_plane/__init__.py:90` |

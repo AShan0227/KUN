@@ -1081,9 +1081,9 @@
       "detail": "activate_work_item_features 写 `control_plane.task_plans.get(mission.current_plan_version or \"\")`，但 runtime.py:1132 中 task_plans 以 plan_id 为键，current_plan_version 存的是 version 字符串（如 \"v1\"，runtime.py:1126），二者几乎不可能相等，因此 task_plan 永远是 None：_match_skill_refs 拿不到 evidence_plan/decomposition/test_plan/constraints 文本，_external_source_refs 永远不会产出 evidence-plan:// 引用——激活产物里的 skill_refs/external_source_refs 系统性缺失且无任何报错。preflight.py:153-171 的 _task_plan_for_mission 已正确实现了双重查找（先按键再按 mission+version 扫描），activation.py 应复用同一逻辑。",
       "evidence": "activation.py:56 task_plan = control_plane.task_plans.get(mission.current_plan_version or \"\")  # runtime.py:1132 self.task_plans[task_plan.plan_id] = task_plan",
       "source": "cp-rest",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "0b2e9b3",
+      "notes": "抽 _resolve_current_plan：按 (mission_id, version) 匹配，替代用 version 查 plan_id 键控字典的恒-None lookup。技能/外部 ref 匹配恢复。+3 测试。"
     },
     {
       "id": "F084",

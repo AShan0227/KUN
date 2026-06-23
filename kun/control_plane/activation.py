@@ -42,6 +42,28 @@ class WorkItemActivation(BaseModel):
     artifacts: list[ArtifactRecord] = Field(default_factory=list)
 
 
+def _resolve_current_plan(control_plane: InMemoryControlPlane, mission_id: str) -> TaskPlan | None:
+    """Resolve a mission's current TaskPlan (audit F083).
+
+    ``control_plane.task_plans`` is keyed by ``plan_id`` but ``mission.current_plan_version``
+    holds a ``version`` string, so the old ``task_plans.get(current_plan_version)`` lookup
+    almost always returned ``None`` — silently degrading skill/external-ref matching to the
+    work-item's own refs only. Match by (mission_id, version) instead.
+    """
+    mission = control_plane.missions[mission_id]
+    target_version = mission.current_plan_version
+    if not target_version:
+        return None
+    return next(
+        (
+            plan
+            for plan in control_plane.task_plans.values()
+            if plan.mission_id == mission_id and plan.version == target_version
+        ),
+        None,
+    )
+
+
 def activate_work_item_features(
     *,
     control_plane: InMemoryControlPlane,
@@ -53,7 +75,7 @@ def activate_work_item_features(
     """Attach default runtime capabilities and execution safeguards to a work item."""
 
     mission = control_plane.missions[work_item.mission_id]
-    task_plan = control_plane.task_plans.get(mission.current_plan_version or "")
+    task_plan = _resolve_current_plan(control_plane, work_item.mission_id)
     contract = control_plane.contracts.get(mission.execution_contract_ref or "")
     capability_refs = _merge_unique(
         work_item.required_capability_refs,
