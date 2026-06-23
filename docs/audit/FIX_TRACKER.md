@@ -2,9 +2,9 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 67 ｜ ⛔blocked 0 ｜ 📐needs-design 42 ｜ ⬜pending 64
+**总计 173 项** — ✅done 67 ｜ ⛔blocked 0 ｜ 📐needs-design 48 ｜ ⬜pending 58
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
-剩余 pending+fix：53（high 0 / medium 48 / low 5）
+剩余 pending+fix：47（high 0 / medium 42 / low 5）
 
 | id | sev | class | 状态 | 标题 | 文件 |
 |---|---|---|---|---|---|
@@ -85,8 +85,8 @@
 | F063 | medium | fix | ⬜ | Context 资产层实际只有进程内内存实现：RedisAssetStore 从未接线，资产重启即丢、跨进程不一致， | `kun/context/storage.py:166-174` |
 | F064 | medium | fix | ⬜ | CANARY→PRODUCTION 审批校验器写好了但从未接线, 生产路径仍是 '非空字符串即通过' 的 honor | `kun/governance/capability_lifecycle.py:196` |
 | F065 | medium | fix | ⬜ | evidence_ledger 是空 stub: append 只打日志, get_trace 返回空列表, ADR | `kun/governance/evidence_ledger.py:51` |
-| F066 | medium | fix | ⬜ | 零鉴权 + 租户/用户身份三处硬编码, 审批按钮可被任意访问者点击执行真实副作用 | `frontend/src/app/page.tsx:40` |
-| F067 | medium | fix | ⬜ | layout 与 control-plane 页面使用的 kun-* 组件样式类在整个仓库 (含全部 git 历史) | `frontend/src/app/globals.css:1` |
+| F066 | medium | fix | 📐 | 零鉴权 + 租户/用户身份三处硬编码, 审批按钮可被任意访问者点击执行真实副作用 | `frontend/src/app/page.tsx:40` |
+| F067 | medium | fix | 📐 | layout 与 control-plane 页面使用的 kun-* 组件样式类在整个仓库 (含全部 git 历史) | `frontend/src/app/globals.css:1` |
 | F068 | medium | fix | ✅ | PG skip guard 字符串匹配错误，13 个约束测试在无 Docker 时失败而非跳过 | `tests/integration/test_v7_xb_pg_check_constraint` |
 | F069 | medium | fix | ⬜ | PROGRESS.md 宣称 'L5 已达成=RSI 真闭合的标志' 与代码现实不符 | `PROGRESS.md:140` |
 | F070 | medium | fix | ⬜ | 字符串补丁机制对生成代码逐字节耦合，anchor 漂移时静默跳过并可产出引用未定义变量的源码 | `kun/control_plane/game_production.py:5876-5908,` |
@@ -124,10 +124,10 @@
 | F102 | medium | fix | ⬜ | 红队套件只打 mock, 从未对准真实系统 — security/ 子系统整体是测试夹具 | `kun/cli.py:1876` |
 | F103 | medium | fix | ⬜ | proactive_dispatch 的 Layer 1a 强制工具分支只标记 seen 从不真正 dispatch | `kun/engineering/proactive_tools.py:301` |
 | F104 | medium | fix | ⬜ | PromptABService 直接调用 Strategist 私有方法 _emit_and_adjust，且整个模 | `kun/integration/prompt_ab.py:305` |
-| F105 | medium | fix | ⬜ | 主工作区 WS 协议覆盖不全: 长任务双线交互的 5 种服务端消息类型被静默丢弃 (后端对应链路同样未接通) | `frontend/src/app/page.tsx:68-99` |
-| F106 | medium | fix | ⬜ | 导航包含两个 404 死链 (/billing、/account), 用对象字面量 href 绕过 typedRou | `frontend/src/app/layout.tsx:34-42` |
-| F107 | medium | fix | ⬜ | cockpit 与 control-plane 页面无请求取消/竞态防护, 每个输入框 keystroke 触发整组 | `frontend/src/app/cockpit/page.tsx:206-229` |
-| F108 | medium | fix | ⬜ | 主工作区 WS 无重连机制, 消息数组无上限增长; 后端重启后 UI 永久停在 '未连接' | `frontend/src/app/page.tsx:51-66` |
+| F105 | medium | fix | 📐 | 主工作区 WS 协议覆盖不全: 长任务双线交互的 5 种服务端消息类型被静默丢弃 (后端对应链路同样未接通) | `frontend/src/app/page.tsx:68-99` |
+| F106 | medium | fix | 📐 | 导航包含两个 404 死链 (/billing、/account), 用对象字面量 href 绕过 typedRou | `frontend/src/app/layout.tsx:34-42` |
+| F107 | medium | fix | 📐 | cockpit 与 control-plane 页面无请求取消/竞态防护, 每个输入框 keystroke 触发整组 | `frontend/src/app/cockpit/page.tsx:206-229` |
+| F108 | medium | fix | 📐 | 主工作区 WS 无重连机制, 消息数组无上限增长; 后端重启后 UI 永久停在 '未连接' | `frontend/src/app/page.tsx:51-66` |
 | F109 | medium | fix | ⬜ | shell-exec/python-exec 沙箱仅为 cwd 目录边界且可被调用方 cwd 放大，无进程隔离 | `kun/skills/sandbox.py:43-63` |
 | F110 | medium | fix | ⬜ | curl|bash 一键部署无完整性校验并安装常驻 daemon | `scripts/one_click_deploy.sh:5` |
 | F111 | medium | fix | ⬜ | integration marker 覆盖率 6/26，marker 隔离机制形同虚设 | `tests/integration/` |

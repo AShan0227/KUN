@@ -860,9 +860,9 @@
       "detail": "前端没有任何登录/token 集成, 身份全部由客户端自报且硬编码了个人租户: page.tsx:40 WS 连接串硬编码 tenant_id=u-sylvan&user_id=sylvan (连 kunApiClient 已有的 NEXT_PUBLIC_KUN_TENANT_ID env 都没用); nuo/page.tsx:20 `const TENANT = \"u-sylvan\"`; cockpit/page.tsx:105 `useState(\"u-sylvan\")` (该文件 18 行注释声称 'defaults to NEXT_PUBLIC_KUN_TENANT_ID' 但代码并未读 env, 注释与实现矛盾); kunApiClient.ts:6-9 默认值兜底。后端 main.py:226-255 tenant_middleware 直接信任 X-Tenant-Id 头, ws.py:81-86 自己注释承认 'no real authentication'。后果: 任何能访问 3000/8000 端口的人改一个 header 即可冒充任意租户, 且 /nuo 页面的 '通过' 按钮 (nuo/page.tsx:199-204) 会经 action_panel.py:118-123 直接调 execute_approved_action_once 执行发邮件/删除/支付级别的高危动作。当前是单机 dev posture 可接受, 但走向 L6 商业化前必须先做前端 auth 集成 (后端 kun/api/auth 已有 jwt_token.py 却未被 main.py 安装, 前端也从不发 Authorization)。",
       "evidence": "page.tsx:40 `return `${proto}//${host}/ws?tenant_id=u-sylvan&user_id=sylvan``; nuo/page.tsx:20 `const TENANT = \"u-sylvan\"; // dev default; future: from auth`; ws.py:82 `# SECURITY: There is no real authentication on the WS endpoint`",
       "source": "frontend",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "8d7557b",
+      "notes": "零鉴权+WS URL 写死 tenant/user 身份+副作用按钮无门控；前端缺口合并方案见 docs/audit/proposals/frontend-gaps.md（F067/F106/F107/F108 可先行；F066/F105 跟随后端 auth+RSI 长任务链路 rsi-mainline-wiring F025）。"
     },
     {
       "id": "F067",
@@ -873,9 +873,9 @@
       "detail": "layout.tsx (kun-shell/kun-topbar/kun-nav-link/kun-brand-* 等) 和 control-plane/page.tsx (kun-page/kun-surface/kun-badge/kun-input/kun-button/kun-stat-card/kun-surface-muted/kun-kicker 等共 10+ 个类) 大量引用 kun-* 组件类, 但 globals.css 全文仅 13 行 (只有 @tailwind 指令和 body 字体), tailwind.config.ts plugins 为空数组, 也没有其他 css 文件; 我用 `git grep kun-shell $(git rev-list --all)` 核实历史上任何 commit 都没有定义过这些类。Tailwind 调色板 (text-kun-good 等 colors.kun.*) 是存在的, 但组件类全部静默 no-op——配合 Tailwind preflight 重置, '任务驾驶舱' 整页的卡片、按钮、输入框都以无边框无背景的裸 HTML 呈现, 顶部导航栏同样无样式。作为日常使用的 cockpit UI 这是明确的功能性缺陷, 也说明这两个页面大概率是 LLM 生成后从未在浏览器里验收过。",
       "evidence": "globals.css 全文件仅 13 行无任何 .kun-* 定义; tailwind.config.ts:20 `plugins: []`; control-plane/page.tsx:316 `<button className=\"kun-button kun-button-primary\" ...>`; git 全历史 grep kun-shell 仅命中 layout.tsx 引用处",
       "source": "frontend",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "8d7557b",
+      "notes": "kun-* 组件类 4 处使用 0 处定义，界面无样式；前端缺口合并方案见 docs/audit/proposals/frontend-gaps.md（F067/F106/F107/F108 可先行；F066/F105 跟随后端 auth+RSI 长任务链路 rsi-mainline-wiring F025）。"
     },
     {
       "id": "F068",
@@ -1367,9 +1367,9 @@
       "detail": "后端 long_task_intake.py:122-186 会通过 WS 下发 off_topic_reply / scope_expansion_review / pivot_pause / interrupted 四种类型, ws.py:14 协议文档还声明了 ask_user; 但 page.tsx dispatchIncoming 的 switch 一个都没有处理, 全部落入 default 分支 console.debug 静默丢弃——一旦长任务运行中用户再输入, 服务端的答复在 UI 上完全不可见。需要说明: 我核实了 ws.py 中 task_state[\"goal_anchor\"] 只在初始化和重置时写入 None, _run_task_stream (ws.py:221-243) 并不像 115 行注释声称的那样填充它, 所以 handle_long_task_input 分支目前实际不可达 (这是后端 ws.py 自己的接线缺口), 当下用户只会收到前端能显示的 'task already running' error。但双线长任务正是当前主线 (b2e8ab6 supervisor harness), 后端一旦接通, 前端就会开始静默丢核心交互消息, 建议两端一起补齐。",
       "evidence": "long_task_intake.py:132 `\"type\": \"off_topic_reply\"`, :147 `\"type\": \"scope_expansion_review\"`, :160 `\"type\": \"pivot_pause\"`; page.tsx:97-98 `default: console.debug(\"unhandled msg\", msg)`; ws.py 中 task_state 仅有 None 赋值 (115,125-126,163-165 行)",
       "source": "frontend",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "8d7557b",
+      "notes": "WS dispatchIncoming 长任务消息类型落 default 静默丢；前端缺口合并方案见 docs/audit/proposals/frontend-gaps.md（F067/F106/F107/F108 可先行；F066/F105 跟随后端 auth+RSI 长任务链路 rsi-mainline-wiring F025）。"
     },
     {
       "id": "F106",
@@ -1380,9 +1380,9 @@
       "detail": "layout.tsx 顶栏链接到 /billing (计费透明) 和 /account (会话/账号), 但 src/app 下只有 4 个页面 (/, /nuo, /cockpit, /control-plane), 这两个路由不存在, 点击即 404。next.config.mjs 开了 typedRoutes, 字符串字面量本会编译报错, 代码用 `href={{ pathname: \"/billing\" }}` 对象形式刻意绕过了类型检查——这是把不完成度藏进类型系统盲区的做法。同时 /cockpit (V7 日常驾驶舱, 注释自称 daily-use dashboard) 反而没有任何导航入口, 只能手敲 URL。建议: 未实现的页面从导航移除或加 '即将上线' 占位页, cockpit 加入导航。",
       "evidence": "layout.tsx:37 `<Link href={{ pathname: \"/billing\" }} ...>计费透明</Link>`, :40 `<Link href={{ pathname: \"/account\" }} ...>`; `find src/app -name page.tsx` 仅 4 个页面, 无 billing/account 目录; 导航中 '任务驾驶舱' 指向 /control-plane, /cockpit 无入口",
       "source": "frontend",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "8d7557b",
+      "notes": "/billing /account 导航死链(无路由目录)+对象字面量 href 绕 typedRoutes；前端缺口合并方案见 docs/audit/proposals/frontend-gaps.md（F067/F106/F107/F108 可先行；F066/F105 跟随后端 auth+RSI 长任务链路 rsi-mainline-wiring F025）。"
     },
     {
       "id": "F107",
@@ -1393,9 +1393,9 @@
       "detail": "两个页面的 fetch 回调均以受控输入为 useCallback 依赖、再被 useEffect 依赖: cockpit 页 tenant 输入每敲一个字符就并发重发 capabilities/auditor/ensemble/mission 4 组请求 (cockpit/page.tsx:136,153,170,192 直接拼进 URL), control-plane 页 missionId 每个 keystroke 触发 missions 列表 + cockpit 详情重拉 (control-plane/page.tsx:196-227, 269-275)。所有请求都没有 AbortController 或序号守卫, 加上 8s/15s 轮询并行, 网络稍慢时旧 tenant/旧 mission 的慢响应会落在新输入之后覆盖 state, 面板显示与输入框不一致; cockpit 主刷新 effect 的 `cancelled` 标志只保护 setLastUpdatedAt, 不保护各面板 setState。对一个以 8s 自刷新为卖点的监控驾驶舱, 这是可复现的数据错乱来源, 建议: 输入 debounce/失焦提交 + AbortController 或自增 requestId 守卫。",
       "evidence": "cockpit/page.tsx:134-147 `useCallback(... fetch(`/cockpit/capabilities?tenant_id=${tenant}...`) , [tenant, setErr])` + :206-224 useEffect 依赖全部回调; control-plane/page.tsx:213 `[missionId]` 依赖 → :273-275 `useEffect(() => { void fetchCockpit(); }, [fetchCockpit])`",
       "source": "frontend",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "8d7557b",
+      "notes": "cockpit/control-plane 无 AbortController/竞态防护；前端缺口合并方案见 docs/audit/proposals/frontend-gaps.md（F067/F106/F107/F108 可先行；F066/F105 跟随后端 auth+RSI 长任务链路 rsi-mainline-wiring F025）。"
     },
     {
       "id": "F108",
@@ -1406,9 +1406,9 @@
       "detail": "WS 在 mount 时建立一次, onclose 只 setConnected(false), 没有任何指数退避重连、心跳或手动重连按钮——后端重启 (鲲的 RSI/自部署场景下是常态) 或网络抖动后, 用户必须整页刷新且丢失全部会话显示。同时 messages/side 两个数组只增不减 (page.tsx:78-92), 长会话 (产品定位是 hours-long autonomy) 下 DOM 节点与内存无界增长, 列表还用 index 作 key。累计费用 totalCost 也只存在客户端内存, 刷新归零。建议: 加重连 + 心跳, 消息列表加窗口上限或虚拟滚动。",
       "evidence": "page.tsx:55-56 `ws.onopen = () => setConnected(true); ws.onclose = () => setConnected(false);` 无任何重连逻辑; :130 `messages.map((m, i) => <div key={i} ...`",
       "source": "frontend",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "8d7557b",
+      "notes": "WS 无重连+消息数组无上限增长；前端缺口合并方案见 docs/audit/proposals/frontend-gaps.md（F067/F106/F107/F108 可先行；F066/F105 跟随后端 auth+RSI 长任务链路 rsi-mainline-wiring F025）。"
     },
     {
       "id": "F109",
