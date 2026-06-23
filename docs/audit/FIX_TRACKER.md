@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 43 ｜ ⛔blocked 0 ｜ 📐needs-design 32 ｜ ⬜pending 98
+**总计 173 项** — ✅done 45 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 93
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -118,7 +118,7 @@
 | F097 | medium | fix | ✅ | 5 个 ADR-016 指标定义后从未被更新，其中含安全告警指标 tenant_cross_access_attem | `kun/core/metrics.py:19-92` |
 | F098 | medium | architecture | ⬜ | ImportanceScorer(中央重要度打分器)无任何生产调用方，packer 另起炉灶用重复的词法打分 | `kun/context/importance.py:43` |
 | F099 | medium | fix | ⬜ | L6 行业评测套件是孤儿且度量很浅,无法支撑真实在度量 | `kun/evaluation/industry_suite.py:164` |
-| F100 | medium | fix | ⬜ | RCDH 诊断、PromotionTimeoutSweeper、promotion advance 均无生产接线 — | `kun/governance/rcdh.py:303` |
+| F100 | medium | fix | 📐 | RCDH 诊断、PromotionTimeoutSweeper、promotion advance 均无生产接线 — | `kun/governance/rcdh.py:303` |
 | F101 | medium | fix | ⬜ | ResourceQuota / ExplorationPenalty 从未注入生产 Strategist, 且为单进 | `kun/governance/resource_quota.py:86` |
 | F102 | medium | fix | ⬜ | 红队套件只打 mock, 从未对准真实系统 — security/ 子系统整体是测试夹具 | `kun/cli.py:1876` |
 | F103 | medium | fix | ⬜ | proactive_dispatch 的 Layer 1a 强制工具分支只标记 seen 从不真正 dispatch | `kun/engineering/proactive_tools.py:301` |
@@ -135,7 +135,7 @@
 | F114 | medium | fix | ⬜ | evaluation/ 446 行 L6 评测框架生产调用方为零，仅测试文件引用 | `/Users/petrarain/鲲/kun/evaluation/__init__.py:1` |
 | F115 | medium | fix | ⬜ | External Supervisor（ADR-023）：service 真实但'独立进程'模式是占位，Mode A | `kun/external_supervisor/runner.py:45` |
 | F116 | medium | fix | ⬜ | e2e_rsi_demo.py 是半剧本：链路中段与验证证据写死；fixture_only 强制标注未实装 | `scripts/e2e_rsi_demo.py:195` |
-| F117 | medium | fix | ⬜ | RCDH 诊断引擎与 heavy-drift 后续动作未接线：rsi_trigger 只是落库字符串 | `kun/governance/rcdh.py:303` |
+| F117 | medium | fix | 📐 | RCDH 诊断引擎与 heavy-drift 后续动作未接线：rsi_trigger 只是落库字符串 | `kun/governance/rcdh.py:303` |
 | F118 | medium | fix | ⬜ | 锁定的运行时依赖含 7 个已知 CVE(starlette/urllib3/idna/mako) | `uv.lock:1` |
 | F119 | medium | fix | ⬜ | .env.example 与代码实际读取的环境变量严重脱节(约 50 个未文档化) | `.env.example:1` |
 | F120 | medium | fix | ⬜ | Dockerfile: --frozen 失败时静默回退到非锁定安装 + 镜像缺 seeds/ 目录 | `Dockerfile:19` |
@@ -143,13 +143,13 @@
 | F122 | medium | fix | ✅ | temperature 修复用硬编码子串黑名单, opus-4-8/后续模型不覆盖且静默丢参 | `kun/interface/llm/anthropic_provider.py:151-154` |
 | F123 | medium | fix | ✅ | CodexMcpProvider 工具调用示例与解析器格式矛盾 → bad_json 静默丢工具调用 | `kun/interface/llm/codex_mcp_provider.py:462-465` |
 | F124 | medium | fix | ✅ | finish_reason 把 refusal/上下文超限折叠为 "stop", 失败被当成功完成 | `kun/interface/llm/anthropic_provider.py:201-203` |
-| F125 | medium | fix | ⬜ | [文档漂移] ADR-023 Mode A 'NATS 订阅 + 独立进程持续监管' 实为 stub runner  | `kun/external_supervisor/runner.py:44` |
+| F125 | medium | fix | ✅ | [文档漂移] ADR-023 Mode A 'NATS 订阅 + 独立进程持续监管' 实为 stub runner  | `kun/external_supervisor/runner.py:44` |
 | F126 | medium | fix | ✅ | [文档漂移] ADR-019 '生产模式不允许 query 参数租户' 为假——WS 闸门仅是 opt-in 环境变 | `kun/api/ws.py:88` |
-| F127 | medium | fix | ⬜ | [文档漂移] RCDH 诊断链路（含 narrow_scope 护栏）在生产中无人调用——DiagnosticRun | `kun/agents/supervisor/service.py:104` |
+| F127 | medium | fix | 📐 | [文档漂移] RCDH 诊断链路（含 narrow_scope 护栏）在生产中无人调用——DiagnosticRun | `kun/agents/supervisor/service.py:104` |
 | F128 | medium | fix | 📐 | [文档漂移] ADR-022 宣称新加的 7 个事件类型一个 producer 都没有 | `decisions.md:644` |
 | F129 | medium | fix | 📐 | [文档漂移] ADR-020 '7 个 agent 角色' 已变成 11 个实目录，新增 4 个角色无任何 ADR  | `decisions.md:338` |
 | F130 | medium | fix | 📐 | [文档漂移] ADR-020 'control_plane / brain / engineering/orches | `decisions.md:380` |
-| F131 | medium | fix | ⬜ | [文档漂移] PROGRESS.md 自 2026-05-27 停更，落后 78 个 commit，进度叙事双向失真 | `PROGRESS.md:234` |
+| F131 | medium | fix | ✅ | [文档漂移] PROGRESS.md 自 2026-05-27 停更，落后 78 个 commit，进度叙事双向失真 | `PROGRESS.md:234` |
 | F132 | medium | fix | ✅ | [文档漂移] ADR-024 '新建 kun/governance/rsi_loop.py 编排 10 步' 已删除 | `decisions.md:956` |
 | F133 | medium | fix | ⬜ | unit-tests 无覆盖率门槛:测试可空心化而流水线仍绿 | `.github/workflows/ci.yml:47` |
 | F134 | medium | fix | ⬜ | 无 branch protection / required checks 配置、无 CODEOWNERS:门禁强制 | `.github/workflows/ci.yml:13-124` |

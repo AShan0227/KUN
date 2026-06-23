@@ -1302,9 +1302,9 @@
       "detail": "run_diagnostic(ADR-021 核心)在 kun/ 下零生产调用: SupervisorService 预留的 diagnostic_runner 注入点(supervisor/service.py:126)在所有生产构造处都没传, docstring 自述 'production 接 kun.governance.rcdh.run_diagnostic' 但没人接。PromotionTimeoutSweeper 唯一调用方是 scripts/e2e_rsi_demo.py:302, 没有任何 daemon/cron 周期跑它 → '超时未晋级强制重审' 的防 dormant-feature 机制不运转。promotion_queue.advance() 是 stub, 无条件返回 \"in_replay\"(promotion_queue.py:292-298), 若有人调用会得到错误的状态。另: RCDH fast-path 把任何案例库命中一律标 root_cause_level=1/action='activate'(rcdh.py:285-287), 且 record_case 把 recommended_action 当 root_cause_kind 存(rcdh.py:458), 两个语义域混用, 案例库数据从第一天起就是脏的。",
       "evidence": "grep run_diagnostic 在 kun/ 仅 supervisor/service.py:106 docstring 命中; supervisor 生产构造(e2e_rsi_demo.py:133, supervisor/pool.py:107)均不传 diagnostic_runner; promotion_queue.py:296-298 `log.info(...); return \"in_replay\"`",
       "source": "gov-sec-watch",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "2659905",
+      "notes": "RCDH 诊断/Sweeper/promotion advance 无生产接线；同属 RCDH 引擎就绪零接线，并入 rsi-mainline-wiring.md(第1环检测器+第9步 diagnostic_records 落库时一并接通)。"
     },
     {
       "id": "F101",
@@ -1523,9 +1523,9 @@
       "detail": "rcdh.run_diagnostic（4 级根因诊断 + bug 案例库 fast-path）实现完整，但生产 0 调用：SupervisorService 的 diagnostic_runner 注入点在生产从未注入（service.py:106 注释'production 接 kun.governance.rcdh.run_diagnostic'未发生）；plan review 判定 off_track 后产出 'trigger_rcdh_level_0' 动作，仅被 plan_review_db.py:45 映射成字符串 'rsi_trigger' 写进 plan_reviews 表，exec_loop / long_task_orchestrator 中无任何代码据此调 RCDH 或写 strategy_search_request。即'漂移检测→诊断→修复探索'在检测落库后即终止。诊断结果也不落 diagnostic_records 表（run_diagnostic 只返回内存对象）。",
       "evidence": "grep run_diagnostic 生产 caller 仅命中两处 docstring/注释；plan_review_db.py:45 '\"trigger_rcdh_level_0\": \"rsi_trigger\"' 为该动作的唯一下游",
       "source": "rsi-claims",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "2659905",
+      "notes": "RCDH 引擎与 heavy-drift 后续动作未接线，rsi_trigger 仅落库字符串；同属 RCDH 引擎就绪零接线，并入 rsi-mainline-wiring.md(第1环检测器+第9步 diagnostic_records 落库时一并接通)。"
     },
     {
       "id": "F118",
@@ -1627,9 +1627,9 @@
       "detail": "ADR-023 描述 External Supervisor 订阅 NATS kun.task.* 持续监管。实际 kun/external_supervisor/ 全目录 grep 'nats' 0 命中；runner.py:44-77 的 _run_until_signal 自述 '主循环占位 — L2.4 只是 stub…目前: 健康检查一次 + 等待 SIGTERM'；modes.py:10 明示 'L2.5 不接 NATS 订阅…提供 sync API, 让主线直接调'。监督功能本身存在且 orchestrator 确实会 lazy-build 并同步调用（orchestrator.py:246-286, LT.WIRE-1/2），但'独立进程实时监管'的独立性与实时性承诺被高估为进程内函数调用——主线挂了监督也挂，且独立进程入口 python -m kun.external_supervisor 启动后什么也不做。ADR-023 未修订。",
       "evidence": "runner.py:45 `\"\"\"主循环占位 — L2.4 只是 stub.` / `目前: 健康检查一次 + 等待 SIGTERM`；modes.py:10 'L2.5 不接 NATS 订阅 (那是 L3 闭环扩散)…sync API'；grep -rn nats kun/external_supervisor/ 0 命中",
       "source": "docs-drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "2659905",
+      "notes": "decisions.md ADR-023 双模式小节加 F125 补充注记：Mode A NATS 订阅+持续监管同为目标态(runner.py 占位 stub)，接线见 external-supervisor.md。与 F030/F047 同根。"
     },
     {
       "id": "F126",
@@ -1653,9 +1653,9 @@
       "detail": "ADR-021 护栏 4（narrow_scope ≤5 模块强制入口）在 kun/governance/diagnosis_scope.py:27,128-131 与 rcdh.py:322-337 实现真实，护栏本身属实。但 rcdh.run_diagnostic 的生产接线不存在：supervisor/service.py:103-107 定义 DiagnosticRunner 注入点并注明 'production 接 kun.governance.rcdh.run_diagnostic'，而唯一的生产构造方 supervisor/pool.py:101-107 _make_instance 只传 emitter/notification_sender，diagnostic_runner 恒为 None；grep 全仓 run_diagnostic 无生产调用。结果：PROGRESS L5.5 的 'cluster 触发 → RCDH 诊断 enrich' 路径在生产永不发生，护栏守着一条没人走的路。同时这削弱了 Gate R2（fix 必须带 diagnostic_id，gate/service.py:86-89，该规则本身真实存在）的上游来源。",
       "evidence": "service.py:106 docstring '测试用 fake; production 接 kun.governance.rcdh.run_diagnostic'；pool.py:101-107 kwargs 只含 emitter/notification_sender；grep run_diagnostic 生产调用 0",
       "source": "docs-drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "2659905",
+      "notes": "RCDH 诊断链路(含 narrow_scope 护栏)生产无人调用；同属 RCDH 引擎就绪零接线，并入 rsi-mainline-wiring.md(第1环检测器+第9步 diagnostic_records 落库时一并接通)。"
     },
     {
       "id": "F128",
@@ -1705,9 +1705,9 @@
       "detail": "PROGRESS.md:234 落款 '最后更新：2026-05-27'，而 git log --since=2026-05-28 有 78 个 commit（整个 V7-PHASE-X 工作流）。失真双向：高估侧见本报告 ADR-023/Auth/L6.E 各条；低估侧——PROGRESS.md:191 'L6.D-内容分发 [ ]' 仍未勾选，但 kun/interface/automation/wechat_mp/ 与 xiaohongshu/ 已存在且 test_xiaohongshu_adapter.py 有 17 个测试；文档测试数停在 1203，实际 tests/unit 已收集 1949 个（本次实跑全绿 + ruff clean）。PROGRESS.md 已不能作为可信进度源，CTO 同步项目状态时应以 git log + 实跑为准。建议把'每里程碑必更 PROGRESS'纳入与 retrospective 同级的硬纪律（后者执行得很好）。",
       "evidence": "PROGRESS.md:234 落款；`git log --oneline --since=2026-05-28 | wc -l` = 78；ls kun/interface/automation/ 含 wechat_mp、xiaohongshu；pytest collect 1949 / 实跑 exit 0",
       "source": "docs-drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "2659905",
+      "notes": "PROGRESS.md 顶部加陈旧横幅：自 2026-05-27 停更落后~78 commit，以 git log + docs/audit/ 为准；全面对账归入 architecture-debt F038。"
     },
     {
       "id": "F132",

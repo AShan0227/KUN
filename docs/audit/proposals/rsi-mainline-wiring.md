@@ -55,6 +55,8 @@ ADR-024 的闭环 = **检测 → 策略 → 安全实验 → 门禁落地 → �
 - **诚信优先**：在任一环真正接通前，PROGRESS/decisions 里相关"已闭环/已达成"措辞应保持 F047/F049/F050 那样的如实标注，避免 L5"RSI 真闭合 ✅"的过度宣称。
 
 ## 4. 本方案覆盖的 findings
-F021, F022, F025, F039, F040, F041, F042, F091（标 needs-design 指向本文件）；F050 已在 ADR-024 注记并在第 8 步接线。
+F021, F022, F025, F039, F040, F041, F042, F091, F100, F117, F127（标 needs-design 指向本文件）；F050 已在 ADR-024 注记并在第 8 步接线。
+
+> **RCDH 接线（F100/F117/F127）**：`kun/governance/rcdh.py` 的 `run_diagnostic` 只返回对象、不落 `diagnostic_records`(第 5 环已点)；`rsi_trigger` 仅落库字符串、无 heavy-drift 后续动作；`supervisor/service.py` 的 RCDH 诊断链路(含 `narrow_scope` 护栏)生产无人调用。三条同属「RCDH 引擎就绪、生产零接线」——在第 1 环(检测器接 observe)+第 9 步(diagnostic_records 落库)接通时一并落地：诊断结果落 `diagnostic_records`、`rsi_trigger` 触发真实策略搜索、narrow_scope 护栏在生产诊断路径生效。
 
 > F091 落地说明：在第 2/3 环接通 `runtime_experiments` 读写时，同步给该表补 `requires_human_review`/`explorer_mode`/`rationale` 三列并补全 `to_row_payload`，加 payload↔row round-trip 测试（断言安全标记 `requires_human_review` 不丢）。

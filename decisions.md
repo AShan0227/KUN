@@ -685,6 +685,11 @@ class ExternalSupervisor:
 > 全仓无 `multiprocessing.Process` 用法（该词仅出现在 docstring）；`KUN_SUPERVISOR_MODEL`
 > 环境变量代码从不读取；启动时也无 model-family 校验。实际运行是**同进程、默认关闭、失败静默跳过**。
 > 本节描述目标态，不代表当前实现；真正落地见 F030/F031/F032（needs-design）。
+>
+> **F125 补充（audit 2026-06-23）**：下方「双模式 Mode A · 同步监管」描述的「订阅 NATS
+> `kun.task.*` + 每 N event/T 秒持续监管」同样是目标态——`kun/external_supervisor/runner.py`
+> 现为占位 stub（启动 service + 健康检查一次 + 等 SIGTERM），NATS 订阅与 Mode A/B 路由标
+> 「L2.5 实装」未做。Mode A/B 的接线路径见 docs/audit/proposals/external-supervisor.md。
 
 ### 双模式
 

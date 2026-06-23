@@ -48,3 +48,5 @@
 2026-06-23 F062/F088 📐 — 进程内线程安全(daemon worker_pool>1)+checkpoint sequence 并入 concurrency-multi-replica.md(离线无法忠实复现线程时序，带并发测试落地)
 2026-06-23 F126/F132 ✅ — decisions.md 就地诚实订正(ADR-019 query 租户 opt-in / ADR-024 rsi_loop.py 不存在)
 2026-06-23 F128/F129/F130 📐 — ADR-020/022 治理链漂移枚举并入 architecture-debt.md F038(追溯补 ADR)
+2026-06-23 F125/F131 ✅ — decisions.md ADR-023 Mode A stub 注记 + PROGRESS.md 陈旧横幅(以 git log/docs/audit 为准)
+2026-06-23 F127/F100/F117 📐 — RCDH 引擎就绪零接线并入 rsi-mainline-wiring.md
