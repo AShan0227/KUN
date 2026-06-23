@@ -1640,9 +1640,9 @@
       "detail": "decisions.md:267 宣称 'WS 加 KUN_WS_REQUIRE_AUTH_HEADER=1 闸门（已实现），生产模式不允许 query 参数租户'。代码现实：ws.py:88 的闸门只在运维手工设置 KUN_WS_REQUIRE_AUTH_HEADER=1 时生效；config.py:138-160 的 _production_safety 校验 DSN/S3/default_tenant_id，但不检查该 env var，KUN_ENV=production 下不设它照样启动、照样接受任意 query 参数 tenant_id（即任何知道 tenant_id 的客户端可冒充该租户）。production 真正 fail-closed 的只有'缺 tenant'场景（default_tenant_id 必须为空），'冒充 tenant' 不设防。ws.py:81-83 注释自己承认 'There is no real authentication on the WS endpoint'。建议在 _production_safety 中加一条：production 且 auth 未启用时强制要求该闸门开启。",
       "evidence": "ws.py:88 `if os.getenv(\"KUN_WS_REQUIRE_AUTH_HEADER\") == \"1\" and raw_tenant:`；ws.py:81 注释 'There is no real authentication on the WS endpoint'；config.py:_production_safety 无该项检查",
       "source": "docs-drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "831e889",
+      "notes": "decisions.md ADR-019 就地订正：query-参数租户拒绝是 opt-in(需显式 KUN_WS_REQUIRE_AUTH_HEADER=1)，非生产模式自动启用；原\"生产模式不允许 query 参数租户\"过度表述已订正。"
     },
     {
       "id": "F127",
@@ -1666,9 +1666,9 @@
       "detail": "decisions.md:644 列出 7 个新事件类型（goal_anchor.created / plan_review.due / plan_review.completed / drift.detected / input.classified / user_message.queued_for_post_task / scope_expansion.requested）。我对 kun/ 全仓 grep 了点号与下划线两种变体，并清点了所有 event_type=\"...\" 字面量（task.done / state_change / plan_change / promotion / rollback 等约 30 种）：7 个中没有任何一个被 emit。背后的功能件部分存在（input_classifier 的 scope_expansion 分类、long_task_intake 的 scope_expansion_review bucket、plan_review_db、anchor），但都没有按 ADR-022 的事件契约对外发事件，'anti-drift 事件闭环' 是文档超前于代码。影响：监督线/审计无法通过事件流观测漂移检测与 anchor 生命周期。",
       "evidence": "grep -rn 'goal_anchor.created|drift.detected|plan_review.due|…' kun/ --include=*.py → 0 emit 点；event_type=\"…\" 全量清单中无任何一个 ADR-022 事件名",
       "source": "docs-drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "831e889",
+      "notes": "ADR-022 新增事件类型生产无 producer(信号零流动)；并入 architecture-debt.md F038 治理链小节(追溯式补 ADR/对账)。"
     },
     {
       "id": "F129",
@@ -1679,9 +1679,9 @@
       "detail": "decisions.md:306-338 定义 7 个 agent 角色并要求扩展过'闭哪个环/谁读它/删了断什么'三连问。实际 ls kun/agents/ 有 11 个角色目录：多出 mission_director、nuo、qi、trifecta。grep decisions.md：mission_director/qi/trifecta 零命中（nuo 仅 ADR-012 以'傩数据层'身份出现，agent 化无 ADR）；decisions.md 止步 ADR-026（grep '^## ADR-' 计 26 个）。这些重大架构扩展只在 docs/v7/KUN-V7.md 定义，直接违反 README 开发铁律 4 '新抽象需要 ADR'——架构权威已事实上从 decisions.md 漂移到 KUN-V7.md，而 README/PROGRESS 对 V7 文档只字未提。建议：补 ADR-027（V7 角色扩展）一次性收编，或正式宣布 KUN-V7.md 为现行权威并在 README 更新权威链。",
       "evidence": "ls kun/agents/ → director, executor, external_supervisor, gate, mission_director, nuo, qi, strategist, supervisor, tester, trifecta（11 个）；grep -c '^## ADR-' decisions.md = 26；grep mission_director|trifecta|qi decisions.md = 0",
       "source": "docs-drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "831e889",
+      "notes": "ADR-020 称 7 角色，实有 11 目录(新增角色无 ADR)；并入 architecture-debt.md F038 治理链小节(追溯式补 ADR/对账)。"
     },
     {
       "id": "F130",
@@ -1692,9 +1692,9 @@
       "detail": "decisions.md:380 明文：'kun/control_plane/ kun/brain/ kun/engineering/orchestrator.py 三处现有目录/文件在 L1 阶段重组后消失'。现实：kun/control_plane/ 有 36 个文件且被 KUN-V7.md §9.2 重新定为一级子系统；kun/brain/ 仍存在（compat shim，自述 importer 清零后可删——grep 'from kun.brain' 确实已 0 命中，属可删未删）；kun/engineering/orchestrator.py 不仅没消失，还是 ws.py:38,46 直接 import 的生产编排核心（get_orchestrator/OrchestratorEvent）。ADR-020 从未 amend，违反项目自己 'append-only + 冲突以 decisions.md 为准' 的纪律——按这条纪律字面执行的话，现行代码结构整体'不合法'。建议给 ADR-020 补修订段，brain/ 顺手删除。",
       "evidence": "decisions.md:380 原文'三处…消失'；ls kun/control_plane | wc -l = 36；ws.py:38 `from kun.api.runtime import get_orchestrator` + ws.py:46 `from kun.engineering.orchestrator import OrchestratorEvent`",
       "source": "docs-drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "831e889",
+      "notes": "ADR-020 模块路径与实际包结构漂移；并入 architecture-debt.md F038 治理链小节(追溯式补 ADR/对账)。"
     },
     {
       "id": "F131",
@@ -1718,9 +1718,9 @@
       "detail": "decisions.md:956 '影响' 节宣称新建 kun/governance/rsi_loop.py 编排 10 步闭环。该文件已在 commit 755b99b 以 'delete dead rsi_loop.py skeleton (0 production callers)' 删除（ls 确认不存在），ADR-024 未补任何修订。'0 production callers' 这个删除理由本身说明：所谓 10 步编排器从未真正上岗，RSI 闭环现状是 Supervisor→Strategist→Gate→promotion_queue 各组件分散拼接，端到端串联只存在于 scripts/e2e_rsi_demo.py 演示脚本。结合 sweeper 未调度（另一 finding），'10 步全自动闭环' 在生产中并不完整。建议在 ADR-024 补修订段说明编排责任归属（事件驱动分散编排 vs 单一 loop），避免后来者按文档找一个不存在的文件。",
       "evidence": "ls kun/governance/rsi_loop.py → No such file；git log: 755b99b 'refactor(V7-PHASE-X.S): delete dead rsi_loop.py skeleton (0 production callers)'",
       "source": "docs-drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "831e889",
+      "notes": "decisions.md ADR-024 就地订正：rsi_loop.py 当前不存在(已删/从未落地)，10 步未集中单文件；RSI 现状指向 rsi-mainline-wiring.md。"
     },
     {
       "id": "F133",

@@ -37,6 +37,17 @@
 - README 权威文档清单补上 `docs/v7/KUN-V7.md`；把 PROGRESS/decisions/PROGRESS_VS_PLAN/PROMISES 四套口径**对账或归档**(后两者已失效)。
 - 制度化：把 X.Q 的 production-entry diff check 扩展为「每个新组件强制声明生产入口 + 对应 ADR」，防止再次漂移(呼应全仓反复出现的 orphan 模式)。
 
+#### 具体漂移实例（审计核实，需追溯式 ADR / 对账）
+这些是 F038「治理链断裂」的可枚举实例，建议在补 ADR 时逐条交代：
+
+| ID | 漂移 | 现状（已核实） | 处理 |
+|----|------|---------|------|
+| **F129** | ADR-020 称「7 个 agent 角色」 | `kun/agents/` 实有 11 个角色目录(director/executor/external_supervisor/gate/mission_director/nuo/qi/strategist/supervisor/tester/trifecta)。原文带「（按需扩展）」软化，但 mission_director/external_supervisor/trifecta 等新角色无任何 ADR 留痕。 | 追溯 ADR 交代新增角色 + 更新 ADR-020 角色清单(或改为「≥7，见 agents/ 目录」)。 |
+| **F130** | ADR-020 模块路径(control_plane/brain/engineering/orchestrator) | 五层目录规划与实际包结构漂移(control_plane 反而膨胀，见 F036)。 | 与 control_plane 去留裁决 ADR 一并更新模块路径表。 |
+| **F128** | ADR-022 新增的事件类型 producer 缺失 | ADR-022 声称的若干 anti-drift 事件类型在生产无 producer(emit 端缺失)，属「类型已声明、信号零流动」。与 RSI 主链 orphan 同构(rsi-mainline-wiring)。 | 接通 anti-drift 信号(rsi-mainline 第 6 步防漂移消费端)时补 producer，或在 ADR-022 注记「类型预留、producer 待接」。 |
+
+> 注：F126(ADR-019 WS query 租户表述)、F132(ADR-024 rsi_loop.py 已删)已直接在 `decisions.md` 就地做诚实订正(opt-in flag / 文件不存在)，不在本表——它们是单点可订正的事实，无需追溯 ADR。
+
 ### F053 · ORM↔迁移 CHECK 对齐（机械但需逐表核对 + 全套件验证）
 - **可机械修，但不在本 loop 一次盲改**：把 0011/0012 的每条 CHECK 逐条镜像进对应 ORM Row 的 `__table_args__`
   (条件字符串与迁移完全一致)，加一个像 F054 那样的漂移守卫测试(ORM CHECK 集合 == 迁移 CHECK 集合)。
@@ -50,4 +61,5 @@
 3. 最后做 **F036/F012/F037 的域化拆分**(大 epic，与 F001/F008/F009 一起)。
 
 ## 4. 覆盖 findings
-F012, F036, F037, F038, F053（标 needs-design 指向本文件）。
+F012, F036, F037, F038, F053, F128, F129, F130（标 needs-design 指向本文件）。
+F126、F132 已在 decisions.md 就地诚实订正(done)，此处仅备注关联。

@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 41 ｜ ⛔blocked 0 ｜ 📐needs-design 29 ｜ ⬜pending 103
+**总计 173 项** — ✅done 43 ｜ ⛔blocked 0 ｜ 📐needs-design 32 ｜ ⬜pending 98
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -144,13 +144,13 @@
 | F123 | medium | fix | ✅ | CodexMcpProvider 工具调用示例与解析器格式矛盾 → bad_json 静默丢工具调用 | `kun/interface/llm/codex_mcp_provider.py:462-465` |
 | F124 | medium | fix | ✅ | finish_reason 把 refusal/上下文超限折叠为 "stop", 失败被当成功完成 | `kun/interface/llm/anthropic_provider.py:201-203` |
 | F125 | medium | fix | ⬜ | [文档漂移] ADR-023 Mode A 'NATS 订阅 + 独立进程持续监管' 实为 stub runner  | `kun/external_supervisor/runner.py:44` |
-| F126 | medium | fix | ⬜ | [文档漂移] ADR-019 '生产模式不允许 query 参数租户' 为假——WS 闸门仅是 opt-in 环境变 | `kun/api/ws.py:88` |
+| F126 | medium | fix | ✅ | [文档漂移] ADR-019 '生产模式不允许 query 参数租户' 为假——WS 闸门仅是 opt-in 环境变 | `kun/api/ws.py:88` |
 | F127 | medium | fix | ⬜ | [文档漂移] RCDH 诊断链路（含 narrow_scope 护栏）在生产中无人调用——DiagnosticRun | `kun/agents/supervisor/service.py:104` |
-| F128 | medium | fix | ⬜ | [文档漂移] ADR-022 宣称新加的 7 个事件类型一个 producer 都没有 | `decisions.md:644` |
-| F129 | medium | fix | ⬜ | [文档漂移] ADR-020 '7 个 agent 角色' 已变成 11 个实目录，新增 4 个角色无任何 ADR  | `decisions.md:338` |
-| F130 | medium | fix | ⬜ | [文档漂移] ADR-020 'control_plane / brain / engineering/orches | `decisions.md:380` |
+| F128 | medium | fix | 📐 | [文档漂移] ADR-022 宣称新加的 7 个事件类型一个 producer 都没有 | `decisions.md:644` |
+| F129 | medium | fix | 📐 | [文档漂移] ADR-020 '7 个 agent 角色' 已变成 11 个实目录，新增 4 个角色无任何 ADR  | `decisions.md:338` |
+| F130 | medium | fix | 📐 | [文档漂移] ADR-020 'control_plane / brain / engineering/orches | `decisions.md:380` |
 | F131 | medium | fix | ⬜ | [文档漂移] PROGRESS.md 自 2026-05-27 停更，落后 78 个 commit，进度叙事双向失真 | `PROGRESS.md:234` |
-| F132 | medium | fix | ⬜ | [文档漂移] ADR-024 '新建 kun/governance/rsi_loop.py 编排 10 步' 已删除 | `decisions.md:956` |
+| F132 | medium | fix | ✅ | [文档漂移] ADR-024 '新建 kun/governance/rsi_loop.py 编排 10 步' 已删除 | `decisions.md:956` |
 | F133 | medium | fix | ⬜ | unit-tests 无覆盖率门槛:测试可空心化而流水线仍绿 | `.github/workflows/ci.yml:47` |
 | F134 | medium | fix | ⬜ | 无 branch protection / required checks 配置、无 CODEOWNERS:门禁强制 | `.github/workflows/ci.yml:13-124` |
 | F135 | medium | fix | ✅ | TaskMeta.complexity / priority_profile / estimated_steps 写 | `kun/core/orm.py:75` |

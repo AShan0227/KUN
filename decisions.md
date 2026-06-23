@@ -264,8 +264,9 @@
 
 - 单机部署，`KUN_ENV=dev`，跳过真 auth
 - production 启动检查（已实现）拒绝 dev 默认凭证、拒绝 `default_tenant_id` 未清空、CORS 拒绝 `*`
-- WS 加 `KUN_WS_REQUIRE_AUTH_HEADER=1` 闸门（已实现），生产模式不允许 query 参数租户
-- **状态**：✅ 已落地
+- WS 加 `KUN_WS_REQUIRE_AUTH_HEADER=1` 闸门（已实现）
+  - **F126 订正（审计）**：query-参数租户的拒绝是 **opt-in** —— 仅当显式设 `KUN_WS_REQUIRE_AUTH_HEADER=1` 时 `kun/api/ws.py` 才拒绝 query `tenant_id`；**并非 `KUN_ENV=production` 自动启用**。默认（未设该 flag）下 WS 仍接受 query 参数租户。生产部署须显式设置该 flag；原文“生产模式不允许 query 参数租户”属过度表述。
+- **状态**：✅ 已落地（阶段 1 闸门已实现；见上 F126 订正：query 租户拒绝需显式开 flag）
 
 ### 阶段 2 · 中期（多用户进入前）
 
@@ -965,6 +966,7 @@ class RuntimeCapability(BaseModel):
 
 - alembic 0011 新建 6 张表 + evidence_ledger 加 3 字段
 - 新建 `kun/governance/rsi_loop.py` 编排 10 步
+  - **F132 订正（审计）**：`kun/governance/rsi_loop.py` 当前**不存在**（已删除/从未以该文件形式落地）。10 步编排未集中在单一 `rsi_loop.py`；RSI 闭环的真实接线现状（多环 orphan、合成证据喂门禁等）见 `docs/audit/proposals/rsi-mainline-wiring.md`。本条不应被读作“已实现”。
 - 新建 `kun/governance/promotion_queue.py` 处理 capability 晋级
 - 新建 `kun/governance/evidence_ledger.py` 写入 / 查询封装
 - 删除 ADR-018 §16.4 KnowledgePrecipitation 抽象
