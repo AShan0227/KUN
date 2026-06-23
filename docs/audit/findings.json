@@ -665,9 +665,9 @@
       "detail": "integration-tests job 的 pytest 步骤挂 continue-on-error: true(ci.yml:91,注释引 ADR-013 '稳定前允许 soft-fail')。该 job 是唯一拉起 Postgres/Redis/NATS 真实服务容器并跑迁移+集成测试的环节,即唯一能验证 ORM↔迁移↔跨进程持久化(如近期 discipline reports → PG 持久化)是否真的可用的关卡。软失败意味着集成测试全红也算通过。叠加'本分支无 CI'后,这一层在被审分支上执行结果为 0 次。CTO 决策:'稳定前 soft-fail'是合理的临时姿态,但需要一个明确的退出条件与日期,并在控制台监控该 job 的真实通过率;否则它会永久 soft-fail,集成回归(数据丢失/迁移漂移类问题)将无人把守。建议把它拆成'必过的冒烟子集'+'soft-fail 的不稳定子集'。",
       "evidence": "ci.yml L90-91 `- run: uv run pytest tests/integration -q` 紧跟 `continue-on-error: true  # ADR-013 integration tier 稳定前允许 soft-fail`;L52-82 services postgres/redis/nats + KUN_PG_DSN 等",
       "source": "extra:ci_gate_posture_and_branch_lineage",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "(G01)",
+      "notes": "已由 G01 修复：integration-tests 的 step-level continue-on-error 已移除(集成回归现在硬阻断)。本轮核实确认。"
     },
     {
       "id": "F052",
@@ -678,9 +678,9 @@
       "detail": "integration job 只执行 alembic upgrade head(ci.yml:89),只验证'已有迁移能跑通',完全不验证'当前 ORM 模型是否还有未生成的迁移'(无 alembic check,也无 autogenerate --check 之类的 diff 门禁)。被审分支期间 kun/core/orm.py 从 origin/main 的 477 行膨胀到工作树 1202 行(+725 行,翻 2.5 倍),迁移数从 10 增到 18。在没有 autogenerate-diff 门禁、且该 job 本身又 soft-fail、且本分支根本不跑 CI 的三重失守下,ORM 新增字段/表与迁移不同步(schema drift)几乎一定会发生且无法被发现。CTO 决策:对一个声称要做 RSI 自我改进、且正向 L6 商业化(涉及真实数据持久化)演进的系统,schema drift 是数据正确性的直接风险;应新增一个硬门禁步骤,在干净 DB 上 upgrade head 后跑 alembic check(或 autogenerate 产出空 diff 断言)。",
       "evidence": "ci.yml L89 唯一一处 alembic:`- run: uv run alembic upgrade head`;grep alembic 仅命中 L89;orm.py origin/main 477 行 vs 工作树 1202 行;迁移 origin/main 10 个 vs 工作树 18 个",
       "source": "extra:ci_gate_posture_and_branch_lineage",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "fd808aa",
+      "notes": "CI integration-tests job 在 alembic upgrade head 后加 `alembic check`：ORM(Base.metadata)与迁移链漂移(autogenerate 非空 diff)会让 CI 失败。纯 CI 配置(YAML 校验通过)。"
     },
     {
       "id": "F053",

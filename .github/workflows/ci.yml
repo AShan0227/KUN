@@ -87,6 +87,10 @@ jobs:
           enable-cache: true
       - run: uv sync --extra dev
       - run: uv run alembic upgrade head
+      # Audit F052: fail if the ORM models (Base.metadata) have drifted from the
+      # migration chain — i.e. `alembic revision --autogenerate` would produce a
+      # non-empty diff. Catches schema drift that `upgrade head` alone misses.
+      - run: uv run alembic check
       - run: uv run pytest tests/integration -q
 
   frontend:

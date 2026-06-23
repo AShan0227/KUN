@@ -22,3 +22,5 @@
 2026-06-23 F026 ✅ — bypass_rls 系统 session 不再强制 current_tenant()，修生产 outbox/NATS/GC 每 tick 崩溃，+4 测试
 2026-06-23 F054 ✅ — EntityType 枚举↔DB CHECK 对齐为并集 + 迁移 0019 + 漂移守卫，+3 测试
 2026-06-23 F046 ✅ — router 重试只针对传输错误，HTTP status 交 SDK(消除429放大/确定性400空转)+reraise，+8 测试
+2026-06-23 F051 ✅ — 已由 G01 修复(集成测试去 soft-fail)，本轮核实
+2026-06-23 F052 ✅ — CI 加 alembic check 步骤捕获 ORM↔迁移漂移(纯 CI 配置)
