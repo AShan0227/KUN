@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 27 ｜ ⛔blocked 0 ｜ 📐needs-design 21 ｜ ⬜pending 125
+**总计 173 项** — ✅done 27 ｜ ⛔blocked 0 ｜ 📐needs-design 25 ｜ ⬜pending 121
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -25,12 +25,12 @@
 | F007a | high | fix | ⬜ | 生产环境 auth 关闭应 fail-closed（拒绝启动或拒绝请求） | `kun/core/config.py,` |
 | F008 | high | fix | 📐 | 全部质量评分与门禁是硬编码常量+生成代码字符串指纹自检，RSI 评估信号为虚构 | `kun/control_plane/game_production.py:6653-6974,` |
 | F009 | high | fix | 📐 | 7907 行单文件中约 60% 是单一游戏项目的内嵌源码/SVG/CSS/逐版本补丁，control plane 内 | `kun/control_plane/game_production.py:2913-6026,` |
-| F010 | high | fix | ⬜ | 长任务运行期间不刷新 work-item 心跳/lease/资源锁 TTL，多副本部署下必然误判超时并重复执行 | `kun/control_plane/daemon.py:3238` |
-| F011 | high | fix | ⬜ | 多进程共享 store 下大量治理方法用『tick 起点内存快照 + 无条件 put』写回，存在 last-writ | `kun/control_plane/daemon.py:1156` |
+| F010 | high | fix | 📐 | 长任务运行期间不刷新 work-item 心跳/lease/资源锁 TTL，多副本部署下必然误判超时并重复执行 | `kun/control_plane/daemon.py:3238` |
+| F011 | high | fix | 📐 | 多进程共享 store 下大量治理方法用『tick 起点内存快照 + 无条件 put』写回，存在 last-writ | `kun/control_plane/daemon.py:1156` |
 | F012 | high | architecture | 📐 | 6927 行 god-module：通用控制面守护进程内嵌两个具体产品(游戏/RainFlow 广告)的业务剧本与文 | `kun/control_plane/daemon.py:5926` |
 | F013 | high | fix | ✅ | 人工验收自由文本解析把否定句误判为 accepted，直接错误关闭任务 | `kun/control_plane/runtime.py:947-970` |
-| F014 | high | fix | ⬜ | 多写者(API 进程/多 daemon 副本)下 ledger 序列冲突，审计事件被静默丢弃 | `kun/control_plane/runtime.py:2508-2542` |
-| F015 | high | fix | ⬜ | API 进程持有从不刷新的控制面副本：读到陈旧状态、写回时整记录覆盖 daemon 新状态 | `kun/api/control_plane.py:176-185` |
+| F014 | high | fix | 📐 | 多写者(API 进程/多 daemon 副本)下 ledger 序列冲突，审计事件被静默丢弃 | `kun/control_plane/runtime.py:2508-2542` |
+| F015 | high | fix | 📐 | API 进程持有从不刷新的控制面副本：读到陈旧状态、写回时整记录覆盖 daemon 新状态 | `kun/api/control_plane.py:176-185` |
 | F016 | high | fix | 📐 | 质量门禁分数全为硬编码常量：finalize_mission 无条件自评 pass 并 ready_to_deliv | `kun/control_plane/kun_runtime_runner.py:338-368` |
 | F017 | high | fix | 📐 | productization.py 用硬编码评估结果把外部行为信号直通 production 能力，RSI 闭环自证 | `kun/control_plane/productization.py:2351` |
 | F018 | high | fix | ✅ | run_feature_activation_audit 对用户传入目录无条件 shutil.rmtree，存在数据 | `kun/control_plane/feature_activation_audit.py:21` |

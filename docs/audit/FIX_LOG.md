@@ -33,3 +33,4 @@
 2026-06-23 F030/F031/F032 📐 — needs-design 合并方案 docs/audit/proposals/external-supervisor.md（外部监督落地：fail-close 守卫/独立进程/裁决强制力）
 2026-06-23 F029 ✅ — NATS watchtower handler 加载真实规则集(缓存单例)，跨进程规则不再永不触发，+3 测试
 2026-06-23 F012/F036/F037/F038/F053 📐 — needs-design 架构债合并方案 docs/audit/proposals/architecture-debt.md（平台/产品分离+治理链补 ADR+ORM CHECK 对齐）
+2026-06-23 F010/F011/F014/F015 📐 — needs-design 并发/多副本一致性方案 docs/audit/proposals/concurrency-multi-replica.md（CAS/lease 续期/ledger 序列/单写者）

@@ -132,9 +132,9 @@
       "detail": "_claim_work_item_lease 把 work item 的 timeout 设为 now+resource_lock_ttl(默认 900s)，start_work_item_run 只在启动时写一次 heartbeat；运行期间唯一的心跳线程 _start_managed_worker_heartbeat(4551-4592) 只刷新 daemon 自身的 service 状态文件，从不刷新 work item 的 heartbeat/timeout，也不续期资源锁。而 daemon_service.py 的 build_daemon_worker_pool_service_install_plans 明确把『多副本共享 store + 共享锁库』作为生产路径(replica_count=2)并声称 lease 能防重复。后果：任何 LLM 型 runner 跑超 15 分钟(对鲲的长任务是常态)，兄弟副本下一个 tick 的 supervisor.detect_timeouts/detect_stale_runs 就会命中 timeout_expired/heartbeat_stale，_apply_recovery(3110) 将其改为 failed、把 run 关成 failed 并排队 retry → 同一 workspace 双执行；原 runner 完成后 finish_work_item_run 又把 failed 状态覆盖回来，状态互相踩踏。同时资源锁 900s 过期后另一副本可在同一 workspace 上并发写。建议：心跳线程同时调用 store 的 lease 续期 + 资源锁 extend，或把 timeout 与 worker_heartbeat_interval 联动续期。",
       "evidence": "daemon.py:3238 `timeout = now + self.resource_lock_ttl`；daemon.py:4571-4578 心跳线程仅 _save_managed_service_heartbeat(写 service 状态文件)；supervisor.py:373 `if item.heartbeat + self.stale_heartbeat_after <= observed_at`(默认 10 分钟)；daemon_service.py notes: \"Resource locks and work-item leases prevent duplicate claims and write races.\"",
       "source": "cp-daemon",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "b6e13b6",
+      "notes": "长任务 lease/心跳不续期→双执行；多副本/并发一致性合并方案见 docs/audit/proposals/concurrency-multi-replica.md（版本号 CAS/lease 续期/ledger DB 序列/单写者 owner；落地前生产限单 daemon）。关联 F019。"
     },
     {
       "id": "F011",
@@ -145,9 +145,9 @@
       "detail": "_should_refresh_shared_work_queue 只在 tick 开始时比较 store 文件签名决定是否 refresh_from_store；之后整个 tick(可能因同步执行 runner 持续数十分钟)都基于这份内存快照决策。约 15 个 _retire_*/_requeue_*/_restore_*/_queue_* 方法直接 `item.model_copy(update={\"status\": ...})` 后无条件 put_work_item 写回(如 _retire_superseded_plan_work:2493, _retire_terminal_followup_only_work:2215, _requeue_failed_subjects_for_completed_clean_retest:4025)，没有任何版本号/CAS 保护。文件 store 的 _put_and_persist 虽然 put 前会从磁盘重载，但写入的是 daemon 基于陈旧快照构造的记录，会把另一副本/cockpit 在 tick 中途完成的状态(例如 done)直接覆盖成 cancelled/queued。只有 claim/release lease 两个操作是真正原子的。单副本无碍，双副本(官方部署计划)下是真实的丢更新通道。建议为 WorkItem 引入 version/updated_at 乐观并发控制，或把所有状态翻转收敛到 store 端的条件更新原语。",
       "evidence": "daemon.py:1156-1168 仅按文件 mtime/size 签名决定 tick 起点是否刷新；daemon.py:2493 `updated = work_item.model_copy(update={\"status\": \"cancelled\"}); self.control_plane.work_items[...]=updated; self._persist_work_item(updated)` 模式在文件中出现 15+ 次，均无并发保护",
       "source": "cp-daemon",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "b6e13b6",
+      "notes": "tick 快照+无条件 put→last-writer-wins；多副本/并发一致性合并方案见 docs/audit/proposals/concurrency-multi-replica.md（版本号 CAS/lease 续期/ledger DB 序列/单写者 owner；落地前生产限单 daemon）。关联 F019。"
     },
     {
       "id": "F012",
@@ -184,9 +184,9 @@
       "detail": "_record_ledger_event 用进程内 Counter 生成 sequence，idempotency_key=f\"{mission_id}:{seq}:{event_type}\"。每个进程(API server、daemon 各副本)各自 hydrate 后独立递增，必然撞号；而 store.py _RecordBucket.put 对 (mission_id, idempotency_key) 相同但 record_id 不同的记录会直接返回已有记录、丢弃新事件(无报错无日志)。daemon_service.py:250-316 明确支持多副本共享同一 store 的生产部署，两个副本并行跑同一 mission 的不同 work item 时，state_change/gate_evaluation 审计事件会成对丢失，且 mission.ledger_refs 仍引用被丢弃的 event_id 形成悬挂引用。_latest_gate 依赖 sequence 排序也随之失真。建议：序列号下沉到 store 原子分配(PG sequence)，或 idempotency_key 改为含进程/事件唯一成分。",
       "evidence": "runtime.py: idempotency_key=f\"{mission_id}:{self._ledger_sequences[mission_id]}:{event_type}\"\\nstore.py:57-59: existing_id = self._idempotency_index.get(index_key)\\n  if existing_id is not None and existing_id != record_id:\\n      return _copy_record(self._records[existing_id])  # 新事件被静默吞掉",
       "source": "cp-runtime",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "b6e13b6",
+      "notes": "ledger 序列冲突→审计静默丢弃；多副本/并发一致性合并方案见 docs/audit/proposals/concurrency-multi-replica.md（版本号 CAS/lease 续期/ledger DB 序列/单写者 owner；落地前生产限单 daemon）。关联 F019。"
     },
     {
       "id": "F015",
@@ -197,9 +197,9 @@
       "detail": "install_v6_control_plane_runtime 在启动时 hydrate 一次 InMemoryControlPlane，之后所有端点(record_collaboration_response、apply_gate、apply_run_result)都基于这份快照决策，全文件 grep 确认 API 侧从不调用 refresh_from_store。后果：(1) daemon 启动后创建的协作票据在 API 里 404，操作员根本无法应答——这正是 waiting_human 恢复的唯一入口；(2) record_collaboration_response → _resume_after_collaboration 用陈旧 mission.status 做 assert_transition_allowed 并 model_copy 整记录 put_mission，会把 daemon 期间写入的 current_plan_version/acceptance_ref/artifact_manifest_refs/ledger_refs 回滚成旧值(file store 是记录级 last-writer-wins)。runtime.py 提供了 refresh_from_store 但未在任何 API 变更路径前调用。建议：API 端点在读写前强制 refresh，或把 API 变更改为命令写入由 daemon 单写者消费。",
       "evidence": "def get_v6_control_plane(request): runtime = getattr(request.app.state, \"v6_control_plane\", None) ...  # 启动时构造一次\\ngrep: kun/api/ 下无任何 refresh_from_store()/store.reload() 调用",
       "source": "cp-runtime",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "b6e13b6",
+      "notes": "API 陈旧副本+整记录覆盖；多副本/并发一致性合并方案见 docs/audit/proposals/concurrency-multi-replica.md（版本号 CAS/lease 续期/ledger DB 序列/单写者 owner；落地前生产限单 daemon）。关联 F019。"
     },
     {
       "id": "F016",
