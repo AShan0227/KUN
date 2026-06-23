@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 36 ｜ ⛔blocked 0 ｜ 📐needs-design 25 ｜ ⬜pending 112
+**总计 173 项** — ✅done 38 ｜ ⛔blocked 0 ｜ 📐needs-design 26 ｜ ⬜pending 109
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -103,7 +103,7 @@
 | F082 | medium | fix | ⬜ | RainFlow/游戏生产域逻辑硬编码进'通用'控制面核心，违反分层并已三处复制 | `kun/control_plane/runtime.py:889-934` |
 | F083 | medium | fix | ✅ | activation.py 用 plan 版本号查按 plan_id 键控的字典，task_plan 恒为 None | `kun/control_plane/activation.py:56` |
 | F084 | medium | fix | ⬜ | workspace_snapshot：含 .git/node_modules 的工作区 complete_resto | `kun/control_plane/workspace_snapshot.py:94` |
-| F085 | medium | fix | ⬜ | RedisResourceLockStore.release_holder 非原子 get→delete，可能误删其 | `kun/control_plane/work_item_governance.py:668` |
+| F085 | medium | fix | 📐 | RedisResourceLockStore.release_holder 非原子 get→delete，可能误删其 | `kun/control_plane/work_item_governance.py:668` |
 | F086 | medium | fix | ⬜ | control_plane/__init__.py 急切导入全部 ~45k 行，含 2200 行测试夹具型审计套件混 | `kun/control_plane/__init__.py:90` |
 | F087 | medium | fix | ⬜ | SupervisorPool fan-out 双发同一异常：维度实例不按维度过滤检查项，与自述'不互扰'矛盾；且 P | `/Users/petrarain/鲲/kun/agents/supervisor/pool.py` |
 | F088 | medium | fix | ⬜ | TaskCheckpointService sequence 仅进程内单调，重启/多进程下产生重复 sequence | `/Users/petrarain/鲲/kun/agents/executor/checkpoin` |
@@ -114,7 +114,7 @@
 | F093 | medium | fix | ⬜ | V6 Control Plane 全内存 + 本地 JSON 文件持久化：无租户隔离、无跨进程一致性，daemon  | `kun/api/control_plane.py:176-214,363-372;` |
 | F094 | medium | fix | ⬜ | Automation 层 Action.timeout_sec / max_retries 契约未实现；Shopif | `kun/interface/automation/api_base.py:25-96;` |
 | F095 | medium | fix | ⬜ | Event.build 生成的 NATS subject 域名段重复，与文档约定不符且已被测试固化 | `kun/datamodel/events.py:104-105` |
-| F096 | medium | fix | ⬜ | TaskMeta 的 L1 字段 complexity / priority_profile / estimated | `kun/datamodel/task.py:57-62` |
+| F096 | medium | fix | ✅ | TaskMeta 的 L1 字段 complexity / priority_profile / estimated | `kun/datamodel/task.py:57-62` |
 | F097 | medium | fix | ✅ | 5 个 ADR-016 指标定义后从未被更新，其中含安全告警指标 tenant_cross_access_attem | `kun/core/metrics.py:19-92` |
 | F098 | medium | architecture | ⬜ | ImportanceScorer(中央重要度打分器)无任何生产调用方，packer 另起炉灶用重复的词法打分 | `kun/context/importance.py:43` |
 | F099 | medium | fix | ⬜ | L6 行业评测套件是孤儿且度量很浅,无法支撑真实在度量 | `kun/evaluation/industry_suite.py:164` |
@@ -153,7 +153,7 @@
 | F132 | medium | fix | ⬜ | [文档漂移] ADR-024 '新建 kun/governance/rsi_loop.py 编排 10 步' 已删除 | `decisions.md:956` |
 | F133 | medium | fix | ⬜ | unit-tests 无覆盖率门槛:测试可空心化而流水线仍绿 | `.github/workflows/ci.yml:47` |
 | F134 | medium | fix | ⬜ | 无 branch protection / required checks 配置、无 CODEOWNERS:门禁强制 | `.github/workflows/ci.yml:13-124` |
-| F135 | medium | fix | ⬜ | TaskMeta.complexity / priority_profile / estimated_steps 写 | `kun/core/orm.py:75` |
+| F135 | medium | fix | ✅ | TaskMeta.complexity / priority_profile / estimated_steps 写 | `kun/core/orm.py:75` |
 | F136 | medium | fix | ✅ | ValidatorKind 枚举不含运行时产出的 'ensemble' | `kun/agents/tester/validation.py:343` |
 | F137 | medium | architecture | ⬜ | CI 从不跑 alembic check，且无 DB 时无法运行 → 漂移长期无人发现 | `alembic/env.py:26` |
 | F138 | medium | fix | ✅ | /metrics 端点导出默认 registry，未 emit 的 series 在抓取时不出现 | `kun/api/main.py:261` |

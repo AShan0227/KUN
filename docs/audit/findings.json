@@ -1107,9 +1107,9 @@
       "detail": "release_holder 对每个 key 先 get 校验 holder 再 delete，两步之间锁可能因 px TTL 过期并被另一 worker SET 新租约，随后的 delete 会删掉别人的活跃锁；过期租约清理同样是无比较的裸 delete。acquire_many 正确使用了 WATCH/MULTI，release 却没有——标准修法是 Lua compare-and-delete 或在 WATCH 下删除。Redis 后端目前是跨机器 worker 的预留路径（CLI 已接 --resource-lock-redis-url），上量前应修复。同文件 SQLiteResourceLockStore._transaction 在 BEGIN 之前以自动提交模式执行 CREATE/ALTER 迁移(515-536 行)，两个 daemon 进程首次并发启动时 ALTER 有小概率竞态报 duplicate column。",
       "evidence": "raw_value = self.client.get(key) ... if lease.holder_id != holder_id: continue\\nreleased.append(lease)\\nself.client.delete(key)  # get 与 delete 之间无原子性",
       "source": "cp-rest",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "b23033e",
+      "notes": "Redis 锁释放非原子(TOCTOU 误删新 holder)；离线无 fakeredis/真 redis 且手写 FakeRedis watch/multi 为 no-op，无法忠实单测 → 并入 concurrency-multi-replica.md，随 F010 lease 续期带集成测试落地(Lua compare-and-delete)。"
     },
     {
       "id": "F086",
@@ -1250,9 +1250,9 @@
       "detail": "ADR-020/022 给 TaskMeta 加的三个 Layer-1 字段(complexity 档位决定是否进 long-task mode、priority_profile 决定路由 cost downgrade、estimated_steps)在 tasks 表没有对应列，orchestrator.py:407 的 TaskRow(...) 插入也没带上它们，且不在 spec_json(那只存 TaskSpec)。任何从 DB 重建任务画像的路径(复盘、resume 分析、Mission Director 对照)拿到的都是默认值 simple/cost_first/1，与当初 Director 的判定不一致。datamodel 演进领先于 ORM/迁移，属于『模型-迁移对齐』缺口；列级 parity 检查其余 19 张表全部一致，仅此一处字段级丢失。建议补一版迁移加列或明确写入 spec_json/blob。",
       "evidence": "task.py:57: `complexity: Literal[\"simple\",\"medium\",\"complex\"] = \"simple\"`；orm.py TaskRow 无对应列；orchestrator.py:407-425 INSERT 字段清单不含三者",
       "source": "core-data",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "(F135)",
+      "notes": "与 F135 同根因(TaskMeta L1 Director 字段无 ORM 列→持久丢失)，由 F135 同次修复(ORM 列+迁移0020+映射)。"
     },
     {
       "id": "F097",
@@ -1757,9 +1757,9 @@
       "detail": "Director 在 intent.py:117-130 计算并填充 TaskMeta 的 complexity（simple/medium/complex）、priority_profile（speed_first/cost_first）、estimated_steps（task.py:57/58/62），但 TaskRow（orm.py:75-120）没有这三列：orchestrator.py:407-425 持久化 TaskRow 时只写 complexity_score（数值）等显式列，三个派生字段既不进列也不进 spec_json（spec_json 装的是 Layer-2 TaskSpec，而这三个字段属 Layer-1 TaskMeta，orchestrator.py:421-423 只 dump task_ref.spec）。且 grep 全 engineering/integration 层无任何 reader 从 TaskRow 重建 TaskMeta（无 _row_to_meta / TaskMeta.model_validate）。结果：这三个驱动「是否进 long-task 模式 / 路由是否启用 cost downgrade」的关键档位是 write-then-discard，进程重启或跨 worker 读 TaskRow 时全部退回默认（complexity='simple'、priority_profile='cost_first'、estimated_steps=1）。影响：长任务恢复或异步重算时会按错误的低复杂度档位走，可能跳过 long-task 防漂移路径。",
       "evidence": "orm.py:75-120 TaskRow 列里只有 complexity_score，无 complexity/priority_profile/estimated_steps；intent.py:125-130 meta.complexity/priority_profile/estimated_steps 被填充；orchestrator.py:421 spec_json=task_ref.spec.model_dump() 只含 Layer-2",
       "source": "extra:db_schema_orm_migration_drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "b23033e",
+      "notes": "TaskRow 补 complexity/priority_profile/estimated_steps 列 + orchestrator 映射 + 迁移 0020；与 F096 同根因(L1 字段写库即丢)，一并修复。+2 漂移守卫测试。"
     },
     {
       "id": "F136",

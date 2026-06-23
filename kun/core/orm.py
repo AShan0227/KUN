@@ -89,6 +89,11 @@ class TaskRow(Base):
     # Layer 1 fields
     estimated_cost_usd: Mapped[float] = mapped_column(nullable=False, default=0.0)
     estimated_duration_sec: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    estimated_steps: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # L1.7 (ADR-020/ADR-022) Director outputs — audit F135/F096: these lived on
+    # TaskMeta but had no columns, so they were silently dropped on persist.
+    complexity: Mapped[str] = mapped_column(String(16), nullable=False, default="simple")
+    priority_profile: Mapped[str] = mapped_column(String(16), nullable=False, default="cost_first")
     deadline_iso: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     success_criteria_short: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

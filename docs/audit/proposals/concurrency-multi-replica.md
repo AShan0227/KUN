@@ -17,6 +17,7 @@ API 覆盖 daemon 新状态。这 4 条 + F019(单文件全量重写/丢字段)�
 | **F011** | `daemon.py`(~1156) 治理 pass：tick 起点 `refresh_from_store` 取内存快照 → 改 → 无条件 `put` 写回 | 多 daemon 副本各自从自己 tick 起点的快照改，最后写的覆盖先写的 → **last-writer-wins 丢更新**(治理状态、retire/restore 等)。 |
 | **F014** | `runtime.py` `_record_ledger_event`(~2535)：ledger 序列/id 由进程内状态分配 | 多写者(API 进程 / 多 daemon)并发 append → 序列冲突 → **审计事件静默丢弃**(ledger 不是唯一真理源)。 |
 | **F015** | `api/control_plane.py`(~176)：API 持有 `InMemoryControlPlane` 副本，从不 `refresh_from_store` | API 读到陈旧状态；API 写回时**整记录覆盖** daemon 刚写的新状态 → 双向丢更新。 |
+| **F085** | `work_item_governance.py` `RedisResourceLockStore.release_holder`(~668)：`get(key)`→比对 holder→`delete(key)` 非原子 | 锁过期后被新 holder 抢占，本陈旧 release 在 get/delete 间隙把**新 holder 的锁误删**。修法：Lua compare-and-delete（仅当 stored holder_id 仍等于本 holder 才 DEL），与 acquire 的 WATCH/MULTI 同族。**本机无 fakeredis/真 redis + 手写 FakeRedis 的 watch/multi 是 no-op，离线单测无法忠实复现 TOCTOU 窗口**，故并入本方案随 lease 续期(F010)一起带集成测试落地。 |
 | (关联)**F019** | `file_store.py`：单条 put 全量重读+重写、丢未知字段 | 见 docs/audit/proposals/F019.md。 |
 
 ## 2. 一致性方案选项
@@ -57,4 +58,6 @@ API 覆盖 daemon 新状态。这 4 条 + F019(单文件全量重写/丢字段)�
 - 与持久层(F019)、ledger 作为 RSI 证据源(rsi-mainline-wiring 第 5 环 evidence_ledger)耦合。
 
 ## 5. 覆盖 findings
-F010, F011, F014, F015（标 needs-design 指向本文件）；F019 见其自身方案。
+F010, F011, F014, F015, F085（标 needs-design 指向本文件）；F019 见其自身方案。
+
+> F085 落地说明：`release_holder` 改为 Lua compare-and-delete（atomic CAS-DEL）+ acquire 路径已有的 WATCH/MULTI 复用；与 F010 lease 续期同 PR，在 CI(真 redis) 下做并发释放不变量测试（断言陈旧 release 不删新 holder 的锁）。

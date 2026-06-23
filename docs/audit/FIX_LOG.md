@@ -39,3 +39,5 @@
 2026-06-23 F122 ✅ — temperature 拒绝模型集补全(opus-4-8/fable-5/mythos)，防误发 400，+8 测试
 2026-06-23 F083 ✅ — activation 现按 (mission_id,version) 解析当前 plan（原来用 version 查 plan_id 字典恒 None），技能/外部 ref 匹配恢复，+3 测试
 2026-06-23 F079 ✅ — mission_director._latest_gate 按 gate_evaluation_id(ULID 时序) 取最新，不再依赖 dict 插入序，+2 测试
+2026-06-23 F135+F096 ✅ — TaskRow 补 complexity/priority_profile/estimated_steps 列+orchestrator 映射+迁移 0020，L1 Director 字段不再写库即丢，+2 测试
+2026-06-23 F085 📐 — Redis 锁释放原子性并入 concurrency-multi-replica.md(离线无法忠实单测 TOCTOU，随 F010 带集成测试)
