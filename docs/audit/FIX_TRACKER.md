@@ -2,9 +2,9 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 67 ｜ ⛔blocked 0 ｜ 📐needs-design 71 ｜ ⬜pending 35
+**总计 173 项** — ✅done 68 ｜ ⛔blocked 0 ｜ 📐needs-design 81 ｜ ⬜pending 24
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
-剩余 pending+fix：24（high 0 / medium 19 / low 5）
+剩余 pending+fix：13（high 0 / medium 8 / low 5）
 
 | id | sev | class | 状态 | 标题 | 文件 |
 |---|---|---|---|---|---|
@@ -129,17 +129,17 @@
 | F107 | medium | fix | 📐 | cockpit 与 control-plane 页面无请求取消/竞态防护, 每个输入框 keystroke 触发整组 | `frontend/src/app/cockpit/page.tsx:206-229` |
 | F108 | medium | fix | 📐 | 主工作区 WS 无重连机制, 消息数组无上限增长; 后端重启后 UI 永久停在 '未连接' | `frontend/src/app/page.tsx:51-66` |
 | F109 | medium | fix | ⬜ | shell-exec/python-exec 沙箱仅为 cwd 目录边界且可被调用方 cwd 放大，无进程隔离 | `kun/skills/sandbox.py:43-63` |
-| F110 | medium | fix | ⬜ | curl|bash 一键部署无完整性校验并安装常驻 daemon | `scripts/one_click_deploy.sh:5` |
-| F111 | medium | fix | ⬜ | integration marker 覆盖率 6/26，marker 隔离机制形同虚设 | `tests/integration/` |
+| F110 | medium | fix | 📐 | curl|bash 一键部署无完整性校验并安装常驻 daemon | `scripts/one_click_deploy.sh:5` |
+| F111 | medium | fix | 📐 | integration marker 覆盖率 6/26，marker 隔离机制形同虚设 | `tests/integration/` |
 | F112 | medium | fix | 📐 | 六组循环依赖靠延迟 import/TYPE_CHECKING 压制，engineering↔skills 为模块级硬 | `/Users/petrarain/鲲/kun/skills/calibration.py:39` |
 | F113 | medium | fix | 📐 | daemon.py 6,927 行：12 个类 5 类职责堆在单文件，属真实复杂度但缺模块边界 | `/Users/petrarain/鲲/kun/control_plane/daemon.py:1` |
 | F114 | medium | fix | 📐 | evaluation/ 446 行 L6 评测框架生产调用方为零，仅测试文件引用 | `/Users/petrarain/鲲/kun/evaluation/__init__.py:1` |
 | F115 | medium | fix | 📐 | External Supervisor（ADR-023）：service 真实但'独立进程'模式是占位，Mode A | `kun/external_supervisor/runner.py:45` |
 | F116 | medium | fix | ⬜ | e2e_rsi_demo.py 是半剧本：链路中段与验证证据写死；fixture_only 强制标注未实装 | `scripts/e2e_rsi_demo.py:195` |
 | F117 | medium | fix | 📐 | RCDH 诊断引擎与 heavy-drift 后续动作未接线：rsi_trigger 只是落库字符串 | `kun/governance/rcdh.py:303` |
-| F118 | medium | fix | ⬜ | 锁定的运行时依赖含 7 个已知 CVE(starlette/urllib3/idna/mako) | `uv.lock:1` |
-| F119 | medium | fix | ⬜ | .env.example 与代码实际读取的环境变量严重脱节(约 50 个未文档化) | `.env.example:1` |
-| F120 | medium | fix | ⬜ | Dockerfile: --frozen 失败时静默回退到非锁定安装 + 镜像缺 seeds/ 目录 | `Dockerfile:19` |
+| F118 | medium | fix | ✅ | 锁定的运行时依赖含 7 个已知 CVE(starlette/urllib3/idna/mako) | `uv.lock:1` |
+| F119 | medium | fix | 📐 | .env.example 与代码实际读取的环境变量严重脱节(约 50 个未文档化) | `.env.example:1` |
+| F120 | medium | fix | 📐 | Dockerfile: --frozen 失败时静默回退到非锁定安装 + 镜像缺 seeds/ 目录 | `Dockerfile:19` |
 | F121 | medium | fix | ✅ | 定价表过时: Opus 4.7 高估 3 倍、Haiku 4.5 低估 4 倍, cache 写入未计费 | `kun/interface/llm/anthropic_provider.py:42-58` |
 | F122 | medium | fix | ✅ | temperature 修复用硬编码子串黑名单, opus-4-8/后续模型不覆盖且静默丢参 | `kun/interface/llm/anthropic_provider.py:151-154` |
 | F123 | medium | fix | ✅ | CodexMcpProvider 工具调用示例与解析器格式矛盾 → bad_json 静默丢工具调用 | `kun/interface/llm/codex_mcp_provider.py:462-465` |
@@ -152,16 +152,16 @@
 | F130 | medium | fix | 📐 | [文档漂移] ADR-020 'control_plane / brain / engineering/orches | `decisions.md:380` |
 | F131 | medium | fix | ✅ | [文档漂移] PROGRESS.md 自 2026-05-27 停更，落后 78 个 commit，进度叙事双向失真 | `PROGRESS.md:234` |
 | F132 | medium | fix | ✅ | [文档漂移] ADR-024 '新建 kun/governance/rsi_loop.py 编排 10 步' 已删除 | `decisions.md:956` |
-| F133 | medium | fix | ⬜ | unit-tests 无覆盖率门槛:测试可空心化而流水线仍绿 | `.github/workflows/ci.yml:47` |
-| F134 | medium | fix | ⬜ | 无 branch protection / required checks 配置、无 CODEOWNERS:门禁强制 | `.github/workflows/ci.yml:13-124` |
+| F133 | medium | fix | 📐 | unit-tests 无覆盖率门槛:测试可空心化而流水线仍绿 | `.github/workflows/ci.yml:47` |
+| F134 | medium | fix | 📐 | 无 branch protection / required checks 配置、无 CODEOWNERS:门禁强制 | `.github/workflows/ci.yml:13-124` |
 | F135 | medium | fix | ✅ | TaskMeta.complexity / priority_profile / estimated_steps 写 | `kun/core/orm.py:75` |
 | F136 | medium | fix | ✅ | ValidatorKind 枚举不含运行时产出的 'ensemble' | `kun/agents/tester/validation.py:343` |
 | F137 | medium | architecture | ⬜ | CI 从不跑 alembic check，且无 DB 时无法运行 → 漂移长期无人发现 | `alembic/env.py:26` |
 | F138 | medium | fix | ✅ | /metrics 端点导出默认 registry，未 emit 的 series 在抓取时不出现 | `kun/api/main.py:261` |
-| F139 | medium | fix | ⬜ | v7_xb_smoke.py：用 StubProvider + 内存 fake session 跑一遍即 print | `scripts/v7_xb_smoke.py:296-372` |
-| F140 | medium | fix | ⬜ | dogfood_v10：lifecycle/auditor 表增长依赖手喂的'必过'GateService 输入；M | `scripts/dogfood_v10_trigger_xb_tables.py:104-131` |
-| F141 | medium | fix | ⬜ | spark_world_run.py 未提交改动坦承 claude CLI OAuth 路径曾'silent stu | `scripts/spark_world_run.py:49-60` |
-| G10 | medium | fix | ⬜ | CI unit-tests 加覆盖率门槛(--cov-fail-under) | `.github/workflows/ci.yml,` |
+| F139 | medium | fix | 📐 | v7_xb_smoke.py：用 StubProvider + 内存 fake session 跑一遍即 print | `scripts/v7_xb_smoke.py:296-372` |
+| F140 | medium | fix | 📐 | dogfood_v10：lifecycle/auditor 表增长依赖手喂的'必过'GateService 输入；M | `scripts/dogfood_v10_trigger_xb_tables.py:104-131` |
+| F141 | medium | fix | 📐 | spark_world_run.py 未提交改动坦承 claude CLI OAuth 路径曾'silent stu | `scripts/spark_world_run.py:49-60` |
+| G10 | medium | fix | 📐 | CI unit-tests 加覆盖率门槛(--cov-fail-under) | `.github/workflows/ci.yml,` |
 | F142 | low | architecture | ⬜ | 双运行时并存：control_plane 栈与 agents 7 角色栈模块级零耦合，Supervisor/Miss | `/Users/petrarain/鲲/kun/control_plane/kun_runtime` |
 | F143 | low | fix | ✅ | record_plan_change 绕过状态机校验直接改 mission.status | `kun/control_plane/runtime.py:1203-1213` |
 | F144 | low | fix | ✅ | frontier50_external：默认 workdir 硬编码他人机器绝对路径，can_run 用 "ab"  | `kun/control_plane/frontier50_external.py:34` |

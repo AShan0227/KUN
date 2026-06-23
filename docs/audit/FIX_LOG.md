@@ -78,3 +78,5 @@
 2026-06-24 F074/F075/F076/F077/F081/F093 📐 — 并发/资源簇并入 concurrency-multi-replica.md §4b(膨胀/隔离/进程级一致性)
 2026-06-24 F063/F064/F065/F099/F101/F103/F104/F114 📐 — 孤儿/接线簇并入 rsi-mainline-wiring.md §2b；F115 并入 external-supervisor.md
 2026-06-24 F070/F071/F072/F082/F084/F086/F112/F113 📐 — 架构/分层簇并入 architecture-debt.md §1b(实现质量+模块化债)
+2026-06-24 F118 ✅ 16af265 — 升级 4 个传递依赖避开 7 个已知 CVE(starlette/urllib3/idna/mako),全套件绿
+2026-06-24 F110/F111/F119/F120/F133/F134/G10 📐 — 新建 ci-and-supplychain.md(CI 门禁强制力+供应链)；F139/F140/F141 📐 并入 demo-script-honesty.md §1b

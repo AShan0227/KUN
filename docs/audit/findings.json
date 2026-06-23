@@ -1432,9 +1432,9 @@
       "detail": "README/脚本头建议 `curl -fsSL https://raw.githubusercontent.com/AShan0227/KUN/main/scripts/one_click_deploy.sh | bash`，脚本内部又 `curl -LsSf https://astral.sh/uv/install.sh | sh`(ensure_uv:37)，clone/pull 走 https 但不固定 commit(clone_or_update:45-48)，随后 install_daemon 通过 launchctl bootstrap / systemctl --user enable --now 安装并立即拉起常驻控制面 daemon(:59-95)。整条链没有任何校验和/签名/commit 固定：raw.githubusercontent 或上游仓库一旦被篡改、或传输被 MITM，受害者本机即获得一个开机自启的持久化 RCE。对一个会自主执行任务、能调 shell-exec 的 Agent OS，自启 daemon 放大了影响面。建议：发布固定 tag/commit + 校验和，或至少在文档显著位置警示，并默认 KUN_INSTALL_DAEMON=0。",
       "evidence": "one_click_deploy.sh:5 `curl -fsSL .../one_click_deploy.sh | bash`; :37 `curl -LsSf https://astral.sh/uv/install.sh | sh`; :45 `git -C \"$KUN_DIR\" pull --ff-only origin main`(无 commit 固定); :75 `launchctl bootstrap \"gui/$(id -u)\" .../$SERVICE_NAME.plist`; :89 `systemctl --user enable --now`",
       "source": "security",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "df2704d",
+      "notes": "curl|bash 部署无校验和/不 pin commit/装常驻 daemon(daemon 已被 F043 兜)；并入 docs/audit/proposals/ci-and-supplychain.md。"
     },
     {
       "id": "F111",
@@ -1445,9 +1445,9 @@
       "detail": "pyproject.toml 定义了 integration/e2e marker 并开了 --strict-markers，但 tests/integration/ 下 26 个文件中 20 个没有打 pytest.mark.integration(包括 test_v7_xb_pg_check_constraints.py、test_v7_checkpoint_crash_resume_e2e.py 等真依赖 PG 的文件)。实测 `pytest -m \"not integration and not e2e\"` 仍选中 2152/2172 个测试——意味着想用 marker 在无 Docker 环境跑'纯单测子集'是做不到的，上面 13 个失败测试照样被选中。当前事实上的隔离手段只剩目录路径(tests/unit vs tests/integration)，建议要么在 tests/integration/conftest.py 里用 collection hook 统一打 marker，要么补齐 pytestmark。",
       "evidence": "grep -L 'mark.integration' tests/integration/test_*.py → 20 个文件; pytest -m 'not integration and not e2e' --collect-only → 2152/2172 selected",
       "source": "test-health",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "df2704d",
+      "notes": "integration marker 20/26 缺失致 -m 隔离失效(CI 目录分层 OK)；并入 docs/audit/proposals/ci-and-supplychain.md。"
     },
     {
       "id": "F112",
@@ -1536,9 +1536,9 @@
       "detail": "对 `uv export --frozen --no-dev` 导出的运行时依赖跑 pip-audit，命中 4 个包共 7 个已知漏洞：starlette 1.0.0(PYSEC-2026-161，修复版 1.0.1)——这是 FastAPI 的底层框架，直接处于 API 请求路径上；urllib3 2.6.3(PYSEC-2026-141/142，修复版 2.7.0)；idna 3.13(CVE-2026-45409，修复版 3.15)；mako 1.3.11(CVE-2026-44307，修复版 1.3.12，alembic 模板依赖)。全部是传递依赖且都有修复版本，一条 `uv lock --upgrade-package starlette --upgrade-package urllib3 --upgrade-package idna --upgrade-package mako` 即可解决。当前服务只在本机跑、未暴露公网，故定 medium；L6 商业化对外暴露 API 前必须清掉，建议把 pip-audit 加进 CI。其余直接依赖版本都很新(fastapi 0.136、sqlalchemy 2.0.49、anthropic 0.96、openai 2.32)，前端 next 锁在 15.5.18(已过 CVE-2025-29927 修复线)，无其他过时风险。",
       "evidence": "pip-audit 输出: idna 3.13 CVE-2026-45409 (fix 3.15) / mako 1.3.11 CVE-2026-44307 (fix 1.3.12) / starlette 1.0.0 PYSEC-2026-161 (fix 1.0.1) / urllib3 2.6.3 PYSEC-2026-141,142 (fix 2.7.0) — \"Found 7 known vulnerabilities in 4 packages\"",
       "source": "infra-deps",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "16af265",
+      "notes": "pip-audit 命中 7 CVE/4 包,uv lock --upgrade-package 升至修复版(starlette 1.0.0→1.3.1/urllib3→2.7.0/idna→3.18/mako→1.3.12),全 unit 套件绿。"
     },
     {
       "id": "F119",
@@ -1549,9 +1549,9 @@
       "detail": "grep 全部 KUN_ 环境变量字面量 + kun/core/config.py 的 pydantic-settings 字段，与 .env.example 对比：代码读取但完全无文档的变量约 50 个，包括 (a) 整个 V7 特性开关族 ~23 个(KUN_V7_TRIFECTA_*、KUN_V7_ENSEMBLE_*、KUN_V7_METHODOLOGY_*、KUN_V7_AUDITOR_* 等)——这些是 RSI 闭环的核心开关，新部署者无从知道默认开还是关；(b) KUN_AUTH_ENABLED/KUN_AUTH_JWT_SECRET/KUN_AUTH_TOKEN_TTL_SECONDS(config.py:106-108)——而且 .env.example:134-142 的 auth 注释还停留在'没有任何真实 auth'的旧状态，与 kun/api/auth/(jwt_token.py/middleware.py/rls.py 已存在)和 ADR-019 的实现矛盾，属于会误导安全决策的过期文档；(c) KUN_EXTERNAL_SUPERVISOR_* 6 个(ADR-023)；(d) KUN_BUDGET_WARN_FRACTION、KUN_TASK_MAX_DURATION_SEC、KUN_RESULT_OFFLOAD_THRESHOLD_BYTES、KUN_V6_DAEMON_STATE、KUN_LOCAL_STATE_ROOT、KUN_REPO_ROOT、各 RUNNER_OWNER、KUN_FRONTIER50_LIVE_* 等运维相关变量。对一个目标是'自运营'的系统，配置面文档漂移会直接放大排障成本，建议写个 CI 检查脚本 diff 两边。",
       "evidence": "代码中存在但 .env.example 缺失(节选): KUN_AUTH_ENABLED, KUN_AUTH_JWT_SECRET, KUN_V7_TRIFECTA_ENABLED, KUN_V7_ENSEMBLE_TIERS, KUN_V7_METHODOLOGY_DIR, KUN_EXTERNAL_SUPERVISOR_ENABLED, KUN_LOCAL_STATE_ROOT, KUN_V6_DAEMON_STATE; 同时 .env.example:135 仍写 \"No real auth is enforced yet\" 而 config.py:106 已有 auth_enabled/auth_jwt_secret + kun/api/auth/ 模块",
       "source": "infra-deps",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "df2704d",
+      "notes": ".env.example 脱节约 50 变量(V7 开关族 ~23 + auth 三件)；并入 docs/audit/proposals/ci-and-supplychain.md。"
     },
     {
       "id": "F120",
@@ -1562,9 +1562,9 @@
       "detail": "两个问题：(1) 第 19 行 `RUN uv sync --frozen --no-dev --no-editable || uv sync --no-dev --no-editable`——当 uv.lock 与 pyproject 不一致时不报错，而是静默重新解析依赖，镜像构建失去可重现性，且恰好在锁文件过期(最需要被发现)的时候掩盖问题，应去掉 fallback 让构建硬失败；(2) 运行时镜像只 COPY 了 kun/rules/skills/alembic，没有 seeds/，而 kun/context/seeds.py:49 的默认种子路径是 <repo>/seeds/context_assets.yaml，缺失时 _load_yaml 只记一条 info 日志返回空(seeds.py:53-55)，V7 methodology 注入的默认目录 <repo>/seeds/methodologies/ 同样缺失——容器里上下文种子和方法论注入会静默退化为空，无任何报错。另有小问题：镜像用 python:3.13-slim 而本地工具链(uv python 3.12.13、ruff/mypy target py312)全是 3.12，测试从未在 3.13 上跑过，存在未验证的版本偏差。",
       "evidence": "Dockerfile:19 `RUN uv sync --frozen --no-dev --no-editable || uv sync --no-dev --no-editable`; Dockerfile:31-35 COPY 列表无 seeds; seeds.py:53-55 `if not path.exists(): log.info(\"context.seeds.absent\"...); return []`",
       "source": "infra-deps",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "df2704d",
+      "notes": "Dockerfile --frozen 静默回退 + 缺 seeds/(多阶段/非root/healthcheck 已做)；并入 docs/audit/proposals/ci-and-supplychain.md。"
     },
     {
       "id": "F121",
@@ -1731,9 +1731,9 @@
       "detail": "unit-tests job 仅 `uv run pytest tests/unit -q`(ci.yml:47),无 --cov / --cov-fail-under / 任何覆盖率阈值(grep cov|coverage|fail-under 在 ci.yml 内 0 命中)。这意味着只要少量测试存在并通过即算绿灯,新增代码可以零测试覆盖而不被察觉。对 221 个提交、+725 行 orm 这种快速膨胀的代码量,缺覆盖率门槛会让'死代码/零调用方函数'(如 submit_self_report:kun/agents/supervisor/plan_review_service.py:136 定义,但生产侧 0 个 .submit_self_report( 调用,仅 docstring 提及 + 10 处测试调用)更难被发现——测试覆盖了它,但没有任何生产路径用它。CTO 决策:建议为后端设定一个起步覆盖率底线(哪怕先 patch coverage / diff-cover 只卡新增行),与前端的硬 typecheck 门禁对齐严格度。",
       "evidence": "ci.yml L47 `- run: uv run pytest tests/unit -q`(无 cov 参数);ci.yml 内 grep cov/coverage/fail-under = 0 命中;plan_review_service.py L136 `async def submit_self_report(`;生产侧 `.submit_self_report(` 调用 = 0(仅 L6 docstring),tests 内调用 10 处",
       "source": "extra:ci_gate_posture_and_branch_lineage",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "df2704d",
+      "notes": "unit job 无 --cov-fail-under 覆盖率门槛(基线 82%)；并入 docs/audit/proposals/ci-and-supplychain.md。"
     },
     {
       "id": "F134",
@@ -1744,9 +1744,9 @@
       "detail": ".github/ 目录下仅有 workflows/ci.yml 一个文件(find .github -type f 只此一项),没有 CODEOWNERS,也没有任何 branch-protection-as-code。GitHub 的 required status checks / 禁止直接 push / 必需 review 都是仓库设置项,无法从代码核实,但结合'CI 只认 main'+'实际开发分支无 CI'的事实,即便 main 上配了 required checks 也保护不到真正在动的 鲲V1.1-dev。此外一个细节:origin/main 上 license-scan job 本来也是 continue-on-error: true,本分支才把它改成硬门禁(ci.yml:112-117 注释,git diff 显示这是 origin/main..HEAD 间 ci.yml 唯一改动)——说明门禁策略本身也是在这条'无人验证'的分支上演进,改动从未经 CI 自验。CTO 决策:门禁的有效性最终取决于 GitHub 仓库设置;需要人工核对 main(及未来主干)是否真的配了 required checks + 禁止 force-push,并补 CODEOWNERS 以约束高风险目录(alembic/、kun/core/)的评审。",
       "evidence": "find /Users/petrarain/鲲/.github -type f 仅返回 ci.yml;无 CODEOWNERS;git diff origin/main HEAD -- ci.yml 唯一改动为 license-scan 去掉 continue-on-error(L112-117)",
       "source": "extra:ci_gate_posture_and_branch_lineage",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "df2704d",
+      "notes": "无 branch protection/CODEOWNERS,开发分支无 CI；并入 docs/audit/proposals/ci-and-supplychain.md。"
     },
     {
       "id": "F135",
@@ -1809,9 +1809,9 @@
       "detail": "脚本头部诚实标注 SCOPE：stub provider + in-memory fake session、不打 PG、不打真 LLM。这点优于其他脚本。但问题在结论措辞：6 段全过后 print '全部 6 块 X.B 真在 runtime 走通. 软件层完成度 100%'(L21,360-363)。其中 Segment6(L296-321) 用两个 StubProvider(claude-opus-4-7 / gpt-5.5) 调 ensemble，断言只检查 EnsembleCallRow 被 add 到 fake sink + n_providers_total==2 + failure_count==0——这恰是上一轮指出的'调 StubProvider 却当成功'模式：StubProvider.invoke 只是 echo 用户消息（stub_provider.py:_default_builder），ensemble 的跨 family 一致性/divergence 全无真实语义。把'stub 跑通 + 内存断言'表述为'真在 runtime 走通 / 完成度 100%'会让读文档的人误以为这是带真实依赖的端到端验证。建议把结论降级为'代码路径可调用（stub）'。",
       "evidence": "L303-304 `StubProvider(model_id=\"claude-opus-4-7\")` / `StubProvider(model_id=\"gpt-5.5\")`；L361-362 `\"All 6 X.B segments smoke-passed. Software layer V7 Phase X.B = 100%.\"`；stub_provider.py `_default_builder` 仅 `f\"[stub echo] {...}\"`",
       "source": "extra:dogfood_scripts_honesty_audit",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "df2704d",
+      "notes": "v7_xb_smoke 印 \"软件层完成度 100%\" 实为 stub 调通(一行措辞级真修复)；并入 docs/audit/proposals/demo-script-honesty.md。"
     },
     {
       "id": "F140",
@@ -1822,9 +1822,9 @@
       "detail": "v10 的 row delta 框架本身是真实的（真 SELECT count 前后快照）。但两点削弱其作为证据：(1) Step1 GateService.admit 的输入 test_report.pass_rate=0.97 / debrief.evidence_quality=0.92 是手填的必过值(L110-124)，所以 lifecycle_transitions+1、auditor_reports+1 是'喂了必过参数所以桥被触发'，并非真实裁决产生；(2) Step2 MissionDirector 桥是 fire-and-forget 线程 + await sleep(3.0) 探测落库(L287-289)，存在时序竞态，慢机器上可能漏 row；(3) 最终 VERDICT(L370-378) len(grew)>=3 即返回 0，即 4 张表里有 1 张没增长也算'成功退出'，与 print 的'PARTIAL'语义不一致，容易被上层脚本/人误读为通过。这些不是造假，但作为'4 表全打通'的硬证据有水分。",
       "evidence": "L111-124 `test_report={'pass_rate':0.97,...}` `debrief={'evidence_quality':0.92,...}`；L288-289 `print(\"  → Waiting 3s for fire-and-forget bridge thread...\"); await asyncio.sleep(3.0)`；L378 `return 0 if len(grew) >= 3 else 1`",
       "source": "extra:dogfood_scripts_honesty_audit",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "df2704d",
+      "notes": "dogfood_v10 手喂必过 Gate 输入 + fire-and-forget sleep(3) 探测竞态；并入 docs/audit/proposals/demo-script-honesty.md。"
     },
     {
       "id": "F141",
@@ -1835,9 +1835,9 @@
       "detail": "工作树对该 runner 的未提交改动注释直接写明历史事故：'claude CLI OAuth (claude -p subprocess): hung 180s × 3 → RetryError → silent stub fallback that echoed the prompt (a no-op masquerading as success)'。这是对'调 stub provider 却当成功'反模式的**当事人书面确认**——说明这个被用来'让鲲在真实长任务上跑'的 runner，曾经在 provider 挂掉后静默回退到 echo-prompt 的 stub，而上层不会察觉。同一改动把 max_budget_usd 从默认提到 1000.0、max_steps plan 模式提到 80，并切回 KUN_CODEX_ONLY=1（钉所有 tier 到 Codex MCP）。该 runner 用 _StubSupervisor（L170-177，verdict 恒 'ok'），监督完全是占位。若用此 runner 的输出当作'鲲自主完成了 SparkWorld 产品方案/M1'的证据，必须先确认本次真用了 AnthropicProvider/Codex 真 LLM 而非又触发了 stub fallback——脚本本身不对'是否回退到 stub'做断言或失败。建议在 runner 内对 final_text 做'非 echo-prompt'校验并在回退时硬失败。",
       "evidence": "L51-52 `# claude CLI OAuth (...): hung 180s × 3 → RetryError → / # silent stub fallback that echoed the prompt (a no-op masquerading as success)`；L170-177 `_StubSupervisor.analyze_observation` 返回 `verdict = \"ok\"`；L247 `max_budget_usd=1000.0`",
       "source": "extra:dogfood_scripts_honesty_audit",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "df2704d",
+      "notes": "spark_world_run 未提交改动坦承 stub 静默回退 echo(印证 F045)；并入 docs/audit/proposals/demo-script-honesty.md。"
     },
     {
       "id": "F142",
@@ -2212,9 +2212,9 @@
       "detail": "当前 unit 测试无覆盖率门槛，可空心化仍绿。基线 82%，建议 --cov-fail-under=80。",
       "evidence": "",
       "source": "G01-split",
-      "status": "pending",
-      "commit": "",
-      "notes": "需确认 pytest-cov 配置"
+      "status": "needs-design",
+      "commit": "df2704d",
+      "notes": "CI 加 --cov-fail-under=80(同 F133)；并入 docs/audit/proposals/ci-and-supplychain.md。"
     },
     {
       "id": "F007a",
