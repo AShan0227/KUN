@@ -431,9 +431,9 @@
       "detail": "自指检查只匹配裸名/点路径/kun.agents.<role>/kun/agents/<role> 四种形式, 但 External Supervisor 的真实代码在 kun/external_supervisor/(不在 kun/agents/ 下), 治理与守望逻辑在 kun/governance/、kun/watchtower/。实测: is_self_referential('kun/external_supervisor/service')==False, 'kun/governance/capability_lifecycle'==False, 'kun/watchtower/engine'==False。即 Strategist 若提出修改监督自己的真实模块路径的 capability, '自指 capability 永不 auto-promote'(ADR-024 约束 1)和强制 target_level=0 的护栏都不会触发。这是 RSI 系统最不该有的洞: 改写裁判代码的候选不会被识别为自指。修复: 前缀表加 kun/external_supervisor、kun/governance、kun/watchtower(及 kun.xxx 点形式), 或改为基于真实包布局的路径归一化。",
       "evidence": "本地执行该函数: 'kun/external_supervisor/service' -> False; 'kun/governance/capability_lifecycle' -> False; 'kun/watchtower/engine' -> False; 'kun/agents/gate/service' -> True",
       "source": "gov-sec-watch",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "c890f87",
+      "notes": "加 SELF_REFERENTIAL_MODULE_ROOTS（kun/external_supervisor·governance·watchtower 真实路径，含 dotted），堵住\"改裁判代码\"绕过自指护栏；角色前缀逻辑不变。+3 测试。"
     },
     {
       "id": "F034",

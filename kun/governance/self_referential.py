@@ -31,9 +31,21 @@ SELF_REFERENTIAL_PREFIXES: tuple[str, ...] = (
     "external_supervisor",
 )
 
+# Real module roots whose code IS the RSI judge / supervision / guard machinery.
+# Editing anything under these is modifying the mechanism that judges the change
+# itself — self-referential regardless of role-prefix naming. The prefix-only
+# check above missed these real paths (audit F033): the External Supervisor lives
+# at kun/external_supervisor (NOT kun/agents/external_supervisor), and the
+# governance/watchtower guard code (incl. this very file) carries no role prefix.
+SELF_REFERENTIAL_MODULE_ROOTS: tuple[str, ...] = (
+    "kun/external_supervisor",
+    "kun/governance",
+    "kun/watchtower",
+)
+
 
 def is_self_referential(target_module: str | None) -> bool:
-    """target_module 命中 5 个监督角色前缀任一种命名形式 → True.
+    """target_module 命中 5 个监督角色前缀、或 RSI 判定/护栏真实模块根 → True.
 
     None / 空字符串 → False.
     """
@@ -49,10 +61,19 @@ def is_self_referential(target_module: str | None) -> bool:
             or lowered.startswith(f"kun.agents.{prefix}")
         ):
             return True
+    for root in SELF_REFERENTIAL_MODULE_ROOTS:
+        dotted = root.replace("/", ".")
+        if (
+            lowered in (root, dotted)
+            or lowered.startswith(f"{root}/")
+            or lowered.startswith(f"{dotted}.")
+        ):
+            return True
     return False
 
 
 __all__ = [
+    "SELF_REFERENTIAL_MODULE_ROOTS",
     "SELF_REFERENTIAL_PREFIXES",
     "is_self_referential",
 ]
