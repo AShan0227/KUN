@@ -5630,29 +5630,11 @@ def _has_ready_or_active_current_plan_work(
     )
 
 
-def _ready_current_plan_product_work(
-    control_plane: InMemoryControlPlane,
-    mission: Mission,
-    *,
-    now: datetime,
-) -> list[WorkItem]:
-    return [
-        item
-        for item in control_plane.ready_work_items(mission.mission_id, now=now)
-        if item.task_plan_version == mission.current_plan_version
-        and not _is_state_preserving_followup(item)
-    ]
-
-
-def _has_ready_current_plan_product_work(
-    control_plane: InMemoryControlPlane,
-    mission: Mission,
-    *,
-    now: datetime,
-) -> bool:
-    return bool(_ready_current_plan_product_work(control_plane, mission, now=now))
-
-
+# Audit F061: the dead, shadowed first definitions of
+# _ready_current_plan_product_work / _has_ready_current_plan_product_work were
+# removed here. Python used the later (more complete) definitions below — which
+# filter via _is_ready_product_core_work + contract and tolerate a None plan
+# version — so the earlier simpler copies were unreachable and semantically stale.
 def _open_acceptance_pressure_gate_id(
     *,
     mission_id: str,

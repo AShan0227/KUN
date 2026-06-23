@@ -795,9 +795,9 @@
       "detail": "_ready_current_plan_product_work 与 _has_ready_current_plan_product_work 在同一模块定义了两次(5633/5647 与 6488/6509)。Python 模块级名字以最后定义为准，前一组(语义=『当前 plan 下所有非 followup 的 ready 项』)已是死代码；实际生效的是后一组(语义=经 _is_ready_product_core_work + contract 过滤的『core 产品工作』，且容忍 current_plan_version 为 None)。tick_once:620 与 _resume_waiting_product_mission_with_ready_current_work:1582 这两个调度关键路径全部走后一组语义。任何人按文件顺序阅读/修改前一组定义都不会有任何效果，极易引入『改了没生效』型 bug。应删除 5608-5653 区段中被遮蔽的定义(注意 5608 的 _has_ready_or_active_current_plan_work 不重复、仍在用)。",
       "evidence": "grep 重复定义: 5633:def _ready_current_plan_product_work / 6488:def _ready_current_plan_product_work；5647:def _has_ready_current_plan_product_work / 6509:def _has_ready_current_plan_product_work。两版过滤条件不同：前版 `not _is_state_preserving_followup(item)`，后版 `_is_ready_product_core_work(..., contract=contract, ...)`",
       "source": "cp-daemon",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "40fb744",
+      "notes": "删除 daemon.py 中被遮蔽的死代码——_ready_current_plan_product_work / _has_ready_current_plan_product_work 的前一组定义(语义较旧)。Python 本就用后定义(更完整：_is_ready_product_core_work+contract+容忍 None 版本)，删除为零行为变更，全套件绿。grep 确认每个仅剩一处定义、_is_state_preserving_followup 仍被多处使用未孤立。"
     },
     {
       "id": "F062",
