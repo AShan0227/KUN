@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 171 项** — ✅done 12 ｜ ⛔blocked 0 ｜ 📐needs-design 5 ｜ ⬜pending 154
+**总计 171 项** — ✅done 13 ｜ ⛔blocked 0 ｜ 📐needs-design 5 ｜ ⬜pending 153
 严重度：critical 6 / high 56 / medium 82 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -28,7 +28,7 @@
 | F010 | high | fix | ⬜ | 长任务运行期间不刷新 work-item 心跳/lease/资源锁 TTL，多副本部署下必然误判超时并重复执行 | `kun/control_plane/daemon.py:3238` |
 | F011 | high | fix | ⬜ | 多进程共享 store 下大量治理方法用『tick 起点内存快照 + 无条件 put』写回，存在 last-writ | `kun/control_plane/daemon.py:1156` |
 | F012 | high | architecture | ⬜ | 6927 行 god-module：通用控制面守护进程内嵌两个具体产品(游戏/RainFlow 广告)的业务剧本与文 | `kun/control_plane/daemon.py:5926` |
-| F013 | high | fix | ⬜ | 人工验收自由文本解析把否定句误判为 accepted，直接错误关闭任务 | `kun/control_plane/runtime.py:947-970` |
+| F013 | high | fix | ✅ | 人工验收自由文本解析把否定句误判为 accepted，直接错误关闭任务 | `kun/control_plane/runtime.py:947-970` |
 | F014 | high | fix | ⬜ | 多写者(API 进程/多 daemon 副本)下 ledger 序列冲突，审计事件被静默丢弃 | `kun/control_plane/runtime.py:2508-2542` |
 | F015 | high | fix | ⬜ | API 进程持有从不刷新的控制面副本：读到陈旧状态、写回时整记录覆盖 daemon 新状态 | `kun/api/control_plane.py:176-185` |
 | F016 | high | fix | 📐 | 质量门禁分数全为硬编码常量：finalize_mission 无条件自评 pass 并 ready_to_deliv | `kun/control_plane/kun_runtime_runner.py:338-368` |

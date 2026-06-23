@@ -171,9 +171,9 @@
       "detail": "record_collaboration_response → _record_acceptance_review_from_collaboration_response 在用户没选 selected_option 时用子串匹配解析 answer。匹配顺序是 rework→reject→partial→accept，且无否定词处理：人类回复 \"This is not acceptable\"、\"I cannot accept this\" 都包含 \"accept\"，会返回 \"accepted\"，record_acceptance_review 随即把 mission 迁移到 learning_writeback(等于验收通过进入收尾)。这发生在交付验收的最终人机环节(ticket.type==review 且 mission awaiting_acceptance)，是人类否决被系统当成批准的明确 bug。另外该函数完全没有中文 token，中文回答一律返回 None 不产生验收记录。建议：要求结构化 selected_option 为唯一通道，或至少加否定词/LLM 解析并在歧义时拒绝落库。",
       "evidence": "if any(token in answer for token in (\"accept\", \"accepted\", \"approve\", \"approved\")):\\n    return \"accepted\"  # 前面只检查了 'rework required'/'reject'/'partial accept'，'not acceptable' 落到这里",
       "source": "cp-runtime",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "1b18d58",
+      "notes": "加否定守卫：do not accept / not approved / unacceptable / disapprove 等先于肯定匹配判为 rework_required，绝不误判 accepted；selected_option 结构化路径优先不变。+10 测试。"
     },
     {
       "id": "F014",

@@ -965,6 +965,33 @@ def _acceptance_decision_from_collaboration_response(
         return "rejected"
     if any(token in answer for token in ("partial accept", "partially accepted")):
         return "partial_accepted"
+    # Negation guard (audit F013): "do not accept", "not approved", "unacceptable"
+    # etc. all contain the substring "accept"/"approve" and were misclassified as
+    # accepted by the affirmative check below — wrongly closing the task. An
+    # explicitly negated acceptance is sent back for rework (never accepted).
+    if any(
+        token in answer
+        for token in (
+            "not accept",
+            "don't accept",
+            "do not accept",
+            "cannot accept",
+            "can't accept",
+            "won't accept",
+            "will not accept",
+            "not accepted",
+            "unacceptable",
+            "not acceptable",
+            "not approve",
+            "don't approve",
+            "do not approve",
+            "cannot approve",
+            "can't approve",
+            "not approved",
+            "disapprove",
+        )
+    ):
+        return "rework_required"
     if any(token in answer for token in ("accept", "accepted", "approve", "approved")):
         return "accepted"
     return None
