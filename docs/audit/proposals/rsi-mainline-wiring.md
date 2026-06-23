@@ -19,6 +19,7 @@ ADR-024 的闭环 = **检测 → 策略 → 安全实验 → 门禁落地 → �
 | 1.5 防漂移 | **F021** | `ExecutorLoop` 收到模型心跳自评 JSON 只回 `"Status received. Continue working..."`，**从不解析**；`PlanReviewService.observe_step_and_maybe_render_prompt` 的 `executor_self_report` 恒为 `None` → `evaluate_executor_self_report({})` 永远 `aligned`；`submit_self_report` 0 生产调用方。`long_task_orchestrator.py:546` 注释自认 "We do not yet parse the Executor's self_report JSON"。 |
 | 2 策略 | **F022** | `StrategistService` 生产调用方只有 `kun/integration/prompt_ab.py`，且默认无 `emitter` → 候选不落库。没有消费者读 `strategy_search_requests` 表来驱动 Strategist。 |
 | 3 安全实验 | **F040** | 整环不存在。`RuntimeExperimentRow` 生产代码无 insert/select；`StrategistService.ExperimentEmitter` 生产从不注入 writer；`Executor`(`kun/agents/executor/base.py:35`)只是 `class Executor(Protocol): async def run(...) -> Any: ...` 桩——"读 runtime_experiments 应用候选 override" 只是 docstring。 |
+| 3 实验 schema | **F091** | `StrategyExperiment.to_row_payload`(`strategist/service.py:59`)丢 `requires_human_review`/`explorer_mode`/`rationale`——因为 `runtime_experiments` 表(0011)/`RuntimeExperimentRow`(orm.py:522)**根本没有这三列**。其中 `requires_human_review` 是 Gate 自指审查输入(`gate/service.py:174`)，一旦实验环接通(本表开始被生产读写)，落库再读回就会丢这个安全标记。**当前无 live 风险**：to_row_payload 无生产消费者，且 Gate 有 L3.5 独立 `target_module` 自指检查兜底。修法：接线本环时给 `runtime_experiments` 补 `requires_human_review bool / explorer_mode / rationale` 三列(迁移+ORM)并补全 payload，加 round-trip 测试。 |
 | 4 门禁落地 | **F041** | `GateService.admit` 的 R1-R6 真实，但唯一生产调用链(`api/main.py` → idle_batch_worker → MethodologyDistillStep → `methodology_to_gate_bridge`)喂的 `test_report` 是写死 `pass_rate=1.0`(`bridge.py:107`)、`debrief evidence_quality=0.75`——验证的是合成数据，必放行；且该路径 `GateService()` 不带 `capability_writer`(`bridge.py:151-153`)，approve 也**不写** `runtime_capabilities`。 |
 | 5 影响下次 | **F041/F042** | `runtime_capabilities.enabled` 读侧唯一消费者是 `prompt_ab.pick_active_variant`(且 PromptAB 自身生产无调用方)。6 张脊柱表(0011)中 `runtime_capabilities/runtime_experiments/strategy_search_requests` 仅 demo 读写；`diagnostic_records` 0 写入(`rcdh.run_diagnostic` 只返回对象不落库)；`goal_anchors` 0 写入(`director/intent.py:165` 注释自认未做，anchor 只在内存 pin)；`evidence_ledger` 0 流动。 |
 | 输入路由 | **F025** | `kun/api/ws.py` 的 `task_state` 从无赋值真值的代码(只 置 None + 读取)，`if task_state["goal_anchor"] is None` 恒真 → 长任务期追加消息永远走"task already running"拒绝分支，`handle_long_task_input` 的 6-bucket 路由(off_topic/scope_expansion/pivot/cancel)在 WS 生产路径是死代码。 |
@@ -54,4 +55,6 @@ ADR-024 的闭环 = **检测 → 策略 → 安全实验 → 门禁落地 → �
 - **诚信优先**：在任一环真正接通前，PROGRESS/decisions 里相关"已闭环/已达成"措辞应保持 F047/F049/F050 那样的如实标注，避免 L5"RSI 真闭合 ✅"的过度宣称。
 
 ## 4. 本方案覆盖的 findings
-F021, F022, F025, F039, F040, F041, F042（标 needs-design 指向本文件）；F050 已在 ADR-024 注记并在第 8 步接线。
+F021, F022, F025, F039, F040, F041, F042, F091（标 needs-design 指向本文件）；F050 已在 ADR-024 注记并在第 8 步接线。
+
+> F091 落地说明：在第 2/3 环接通 `runtime_experiments` 读写时，同步给该表补 `requires_human_review`/`explorer_mode`/`rationale` 三列并补全 `to_row_payload`，加 payload↔row round-trip 测试（断言安全标记 `requires_human_review` 不丢）。

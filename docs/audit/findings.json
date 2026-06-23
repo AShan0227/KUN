@@ -1185,9 +1185,9 @@
       "detail": "runtime_experiments 表(kun/core/orm.py:514-539)没有 requires_human_review/explorer_mode/rationale 列，to_row_payload 也不输出这三个字段。自指实验落库后只剩 status='awaiting_human_review' 一根弦；若任何下游把 status 重置/流转，人审标记即丢失——目前靠 Gate 的独立 target_module 检查(L3.5 第二道)兜底才不出事。explorer_mode 与 rationale 的丢失则直接削弱实验审计链(Tester/复盘无法知道候选属于哪个 Explorer 模式、为何生成)。建议补列+补字段，或至少塞进 JSONB metadata。",
       "evidence": "to_row_payload 返回 dict 仅含 tenant_id/experiment_id/target_module/target_level/change_spec/rollout_mode/sampling_rate/success_metric/acceptance_threshold/rollback_on/ttl_seconds/status；RuntimeExperimentRow 同样无这三列",
       "source": "agents-brain",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "574eec6",
+      "notes": "to_row_payload 丢 requires_human_review/explorer_mode/rationale，因 runtime_experiments 表/ORM 无此三列；且 to_row_payload 无生产消费者(实验环 orphan)、Gate 有 L3.5 独立自指兜底，无 live 风险。并入 rsi-mainline-wiring.md，第 2/3 环接通时补列+补 payload+round-trip 测试。"
     },
     {
       "id": "F092",

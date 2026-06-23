@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 39 ｜ ⛔blocked 0 ｜ 📐needs-design 26 ｜ ⬜pending 108
+**总计 173 项** — ✅done 39 ｜ ⛔blocked 0 ｜ 📐needs-design 27 ｜ ⬜pending 107
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -109,7 +109,7 @@
 | F088 | medium | fix | ⬜ | TaskCheckpointService sequence 仅进程内单调，重启/多进程下产生重复 sequence | `/Users/petrarain/鲲/kun/agents/executor/checkpoin` |
 | F089 | medium | fix | ⬜ | Gate 自指能力 enable 强门禁可被绕过：metadata_lookup 缺省即跳过检查，approval  | `/Users/petrarain/鲲/kun/agents/gate/service.py:44` |
 | F090 | medium | fix | ⬜ | MultiJudge '多判官'实为同一模型同温度调 N 次，票相关性极高，多数票独立性假设不成立 | `/Users/petrarain/鲲/kun/agents/tester/multi_judge` |
-| F091 | medium | fix | ⬜ | StrategyExperiment.to_row_payload 丢弃 requires_human_review | `/Users/petrarain/鲲/kun/agents/strategist/service` |
+| F091 | medium | fix | 📐 | StrategyExperiment.to_row_payload 丢弃 requires_human_review | `/Users/petrarain/鲲/kun/agents/strategist/service` |
 | F092 | medium | fix | ✅ | _invoke_with_retry 无差别重试，叠加 SDK 内建重试与 CLI 长超时，最坏情况单次调用阻塞 2 | `kun/interface/llm/router.py:572-574` |
 | F093 | medium | fix | ⬜ | V6 Control Plane 全内存 + 本地 JSON 文件持久化：无租户隔离、无跨进程一致性，daemon  | `kun/api/control_plane.py:176-214,363-372;` |
 | F094 | medium | fix | ⬜ | Automation 层 Action.timeout_sec / max_retries 契约未实现；Shopif | `kun/interface/automation/api_base.py:25-96;` |
