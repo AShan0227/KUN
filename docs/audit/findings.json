@@ -366,9 +366,9 @@
       "detail": "orchestrator.stream 在调 LLM 前先跑 proactive_dispatch(orchestrator.py 第 753 到 760 行),默认与 yaml 触发器都含 python-exec: 正则匹配 python 围栏代码块命中即把代码原样交给 skill 调度执行。python_exec.py 用子进程跑 python3,沙箱仅限制工作目录到 tmp 下的 kun-skill-exec(sandbox.py 注释明确写这不是容器),代码可读 SSH 私钥、读环境变量、发网络请求,等同宿主机任意代码执行。关键失衡是 concurrency.py 对 send、delete、deploy、transfer 等关键词会走 pending_actions 审批门(orchestrator.py 第 582 行提前返回等待人工确认),而执行任意代码却在审批门之前无任何门、与 risk_level 无关地自动跑。鲲定位为会摄取外部内容的 Agent OS,攻击者可控内容里的 python 围栏块会被自动执行。建议把 python-exec 与 shell-exec 移出 proactive 自动执行白名单或强制走审批门加真实隔离。",
       "evidence": "DEFAULT_TRIGGERS 含 python-exec 触发器匹配 python 围栏块;config proactive_triggers.yaml 同样配置;python_exec 用子进程执行 python3 仅设置 cwd",
       "source": "eng-eval",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "(F003)",
+      "notes": "与 F003 同一 RCE：proactive 无审批自动执行用户消息里的 python 代码块。F003 已加 NEVER_PROACTIVE frozenset(python-exec/shell-exec) 在全部 3 个分发层强制跳过 + 移除 python-exec 触发器(proactive_tools.py:253 注释 \"Removed audit F003 RCE\")。F028 建议(移出自动白名单/走审批)正是 F003 所做。核实重复。"
     },
     {
       "id": "F029",
@@ -574,9 +574,9 @@
       "detail": "Anthropic Messages API 的 messages[] 只接受 user/assistant 角色, 但 invoke() 只特判了 system, tool 角色消息被原样塞进 messages。而长任务主循环 exec_loop 每轮工具执行后都会 append {\"role\": \"tool\", ...}(exec_loop.py:431-439), llm_invoker._dict_to_llm_message 也刻意保留 role=\"tool\"(llm_invoker.py:66-77)。结果: 一旦 AnthropicProvider 成为活跃 provider(ADR-002 第 2 优先级——CLI 不可用或被禁用时的直连 API 路径, 也是本次 diff 注释声称要切换过去的\"可靠路径\"), 任何带工具结果的第二步 LLM 调用必然 400 invalid_request_error, tenacity 再原样重试 3 次, 然后降级。对比: ClaudeCodeProvider 和 CodexMcpProvider 都把 tool 轮次压平成文本, 唯独 AnthropicProvider 没有。修复: 在 invoke() 里把 tool 角色折叠为 user 文本(内容已带 \"Tool result [id]:\" 前缀), 或实现真正的 tool_result content block。",
       "evidence": "anthropic_provider.py: for m in request.messages: if m.role == \"system\": continue; block = {\"role\": m.role, \"content\": m.content} —— m.role 可能为 \"tool\"; exec_loop.py:432: messages.append({\"role\": \"tool\", \"tool_id\": r.tool_id, ...})",
       "source": "diff-and-llm",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "716c836",
+      "notes": "抽 _to_anthropic_message：role=\"tool\" 消息转成 user 消息内的 tool_result content-block(type=tool_result + tool_use_id=tool_call_id + content)，按 claude-api 权威格式；Anthropic 不接受 role=\"tool\"，原透传致多轮工具循环必 400。+5 测试。"
     },
     {
       "id": "F045",

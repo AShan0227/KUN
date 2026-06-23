@@ -27,6 +27,7 @@ from kun.core.config import settings
 from kun.core.logging import get_logger
 from kun.core.metrics import llm_cost_usd, llm_latency_seconds, llm_request_total
 from kun.interface.llm.base import (
+    LLMMessage,
     LLMProvider,
     LLMRequest,
     LLMResponse,
@@ -74,6 +75,37 @@ _NO_SAMPLING_PARAM_MODELS: tuple[str, ...] = (
 def _accepts_temperature(model_id: str) -> bool:
     """Whether this model still accepts the `temperature` sampling param."""
     return not any(s in model_id for s in _NO_SAMPLING_PARAM_MODELS)
+
+
+def _to_anthropic_message(m: LLMMessage) -> dict[str, Any]:
+    """Map one LLMMessage to an Anthropic ``messages[]`` entry (audit F044).
+
+    ``role="tool"`` is NOT a valid Anthropic role — the API accepts only
+    user/assistant/system. Tool results must be a ``tool_result`` content block
+    inside a **user** message, keyed by the originating ``tool_use_id``. The old
+    code passed ``{"role": "tool", ...}`` straight through, so any multi-turn tool
+    loop returned a 400. (system is filtered out before this is called.)
+    """
+    if m.role == "tool":
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": m.tool_call_id or "",
+                    "content": m.content,
+                }
+            ],
+        }
+    if m.cache:
+        # Wrap as cache_control for prompt caching.
+        return {
+            "role": m.role,
+            "content": [
+                {"type": "text", "text": m.content, "cache_control": {"type": "ephemeral"}}
+            ],
+        }
+    return {"role": m.role, "content": m.content}
 
 
 def _map_finish_reason(
@@ -164,24 +196,9 @@ class AnthropicProvider(LLMProvider):
 
         # Split system from rest (Anthropic-specific API shape)
         system_text = "\n\n".join(m.content for m in request.messages if m.role == "system")
-        messages: list[dict[str, Any]] = []
-        for m in request.messages:
-            if m.role == "system":
-                continue
-            block: dict[str, Any] = {"role": m.role, "content": m.content}
-            if m.cache:
-                # Wrap as cache_control for prompt caching
-                block = {
-                    "role": m.role,
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": m.content,
-                            "cache_control": {"type": "ephemeral"},
-                        }
-                    ],
-                }
-            messages.append(block)
+        messages: list[dict[str, Any]] = [
+            _to_anthropic_message(m) for m in request.messages if m.role != "system"
+        ]
 
         kwargs: dict[str, Any] = {
             "model": self.model_id,
