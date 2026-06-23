@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -31,8 +32,30 @@ from kun.control_plane.qi_ab import (
 from kun.control_plane.runtime import WorkItemResult
 from kun.control_plane.v6 import WorkItem
 
-FRONTIER50_DEFAULT_WORKDIR = Path("/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10")
+# Audit F144: the AB workspace path used to be hardcoded to one developer's
+# absolute path. Keep it as a documented fallback but allow override via
+# KUN_FRONTIER50_WORKDIR so the runner works on any machine.
+_FRONTIER50_FALLBACK_WORKDIR = "/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10"
+
+
+def _default_workdir() -> Path:
+    return Path(os.getenv("KUN_FRONTIER50_WORKDIR", _FRONTIER50_FALLBACK_WORKDIR)).expanduser()
+
+
+FRONTIER50_DEFAULT_WORKDIR = _default_workdir()
 FRONTIER50_DEFAULT_COMMAND = "run_real_comparator_ab_external.command"
+
+# Audit F144: ``"ab" in text`` matched any word containing "ab" (database, table,
+# label, fabricate…). Match "ab" only as a hyphen/space-delimited token via word
+# boundaries. Real markers are hyphen-delimited (e.g. work-qi-ab-round-01), where
+# the hyphens are non-word chars, so \bab\b matches them while "database"/"table"
+# (no boundary around their "ab") do not.
+_AB_MARKER_RE = re.compile(r"\bab\b")
+
+
+def _mentions_frontier50_or_ab(text: str) -> bool:
+    lowered = text.lower()
+    return "frontier50" in lowered or bool(_AB_MARKER_RE.search(lowered))
 
 
 class ExternalCommandResult(BaseModel):
@@ -110,11 +133,11 @@ class Frontier50ExternalRoundRunner:
         self._executor = executor or _subprocess_executor
 
     def can_run(self, work_item: WorkItem) -> bool:
-        text = f"{work_item.work_item_id}\n{work_item.expected_output}".lower()
+        text = f"{work_item.work_item_id}\n{work_item.expected_output}"
         return (
             work_item.owner == "qi"
             and work_item.type == "test"
-            and ("frontier50" in text or "ab" in text)
+            and _mentions_frontier50_or_ab(text)
         )
 
     def run(self, work_item: WorkItem) -> WorkItemResult:
@@ -209,11 +232,11 @@ class Frontier50ExternalRuntimeRunner:
         self._executor = executor
 
     def can_run(self, work_item: WorkItem) -> bool:
-        text = f"{work_item.work_item_id}\n{work_item.expected_output}".lower()
+        text = f"{work_item.work_item_id}\n{work_item.expected_output}"
         return (
             work_item.owner == "qi"
             and work_item.type == "test"
-            and ("frontier50" in text or "ab" in text)
+            and _mentions_frontier50_or_ab(text)
         )
 
     def run(self, work_item: WorkItem) -> WorkItemResult:

@@ -1874,9 +1874,9 @@
       "detail": "FRONTIER50_DEFAULT_WORKDIR = Path(\"/Users/slyvan/Documents/Codex/...\")——当前机器用户是 petrarain，该默认值在本机必然不存在，凡未显式传 --frontier50-live-workdir 的路径都会静默走 _blocked_result_from_error。更重要的是两个 runner 的 can_run 判定为 `work_item.owner == \"qi\" and work_item.type == \"test\" and (\"frontier50\" in text or \"ab\" in text)`(112-118/211-217 行)：\"ab\" 是 about/available/table/enable 等常见词的子串，任何 qi 所属、文本里碰巧含这些词的 test 工作项都会被路由去执行外部 AB 基准 shell 命令(subprocess 跑 .command 脚本)。建议改为精确前缀匹配 work_item_id（如 work-qi-ab-）并删除硬编码路径默认值（改为必填或环境变量）。",
       "evidence": "FRONTIER50_DEFAULT_WORKDIR = Path(\"/Users/slyvan/Documents/Codex/2026-05-08/5-7-1-2-abtext-10\"); can_run: ... and (\"frontier50\" in text or \"ab\" in text)",
       "source": "cp-rest",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "2fe5d0d",
+      "notes": "默认 workdir 改 KUN_FRONTIER50_WORKDIR 可覆盖(_default_workdir，旧绝对路径降级为 fallback)；can_run 的 \"ab\" 子串匹配改 \\bab\\b 词边界(_mentions_frontier50_or_ab)，real marker work-qi-ab-round-01 仍匹配、database/table/label 不再误触。+两组测试。"
     },
     {
       "id": "F145",
