@@ -1232,10 +1232,16 @@ class InMemoryControlPlane:
             "execution_contract_ref": execution_contract.contract_id,
             "working_context_ref": working_context.working_context_id,
         }
+        # Audit F143: route the status change through the same state-machine guard
+        # the other transition sites use, instead of writing mission.status blind.
+        new_status = None
         if mission.status in {"delivering", "awaiting_acceptance"}:
-            update_payload["status"] = "changing_plan"
+            new_status = "changing_plan"
         elif mission.status in {"waiting_human", "waiting_external", "paused"}:
-            update_payload["status"] = "queued"
+            new_status = "queued"
+        if new_status is not None:
+            assert_transition_allowed(mission.status, new_status)
+            update_payload["status"] = new_status
         updated = mission.model_copy(update=update_payload)
         self.missions[mission_id] = updated
         self._persist_mission(updated)

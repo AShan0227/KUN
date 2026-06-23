@@ -1861,9 +1861,9 @@
       "detail": "transition_mission 是唯一调用 assert_transition_allowed 的入口，但 record_plan_change 直接用 model_copy 修改 status(delivering/awaiting_acceptance→changing_plan，waiting_human/waiting_external/paused→queued)，没有经过状态机校验，也没有为状态变化单独记 state_change 事件(只有 plan_change 事件捎带 after.status)。当前映射碰巧都在 _ALLOWED_TRANSITIONS 内，但对 closed/failed/cancelled 等终态 mission 调用时会静默记录新计划而 mission 留在终态，产生\"有活跃 plan 的死任务\"。这是状态机完整性的后门，未来加状态时容易引入非法迁移。建议：内部统一走 transition_mission，终态 mission 直接 raise。",
       "evidence": "if mission.status in {\"delivering\", \"awaiting_acceptance\"}: update_payload[\"status\"] = \"changing_plan\"\\nelif mission.status in {\"waiting_human\", \"waiting_external\", \"paused\"}: update_payload[\"status\"] = \"queued\"\\nupdated = mission.model_copy(update=update_payload)  # 无 assert_transition_allowed",
       "source": "cp-runtime",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "b8fa349",
+      "notes": "record_plan_change 的状态变更改走 assert_transition_allowed(与其他 4 处转移点一致)，不再盲写 mission.status；5 个既有转移均在允许表内、零行为变更，非法转移现在会抛而非静默。+6 测试。"
     },
     {
       "id": "F144",

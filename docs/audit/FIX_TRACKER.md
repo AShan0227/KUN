@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 53 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 85
+**总计 173 项** — ✅done 54 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 84
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -162,7 +162,7 @@
 | F141 | medium | fix | ⬜ | spark_world_run.py 未提交改动坦承 claude CLI OAuth 路径曾'silent stu | `scripts/spark_world_run.py:49-60` |
 | G10 | medium | fix | ⬜ | CI unit-tests 加覆盖率门槛(--cov-fail-under) | `.github/workflows/ci.yml,` |
 | F142 | low | architecture | ⬜ | 双运行时并存：control_plane 栈与 agents 7 角色栈模块级零耦合，Supervisor/Miss | `/Users/petrarain/鲲/kun/control_plane/kun_runtime` |
-| F143 | low | fix | ⬜ | record_plan_change 绕过状态机校验直接改 mission.status | `kun/control_plane/runtime.py:1203-1213` |
+| F143 | low | fix | ✅ | record_plan_change 绕过状态机校验直接改 mission.status | `kun/control_plane/runtime.py:1203-1213` |
 | F144 | low | fix | ✅ | frontier50_external：默认 workdir 硬编码他人机器绝对路径，can_run 用 "ab"  | `kun/control_plane/frontier50_external.py:34` |
 | F145 | low | fix | ✅ | cockpit._current_plan 用字典序比较计划版本，v10 < v9，多次改版后驾驶舱显示错误计划 | `kun/control_plane/cockpit.py:322` |
 | F146 | low | fix | ⬜ | Strategist 配额与探索惩罚硬编码 tenant_id='default'，多租户限流/惩罚失效 | `/Users/petrarain/鲲/kun/agents/strategist/service` |
