@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 171 项** — ✅done 9 ｜ ⛔blocked 0 ｜ 📐needs-design 5 ｜ ⬜pending 157
+**总计 171 项** — ✅done 10 ｜ ⛔blocked 0 ｜ 📐needs-design 5 ｜ ⬜pending 156
 严重度：critical 6 / high 56 / medium 82 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -35,7 +35,7 @@
 | F017 | high | fix | 📐 | productization.py 用硬编码评估结果把外部行为信号直通 production 能力，RSI 闭环自证 | `kun/control_plane/productization.py:2351` |
 | F018 | high | fix | ✅ | run_feature_activation_audit 对用户传入目录无条件 shutil.rmtree，存在数据 | `kun/control_plane/feature_activation_audit.py:21` |
 | F019 | high | fix | ⬜ | FileControlPlaneStore 每次单条写入都全量重读+全量重写快照，O(N²) 累积成本，且静默丢弃未 | `kun/control_plane/file_store.py:432` |
-| F020 | high | fix | ⬜ | tier3 验证聚合必崩：'ensemble' 不在 ValidatorKind Literal 中，Pydanti | `/Users/petrarain/鲲/kun/agents/tester/validation.` |
+| F020 | high | fix | ✅ | tier3 验证聚合必崩：'ensemble' 不在 ValidatorKind Literal 中，Pydanti | `/Users/petrarain/鲲/kun/agents/tester/validation.` |
 | F021 | high | fix | ⬜ | ADR-022 Layer4 防漂移闭环断链：Executor 自评 JSON 从不被解析，submit_self_ | `/Users/petrarain/鲲/kun/agents/exec_loop.py` |
 | F022 | high | fix | ⬜ | 监督线 RSI 主链(Supervisor→Strategist→Gate)无生产事件源接线，只在 demo 脚本里 | `/Users/petrarain/鲲/kun/agents/supervisor/service` |
 | F023 | high | fix | ✅ | JWT 鉴权 + RLS 子系统是死代码，生产 API/WS 完全信任客户端自报的租户与权限头 | `kun/api/main.py:226-255;` |

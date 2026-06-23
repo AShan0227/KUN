@@ -33,6 +33,10 @@ ValidatorKind = Literal[
     "ab_test",
     "redteam",
     "benchmark",
+    # Aggregate kind emitted by ValidationPipeline.aggregate() when more than one
+    # distinct validator kind participated (e.g. tier-3). Must be a member or the
+    # aggregated ValidationResult fails Pydantic validation and the tier crashes.
+    "ensemble",
 ]
 
 

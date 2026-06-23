@@ -262,9 +262,9 @@
       "detail": "ValidationPipeline.aggregate() 在多种 validator 混跑时把 validator_kind 设为 'ensemble'，但 ValidatorKind Literal 只含 single_judge/multi_judge/debate/ab_test/redteam/benchmark。已在仓库环境实测：构造 validator_kind='ensemble' 的 ValidationResult 直接抛 pydantic ValidationError。tier3(高风险+高复杂任务)固定跑 MultiJudge+DebateValidator 两种 validator，聚合必然走 'ensemble' 分支 → aggregate() 100% 抛错。调用方 orchestrator.py:1086/1470 用 try/except 包住并记成 validation.infrastructure_failure，后果是：风险最高的一档任务永远拿不到聚合验证结论，验证分数静默丢失、任务照常标 done。一行修复：把 'ensemble' 加进 ValidatorKind 或放宽该字段为 str。",
       "evidence": "ValidatorKind = Literal[\"single_judge\",\"multi_judge\",...]; aggregate(): validator_kind=kinds[0] if len(set(kinds))==1 else \"ensemble\"。实测: pydantic 报 \"Input should be 'single_judge', 'multi_judge', 'debate', 'ab_test', 'redteam' or 'benchmark' [type=literal_error, input_value='ensemble']\"",
       "source": "agents-brain",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "7b07171",
+      "notes": "把 \"ensemble\" 加入 ValidatorKind Literal（aggregate 多类型聚合时本就产出该值）。+3 回归测试(mixed→ensemble 不崩 / 单类型保留 / 空→None)。"
     },
     {
       "id": "F021",
