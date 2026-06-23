@@ -61,3 +61,4 @@
 2026-06-24 F143 ✅ — record_plan_change 状态变更走 assert_transition_allowed(消除状态机绕过)，零行为变更，+6 测试
 2026-06-24 F152 ✅ — skills/watchtower 默认路径缺失时回退 repo-root 锚定，非 repo-root 启动不再静默零加载，+3 测试
 2026-06-24 F154 ✅ — mission_director V6 单测关闭 V7 桥(autouse)，不再后台连 55432，单测密闭化，断言不变
+2026-06-24 F149 ✅ — shopify browser 读操作区分真成功/降级(page_confirmed)，加载失败→failed、成功标 navigation_only，+4 测试

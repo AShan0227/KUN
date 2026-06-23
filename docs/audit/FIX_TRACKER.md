@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 56 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 82
+**总计 173 项** — ✅done 57 ｜ ⛔blocked 0 ｜ 📐needs-design 35 ｜ ⬜pending 81
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -168,7 +168,7 @@
 | F146 | low | fix | ⬜ | Strategist 配额与探索惩罚硬编码 tenant_id='default'，多租户限流/惩罚失效 | `/Users/petrarain/鲲/kun/agents/strategist/service` |
 | F147 | low | fix | ⬜ | SupervisorService.observe 全程持单把全局锁跨 await DB/通知调用，监督线吞吐被串行 | `/Users/petrarain/鲲/kun/agents/supervisor/service` |
 | F148 | low | fix | ⬜ | Cockpit 端点用 query 参数 tenant_id（默认 "default"）绕过租户中间件，discip | `kun/api/cockpit.py:282-296,328-339;` |
-| F149 | low | fix | ⬜ | 平台 browser adapter 的读操作仅导航即返回 status=ok，假成功污染 AdapterRoute | `kun/interface/automation/shopify/browser.py:161-` |
+| F149 | low | fix | ✅ | 平台 browser adapter 的读操作仅导航即返回 status=ok，假成功污染 AdapterRoute | `kun/interface/automation/shopify/browser.py:161-` |
 | F150 | low | fix | ✅ | EntityType 枚举与 capability_cards DB CHECK 约束双向不一致(company v | `kun/datamodel/capability.py:22-28` |
 | F151 | low | fix | ⬜ | External Supervisor 自身可被提示词注入 + 解析兜底 fail-open + LLM 自由文本可 | `kun/external_supervisor/service.py:207` |
 | F152 | low | fix | ✅ | 技能注册表与 watchtower 规则用 cwd 相对默认路径，非 repo-root 启动时静默不加载 | `kun/skills/loader.py:162` |

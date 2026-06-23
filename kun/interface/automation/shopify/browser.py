@@ -49,7 +49,7 @@ _SELECTORS: dict[str, dict[str, str]] = {
     },
     "get_product": {
         "product_title": "h1.product-title",
-        "page_loaded": '[data-product-id]',
+        "page_loaded": "[data-product-id]",
     },
 }
 
@@ -67,9 +67,7 @@ class ShopifyBrowserAdapter(BrowserAdapter):
         page_factory: PageFactory | None = None,
         default_timeout_sec: float = 30.0,
     ) -> None:
-        super().__init__(
-            page_factory=page_factory, default_timeout_sec=default_timeout_sec
-        )
+        super().__init__(page_factory=page_factory, default_timeout_sec=default_timeout_sec)
         self._shop_domain = shop_domain
 
     def _build_url(self, op: str, payload: dict[str, Any]) -> str:
@@ -80,9 +78,7 @@ class ShopifyBrowserAdapter(BrowserAdapter):
                 path = path.replace(placeholder, str(value))
         return f"https://{self._shop_domain}{path}"
 
-    async def _do_execute(
-        self, action: Action, *, page: BrowserPage
-    ) -> ActionResult:
+    async def _do_execute(self, action: Action, *, page: BrowserPage) -> ActionResult:
         op = action.operation
         if op not in _OPERATION_PATHS:
             return ActionResult(
@@ -111,12 +107,15 @@ class ShopifyBrowserAdapter(BrowserAdapter):
 
         # 等页面 ready (loaded indicator)
         page_loaded_sel = selectors.get("page_loaded") or selectors.get("success_indicator")
+        # Audit F149: track whether the page actually loaded (selector appeared),
+        # not merely whether a selector was configured. None = couldn't check.
+        page_confirmed: bool | None = None
         if page_loaded_sel:
             try:
-                await page.wait_for_selector(
-                    page_loaded_sel, timeout=action.timeout_sec * 1000
-                )
+                await page.wait_for_selector(page_loaded_sel, timeout=action.timeout_sec * 1000)
+                page_confirmed = True
             except Exception as e:
+                page_confirmed = False
                 log.warning(
                     "shopify_browser.page_not_loaded",
                     operation=op,
@@ -159,17 +158,45 @@ class ShopifyBrowserAdapter(BrowserAdapter):
                 )
 
         elif op == "list_orders":
-            # 仅 navigate + 探活, 真 list 需要 page.locator(...).all() 在子类扩展
+            # Base stub: navigate + 探活 only; real listing needs page.locator(...).all()
+            # in a subclass. Audit F149: a confirmed-failed page load is a real failure
+            # (not "ok"); a successful nav is marked navigation_only so AdapterRouter's
+            # health score isn't inflated by a stub that extracted no order data.
+            if page_confirmed is False:
+                return ActionResult(
+                    action_id=action.action_id,
+                    status="failed",
+                    kind_used="browser",
+                    result_payload={"navigated_to": url},
+                    latency_ms=0.0,
+                    error="page load not confirmed (page_loaded selector timed out)",
+                )
             return ActionResult(
                 action_id=action.action_id,
                 status="ok",
                 kind_used="browser",
-                result_payload={"navigated_to": url, "page_loaded": page_loaded_sel is not None},
+                result_payload={
+                    "navigated_to": url,
+                    "page_loaded": page_confirmed,
+                    "navigation_only": True,
+                },
                 latency_ms=0.0,
-                rationale="shopify browser list_orders navigated",
+                rationale="shopify browser list_orders navigated (base stub: navigation only, no order data extracted)",
             )
 
         elif op == "get_product":
+            if page_confirmed is False:
+                return ActionResult(
+                    action_id=action.action_id,
+                    status="failed",
+                    kind_used="browser",
+                    result_payload={
+                        "navigated_to": url,
+                        "product_id": action.payload.get("product_id", ""),
+                    },
+                    latency_ms=0.0,
+                    error="page load not confirmed (page_loaded selector timed out)",
+                )
             return ActionResult(
                 action_id=action.action_id,
                 status="ok",
@@ -177,9 +204,11 @@ class ShopifyBrowserAdapter(BrowserAdapter):
                 result_payload={
                     "navigated_to": url,
                     "product_id": action.payload.get("product_id", ""),
+                    "page_loaded": page_confirmed,
+                    "navigation_only": True,
                 },
                 latency_ms=0.0,
-                rationale="shopify browser get_product navigated",
+                rationale="shopify browser get_product navigated (base stub: navigation only, no product data extracted)",
             )
 
         return ActionResult(
