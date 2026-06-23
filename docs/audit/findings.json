@@ -67,9 +67,9 @@
       "detail": "tenant_cross_access_attempt 被定义为 'Cross-tenant access attempts (CRITICAL alert)' 计数器，但在整个仓库（含 tests/scripts）grep 零引用、连 import 都没有，从未 .labels().inc()。更深层问题：应用层根本没有任何'检测到跨租户访问'的代码——跨租户隔离完全依赖 Postgres RLS（kun/core/db.py:114 _set_rls_context 设置 GUC），而 RLS 命中时是静默过滤行，不抛异常也不计数。结合上一轮已确认的'生产 API 零鉴权、X-Tenant-Id 被直接信任'，本应监控越权的指标永无产数。由于 /metrics 导出默认 registry 且该 series 从未被实例化，抓取时根本不出现该指标，任何基于它的越权告警（即便将来配上）都永远拿不到非零样本。结论：安全可观测性为零，越权事件在指标层完全不可见。",
       "evidence": "metrics.py:88-92 定义 `tenant_cross_access_attempt = Counter(\"kun_tenant_cross_access_attempt_total\", \"Cross-tenant access attempts (CRITICAL alert)\", [\"from_tenant\", \"to_tenant\"])`；全仓 `grep -rn tenant_cross_access_attempt --include=*.py` 仅命中 metrics.py 自身定义，无任何 emit。",
       "source": "extra:observability_metrics_emission_gap",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "3985513",
+      "notes": "加 _record_cross_tenant_attempt 检测点：非bypass session 显式 tenant_id≠ambient → emit kun_tenant_cross_access_attempt_total + CRITICAL log。检测+告警，暂不阻断(强制阻断列为后续硬化)。+5 离线测试。新增 tenancy.current_tenant_or_none()。"
     },
     {
       "id": "F006",

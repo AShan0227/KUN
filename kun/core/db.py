@@ -15,7 +15,11 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 from kun.core.config import settings
-from kun.core.tenancy import current_tenant
+from kun.core.logging import get_logger
+from kun.core.metrics import tenant_cross_access_attempt
+from kun.core.tenancy import current_tenant, current_tenant_or_none
+
+log = get_logger("kun.db")
 
 # Naming convention for constraints — keeps alembic migrations deterministic.
 NAMING_CONVENTION = {
@@ -87,6 +91,31 @@ def get_admin_sessionmaker() -> async_sessionmaker[AsyncSession]:
     return _admin_sessionmaker
 
 
+def _record_cross_tenant_attempt(*, tenant_id: str | None, bypass_rls: bool) -> None:
+    """Detect + record a cross-tenant access attempt (audit F005).
+
+    An explicit ``tenant_id`` overrides the RLS GUC, so opening a non-bypass
+    session for tenant B while the ambient request identity is tenant A operates
+    on B's data — exactly the cross-tenant access the metric must catch (RLS
+    cannot stop it; the GUC is set to B). bypass_rls sessions are the sanctioned
+    admin/system path and are exempt. Detection + CRITICAL log + metric only; it
+    does not block (enforcement is a separate hardening step).
+    """
+    if bypass_rls or not tenant_id:
+        return
+    explicit = tenant_id.strip()
+    if not explicit:
+        return
+    ambient = current_tenant_or_none()
+    if ambient is not None and ambient.tenant_id != explicit:
+        tenant_cross_access_attempt.labels(from_tenant=ambient.tenant_id, to_tenant=explicit).inc()
+        log.warning(
+            "security.cross_tenant_access_attempt",
+            from_tenant=ambient.tenant_id,
+            to_tenant=explicit,
+        )
+
+
 @asynccontextmanager
 async def session_scope(
     *,
@@ -100,6 +129,7 @@ async def session_scope(
     must opt into bypass_rls explicitly, which uses the admin DSN instead of a
     user-settable "bypass" flag.
     """
+    _record_cross_tenant_attempt(tenant_id=tenant_id, bypass_rls=bypass_rls)
     maker = get_admin_sessionmaker() if bypass_rls else get_sessionmaker()
     async with maker() as s:
         try:
