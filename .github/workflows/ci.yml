@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "鲲V1.1-dev"]
   pull_request:
-    branches: [main]
+    branches: [main, "鲲V1.1-dev"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -88,7 +88,6 @@ jobs:
       - run: uv sync --extra dev
       - run: uv run alembic upgrade head
       - run: uv run pytest tests/integration -q
-        continue-on-error: true  # ADR-013 integration tier 稳定前允许 soft-fail
 
   frontend:
     name: Frontend checks

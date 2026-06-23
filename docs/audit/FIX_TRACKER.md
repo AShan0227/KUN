@@ -2,13 +2,12 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 168 项**（critical 6 / high 54 / medium 81 / low 19 / meta 8）+ 54 条低危暂缓
-
-状态：⬜ pending ｜ ✅ done ｜ ⛔ blocked ｜ 📐 needs-design
+**总计 170 项** — ✅done 1 ｜ ⛔blocked 0 ｜ 📐needs-design 0 ｜ ⬜pending 169
+严重度：critical 6 / high 55 / medium 82 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
 |---|---|---|---|---|---|
-| G01 | meta | process | ⬜ | CI 门禁姿态从未被审计(最重要的元缺口): .github/workflows/ci.yml 中 typecheck( | `` |
+| G01 | meta | process | ✅ | CI 门禁姿态从未被审计(最重要的元缺口): .github/workflows/ci.yml 中 typecheck( | `` |
 | G02 | meta | process | ⬜ | 数据库 schema 与代码一致性(列级)未被验证: kun/core/orm.py 用 SQLAlchemy 声明式定 | `` |
 | G03 | meta | process | ⬜ | 可观测性是半空壳: kun/core/metrics.py 定义 15 个 Prometheus 采集器,实测仅 6 个 | `` |
 | G04 | meta | process | ⬜ | git 历史卫生与分支血缘混乱: 本机检出的是 鲲V1.1-dev,git log 显示 origin/main 反而是 | `` |
@@ -76,6 +75,7 @@
 | F058 | high | fix | ⬜ | dogfood_v14 / dogfood_v15：用 _StubLLM 跑 orchestrator，把'RSI 闭环 | `scripts/dogfood_v14_rsi_closed_loop_demo.py:127-` |
 | F059 | high | fix | ⬜ | dogfood_v12 / v13：调真 Haiku 但 PASS 判据只看 TrifectaState==OK，而 O | `scripts/dogfood_v13_orchestrator_trifecta_real_l` |
 | F060 | high | fix | ⬜ | multi_dim_test.py：10 维能力'打分'本质是 grep 文件是否存在 + git log 计数 + 读 | `scripts/multi_dim_test.py:96-412` |
+| G09 | high | fix | ⬜ | 清理 152 个 mypy 错误后把 CI typecheck 设为硬门禁 | `kun/` |
 | F061 | medium | fix | ⬜ | 同名函数重复定义，前一组被静默遮蔽成死代码且语义不同 | `kun/control_plane/daemon.py:5633` |
 | F062 | medium | fix | ⬜ | worker_pool>1 时 runner 在线程池内无锁迭代共享 dict，与 finish 写入并发可抛 Runt | `kun/control_plane/runtime.py:1326-1341` |
 | F063 | medium | fix | ⬜ | Context 资产层实际只有进程内内存实现：RedisAssetStore 从未接线，资产重启即丢、跨进程不一致，且没 | `kun/context/storage.py:166-174` |
@@ -157,6 +157,7 @@
 | F139 | medium | fix | ⬜ | v7_xb_smoke.py：用 StubProvider + 内存 fake session 跑一遍即 print ' | `scripts/v7_xb_smoke.py:296-372` |
 | F140 | medium | fix | ⬜ | dogfood_v10：lifecycle/auditor 表增长依赖手喂的'必过'GateService 输入；Mis | `scripts/dogfood_v10_trigger_xb_tables.py:104-131` |
 | F141 | medium | fix | ⬜ | spark_world_run.py 未提交改动坦承 claude CLI OAuth 路径曾'silent stub  | `scripts/spark_world_run.py:49-60` |
+| G10 | medium | fix | ⬜ | CI unit-tests 加覆盖率门槛(--cov-fail-under) | `.github/workflows/ci.yml,` |
 | F142 | low | architecture | ⬜ | 双运行时并存：control_plane 栈与 agents 7 角色栈模块级零耦合，Supervisor/Missio | `/Users/petrarain/鲲/kun/control_plane/kun_runtime` |
 | F143 | low | fix | ⬜ | record_plan_change 绕过状态机校验直接改 mission.status | `kun/control_plane/runtime.py:1203-1213` |
 | F144 | low | fix | ⬜ | frontier50_external：默认 workdir 硬编码他人机器绝对路径，can_run 用 "ab" 子串 | `kun/control_plane/frontier50_external.py:34` |

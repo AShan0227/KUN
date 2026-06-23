@@ -2095,9 +2095,9 @@
       "detail": "CI 门禁姿态从未被审计(最重要的元缺口): .github/workflows/ci.yml 中 typecheck(mypy) 与 integration-tests 两个 job 都是 continue-on-error:true(soft-fail),永不阻断合并；unit 测试无覆盖率门槛；CI 只在 push/pull_request 到 main 触发，而被审分支 鲲V1.1-dev 与 origin/main 已分叉 221 个 commit、orm.py 从 477 行涨到 1202 行/迁移从 10 涨到 18——该分支很可能从未跑过这套 CI。这是上一轮所有'死代码/类型错误/Literal 不匹配/漂移'类发现能大量存在的根因:门禁本身放行。上一轮无任何 finding 评估 CI 配置。",
       "evidence": "",
       "source": "critic-gap",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "23671b7",
+      "notes": "CI 现在在 鲲V1.1-dev 触发(push+PR) + 集成测试去 soft-fail。typecheck 仍 soft——阻塞于 152 个 mypy 错误，拆为 G09。unit 覆盖率门槛拆为 G10。"
     },
     {
       "id": "G02",
@@ -2189,6 +2189,32 @@
       "status": "pending",
       "commit": "",
       "notes": ""
+    },
+    {
+      "id": "G09",
+      "severity": "high",
+      "class": "fix",
+      "title": "清理 152 个 mypy 错误后把 CI typecheck 设为硬门禁",
+      "file": "kun/ (42 files), .github/workflows/ci.yml",
+      "detail": "mypy kun 当前 152 errors/42 files；清理后移除 typecheck job 的 continue-on-error。",
+      "evidence": "uv run mypy kun → Found 152 errors in 42 files",
+      "source": "G01-split",
+      "status": "pending",
+      "commit": "",
+      "notes": "大工程，建议分模块分批；可能需 needs-design 拆子项"
+    },
+    {
+      "id": "G10",
+      "severity": "medium",
+      "class": "fix",
+      "title": "CI unit-tests 加覆盖率门槛(--cov-fail-under)",
+      "file": ".github/workflows/ci.yml, pyproject.toml",
+      "detail": "当前 unit 测试无覆盖率门槛，可空心化仍绿。基线 82%，建议 --cov-fail-under=80。",
+      "evidence": "",
+      "source": "G01-split",
+      "status": "pending",
+      "commit": "",
+      "notes": "需确认 pytest-cov 配置"
     }
   ],
   "low_deferred": [
