@@ -2056,9 +2056,9 @@
       "detail": "复核任务要求确认的 events_published_total/events_outbox_lag 唯一 emit 点：events_published_total.labels(event_type).inc() 在 publish_to_nats()（events.py:160），events_outbox_lag.set(lag) 在 outbox_worker() 主循环（events.py:184）。两者都在生产后台 worker 路径（outbox_worker 注释明确'Start this as a background task on app startup'），是真实产数，非测试/demo。此条为正向确认，非缺陷：这两个指标可信。但需注意 events_published_total 只在 NATS publish 返回 True 时 +1，而注释承认这只代表写入客户端发送缓冲、非服务端持久化，因此该指标语义是'已尝试发布'而非'已可靠送达'，面板解读需小心。",
       "evidence": "events.py:160 `events_published_total.labels(event_type=event.event_type).inc()` 在 publish_to_nats；events.py:184 `events_outbox_lag.set(lag)` 在 outbox_worker while 循环内；events.py:170 注释 'Start this as a background task on app startup.'",
       "source": "extra:observability_metrics_emission_gap",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "2f6736a",
+      "notes": "正向确认(非缺陷)：events_published_total/events_outbox_lag 在生产 outbox_worker 路径真 emit。加 live-metrics 守护测试防误删。"
     },
     {
       "id": "F159",
@@ -2069,9 +2069,9 @@
       "detail": "复核确认：task_started_total(orchestrator.py:683)、task_duration_seconds(:1024)、task_surprise_score(:1030) 均在 Orchestrator.run()（:304 起的生产任务执行主路径）内 emit；watchtower_rule_latency_seconds(engine.py:135)、watchtower_intervention_rate(engine.py:144) 在 RuleEngine 规则评估主循环内 emit。这 5 个 + LLM 三件套 + events 两个 = 11 个指标确为生产产数，是真实可用的部分。此条为正向确认。唯一提示：watchtower_intervention_rate 带 tenant_id label，与 metrics.py 文件头的基数纪律一致（仅 cost/quality/security 计数器可带 tenant_id），但 task_duration_seconds/task_surprise_score 未带 tenant，跨租户成本/质量归因需结合日志。",
       "evidence": "orchestrator.py:683 task_started_total / :1024 task_duration_seconds / :1030 task_surprise_score 均在 run() 路径；engine.py:135 watchtower_rule_latency_seconds.observe / :144 watchtower_intervention_rate.inc 在 evaluate 主循环。",
       "source": "extra:observability_metrics_emission_gap",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "2f6736a",
+      "notes": "正向确认(非缺陷)：task_started_total/duration/surprise + watchtower_rule_latency/intervention_rate 在 Orchestrator.run/规则评估主循环真 emit。与 F158 合并的 live-metrics 守护测试覆盖这 10 个确认产数指标(LLM 三件套+events 两个+task 三个+watchtower 两个)。"
     },
     {
       "id": "F160",
