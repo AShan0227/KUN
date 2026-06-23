@@ -444,9 +444,9 @@
       "detail": "seeds/methodologies 的实际手写 schema 里 trigger、action、applicability 都是 dict（trigger 含 conditions 列表，action 含 pattern 列表，applicability 含 scopes 与 do_not_apply_when），但 load_methodologies 用 _listify 提取 trigger 与 action，而 _listify 只处理 None、str、list，遇到 dict 直接返回空列表。实测 33 条 seed 中 28 条的 triggers 与 actions 全部 listify 成空，applicability 也全空。这定义了 RSI 闭环读侧注入 LLM 的内容：render_for_system_prompt 因此对这 28 条只输出 title 加 description 第一行，丢掉最有价值的行动步骤。更糟的是相关度最高的 grep_verify_before_assume（实测 top1，相关度 0.33）正是 dict-action 那类，渲染出 0 条行动。单测用扁平 list schema 与生产 seed 不一致，所以没人发现。后果是核心 RSI 自进化机制名义接通、实际把蒸馏成果精华静默吞掉。",
       "evidence": "_listify 无 dict 分支，dict 落到末尾返回空列表；调用处 triggers 与 actions 都经 _listify(data.get(...))；实测 grep_verify entry 的 actions 与 applicability 均为空",
       "source": "integration-skills",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "fd7ae30",
+      "notes": "_listify 改递归：支持 dict 形 trigger/action/applicability（此前顶层 dict 直接返回 []，28/33 条 action 被丢）；anti_pattern 单复数都读。+4 测试（含真实 seeds 校验 ≥90% 有 actions）。"
     },
     {
       "id": "F035",

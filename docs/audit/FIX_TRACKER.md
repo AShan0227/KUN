@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 171 项** — ✅done 13 ｜ ⛔blocked 0 ｜ 📐needs-design 5 ｜ ⬜pending 153
+**总计 171 项** — ✅done 14 ｜ ⛔blocked 0 ｜ 📐needs-design 5 ｜ ⬜pending 152
 严重度：critical 6 / high 56 / medium 82 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -49,7 +49,7 @@
 | F031 | high | fix | ⬜ | Mode A / Mode B / 自嗨检测 / ExternalSupervisorPool 全是死代码, Gat | `kun/external_supervisor/modes.py:134` |
 | F032 | high | fix | ⬜ | 监督裁决全程 advisory-only: alarming 只发事件, 无任何消费者会暂停/终止主线 | `kun/engineering/long_task_orchestrator.py:931` |
 | F033 | high | fix | ⬜ | is_self_referential 漏判真实实现路径 — 自指护栏可被 kun/external_supervi | `kun/governance/self_referential.py:43` |
-| F034 | high | fix | ⬜ | 方法论 runtime loader 与 seeds YAML schema 不匹配，28/33 条方法论的 act | `kun/engineering/methodology_runtime_loader.py:20` |
+| F034 | high | fix | ✅ | 方法论 runtime loader 与 seeds YAML schema 不匹配，28/33 条方法论的 act | `kun/engineering/methodology_runtime_loader.py:20` |
 | F035 | high | fix | ⬜ | shell-exec 与 python-exec 对 LLM 生成命令无命令级过滤；SkillManifest 的  | `kun/skills/builtin/shell_exec.py:46` |
 | F036 | high | architecture | ⬜ | ADR-020 钦定架构与实际代码根本背离：control_plane 应消失却翻倍至全包 50% | `/Users/petrarain/鲲/decisions.md:380` |
 | F037 | high | architecture | ⬜ | game_production.py 膨胀根因：平台层硬编码特定游戏的产品代码补丁与交付物，非业务复杂度 | `/Users/petrarain/鲲/kun/control_plane/game_produc` |

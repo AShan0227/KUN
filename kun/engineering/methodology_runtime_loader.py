@@ -200,7 +200,9 @@ def load_methodologies(
             description=str(data.get("description", "")),
             triggers=_listify(data.get("trigger")),
             actions=_listify(data.get("action")),
-            anti_patterns=_listify(data.get("anti_pattern")),
+            # Seeds use both "anti_patterns" (plural) and "anti_pattern" — read
+            # both so neither spelling is silently dropped (audit F034).
+            anti_patterns=_listify(data.get("anti_patterns")) + _listify(data.get("anti_pattern")),
             applicability=_listify(data.get("applicability")),
             confidence=str(data.get("confidence", "medium")),
             lifecycle_stage=stage,
@@ -217,25 +219,34 @@ def load_methodologies(
 
 
 def _listify(raw: Any) -> list[str]:
-    """yaml may give a list of dicts ({condition: '...'}) or a list of
-    strings or a single string. Normalize all to a flat list[str]."""
-    if raw is None:
-        return []
-    if isinstance(raw, str):
-        return [raw.strip()] if raw.strip() else []
-    if isinstance(raw, list):
-        out: list[str] = []
-        for item in raw:
-            if isinstance(item, str):
-                if item.strip():
-                    out.append(item.strip())
-            elif isinstance(item, dict):
-                # Common shape: {condition: '...'} or {do: '...'}
-                for v in item.values():
-                    if isinstance(v, str) and v.strip():
-                        out.append(v.strip())
-        return out
-    return []
+    """Normalize a methodology field to a flat list[str].
+
+    YAML fields come in several shapes: a string; a list (of strings or
+    {key: value} dicts); or a *mapping* whose values are themselves lists /
+    strings / nested mappings — e.g. ``trigger: {conditions: [...],
+    signals_from: [...]}`` or ``action: {required_sections: [...],
+    dependency_ordering: {description: ..., rule: ...}}``. The previous version
+    returned [] for a top-level mapping, so every structured seed lost its
+    actions / triggers / applicability (audit F034: 28/33 dropped). Recurse and
+    collect all leaf strings instead.
+    """
+    out: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, str):
+            s = node.strip()
+            if s:
+                out.append(s)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+        elif isinstance(node, dict):
+            for v in node.values():
+                _walk(v)
+        # numbers / bools / None: nothing to collect
+
+    _walk(raw)
+    return out
 
 
 # ============================================================
