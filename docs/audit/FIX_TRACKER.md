@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 40 ｜ ⛔blocked 0 ｜ 📐needs-design 27 ｜ ⬜pending 106
+**总计 173 项** — ✅done 41 ｜ ⛔blocked 0 ｜ 📐needs-design 27 ｜ ⬜pending 105
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -112,7 +112,7 @@
 | F091 | medium | fix | 📐 | StrategyExperiment.to_row_payload 丢弃 requires_human_review | `/Users/petrarain/鲲/kun/agents/strategist/service` |
 | F092 | medium | fix | ✅ | _invoke_with_retry 无差别重试，叠加 SDK 内建重试与 CLI 长超时，最坏情况单次调用阻塞 2 | `kun/interface/llm/router.py:572-574` |
 | F093 | medium | fix | ⬜ | V6 Control Plane 全内存 + 本地 JSON 文件持久化：无租户隔离、无跨进程一致性，daemon  | `kun/api/control_plane.py:176-214,363-372;` |
-| F094 | medium | fix | ⬜ | Automation 层 Action.timeout_sec / max_retries 契约未实现；Shopif | `kun/interface/automation/api_base.py:25-96;` |
+| F094 | medium | fix | ✅ | Automation 层 Action.timeout_sec / max_retries 契约未实现；Shopif | `kun/interface/automation/api_base.py:25-96;` |
 | F095 | medium | fix | ✅ | Event.build 生成的 NATS subject 域名段重复，与文档约定不符且已被测试固化 | `kun/datamodel/events.py:104-105` |
 | F096 | medium | fix | ✅ | TaskMeta 的 L1 字段 complexity / priority_profile / estimated | `kun/datamodel/task.py:57-62` |
 | F097 | medium | fix | ✅ | 5 个 ADR-016 指标定义后从未被更新，其中含安全告警指标 tenant_cross_access_attem | `kun/core/metrics.py:19-92` |

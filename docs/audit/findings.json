@@ -1224,9 +1224,9 @@
       "detail": "api_base.py 文档声称 '通用部分 (timeout / retry / auth / health_check) 由 base 处理'，实际：APIAdapter.execute 无任何 asyncio.wait_for，_default_timeout 存而不用（API 路径挂起即永久挂起，浏览器路径靠 page.goto 的 timeout 参数兜一部分）；Action.max_retries 在 adapter/router 任何一层都没实现；HttpCaller 签名是 (method, url, body)，没有 headers 通道，ShopifyAPIAdapter 收的 access_token 除了 health_check 的 None 判断外永远到不了请求头——auth 只能靠调用方在 http_caller 闭包里自带 token，构造参数纯属误导；APIAdapter.health_check 默认返回 True，未实现探活的 adapter 会被 AdapterRouter 一直当健康节点选中。这层是 L6 商业化主路径（automation_runner.py 已接线），上真实平台前需把 timeout/retry/auth 合同补实。",
       "evidence": "api_base.py:70 result = await self._do_execute(action, http_caller=self._http_caller) — 无 wait_for；HttpCaller = Callable[[str, str, dict | None], Awaitable[dict]]（无 headers）；api_base.py:94-96 async def health_check(self) -> bool: return True；shopify/api.py 中 _access_token 仅出现在 __init__ 与 health_check 的 None 判断",
       "source": "api-interface",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "ddfc4f2",
+      "notes": "APIAdapter.execute 落实 timeout_sec(asyncio.wait_for 每次尝试)+max_retries(作为最大尝试数,默认1=原行为);仅对 timeout/异常重试,业务 failed 结果不重试(防非幂等外部调用重复执行);注释标注幂等前提。+4 测试。"
     },
     {
       "id": "F095",

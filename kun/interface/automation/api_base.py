@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from abc import abstractmethod
 from collections.abc import Awaitable, Callable
@@ -45,9 +46,7 @@ class APIAdapter(AutomationAdapter):
         self._default_timeout = default_timeout_sec
 
     @abstractmethod
-    async def _do_execute(
-        self, action: Action, *, http_caller: HttpCaller
-    ) -> ActionResult:
+    async def _do_execute(self, action: Action, *, http_caller: HttpCaller) -> ActionResult:
         """子类实现具体 API 调用逻辑.
 
         http_caller 由 base 注入 (生产 httpx, 测试 fake).
@@ -55,7 +54,18 @@ class APIAdapter(AutomationAdapter):
         raise NotImplementedError
 
     async def execute(self, action: Action) -> ActionResult:
-        """通用 execute — 调子类 _do_execute + timing + error wrapping."""
+        """通用 execute — 调子类 _do_execute + timeout + retry + timing + error wrapping.
+
+        Audit F094: honor the Action contract the base docstring promised.
+        - ``timeout_sec`` bounds each attempt via ``asyncio.wait_for``.
+        - ``max_retries`` is the max number of ATTEMPTS (default 1 → single attempt,
+          i.e. unchanged behavior). We retry ONLY on timeout/exception (transient),
+          never on a returned status="failed" ActionResult (a real business failure
+          must surface immediately, not be re-run).
+
+        Caveat: a retry re-invokes the external SaaS call, which is only safe for
+        idempotent operations. Default max_retries=1 means callers opt in explicitly.
+        """
         if self._http_caller is None:
             return ActionResult(
                 action_id=action.action_id,
@@ -65,31 +75,51 @@ class APIAdapter(AutomationAdapter):
                 latency_ms=0.0,
                 error="no http_caller injected; production needs httpx",
             )
-        started = time.perf_counter()
-        try:
-            result = await self._do_execute(action, http_caller=self._http_caller)
-        except Exception as e:
-            latency = (time.perf_counter() - started) * 1000
-            log.warning(
-                "api_adapter.execute_failed",
-                platform=self.platform,
-                operation=action.operation,
-                error=str(e),
-            )
-            return ActionResult(
-                action_id=action.action_id,
-                status="failed",
-                kind_used=self.kind,
-                result_payload={},
-                latency_ms=latency,
-                error=str(e),
-            )
-        # 子类可能没设 latency_ms — 用 base 算的
-        if result.latency_ms == 0.0:
-            from dataclasses import replace
+        attempts = max(1, action.max_retries)
+        last_error = "unknown"
+        for attempt in range(attempts):
+            started = time.perf_counter()
+            try:
+                result = await asyncio.wait_for(
+                    self._do_execute(action, http_caller=self._http_caller),
+                    timeout=action.timeout_sec,
+                )
+            except TimeoutError:
+                last_error = f"timeout after {action.timeout_sec}s"
+                log.warning(
+                    "api_adapter.execute_timeout",
+                    platform=self.platform,
+                    operation=action.operation,
+                    attempt=attempt + 1,
+                    timeout_sec=action.timeout_sec,
+                )
+                continue
+            except Exception as e:
+                last_error = str(e)
+                log.warning(
+                    "api_adapter.execute_failed",
+                    platform=self.platform,
+                    operation=action.operation,
+                    attempt=attempt + 1,
+                    error=str(e),
+                )
+                continue
+            # Success path — a returned ActionResult (even status="failed") is a
+            # definitive business outcome and is NOT retried.
+            if result.latency_ms == 0.0:
+                from dataclasses import replace
 
-            result = replace(result, latency_ms=(time.perf_counter() - started) * 1000)
-        return result
+                result = replace(result, latency_ms=(time.perf_counter() - started) * 1000)
+            return result
+        # All attempts exhausted on transient failures.
+        return ActionResult(
+            action_id=action.action_id,
+            status="failed",
+            kind_used=self.kind,
+            result_payload={},
+            latency_ms=0.0,
+            error=last_error,
+        )
 
     async def health_check(self) -> bool:
         """默认: 任何子类没 override 时返回 True. 子类应实现真探活."""
