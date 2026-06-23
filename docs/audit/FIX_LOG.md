@@ -16,3 +16,4 @@
 2026-06-23 F027 ✅ — 长任务重复终结事件+非流式崩溃：过滤 LT 终结事件 + run() 守卫 result 键，+2 测试
 2026-06-23 F013 ✅ — 人工验收否定句误判 accepted：加否定守卫→rework_required，+10 测试
 2026-06-23 F034 ✅ — 方法论 loader 支持 dict 形字段(_listify 递归)，恢复 RSI 读侧丢失的 action，+4 测试
+2026-06-23 F019 📐 — needs-design：FileControlPlaneStore O(N²) 写放大 + 静默丢未知字段，写方案 docs/audit/proposals/F019.md（持久层重设计，不硬改）

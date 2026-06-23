@@ -249,9 +249,9 @@
       "detail": "这是生产持久层（kun/api/main.py:76 与 CLI daemon 都用它）。_put_and_persist 在非事务路径下：取 flock → _load_from_disk_locked()（用 pydantic 重新校验文件里全部 13 类记录）→ 写入单条 → 全量 json.dump + fsync + 目录 fsync。LedgerEvent 只增不减，长任务 daemon 每条账本事件的写入成本随历史线性增长，整体 O(N²)；多 daemon 副本共享同一 store 时所有写入在一把进程间 flock 上串行，与 work_item_governance 设计的多 worker 池目标冲突。另外 _load_bucket(412-431 行)按当前模型的 model_fields 过滤后再校验，未知字段被静默丢弃——多版本进程混跑（项目刚做过 \"discipline reports → PG\" 这类多进程部署迁移）时，旧版本进程一次写入就会把新版本写的字段从快照里抹掉，schema_version 恒为 1 无法拦截。建议尽快落地 SQL/append-only ledger 后端，或至少把 ledger_events 拆为追加式 jsonl。",
       "evidence": "with self._interprocess_locked():\\n    self._load_from_disk_locked()\\n    ...\\n    stored = active_bucket.put(record)\\n    self._persist_unlocked()  # 全量 dump + fsync; _load_bucket: raw_record = {f: raw_record[f] for f in model.model_fields if f in raw_record}",
       "source": "cp-rest",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "6172114",
+      "notes": "持久层重设计：O(N²) 全量重写需改存储格式/刷盘策略(脏标记防抖→分片→append-log)，未知字段保留需 extra=allow/envelope。方案见 docs/audit/proposals/F019.md。与 F011/F014/F015 一致性簇一并排期。不在 loop 内硬改。"
     },
     {
       "id": "F020",
