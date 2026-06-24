@@ -251,7 +251,7 @@
       "source": "cp-rest",
       "status": "needs-design",
       "commit": "6172114",
-      "notes": "持久层重设计：O(N²) 全量重写需改存储格式/刷盘策略(脏标记防抖→分片→append-log)，未知字段保留需 extra=allow/envelope。方案见 docs/audit/proposals/F019.md。与 F011/F014/F015 一致性簇一并排期。不在 loop 内硬改。"
+      "notes": "持久层重设计：O(N²) 全量重写需改存储格式/刷盘策略(脏标记防抖→分片→append-log)，未知字段保留需 extra=allow/envelope。方案见 docs/audit/proposals/F019.md。与 F011/F014/F015 一致性簇一并排期。不在 loop 内硬改。 [Loop-2 TIER-2 #1] 决议草案见 docs/audit/proposals/drafts/ADR-027-persistence-redesign.md(DB 落库+RLS、版本号/CAS、append-only ledger+sequence、artifact 分页/TTL、shadow-write→backfill→flip 迁移、分步验证),待人审。F019 维持 needs-design/needs-review。"
     },
     {
       "id": "F020",
