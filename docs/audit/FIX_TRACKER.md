@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md) / [LOOP2_PLAN.md](LOOP2_PLAN.md)
 
-**总计 173 项** — ✅done 84 ｜ ⏸deferred 1 ｜ 📐needs-design 88 ｜ 🔍needs-review 0 ｜ ⬜pending 0
+**总计 173 项** — ✅done 85 ｜ ⏸deferred 1 ｜ 📐needs-design 87 ｜ 🔍needs-review 0 ｜ ⬜pending 0
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -172,7 +172,7 @@
 | F150 | low | fix | ✅ | EntityType 枚举与 capability_cards DB CHECK 约束双向不一致(company v | `kun/datamodel/capability.py:22-28` |
 | F151 | low | fix | 📐 | External Supervisor 自身可被提示词注入 + 解析兜底 fail-open + LLM 自由文本可 | `kun/external_supervisor/service.py:207` |
 | F152 | low | fix | ✅ | 技能注册表与 watchtower 规则用 cwd 相对默认路径，非 repo-root 启动时静默不加载 | `kun/skills/loader.py:162` |
-| F153 | low | fix | 📐 | /cockpit 页面的 API 路径未配置 rewrite, 同源部署下整页必然 404; dev 端口 3001 | `frontend/next.config.mjs:7-11` |
+| F153 | low | fix | ✅ | /cockpit 页面的 API 路径未配置 rewrite, 同源部署下整页必然 404; dev 端口 3001 | `frontend/next.config.mjs:7-11` |
 | F154 | low | fix | ✅ | 单测非密闭: mission_director 单测真连 localhost:55432，错误被静默吞掉 | `kun/control_plane/mission_director.py:135-148` |
 | F155 | low | fix | ✅ | 5 个有生产调用方的模块在 unit+integration 双套件下覆盖率为 0% | `kun/governance/evidence_ledger.py:1` |
 | F156 | low | fix | ✅ | spark_world_run.py 注释与代码互相矛盾, env 操作埋下回切陷阱 | `scripts/spark_world_run.py:49-60` |

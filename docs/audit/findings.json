@@ -1991,9 +1991,9 @@
       "detail": "next.config.mjs rewrites 只代理 /api/:path*、/nuo/:path* 和 /ws, 而 cockpit 页面经 kunApiClient 请求的是 /cockpit/writes-status 等裸前缀路径 (后端 cockpit.py:48 prefix=\"/cockpit\")。kunApiClient.apiOrigin (kunApiClient.ts:11-19) 仅当 http + 端口 3000/3001 时直连 :8000, 其余情况返回同源——即任何不设 NEXT_PUBLIC_API_ORIGIN 的生产/预发同源部署下, cockpit 页面 5 个面板全部打到 Next 自身 404, r.json() 抛 SyntaxError。另外 dev fallback 里的 3001 端口与后端默认 CORS (config.py:102 api_cors_origins=\"http://localhost:3000\") 不匹配, 3001 起的 dev 实例请求会被浏览器拦截。修法很简单: rewrites 加一条 /cockpit/:path*, 或 cockpit 端点统一挂到 /api 前缀下; 同时建议统一 '直连 vs rewrite' 两套策略 (目前 HTTP dev 直连、WS 与 nuo 页走 rewrite, 三种姿势并存)。",
       "evidence": "next.config.mjs rewrites 仅 `/api/:path*`、`/nuo/:path*`、`/ws` 三条; cockpit/page.tsx:124 `apiFetch(`/cockpit/writes-status`)`; kunApiClient.ts:15-18 `if (protocol === \"http:\" && (port === \"3000\" || port === \"3001\")) return ...:8000; return `${protocol}//${host}``",
       "source": "frontend",
-      "status": "needs-design",
-      "commit": "d6bc7f7",
-      "notes": "/cockpit/* 无 rewrite 同源必 404 + dev 3001 被 CORS 拒(near-trivial 一行修复)；并入 docs/audit/proposals/frontend-gaps.md。"
+      "status": "done",
+      "commit": "f5183ce",
+      "notes": "[Loop-2 #10] next.config.mjs 加 /cockpit/:path* rewrite(与 /api、/nuo 同型,node --check 通过);dev CORS 不改后端 config 默认,改在 .env.example CORS 注释说明多端口设法。残留:需在跑起来的 Next dev+后端栈目视确认 /cockpit 不再 404(前端 pytest 不覆盖,改动高把握但未端到端跑过),见 frontend-gaps.md。"
     },
     {
       "id": "F154",

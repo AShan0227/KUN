@@ -8,6 +8,10 @@ const nextConfig = {
     return [
       { source: "/api/:path*", destination: `${apiOrigin}/api/:path*` },
       { source: "/nuo/:path*", destination: `${apiOrigin}/nuo/:path*` },
+      // Audit F153: cockpit/page.tsx fetches /cockpit/* (writes-status,
+      // capabilities, supervisor, ensemble, missions). Without this rewrite those
+      // hit the Next server (404) instead of being proxied to the API origin.
+      { source: "/cockpit/:path*", destination: `${apiOrigin}/cockpit/:path*` },
       { source: "/ws", destination: `${apiOrigin}/ws` },
     ];
   },

@@ -17,7 +17,7 @@
 | **F106** | `layout.tsx` 导航含 `/billing`、`/account` 两个链接，但 `frontend/src/app/` 下**无** billing/account 路由目录(ls 确认)→ 必 404；且用对象字面量 `href={{pathname:...}}` 绕过 Next typedRoutes 检查。 |
 | **F107** | `cockpit/page.tsx`(及 control-plane)的 fetch 由 `onChange`/`useEffect` 触发，无 `AbortController`/请求取消、无竞态防护——每次 keystroke 触发整组请求，旧响应可覆盖新响应。 |
 | **F108** | `page.tsx` WS `onclose` 仅 `setConnected(false)`，**无重连**；`messages`/`side` 数组 `setMessages([...m, new])` **无上限增长**。后端重启后 UI 永久停在"未连接"。 |
-| **F153** | `cockpit/page.tsx` 全部 fetch `/cockpit/*`(writes-status/capabilities/supervisor/ensemble/missions，:124-192)，但 `frontend/next.config.mjs:7-11` rewrites 只覆盖 `/api/:path*`、`/nuo/:path*`、`/ws`——**无 `/cockpit/:path*`**→ 同源部署下整页 API 必 404(打到 Next server 而非后端)。另 dev 端口 3001 被后端默认 CORS(`config.py:102` 仅 `http://localhost:3000`)拒。 | next.config.mjs rewrites 加 `{ source: "/cockpit/:path*", destination: ${apiOrigin}/cockpit/:path* }`(一行)；dev 把 3001 加入 `KUN_API_CORS_ORIGINS`(或统一走同源 rewrite 免 CORS)。near-trivial 真修复，但需 Next dev server + 后端联调验证，故归 needs-design。 |
+| **F153** | ~~`cockpit/page.tsx` fetch `/cockpit/*` 无 rewrite → 同源 404~~ **已 land(Loop-2 #10)**：`frontend/next.config.mjs` rewrites 加了 `{ source: "/cockpit/:path*", destination: ${apiOrigin}/cockpit/:path* }`(与既有 /api、/nuo 同型，`node --check` 语法通过)。dev CORS：**不改后端 config 运行时默认**，在 `.env.example` CORS 注释说明 dev 多端口时设 `KUN_API_CORS_ORIGINS=http://localhost:3000,http://localhost:3001`。 | ✅ rewrite + CORS 文档已落地。**残留(需人)**：在跑起来的 Next dev + 后端栈里目视确认 /cockpit 页面请求被代理、不再 404(前端 pytest 不覆盖，改动是与现有可用 rewrite 同型的一行，高把握但未端到端跑过)。 |
 
 ## 2. 处理方向
 
