@@ -1276,9 +1276,9 @@
       "detail": "importance.py 实现了完整的 semantic/frequency/recency 加权 + 半衰期 + review_needed 复审信号(232 行)，但全库只有单测引用，生产路径零调用。ContextPacker._score_asset 用的是另一套 ad-hoc 打分(词项重叠+tag bonus+access bonus)，连 _terms() 函数都和 importance.py 原样复制了一份(packer.py:141 vs importance.py:210)。结果是『统一打分(ADR-018 §16.1 ScoreDescriptor)』在 context 子系统是双轨：文档宣称的重要度/衰减/复审管线对实际行为无影响。建议让 packer 复用 ImportanceScorer(它本就支持无 embedding 的词法兜底)，删掉重复实现。",
       "evidence": "grep ImportanceScorer 在 kun/ 下仅 importance.py 自身；packer.py:141 与 importance.py:210 存在逐字相同的 `def _terms(text)`",
       "source": "core-data",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "PENDING",
+      "notes": "ImportanceScorer 零生产调用方 + packer 重复词法打分(逐字重复 _terms)；ADR-018 §16.1 ScoreDescriptor 未在 context 落地。并入 docs/audit/proposals/architecture-debt.md §1b(复用 ImportanceScorer 或删死码)。"
     },
     {
       "id": "F099",
@@ -1783,9 +1783,9 @@
       "detail": "env.py:9 `import kun.core.orm` + env.py:26 `target_metadata = Base.metadata` 表明设计本意是靠 autogenerate/`alembic check` 对齐 ORM 与迁移。但实测 `uv run alembic check` 在无 DB 时直接抛 OSError（asyncpg 连 127.0.0.1:55432 被拒，env.py:24 强制用 pg_admin_dsn 真连库），即 alembic check 不能离线给出 metadata diff，必须有活的 Postgres。结合 CI 从不跑该命令，导致上面所有 CHECK 约束漂移（0011/0012 八表）、entity_type 枚举不一致长期无守门。影响：双轨 schema 漂移无自动检测，本次发现的多处不一致正是这一缺口的产物。建议：CI 加一步起临时 PG + `alembic upgrade head` + `alembic check`（顺带能抓到本报告第 1 条 0009 的崩溃）。",
       "evidence": "env.py:24 config.set_main_option(\"sqlalchemy.url\", settings().pg_admin_dsn)；实跑 alembic check → OSError: Connect call failed ('127.0.0.1', 55432)（无离线 diff 能力）",
       "source": "extra:db_schema_orm_migration_drift",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "superseded",
+      "notes": "STALE/已解决：CI 实际已跑 alembic check(.github/workflows/ci.yml:93，由 F052 加)，下游漂移由 F157 修复。本条是 F052 的重复，无残留工作。"
     },
     {
       "id": "F138",
@@ -1848,9 +1848,9 @@
       "detail": "跨模块 import 统计显示 control_plane→agents 和 agents→control_plane 均为 0 条边——45k 行的 V6/V7 产品运行时完全不使用 ADR-020 的 7 agent 体系，仅有 2 处函数内延迟 import 桥接(kun_runtime_runner.py:430 调 engineering.Orchestrator；daemon.py:806 调 integration.mission_director_v7_bridge)。角色实现重复：control_plane/supervisor.py(MinimalSupervisor) vs agents/supervisor/service.py(589 行)；control_plane/mission_director.py(972 行) vs agents/mission_director/service.py(324 行)。ADR-020 的 L2 运行层('主线+监督线')在代码里有两套竞争实现：engineering/orchestrator+agents services 一套，control_plane/daemon(6,927 行) 一套，cli.py 15 处 import 走 control_plane、api/main.py 主要走 engineering——同一平台两条互不复用的执行通路。影响：RSI 闭环在 agents 栈沉淀的能力(capability card/seeds)默认到不了 control_plane 跑的生产任务，X.G/X.H 系列 commit 就是在补这类'orphan wiring'，属双轨架构的持续性税收。",
       "evidence": "精确 import 矩阵: control_plane→agents: 0, agents→control_plane: 0; control_plane 内部边 151 条; kun_runtime_runner.py:430-433: `from kun.engineering.orchestrator import Orchestrator` (函数内); daemon.py:806: `from kun.integration.mission_director_v7_bridge import` (函数内)",
       "source": "architecture",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "needs-design",
+      "commit": "PENDING",
+      "notes": "即 F036 的另一表述(control_plane↔agents 模块级零 import + 重复实现 + 双入口)；无独立设计，随 F036 裁决落地。并入 docs/audit/proposals/architecture-debt.md §1b。"
     },
     {
       "id": "F143",
@@ -2108,9 +2108,9 @@
       "detail": "数据库 schema 与代码一致性(列级)未被验证: kun/core/orm.py 用 SQLAlchemy 声明式定义 26 张表,alembic/versions 用手写 op.create_table 平行维护;alembic/env.py 设了 target_metadata=Base.metadata 但 CI 只跑 `alembic upgrade head`,从无 `alembic check`/autogenerate-diff。表名级一致(已核对 26 张 ORM 表均有迁移),但列/类型/CHECK/枚举级漂移无任何自动化拦截,且本机 Docker 关停无法手验。上一轮只报过零散 ADR-016 指标定义漂移,未系统比对 ORM↔迁移。",
       "evidence": "",
       "source": "critic-gap",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "rollup",
+      "notes": "meta 审计维度(roll-up，同 G01 处理范式)：其具体子项已分解为 F-findings(done / needs-design / deferred)，无维度级独立残留工作。详见对应 proposals 与 FIX_TRACKER。"
     },
     {
       "id": "G03",
@@ -2121,9 +2121,9 @@
       "detail": "可观测性是半空壳: kun/core/metrics.py 定义 15 个 Prometheus 采集器,实测仅 6 个有 emit 调用点且全部集中在 kun/interface/llm/*(LLM provider);9 个零 emit——其中包括安全指标 tenant_cross_access_attempt(0)、成本失控 llm_cost_runaway_total(0)、watchtower_intervention_rate(0)、context_cache_hit_rate(0)、task_started_total(0)。/metrics 端点真实存在但导出的多数 series 永远为空,Grafana/Prometheus 仪表盘据此判断系统健康会得到虚假绿灯。上一轮仅报'5 个 ADR-016 指标从未更新',未量化这是系统性缺口。",
       "evidence": "",
       "source": "critic-gap",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "rollup",
+      "notes": "meta 审计维度(roll-up，同 G01 处理范式)：其具体子项已分解为 F-findings(done / needs-design / deferred)，无维度级独立残留工作。详见对应 proposals 与 FIX_TRACKER。"
     },
     {
       "id": "G04",
@@ -2134,9 +2134,9 @@
       "detail": "git 历史卫生与分支血缘混乱: 本机检出的是 鲲V1.1-dev,git log 显示 origin/main 反而是更旧的树(orm 477 行/10 迁移)且与 HEAD 分叉;更严重的是 git 历史里存在大量当前工作树没有的迁移与子系统——0019~0028(含 tenant_account_registry/world_action_executions/token_usage_audit/state_ledger/tenant_password_credentials)以及 kun/ops/secret_store.py、secret_audit.py,且历史中出现重复 revision 号(两个 0011/两个 0012/三个 0013/三个 0015/两个 0016/0017/0018),是 Alembic 多 head / down_revision 冲突隐患。需要厘清:被审分支是不是权威分支?那些 0019+ 子系统是被回退删除还是在另一条线?",
       "evidence": "",
       "source": "critic-gap",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "rollup",
+      "notes": "meta 审计维度(roll-up，同 G01 处理范式)：其具体子项已分解为 F-findings(done / needs-design / deferred)，无维度级独立残留工作。详见对应 proposals 与 FIX_TRACKER。"
     },
     {
       "id": "G05",
@@ -2147,9 +2147,9 @@
       "detail": "前后端契约无防漂移机制: frontend/src/kunApiClient.ts(70 行)手写拼 URL(`${apiOrigin()}${path}`)直连后端 :8000,无 OpenAPI/生成式 client/共享类型;后端 FastAPI 也未见导出 openapi.json 供前端消费。后端路由签名/字段一改,前端无编译期/CI 期捕获,只能运行时 404/解析失败。上一轮报过 /cockpit rewrite 404、WS 消息类型丢弃等点状问题,但未把'契约无单一真相源'作为横切缺口。",
       "evidence": "",
       "source": "critic-gap",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "rollup",
+      "notes": "meta 审计维度(roll-up，同 G01 处理范式)：其具体子项已分解为 F-findings(done / needs-design / deferred)，无维度级独立残留工作。详见对应 proposals 与 FIX_TRACKER。"
     },
     {
       "id": "G06",
@@ -2160,9 +2160,9 @@
       "detail": "dogfood 脚本质量与诚实度: scripts/ 下有 11 个 dogfood_v9~v15 + e2e_rsi_demo + spark_world_run 等大型脚本(单个 10~20KB),它们是 RSI'闭环已达成'叙事的主要证据来源,却完全在 CI 之外、无人校验其是否写死中段证据(上一轮已对 e2e_rsi_demo 报过半剧本)。这批脚本作为'活文档/验收证据'的整体可信度未被系统审计:哪些断言是真实跑通、哪些是 fixture_only 占位、哪些静默吞错。",
       "evidence": "",
       "source": "critic-gap",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "rollup",
+      "notes": "meta 审计维度(roll-up，同 G01 处理范式)：其具体子项已分解为 F-findings(done / needs-design / deferred)，无维度级独立残留工作。详见对应 proposals 与 FIX_TRACKER。"
     },
     {
       "id": "G07",
@@ -2173,9 +2173,9 @@
       "detail": "错误预算/降级/背压未被审查: LLM 路由层已知有无差别重试×3 叠加 SDK 重试(上一轮报过),但更广的降级策略缺位——无 /metrics 驱动的 cost 熔断(llm_cost_runaway_total 零 emit)、events_outbox_lag 零消费者、daemon tick 无异常隔离(上一轮点状报过)。缺一个横切视角:当 Postgres/NATS/LLM 任一依赖降级时,常驻进程是 fail-open 伪成功还是 fail-close,系统级降级矩阵无人梳理。",
       "evidence": "",
       "source": "critic-gap",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "rollup",
+      "notes": "meta 审计维度(roll-up，同 G01 处理范式)：其具体子项已分解为 F-findings(done / needs-design / deferred)，无维度级独立残留工作。详见对应 proposals 与 FIX_TRACKER。"
     },
     {
       "id": "G08",
@@ -2186,9 +2186,9 @@
       "detail": "并发/幂等的端到端验证缺位: idempotency_keys 表 + control_plane/store.py 的幂等索引 + kun/core/idempotency_gc.py 存在,但上一轮已发现大量 last-writer-wins/TOCTOU/无锁迭代/ledger 序列冲突。这些都是单点发现,缺一个'多副本部署下幂等保证是否真实成立'的集中压测/不变量审查(且本机无 Docker 无法跑并发集成测试,CI 的并发测试又 soft-fail)。",
       "evidence": "",
       "source": "critic-gap",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "rollup",
+      "notes": "meta 审计维度(roll-up，同 G01 处理范式)：其具体子项已分解为 F-findings(done / needs-design / deferred)，无维度级独立残留工作。详见对应 proposals 与 FIX_TRACKER。"
     },
     {
       "id": "G09",
@@ -2238,9 +2238,9 @@
       "detail": "python-exec 的任意代码无法靠模式过滤安全约束（__import__/getattr 等可绕过），需真隔离（子进程降权/seccomp/容器）。SkillManifest.allowed_commands 字段从未被强制读取（死代码）——要么接线到 command_policy，要么删除。",
       "evidence": "loader.py:56 allowed_commands 全仓零读取",
       "source": "F035-split",
-      "status": "pending",
-      "commit": "",
-      "notes": "需设计；与持久层/沙箱隔离专项一并排期"
+      "status": "needs-design",
+      "commit": "PENDING",
+      "notes": "拆两半：隔离半(python-exec 进程/容器隔离)与 F109 同根，并入 docs/audit/proposals/security-posture.md；死字段半(loader.py:56-58 三死字段 + builtin/__init__.py:32 误导\"受 allowlist 约束\"描述)是独立具体 fix(安全诚实)，亦记于 docs/audit/proposals/security-posture.md 末行，可较早单做。"
     },
     {
       "id": "F055a",

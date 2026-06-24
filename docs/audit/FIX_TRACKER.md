@@ -2,20 +2,20 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
 
-**总计 173 项** — ✅done 69 ｜ ⏸deferred 1 ｜ ⛔blocked 0 ｜ 📐needs-design 92 ｜ ⬜pending 11
-严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8（另 54 低危暂缓）
-**剩余 pending+fix：0**（high 0 / medium 0 / low 0）
+**总计 173 项** — ✅done 77 ｜ ⏸deferred 1 ｜ ⛔blocked 0 ｜ 📐needs-design 95 ｜ ⬜pending 0
+严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8
+**剩余 pending+fix：0**（high 0 / medium 0 / low 0）；剩余 pending(全部)：0
 
 | id | sev | class | 状态 | 标题 | 文件 |
 |---|---|---|---|---|---|
 | G01 | meta | process | ✅ | CI 门禁姿态从未被审计(最重要的元缺口): .github/workflows/ci.yml 中 typechec | `` |
-| G02 | meta | process | ⬜ | 数据库 schema 与代码一致性(列级)未被验证: kun/core/orm.py 用 SQLAlchemy 声明 | `` |
-| G03 | meta | process | ⬜ | 可观测性是半空壳: kun/core/metrics.py 定义 15 个 Prometheus 采集器,实测仅 6 | `` |
-| G04 | meta | process | ⬜ | git 历史卫生与分支血缘混乱: 本机检出的是 鲲V1.1-dev,git log 显示 origin/main 反 | `` |
-| G05 | meta | process | ⬜ | 前后端契约无防漂移机制: frontend/src/kunApiClient.ts(70 行)手写拼 URL(`${ | `` |
-| G06 | meta | process | ⬜ | dogfood 脚本质量与诚实度: scripts/ 下有 11 个 dogfood_v9~v15 + e2e_rs | `` |
-| G07 | meta | process | ⬜ | 错误预算/降级/背压未被审查: LLM 路由层已知有无差别重试×3 叠加 SDK 重试(上一轮报过),但更广的降级策 | `` |
-| G08 | meta | process | ⬜ | 并发/幂等的端到端验证缺位: idempotency_keys 表 + control_plane/store.py | `` |
+| G02 | meta | process | ✅ | 数据库 schema 与代码一致性(列级)未被验证: kun/core/orm.py 用 SQLAlchemy 声明 | `` |
+| G03 | meta | process | ✅ | 可观测性是半空壳: kun/core/metrics.py 定义 15 个 Prometheus 采集器,实测仅 6 | `` |
+| G04 | meta | process | ✅ | git 历史卫生与分支血缘混乱: 本机检出的是 鲲V1.1-dev,git log 显示 origin/main 反 | `` |
+| G05 | meta | process | ✅ | 前后端契约无防漂移机制: frontend/src/kunApiClient.ts(70 行)手写拼 URL(`${ | `` |
+| G06 | meta | process | ✅ | dogfood 脚本质量与诚实度: scripts/ 下有 11 个 dogfood_v9~v15 + e2e_rs | `` |
+| G07 | meta | process | ✅ | 错误预算/降级/背压未被审查: LLM 路由层已知有无差别重试×3 叠加 SDK 重试(上一轮报过),但更广的降级策 | `` |
+| G08 | meta | process | ✅ | 并发/幂等的端到端验证缺位: idempotency_keys 表 + control_plane/store.py | `` |
 | F001 | critical | fix | 📐 | "外部监督+真人评审"门禁被同进程代码自批通过，且能覆盖人类的 fail 裁决 | `kun/control_plane/game_production.py:1791-1845` |
 | F002 | critical | fix | ✅ | 生产环境下日志处理器必然抛 MissingTenantContextError，进程级核心流程(启动/后台 work | `kun/core/logging.py:26` |
 | F003 | critical | fix | ✅ | 提示词中的 ```python``` 代码块被自动执行(python-exec)，可达 RCE 与密钥外泄 | `kun/engineering/config/proactive_triggers.yaml:5` |
@@ -52,7 +52,7 @@
 | F033 | high | fix | ✅ | is_self_referential 漏判真实实现路径 — 自指护栏可被 kun/external_supervi | `kun/governance/self_referential.py:43` |
 | F034 | high | fix | ✅ | 方法论 runtime loader 与 seeds YAML schema 不匹配，28/33 条方法论的 act | `kun/engineering/methodology_runtime_loader.py:20` |
 | F035 | high | fix | ✅ | shell-exec 与 python-exec 对 LLM 生成命令无命令级过滤；SkillManifest 的  | `kun/skills/builtin/shell_exec.py:46` |
-| F035a | high | architecture | ⬜ | python-exec 进程/容器隔离 + 清理死的 SkillManifest.allowed_commands | `kun/skills/builtin/python_exec.py,` |
+| F035a | high | architecture | 📐 | python-exec 进程/容器隔离 + 清理死的 SkillManifest.allowed_commands | `kun/skills/builtin/python_exec.py,` |
 | F036 | high | architecture | 📐 | ADR-020 钦定架构与实际代码根本背离：control_plane 应消失却翻倍至全包 50% | `/Users/petrarain/鲲/decisions.md:380` |
 | F037 | high | architecture | 📐 | game_production.py 膨胀根因：平台层硬编码特定游戏的产品代码补丁与交付物，非业务复杂度 | `/Users/petrarain/鲲/kun/control_plane/game_produc` |
 | F038 | high | architecture | 📐 | 架构治理链断裂：V6/V7 两代架构无任何 ADR，decisions.md/PROGRESS.md 已失效为权威文 | `/Users/petrarain/鲲/decisions.md:1076` |
@@ -117,7 +117,7 @@
 | F095 | medium | fix | ✅ | Event.build 生成的 NATS subject 域名段重复，与文档约定不符且已被测试固化 | `kun/datamodel/events.py:104-105` |
 | F096 | medium | fix | ✅ | TaskMeta 的 L1 字段 complexity / priority_profile / estimated | `kun/datamodel/task.py:57-62` |
 | F097 | medium | fix | ✅ | 5 个 ADR-016 指标定义后从未被更新，其中含安全告警指标 tenant_cross_access_attem | `kun/core/metrics.py:19-92` |
-| F098 | medium | architecture | ⬜ | ImportanceScorer(中央重要度打分器)无任何生产调用方，packer 另起炉灶用重复的词法打分 | `kun/context/importance.py:43` |
+| F098 | medium | architecture | 📐 | ImportanceScorer(中央重要度打分器)无任何生产调用方，packer 另起炉灶用重复的词法打分 | `kun/context/importance.py:43` |
 | F099 | medium | fix | 📐 | L6 行业评测套件是孤儿且度量很浅,无法支撑真实在度量 | `kun/evaluation/industry_suite.py:164` |
 | F100 | medium | fix | 📐 | RCDH 诊断、PromotionTimeoutSweeper、promotion advance 均无生产接线 — | `kun/governance/rcdh.py:303` |
 | F101 | medium | fix | 📐 | ResourceQuota / ExplorationPenalty 从未注入生产 Strategist, 且为单进 | `kun/governance/resource_quota.py:86` |
@@ -156,13 +156,13 @@
 | F134 | medium | fix | 📐 | 无 branch protection / required checks 配置、无 CODEOWNERS:门禁强制 | `.github/workflows/ci.yml:13-124` |
 | F135 | medium | fix | ✅ | TaskMeta.complexity / priority_profile / estimated_steps 写 | `kun/core/orm.py:75` |
 | F136 | medium | fix | ✅ | ValidatorKind 枚举不含运行时产出的 'ensemble' | `kun/agents/tester/validation.py:343` |
-| F137 | medium | architecture | ⬜ | CI 从不跑 alembic check，且无 DB 时无法运行 → 漂移长期无人发现 | `alembic/env.py:26` |
+| F137 | medium | architecture | ✅ | CI 从不跑 alembic check，且无 DB 时无法运行 → 漂移长期无人发现 | `alembic/env.py:26` |
 | F138 | medium | fix | ✅ | /metrics 端点导出默认 registry，未 emit 的 series 在抓取时不出现 | `kun/api/main.py:261` |
 | F139 | medium | fix | 📐 | v7_xb_smoke.py：用 StubProvider + 内存 fake session 跑一遍即 print | `scripts/v7_xb_smoke.py:296-372` |
 | F140 | medium | fix | 📐 | dogfood_v10：lifecycle/auditor 表增长依赖手喂的'必过'GateService 输入；M | `scripts/dogfood_v10_trigger_xb_tables.py:104-131` |
 | F141 | medium | fix | 📐 | spark_world_run.py 未提交改动坦承 claude CLI OAuth 路径曾'silent stu | `scripts/spark_world_run.py:49-60` |
 | G10 | medium | fix | 📐 | CI unit-tests 加覆盖率门槛(--cov-fail-under) | `.github/workflows/ci.yml,` |
-| F142 | low | architecture | ⬜ | 双运行时并存：control_plane 栈与 agents 7 角色栈模块级零耦合，Supervisor/Miss | `/Users/petrarain/鲲/kun/control_plane/kun_runtime` |
+| F142 | low | architecture | 📐 | 双运行时并存：control_plane 栈与 agents 7 角色栈模块级零耦合，Supervisor/Miss | `/Users/petrarain/鲲/kun/control_plane/kun_runtime` |
 | F143 | low | fix | ✅ | record_plan_change 绕过状态机校验直接改 mission.status | `kun/control_plane/runtime.py:1203-1213` |
 | F144 | low | fix | ✅ | frontier50_external：默认 workdir 硬编码他人机器绝对路径，can_run 用 "ab"  | `kun/control_plane/frontier50_external.py:34` |
 | F145 | low | fix | ✅ | cockpit._current_plan 用字典序比较计划版本，v10 < v9，多次改版后驾驶舱显示错误计划 | `kun/control_plane/cockpit.py:322` |

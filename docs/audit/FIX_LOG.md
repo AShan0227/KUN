@@ -83,3 +83,4 @@
 2026-06-24 F069 ✅ — PROGRESS.md L5 'RSI 真闭合已达成' 诚实化为'代码路径存在、主链未接通'(引 rsi-mainline-wiring)
 2026-06-24 F102/F109/F148/F151 📐 — 新建 security-posture.md;F078 📐 并入 architecture-debt §1b;F116/F160 📐 并入 demo-script-honesty §1b
 2026-06-24 F087 📐 rsi-mainline §2b;F090 📐 rsi-mainline §2b(判官独立性,模型约束);F147 📐 concurrency §4b(锁粒度);F153 📐 frontend-gaps(/cockpit rewrite);F055a ⏸ deferred(特性未做占位)
+2026-06-24 收尾核销：F137 ✅(stale,=F052 已加 ci alembic check);F142 📐(=F036)/F098 📐/F035a 📐 并入 architecture-debt/security-posture;G02-G08 ✅(roll-up 同 G01)。验证 workflow wf_cde3c00e-0e0：92 needs-design 全部有方案引用，0 silent gap。

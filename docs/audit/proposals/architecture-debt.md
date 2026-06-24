@@ -35,8 +35,10 @@
 | **F113** | **同 F012**：`daemon.py` 6,930 行 god-module（本轮复核行数），多职责（引擎/治理/worker/产品剧本）堆一处 | 见 F012 处理方向——按「引擎 / 治理插件 / 产品 playbook」三层拆分。此处仅作 F012 的再确认条目。 |
 
 | **F078** | `kun/control_plane/runtime.py:169-226` `_should_route_to_nuo` 末段用 ~40 个中英文**子串匹配**(text 含 "timeout"/"unauthorized"/"机制雏形"… 即路由到 Nuo)作控制流。**注**：函数先查结构化信号(artifact_manifest.kind / gate_evaluation.next_action / failure_category / status)，子串仅为兜底，且方向是"疑则升级到 Nuo 复核"(fail-safe，误判=多一次复核、非危险跳过)。残留风险是脆弱：交付内容正常含这些词→误升级；i18n 漏词→漏升级；维护负担大。 | 让上游 producer 输出**结构化失败信号**(枚举 failure reason)，子串仅作最后兜底并打日志标注；不要把自由文本子串当主控制流。随 producer 改造落地。 |
+| **F098** | `kun/context/importance.py:43` `ImportanceScorer`(中央重要度打分器，232 行)**零生产调用方**(仅 `context/__init__.py` 再导出 + 单测引用)；同时 `kun/context/packer.py:115` `_score_asset` 另起炉灶做 ad-hoc 词法打分，`packer.py:141 _terms` 与 `importance.py:210 _terms` **逐字重复**——双轨打分、中央那套是死代码。属 ADR-018 §16.1「统一 ScoreDescriptor」未在 context 子系统落地。 | 让 `ContextPacker._score_asset` 复用 `ImportanceScorer`(已支持无 embedding 的词法回退)，删 packer 重复的 `_terms`/`_score_asset`，让文档化的 importance/decay/review 管线真正驱动打包；或判定 ImportanceScorer 过早则连同其测试删除以去死码。 |
+| **F142** | 即 **F036** 的另一表述：`control_plane` 栈与 `agents` 7 角色栈**模块级零 import**(仅 2 处函数内延迟桥接 `kun_runtime_runner.py:430`、`daemon.py:809`)；并存重复实现(`control_plane/supervisor.py` vs `agents/supervisor/service.py`、`control_plane/mission_director.py` vs `agents/mission_director/service.py`)与双入口(cli 走 control_plane、api 走 engineering)。 | 同 F036 §2「接线 agents↔control_plane 或明确二选一」。无独立设计，随 F036 裁决一并落地。 |
 
-> F070/F071/F072/F084/F086 随 F037 game_production 域化迁出一并落地；F082/F112 随 F036 分层裁决落地；F113 即 F012；F078 随上游 producer 结构化信号改造落地（当前为 fail-safe 兜底，无 live 危险）。落地前不应宣称 game_production 是"通用平台能力"。
+> F070/F071/F072/F084/F086 随 F037 game_production 域化迁出一并落地；F082/F112/F142 随 F036 分层裁决落地(F142 即 F036)；F113 即 F012；F078 随上游 producer 结构化信号改造落地（当前为 fail-safe 兜底，无 live 危险）；F098 随 context 打分统一(复用 ImportanceScorer 或删死码)落地。落地前不应宣称 game_production 是"通用平台能力"。
 
 ## 2. 处理方向
 
@@ -80,6 +82,6 @@
 3. 最后做 **F036/F012/F037 的域化拆分**(大 epic，与 F001/F008/F009 一起)。
 
 ## 4. 覆盖 findings
-F012, F036, F037, F038, F053, F070, F071, F072, F078, F082, F084, F086, F112, F113, F128, F129, F130（标 needs-design 指向本文件）。
-F070/F071/F072/F078/F082/F084/F086/F112/F113 见 §1b（随 F036/F037 域化与分层裁决一并落地；F113 即 F012；F078 随上游 producer 结构化信号改造）。
+F012, F036, F037, F038, F053, F070, F071, F072, F078, F082, F084, F086, F098, F112, F113, F128, F129, F130, F142（标 needs-design 指向本文件）。
+F070/F071/F072/F078/F082/F084/F086/F098/F112/F113/F142 见 §1b（随 F036/F037 域化与分层裁决一并落地；F113 即 F012；F142 即 F036；F078 随上游 producer 结构化信号改造；F098 随 context 打分统一）。
 F126、F132 已在 decisions.md 就地诚实订正(done)，此处仅备注关联。
