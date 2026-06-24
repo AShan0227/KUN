@@ -873,9 +873,9 @@
       "detail": "layout.tsx (kun-shell/kun-topbar/kun-nav-link/kun-brand-* 等) 和 control-plane/page.tsx (kun-page/kun-surface/kun-badge/kun-input/kun-button/kun-stat-card/kun-surface-muted/kun-kicker 等共 10+ 个类) 大量引用 kun-* 组件类, 但 globals.css 全文仅 13 行 (只有 @tailwind 指令和 body 字体), tailwind.config.ts plugins 为空数组, 也没有其他 css 文件; 我用 `git grep kun-shell $(git rev-list --all)` 核实历史上任何 commit 都没有定义过这些类。Tailwind 调色板 (text-kun-good 等 colors.kun.*) 是存在的, 但组件类全部静默 no-op——配合 Tailwind preflight 重置, '任务驾驶舱' 整页的卡片、按钮、输入框都以无边框无背景的裸 HTML 呈现, 顶部导航栏同样无样式。作为日常使用的 cockpit UI 这是明确的功能性缺陷, 也说明这两个页面大概率是 LLM 生成后从未在浏览器里验收过。",
       "evidence": "globals.css 全文件仅 13 行无任何 .kun-* 定义; tailwind.config.ts:20 `plugins: []`; control-plane/page.tsx:316 `<button className=\"kun-button kun-button-primary\" ...>`; git 全历史 grep kun-shell 仅命中 layout.tsx 引用处",
       "source": "frontend",
-      "status": "needs-design",
-      "commit": "8d7557b",
-      "notes": "kun-* 组件类 4 处使用 0 处定义，界面无样式；前端缺口合并方案见 docs/audit/proposals/frontend-gaps.md（F067/F106/F107/F108 可先行；F066/F105 跟随后端 auth+RSI 长任务链路 rsi-mainline-wiring F025）。"
+      "status": "done",
+      "commit": "4550bff",
+      "notes": "[Loop-2 #11/TIER-1 收官] 在 globals.css @layer components 定义全部 25 个 kun-* 组件类(用 tailwind.config kun 调色板,朴素可用样式)。验证:npx tailwindcss 编译 RC=0(全部 @apply 解析、类生成真 CSS)+ 新增静态守卫单测(模板用到的 kun-* 全集 ⊆ globals.css 定义集,防再漂移)。残留:跑起来的 dev server 里目视微调样式(CSS 已证编译有效,纯审美)。"
     },
     {
       "id": "F068",

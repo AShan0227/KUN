@@ -10,3 +10,99 @@ body {
   background: theme("colors.kun.fog");
   color: theme("colors.kun.ink");
 }
+
+/*
+ * Audit F067: the kun-* component classes are referenced across layout.tsx,
+ * page.tsx, nuo/page.tsx and control-plane/page.tsx but had ZERO definitions,
+ * so those surfaces rendered unstyled. Defined here in one place (Tailwind
+ * @layer components) using the kun palette from tailwind.config.ts. Plain,
+ * usable defaults — not a pixel-perfect design. A unit guard
+ * (test_frontend_kun_classes_defined) asserts every referenced kun-* class is
+ * defined here so the gap cannot silently reopen.
+ */
+@layer components {
+  /* layout / shell */
+  .kun-page {
+    @apply flex min-h-screen flex-col;
+  }
+  .kun-shell {
+    @apply flex flex-1 flex-col gap-4 md:flex-row;
+  }
+  .kun-surface {
+    @apply rounded-lg border border-black/10 bg-white p-4;
+  }
+  .kun-surface-muted {
+    @apply rounded-lg border border-black/5 bg-kun-fog p-4;
+  }
+  .kun-side {
+    @apply rounded-lg border border-black/10 bg-kun-side p-4;
+  }
+  .kun-topbar {
+    @apply border-b border-black/10 bg-white;
+  }
+  .kun-topbar-inner {
+    @apply mx-auto flex max-w-6xl items-center justify-between px-4 py-3;
+  }
+
+  /* brand */
+  .kun-brand {
+    @apply flex items-center gap-2;
+  }
+  .kun-brand-mark {
+    @apply text-xl font-bold text-kun-accent;
+  }
+  .kun-brand-title {
+    @apply font-semibold text-kun-ink;
+  }
+  .kun-brand-subtitle {
+    @apply text-xs text-kun-ink/60;
+  }
+
+  /* nav */
+  .kun-nav {
+    @apply flex items-center gap-1;
+  }
+  .kun-nav-link {
+    @apply rounded px-3 py-1.5 text-sm text-kun-ink/80 transition-colors hover:bg-kun-fog hover:text-kun-ink;
+  }
+
+  /* text accents */
+  .kun-kicker {
+    @apply text-xs font-medium uppercase tracking-wide text-kun-ink/50;
+  }
+  .kun-accent {
+    @apply text-kun-accent;
+  }
+  .kun-good {
+    @apply text-kun-good;
+  }
+  .kun-bad {
+    @apply text-kun-bad;
+  }
+  .kun-warn {
+    @apply text-kun-warn;
+  }
+
+  /* components */
+  .kun-badge {
+    @apply inline-flex items-center rounded-full border border-black/10 bg-kun-fog px-2 py-0.5 text-xs;
+  }
+  .kun-button {
+    @apply inline-flex items-center justify-center rounded-md border border-black/10 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-kun-fog;
+  }
+  .kun-button-primary {
+    @apply inline-flex items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium text-white transition-opacity bg-kun-accent hover:opacity-90;
+  }
+  .kun-button-secondary {
+    @apply inline-flex items-center justify-center rounded-md border px-3 py-1.5 text-sm font-medium transition-colors border-kun-accent text-kun-accent hover:bg-kun-accent/10;
+  }
+  .kun-input {
+    @apply w-full rounded-md border border-black/15 px-3 py-1.5 text-sm focus:border-kun-accent focus:outline-none;
+  }
+  .kun-stat-card {
+    @apply flex flex-col gap-1 rounded-lg border border-black/10 bg-white p-4;
+  }
+  .kun-control-plane-daemon {
+    @apply rounded-md border border-black/10 bg-kun-fog px-3 py-2 font-mono text-sm;
+  }
+}

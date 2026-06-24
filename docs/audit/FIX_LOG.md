@@ -94,3 +94,4 @@
 2026-06-24 [Loop-2 #8] G09 批1 ✅(部分) — 删 12 unused-ignore + 补 17 type-arg,mypy 145→116,无新错误类型;批2-5 仍 needs-design(typecheck-debt.md)
 2026-06-24 [Loop-2 #9] F147 ✅ — SupervisorService.observe 锁粒度收窄(I/O 移出锁,dedup 仍锁内记录保证不重复 emit)+并发单测(锁释放/IO 重叠)
 2026-06-24 [Loop-2 #10] F153 ✅ — next.config.mjs 加 /cockpit rewrite(node --check 通过)+.env.example CORS 多端口注释(不改后端默认);残留需人目检 dev 栈
+2026-06-24 [Loop-2 #11] F067 ✅(TIER-1 收官) — globals.css 定义全部 25 个 kun-* 类(tailwindcss 编译 RC=0 验证)+静态守卫测试;残留纯审美目检

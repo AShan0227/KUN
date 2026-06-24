@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md) / [LOOP2_PLAN.md](LOOP2_PLAN.md)
 
-**总计 173 项** — ✅done 85 ｜ ⏸deferred 1 ｜ 📐needs-design 87 ｜ 🔍needs-review 0 ｜ ⬜pending 0
+**总计 173 项** — ✅done 86 ｜ ⏸deferred 1 ｜ 📐needs-design 86 ｜ 🔍needs-review 0 ｜ ⬜pending 0
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -85,7 +85,7 @@
 | F064 | medium | fix | 📐 | CANARY→PRODUCTION 审批校验器写好了但从未接线, 生产路径仍是 '非空字符串即通过' 的 honor | `kun/governance/capability_lifecycle.py:196` |
 | F065 | medium | fix | 📐 | evidence_ledger 是空 stub: append 只打日志, get_trace 返回空列表, ADR | `kun/governance/evidence_ledger.py:51` |
 | F066 | medium | fix | 📐 | 零鉴权 + 租户/用户身份三处硬编码, 审批按钮可被任意访问者点击执行真实副作用 | `frontend/src/app/page.tsx:40` |
-| F067 | medium | fix | 📐 | layout 与 control-plane 页面使用的 kun-* 组件样式类在整个仓库 (含全部 git 历史) | `frontend/src/app/globals.css:1` |
+| F067 | medium | fix | ✅ | layout 与 control-plane 页面使用的 kun-* 组件样式类在整个仓库 (含全部 git 历史) | `frontend/src/app/globals.css:1` |
 | F068 | medium | fix | ✅ | PG skip guard 字符串匹配错误，13 个约束测试在无 Docker 时失败而非跳过 | `tests/integration/test_v7_xb_pg_check_constraint` |
 | F069 | medium | fix | ✅ | PROGRESS.md 宣称 'L5 已达成=RSI 真闭合的标志' 与代码现实不符 | `PROGRESS.md:140` |
 | F070 | medium | fix | 📐 | 字符串补丁机制对生成代码逐字节耦合，anchor 漂移时静默跳过并可产出引用未定义变量的源码 | `kun/control_plane/game_production.py:5876-5908,` |
