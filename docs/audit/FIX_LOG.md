@@ -89,3 +89,4 @@
 2026-06-24 [Loop-2 #3] F098 去重子集 ✅ — _terms 抽到 kun/context/text_terms.py 单一源(importance+packer 共用)+回归测试；ImportanceScorer 接线 vs 删除仍 needs-design(按孤儿处置=接线非删)
 2026-06-24 [Loop-2 #4] F111 ✅ — 20 个 integration 文件补 integration/e2e marker(含 7 个 asyncio-only 改 list)+静态守卫测试;-m 'not integration and not e2e' 现真正隔离离线单测子集
 2026-06-24 [Loop-2 #5] F053 ✅ — 8 个 ORM Row 镜像 0011/0012 共 23 条 CHECK 到 __table_args__ + 解析式漂移守卫测试;命名约定前缀差异诚实注记(rename 迁移留后续)
+2026-06-24 [Loop-2 #6] F133+G10 ✅ — ci.yml unit job 加覆盖率硬门禁 --cov-fail-under=80(本机实测 83%,本机等价命令 RC=0 验证)

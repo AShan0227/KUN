@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md) / [LOOP2_PLAN.md](LOOP2_PLAN.md)
 
-**总计 173 项** — ✅done 80 ｜ ⏸deferred 1 ｜ 📐needs-design 92 ｜ 🔍needs-review 0 ｜ ⬜pending 0
+**总计 173 项** — ✅done 82 ｜ ⏸deferred 1 ｜ 📐needs-design 90 ｜ 🔍needs-review 0 ｜ ⬜pending 0
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -151,7 +151,7 @@
 | F130 | medium | fix | 📐 | [文档漂移] ADR-020 'control_plane / brain / engineering/orches | `decisions.md:380` |
 | F131 | medium | fix | ✅ | [文档漂移] PROGRESS.md 自 2026-05-27 停更，落后 78 个 commit，进度叙事双向失真 | `PROGRESS.md:234` |
 | F132 | medium | fix | ✅ | [文档漂移] ADR-024 '新建 kun/governance/rsi_loop.py 编排 10 步' 已删除 | `decisions.md:956` |
-| F133 | medium | fix | 📐 | unit-tests 无覆盖率门槛:测试可空心化而流水线仍绿 | `.github/workflows/ci.yml:47` |
+| F133 | medium | fix | ✅ | unit-tests 无覆盖率门槛:测试可空心化而流水线仍绿 | `.github/workflows/ci.yml:47` |
 | F134 | medium | fix | 📐 | 无 branch protection / required checks 配置、无 CODEOWNERS:门禁强制 | `.github/workflows/ci.yml:13-124` |
 | F135 | medium | fix | ✅ | TaskMeta.complexity / priority_profile / estimated_steps 写 | `kun/core/orm.py:75` |
 | F136 | medium | fix | ✅ | ValidatorKind 枚举不含运行时产出的 'ensemble' | `kun/agents/tester/validation.py:343` |
@@ -160,7 +160,7 @@
 | F139 | medium | fix | 📐 | v7_xb_smoke.py：用 StubProvider + 内存 fake session 跑一遍即 print | `scripts/v7_xb_smoke.py:296-372` |
 | F140 | medium | fix | 📐 | dogfood_v10：lifecycle/auditor 表增长依赖手喂的'必过'GateService 输入；M | `scripts/dogfood_v10_trigger_xb_tables.py:104-131` |
 | F141 | medium | fix | 📐 | spark_world_run.py 未提交改动坦承 claude CLI OAuth 路径曾'silent stu | `scripts/spark_world_run.py:49-60` |
-| G10 | medium | fix | 📐 | CI unit-tests 加覆盖率门槛(--cov-fail-under) | `.github/workflows/ci.yml,` |
+| G10 | medium | fix | ✅ | CI unit-tests 加覆盖率门槛(--cov-fail-under) | `.github/workflows/ci.yml,` |
 | F142 | low | architecture | 📐 | 双运行时并存：control_plane 栈与 agents 7 角色栈模块级零耦合，Supervisor/Miss | `/Users/petrarain/鲲/kun/control_plane/kun_runtime` |
 | F143 | low | fix | ✅ | record_plan_change 绕过状态机校验直接改 mission.status | `kun/control_plane/runtime.py:1203-1213` |
 | F144 | low | fix | ✅ | frontier50_external：默认 workdir 硬编码他人机器绝对路径，can_run 用 "ab"  | `kun/control_plane/frontier50_external.py:34` |

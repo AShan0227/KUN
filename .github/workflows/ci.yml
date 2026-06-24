@@ -44,7 +44,10 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --extra dev
-      - run: uv run pytest tests/unit -q
+      # Audit F133/G10: coverage hard gate. Local baseline 83% (tests/unit, --cov=kun);
+      # threshold set conservatively at 80 (2pt+ buffer) so it fails only on real
+      # regression, not noise. Raise over time as coverage climbs.
+      - run: uv run pytest tests/unit -q --cov=kun --cov-report=term --cov-fail-under=80
 
   integration-tests:
     name: Integration tests

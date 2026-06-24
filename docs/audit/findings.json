@@ -1731,9 +1731,9 @@
       "detail": "unit-tests job 仅 `uv run pytest tests/unit -q`(ci.yml:47),无 --cov / --cov-fail-under / 任何覆盖率阈值(grep cov|coverage|fail-under 在 ci.yml 内 0 命中)。这意味着只要少量测试存在并通过即算绿灯,新增代码可以零测试覆盖而不被察觉。对 221 个提交、+725 行 orm 这种快速膨胀的代码量,缺覆盖率门槛会让'死代码/零调用方函数'(如 submit_self_report:kun/agents/supervisor/plan_review_service.py:136 定义,但生产侧 0 个 .submit_self_report( 调用,仅 docstring 提及 + 10 处测试调用)更难被发现——测试覆盖了它,但没有任何生产路径用它。CTO 决策:建议为后端设定一个起步覆盖率底线(哪怕先 patch coverage / diff-cover 只卡新增行),与前端的硬 typecheck 门禁对齐严格度。",
       "evidence": "ci.yml L47 `- run: uv run pytest tests/unit -q`(无 cov 参数);ci.yml 内 grep cov/coverage/fail-under = 0 命中;plan_review_service.py L136 `async def submit_self_report(`;生产侧 `.submit_self_report(` 调用 = 0(仅 L6 docstring),tests 内调用 10 处",
       "source": "extra:ci_gate_posture_and_branch_lineage",
-      "status": "needs-design",
-      "commit": "df2704d",
-      "notes": "unit job 无 --cov-fail-under 覆盖率门槛(基线 82%)；并入 docs/audit/proposals/ci-and-supplychain.md。"
+      "status": "done",
+      "commit": "7ade7d4",
+      "notes": "[Loop-2 #6] ci.yml unit-tests job 加 --cov=kun --cov-fail-under=80(本机实测 tests/unit 覆盖率 P=83%,阈值保守设 80 留 3pt+ 缓冲;pytest-cov>=6 已在 dev extra)。本机用相同命令+阈值实测 RC=0 通过(Option A:CI 改动以本机等价命令验证)。"
     },
     {
       "id": "F134",
@@ -2212,9 +2212,9 @@
       "detail": "当前 unit 测试无覆盖率门槛，可空心化仍绿。基线 82%，建议 --cov-fail-under=80。",
       "evidence": "",
       "source": "G01-split",
-      "status": "needs-design",
-      "commit": "df2704d",
-      "notes": "CI 加 --cov-fail-under=80(同 F133)；并入 docs/audit/proposals/ci-and-supplychain.md。"
+      "status": "done",
+      "commit": "7ade7d4",
+      "notes": "[Loop-2 #6] ci.yml unit-tests job 加 --cov=kun --cov-fail-under=80(本机实测 tests/unit 覆盖率 P=83%,阈值保守设 80 留 3pt+ 缓冲;pytest-cov>=6 已在 dev extra)。本机用相同命令+阈值实测 RC=0 通过(Option A:CI 改动以本机等价命令验证)。"
     },
     {
       "id": "F007a",
