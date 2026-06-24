@@ -3,6 +3,8 @@
 > 状态：needs-design（系统集成 + 跨进程事件流 + DB 读写闭合，不能在 loop 内逐点盲改）
 > 北极星：ADR-024「每跑一次都让自己略变更聪明」。当前是**零件齐全、传动轴未装**——
 > 5 环引擎都有代码+单测，但生产事件流进不来、合成证据喂门禁、脊柱表零流动。
+>
+> 📝 **分步落地草案见 [drafts/RSI-mainline-wiring-plan.md](drafts/RSI-mainline-wiring-plan.md)**（Loop-2 TIER-2 #3，待人审）——把下述 1→9 环细化为可据此动工的阶段计划（前置 ADR-027 持久层 + ADR-028 单一运行时）。本文件相关 findings 维持 needs-design/needs-review。
 
 ## 0. 一句话根因
 
