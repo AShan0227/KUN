@@ -29,7 +29,10 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
         "auto_trigger_when": [],
     },
     "shell-exec": {
-        "description": "在沙箱里执行 shell 命令, 受 allowlist 约束",
+        "description": (
+            "在沙箱里执行 shell 命令, 受环境级命令策略约束 "
+            "(KUN_SHELL_EXEC_ALLOW/DENY, 默认 denylist; 非 per-skill allowlist)"
+        ),
         "auto_trigger_when": [],
     },
     "file-io": {

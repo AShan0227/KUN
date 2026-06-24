@@ -53,9 +53,15 @@ class SkillManifest(BaseModel):
     source: str | None = None
     maturity: str = "cold_start"
     input_schema: dict[str, Any] = Field(default_factory=dict)
-    allowed_commands: list[str] = Field(default_factory=list)
-    denied_patterns: list[str] = Field(default_factory=list)
-    denied_domains: list[str] = Field(default_factory=list)
+    # NOTE (audit F035a): per-manifest command policy is NOT implemented. The dead
+    # typed fields ``allowed_commands`` / ``denied_patterns`` / ``denied_domains``
+    # were removed — nothing in the codebase consumed them, so declaring them as a
+    # typed contract falsely advertised a per-skill allowlist that was never
+    # enforced. The real shell guard is env-based (KUN_SHELL_EXEC_ALLOW / DENY) in
+    # ``kun/skills/command_policy.py``. SKILL.md frontmatter using these keys still
+    # loads (model_config extra="allow"); they are inert metadata until/unless a
+    # per-manifest policy is wired (tracked as needs-design in
+    # docs/audit/proposals/security-posture.md).
     # 主动用工具 layer 3: 每个 skill 自带的"看到这种 prompt 就触发我"声明.
     # 元素跟 kun/engineering/config/proactive_triggers.yaml 的 trigger 同形:
     #   - pattern: 正则

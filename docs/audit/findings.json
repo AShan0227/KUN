@@ -2240,7 +2240,7 @@
       "source": "F035-split",
       "status": "needs-design",
       "commit": "PENDING",
-      "notes": "拆两半：隔离半(python-exec 进程/容器隔离)与 F109 同根，并入 docs/audit/proposals/security-posture.md；死字段半(loader.py:56-58 三死字段 + builtin/__init__.py:32 误导\"受 allowlist 约束\"描述)是独立具体 fix(安全诚实)，亦记于 docs/audit/proposals/security-posture.md 末行，可较早单做。"
+      "notes": "拆两半：隔离半(python-exec 进程/容器隔离)与 F109 同根，并入 docs/audit/proposals/security-posture.md；死字段半(loader.py:56-58 三死字段 + builtin/__init__.py:32 误导\"受 allowlist 约束\"描述)是独立具体 fix(安全诚实)，亦记于 docs/audit/proposals/security-posture.md 末行，可较早单做。 [Loop-2 1867690→]：诚实子集已 land — 删 SkillManifest 3 个零消费者死字段(allowed_commands/denied_patterns/denied_domains)+订正 shell-exec 描述(env KUN_SHELL_EXEC_ALLOW/DENY 非 per-skill allowlist)+回归测试。隔离半仍 F109；wire-vs-strip manifest allowlist 仍 needs-design(security-posture)。"
     },
     {
       "id": "F055a",
