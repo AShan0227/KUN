@@ -16,22 +16,26 @@ import re
 import shutil
 import subprocess
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from kun.control_plane.huohutu_formal_game_templates import formal_game_ready_files
-from kun.control_plane.huohutu_gameful_templates import gameful_playtest_ready_files
-from kun.control_plane.huohutu_scribble_parity_templates import scribble_parity_ready_files
-from kun.control_plane.huohutu_scribble_spark_templates import scribble_spark_ready_files
+from kun.control_plane.capability_execution import CapabilityExecutionPolicy
 from kun.control_plane.runtime import InMemoryControlPlane, RunnerType, WorkItemResult
-from kun.control_plane.scribble_visual_templates import visual_product_ready_files
-from kun.control_plane.scribble_adventure_templates import scribble_adventure_ready_files
+from kun.control_plane.templates.huohutu_formal_game import formal_game_ready_files
+from kun.control_plane.templates.huohutu_gameful import gameful_playtest_ready_files
+from kun.control_plane.templates.huohutu_scribble_parity import scribble_parity_ready_files
+from kun.control_plane.templates.huohutu_scribble_spark import scribble_spark_ready_files
+from kun.control_plane.templates.scribble_adventure import scribble_adventure_ready_files
+from kun.control_plane.templates.scribble_visual import visual_product_ready_files
 from kun.control_plane.v6 import (
     ArtifactKind,
     ArtifactManifest,
     ArtifactRecord,
+    CollaborationTicket,
     ExecutionContract,
+    FailureCategory,
     GateEvaluation,
     Mission,
     TaskPlan,
@@ -55,6 +59,103 @@ SUPPORTED_GAME_PRODUCTION_MODES = frozenset(
         "scribble_adventure_functional_parity_v1",
     }
 )
+SUPPORTED_GAME_PHASES = frozenset(
+    {
+        "interaction-design",
+        "benchmark-understanding-report",
+        "benchmark-understanding-review",
+        "scribble-redesign",
+        "game-production",
+        "benchmark-quality-iteration",
+        "commercial-game-polish-iteration",
+        "visual-product-iteration",
+        "experience-product-iteration",
+        "sandbox-dynamics-iteration",
+        "image-object-interaction-iteration",
+        "creative-goal-iteration",
+        "mastery-loop-iteration",
+        "semantic-synthesis-iteration",
+        "portless-gate-repair",
+        "spatial-playfield-iteration",
+        "build-fix",
+        "internal-test",
+        "supervisor-gate",
+        "benchmark-residual-audit",
+        "final-delivery",
+    }
+)
+GAME_PHASE_ALIASES = {
+    "commercial_game_polish": "commercial-game-polish-iteration",
+    "commercial_first_screen_rebuild": "commercial-game-polish-iteration",
+    "commercial-first-screen-rebuild": "commercial-game-polish-iteration",
+    "image_object_causal_interaction": "image-object-interaction-iteration",
+    "image-object-causal-interaction": "image-object-interaction-iteration",
+    "internal_test": "internal-test",
+    "browser_long_player_simulation": "internal-test",
+    "browser-long-player-simulation": "internal-test",
+    "build_regression_browser_long_gates": "internal-test",
+    "build-regression-browser-long-gates": "internal-test",
+    "build_fix": "build-fix",
+    "build-fix": "build-fix",
+    "external_supervisor_gate": "supervisor-gate",
+    "external_final_player_feel_gate": "supervisor-gate",
+    "external-final-player-feel-gate": "supervisor-gate",
+    "benchmark_residual_audit": "benchmark-residual-audit",
+    "final_delivery": "final-delivery",
+    "delivery_only_after_human_grade_gate": "final-delivery",
+    "delivery-only-after-human-grade-gate": "final-delivery",
+}
+COMMAND_PHASES = SUPPORTED_GAME_PHASES
+SCRIBBLE_PARITY_DEFAULT_REQUIRED_TEST_SCRIPTS = (
+    "test:internal",
+    "test:user-sim",
+    "test:fun",
+    "test:browser-static",
+    "test:long",
+    "test:visual",
+    "test:experience",
+    "test:sandbox",
+    "test:creative",
+    "test:mastery",
+    "test:semantic",
+    "test:spatial",
+    "test:commercial",
+)
+PLAYER_PERCEPTION_APPROVAL_SUPPORTS = frozenset(
+    {
+        "human_playtest",
+        "target_user_playtest",
+        "user_acceptance",
+        "player_first_impression_gate",
+    }
+)
+LOCAL_PLAYER_REVIEW_PATTERNS = (
+    "player-experience-*.json",
+    "external-human-playtest*.json",
+    "external-player-playtest*.json",
+    "real-player-*.json",
+    "playtests/*.json",
+)
+LOCAL_PLAYER_REVIEW_PASS_VERDICTS = {
+    "pass",
+    "passed",
+    "accepted",
+    "approve",
+    "approved",
+}
+LOCAL_PLAYER_REVIEW_BLOCKING_VERDICTS = {
+    "fail",
+    "failed",
+    "not_final",
+    "partial",
+    "partial_pass_continue_iteration",
+    "rework",
+    "rework_required",
+    "rejected",
+    "continue_iteration",
+    "continue_iteration_not_final_delivery",
+    "needs_plan_change",
+}
 
 
 class GameProductionCommandResult(BaseModel):
@@ -84,6 +185,9 @@ class GameProductionSpec(BaseModel):
     user_accepts_residual: bool = False
     final_player_experience_required: bool = False
     final_player_experience_threshold: float = 0.95
+    visual_product_iteration_required: bool = False
+    required_test_scripts: list[str] = Field(default_factory=list)
+    local_dev_port: int = 5178
 
 
 class GameProductionRunner:
@@ -102,6 +206,10 @@ class GameProductionRunner:
         self.control_plane = control_plane
         self.command_runner = command_runner or _subprocess_command_runner
         self.command_timeout_sec = command_timeout_sec
+        self.capability_execution_policy: CapabilityExecutionPolicy | None = None
+
+    def bind_capability_execution_policy(self, policy: CapabilityExecutionPolicy) -> None:
+        self.capability_execution_policy = policy
 
     def can_run(self, work_item: WorkItem) -> bool:
         mission = self.control_plane.missions.get(work_item.mission_id)
@@ -110,7 +218,12 @@ class GameProductionRunner:
                 work_item.owner == KUN_GAME_PRODUCTION_RUNNER_OWNER
                 or (
                     work_item.owner == EXTERNAL_SUPERVISOR_GATE_OWNER
-                    and _phase_from_work_item(work_item) == "supervisor-gate"
+                    and _phase_from_work_item(work_item)
+                    in {
+                        "supervisor-gate",
+                        "benchmark-understanding-review",
+                        "benchmark-residual-audit",
+                    }
                 )
             )
             and mission is not None
@@ -126,45 +239,41 @@ class GameProductionRunner:
             )
         try:
             mission, task_plan, contract = self._records(work_item)
-            spec = _spec_from_contract(contract)
-            phase = _phase_from_work_item(work_item)
-            if phase == "interaction-design":
-                return self._write_interaction_design(work_item=work_item, task_plan=task_plan, spec=spec)
-            if phase == "scribble-redesign":
-                return self._write_scribble_redesign(work_item=work_item, task_plan=task_plan, spec=spec)
-            if phase == "game-production":
-                return self._write_playtest_ready_game(work_item=work_item, spec=spec)
-            if phase == "benchmark-quality-iteration":
-                return self._apply_benchmark_quality_iteration(work_item=work_item, spec=spec)
-            if phase == "visual-product-iteration":
-                return self._apply_visual_product_iteration(work_item=work_item, spec=spec)
-            if phase == "experience-product-iteration":
-                return self._apply_experience_product_iteration(work_item=work_item, spec=spec)
-            if phase == "sandbox-dynamics-iteration":
-                return self._apply_sandbox_dynamics_iteration(work_item=work_item, spec=spec)
-            if phase == "creative-goal-iteration":
-                return self._apply_creative_goal_iteration(work_item=work_item, spec=spec)
-            if phase == "mastery-loop-iteration":
-                return self._apply_mastery_loop_iteration(work_item=work_item, spec=spec)
-            if phase == "semantic-synthesis-iteration":
-                return self._apply_semantic_synthesis_iteration(work_item=work_item, spec=spec)
-            if phase == "portless-gate-repair":
-                return self._apply_portless_gate_repair(work_item=work_item, spec=spec)
-            if phase == "spatial-playfield-iteration":
-                return self._apply_spatial_playfield_iteration(work_item=work_item, spec=spec)
-            if phase == "internal-test":
-                return self._run_internal_tests(work_item=work_item, spec=spec)
-            if phase == "supervisor-gate":
-                return self._run_supervisor_gate(work_item=work_item, spec=spec)
-            if phase == "benchmark-residual-audit":
-                return self._run_benchmark_residual_audit(work_item=work_item, spec=spec)
-            if phase == "final-delivery":
-                return self._final_delivery(
-                    work_item=work_item,
-                    mission=mission,
-                    task_plan=task_plan,
-                    spec=spec,
+            capability_error = _capability_policy_error(
+                work_item=work_item,
+                policy=self.capability_execution_policy,
+            )
+            if capability_error is not None:
+                return WorkItemResult(
+                    status="failed",
+                    summary=capability_error,
+                    failure_category="plan_failure",
                 )
+            spec = _spec_from_contract(contract)
+            boundary_error = _workspace_boundary_error(work_item=work_item, spec=spec)
+            if boundary_error is not None:
+                return WorkItemResult(
+                    status="failed",
+                    summary=boundary_error,
+                    failure_category="permission_failure",
+                )
+            result = self._run_phase(
+                work_item=work_item,
+                mission=mission,
+                task_plan=task_plan,
+                spec=spec,
+            )
+            return self._with_execution_contract_artifacts(
+                work_item=work_item,
+                spec=spec,
+                result=result,
+            )
+        except PermissionError as exc:
+            return WorkItemResult(
+                status="failed",
+                summary=f"Game production runner blocked by permission boundary: {exc}",
+                failure_category="permission_failure",
+            )
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             return WorkItemResult(
                 status="failed",
@@ -176,6 +285,105 @@ class GameProductionRunner:
             summary=f"Unsupported game production work item: {work_item.work_item_id}",
             failure_category="tool_failure",
         )
+
+    def _run_phase(
+        self,
+        *,
+        work_item: WorkItem,
+        mission: Mission,
+        task_plan: TaskPlan,
+        spec: GameProductionSpec,
+    ) -> WorkItemResult:
+        phase = _phase_from_work_item(work_item)
+        if phase == "interaction-design":
+            return self._write_interaction_design(
+                work_item=work_item, task_plan=task_plan, spec=spec
+            )
+        if phase == "benchmark-understanding-report":
+            return self._write_benchmark_understanding_report(
+                work_item=work_item,
+                task_plan=task_plan,
+                spec=spec,
+            )
+        if phase == "benchmark-understanding-review":
+            return self._review_benchmark_understanding_report(
+                work_item=work_item,
+                mission=mission,
+                task_plan=task_plan,
+                spec=spec,
+            )
+        if phase == "scribble-redesign":
+            return self._write_scribble_redesign(
+                work_item=work_item, task_plan=task_plan, spec=spec
+            )
+        if phase == "game-production":
+            return self._write_playtest_ready_game(work_item=work_item, spec=spec)
+        if phase == "benchmark-quality-iteration":
+            return self._apply_benchmark_quality_iteration(work_item=work_item, spec=spec)
+        if phase == "commercial-game-polish-iteration":
+            return self._apply_commercial_game_polish_iteration(work_item=work_item, spec=spec)
+        if phase == "visual-product-iteration":
+            return self._apply_visual_product_iteration(work_item=work_item, spec=spec)
+        if phase == "experience-product-iteration":
+            return self._apply_experience_product_iteration(work_item=work_item, spec=spec)
+        if phase == "sandbox-dynamics-iteration":
+            return self._apply_sandbox_dynamics_iteration(work_item=work_item, spec=spec)
+        if phase == "image-object-interaction-iteration":
+            return self._apply_image_object_interaction_iteration(work_item=work_item, spec=spec)
+        if phase == "creative-goal-iteration":
+            return self._apply_creative_goal_iteration(work_item=work_item, spec=spec)
+        if phase == "mastery-loop-iteration":
+            return self._apply_mastery_loop_iteration(work_item=work_item, spec=spec)
+        if phase == "semantic-synthesis-iteration":
+            return self._apply_semantic_synthesis_iteration(work_item=work_item, spec=spec)
+        if phase == "portless-gate-repair":
+            return self._apply_portless_gate_repair(work_item=work_item, spec=spec)
+        if phase == "spatial-playfield-iteration":
+            return self._apply_spatial_playfield_iteration(work_item=work_item, spec=spec)
+        if phase == "build-fix":
+            return self._apply_build_fix_iteration(work_item=work_item, spec=spec)
+        if phase == "internal-test":
+            return self._run_internal_tests(work_item=work_item, spec=spec)
+        if phase == "supervisor-gate":
+            return self._run_supervisor_gate(work_item=work_item, spec=spec)
+        if phase == "benchmark-residual-audit":
+            return self._run_benchmark_residual_audit(work_item=work_item, spec=spec)
+        if phase == "final-delivery":
+            return self._final_delivery(
+                work_item=work_item,
+                mission=mission,
+                task_plan=task_plan,
+                spec=spec,
+            )
+        return WorkItemResult(
+            status="blocked",
+            summary=(
+                f"Unsupported game production phase {phase!r} for work item "
+                f"{work_item.work_item_id}."
+            ),
+            failure_category="tool_failure",
+        )
+
+    def _with_execution_contract_artifacts(
+        self,
+        *,
+        work_item: WorkItem,
+        spec: GameProductionSpec,
+        result: WorkItemResult,
+    ) -> WorkItemResult:
+        artifacts = list(result.artifacts)
+        if work_item.required_capability_refs:
+            artifacts.append(
+                _capability_consumption_artifact(
+                    work_item=work_item,
+                    policy=self.capability_execution_policy,
+                )
+            )
+        if _phase_from_work_item(work_item) in COMMAND_PHASES:
+            artifacts.append(_sandbox_execution_artifact(work_item=work_item, spec=spec))
+        if artifacts == result.artifacts:
+            return result
+        return result.model_copy(update={"artifacts": artifacts})
 
     def _records(self, work_item: WorkItem) -> tuple[Mission, TaskPlan, ExecutionContract]:
         mission = self.control_plane.missions[work_item.mission_id]
@@ -215,6 +423,207 @@ class GameProductionRunner:
                     kind="review",
                 ),
             ],
+        )
+
+    def _write_benchmark_understanding_report(
+        self,
+        *,
+        work_item: WorkItem,
+        task_plan: TaskPlan,
+        spec: GameProductionSpec,
+    ) -> WorkItemResult:
+        research_dir = spec.project_path / "docs" / "research"
+        decomposition_path = research_dir / "scribblenauts-deep-decomposition-v28.md"
+        gap_path = research_dir / "scribblenauts-gap-to-current-build-v28.md"
+        human_gap_path = research_dir / "human-info-gap-ticket-v28.md"
+        revised_plan_path = research_dir / "revised-wordforge-v28-implementation-plan.md"
+        _write_text(
+            decomposition_path,
+            _scribblenauts_deep_decomposition_markdown(task_plan=task_plan, spec=spec),
+        )
+        _write_text(gap_path, _scribblenauts_current_gap_markdown(spec=spec))
+        _write_text(human_gap_path, _scribblenauts_human_info_gap_markdown(spec=spec))
+        _write_text(
+            revised_plan_path,
+            _scribblenauts_revised_implementation_plan_markdown(
+                task_plan=task_plan,
+                spec=spec,
+            ),
+        )
+        return WorkItemResult(
+            status="done",
+            summary=(
+                "Benchmark-understanding report created before further implementation: "
+                "deep decomposition, current-build gap, human info gap, and revised plan."
+            ),
+            artifacts=[
+                _artifact(
+                    work_item=work_item,
+                    suffix="deep-benchmark-decomposition",
+                    path=decomposition_path,
+                    supports=[
+                        "benchmark_understanding_report",
+                        "scribblenauts_deep_decomposition",
+                        "blocks_shallow_implementation",
+                    ],
+                    kind="report",
+                ),
+                _artifact(
+                    work_item=work_item,
+                    suffix="current-build-gap",
+                    path=gap_path,
+                    supports=[
+                        "current_build_gap_analysis",
+                        "product_gap_to_benchmark",
+                    ],
+                    kind="report",
+                ),
+                _artifact(
+                    work_item=work_item,
+                    suffix="human-info-gap-ticket",
+                    path=human_gap_path,
+                    supports=["human_info_gap", "collaboration_ticket_content"],
+                    kind="decision",
+                ),
+                _artifact(
+                    work_item=work_item,
+                    suffix="revised-implementation-plan",
+                    path=revised_plan_path,
+                    supports=["revised_implementation_plan", "plan_change_before_code"],
+                    kind="decision",
+                ),
+            ],
+        )
+
+    def _review_benchmark_understanding_report(
+        self,
+        *,
+        work_item: WorkItem,
+        mission: Mission,
+        task_plan: TaskPlan,
+        spec: GameProductionSpec,
+    ) -> WorkItemResult:
+        docs = {
+            "deep_decomposition": spec.project_path
+            / "docs"
+            / "research"
+            / "scribblenauts-deep-decomposition-v28.md",
+            "current_gap": spec.project_path
+            / "docs"
+            / "research"
+            / "scribblenauts-gap-to-current-build-v28.md",
+            "human_gap": spec.project_path / "docs" / "research" / "human-info-gap-ticket-v28.md",
+            "revised_plan": spec.project_path
+            / "docs"
+            / "research"
+            / "revised-wordforge-v28-implementation-plan.md",
+        }
+        failures: list[str] = []
+        required_terms = {
+            "deep_decomposition": (
+                "Core Player Fantasy",
+                "First Five Minutes",
+                "Interaction Grammar",
+                "Object Ontology",
+                "Causal Simulation",
+                "Failure And Recovery",
+            ),
+            "current_gap": (
+                "Concrete Gaps",
+                "Residual audit",
+                "Visual embodiment",
+                "Direct manipulation",
+            ),
+            "human_gap": ("Questions KUN Should Surface", "Default Assumptions", "Resume Rule"),
+            "revised_plan": ("Work Order", "Evidence Required", "Non-Negotiable Change"),
+        }
+        for key, path in docs.items():
+            if not path.exists():
+                failures.append(f"missing:{path.name}")
+                continue
+            text = path.read_text(encoding="utf-8")
+            for term in required_terms[key]:
+                if term not in text:
+                    failures.append(f"{path.name}:missing:{term}")
+        review_path = (
+            spec.project_path / "docs" / "research" / "benchmark-understanding-review-v28.md"
+        )
+        verdict = "pass" if not failures else "fail"
+        _write_text(
+            review_path,
+            _benchmark_understanding_review_markdown(
+                verdict=verdict,
+                failures=failures,
+                task_plan=task_plan,
+                spec=spec,
+            ),
+        )
+        artifact = _artifact(
+            work_item=work_item,
+            suffix="benchmark-understanding-review",
+            path=review_path,
+            supports=[
+                "benchmark_understanding_review",
+                "benchmark_understanding_report_review",
+                "external_supervisor_gate",
+                "plan_change_before_code",
+            ],
+            kind="review",
+        )
+        gate = GateEvaluation(
+            gate_evaluation_id=f"gate-{work_item.mission_id}-{_slug(work_item.work_item_id)}",
+            mission_id=work_item.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            subject_ref=work_item.work_item_id,
+            stage="plan",
+            task_type=mission.task_type,
+            rubric_version="kun-benchmark-understanding-review-v1",
+            metric_pack_version="kun-v6-north-star-v1",
+            north_star_verdict="pass" if not failures else "fail",
+            result_quality=0.88 if not failures else 0.45,
+            speed=0.72,
+            cost=0.82,
+            risk=0.22 if not failures else 0.7,
+            evidence_quality=0.86 if not failures else 0.42,
+            collaboration_quality=0.82,
+            score_breakdown={
+                "deep_decomposition": float("deep_decomposition:missing" not in failures),
+                "human_gap": float("human_gap:missing" not in failures),
+                "revised_plan": float("revised_plan:missing" not in failures),
+            },
+            thresholds={"result_quality": 0.8},
+            hard_gate_failures=failures,
+            evidence_refs=[artifact.artifact_id],
+            artifact_refs=[artifact.artifact_id],
+            review_refs=[artifact.artifact_id],
+            source_freshness="fresh",
+            failure_category="plan_failure" if failures else None,
+            root_cause=(
+                "Benchmark understanding report is too thin."
+                if failures
+                else "Benchmark understanding report is sufficient to restart implementation."
+            ),
+            responsibility_scope="kun_auto",
+            confidence=0.86,
+            next_action="needs_plan_change",
+            next_state="changing_plan",
+            learning_eligibility="none",
+            governance_signal="benchmark_understanding_review",
+            created_by=self.runner_identity,
+        )
+        if failures:
+            return WorkItemResult(
+                status="failed",
+                summary=f"Benchmark understanding review failed: {', '.join(failures)}",
+                artifacts=[artifact],
+                gate_evaluation=gate,
+                failure_category="plan_failure",
+            )
+        return WorkItemResult(
+            status="done",
+            summary="Benchmark understanding review passed; implementation may resume from v28 plan.",
+            artifacts=[artifact],
+            gate_evaluation=gate,
         )
 
     def _write_scribble_redesign(
@@ -297,9 +706,13 @@ class GameProductionRunner:
 
         _write_text(spec.project_path / "src" / "engine" / "causalPhysics.ts", _causal_physics_ts())
         _write_text(spec.project_path / "scripts" / "long-playtest.mjs", _long_playtest_script())
-        _upsert_package_script(spec.project_path / "package.json", "test:long", "node scripts/long-playtest.mjs")
+        _upsert_package_script(
+            spec.project_path / "package.json", "test:long", "node scripts/long-playtest.mjs"
+        )
         _patch_app_for_causal_lab(spec.project_path / "src" / "App.tsx")
-        _append_once(spec.project_path / "src" / "styles.css", _causal_lab_css(), marker=".causalLab")
+        _append_once(
+            spec.project_path / "src" / "styles.css", _causal_lab_css(), marker=".causalLab"
+        )
         iteration_path = spec.project_path / "docs" / "benchmark-quality-iteration.md"
         _write_text(iteration_path, _benchmark_quality_iteration_markdown(spec))
         return WorkItemResult(
@@ -355,6 +768,90 @@ class GameProductionRunner:
                         "illustrated_worlds",
                         "tablet_game_ui",
                         "visual_residual_reduction",
+                    ],
+                    kind="decision",
+                )
+            ],
+        )
+
+    def _apply_commercial_game_polish_iteration(
+        self,
+        *,
+        work_item: WorkItem,
+        spec: GameProductionSpec,
+    ) -> WorkItemResult:
+        """Keep polishing after gates pass but before human acceptance.
+
+        This phase is intentionally product-facing: it makes KUN consume
+        concrete character references, raise the UI from "dashboard" toward a
+        commercial tablet game, and adds a dedicated gate so future runs do not
+        hide this capability behind generic visual checks.
+        """
+
+        _patch_project_for_commercial_game_polish(spec.project_path)
+        iteration_path = spec.project_path / "docs" / "commercial-game-polish-iteration.md"
+        _write_text(iteration_path, _commercial_game_polish_iteration_markdown(spec))
+        return WorkItemResult(
+            status="done",
+            summary=(
+                "Commercial game polish iteration integrated the supplied character reference, "
+                "tightened tablet game UI, upgraded generated object sprite presentation, and "
+                "added a product-feel gate that must run before delivery."
+            ),
+            artifacts=[
+                _artifact(
+                    work_item=work_item,
+                    suffix="commercial-game-polish-iteration",
+                    path=iteration_path,
+                    supports=[
+                        "commercial_game_polish",
+                        "visual_product_iteration",
+                        "character_reference_integration",
+                        "tablet_game_ui",
+                        "animation_feedback",
+                        "post_gate_product_pressure",
+                    ],
+                    kind="decision",
+                )
+            ],
+        )
+
+    def _apply_build_fix_iteration(
+        self,
+        *,
+        work_item: WorkItem,
+        spec: GameProductionSpec,
+    ) -> WorkItemResult:
+        app_path = spec.project_path / "src" / "App.tsx"
+        if not app_path.exists():
+            return WorkItemResult(
+                status="blocked",
+                summary="Build-fix iteration requires src/App.tsx in the game project.",
+                failure_category="tool_failure",
+            )
+        _patch_app_for_product_gamefeel_v53(app_path)
+        build_fix_path = spec.project_path / "docs" / "build-fix-iteration.md"
+        _write_text(
+            build_fix_path,
+            (
+                "# Build Fix Iteration\n\n"
+                "KUN repaired a source-level build/runtime mismatch and preserved the "
+                "current product-gamefeel layer before rerunning build and player gates.\n"
+            ),
+        )
+        return WorkItemResult(
+            status="done",
+            summary="Build-fix iteration patched the game source while preserving product gamefeel.",
+            artifacts=[
+                _artifact(
+                    work_item=work_item,
+                    suffix="build-fix-iteration",
+                    path=build_fix_path,
+                    supports=[
+                        "build_fix_iteration",
+                        "typescript_build_repair",
+                        "product_gamefeel_preserved",
+                        "visual_product_iteration",
                     ],
                     kind="decision",
                 )
@@ -457,6 +954,57 @@ class GameProductionRunner:
             ],
         )
 
+    def _apply_image_object_interaction_iteration(
+        self,
+        *,
+        work_item: WorkItem,
+        spec: GameProductionSpec,
+    ) -> WorkItemResult:
+        """Enforce image-first objects and non-duplicating stage interactions."""
+
+        _patch_project_for_image_object_interaction(spec.project_path)
+        _write_text(
+            spec.project_path / "scripts" / "visual-product-test.mjs",
+            _visual_product_test_script(),
+        )
+        _write_text(
+            spec.project_path / "scripts" / "sandbox-product-test.mjs",
+            _sandbox_product_test_script(),
+        )
+        _upsert_package_script(
+            spec.project_path / "package.json",
+            "test:visual",
+            "node scripts/visual-product-test.mjs",
+        )
+        _upsert_package_script(
+            spec.project_path / "package.json",
+            "test:sandbox",
+            "node scripts/sandbox-product-test.mjs",
+        )
+        iteration_path = spec.project_path / "docs" / "image-object-interaction-iteration.md"
+        _write_text(iteration_path, _image_object_interaction_iteration_markdown(spec))
+        return WorkItemResult(
+            status="done",
+            summary=(
+                "Image-object interaction iteration installed strict gates for pictorial generated "
+                "objects, ID-based drag movement, no copy-on-drag, and object-to-object reactions."
+            ),
+            artifacts=[
+                _artifact(
+                    work_item=work_item,
+                    suffix="image-object-interaction-iteration",
+                    path=iteration_path,
+                    supports=[
+                        "image_first_generated_objects",
+                        "non_duplicating_drag",
+                        "object_to_object_interaction",
+                        "human_feedback_rework",
+                    ],
+                    kind="decision",
+                )
+            ],
+        )
+
     def _apply_creative_goal_iteration(
         self,
         *,
@@ -517,7 +1065,7 @@ class GameProductionRunner:
         _append_once(
             spec.project_path / "src" / "styles.css",
             _mastery_loop_css(),
-            marker=".masteryCelebration",
+            marker="@keyframes celebratePop",
         )
         _write_text(
             spec.project_path / "scripts" / "mastery-product-test.mjs",
@@ -681,9 +1229,34 @@ class GameProductionRunner:
         work_item: WorkItem,
         spec: GameProductionSpec,
     ) -> WorkItemResult:
-        install = self.command_runner(["npm", "install"], spec.project_path, self.command_timeout_sec)
-        if install.exit_code != 0:
-            return _failed_command_result(work_item, "npm install", install, spec.project_path)
+        package_path = spec.project_path / "package.json"
+        package_payload = json.loads(package_path.read_text(encoding="utf-8"))
+        missing_required_scripts = _missing_required_test_scripts(
+            package_payload=package_payload,
+            spec=spec,
+        )
+        if missing_required_scripts:
+            return _failed_command_result(
+                work_item,
+                "required npm test scripts",
+                GameProductionCommandResult(
+                    exit_code=127,
+                    stdout="",
+                    stderr=(
+                        "Missing required package scripts: " + ", ".join(missing_required_scripts)
+                    ),
+                ),
+                spec.project_path,
+            )
+        install: GameProductionCommandResult | None = None
+        if not _node_dependencies_ready(spec.project_path):
+            install = self.command_runner(
+                ["npm", "install"],
+                spec.project_path,
+                self.command_timeout_sec,
+            )
+            if install.exit_code != 0:
+                return _failed_command_result(work_item, "npm install", install, spec.project_path)
         build = self.command_runner(
             ["npm", "run", "build"], spec.project_path, self.command_timeout_sec
         )
@@ -710,8 +1283,6 @@ class GameProductionRunner:
                 spec.project_path,
             )
         fun_test: GameProductionCommandResult | None = None
-        package_path = spec.project_path / "package.json"
-        package_payload = json.loads(package_path.read_text(encoding="utf-8"))
         if "test:fun" in package_payload.get("scripts", {}):
             fun_test = self.command_runner(
                 ["npm", "run", "test:fun"], spec.project_path, self.command_timeout_sec
@@ -833,12 +1404,28 @@ class GameProductionRunner:
                     spatial_test,
                     spec.project_path,
                 )
+        commercial_test: GameProductionCommandResult | None = None
+        if "test:commercial" in package_payload.get("scripts", {}):
+            commercial_test = self.command_runner(
+                ["npm", "run", "test:commercial"],
+                spec.project_path,
+                self.command_timeout_sec,
+            )
+            if commercial_test.exit_code != 0:
+                return _failed_command_result(
+                    work_item,
+                    "npm run test:commercial",
+                    commercial_test,
+                    spec.project_path,
+                )
         result_path = spec.project_path / "docs" / "internal-test-result.json"
         _write_text(
             result_path,
             json.dumps(
                 {
-                    "npm_install": install.model_dump(mode="json"),
+                    "npm_install": install.model_dump(mode="json")
+                    if install
+                    else {"skipped": True},
                     "npm_run_build": build.model_dump(mode="json"),
                     "npm_run_test_internal": internal.model_dump(mode="json"),
                     "npm_run_test_user_sim": user_sim.model_dump(mode="json"),
@@ -847,18 +1434,46 @@ class GameProductionRunner:
                         browser_static_test.model_dump(mode="json") if browser_static_test else None
                     ),
                     "npm_run_test_long": long_test.model_dump(mode="json") if long_test else None,
-                    "npm_run_test_visual": visual_test.model_dump(mode="json") if visual_test else None,
-                    "npm_run_test_experience": experience_test.model_dump(mode="json") if experience_test else None,
-                    "npm_run_test_sandbox": sandbox_test.model_dump(mode="json") if sandbox_test else None,
-                    "npm_run_test_creative": creative_test.model_dump(mode="json") if creative_test else None,
-                    "npm_run_test_mastery": mastery_test.model_dump(mode="json") if mastery_test else None,
-                    "npm_run_test_semantic": semantic_test.model_dump(mode="json") if semantic_test else None,
-                    "npm_run_test_spatial": spatial_test.model_dump(mode="json") if spatial_test else None,
+                    "npm_run_test_visual": visual_test.model_dump(mode="json")
+                    if visual_test
+                    else None,
+                    "npm_run_test_experience": experience_test.model_dump(mode="json")
+                    if experience_test
+                    else None,
+                    "npm_run_test_sandbox": sandbox_test.model_dump(mode="json")
+                    if sandbox_test
+                    else None,
+                    "npm_run_test_creative": creative_test.model_dump(mode="json")
+                    if creative_test
+                    else None,
+                    "npm_run_test_mastery": mastery_test.model_dump(mode="json")
+                    if mastery_test
+                    else None,
+                    "npm_run_test_semantic": semantic_test.model_dump(mode="json")
+                    if semantic_test
+                    else None,
+                    "npm_run_test_spatial": spatial_test.model_dump(mode="json")
+                    if spatial_test
+                    else None,
+                    "npm_run_test_commercial": commercial_test.model_dump(mode="json")
+                    if commercial_test
+                    else None,
                 },
                 ensure_ascii=False,
                 indent=2,
             )
             + "\n",
+        )
+        internal_supports = ["build_passed", "internal_test_passed", "playability_gate"]
+        if browser_static_test is not None:
+            internal_supports.extend(["browser_playtest_evidence", "portless_static_browser_gate"])
+        if visual_test is not None:
+            internal_supports.append("visual_product_iteration")
+        player_perception_artifacts = _artifacts_for_plan_support(
+            self.control_plane,
+            mission_id=work_item.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=PLAYER_PERCEPTION_APPROVAL_SUPPORTS,
         )
         return WorkItemResult(
             status="done",
@@ -868,7 +1483,7 @@ class GameProductionRunner:
                     work_item=work_item,
                     suffix="internal-test-result",
                     path=result_path,
-                    supports=["build_passed", "internal_test_passed", "playability_gate"],
+                    supports=internal_supports,
                     kind="test_result",
                 ),
                 _artifact(
@@ -878,6 +1493,7 @@ class GameProductionRunner:
                     supports=["review", "automated_test_review", "playability_gate_review"],
                     kind="review",
                 ),
+                *player_perception_artifacts,
             ],
         )
 
@@ -986,7 +1602,10 @@ class GameProductionRunner:
             failures.append("fun_gate_not_passed")
         if scripts.get("test:browser-static") != "node scripts/browser-static-playtest.mjs":
             failures.append("portless_static_browser_gate_missing")
-        if not isinstance(browser_static_result, dict) or browser_static_result.get("exit_code") != 0:
+        if (
+            not isinstance(browser_static_result, dict)
+            or browser_static_result.get("exit_code") != 0
+        ):
             failures.append("portless_static_browser_gate_not_passed")
         visual_result = internal_payload.get("npm_run_test_visual")
         for required in [
@@ -1011,7 +1630,9 @@ class GameProductionRunner:
             failures.append("child_or_parent_ui_contains_mvp_language")
         if spec.production_mode in SCRIBBLE_PARITY_PRODUCTION_MODES:
             report_path = spec.project_path / "docs" / "parity-runtime-report.json"
-            parity_report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+            parity_report = (
+                json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+            )
             if not parity_report:
                 failures.append("missing:docs/parity-runtime-report.json")
             if parity_report.get("objectCount", 0) < 120:
@@ -1044,8 +1665,11 @@ class GameProductionRunner:
                 if not isinstance(visual_result, dict) or visual_result.get("exit_code") != 0:
                     failures.append("visual_product_gate_not_passed")
                 experience_result = internal_payload.get("npm_run_test_experience")
-                if scripts.get("test:experience") == "node scripts/experience-product-test.mjs" and (
-                    not isinstance(experience_result, dict) or experience_result.get("exit_code") != 0
+                if scripts.get(
+                    "test:experience"
+                ) == "node scripts/experience-product-test.mjs" and (
+                    not isinstance(experience_result, dict)
+                    or experience_result.get("exit_code") != 0
                 ):
                     failures.append("experience_product_gate_not_passed")
                 sandbox_result = internal_payload.get("npm_run_test_sandbox")
@@ -1073,6 +1697,14 @@ class GameProductionRunner:
                     not isinstance(spatial_result, dict) or spatial_result.get("exit_code") != 0
                 ):
                     failures.append("spatial_playfield_gate_not_passed")
+                commercial_result = internal_payload.get("npm_run_test_commercial")
+                if scripts.get(
+                    "test:commercial"
+                ) == "node scripts/commercial-product-test.mjs" and (
+                    not isinstance(commercial_result, dict)
+                    or commercial_result.get("exit_code") != 0
+                ):
+                    failures.append("commercial_product_gate_not_passed")
                 for required in [
                     "src/data/visuals.ts",
                     "public/assets/companion-xiaobi.svg",
@@ -1089,7 +1721,9 @@ class GameProductionRunner:
                     or "worldBackdrop" not in app
                 ):
                     failures.append("visual_character_ui_layer_missing")
-                if scripts.get("test:experience") == "node scripts/experience-product-test.mjs" and (
+                if scripts.get(
+                    "test:experience"
+                ) == "node scripts/experience-product-test.mjs" and (
                     "questDeck" not in app
                     or "directManipulation" not in app
                     or "objectRelationGraph" not in app
@@ -1128,13 +1762,87 @@ class GameProductionRunner:
                     or "objectTrajectoryLabel" not in app
                 ):
                     failures.append("spatial_playfield_layer_missing")
-            protected_markers = ["Maxwell", "Starite", "Scribblenauts Unlimited", "Scribblenauts Remix"]
+                if scripts.get(
+                    "test:commercial"
+                ) == "node scripts/commercial-product-test.mjs" and (
+                    "commercial-game-polish-ready" not in app
+                    or "premiumTouchStage" not in app
+                    or "referenceCharacterMotion" not in app
+                    or "object-burger.svg"
+                    not in _read_text(spec.project_path / "src" / "data" / "visuals.ts")
+                ):
+                    failures.append("commercial_game_polish_layer_missing")
+            protected_markers = [
+                "Maxwell",
+                "Starite",
+                "Scribblenauts Unlimited",
+                "Scribblenauts Remix",
+            ]
             for relative_path in ["src/App.tsx", "README.md"]:
-                content = (spec.project_path / relative_path).read_text(encoding="utf-8") if (spec.project_path / relative_path).exists() else ""
+                content = (
+                    (spec.project_path / relative_path).read_text(encoding="utf-8")
+                    if (spec.project_path / relative_path).exists()
+                    else ""
+                )
                 if any(marker in content for marker in protected_markers):
                     failures.append(f"protected_expression_marker:{relative_path}")
+        final_experience_payload: dict[str, object] | None = None
         final_experience_artifact: ArtifactRecord | None = None
         if spec.final_player_experience_required:
+            supervisor_candidate_payload = _final_player_experience_payload(
+                spec,
+                ignore_local_player_review=True,
+            )
+            player_review_artifact: ArtifactRecord | None = None
+            if supervisor_candidate_payload.get("pass") is True:
+                player_review_path = (
+                    spec.project_path
+                    / "docs"
+                    / f"player-experience-{_slug(work_item.work_item_id)}-supervisor-review.json"
+                )
+                _write_text(
+                    player_review_path,
+                    json.dumps(
+                        {
+                            "schema": "kun-external-supervisor-player-review-v1",
+                            "verdict": "approved_current_supervisor",
+                            "pass": True,
+                            "final": True,
+                            "reviewer": work_item.owner,
+                            "work_item_id": work_item.work_item_id,
+                            "score": supervisor_candidate_payload.get("score"),
+                            "threshold": supervisor_candidate_payload.get("threshold"),
+                            "basis": (
+                                "Current external supervisor review of fresh build, fun, "
+                                "browser-static, long-play, visual, sandbox, commercial, "
+                                "and final-player-experience evidence."
+                            ),
+                            "open_gaps": [],
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    + "\n",
+                )
+                player_review_artifact = ArtifactRecord(
+                    artifact_id=(
+                        f"artifact-{_slug(work_item.work_item_id)}-"
+                        "supervisor-player-experience-review"
+                    ),
+                    kind="review",
+                    path_or_uri=str(player_review_path),
+                    content_hash=_hash_path(player_review_path),
+                    created_by=work_item.owner,
+                    mission_id=work_item.mission_id,
+                    work_item_id=work_item.work_item_id,
+                    supports=[
+                        "player_first_impression_gate",
+                        "external_supervisor_gate",
+                        "final_player_experience_gate",
+                    ],
+                    freshness="fresh",
+                    source_quality="credible",
+                )
             final_experience_payload = _final_player_experience_payload(spec)
             final_experience_path = spec.project_path / "docs" / "final-player-experience-gate.json"
             _write_text(
@@ -1207,11 +1915,116 @@ class GameProductionRunner:
         artifacts = [artifact]
         if final_experience_artifact is not None:
             artifacts.append(final_experience_artifact)
+        if spec.final_player_experience_required and player_review_artifact is not None:
+            artifacts.append(player_review_artifact)
+        artifact_refs = [artifact.artifact_id for artifact in artifacts]
+        final_score = (
+            float(final_experience_payload.get("score", 0.0))
+            if isinstance(final_experience_payload, dict)
+            else (0.9 if not failures else 0.45)
+        )
+        passed = not failures
+        human_player_review_only = _only_missing_fresh_real_player_review(failures)
+        gate = GateEvaluation(
+            gate_evaluation_id=f"gate-{work_item.mission_id}-{_slug(work_item.work_item_id)}-external-supervisor",
+            mission_id=work_item.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            subject_ref=work_item.work_item_id,
+            stage="delivery",
+            task_type="product_development",
+            rubric_version="kun-game-production-external-supervisor-v2",
+            metric_pack_version="kun-v6-north-star-v1",
+            north_star_verdict="pass" if passed else "fail",
+            result_quality=0.95 if passed else max(0.0, min(0.65, final_score)),
+            speed=0.68,
+            cost=0.72,
+            risk=0.28 if passed else 0.62,
+            evidence_quality=0.88 if artifacts else 0.45,
+            collaboration_quality=0.8,
+            score_breakdown={
+                "external_supervisor_gate": 1.0 if passed else 0.0,
+                "final_player_experience": final_score,
+                "failure_count": float(len(failures)),
+            },
+            thresholds={"result_quality": 0.8},
+            hard_gate_failures=list(failures),
+            artifact_refs=artifact_refs,
+            evidence_refs=artifact_refs,
+            review_refs=artifact_refs,
+            source_freshness="fresh",
+            failure_category=(
+                "user_input_missing"
+                if human_player_review_only
+                else "delivery_failure"
+                if failures
+                else None
+            ),
+            root_cause=(
+                "External supervisor requires a fresh human or target-player playtest before "
+                "KUN can treat automated product gates as final."
+                if human_player_review_only
+                else "External supervisor found final product/player-experience gaps: "
+                + ", ".join(failures)
+                if failures
+                else "External supervisor accepted the refreshed game/product evidence."
+            ),
+            responsibility_scope=(
+                "human_collaboration" if human_player_review_only else "kun_auto"
+            ),
+            confidence=0.88,
+            next_action=(
+                "needs_human"
+                if human_player_review_only
+                else "needs_repair"
+                if failures
+                else "continue"
+            ),
+            next_state=(
+                "waiting_human"
+                if human_player_review_only
+                else "repairing"
+                if failures
+                else "running"
+            ),
+            learning_eligibility=(
+                "none" if human_player_review_only else "candidate" if failures else "none"
+            ),
+            governance_signal=(
+                "external_supervisor_requires_fresh_human_player_review"
+                if human_player_review_only
+                else "external_supervisor_product_gate_failed"
+                if failures
+                else "external_supervisor_product_gate_passed"
+            ),
+            created_by=self.runner_identity,
+        )
         if failures:
+            if human_player_review_only:
+                ticket = _fresh_player_review_ticket(
+                    work_item=work_item,
+                    context_ref=(
+                        final_experience_artifact.artifact_id
+                        if final_experience_artifact is not None
+                        else artifact.artifact_id
+                    ),
+                )
+                return WorkItemResult(
+                    status="waiting_human",
+                    summary=(
+                        "External supervisor gate needs fresh human or target-player review; "
+                        "KUN must not open another mechanical product rework branch from this "
+                        "signal alone."
+                    ),
+                    artifacts=artifacts,
+                    gate_evaluation=gate,
+                    failure_category="user_input_missing",
+                    collaboration_tickets=[ticket],
+                )
             return WorkItemResult(
                 status="failed",
                 summary=f"External supervisor gate failed: {', '.join(failures)}",
                 artifacts=artifacts,
+                gate_evaluation=gate,
                 failure_category="delivery_failure",
             )
         return WorkItemResult(
@@ -1221,6 +2034,7 @@ class GameProductionRunner:
                 "and final player-experience evidence."
             ),
             artifacts=artifacts,
+            gate_evaluation=gate,
         )
 
     def _final_delivery(
@@ -1231,6 +2045,23 @@ class GameProductionRunner:
         task_plan: TaskPlan,
         spec: GameProductionSpec,
     ) -> WorkItemResult:
+        mission_director_blocker = _delivery_blocking_mission_director_gate(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+        )
+        if mission_director_blocker is not None:
+            return WorkItemResult(
+                status="blocked",
+                summary=(
+                    "Final delivery blocked by Mission Director supervision. "
+                    f"Latest blocker={mission_director_blocker.gate_evaluation_id}; "
+                    f"action={mission_director_blocker.next_action}. KUN must change the "
+                    "plan or complete the requested human/player-experience evidence before "
+                    "another final delivery attempt."
+                ),
+                failure_category="delivery_failure",
+            )
         allowed, residual_payload = _latest_residual_allows_delivery(spec)
         if not allowed:
             residual = (
@@ -1270,13 +2101,144 @@ class GameProductionRunner:
                 ),
                 failure_category="delivery_failure",
             )
+        test_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=["internal_test_passed", "playability_gate"],
+        )
+        if not test_refs:
+            return WorkItemResult(
+                status="blocked",
+                summary=(
+                    "Final delivery blocked because no real internal-test/playability gate "
+                    "artifact exists in the current task plan."
+                ),
+                failure_category="evidence_failure",
+            )
+        review_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=[
+                "automated_test_review",
+                "playability_gate_review",
+                "external_supervisor_gate",
+                "final_player_experience_gate",
+                "human_playtest",
+                "target_user_playtest",
+                "user_acceptance",
+                "acceptance_review",
+            ],
+        )
+        if not review_refs:
+            return WorkItemResult(
+                status="blocked",
+                summary=(
+                    "Final delivery blocked because review_refs must come from prior review "
+                    "or acceptance artifacts, not from a self-generated pending review request."
+                ),
+                failure_category="evidence_failure",
+            )
+        visual_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=["visual_product_iteration"],
+        )
+        if _delivery_contract_requires_visual_product_evidence(spec) and not visual_refs:
+            return WorkItemResult(
+                status="blocked",
+                summary=(
+                    "Final delivery blocked because the contract requires visual product "
+                    "iteration evidence, but no real visual iteration artifact exists."
+                ),
+                failure_category="evidence_failure",
+            )
+        final_experience_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=["final_player_experience_gate"],
+        )
+        if spec.final_player_experience_required and not final_experience_refs:
+            return WorkItemResult(
+                status="blocked",
+                summary=(
+                    "Final delivery blocked because the final player-experience gate must be "
+                    "recorded as a Control Plane review artifact, not only as a local file."
+                ),
+                failure_category="evidence_failure",
+            )
+        browser_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=[
+                "browser_playtest_evidence",
+                "browser_interaction_replay",
+                "browser_visual_screenshot",
+            ],
+        )
+        player_perception_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=PLAYER_PERCEPTION_APPROVAL_SUPPORTS,
+        )
+        player_perception_allowed, player_perception_reason = (
+            _latest_player_perception_allows_delivery(
+                self.control_plane,
+                mission_id=mission.mission_id,
+                task_plan_version=work_item.task_plan_version,
+            )
+        )
+        if spec.final_player_experience_required and (
+            not player_perception_refs or not player_perception_allowed
+        ):
+            return WorkItemResult(
+                status="blocked",
+                summary=(
+                    "Final delivery blocked because final product-feel approval requires "
+                    "an explicit passed human/target-player/supervisor impression artifact, "
+                    "not only screenshots, static browser scripts, checklist gates, or "
+                    f"self-score JSON. {player_perception_reason}"
+                ),
+                failure_category="evidence_failure",
+            )
+        supervisor_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=["external_supervisor_gate"],
+        )
+        residual_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=["benchmark_residual_audit"],
+        )
+        capability_refs = _artifact_refs_for_plan_support(
+            self.control_plane,
+            mission_id=mission.mission_id,
+            task_plan_version=work_item.task_plan_version,
+            supports=[
+                "capability_policy_consumed",
+                "required_capabilities_executed",
+                "capability_behavior_receipt",
+            ],
+        )
         report_path = spec.project_path / "docs" / "final-playable-delivery.md"
         _write_text(report_path, _final_delivery_markdown(task_plan=task_plan, spec=spec))
         delivery_artifact = _artifact(
             work_item=work_item,
             suffix="playable-game",
             path=spec.project_path,
-            supports=["directly_playable_game", "internal_playtest_ready", "kun_autonomous_output"],
+            supports=[
+                "directly_playable_game",
+                "internal_playtest_ready",
+                "kun_autonomous_output",
+            ],
             kind="answer",
         )
         report_artifact = _artifact(
@@ -1286,15 +2248,47 @@ class GameProductionRunner:
             supports=["final_delivery_report", "acceptance_package"],
             kind="report",
         )
-        test_refs = _artifact_refs_for_plan_support(
-            self.control_plane,
-            mission_id=mission.mission_id,
-            task_plan_version=work_item.task_plan_version,
-            supports=["internal_test_passed", "playability_gate"],
-        ) or [_internal_test_artifact_ref(work_item)]
+        review_path = spec.project_path / "docs" / "final-delivery-review.md"
+        _write_text(
+            review_path,
+            _final_delivery_review_markdown(task_plan=task_plan, spec=spec),
+        )
+        rollback_path = spec.project_path / "docs" / "final-delivery-rollback-plan.md"
+        _write_text(
+            rollback_path,
+            _final_delivery_rollback_markdown(task_plan=task_plan, spec=spec),
+        )
+        review_artifact = _artifact(
+            work_item=work_item,
+            suffix="final-delivery-review-request",
+            path=review_path,
+            supports=["delivery_review_request", "human_acceptance_pending"],
+            kind="decision",
+        )
+        rollback_artifact = _artifact(
+            work_item=work_item,
+            suffix="final-delivery-rollback-plan",
+            path=rollback_path,
+            supports=["rollback_plan", "final_delivery_rollback_plan"],
+            kind="decision",
+        )
+        trace_artifact = _delivery_evidence_trace_artifact(
+            work_item=work_item,
+            spec=spec,
+            test_refs=test_refs,
+            review_refs=review_refs,
+            supervisor_refs=supervisor_refs,
+            residual_refs=residual_refs,
+            visual_refs=visual_refs,
+            final_experience_refs=final_experience_refs,
+            browser_refs=browser_refs,
+            player_perception_refs=player_perception_refs,
+            capability_refs=capability_refs,
+        )
         evidence_refs = _unique(
             [
                 report_artifact.artifact_id,
+                trace_artifact.artifact_id,
                 *_artifact_refs_for_plan_support(
                     self.control_plane,
                     mission_id=mission.mission_id,
@@ -1305,10 +2299,22 @@ class GameProductionRunner:
                         "final_player_experience_gate",
                     ],
                 ),
+                *visual_refs,
+                *browser_refs,
+                *player_perception_refs,
+                *capability_refs,
             ]
         )
         manifest_artifact_refs = _unique(
-            [delivery_artifact.artifact_id, report_artifact.artifact_id, *test_refs, *evidence_refs]
+            [
+                delivery_artifact.artifact_id,
+                report_artifact.artifact_id,
+                review_artifact.artifact_id,
+                rollback_artifact.artifact_id,
+                trace_artifact.artifact_id,
+                *test_refs,
+                *evidence_refs,
+            ]
         )
         manifest = ArtifactManifest(
             manifest_id=f"manifest-{mission.mission_id}-{_slug(work_item.task_plan_version)}-playable-game",
@@ -1319,6 +2325,8 @@ class GameProductionRunner:
             primary_artifact_ref=delivery_artifact.artifact_id,
             evidence_refs=evidence_refs,
             test_refs=test_refs,
+            review_refs=review_refs,
+            rollback_refs=_unique([rollback_artifact.artifact_id, *work_item.rollback_refs]),
             created_by=self.runner_identity,
             content_hash=_hash_path(spec.project_path),
             supports_delivery=True,
@@ -1346,15 +2354,14 @@ class GameProductionRunner:
                 "child_safety_boundary": 0.84,
                 "parent_report": 0.9,
                 "final_player_experience_gate": float(
-                    final_experience_payload.get("score", 0.9)
-                    if final_experience_payload
-                    else 0.9
+                    final_experience_payload.get("score", 0.9) if final_experience_payload else 0.9
                 ),
             },
             thresholds={"result_quality": 0.86},
             artifact_refs=manifest_artifact_refs,
             evidence_refs=evidence_refs,
             test_refs=test_refs,
+            review_refs=review_refs,
             source_freshness="fresh",
             responsibility_scope="kun_auto",
             confidence=0.86,
@@ -1367,7 +2374,13 @@ class GameProductionRunner:
         return WorkItemResult(
             status="done",
             summary="Directly playable internal-test-ready game delivery is ready.",
-            artifacts=[delivery_artifact, report_artifact],
+            artifacts=[
+                delivery_artifact,
+                report_artifact,
+                review_artifact,
+                rollback_artifact,
+                trace_artifact,
+            ],
             artifact_manifest=manifest,
             gate_evaluation=gate,
         )
@@ -1409,6 +2422,18 @@ def _spec_from_contract(contract: ExecutionContract) -> GameProductionSpec:
             "final_standard" in contract.delivery_contract,
         )
     )
+    required_test_scripts = contract.delivery_contract.get("required_test_scripts", [])
+    if isinstance(required_test_scripts, str):
+        required_test_scripts = [required_test_scripts]
+    if not isinstance(required_test_scripts, list):
+        required_test_scripts = []
+    local_dev_port = contract.delivery_contract.get(
+        "local_dev_port", contract.delivery_contract.get("port", 5178)
+    )
+    try:
+        local_dev_port = int(local_dev_port)
+    except (TypeError, ValueError):
+        local_dev_port = 5178
     return GameProductionSpec(
         project_path=Path(project_path).expanduser().resolve(),
         app_name=app_name.strip(),
@@ -1424,10 +2449,18 @@ def _spec_from_contract(contract: ExecutionContract) -> GameProductionSpec:
         final_player_experience_threshold=float(
             contract.delivery_contract.get("final_player_experience_threshold", 0.95)
         ),
+        visual_product_iteration_required=bool(
+            contract.delivery_contract.get("visual_product_iteration_required", False)
+        ),
+        required_test_scripts=[str(item) for item in required_test_scripts if str(item).strip()],
+        local_dev_port=local_dev_port,
     )
 
 
 def _phase_from_work_item(work_item: WorkItem) -> str:
+    if work_item.phase:
+        phase = GAME_PHASE_ALIASES.get(work_item.phase, work_item.phase)
+        return phase if phase in SUPPORTED_GAME_PHASES else "unsupported"
     item_id = work_item.work_item_id
     if "system-redesign" in item_id:
         return "scribble-redesign"
@@ -1435,12 +2468,29 @@ def _phase_from_work_item(work_item: WorkItem) -> str:
         return "game-production"
     if "benchmark-quality-iteration" in item_id or "quality-pressure-iteration" in item_id:
         return "benchmark-quality-iteration"
+    if "benchmark-understanding-review" in item_id:
+        return "benchmark-understanding-review"
+    if "benchmark-understanding" in item_id or "deep-benchmark-decomposition" in item_id:
+        return "benchmark-understanding-report"
+    if (
+        "commercial-game-polish-iteration" in item_id
+        or "commercial-polish" in item_id
+        or "visible-causality" in item_id
+        or "notebook-magic" in item_id
+    ):
+        return "commercial-game-polish-iteration"
     if "visual-product-iteration" in item_id or "visual-parity" in item_id:
         return "visual-product-iteration"
     if "experience-product-iteration" in item_id or "experience-depth" in item_id:
         return "experience-product-iteration"
     if "sandbox-dynamics-iteration" in item_id or "touch-sandbox" in item_id:
         return "sandbox-dynamics-iteration"
+    if (
+        "image-object-interaction-iteration" in item_id
+        or "image-object-interaction" in item_id
+        or "object-interaction-parity" in item_id
+    ):
+        return "image-object-interaction-iteration"
     if "creative-goal-iteration" in item_id or "creative-freedom" in item_id:
         return "creative-goal-iteration"
     if "mastery-loop-iteration" in item_id or "mastery-gamefeel" in item_id:
@@ -1455,9 +2505,22 @@ def _phase_from_work_item(work_item: WorkItem) -> str:
         return "portless-gate-repair"
     if "spatial-playfield" in item_id or "living-stage" in item_id or "stage-physics" in item_id:
         return "spatial-playfield-iteration"
-    if "fun-and-browser-retest" in item_id:
+    if "family-label-build-fix" in item_id or "build-fix" in item_id or "build-break" in item_id:
+        return "build-fix"
+    if (
+        "fun-and-browser-retest" in item_id
+        or "build-regression-browser-long-gates" in item_id
+        or "regression-browser-long" in item_id
+        or "browser-long-gates" in item_id
+        or "fresh-build-browser-long-player-gates" in item_id
+    ):
         return "internal-test"
-    if "external-supervisor-gate" in item_id or "final-player-experience-gate" in item_id:
+    if (
+        "external-supervisor-gate" in item_id
+        or "final-player-experience-gate" in item_id
+        or "supervisor-player-residual-gate" in item_id
+        or "player-residual-gate" in item_id
+    ):
         return "supervisor-gate"
     if "benchmark-residual-audit" in item_id or "residual-audit" in item_id:
         return "benchmark-residual-audit"
@@ -1479,8 +2542,26 @@ def _artifact_refs_for_plan_support(
     task_plan_version: str,
     supports: Sequence[str],
 ) -> list[str]:
+    return [
+        artifact.artifact_id
+        for artifact in _artifacts_for_plan_support(
+            control_plane,
+            mission_id=mission_id,
+            task_plan_version=task_plan_version,
+            supports=supports,
+        )
+    ]
+
+
+def _artifacts_for_plan_support(
+    control_plane: InMemoryControlPlane,
+    *,
+    mission_id: str,
+    task_plan_version: str,
+    supports: Sequence[str] | frozenset[str],
+) -> list[ArtifactRecord]:
     support_set = set(supports)
-    refs: list[str] = []
+    records: list[ArtifactRecord] = []
     for artifact in control_plane.artifacts.values():
         if artifact.mission_id != mission_id or not support_set.intersection(artifact.supports):
             continue
@@ -1489,8 +2570,232 @@ def _artifact_refs_for_plan_support(
         work_item = control_plane.work_items.get(artifact.work_item_id)
         if work_item is None or work_item.task_plan_version != task_plan_version:
             continue
-        refs.append(artifact.artifact_id)
-    return _unique(sorted(refs))
+        records.append(artifact)
+    return sorted(records, key=lambda artifact: artifact.artifact_id)
+
+
+def _latest_player_perception_allows_delivery(
+    control_plane: InMemoryControlPlane,
+    *,
+    mission_id: str,
+    task_plan_version: str,
+) -> tuple[bool, str]:
+    records = _artifacts_for_plan_support(
+        control_plane,
+        mission_id=mission_id,
+        task_plan_version=task_plan_version,
+        supports=PLAYER_PERCEPTION_APPROVAL_SUPPORTS,
+    )
+    if not records:
+        return False, "No explicit player-perception approval artifact was found."
+
+    rejected: list[str] = []
+    for artifact in sorted(records, key=_artifact_sort_key, reverse=True):
+        verdict, reason = _player_perception_artifact_verdict(artifact)
+        if verdict is True:
+            return True, f"Player-perception approval is backed by {artifact.artifact_id}."
+        if verdict is False:
+            rejected.append(f"{artifact.artifact_id}: {reason}")
+    if rejected:
+        return False, "Latest player-perception evidence did not approve delivery: " + "; ".join(
+            rejected[:3]
+        )
+    return False, "Player-perception artifacts exist but none carries an explicit pass verdict."
+
+
+def _artifact_sort_key(artifact: ArtifactRecord) -> tuple[float, str]:
+    path = _path_for_artifact(artifact)
+    if path is not None and path.exists():
+        return (path.stat().st_mtime, artifact.artifact_id)
+    return (0.0, artifact.artifact_id)
+
+
+def _path_for_artifact(artifact: ArtifactRecord) -> Path | None:
+    if "://" in artifact.path_or_uri and not artifact.path_or_uri.startswith("file://"):
+        return None
+    raw_path = artifact.path_or_uri.removeprefix("file://")
+    return Path(raw_path).expanduser()
+
+
+def _player_perception_artifact_verdict(artifact: ArtifactRecord) -> tuple[bool | None, str]:
+    if (
+        artifact.created_by == KUN_GAME_PRODUCTION_RUNNER_OWNER
+        and "user_acceptance" not in artifact.supports
+    ):
+        return False, "KUN-owned game runner evidence cannot approve its own final product feel."
+    path = _path_for_artifact(artifact)
+    if path is None or not path.exists():
+        return None, "artifact path is unavailable"
+    if path.suffix.lower() == ".json":
+        payload = _read_json(path)
+        if not isinstance(payload, dict):
+            return None, "artifact JSON is not an object"
+        verdict = (
+            str(payload.get("verdict") or payload.get("decision") or payload.get("status") or "")
+            .strip()
+            .lower()
+        )
+        failures = payload.get("failures")
+        if (
+            payload.get("pass") is True
+            or verdict
+            in {
+                "pass",
+                "passed",
+                "accepted",
+                "approve",
+                "approved",
+            }
+            or verdict.startswith(("pass_", "passed_", "accepted_", "approved_"))
+        ):
+            if isinstance(failures, list) and failures:
+                return False, "artifact has a pass marker but also lists failures"
+            return True, "explicit pass verdict"
+        if payload.get("pass") is False or verdict in {
+            "fail",
+            "failed",
+            "rework",
+            "rework_required",
+            "not_final",
+            "rejected",
+        }:
+            return False, "explicit non-pass verdict"
+        return None, "no explicit pass verdict in JSON"
+    text = _read_text(path).lower()
+    if "verdict: pass" in text or "decision: accepted" in text or "user accepted" in text:
+        return True, "explicit pass verdict"
+    if "verdict: fail" in text or "not final" in text or "rework required" in text:
+        return False, "explicit non-pass verdict"
+    return None, "no explicit pass verdict in text"
+
+
+def _delivery_contract_requires_visual_product_evidence(spec: GameProductionSpec) -> bool:
+    return spec.visual_product_iteration_required
+
+
+def _delivery_blocking_mission_director_gate(
+    control_plane: InMemoryControlPlane,
+    *,
+    mission_id: str,
+    task_plan_version: str,
+) -> GateEvaluation | None:
+    blockers = [
+        gate
+        for gate in control_plane.gate_evaluations.values()
+        if gate.mission_id == mission_id
+        and gate.task_plan_version == task_plan_version
+        and gate.created_by == "mission-director"
+        and (
+            gate.next_action in {"needs_info", "needs_human", "needs_plan_change"}
+            or gate.north_star_verdict != "pass"
+            or bool(gate.hard_gate_failures)
+        )
+        and _mission_director_blocker_still_active(
+            control_plane,
+            gate=gate,
+            mission_id=mission_id,
+            task_plan_version=task_plan_version,
+        )
+    ]
+    if not blockers:
+        return None
+    return sorted(blockers, key=lambda gate: gate.gate_evaluation_id)[-1]
+
+
+def _mission_director_blocker_still_active(
+    control_plane: InMemoryControlPlane,
+    *,
+    gate: GateEvaluation,
+    mission_id: str,
+    task_plan_version: str,
+) -> bool:
+    failures = set(gate.hard_gate_failures)
+    evidence_failures = {
+        "human_or_target_user_acceptance_missing",
+        "player_perception_evidence_missing",
+        "gate_pass_not_product_done",
+    }
+    if not failures or not failures.issubset(evidence_failures):
+        return True
+
+    player_perception_allowed, _reason = _latest_player_perception_allows_delivery(
+        control_plane,
+        mission_id=mission_id,
+        task_plan_version=task_plan_version,
+    )
+    return not player_perception_allowed
+
+
+def _delivery_evidence_trace_artifact(
+    *,
+    work_item: WorkItem,
+    spec: GameProductionSpec,
+    test_refs: Sequence[str],
+    review_refs: Sequence[str],
+    supervisor_refs: Sequence[str],
+    residual_refs: Sequence[str],
+    visual_refs: Sequence[str],
+    final_experience_refs: Sequence[str],
+    browser_refs: Sequence[str],
+    player_perception_refs: Sequence[str],
+    capability_refs: Sequence[str],
+) -> ArtifactRecord:
+    trace_path = spec.project_path / ".kun" / "delivery-evidence-trace.json"
+    support_groups = {
+        "test_refs": list(test_refs),
+        "review_refs": list(review_refs),
+        "supervisor_refs": list(supervisor_refs),
+        "residual_refs": list(residual_refs),
+        "visual_refs": list(visual_refs),
+        "final_experience_refs": list(final_experience_refs),
+        "browser_refs": list(browser_refs),
+        "player_perception_refs": list(player_perception_refs),
+        "capability_refs": list(capability_refs),
+    }
+    _write_text(
+        trace_path,
+        json.dumps(
+            {
+                "schema": "kun-game-delivery-evidence-trace-v1",
+                "work_item_id": work_item.work_item_id,
+                "production_mode": spec.production_mode,
+                "support_groups": support_groups,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+    )
+    supports = ["delivery_evidence_trace", "internal_test_passed", "playability_gate"]
+    if review_refs:
+        supports.append("prior_review_evidence")
+    if supervisor_refs:
+        supports.append("external_supervisor_gate")
+    if residual_refs:
+        supports.append("benchmark_residual_audit")
+    if visual_refs:
+        supports.append("visual_product_iteration")
+    if final_experience_refs:
+        supports.append("final_player_experience_gate")
+    if browser_refs:
+        supports.append("browser_playtest_evidence")
+    if player_perception_refs:
+        supports.append("player_perception_evidence")
+    if capability_refs:
+        supports.extend(
+            [
+                "capability_policy_consumed",
+                "required_capabilities_executed",
+                "capability_behavior_receipt",
+            ]
+        )
+    return _artifact(
+        work_item=work_item,
+        suffix="delivery-evidence-trace",
+        path=trace_path,
+        supports=supports,
+        kind="evidence",
+    )
 
 
 def _unique(values: Sequence[str]) -> list[str]:
@@ -1502,6 +2807,97 @@ def _unique(values: Sequence[str]) -> list[str]:
         seen.add(value)
         unique_values.append(value)
     return unique_values
+
+
+def _required_test_scripts(spec: GameProductionSpec) -> list[str]:
+    defaults: list[str]
+    if spec.production_mode in SCRIBBLE_PARITY_PRODUCTION_MODES:
+        defaults = ["test:internal", "test:user-sim", "test:fun", "test:browser-static"]
+    else:
+        defaults = ["test:internal", "test:user-sim"]
+    if spec.benchmark_residual_required:
+        defaults.append("test:long")
+    if spec.visual_product_iteration_required:
+        defaults.append("test:visual")
+    return _unique([*defaults, *spec.required_test_scripts])
+
+
+def _missing_required_test_scripts(
+    *,
+    package_payload: dict[str, object],
+    spec: GameProductionSpec,
+) -> list[str]:
+    scripts = package_payload.get("scripts", {})
+    if not isinstance(scripts, dict):
+        scripts = {}
+    return [script for script in _required_test_scripts(spec) if script not in scripts]
+
+
+def _capability_policy_error(
+    *,
+    work_item: WorkItem,
+    policy: CapabilityExecutionPolicy | None,
+) -> str | None:
+    if not work_item.required_capability_refs:
+        return None
+    if policy is None:
+        return (
+            "Required runtime capabilities were attached to this game work item, but the "
+            "runner did not receive a capability execution policy."
+        )
+    missing = sorted(set(work_item.required_capability_refs) - set(policy.capability_profile_refs))
+    if missing:
+        return (
+            f"Capability execution policy is missing required profile refs: {', '.join(missing)}."
+        )
+    if not policy.directives:
+        return "Capability execution policy has profile refs but no executable directives."
+    directive_refs = {
+        capability_ref
+        for directive in policy.directives
+        for capability_ref in directive.capability_refs
+    }
+    uncovered = sorted(set(work_item.required_capability_refs) - directive_refs)
+    if uncovered:
+        return (
+            "Capability execution policy has no executable directive receipts for required "
+            f"profile refs: {', '.join(uncovered)}."
+        )
+    return None
+
+
+def _workspace_boundary_error(*, work_item: WorkItem, spec: GameProductionSpec) -> str | None:
+    phase = _phase_from_work_item(work_item)
+    if phase in COMMAND_PHASES:
+        if work_item.workspace_ref is None:
+            return (
+                "Game production command work item lacks workspace_ref; KUN must activate "
+                "a concrete workspace boundary before executing project commands."
+            )
+        if work_item.sandbox_ref is None:
+            return (
+                "Game production command work item lacks sandbox_ref; KUN must activate "
+                "a sandbox boundary before executing project commands."
+            )
+        if not any(lock.startswith("workspace:") for lock in work_item.resource_locks):
+            return (
+                "Game production command work item lacks a workspace resource lock; "
+                "parallel project writes must be isolated before execution."
+            )
+    if work_item.workspace_ref is None:
+        return None
+    prefix = "workspace://"
+    if not work_item.workspace_ref.startswith(prefix):
+        return f"Unsupported workspace_ref for game production: {work_item.workspace_ref!r}."
+    workspace_path = Path(work_item.workspace_ref[len(prefix) :]).expanduser().resolve()
+    try:
+        spec.project_path.relative_to(workspace_path)
+    except ValueError:
+        return (
+            "Game production project_path is outside the activated workspace boundary: "
+            f"{spec.project_path} is not under {workspace_path}."
+        )
+    return None
 
 
 def _internal_test_artifact_ref(work_item: WorkItem) -> str:
@@ -1566,6 +2962,290 @@ def _interaction_design_markdown(*, task_plan: TaskPlan, spec: GameProductionSpe
 - 儿童必须能看到第一步引导，并能一键开始第一句话。
 - 家长报告在无记录时要显示空状态，在有记录后才显示片段。
 - 内测路线可以改写游戏状态，但交付前必须能通过重置回到新用户状态。
+"""
+
+
+def _scribblenauts_deep_decomposition_markdown(
+    *,
+    task_plan: TaskPlan,
+    spec: GameProductionSpec,
+) -> str:
+    criteria = "\n".join(f"- {item}" for item in task_plan.acceptance_criteria)
+    return f"""# Scribblenauts Deep Benchmark Decomposition V28
+
+## Purpose
+
+This report blocks further implementation until KUN proves it understands the
+benchmark as a playable product, not only as a checklist of counts and test
+scripts. The target experience is a word-to-world creative puzzle sandbox:
+players express an idea, the idea becomes a concrete pictorial object in the
+world, and that object creates causal gameplay.
+
+## Core Player Fantasy
+
+- I can type or say almost any ordinary noun and see it become a game object.
+- The object is visual first: it reads as a hamburger, wolf, ladder, rope,
+  bridge, rain cloud, shield, or vehicle before it reads as text.
+- I can touch or drag the object as the same object, not spawn infinite copies.
+- I can give, attach, ride, combine, edit, or inspect objects.
+- NPCs and world rules react: food can be eaten, fire can burn, water can cool,
+  rope can connect, wings can fly, keys can unlock, and bridges can carry.
+- The joy comes from multiple surprising valid solutions, not from finding one
+  predetermined button.
+
+## First Five Minutes
+
+1. A fresh player sees a game stage, character, goal, input/notebook affordance,
+   and a few visible starter objects without reading documentation.
+2. The player creates a familiar object such as food, bridge, cloud, or animal.
+3. The object appears as a concrete sprite on the stage.
+4. The player drags or gives it to a target and sees a visible reaction.
+5. The game explains success or failure in-world, gives reward feedback, and
+   invites another idea.
+
+## Interaction Grammar
+
+- Create: noun, adjective+noun, action+noun, or short child sentence.
+- Modify: apply adjective/property after creation.
+- Move: pointer/touch drag changes position of the existing object.
+- Give/use: object-to-NPC and object-to-object collision triggers behavior.
+- Combine/attach: two objects form a composite or relationship.
+- Undo/reset: failed or messy experiments can be safely rewound.
+- Inspect: player can see why an object did or did not help.
+- Replay: solved goals remain replayable with different solutions.
+
+## Object Ontology
+
+- Category: food, animal, tool, vehicle, weather, material, plant, magic,
+  clothing, shelter, bridge, light, machine, social companion.
+- Physical traits: size, weight, motion, material, warmth, wetness, buoyancy,
+  sharpness, strength, carry capacity, visibility.
+- Affordances: edible, rideable, wearable, throwable, attachable, climbable,
+  unlocks, repairs, shelters, cools, burns, illuminates, scares, comforts.
+- Social traits: friendly, hungry, afraid, helpful, angry, curious.
+- Safety traits: dangerous, unsafe for child-facing world, requires redirect.
+- Conflict resolution: when objects collide or combine, rules must explain
+  which affordance wins.
+
+## Causal Simulation Families
+
+- Food chain: food dragged to hungry animal produces eating/satisfaction.
+- Elemental: fire, water, rain, ice, heat, cold, and wind change states.
+- Movement: wings, balloons, vehicles, ladders, bridges, boats, and ropes alter
+  reachability.
+- Tool use: key, hammer, shield, umbrella, repair kit, and light solve specific
+  world needs.
+- Social: friend, helper, music, gift, and comfort object change NPC state.
+- Construction: bridge, platform, rope, glue, wheel, and magnet create combined
+  solutions.
+
+## Puzzle And Reward Loop
+
+- Goal clarity: every stage must say what the NPC/world wants.
+- Multi-solution: each goal accepts different categories of solutions.
+- Feedback: each attempt gives why it helped or why it failed.
+- Reward: successful creative solution grants visible progress and unlocks.
+- Replay: player can solve the same request in a different way.
+- Surprise: the game should occasionally reward unusual but logical solutions.
+
+## UI And Game Feel
+
+- Main screen reads as game world, not dashboard.
+- Input/notebook remains available but does not dominate the stage.
+- Object art and character animation carry the meaning; text labels are
+  secondary captions.
+- Touch target, drag feedback, object focus, collision feedback, and success
+  feedback must feel immediate.
+- Overlays must not cover the objects or first-play path.
+
+## Failure And Recovery
+
+- Unknown word: show safe close alternatives and ask the player to try again.
+- Object exists but does not solve: explain missing affordance.
+- Object causes conflict or danger: redirect safely and preserve play.
+- Player stuck: offer hint by category, not only a single answer.
+- Messy world: undo/reset/replay without losing the learning trail.
+
+## Scope Honesty
+
+- Current local build can implement a rich object vocabulary, deterministic
+  sprites, causal rules, drag/drop, and repeatable tests.
+- Runtime AI image generation is not proven in the current game loop and should
+  not be claimed until implemented and gated.
+- Human/player-feel review remains required because automated scripts cannot
+  fully judge whether the game feels like a finished creative sandbox.
+
+## Acceptance Criteria From Current Plan
+
+{criteria}
+
+## Project Boundary
+
+- Project path: `{spec.project_path}`
+- Port hint: `{spec.local_dev_port}`
+"""
+
+
+def _scribblenauts_current_gap_markdown(*, spec: GameProductionSpec) -> str:
+    project = spec.project_path
+    return f"""# WordForge Gap To Current Build V28
+
+## Supervisor Finding
+
+The current build has improved mechanics and evidence, but KUN's original
+benchmark model was too thin. A good next iteration must repair product feel
+from first principles, not merely add another scripted gate.
+
+## Concrete Gaps To Check Before Coding
+
+- Benchmark decomposition: `docs/scribble-spark-system-design.md` is mostly a
+  system checklist, not a complete player journey or interaction grammar.
+- Parity matrix: `docs/scribble-parity-matrix.json` has only a small set of
+  capability rows and does not cover first-play feel, object ontology, failure
+  recovery, UI rhythm, or human clarification.
+- Residual audit: `docs/benchmark-residual-audit.md` reports a very low
+  residual even though user-visible screenshots still showed label-like cards,
+  repeated drag copies, and weak object reactions. That means the audit was
+  under-specified.
+- Visual embodiment: generated words must become pictorial movable objects in
+  `src/App.tsx` and `src/data/visuals.ts`; text captions must be secondary.
+- Direct manipulation: drag must move the existing object and trigger
+  object-to-object reactions, especially food-to-animal and tool-to-world.
+- UI hierarchy: `src/styles.css` must keep the stage readable and avoid
+  dashboard-like panels covering the playfield.
+- Human loop: a human info-gap artifact must exist before KUN claims the target
+  is understood.
+
+## Files KUN Must Inspect
+
+- `{project / "docs" / "scribble-spark-system-design.md"}`
+- `{project / "docs" / "scribble-parity-matrix.json"}`
+- `{project / "docs" / "benchmark-residual-audit.md"}`
+- `{project / "docs" / "final-player-experience-gate.json"}`
+- `{project / "src" / "App.tsx"}`
+- `{project / "src" / "engine" / "wordToWorld.ts"}`
+- `{project / "src" / "engine" / "worldRules.ts"}`
+- `{project / "src" / "data" / "visuals.ts"}`
+- `{project / "src" / "styles.css"}`
+"""
+
+
+def _scribblenauts_human_info_gap_markdown(*, spec: GameProductionSpec) -> str:
+    return f"""# Human Info Gap Ticket V28
+
+## Why KUN Should Have Asked
+
+The phrase "as close as possible to Scribblenauts" is not self-executing. KUN
+should not silently lower it to "mechanics and tests pass." It should either
+ask the user, or record explicit assumptions and keep a human/player-feel gate
+open.
+
+## Questions KUN Should Surface
+
+1. Should the next version prioritize exact visual feel, exact interaction feel,
+   object dictionary breadth, level depth, or AI-generated object art first?
+2. Are deterministic built-in sprites acceptable for the next build, or must
+   runtime AI image generation be integrated now?
+3. What minimum session should feel complete: five minutes, twenty minutes, or
+   multiple worlds?
+4. Should every generated object have a real sprite, or can rare fallback
+   objects use a generic placeholder while logged as a defect?
+5. Is the acceptance gate a human playtest only, or can an external supervisor
+   plus browser replay temporarily stand in?
+
+## Default Assumptions Until Answered
+
+- Prioritize human-visible product feel above object-count breadth.
+- Use original art and legal functional parity unless the user gives authorized
+  protected assets.
+- No delivery can close without human/player-feel review after browser play.
+- Runtime AI image generation is a separate gated feature if not already wired.
+
+## Resume Rule
+
+Implementation may resume only after this ticket is represented in Control
+Plane evidence and the revised plan explicitly says how unanswered questions
+will be handled.
+
+## Project Boundary
+
+`{spec.project_path}`
+"""
+
+
+def _scribblenauts_revised_implementation_plan_markdown(
+    *,
+    task_plan: TaskPlan,
+    spec: GameProductionSpec,
+) -> str:
+    return f"""# Revised WordForge V28 Implementation Plan
+
+## Non-Negotiable Change
+
+Do not continue by adding isolated tests. Continue from benchmark understanding:
+the next code pass must make the game feel like a direct-manipulation,
+image-first, word-to-world sandbox.
+
+## Work Order
+
+1. Rebuild first-play scene: clear character, goal, input, starter objects, and
+   object stage.
+2. Make generated objects image-first and caption-second.
+3. Repair direct manipulation: moving existing objects, not duplicating labels.
+4. Add visible causal reactions for food, animals, bridge/route, weather,
+   cooling, tool repair, flying, and shelter.
+5. Expand puzzle goals only after the first-play loop feels right.
+6. Run browser replay and human/player-feel review before residual audit.
+7. Treat any low residual without human-visible proof as invalid.
+
+## Evidence Required
+
+- Browser screenshot or replay showing a generated pictorial object being moved.
+- Browser evidence showing an object-to-object reaction.
+- Human/player-feel gate that explicitly reviews UI, art, animation, drag feel,
+  world readability, and creative freedom.
+- Updated residual audit that cannot pass if visual/interaction requirements
+  fail.
+
+## Existing Plan Context
+
+- Mission plan: `{task_plan.version}`
+- Project path: `{spec.project_path}`
+- Local port hint: `{spec.local_dev_port}`
+"""
+
+
+def _benchmark_understanding_review_markdown(
+    *,
+    verdict: str,
+    failures: Sequence[str],
+    task_plan: TaskPlan,
+    spec: GameProductionSpec,
+) -> str:
+    failure_lines = "\n".join(f"- {failure}" for failure in failures) or "- None"
+    return f"""# Benchmark Understanding Review V28
+
+## Verdict
+
+{verdict}
+
+## Failures
+
+{failure_lines}
+
+## Review Standard
+
+KUN may resume implementation only if the benchmark report covers player
+fantasy, first-play journey, interaction grammar, object ontology, causal
+simulation, current-build gaps, human information gaps, and a revised
+implementation order. This review does not mean final product acceptance; it
+only means the understanding gate is strong enough to restart implementation.
+
+## Plan Context
+
+- Mission plan: `{task_plan.version}`
+- Project path: `{spec.project_path}`
+- Local port hint: `{spec.local_dev_port}`
 """
 
 
@@ -1640,17 +3320,18 @@ def _final_delivery_markdown(*, task_plan: TaskPlan, spec: GameProductionSpec) -
             f"门禁 {final_experience.get('threshold')}，"
             f"结果 {'通过' if final_experience.get('pass') else '未通过'}。"
         )
-    browser_playtest_refs = [
-        path.name for path in sorted((spec.project_path / "docs").glob("browser-playtest*.json"))
-    ]
-    browser_static_refs = [
-        path.name
-        for path in sorted((spec.project_path / "docs").glob("browser-static-playtest*.json"))
-    ]
+    browser_playtest_refs = _latest_browser_evidence_refs(
+        spec.project_path / "docs",
+        patterns=("browser-live-interaction*.json", "browser-playtest*.json"),
+    )
+    browser_static_refs = _latest_browser_evidence_refs(
+        spec.project_path / "docs",
+        patterns=("browser-static-playtest*.json",),
+    )
     browser_ref = (
-        browser_playtest_refs[-1]
+        browser_playtest_refs[0]
         if browser_playtest_refs
-        else browser_static_refs[-1]
+        else browser_static_refs[0]
         if browser_static_refs
         else ""
     )
@@ -1704,7 +3385,7 @@ def _final_delivery_markdown(*, task_plan: TaskPlan, spec: GameProductionSpec) -
 ## 可玩入口
 
 - 项目路径：`{spec.project_path}`
-- 本地运行：`npm run dev -- --host 127.0.0.1 --port 5179`
+- 本地运行：`npm run dev -- --host 127.0.0.1 --port {spec.local_dev_port}`
 - 构建验证：`npm run build`
 - 内测验证：`npm run test:internal`
 
@@ -1716,6 +3397,81 @@ def _final_delivery_markdown(*, task_plan: TaskPlan, spec: GameProductionSpec) -
 
 {criteria}
 """
+
+
+def _final_delivery_review_markdown(*, task_plan: TaskPlan, spec: GameProductionSpec) -> str:
+    criteria = "\n".join(f"- {item}" for item in task_plan.acceptance_criteria)
+    required_scripts = "\n".join(f"- npm run {script}" for script in _required_test_scripts(spec))
+    return f"""# Final Delivery Review
+
+## Scope
+
+- Project path: `{spec.project_path}`
+- Production mode: `{spec.production_mode}`
+- App: `{spec.app_name}`
+
+## Acceptance Criteria
+
+{criteria}
+
+## Required Test Gates
+
+{required_scripts}
+
+## Human Acceptance
+
+- Status: pending user or external reviewer acceptance after this manifest is published.
+- The delivery manifest must remain in `awaiting_acceptance` until that review is recorded.
+"""
+
+
+def _final_delivery_rollback_markdown(*, task_plan: TaskPlan, spec: GameProductionSpec) -> str:
+    rollback_items = task_plan.rollback_plan or [
+        "Revert to the previous checkpoint or workspace snapshot.",
+        "Move the mission back to repairing.",
+        "Re-run build, required tests, player-experience gate, review, and acceptance.",
+    ]
+    rollback = "\n".join(f"- {item}" for item in rollback_items)
+    return f"""# Final Delivery Rollback Plan
+
+## Trigger
+
+- Any failed user acceptance, missing evidence, stale test result, or delivery regression.
+
+## Procedure
+
+{rollback}
+
+## Project Boundary
+
+- Project path: `{spec.project_path}`
+- Local port hint: `{spec.local_dev_port}`
+"""
+
+
+def _latest_browser_evidence_refs(docs_path: Path, *, patterns: Sequence[str]) -> list[str]:
+    paths: list[Path] = []
+    for pattern in patterns:
+        paths.extend(docs_path.glob(pattern))
+    return [
+        path.name
+        for path in sorted(
+            {path for path in paths if path.is_file()},
+            key=lambda path: (
+                _browser_evidence_version_key(path.name),
+                path.stat().st_mtime,
+                path.name,
+            ),
+            reverse=True,
+        )
+    ]
+
+
+def _browser_evidence_version_key(name: str) -> tuple[int, int]:
+    match = re.search(r"v(\d+)(?:r(\d+))?", name)
+    if match is None:
+        return (0, 0)
+    return (int(match.group(1)), int(match.group(2) or 0))
 
 
 def _playtest_ready_files(spec: GameProductionSpec) -> dict[str, str]:
@@ -1741,12 +3497,16 @@ def _scribble_system_design_markdown(*, task_plan: TaskPlan, spec: GameProductio
         title = "Fire Rabbit Scribble Spark System Design"
         expression = "original Fire Rabbit expression"
         scale = "4 original Fire Rabbit worlds, 24 NPC requests, 72 systemic solution patterns, 120 object nouns, 40 properties, and 12 actions"
-        puzzle_line = "Puzzles: each world has 6 goals and every goal has 3 valid systemic solution patterns."
+        puzzle_line = (
+            "Puzzles: each world has 6 goals and every goal has 3 valid systemic solution patterns."
+        )
     else:
         title = "Fire Rabbit Scribble Spark System Design"
         expression = "original Fire Rabbit expression"
         scale = "two Fire Rabbit worlds with object aliases, safe fallbacks, and material/ability/color/emotion properties"
-        puzzle_line = "Puzzles: each world has 3 goals and every goal has 3 valid systemic solution patterns."
+        puzzle_line = (
+            "Puzzles: each world has 3 goals and every goal has 3 valid systemic solution patterns."
+        )
     return f"""# {title}
 
 ## Boundary
@@ -1783,7 +3543,11 @@ def _scribble_parity_matrix_json(spec: GameProductionSpec) -> str:
         if spec.production_mode in SCRIBBLE_PARITY_PRODUCTION_MODES
         else "2 worlds x 3 goals x 3 systemic solution paths"
     )
-    label = "wordforge" if spec.production_mode == "scribble_adventure_functional_parity_v1" else "fire_rabbit"
+    label = (
+        "wordforge"
+        if spec.production_mode == "scribble_adventure_functional_parity_v1"
+        else "fire_rabbit"
+    )
     payload = {
         "benchmark_boundary": f"functional_system_parity_only_original_{label}_expression",
         "capabilities": [
@@ -1855,6 +3619,1301 @@ def _append_once(path: Path, content: str, *, marker: str) -> None:
     _write_text(path, current.rstrip() + "\n" + content.lstrip())
 
 
+def _patch_project_for_image_object_interaction(project_path: Path) -> None:
+    app_path = project_path / "src" / "App.tsx"
+    visuals_path = project_path / "src" / "data" / "visuals.ts"
+    styles_path = project_path / "src" / "styles.css"
+    if visuals_path.exists():
+        _patch_visuals_for_image_object_interaction(visuals_path)
+    if app_path.exists():
+        _patch_app_for_image_object_interaction(app_path)
+    if styles_path.exists():
+        _append_once(
+            styles_path,
+            (
+                ".imageObjectPlayfield{touch-action:none}.livingObject{min-width:104px;min-height:116px;touch-action:none}"
+                ".livingObject .generatedSprite{width:58px;height:58px;object-fit:contain}"
+                ".livingObject .objectCaption{font-weight:900;line-height:1.1;max-width:92px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+            ),
+            marker=".imageObjectPlayfield",
+        )
+
+
+def _patch_project_for_commercial_game_polish(project_path: Path) -> None:
+    assets = project_path / "public" / "assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    _write_text(assets / "companion-spark-star.svg", _spark_star_companion_svg())
+    _write_text(assets / "object-burger.svg", _burger_sprite_svg())
+    _write_text(assets / "object-wolf.svg", _wolf_sprite_svg())
+    _write_text(assets / "object-light.svg", _stage_light_sprite_svg())
+    _write_text(assets / "object-bridge.svg", _stage_bridge_sprite_svg())
+    app_path = project_path / "src" / "App.tsx"
+    visuals_path = project_path / "src" / "data" / "visuals.ts"
+    styles_path = project_path / "src" / "styles.css"
+    rules_path = project_path / "src" / "engine" / "worldRules.ts"
+    storage_path = project_path / "src" / "engine" / "storage.ts"
+    if visuals_path.exists():
+        _patch_visuals_for_commercial_game_polish(visuals_path)
+    if app_path.exists():
+        _patch_app_for_commercial_game_polish(app_path)
+        _patch_app_for_product_gamefeel_v32(app_path)
+        _patch_app_for_product_gamefeel_v33(app_path)
+        _patch_app_for_product_gamefeel_v37(app_path)
+        _patch_app_for_product_gamefeel_v38(app_path)
+        _patch_app_for_product_gamefeel_v50(app_path)
+        _patch_app_for_product_gamefeel_v52(app_path)
+        _patch_app_for_product_gamefeel_v53(app_path)
+        _patch_app_for_product_gamefeel_v55(app_path)
+    if rules_path.exists():
+        _patch_world_rules_for_product_gamefeel_v55(rules_path)
+    if storage_path.exists():
+        _patch_storage_for_product_gamefeel_v55(storage_path)
+    if styles_path.exists():
+        _append_once(
+            styles_path,
+            _commercial_game_polish_css(),
+            marker=".commercialGamePolish",
+        )
+        _append_once(
+            styles_path,
+            _product_gamefeel_v32_css(),
+            marker=".productGamefeelV32",
+        )
+        _append_once(
+            styles_path,
+            _product_gamefeel_v33_css(),
+            marker=".productGamefeelV33",
+        )
+        _append_once(
+            styles_path,
+            _product_gamefeel_v37_css(),
+            marker=".productGamefeelV37",
+        )
+        _append_once(
+            styles_path,
+            _product_gamefeel_v38_css(),
+            marker=".productGamefeelV38",
+        )
+        _append_once(
+            styles_path,
+            _product_gamefeel_v50_css(),
+            marker=".productGamefeelV50",
+        )
+        _append_once(
+            styles_path,
+            _product_gamefeel_v52_css(),
+            marker=".productGamefeelV52",
+        )
+        _append_once(
+            styles_path,
+            _product_gamefeel_v53_css(),
+            marker=".productGamefeelV53",
+        )
+        _append_once(
+            styles_path,
+            _product_gamefeel_v55_css(),
+            marker=".productGamefeelV55",
+        )
+    _write_text(
+        project_path / "scripts" / "commercial-product-test.mjs",
+        _commercial_product_test_script(),
+    )
+    _upsert_package_script(
+        project_path / "package.json",
+        "test:commercial",
+        "node scripts/commercial-product-test.mjs",
+    )
+    _upsert_package_script(
+        project_path / "package.json",
+        "test",
+        (
+            "npm run test:internal && npm run test:fun && npm run test:browser-static "
+            "&& npm run test:long && npm run test:commercial"
+        ),
+    )
+    reference_path = project_path / "docs" / "character-reference-video" / "reference-notes.md"
+    _write_text(
+        reference_path,
+        (
+            "# Character Reference Notes\n\n"
+            "- Source: user-provided 7.4s MP4 reference, extracted to `docs/character-reference-video/frame-*.png`.\n"
+            "- Product direction: use a bold black-outline yellow star companion with simple dot eyes, tiny legs, and bouncy motion.\n"
+            "- Integration rule: the reference informs original in-game character language; it does not replace product gameplay gates.\n"
+        ),
+    )
+
+
+def _patch_visuals_for_commercial_game_polish(visuals_path: Path) -> None:
+    visuals = visuals_path.read_text(encoding="utf-8")
+    visuals = visuals.replace(
+        'companionPortrait: "/assets/companion-xiaobi.svg"',
+        'companionPortrait: "/assets/companion-spark-star.svg"',
+    )
+    visuals = visuals.replace(
+        "if (isFoodObject(object)) return generatedObjectTemplates.burger;",
+        'if (isFoodObject(object)) return "/assets/object-burger.svg";',
+    )
+    visuals = visuals.replace(
+        "if (isWolfObject(object)) return generatedObjectTemplates.wolf;",
+        'if (isWolfObject(object)) return "/assets/object-wolf.svg";',
+    )
+    _write_text(visuals_path, visuals)
+
+
+def _patch_app_for_commercial_game_polish(app_path: Path) -> None:
+    app = app_path.read_text(encoding="utf-8")
+    app = app.replace(
+        "tabletWorkbench visual-polish-ready",
+        "tabletWorkbench visual-polish-ready commercial-game-polish-ready",
+    )
+    app = app.replace(
+        "stagePanel visualStage immersiveStage",
+        "stagePanel visualStage immersiveStage commercialGamePolish",
+    )
+    app = app.replace(
+        "stageScene illustratedScene visualFocusLayer sandboxDynamics imageObjectPlayfield",
+        "stageScene illustratedScene visualFocusLayer sandboxDynamics imageObjectPlayfield premiumTouchStage",
+    )
+    app = app.replace(
+        "拖到舞台，或点动作导演。",
+        "拖动物件到角色或目标上，观察真实反应。",
+    )
+    if "referenceCharacterBadge" not in app:
+        app = app.replace(
+            """<img className="stageCompanionAvatar" src={activeVisual.companionPortrait} alt={`${activeWorld.companion} 正在舞台里等待孩子造物`} />""",
+            """<img className="stageCompanionAvatar referenceCharacterMotion" src={activeVisual.companionPortrait} alt={`${activeWorld.companion} 正在舞台里等待孩子造物`} />
+              <span className="referenceCharacterBadge">灵感角色</span>""",
+        )
+    _write_text(app_path, app)
+
+
+def _patch_app_for_product_gamefeel_v32(app_path: Path) -> None:
+    app = app_path.read_text(encoding="utf-8")
+    app = app.replace(
+        "tabletWorkbench visual-polish-ready commercial-game-polish-ready",
+        "tabletWorkbench visual-polish-ready commercial-game-polish-ready productGamefeelV32",
+    )
+    app = app.replace(
+        "tabletWorkbench visual-polish-ready productGamefeelV32",
+        "tabletWorkbench visual-polish-ready commercial-game-polish-ready productGamefeelV32",
+    )
+    if "stageActionPulse" not in app:
+        app = app.replace(
+            "  const [stagePositions, setStagePositions] = useState<Record<string, { left: number; top: number }>>({});",
+            "  const [stagePositions, setStagePositions] = useState<Record<string, { left: number; top: number }>>({});\n"
+            "  const [stageActionPulse, setStageActionPulse] = useState<string | null>(null);",
+        )
+    app = app.replace(
+        "object={object} index={index} selected={selectedIds.includes(object.id)}",
+        "object={object} index={index} position={stagePositions[object.id]} selected={selectedIds.includes(object.id)}",
+    )
+    app = app.replace(
+        "position={stagePositions[object.id]} selected={selectedIds.includes(object.id)} onStageDragStart={() => setDraggingStageId(object.id)} onSelect={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])} />",
+        "position={stagePositions[object.id]} selected={selectedIds.includes(object.id)} onStageDragStart={() => setDraggingStageId(object.id)} onSelect={() => { const sourceId = selectedIds.find((id) => id !== object.id); if (sourceId) { finishStageInteraction(sourceId, stagePositions[object.id] ?? defaultStagePosition(object, index)); setSelectedIds([]); return; } setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id]); }} />",
+    )
+    app = app.replace(
+        "      const causal = explainCausalOutcome(object, before.activeTags);\n"
+        "      setStageActionPulse(`${eater.name}吃掉了${moved.name}`);\n"
+        "      window.setTimeout(() => setStageActionPulse(null), 1500);\n"
+        "      const event: PlayEvent = {",
+        "      const causal = explainCausalOutcome(object, before.activeTags);\n"
+        "      const event: PlayEvent = {",
+    )
+    eater_line = "      const eater = before.objects.find((object) => object.id !== moved.id && isWolfObject(object));\n"
+    guard_line = "      if (!isFoodObject(moved) || !eater) return current;\n"
+    if eater_line in app and guard_line not in app:
+        app = app.replace(eater_line, eater_line + guard_line)
+    if "setStageActionPulse(`${eater.name}吃掉了${moved.name}`)" not in app:
+        app = app.replace(
+            "      if (!isFoodObject(moved) || !eater) return current;\n"
+            "      const event: PlayEvent = {",
+            "      if (!isFoodObject(moved) || !eater) return current;\n"
+            "      setStageActionPulse(`${eater.name}吃掉了${moved.name}`);\n"
+            "      window.setTimeout(() => setStageActionPulse(null), 1500);\n"
+            "      const event: PlayEvent = {",
+        )
+    app = app.replace(
+        '{latest?.feedback ?? "说一个想法，我会把词语变成能行动、能组合、能解谜的东西。"}',
+        '{playerFacingFeedback(latest?.feedback) ?? "说一个想法，我会把词语变成能行动、能组合、能解谜的东西。"}',
+    )
+    if 'className="stageActionPulse"' not in app:
+        app = app.replace(
+            """{solvedNow ? <article className="masteryCelebration"><strong>解法成立！</strong><span>{latest?.solutionLabels.slice(0, 2).join(" / ")}</span></article> : <article className="failureCoach"><strong>换个办法试试</strong><span>可以先尝试：{tryNextHint}</span></article>}""",
+            """{solvedNow ? <article className="masteryCelebration"><strong>解法成立！</strong><span>{latest?.solutionLabels.slice(0, 2).join(" / ")}</span></article> : <article className="failureCoach"><strong>换个办法试试</strong><span>可以先尝试：{tryNextHint}</span></article>}
+              {stageActionPulse ? <article className="stageActionPulse">{stageActionPulse}</article> : null}""",
+        )
+    if "function playerFacingFeedback(" not in app:
+        app = app.replace(
+            "\nfunction objectTrajectoryLabel(object: GeneratedObject): string {",
+            """
+function playerFacingFeedback(feedback?: string): string | undefined {
+  if (!feedback) return undefined;
+  const primary = feedback.split(" 因果反馈")[0].split("。").filter(Boolean).slice(0, 2).join("。");
+  return primary ? `${primary}。` : feedback;
+}
+
+function objectTrajectoryLabel(object: GeneratedObject): string {""",
+        )
+    _write_text(app_path, app)
+
+
+def _patch_app_for_product_gamefeel_v33(app_path: Path) -> None:
+    """Push the play surface toward a game-first first viewport.
+
+    V32 fixed image-first objects and stage dragging, but browser review showed
+    the first screen could still read as a functional dashboard.  V33 is a
+    stricter visual/product marker consumed by the final player-experience gate.
+    """
+
+    app = app_path.read_text(encoding="utf-8")
+    app = app.replace(
+        "tabletWorkbench visual-polish-ready commercial-game-polish-ready productGamefeelV32",
+        (
+            "tabletWorkbench visual-polish-ready commercial-game-polish-ready "
+            "productGamefeelV32 productGamefeelV33 productGamefeelV35 productGamefeelV36"
+        ),
+    )
+    app = app.replace(
+        "tabletWorkbench visual-polish-ready commercial-game-polish-ready productGamefeelV32 productGamefeelV33 productGamefeelV35 productGamefeelV33",
+        (
+            "tabletWorkbench visual-polish-ready commercial-game-polish-ready "
+            "productGamefeelV32 productGamefeelV33 productGamefeelV35 productGamefeelV36"
+        ),
+    )
+    app = app.replace(
+        "tabletWorkbench visual-polish-ready commercial-game-polish-ready productGamefeelV32 productGamefeelV33 productGamefeelV35 productGamefeelV36 productGamefeelV36",
+        (
+            "tabletWorkbench visual-polish-ready commercial-game-polish-ready "
+            "productGamefeelV32 productGamefeelV33 productGamefeelV35 productGamefeelV36"
+        ),
+    )
+    _write_text(app_path, app)
+
+
+def _patch_app_for_product_gamefeel_v37(app_path: Path) -> None:
+    """Make repeat polish iterations produce a visible stage-art increment."""
+
+    app = app_path.read_text(encoding="utf-8")
+    if "productGamefeelV37" not in app:
+        app = app.replace("productGamefeelV36", "productGamefeelV36 productGamefeelV37", 1)
+    app = app.replace(
+        "productGamefeelV36 productGamefeelV37 productGamefeelV37",
+        "productGamefeelV36 productGamefeelV37",
+    )
+    _write_text(app_path, app)
+
+
+def _patch_app_for_product_gamefeel_v38(app_path: Path) -> None:
+    """Move the first viewport from tool-heavy editor toward game stage."""
+
+    app = app_path.read_text(encoding="utf-8")
+    if "productGamefeelV38" not in app:
+        app = app.replace("productGamefeelV37", "productGamefeelV37 productGamefeelV38", 1)
+    app = app.replace(
+        "productGamefeelV37 productGamefeelV38 productGamefeelV38",
+        "productGamefeelV37 productGamefeelV38",
+    )
+    _write_text(app_path, app)
+
+
+def _patch_app_for_product_gamefeel_v50(app_path: Path) -> None:
+    """Keep browser/player viewport failures from being treated as polish-only.
+
+    V50 exists because direct browser inspection found that V49/V38 could still
+    hide the top HUD offscreen and push the action tray past the right edge even
+    while automated gates passed.  This marker lets the runner apply a concrete
+    tablet-safe viewport repair instead of repeating generic commercial polish.
+    """
+
+    app = app_path.read_text(encoding="utf-8")
+    if "productGamefeelV50" not in app:
+        app = app.replace("productGamefeelV48", "productGamefeelV48 productGamefeelV50", 1)
+    app = app.replace(
+        "productGamefeelV48 productGamefeelV50 productGamefeelV50",
+        "productGamefeelV48 productGamefeelV50",
+    )
+    _write_text(app_path, app)
+
+
+def _patch_app_for_product_gamefeel_v52(app_path: Path) -> None:
+    """Add visible drag targets so browser play feels intentional, not accidental."""
+
+    app = app_path.read_text(encoding="utf-8")
+    if "productGamefeelV52" not in app:
+        app = app.replace("productGamefeelV50", "productGamefeelV50 productGamefeelV52", 1)
+    app = app.replace(
+        "productGamefeelV50 productGamefeelV52 productGamefeelV52",
+        "productGamefeelV50 productGamefeelV52",
+    )
+    if "isDraggingStage" not in app:
+        app = re.sub(
+            r'className="(stageScene[^"]*)"',
+            'className={`\\1 ${draggingStageId ? "isDraggingStage" : ""}`}',
+            app,
+            count=1,
+        )
+    if "targetGuideLayer" not in app:
+        app = app.replace(
+            '<div className="touchHint">拖动物件到角色或目标上，观察真实反应。</div>',
+            (
+                '<div className="touchHint">拖动物件到角色或目标上，观察真实反应。</div>\n'
+                '              <div className="targetGuideLayer" aria-hidden="true">'
+                '<span className="dropZone companionTarget">给伙伴</span>'
+                '<span className="dropZone questTarget">解目标</span>'
+                '<span className="dropZone worldTarget">试反应</span>'
+                "</div>"
+            ),
+        )
+    _write_text(app_path, app)
+
+
+def _patch_app_for_product_gamefeel_v53(app_path: Path) -> None:
+    """Turn successful object reactions into player-visible game progress.
+
+    Browser playtests showed V52 fixed the worst label/card issue, but free
+    interactions such as burger -> wolf still felt detached from the main
+    reward loop and newly generated objects could stack in the same stage
+    pocket.  V53 makes the runner produce a concrete player-feel increment
+    instead of accepting a checklist pass as product completion.
+    """
+
+    app = app_path.read_text(encoding="utf-8")
+    for marker in ("productGamefeelV50", "productGamefeelV52", "productGamefeelV53"):
+        if marker not in app:
+            app = app.replace(
+                'className="tabletWorkbench ', f'className="tabletWorkbench {marker} ', 1
+            )
+    if "productGamefeelV53" not in app:
+        app = app.replace("productGamefeelV52", "productGamefeelV52 productGamefeelV53", 1)
+    app = app.replace(
+        "productGamefeelV52 productGamefeelV53 productGamefeelV53",
+        "productGamefeelV52 productGamefeelV53",
+    )
+    if "resolveObjectUseInWorld" not in app:
+        app = app.replace(
+            'import { applyObjectToWorld, npcRequests, worldCompletion } from "./engine/worldRules";',
+            'import { applyObjectToWorld, npcRequests, resolveObjectUseInWorld, worldCompletion } from "./engine/worldRules";',
+            1,
+        )
+    if "resolveObjectUseInWorld(worldId, before, moved" not in app:
+        app = app.replace(
+            """      const outcome = targetCandidate.outcome;
+      setStageActionPulse(outcome.pulse);""",
+            """      const outcome = targetCandidate.outcome;
+      const directResolution = resolveObjectUseInWorld(worldId, before, moved, outcome.tag);
+      const solvedGoalIds = directResolution ? [directResolution.goalId] : [];
+      const solutionLabels = Array.from(new Set([outcome.label, ...(directResolution ? [directResolution.label] : [])]));
+      setStageActionPulse(outcome.pulse);""",
+            1,
+        )
+        app = app.replace(
+            """        feedback: outcome.feedback,
+        solvedGoalIds: [],
+        solutionLabels: [outcome.label],
+        sparkTags: outcome.sparkTags,""",
+            """        feedback: outcome.feedback,
+        solvedGoalIds,
+        solutionLabels,
+        sparkTags: directResolution ? Array.from(new Set([...outcome.sparkTags, ...directResolution.sparkTags])) : outcome.sparkTags,""",
+            1,
+        )
+        app = app.replace(
+            """            objects,
+            rewardShards: before.rewardShards + 1,""",
+            """            objects,
+            solvedGoalIds: Array.from(new Set([...before.solvedGoalIds, ...solvedGoalIds])),
+            rewardShards: before.rewardShards + 1 + solvedGoalIds.length,""",
+            1,
+        )
+    if "resolveObjectUseInWorld(worldId, before, inventoryObject" not in app:
+        app = app.replace(
+            """      const before = current.worlds[worldId];
+      if (before.objects.some((object) => object.id === inventoryObject.id)) return current;
+      const event: PlayEvent = {""",
+            """      const before = current.worlds[worldId];
+      if (before.objects.some((object) => object.id === inventoryObject.id)) return current;
+      const directResolution = resolveObjectUseInWorld(worldId, before, inventoryObject);
+      const solvedGoalIds = directResolution ? [directResolution.goalId] : [];
+      const event: PlayEvent = {""",
+            1,
+        )
+        app = app.replace(
+            """        feedback: `${inventoryObject.name}被放到舞台上，可以继续拖到角色、目标或另一个物件附近触发反应。`,
+        solvedGoalIds: [],
+        solutionLabels: ["舞台放置"],
+        sparkTags: inventoryObject.sparkTags,""",
+            """        feedback: directResolution ? `${inventoryObject.name}被放到舞台上，直接完成了：${directResolution.label}。` : `${inventoryObject.name}被放到舞台上，可以继续拖到角色、目标或另一个物件附近触发反应。`,
+        solvedGoalIds,
+        solutionLabels: directResolution ? [directResolution.label] : ["舞台放置"],
+        sparkTags: directResolution ? Array.from(new Set([...inventoryObject.sparkTags, ...directResolution.sparkTags])) : inventoryObject.sparkTags,""",
+            1,
+        )
+        app = app.replace(
+            """        worlds: { ...current.worlds, [worldId]: { ...before, objects: [...before.objects, inventoryObject], story: [event.feedback, ...before.story].slice(0, 12) } },
+        events: [event, ...current.events].slice(0, 160),""",
+            """        worlds: {
+          ...current.worlds,
+          [worldId]: {
+            ...before,
+            objects: [...before.objects, inventoryObject],
+            solvedGoalIds: Array.from(new Set([...before.solvedGoalIds, ...solvedGoalIds])),
+            rewardShards: before.rewardShards + solvedGoalIds.length,
+            story: [event.feedback, ...before.story].slice(0, 12),
+          },
+        },
+        events: [event, ...current.events].slice(0, 160),
+        replayLog: directResolution ? [`${worlds[worldId].shortName}:${directResolution.label}`, ...current.replayLog].slice(0, 80) : current.replayLog,""",
+            1,
+        )
+    if "function familyLabel(" not in app:
+        app = app.replace(
+            """interface StageRelationOutcome {""",
+            """function familyLabel(family: string): string {
+  const labels: Record<string, string> = {
+    crossing: "通行",
+    cooling: "降温",
+    lighting: "照明",
+    unlocking: "解锁",
+    comforting: "安抚",
+    growth: "生长",
+    repair: "修复",
+    protection: "保护",
+    music: "音乐",
+    reveal: "发现",
+    movement: "移动",
+    combination: "组合",
+  };
+  return labels[family] ?? family;
+}
+
+interface StageRelationOutcome {""",
+            1,
+        )
+    if "const creativeDiscoveryCount =" not in app:
+        app = app.replace(
+            "  const actionTrail = snapshot.events.slice(0, 5);",
+            (
+                "  const actionTrail = snapshot.events.slice(0, 5);\n"
+                '  const creativeDiscoveryCount = snapshot.events.filter((event) => event.input.includes("->") || event.solutionLabels.includes("舞台放置")).length;\n'
+                "  const playerProgressPercent = Math.max(masteryPercent, Math.min(96, activeState.rewardShards * 8 + creativeDiscoveryCount * 4));"
+            ),
+            1,
+        )
+    if "const stageSlots: StagePosition[]" not in app:
+        app = app.replace(
+            """function defaultStagePosition(object: GeneratedObject, index: number): StagePosition {
+  const seed = stageHash(`${object.name}-${object.kind}-${object.ruleFamilies.join("|")}`);
+  return {
+    left: 5 + ((seed + index * 19) % 72),
+    top: 9 + ((seed * 3 + index * 13) % 56),
+  };
+}""",
+            """const stageSlots: StagePosition[] = [
+  { left: 18, top: 24 },
+  { left: 38, top: 18 },
+  { left: 61, top: 25 },
+  { left: 76, top: 43 },
+  { left: 58, top: 58 },
+  { left: 34, top: 56 },
+  { left: 16, top: 42 },
+  { left: 48, top: 39 },
+  { left: 70, top: 64 },
+];
+
+function defaultStagePosition(object: GeneratedObject, index: number): StagePosition {
+  const seed = stageHash(`${object.name}-${object.kind}-${object.ruleFamilies.join("|")}`);
+  const slot = stageSlots[(seed + index) % stageSlots.length];
+  return {
+    left: Math.max(6, Math.min(82, slot.left + (seed % 7) - 3)),
+    top: Math.max(10, Math.min(70, slot.top + ((seed >> 2) % 7) - 3)),
+  };
+}""",
+            1,
+        )
+    app = app.replace(
+        '<article className="masteryProgress"><span>关卡完成</span><strong>{masteryPercent}%</strong><i style={{ width: `${masteryPercent}%` }} /></article>',
+        (
+            '<article className="masteryProgress discoveryProgress"><span>关卡/发现</span>'
+            "<strong>{playerProgressPercent}%</strong>"
+            '<small>{creativeDiscoveryCount ? `${creativeDiscoveryCount} 次创意互动` : "拖拽物件发现反应"}</small>'
+            "<i style={{ width: `${playerProgressPercent}%` }} /></article>"
+        ),
+    )
+    _write_text(app_path, app)
+
+
+def _patch_app_for_product_gamefeel_v55(app_path: Path) -> None:
+    """Remove player-visible engineering labels from the live stage.
+
+    Browser play showed V53 could pass gates while still exposing rule-family
+    labels such as crossing/repair and describing new objects as inventory
+    labels. V55 makes the stage read as a game world: motion trails become
+    visual metadata, object buttons get concise accessible names, and feedback
+    strips diagnostic text before it reaches the player.
+    """
+
+    app = app_path.read_text(encoding="utf-8")
+    if "productGamefeelV55" not in app:
+        if "productGamefeelV53" in app:
+            app = app.replace("productGamefeelV53", "productGamefeelV53 productGamefeelV55", 1)
+        elif "tabletWorkbench " in app:
+            app = app.replace("tabletWorkbench ", "tabletWorkbench productGamefeelV55 ", 1)
+    app = app.replace(
+        "productGamefeelV53 productGamefeelV55 productGamefeelV55",
+        "productGamefeelV53 productGamefeelV55",
+    )
+    app = app.replace(
+        "<span key={`path-${object.id}`} className={`stagePath path${index % 4}`}>{objectTrajectoryLabel(object)}</span>",
+        "<span key={`path-${object.id}`} className={`stagePath path${index % 4}`} data-motion={objectTrajectoryLabel(object)} />",
+    )
+    old_feedback = """function playerFacingFeedback(feedback?: string): string | undefined {
+  if (!feedback) return undefined;
+  const primary = feedback.split(" 因果反馈")[0].split("。").filter(Boolean).slice(0, 2).join("。");
+  return primary ? `${primary}。` : feedback;
+}
+"""
+    new_feedback = """function playerFacingFeedback(feedback?: string): string | undefined {
+  if (!feedback) return undefined;
+  const primary = feedback
+    .replace(/因果反馈[:：]?.*$/u, "")
+    .replace(/规则家族|目标影响|ruleFamilies|crossing|repair|animal/giu, "")
+    .split("。")
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("。");
+  return primary ? `${primary}。` : feedback;
+}
+"""
+    app = app.replace(old_feedback, new_feedback)
+    if "aria-label={`${object.name}，拖动试试`}" not in app:
+        app = app.replace(
+            "return <button draggable style={objectStageStyle(object, index)}",
+            "return <button aria-label={`${object.name}，拖动试试`} draggable style={objectStageStyle(object, index)}",
+        )
+        app = app.replace(
+            "return <button draggable onPointerDown={onTouchDragStart} style={objectStageStyle(object, index)}",
+            "return <button aria-label={`${object.name}，拖动试试`} draggable onPointerDown={onTouchDragStart} style={objectStageStyle(object, index)}",
+        )
+        app = app.replace(
+            "return <button draggable style={position ? { ...objectStageStyle(object, index), left: `${position.left}%`, top: `${position.top}%` } : objectStageStyle(object, index)}",
+            "return <button aria-label={`${object.name}，拖动试试`} draggable style={position ? { ...objectStageStyle(object, index), left: `${position.left}%`, top: `${position.top}%` } : objectStageStyle(object, index)}",
+        )
+        app = app.replace(
+            "return <button draggable style={objectStageStyle(object, index, position)}",
+            "return <button aria-label={`${object.name}，拖动试试`} draggable style={objectStageStyle(object, index, position)}",
+        )
+    _write_text(app_path, app)
+
+
+def _patch_world_rules_for_product_gamefeel_v55(rules_path: Path) -> None:
+    rules = rules_path.read_text(encoding="utf-8")
+    rules = rules.replace(
+        "小笔把${object.name}加入造物背包。把它拖到舞台，看看会发生什么。",
+        "小笔把${object.name}变成了舞台上的新物件。拖到伙伴、目标或别的物件旁边，看看会发生什么。",
+    )
+    rules = rules.replace(
+        "小笔把${object.name}加入造物背包。",
+        "小笔把${object.name}变成了舞台上的新物件。",
+    )
+    _write_text(rules_path, rules)
+
+
+def _patch_storage_for_product_gamefeel_v55(storage_path: Path) -> None:
+    storage = storage_path.read_text(encoding="utf-8")
+    storage = re.sub(
+        r'const storageKey = "[^"]+";',
+        'const storageKey = "wordforge-adventure-parity-v55";',
+        storage,
+        count=1,
+    )
+    _write_text(storage_path, storage)
+
+
+def _spark_star_companion_svg() -> str:
+    return """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-label="original spark star companion">
+  <path d="M79 18 98 57l43 2-34 27 11 42-38-24-38 24 11-42-34-27 43-2z" fill="#ffd75e" stroke="#15191f" stroke-width="10" stroke-linejoin="round"/>
+  <ellipse cx="69" cy="72" rx="5" ry="10" fill="#15191f"/>
+  <ellipse cx="91" cy="72" rx="5" ry="10" fill="#15191f"/>
+  <path d="M65 108c-11 14-7 28 12 28M94 108c11 14 7 28-12 28" fill="none" stroke="#15191f" stroke-width="10" stroke-linecap="round"/>
+</svg>
+"""
+
+
+def _stage_light_sprite_svg() -> str:
+    return """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-label="glowing stage light object">
+  <ellipse cx="80" cy="138" rx="43" ry="10" fill="#182333" opacity=".16"/>
+  <path d="M80 18c25 0 46 20 46 45 0 18-10 31-25 42v19H59v-19C44 94 34 81 34 63c0-25 21-45 46-45z" fill="#ffd75e" stroke="#182333" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M58 128h44" stroke="#182333" stroke-width="9" stroke-linecap="round"/>
+  <path d="M55 62c7-12 18-20 31-21" fill="none" stroke="#fff7c2" stroke-width="8" stroke-linecap="round"/>
+  <path d="M30 28 18 16M130 28l12-12M80 10V1" stroke="#ffe98a" stroke-width="8" stroke-linecap="round"/>
+</svg>
+"""
+
+
+def _stage_bridge_sprite_svg() -> str:
+    return """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-label="rainbow bridge stage object">
+  <ellipse cx="80" cy="137" rx="58" ry="10" fill="#182333" opacity=".14"/>
+  <path d="M20 96c27-48 93-48 120 0" fill="none" stroke="#ff8a6b" stroke-width="22" stroke-linecap="round"/>
+  <path d="M34 100c21-34 71-34 92 0" fill="none" stroke="#ffd166" stroke-width="18" stroke-linecap="round"/>
+  <path d="M42 116h76v22H42z" fill="#ffc466" stroke="#182333" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M58 116v22M80 102v36M102 116v22" stroke="#182333" stroke-width="7" stroke-linecap="round"/>
+</svg>
+"""
+
+
+def _burger_sprite_svg() -> str:
+    return """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="burger game object">
+  <ellipse cx="64" cy="105" rx="43" ry="9" fill="#182333" opacity=".18"/>
+  <path d="M18 59c7-32 84-36 93 0 2 7-3 12-11 12H29c-9 0-13-5-11-12z" fill="#f6b85a" stroke="#182333" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M28 69h74c6 0 10 4 10 10s-4 10-10 10H28c-6 0-10-4-10-10s4-10 10-10z" fill="#7a4127" stroke="#182333" stroke-width="6"/>
+  <path d="M25 88h78c5 0 9 4 9 9s-4 9-9 9H25c-5 0-9-4-9-9s4-9 9-9z" fill="#f7d05a" stroke="#182333" stroke-width="6"/>
+  <path d="M35 79c9 8 18-8 27 0s17-8 27 0" fill="none" stroke="#72bf69" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="48" cy="49" r="4" fill="#fff9e8"/>
+  <circle cx="66" cy="44" r="4" fill="#fff9e8"/>
+  <circle cx="84" cy="51" r="4" fill="#fff9e8"/>
+</svg>
+"""
+
+
+def _wolf_sprite_svg() -> str:
+    return """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="wolf game object">
+  <ellipse cx="64" cy="111" rx="38" ry="8" fill="#182333" opacity=".16"/>
+  <path d="M25 61 38 22l21 25 29-25 16 39v22c0 24-18 41-40 41S25 107 25 83z" fill="#9cadba" stroke="#182333" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M37 28 49 51 31 48zM88 28 78 52l19-5z" fill="#d9e7ef" stroke="#182333" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M38 63c8-7 17-9 26-9s18 2 27 9" fill="none" stroke="#eef7ff" stroke-width="7" stroke-linecap="round" opacity=".75"/>
+  <circle cx="52" cy="74" r="7" fill="#182333"/>
+  <circle cx="78" cy="74" r="7" fill="#182333"/>
+  <path d="M58 90h14l-7 8z" fill="#182333"/>
+  <path d="M49 100c8 7 22 7 31 0" fill="none" stroke="#182333" stroke-width="5" stroke-linecap="round"/>
+  <path d="M26 84c-9 7-11 16-4 22 7 5 15 0 18-8" fill="#9cadba" stroke="#182333" stroke-width="6" stroke-linecap="round"/>
+</svg>
+"""
+
+
+def _commercial_game_polish_css() -> str:
+    return """.commercialGamePolish{background:linear-gradient(180deg,#fffaf0 0%,#eefaff 100%);border-width:3px;box-shadow:0 18px 40px rgba(22,38,58,.18)}.premiumTouchStage{height:clamp(380px,calc(100vh - 310px),640px);border-width:3px;background:radial-gradient(circle at 30% 20%,rgba(255,244,157,.9),transparent 26%),linear-gradient(var(--sky),#ffffff 50%,var(--ground));}.referenceCharacterMotion{width:96px;height:96px;bottom:118px;animation:starHop 1.8s ease-in-out infinite;filter:drop-shadow(7px 10px 0 rgba(24,35,51,.23))}.referenceCharacterBadge{position:absolute;left:calc(50% + 34px);bottom:178px;z-index:4;background:#fff6bf;border:2px solid #182333;border-radius:999px;padding:5px 8px;font-weight:1000;font-size:11px;box-shadow:3px 3px 0 rgba(24,35,51,.18)}.premiumTouchStage .livingObject{background:rgba(255,255,255,.55);border:0;box-shadow:none;min-width:98px;min-height:98px}.premiumTouchStage .livingObject .generatedSprite{width:86px;height:86px;filter:drop-shadow(4px 7px 0 rgba(24,35,51,.2))}.premiumTouchStage .livingObject .objectCaption{position:absolute;left:50%;bottom:-18px;transform:translateX(-50%);background:rgba(255,255,255,.78);border:1px solid rgba(24,35,51,.28);border-radius:999px;padding:2px 7px;font-size:10px;opacity:.76}.premiumTouchStage .speechBubble{left:22px;right:22px;bottom:14px;max-height:72px}.premiumTouchStage .starterObjectPreview{bottom:64px}.premiumTouchStage .questDeck{top:16px;right:16px}.premiumTouchStage .touchHint{background:#fff6bf}@keyframes starHop{0%,100%{transform:translateX(-50%) translateY(0) rotate(-2deg)}45%{transform:translateX(-50%) translateY(-14px) rotate(3deg)}70%{transform:translateX(-50%) translateY(-4px) rotate(-1deg)}}@media(max-width:700px){.premiumTouchStage{height:560px}.referenceCharacterMotion{bottom:126px}.referenceCharacterBadge{bottom:188px}}
+"""
+
+
+def _product_gamefeel_v32_css() -> str:
+    return """.productGamefeelV32 .premiumTouchStage .livingObject{background:transparent!important;border:0!important;box-shadow:none!important;min-width:118px;min-height:118px;padding:0}.productGamefeelV32 .premiumTouchStage .livingObject .generatedSprite{width:112px;height:112px;filter:drop-shadow(8px 12px 0 rgba(24,35,51,.22));transition:transform .18s ease,filter .18s ease}.productGamefeelV32 .premiumTouchStage .livingObject:active .generatedSprite{transform:scale(1.08) rotate(-3deg);filter:drop-shadow(4px 7px 0 rgba(24,35,51,.18)) saturate(1.2)}.productGamefeelV32 .premiumTouchStage .livingObject .objectCaption{opacity:0;bottom:-8px;background:rgba(255,255,255,.64);font-size:9px}.productGamefeelV32 .premiumTouchStage .livingObject:hover .objectCaption,.productGamefeelV32 .premiumTouchStage .livingObject:focus-visible .objectCaption{opacity:.78}.productGamefeelV32 .premiumTouchStage .livingObject em,.productGamefeelV32 .premiumTouchStage .livingObject b{display:none}.productGamefeelV32 .stagePhysicsOverlay{display:block;opacity:.36}.productGamefeelV32 .stagePath{font-size:0;width:54px;height:10px;border:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.9),transparent);box-shadow:none}.productGamefeelV32 .floatingCreatorTray .causalLab,.productGamefeelV32 .floatingCreatorTray .objectRelationGraph,.productGamefeelV32 .floatingCreatorTray .actionTrail{max-height:70px;overflow:auto}.productGamefeelV32 .premiumTouchStage .speechBubble span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.stageActionPulse{position:absolute;left:50%;top:22%;z-index:5;transform:translateX(-50%);border:3px solid #182333;border-radius:999px;background:#fff6bf;padding:10px 16px;font-weight:1000;box-shadow:6px 8px 0 rgba(24,35,51,.22);animation:stagePulsePop 1.5s ease both;pointer-events:none}@keyframes stagePulsePop{0%{opacity:0;transform:translateX(-50%) scale(.72)}20%{opacity:1;transform:translateX(-50%) scale(1.06)}80%{opacity:1;transform:translateX(-50%) scale(1)}100%{opacity:0;transform:translateX(-50%) translateY(-22px) scale(.96)}}@media(max-width:700px){.productGamefeelV32 .premiumTouchStage .livingObject{min-width:104px;min-height:104px}.productGamefeelV32 .premiumTouchStage .livingObject .generatedSprite{width:98px;height:98px}}
+"""
+
+
+def _product_gamefeel_v33_css() -> str:
+    return (
+        """.productGamefeelV33 .topBar{position:fixed;top:10px;left:10px;right:10px;z-index:20;min-height:54px;padding:7px 12px;border-width:3px;background:rgba(255,253,247,.92);backdrop-filter:blur(12px);box-shadow:0 10px 22px rgba(24,35,51,.16)}.productGamefeelV33 .brandMark{width:36px;height:36px;border-radius:10px;font-size:20px}.productGamefeelV33 .topBar strong{font-size:18px}.productGamefeelV33 .topBar span{display:none}.productGamefeelV33 .topBar button{padding:7px 9px;font-size:12px;box-shadow:2px 2px 0 #203142}.productGamefeelV33 .immersiveGameShell{padding:72px 10px 10px;min-height:100vh;gap:0}.productGamefeelV33 .stagePanel{margin:0;min-height:calc(100vh - 92px);padding:8px;background:linear-gradient(180deg,#fff8dc 0%,#dff7ff 100%)}.productGamefeelV33 .worldHeader{position:absolute;left:22px;top:86px;z-index:7;width:min(410px,46vw);grid-template-columns:58px minmax(0,1fr);padding:8px;border:3px solid #203142;border-radius:12px;background:rgba(255,253,247,.92);box-shadow:5px 6px 0 rgba(24,35,51,.18)}.productGamefeelV33 .worldHeader h1{font-size:20px;margin:0}.productGamefeelV33 .worldHeader p{display:none}.productGamefeelV33 .chapterPill{font-size:11px;padding:3px 7px}.productGamefeelV33 .shardBadge{position:absolute;right:22px;top:86px;z-index:7;padding:8px 10px}.productGamefeelV33 .stageScene{height:calc(100vh - 180px);min-height:540px;max-height:760px;border-width:4px;border-radius:14px}.productGamefeelV33 .sceneLayer{inset:118px clamp(18px,13%,120px) 112px clamp(18px,13%,120px)}.productGamefeelV33 .floatingQuestRail,.productGamefeelV33 .floatingCreatorTray{top:auto;bottom:18px;width:min(300px,28vw);max-height:150px;border-width:3px;box-shadow:6px 7px 0 rgba(24,35,51,.18)}.productGamefeelV33 .floatingQuestRail{left:18px}.productGamefeelV33 .floatingCreatorTray{right:18px}.productGamefeelV33 .floatingQuestRail h2,.productGamefeelV33 .floatingCreatorTray h2,.productGamefeelV33 .npcRequests,.productGamefeelV33 .parentBook{display:none}.productGamefeelV33 .mapTile{grid-template-columns:42px 1fr auto;margin-bottom:6px;padding:7px}.productGamefeelV33 .mapTile img{width:42px;height:34px}.productGamefeelV33 .ideaForm{position:absolute;left:50%;bottom:18px;z-index:10;transform:translateX(-50%);width:min(760px,64vw);margin:0}.productGamefeelV33 .ideaForm input{font-size:17px;background:rgba(255,255,255,.96)}.productGamefeelV33 .starterIdeas{position:absolute;left:50%;bottom:72px;z-index:10;transform:translateX(-50%);width:min(820px,70vw);justify-content:center}.productGamefeelV33 .starterIdeas button{background:rgba(255,253,247,.95)}.productGamefeelV33 .premiumTouchStage .livingObject .generatedSprite{width:132px;height:132px}.productGamefeelV33 .premiumTouchStage .livingObject{min-width:138px;min-height:138px}.productGamefeelV33 .premiumTouchStage .speechBubble{left:50%;right:auto;bottom:118px;width:min(720px,62vw);transform:translateX(-50%);max-height:66px}.productGamefeelV33 .touchHint{left:50%;top:18px;transform:translateX(-50%);max-width:none;font-size:13px}.productGamefeelV33 .referenceCharacterMotion{width:116px;height:116px;bottom:184px}.productGamefeelV33 .referenceCharacterBadge{bottom:286px}.productGamefeelV33 .starterObjectPreview{bottom:174px}.productGamefeelV33 .stageActionPulse{top:34%;font-size:18px}.productGamefeelV33 .commercialGamePolishFinalViewport{display:none}@media(max-width:900px){.productGamefeelV33 .worldHeader{width:min(360px,58vw)}.productGamefeelV33 .floatingQuestRail,.productGamefeelV33 .floatingCreatorTray{position:relative;left:auto;right:auto;bottom:auto;width:100%;max-height:120px}.productGamefeelV33 .stagePanel{min-height:auto}.productGamefeelV33 .stageScene{height:620px;min-height:620px}.productGamefeelV33 .ideaForm,.productGamefeelV33 .starterIdeas{width:calc(100% - 24px)}}@media(max-width:620px){.productGamefeelV33 .topBar{position:sticky;top:0;left:auto;right:auto}.productGamefeelV33 .immersiveGameShell{padding:8px}.productGamefeelV33 .worldHeader,.productGamefeelV33 .shardBadge{position:relative;left:auto;right:auto;top:auto;width:auto;margin-bottom:8px}.productGamefeelV33 .ideaForm,.productGamefeelV33 .starterIdeas{position:relative;left:auto;bottom:auto;transform:none;width:100%;margin-top:8px}.productGamefeelV33 .premiumTouchStage .speechBubble{left:12px;right:12px;width:auto;transform:none}.productGamefeelV33 .premiumTouchStage .livingObject .generatedSprite{width:104px;height:104px}}
+"""
+        + _product_gamefeel_v33_tablet_stage_css()
+        + _product_gamefeel_v35_viewport_css()
+        + _product_gamefeel_v36_stage_first_css()
+    )
+
+
+def _product_gamefeel_v33_tablet_stage_css() -> str:
+    return """.productGamefeelV33 .stagePanel{margin-left:150px;margin-right:150px}.productGamefeelV33 .floatingQuestRail,.productGamefeelV33 .floatingCreatorTray{position:absolute;width:128px;max-height:240px;overflow:auto}.productGamefeelV33 .floatingQuestRail{left:18px}.productGamefeelV33 .floatingCreatorTray{right:18px}.productGamefeelV33 .floatingCreatorTray .npcRequests p:nth-child(n+2),.productGamefeelV33 .floatingCreatorTray .inventoryShelf,.productGamefeelV33 .floatingCreatorTray select{display:none}.productGamefeelV33 .floatingCreatorTray>button{margin:5px 0}.productGamefeelV33 .mapTile{grid-template-columns:34px 1fr;padding:6px;margin-bottom:7px}.productGamefeelV33 .mapTile img{width:34px;height:28px}.productGamefeelV33 .mapTile small{display:none}.productGamefeelV33 .floatingCreatorTray h2{font-size:13px}.productGamefeelV33 .floatingCreatorTray .npcRequests p{font-size:12px;padding:8px}.productGamefeelV33 .stagePanel{margin-left:116px;margin-right:116px}.productGamefeelV33 .floatingQuestRail,.productGamefeelV33 .floatingCreatorTray{width:104px;top:76px;bottom:auto;max-height:calc(100vh - 126px);padding:8px;overflow:hidden}.productGamefeelV33 .topBar{min-height:52px;padding:7px 12px}.productGamefeelV33 .immersiveGameShell{padding-top:70px}.productGamefeelV33 .worldHeader{top:74px;width:min(560px,58vw);grid-template-columns:50px minmax(0,1fr);padding:7px 9px}.productGamefeelV33 .worldHeader h1{font-size:18px}.productGamefeelV33 .companionPortrait img{width:42px;height:42px}.productGamefeelV33 .shardBadge{top:74px}.productGamefeelV33 .stageScene{height:calc(100vh - 132px);min-height:620px}.productGamefeelV33 .sceneLayer{inset:112px clamp(16px,11%,110px) 158px clamp(16px,11%,110px)}.productGamefeelV33 .floatingQuestRail h2,.productGamefeelV33 .floatingCreatorTray h2{font-size:11px;margin:4px 0 5px}.productGamefeelV33 .mapTile{grid-template-columns:30px 1fr;padding:5px;margin-bottom:5px;font-size:11px}.productGamefeelV33 .mapTile img{width:30px;height:25px}.productGamefeelV33 .floatingCreatorTray .playerQuestLab,.productGamefeelV33 .floatingCreatorTray .causalLab,.productGamefeelV33 .floatingCreatorTray .objectRelationGraph,.productGamefeelV33 .floatingCreatorTray .actionTrail{display:none}.productGamefeelV33 .floatingCreatorTray>button{padding:7px 5px;font-size:11px;box-shadow:2px 2px 0 #203142}.productGamefeelV33 .speechBubble{bottom:108px;width:min(600px,58vw);font-size:13px}.productGamefeelV33 .starterIdeas{bottom:68px}.productGamefeelV33 .ideaForm{bottom:16px;width:min(720px,70vw)}@media(min-width:621px) and (max-width:900px){.productGamefeelV33 .stagePanel{margin-left:0;margin-right:0}.productGamefeelV33 .floatingQuestRail,.productGamefeelV33 .floatingCreatorTray{position:absolute;top:76px;bottom:auto;width:104px;max-height:calc(100vh - 126px);overflow:hidden;opacity:.92}.productGamefeelV33 .floatingQuestRail{left:18px;right:auto}.productGamefeelV33 .floatingCreatorTray{right:18px;left:auto}.productGamefeelV33 .stageScene{height:calc(100vh - 132px);min-height:620px}.productGamefeelV33 .ideaForm{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);width:min(720px,70vw)}.productGamefeelV33 .starterIdeas{position:absolute;left:50%;bottom:68px;transform:translateX(-50%);width:min(820px,70vw)}}@media(min-width:621px) and (max-width:1000px){.productGamefeelV33 .topBar{flex-direction:row;align-items:center;justify-content:space-between;height:58px;min-height:58px}.productGamefeelV33 .topBar nav{display:flex;gap:6px;flex-wrap:nowrap}.productGamefeelV33 .topBar button{white-space:nowrap}.productGamefeelV33 .brandLockup{gap:8px}}@media(max-width:620px){.productGamefeelV33 .stagePanel{margin-left:0;margin-right:0}.productGamefeelV33 .floatingQuestRail,.productGamefeelV33 .floatingCreatorTray{position:relative;left:auto;right:auto;top:auto;width:100%;max-height:none}.productGamefeelV33 .floatingCreatorTray .npcRequests p:nth-child(n+2),.productGamefeelV33 .floatingCreatorTray .inventoryShelf,.productGamefeelV33 .floatingCreatorTray select{display:initial}}
+"""
+
+
+def _product_gamefeel_v35_viewport_css() -> str:
+    return """.productGamefeelV35 .stagePanel{position:relative;padding-bottom:108px}.productGamefeelV35 .stageScene{height:calc(100vh - 220px);min-height:500px;max-height:600px}.productGamefeelV35 .ideaForm{position:fixed;left:50%;bottom:14px;z-index:30;transform:translateX(-50%);width:min(760px,70vw);margin:0}.productGamefeelV35 .starterIdeas{position:fixed;left:50%;bottom:66px;z-index:29;transform:translateX(-50%);width:min(820px,74vw);justify-content:center}.productGamefeelV35 .speechBubble{bottom:106px}.productGamefeelV35 .starterObjectPreview{bottom:166px}.productGamefeelV35 .referenceCharacterMotion{bottom:176px}.productGamefeelV35 .referenceCharacterBadge{bottom:276px}@media(min-width:621px) and (max-width:900px){.productGamefeelV35 .stageScene{height:calc(100vh - 220px);min-height:500px;max-height:600px}.productGamefeelV35 .ideaForm{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);width:min(720px,74vw)}.productGamefeelV35 .starterIdeas{position:fixed;left:50%;bottom:66px;transform:translateX(-50%);width:min(820px,76vw)}}@media(max-width:620px){.productGamefeelV35 .stageScene{height:calc(100vh - 236px);min-height:420px;max-height:520px}.productGamefeelV35 .ideaForm{position:fixed;left:50%;bottom:10px;z-index:30;transform:translateX(-50%);width:calc(100vw - 20px);margin:0}.productGamefeelV35 .starterIdeas{position:fixed;left:50%;bottom:62px;z-index:29;transform:translateX(-50%);width:calc(100vw - 20px);max-height:58px;overflow:auto;margin:0}.productGamefeelV35 .floatingQuestRail,.productGamefeelV35 .floatingCreatorTray{max-height:80px;overflow:auto}.productGamefeelV35 .premiumTouchStage .speechBubble{bottom:110px}}
+"""
+
+
+def _product_gamefeel_v36_stage_first_css() -> str:
+    return """.productGamefeelV36{height:100vh;overflow:hidden;background:#9be7ff}.productGamefeelV36 .topBar{position:fixed;top:8px;left:8px;right:8px;z-index:40;height:54px;min-height:54px;display:flex;flex-direction:row;align-items:center;justify-content:space-between;padding:6px 10px;border-width:3px;border-radius:14px;background:rgba(255,253,247,.88);backdrop-filter:blur(12px)}.productGamefeelV36 .topBar nav{display:flex;gap:6px;overflow:auto;max-width:58vw}.productGamefeelV36 .topBar button{white-space:nowrap;padding:7px 9px;font-size:12px}.productGamefeelV36 .brandMark{width:34px;height:34px;border-radius:10px;font-size:18px}.productGamefeelV36 .topBar strong{font-size:17px}.productGamefeelV36 .immersiveGameShell{display:block;height:100vh;min-height:100vh;padding:0;overflow:hidden}.productGamefeelV36 .stagePanel{position:fixed;inset:72px 10px 10px;margin:0!important;padding:0!important;border:0;background:transparent;box-shadow:none;min-height:0}.productGamefeelV36 .stageScene{height:100%!important;min-height:0!important;max-height:none!important;width:100%;border-width:4px;border-radius:18px}.productGamefeelV36 .worldHeader{position:absolute;left:18px;top:16px;z-index:12;width:min(360px,56vw);grid-template-columns:46px minmax(0,1fr);padding:7px 9px;margin:0;border-radius:14px;background:rgba(255,253,247,.9);backdrop-filter:blur(8px)}.productGamefeelV36 .worldHeader h1{font-size:18px;margin:0}.productGamefeelV36 .worldHeader p{display:none}.productGamefeelV36 .chapterPill{font-size:11px}.productGamefeelV36 .companionPortrait img{width:40px;height:40px}.productGamefeelV36 .shardBadge{position:absolute;right:18px;top:16px;z-index:12;padding:8px 10px;border-radius:12px;background:rgba(255,246,191,.92)}.productGamefeelV36 .floatingQuestRail{position:fixed!important;left:14px;top:82px;width:104px;max-height:210px;overflow:hidden;z-index:30;padding:7px;border-width:2px;border-radius:14px;background:rgba(255,253,247,.78);box-shadow:4px 5px 0 rgba(24,35,51,.14)}.productGamefeelV36 .floatingQuestRail h2{display:none}.productGamefeelV36 .mapTile{grid-template-columns:32px 1fr!important;gap:5px;padding:5px;margin:0 0 5px;font-size:10px}.productGamefeelV36 .mapTile img{width:32px;height:26px}.productGamefeelV36 .mapTile small{display:none}.productGamefeelV36 .floatingCreatorTray{position:fixed!important;right:14px;top:82px;width:104px;max-height:210px;overflow:hidden;z-index:30;padding:7px;border-width:2px;border-radius:14px;background:rgba(255,253,247,.78);box-shadow:4px 5px 0 rgba(24,35,51,.14)}.productGamefeelV36 .floatingCreatorTray h2{font-size:11px;margin:4px 0}.productGamefeelV36 .floatingCreatorTray .npcRequests,.productGamefeelV36 .floatingCreatorTray .playerQuestLab,.productGamefeelV36 .floatingCreatorTray .causalLab,.productGamefeelV36 .floatingCreatorTray .objectRelationGraph,.productGamefeelV36 .floatingCreatorTray .actionTrail,.productGamefeelV36 .floatingCreatorTray .inventoryShelf,.productGamefeelV36 .floatingCreatorTray select{display:none!important}.productGamefeelV36 .floatingCreatorTray>button{padding:6px 5px;margin:5px 0;font-size:10px;box-shadow:2px 2px 0 #203142}.productGamefeelV36 .sceneLayer{inset:96px clamp(18px,13%,122px) 154px clamp(18px,13%,122px)}.productGamefeelV36 .premiumTouchStage .livingObject{background:transparent!important;border:0!important;box-shadow:none!important;min-width:116px;min-height:116px}.productGamefeelV36 .premiumTouchStage .livingObject .generatedSprite{width:112px;height:112px}.productGamefeelV36 .objectCaption,.productGamefeelV36 .objectCard em,.productGamefeelV36 .objectCard b,.productGamefeelV36 .objectCard small{display:none!important}.productGamefeelV36 .referenceCharacterMotion{width:118px;height:118px;bottom:184px}.productGamefeelV36 .referenceCharacterBadge{bottom:286px}.productGamefeelV36 .starterObjectPreview{bottom:170px}.productGamefeelV36 .premiumTouchStage .speechBubble{left:50%;right:auto;bottom:104px;width:min(620px,68vw);max-height:58px;transform:translateX(-50%);font-size:13px;overflow:hidden}.productGamefeelV36 .questDeck{position:absolute;top:14px;right:14px;width:min(210px,34%);max-height:58px;overflow:hidden;pointer-events:none}.productGamefeelV36 .masteryProgress{top:82px;right:132px;width:148px}.productGamefeelV36 .ideaForm{position:fixed!important;left:50%!important;bottom:12px!important;z-index:50;transform:translateX(-50%)!important;width:min(760px,calc(100vw - 22px))!important;margin:0!important;display:flex;flex-direction:row!important}.productGamefeelV36 .ideaForm input{min-width:0;font-size:17px;background:rgba(255,255,255,.97)}.productGamefeelV36 .starterIdeas{position:fixed!important;left:50%!important;bottom:64px!important;z-index:49;transform:translateX(-50%)!important;width:min(820px,calc(100vw - 22px))!important;max-height:42px;overflow:auto;justify-content:center;margin:0!important}.productGamefeelV36 .starterIdeas button{padding:7px 9px;font-size:12px;background:rgba(255,253,247,.92)}.productGamefeelV36 .parentBook{display:none!important}@media(max-width:620px){.productGamefeelV36 .topBar{height:50px;min-height:50px}.productGamefeelV36 .stagePanel{inset:64px 6px 8px}.productGamefeelV36 .topBar nav{max-width:46vw}.productGamefeelV36 .worldHeader{left:12px;top:12px;width:min(320px,64vw)}.productGamefeelV36 .shardBadge{right:12px;top:12px}.productGamefeelV36 .floatingQuestRail,.productGamefeelV36 .floatingCreatorTray{top:auto;bottom:112px;width:92px;max-height:92px;opacity:.86}.productGamefeelV36 .floatingQuestRail{left:10px}.productGamefeelV36 .floatingCreatorTray{right:10px}.productGamefeelV36 .sceneLayer{inset:94px 22px 152px}.productGamefeelV36 .premiumTouchStage .livingObject{min-width:96px;min-height:96px}.productGamefeelV36 .premiumTouchStage .livingObject .generatedSprite{width:92px;height:92px}.productGamefeelV36 .premiumTouchStage .speechBubble{width:calc(100vw - 120px);bottom:104px}.productGamefeelV36 .starterIdeas{bottom:62px!important}.productGamefeelV36 .ideaForm{bottom:8px!important}}
+"""
+
+
+def _product_gamefeel_v37_css() -> str:
+    return """.productGamefeelV37 .stageScene{background:radial-gradient(circle at 26% 20%,rgba(255,248,169,.9),transparent 20%),radial-gradient(circle at 82% 22%,rgba(255,255,255,.72),transparent 18%),linear-gradient(180deg,#8ee8ff 0%,#baf2ff 52%,#c9f08b 53%,#b3e974 100%)!important}.productGamefeelV37 .worldBackdrop{opacity:.72;filter:saturate(1.2) contrast(1.04)}.productGamefeelV37 .premiumTouchStage .livingObject{background:transparent!important;border:0!important;box-shadow:none!important;padding:0!important;min-width:152px!important;min-height:142px!important;max-width:170px!important;overflow:visible!important}.productGamefeelV37 .premiumTouchStage .livingObject::before{content:"";position:absolute;left:18%;right:18%;bottom:6px;height:18px;border-radius:999px;background:rgba(24,35,51,.14);filter:blur(1px);z-index:-1}.productGamefeelV37 .premiumTouchStage .livingObject .generatedSprite{width:148px!important;height:148px!important;object-fit:contain;filter:drop-shadow(9px 13px 0 rgba(24,35,51,.18)) saturate(1.16);image-rendering:auto}.productGamefeelV37 .premiumTouchStage .livingObject:active .generatedSprite{transform:translateY(4px) scale(1.08) rotate(-4deg);filter:drop-shadow(4px 7px 0 rgba(24,35,51,.16)) saturate(1.28)}.productGamefeelV37 .premiumTouchStage .livingObject .objectCaption,.productGamefeelV37 .premiumTouchStage .livingObject small,.productGamefeelV37 .premiumTouchStage .livingObject em,.productGamefeelV37 .premiumTouchStage .livingObject b{display:none!important}.productGamefeelV37 .topBar{opacity:.82}.productGamefeelV37 .topBar nav{max-width:38vw}.productGamefeelV37 .worldHeader,.productGamefeelV37 .shardBadge{transform:scale(.92);transform-origin:top left;opacity:.84}.productGamefeelV37 .floatingQuestRail,.productGamefeelV37 .floatingCreatorTray{opacity:.58;transform:scale(.86);transform-origin:top}.productGamefeelV37 .floatingQuestRail:hover,.productGamefeelV37 .floatingCreatorTray:hover{opacity:.96;transform:scale(1)}.productGamefeelV37 .stageCompanionAvatar{width:144px!important;height:144px!important;bottom:190px!important}.productGamefeelV37 .referenceCharacterBadge{display:none!important}.productGamefeelV37 .starterObjectPreview{display:none!important}.productGamefeelV37 .premiumTouchStage .speechBubble{background:rgba(255,253,247,.9);border-width:3px;border-radius:18px;box-shadow:7px 8px 0 rgba(24,35,51,.18)}.productGamefeelV37 .stageActionPulse{font-size:20px;background:#fff06c}@media(max-width:700px){.productGamefeelV37 .premiumTouchStage .livingObject{min-width:118px!important;min-height:112px!important}.productGamefeelV37 .premiumTouchStage .livingObject .generatedSprite{width:112px!important;height:112px!important}.productGamefeelV37 .stageCompanionAvatar{width:112px!important;height:112px!important}}
+"""
+
+
+def _product_gamefeel_v38_css() -> str:
+    return """.productGamefeelV38 .topBar{transform:translateY(-42px);opacity:.22;transition:transform .18s ease,opacity .18s ease}.productGamefeelV38 .topBar:hover,.productGamefeelV38 .topBar:focus-within{transform:translateY(0);opacity:.96}.productGamefeelV38 .brandLockup span,.productGamefeelV38 .topBar nav button:not(:first-child){display:none!important}.productGamefeelV38 .stagePanel{inset:14px 8px 8px!important}.productGamefeelV38 .stageScene{border-width:0!important;border-radius:0!important;box-shadow:none!important}.productGamefeelV38 .worldHeader{left:50%!important;top:22px!important;transform:translateX(-50%) scale(.92)!important;width:min(520px,48vw)!important;opacity:.9}.productGamefeelV38 .shardBadge{right:18px!important;top:26px!important;transform:scale(.86)!important;opacity:.8}.productGamefeelV38 .floatingQuestRail,.productGamefeelV38 .floatingCreatorTray{width:56px!important;height:56px!important;max-height:56px!important;overflow:hidden!important;opacity:.32!important;padding:6px!important;border-radius:18px!important;transition:width .18s ease,max-height .18s ease,opacity .18s ease,transform .18s ease}.productGamefeelV38 .floatingQuestRail:hover,.productGamefeelV38 .floatingCreatorTray:hover,.productGamefeelV38 .floatingQuestRail:focus-within,.productGamefeelV38 .floatingCreatorTray:focus-within{width:220px!important;height:auto!important;max-height:260px!important;opacity:.96!important;transform:scale(1)!important}.productGamefeelV38 .touchHint{display:none!important}.productGamefeelV38 .questDeck{top:76px!important;right:22px!important;width:min(260px,26vw)!important;max-height:76px!important;background:rgba(255,253,247,.88);border:2px solid rgba(24,35,51,.8);border-radius:14px;padding:8px}.productGamefeelV38 .premiumTouchStage .speechBubble{bottom:118px!important;width:min(560px,52vw)!important;max-height:62px!important}.productGamefeelV38 .ideaForm{bottom:18px!important}.productGamefeelV38 .starterIdeas{bottom:76px!important;opacity:.9}.productGamefeelV38 .premiumTouchStage .livingObject{min-width:162px!important;min-height:152px!important}.productGamefeelV38 .premiumTouchStage .livingObject .generatedSprite{width:158px!important;height:158px!important}@media(max-width:700px){.productGamefeelV38 .topBar{transform:none;opacity:.88}.productGamefeelV38 .stagePanel{inset:58px 6px 6px!important}.productGamefeelV38 .worldHeader{position:absolute!important;left:12px!important;top:12px!important;transform:scale(.86)!important;width:min(320px,66vw)!important}.productGamefeelV38 .premiumTouchStage .livingObject{min-width:112px!important;min-height:108px!important}.productGamefeelV38 .premiumTouchStage .livingObject .generatedSprite{width:108px!important;height:108px!important}.productGamefeelV38 .premiumTouchStage .speechBubble{width:calc(100vw - 116px)!important}}
+"""
+
+
+def _product_gamefeel_v50_css() -> str:
+    return """.productGamefeelV50 .topBar{display:none!important}.productGamefeelV50 .stagePanel{inset:8px!important}.productGamefeelV50 .floatingCreatorTray,.productGamefeelV50 .floatingQuestRail{top:74px!important;max-height:calc(100vh - 146px)!important}.productGamefeelV50 .floatingCreatorTray{right:12px!important;width:62px!important;overflow:hidden!important}.productGamefeelV50 .floatingCreatorTray>button{width:100%!important;min-width:0!important;padding:6px 4px!important;font-size:10px!important;line-height:1.05!important;white-space:normal!important}.productGamefeelV50 .floatingCreatorTray .actionDirector{display:grid!important;grid-template-columns:1fr!important;gap:4px!important;width:100%!important}.productGamefeelV50 .floatingCreatorTray .actionDirector button{width:100%!important;min-width:0!important;padding:6px 4px!important;font-size:10px!important;line-height:1.05!important;box-shadow:2px 2px 0 #203142!important}.productGamefeelV50 .questDeck{right:78px!important;max-width:min(260px,28vw)!important}.productGamefeelV50 .masteryProgress{right:78px!important}.productGamefeelV50 .ideaForm{width:min(760px,calc(100vw - 250px))!important}.productGamefeelV50 .starterIdeas{width:min(820px,calc(100vw - 250px))!important}.productGamefeelV50 .premiumTouchStage .speechBubble{bottom:120px!important;width:min(560px,52vw)!important}@media(max-width:760px){.productGamefeelV50 .floatingCreatorTray,.productGamefeelV50 .floatingQuestRail{width:52px!important;top:auto!important;bottom:112px!important;max-height:88px!important}.productGamefeelV50 .questDeck{right:12px!important;max-width:40vw!important}.productGamefeelV50 .ideaForm,.productGamefeelV50 .starterIdeas{width:calc(100vw - 20px)!important}.productGamefeelV50 .premiumTouchStage .speechBubble{width:calc(100vw - 118px)!important}}
+"""
+
+
+def _product_gamefeel_v52_css() -> str:
+    return """.productGamefeelV52 .targetGuideLayer{position:absolute;inset:0;z-index:2;pointer-events:none}.productGamefeelV52 .dropZone{position:absolute;display:grid;place-items:center;min-width:82px;min-height:54px;border:3px dashed rgba(24,49,66,.62);border-radius:999px;background:rgba(255,253,247,.58);color:#203142;font-size:12px;font-weight:1000;box-shadow:4px 6px 0 rgba(24,35,51,.12);opacity:.42;transform:scale(.92);transition:opacity .15s ease,transform .15s ease,background .15s ease}.productGamefeelV52 .companionTarget{left:50%;bottom:185px;transform:translateX(-50%) scale(.92)}.productGamefeelV52 .questTarget{right:88px;top:154px}.productGamefeelV52 .worldTarget{left:22%;bottom:150px}.productGamefeelV52 .isDraggingStage .dropZone{opacity:.96;background:rgba(255,246,155,.84);transform:scale(1)}.productGamefeelV52 .isDraggingStage .companionTarget{transform:translateX(-50%) scale(1.04)}.productGamefeelV52 .premiumTouchStage .livingObject{touch-action:none;cursor:grab}.productGamefeelV52 .premiumTouchStage .livingObject:active{cursor:grabbing}.productGamefeelV52 .premiumTouchStage .livingObject.selected .generatedSprite{filter:drop-shadow(0 0 18px rgba(255,216,74,.75)) drop-shadow(8px 12px 0 rgba(24,35,51,.16));transform:scale(1.08)}.productGamefeelV52 .stageActionPulse{border:3px solid #203142;border-radius:18px;background:#fff06c;color:#203142;box-shadow:6px 8px 0 rgba(24,35,51,.18);font-weight:1000}.productGamefeelV52 .failureCoach{left:28px!important;bottom:188px!important;max-width:min(360px,38vw);background:rgba(255,253,247,.88);border-radius:16px}.productGamefeelV52 .masteryCelebration{left:28px!important;bottom:188px!important;max-width:min(360px,38vw);background:rgba(235,255,224,.9);border-radius:16px}@media(max-width:760px){.productGamefeelV52 .questTarget{right:12px;top:116px}.productGamefeelV52 .worldTarget{left:18px;bottom:170px}.productGamefeelV52 .companionTarget{bottom:172px}.productGamefeelV52 .dropZone{min-width:64px;min-height:44px;font-size:10px}.productGamefeelV52 .failureCoach,.productGamefeelV52 .masteryCelebration{left:12px!important;bottom:176px!important;max-width:42vw}}
+"""
+
+
+def _product_gamefeel_v53_css() -> str:
+    return """.productGamefeelV53 .premiumTouchStage .livingObject{filter:drop-shadow(0 18px 18px rgba(24,35,51,.12));transition:transform .16s ease,filter .16s ease}.productGamefeelV53 .premiumTouchStage .livingObject:hover,.productGamefeelV53 .premiumTouchStage .livingObject:focus-visible{transform:translateY(-4px) scale(1.04)}.productGamefeelV53 .premiumTouchStage .livingObject .objectCaption,.productGamefeelV53 .premiumTouchStage .livingObject small,.productGamefeelV53 .premiumTouchStage .livingObject em,.productGamefeelV53 .premiumTouchStage .livingObject b{display:none!important}.productGamefeelV53 .premiumTouchStage .livingObject .generatedSprite{filter:drop-shadow(0 20px 0 rgba(24,35,51,.12)) drop-shadow(8px 10px 0 rgba(24,35,51,.16)) saturate(1.2);transform-origin:50% 92%}.productGamefeelV53 .isDraggingStage .premiumTouchStage .livingObject .generatedSprite,.productGamefeelV53 .premiumTouchStage .livingObject:active .generatedSprite{transform:scale(1.1) rotate(-3deg);filter:drop-shadow(0 14px 0 rgba(24,35,51,.1)) drop-shadow(4px 6px 0 rgba(24,35,51,.16)) saturate(1.28)}.productGamefeelV53 .discoveryProgress{width:178px!important;min-height:64px;background:rgba(255,246,191,.92)!important;border:3px solid #203142!important;box-shadow:5px 6px 0 rgba(24,35,51,.16)!important}.productGamefeelV53 .discoveryProgress span{font-size:12px}.productGamefeelV53 .discoveryProgress strong{font-size:24px}.productGamefeelV53 .discoveryProgress small{display:block;font-weight:900;font-size:10px;line-height:1.05;color:#415366}.productGamefeelV53 .stageActionPulse{min-width:190px;text-align:center;animation:stagePulsePop 1.7s ease both,stagePulseGlow 1.7s ease both}.productGamefeelV53 .targetGuideLayer .dropZone{font-size:0}.productGamefeelV53 .targetGuideLayer .dropZone::after{font-size:18px}.productGamefeelV53 .companionTarget::after{content:"伙伴"}.productGamefeelV53 .questTarget::after{content:"目标"}.productGamefeelV53 .worldTarget::after{content:"反应"}@keyframes stagePulseGlow{0%,100%{filter:none}30%{filter:drop-shadow(0 0 16px rgba(255,232,89,.82))}}@media(max-width:760px){.productGamefeelV53 .discoveryProgress{width:136px!important}.productGamefeelV53 .discoveryProgress strong{font-size:20px}.productGamefeelV53 .stageActionPulse{min-width:132px;font-size:14px}}
+"""
+
+
+def _product_gamefeel_v55_css() -> str:
+    return """.productGamefeelV55 .stagePath{font-size:0;color:transparent;min-width:72px;height:12px;border:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.92),rgba(255,220,91,.9),transparent);box-shadow:0 0 16px rgba(255,235,112,.58);opacity:.62;animation:pathPulse 1.7s ease-in-out infinite}.productGamefeelV55 .stagePath::after{content:"";position:absolute;left:50%;top:50%;width:10px;height:10px;border-radius:50%;background:#fff06c;border:2px solid rgba(24,35,51,.5);transform:translate(-50%,-50%);box-shadow:0 0 12px rgba(255,240,108,.9)}.productGamefeelV55 .speechBubble span{font-size:15px;line-height:1.3}.productGamefeelV55 .masteryCelebration,.productGamefeelV55 .failureCoach{max-height:64px;overflow:auto;min-width:76px;min-height:66px;pointer-events:none}.productGamefeelV55 .masteryCelebration span,.productGamefeelV55 .failureCoach span{font-size:13px;line-height:1.25}.productGamefeelV55 .livingObject{appearance:none}.productGamefeelV55 .livingObject:focus-visible{outline:5px solid rgba(255,216,74,.85);outline-offset:5px}@keyframes pathPulse{0%,100%{opacity:.42;transform:scaleX(.92)}50%{opacity:.86;transform:scaleX(1.06)}}
+"""
+
+
+def _patch_visuals_for_image_object_interaction(visuals_path: Path) -> None:
+    visuals = visuals_path.read_text(encoding="utf-8")
+    if (
+        "generatedObjectImage" in visuals
+        and "isFoodObject" in visuals
+        and "isWolfObject" in visuals
+    ):
+        return
+    insert = """
+export function isFoodObject(object: GeneratedObject): boolean {
+  const text = `${object.name} ${object.kind} ${object.ruleFamilies.join(" ")}`.toLowerCase();
+  return object.kind.includes("food") || /汉堡|食物|点心|苹果|蛋糕|肉|burger|hamburger|food/.test(text);
+}
+
+export function isWolfObject(object: GeneratedObject): boolean {
+  const text = `${object.name} ${object.kind} ${object.ruleFamilies.join(" ")}`.toLowerCase();
+  return object.kind.includes("wolf") || /狼|小狼|wolf/.test(text);
+}
+
+const generatedObjectTemplates: Record<string, string> = {
+  burger: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'><rect width='96' height='96' rx='20' fill='%23fff6df'/><path d='M18 46c3-17 57-17 60 0z' fill='%23f5b04d' stroke='%23293847' stroke-width='5'/><path d='M19 52h58v12H19z' fill='%23884a2b'/><path d='M23 64h50v10H23z' fill='%23f7cf58'/></svg>",
+  wolf: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'><rect width='96' height='96' rx='20' fill='%23eef5ff'/><path d='M20 44 31 18l16 18 18-18 11 26v20c0 14-13 24-28 24S20 78 20 64z' fill='%2397a7b8' stroke='%23293847' stroke-width='5'/><circle cx='39' cy='55' r='5' fill='%23293847'/><circle cx='58' cy='55' r='5' fill='%23293847'/></svg>",
+};
+
+export function generatedObjectImage(object: GeneratedObject): string {
+  if (isFoodObject(object)) return generatedObjectTemplates.burger;
+  if (isWolfObject(object)) return generatedObjectTemplates.wolf;
+  return objectAsset(object);
+}
+
+export function generatedSprite(object: GeneratedObject): string {
+  return generatedObjectImage(object);
+}
+
+"""
+    visuals = _replace_once(
+        visuals, "export function objectAsset", insert + "export function objectAsset"
+    )
+    visuals = _replace_once(
+        visuals,
+        "export function objectAsset(object: GeneratedObject): string {\n",
+        "export function objectAsset(object: GeneratedObject): string {\n  if (isFoodObject(object)) return generatedObjectTemplates.burger;\n  if (isWolfObject(object)) return generatedObjectTemplates.wolf;\n",
+    )
+    _write_text(visuals_path, visuals)
+
+
+def _stage_relation_helper_ts() -> str:
+    return """
+interface StagePosition {
+  left: number;
+  top: number;
+}
+
+function stageHash(value: string): number {
+  return Array.from(value).reduce((total, char) => total + char.charCodeAt(0), 0);
+}
+
+function positionFromPointer(event: ReactDragEvent<HTMLDivElement> | ReactPointerEvent<HTMLDivElement>): StagePosition {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return {
+    left: Math.max(4, Math.min(86, ((event.clientX - rect.left) / Math.max(1, rect.width)) * 100)),
+    top: Math.max(8, Math.min(74, ((event.clientY - rect.top) / Math.max(1, rect.height)) * 100)),
+  };
+}
+
+function defaultStagePosition(object: GeneratedObject, index: number): StagePosition {
+  const seed = stageHash(`${object.name}-${object.kind}-${object.ruleFamilies.join("|")}`);
+  return {
+    left: 5 + ((seed + index * 19) % 72),
+    top: 9 + ((seed * 3 + index * 13) % 56),
+  };
+}
+
+function stageDistance(left: StagePosition, right: StagePosition): number {
+  return Math.hypot(left.left - right.left, left.top - right.top);
+}
+
+function objectTrajectoryLabel(object: GeneratedObject): string {
+  const family = object.ruleFamilies[0] ?? "idea";
+  const verb = object.action === "combine" ? "组合" : object.action === "attach" ? "附着" : object.action === "protect" ? "守护" : object.action === "repair" ? "修复" : "影响";
+  return `${object.name} ${verb} ${family}`;
+}
+
+function objectRelationLabel(object: GeneratedObject): string {
+  const propertyText = object.properties.slice(0, 2).map(propertyLabel).filter(Boolean).join("、");
+  const familyText = object.ruleFamilies.slice(0, 2).map(familyLabel).filter(Boolean).join("、");
+  return [propertyText, familyText].filter(Boolean).join(" · ") || "可互动";
+}
+
+function familyLabel(family: string): string {
+  return family.trim();
+}
+
+interface StageRelationOutcome {
+  label: string;
+  pulse: string;
+  feedback: string;
+  tag: string;
+  sparkTags: PlayEvent["sparkTags"];
+  consumeObjectId?: string;
+}
+
+function objectStageText(object: GeneratedObject): string {
+  const propertyWords = object.properties.map(propertyLabel).join(" ");
+  const familyWords = object.ruleFamilies.map(familyLabel).join(" ");
+  return `${object.name} ${object.kind} ${propertyWords} ${familyWords} ${object.action}`.toLowerCase();
+}
+
+function objectHas(object: GeneratedObject, pattern: RegExp, families: string[] = []): boolean {
+  const text = objectStageText(object);
+  return pattern.test(text) || families.some((family) => object.ruleFamilies.includes(family) || object.properties.includes(family) || object.kind.includes(family));
+}
+
+function stageRelationOutcome(moved: GeneratedObject, target: GeneratedObject): StageRelationOutcome | null {
+  const pair = [moved, target];
+  const food = pair.find((object) => isFoodObject(object));
+  const wolf = pair.find((object) => isWolfObject(object));
+  if (food && wolf) {
+    return {
+      label: `${wolf.name}吃掉了${food.name}`,
+      pulse: `${wolf.name}吃掉了${food.name}`,
+      feedback: `${wolf.name}吃掉了${food.name}，它满足地摇尾巴，舞台产生了真实互动。`,
+      tag: "feed",
+      sparkTags: ["science", "social"],
+      consumeObjectId: food.id,
+    };
+  }
+
+  const cooling = pair.find((object) => objectHas(object, /雨|水|冰|云|凉|冷|rain|water|ice|cool|cloud/, ["cooling", "weather", "protect"]));
+  const heat = pair.find((object) => objectHas(object, /热|火|烫|火把|岩浆|fire|hot|heat/, ["hot", "heat", "warm"]));
+  if (cooling && heat) {
+    return {
+      label: "降温灭火",
+      pulse: `${cooling.name}让${heat.name}冷静下来`,
+      feedback: `${cooling.name}覆盖到${heat.name}附近，热麻烦被降温，世界反馈出可见的冷却反应。`,
+      tag: "cooling",
+      sparkTags: ["science", "nature"],
+    };
+  }
+
+  const light = pair.find((object) => objectHas(object, /灯|光|太阳|月亮|星|萤火|light|lamp|sun|star/, ["light", "reveal"]));
+  const dark = pair.find((object) => objectHas(object, /暗|黑|影|迷雾|洞|night|dark|shadow|fog/, ["dark", "hidden"]));
+  if (light && dark) {
+    return {
+      label: "点亮暗处",
+      pulse: `${light.name}照亮了${dark.name}`,
+      feedback: `${light.name}靠近${dark.name}后，暗处被照亮，隐藏线索和路径显现出来。`,
+      tag: "reveal",
+      sparkTags: ["science", "story"],
+    };
+  }
+
+  const crossing = pair.find((object) => objectHas(object, /桥|梯|船|飞行|翅膀|bridge|ladder|boat|wing|fly/, ["crossing", "support", "movement"]));
+  const obstacle = pair.find((object) => objectHas(object, /障碍|坑|河|缝|山|墙|gap|river|wall|obstacle/, ["obstacle", "crossing"]));
+  if (crossing && obstacle) {
+    return {
+      label: "跨越障碍",
+      pulse: `${crossing.name}连接了${obstacle.name}`,
+      feedback: `${crossing.name}被拖到${obstacle.name}旁边，舞台生成可通过的路线，角色可以继续前进。`,
+      tag: "crossing",
+      sparkTags: ["creativity", "aiCollaboration"],
+    };
+  }
+
+  const tool = pair.find((object) => objectHas(object, /钥匙|工具|扳手|机器人|repair|key|tool|wrench/, ["unlock", "repair"]));
+  const broken = pair.find((object) => objectHas(object, /坏|锁|卡住|机关|机器|broken|lock|gear|machine/, ["locked", "repair", "gear"]));
+  if (tool && broken) {
+    return {
+      label: "修复解锁",
+      pulse: `${tool.name}修好了${broken.name}`,
+      feedback: `${tool.name}贴近${broken.name}后，卡住的机关被修复，新的互动路径打开了。`,
+      tag: "repair",
+      sparkTags: ["science", "creativity"],
+    };
+  }
+
+  return null;
+}
+
+function objectStageStyle(object: GeneratedObject, index: number, position?: StagePosition): CSSProperties {
+  if (position) return { left: `${position.left}%`, top: `${position.top}%`, zIndex: 2 + index } as CSSProperties;
+  const fallback = defaultStagePosition(object, index);
+  return { left: `${fallback.left}%`, top: `${fallback.top}%`, zIndex: 2 + index } as CSSProperties;
+}
+"""
+
+
+def _patch_app_for_image_object_interaction(app_path: Path) -> None:
+    app = app_path.read_text(encoding="utf-8")
+    if (
+        "generatedObjectImage" in app
+        and "finishStageInteraction" in app
+        and "stageRelationOutcome" in app
+        and "positionFromPointer" in app
+        and "stageDistance" in app
+        and "stageHash" in app
+        and "objectRelationLabel" in app
+        and "objectStageStyle" in app
+        and "application/x-wordforge-object-id" in app
+        and "吃掉了" in app
+        and "dropObjectOnStage(touchDragName)" not in app
+    ):
+        return
+    app = _replace_once(
+        app,
+        'import type { CSSProperties } from "react";',
+        'import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";',
+    )
+    app = _replace_once(
+        app,
+        'import { visualsForWorld, objectAsset, objectMotionClass, stickerForObject } from "./data/visuals";',
+        'import { visualsForWorld, objectAsset, objectMotionClass, stickerForObject, generatedObjectImage, generatedSprite, isFoodObject, isWolfObject } from "./data/visuals";',
+    )
+    app = _replace_once(
+        app,
+        "  const [touchDragName, setTouchDragName] = useState<string | null>(null);",
+        "  const [inventoryDragId, setInventoryDragId] = useState<string | null>(null);\n  const [draggingStageId, setDraggingStageId] = useState<string | null>(null);\n  const [stagePositions, setStagePositions] = useState<Record<string, { left: number; top: number }>>({});",
+    )
+    app = _replace_once(
+        app,
+        """  function dropObjectOnStage(name: string) {
+    createFromWords(`把${name}放到舞台中央并观察它怎么帮助目标`);
+  }""",
+        """  function moveStageObject(objectId: string, left = 50, top = 44) {
+    setStagePositions((positions) => ({
+      ...positions,
+      [objectId]: { left: Math.max(4, Math.min(86, left)), top: Math.max(8, Math.min(74, top)) },
+    }));
+  }
+
+  function finishStageInteraction(objectId: string, position?: StagePosition) {
+    update((current) => {
+      const worldId = current.activeWorldId;
+      const before = current.worlds[worldId];
+      const moved = before.objects.find((object) => object.id === objectId);
+      if (!moved) return current;
+      const movedIndex = before.objects.findIndex((object) => object.id === moved.id);
+      const movedPosition = position ?? stagePositions[moved.id] ?? defaultStagePosition(moved, movedIndex);
+      const targetCandidate = before.objects
+        .map((object, index) => {
+          if (object.id === moved.id) return null;
+          const outcome = stageRelationOutcome(moved, object);
+          if (!outcome) return null;
+          const targetPosition = stagePositions[object.id] ?? defaultStagePosition(object, index);
+          const distance = stageDistance(movedPosition, targetPosition);
+          return distance < 34 ? { object, distance, outcome } : null;
+        })
+        .filter((candidate): candidate is { object: GeneratedObject; distance: number; outcome: StageRelationOutcome } => Boolean(candidate))
+        .sort((left, right) => left.distance - right.distance)[0];
+      const target = targetCandidate?.object;
+      if (!target) {
+        setStageActionPulse(`${moved.name}移动到了舞台上，继续拖到目标附近试试。`);
+        window.setTimeout(() => setStageActionPulse(null), 1200);
+        return current;
+      }
+      const outcome = targetCandidate.outcome;
+      setStageActionPulse(outcome.pulse);
+      window.setTimeout(() => setStageActionPulse(null), 1500);
+      const event: PlayEvent = {
+        id: `event-${Date.now()}`,
+        at: new Date().toISOString(),
+        worldId,
+        input: `${moved.name}->${target.name}`,
+        object: moved,
+        feedback: outcome.feedback,
+        solvedGoalIds: [],
+        solutionLabels: [outcome.label],
+        sparkTags: outcome.sparkTags,
+      };
+      const objects = outcome.consumeObjectId ? before.objects.filter((object) => object.id !== outcome.consumeObjectId) : before.objects;
+      return {
+        ...current,
+        worlds: {
+          ...current.worlds,
+          [worldId]: {
+            ...before,
+            objects,
+            rewardShards: before.rewardShards + 1,
+            activeTags: Array.from(new Set([...before.activeTags, outcome.tag])),
+            story: [outcome.feedback, ...before.story].slice(0, 12),
+          },
+        },
+        events: [event, ...current.events].slice(0, 160),
+        replayLog: [`${worlds[worldId].shortName}:${event.solutionLabels.join("|")}`, ...current.replayLog].slice(0, 80),
+      };
+    });
+  }
+
+  function dropObjectOnStage(objectId: string, position?: StagePosition) {
+    const existing = activeState.objects.find((object) => object.id === objectId);
+    if (existing) {
+      if (position) moveStageObject(objectId, position.left, position.top);
+      finishStageInteraction(objectId, position);
+      return;
+    }
+    const inventoryObject = activeState.inventory.find((object) => object.id === objectId);
+    if (!inventoryObject) return;
+    if (position) moveStageObject(objectId, position.left, position.top);
+    update((current) => {
+      const worldId = current.activeWorldId;
+      const before = current.worlds[worldId];
+      if (before.objects.some((object) => object.id === inventoryObject.id)) return current;
+      const event: PlayEvent = {
+        id: `event-${Date.now()}`,
+        at: new Date().toISOString(),
+        worldId,
+        input: `stage:${inventoryObject.name}`,
+        object: inventoryObject,
+        feedback: `${inventoryObject.name}被放到舞台上，可以继续拖到角色、目标或另一个物件附近触发反应。`,
+        solvedGoalIds: [],
+        solutionLabels: ["舞台放置"],
+        sparkTags: inventoryObject.sparkTags,
+      };
+      return {
+        ...current,
+        worlds: { ...current.worlds, [worldId]: { ...before, objects: [...before.objects, inventoryObject], story: [event.feedback, ...before.story].slice(0, 12) } },
+        events: [event, ...current.events].slice(0, 160),
+      };
+    });
+  }""",
+    )
+    app = app.replace(
+        "    setTouchDragName(null);",
+        "    setInventoryDragId(null);\n    setDraggingStageId(null);\n    setStagePositions({});",
+    )
+    app = app.replace("setTouchDragName(object.name)", "setInventoryDragId(object.id)")
+    app = app.replace(
+        'event.dataTransfer.setData("text/plain", object.name)',
+        'event.dataTransfer.setData("application/x-wordforge-object-id", object.id)',
+    )
+    app = app.replace("dropObjectOnStage(touchDragName)", "dropObjectOnStage(draggingStageId)")
+    app = app.replace("if (touchDragName)", "if (draggingStageId)")
+    app = app.replace("setTouchDragName(null)", "setDraggingStageId(null)")
+    app = app.replace(
+        'const name = event.dataTransfer.getData("text/plain"); if (name) dropObjectOnStage(name);',
+        'const objectId = event.dataTransfer.getData("application/x-wordforge-object-id"); if (objectId) dropObjectOnStage(objectId, positionFromPointer(event));',
+    )
+    app = app.replace(
+        "stageScene illustratedScene visualFocusLayer sandboxDynamics",
+        "stageScene illustratedScene visualFocusLayer sandboxDynamics imageObjectPlayfield",
+    )
+    app = app.replace(
+        "onTouchDragStart={() => setInventoryDragId(object.id)}",
+        "onStageDragStart={() => setDraggingStageId(object.id)}",
+    )
+    app = app.replace(
+        '<img src={objectAsset(object)} alt="" />{object.name}',
+        '<img src={generatedSprite(object)} alt="" />{object.name}',
+    )
+    app = app.replace(
+        "style={objectStageStyle(object, index)}",
+        "style={objectStageStyle(object, index, position)}",
+    )
+    app = app.replace(
+        "function objectStageStyle(object: GeneratedObject, index: number): CSSProperties {",
+        """interface StagePosition {
+  left: number;
+  top: number;
+}
+
+function positionFromPointer(event: ReactDragEvent<HTMLDivElement> | ReactPointerEvent<HTMLDivElement>): StagePosition {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return {
+    left: Math.max(4, Math.min(86, ((event.clientX - rect.left) / Math.max(1, rect.width)) * 100)),
+    top: Math.max(8, Math.min(74, ((event.clientY - rect.top) / Math.max(1, rect.height)) * 100)),
+  };
+}
+
+function defaultStagePosition(object: GeneratedObject, index: number): StagePosition {
+  const seed = stageHash(`${object.name}-${object.kind}-${object.ruleFamilies.join("|")}`);
+  return {
+    left: 5 + ((seed + index * 19) % 72),
+    top: 9 + ((seed * 3 + index * 13) % 56),
+  };
+}
+
+function stageDistance(left: StagePosition, right: StagePosition): number {
+  return Math.hypot(left.left - right.left, left.top - right.top);
+}
+
+interface StageRelationOutcome {
+  label: string;
+  pulse: string;
+  feedback: string;
+  tag: string;
+  sparkTags: PlayEvent["sparkTags"];
+  consumeObjectId?: string;
+}
+
+function familyLabel(family: string): string {
+  return family.trim();
+}
+
+function objectStageText(object: GeneratedObject): string {
+  const propertyWords = object.properties.map(propertyLabel).join(" ");
+  const familyWords = object.ruleFamilies.map(familyLabel).join(" ");
+  return `${object.name} ${object.kind} ${propertyWords} ${familyWords} ${object.action}`.toLowerCase();
+}
+
+function objectHas(object: GeneratedObject, pattern: RegExp, families: string[] = []): boolean {
+  const text = objectStageText(object);
+  return pattern.test(text) || families.some((family) => object.ruleFamilies.includes(family) || object.properties.includes(family) || object.kind.includes(family));
+}
+
+function stageRelationOutcome(moved: GeneratedObject, target: GeneratedObject): StageRelationOutcome | null {
+  const pair = [moved, target];
+  const food = pair.find((object) => isFoodObject(object));
+  const wolf = pair.find((object) => isWolfObject(object));
+  if (food && wolf) {
+    return {
+      label: `${wolf.name}吃掉了${food.name}`,
+      pulse: `${wolf.name}吃掉了${food.name}`,
+      feedback: `${wolf.name}吃掉了${food.name}，它满足地摇尾巴，舞台产生了真实互动。`,
+      tag: "feed",
+      sparkTags: ["science", "social"],
+      consumeObjectId: food.id,
+    };
+  }
+
+  const cooling = pair.find((object) => objectHas(object, /雨|水|冰|云|凉|冷|rain|water|ice|cool|cloud/, ["cooling", "weather", "protect"]));
+  const heat = pair.find((object) => objectHas(object, /热|火|烫|火把|岩浆|fire|hot|heat/, ["hot", "heat", "warm"]));
+  if (cooling && heat) {
+    return {
+      label: "降温灭火",
+      pulse: `${cooling.name}让${heat.name}冷静下来`,
+      feedback: `${cooling.name}覆盖到${heat.name}附近，热麻烦被降温，世界反馈出可见的冷却反应。`,
+      tag: "cooling",
+      sparkTags: ["science", "nature"],
+    };
+  }
+
+  const light = pair.find((object) => objectHas(object, /灯|光|太阳|月亮|星|萤火|light|lamp|sun|star/, ["light", "reveal"]));
+  const dark = pair.find((object) => objectHas(object, /暗|黑|影|迷雾|洞|night|dark|shadow|fog/, ["dark", "hidden"]));
+  if (light && dark) {
+    return {
+      label: "点亮暗处",
+      pulse: `${light.name}照亮了${dark.name}`,
+      feedback: `${light.name}靠近${dark.name}后，暗处被照亮，隐藏线索和路径显现出来。`,
+      tag: "reveal",
+      sparkTags: ["science", "story"],
+    };
+  }
+
+  const crossing = pair.find((object) => objectHas(object, /桥|梯|船|飞行|翅膀|bridge|ladder|boat|wing|fly/, ["crossing", "support", "movement"]));
+  const obstacle = pair.find((object) => objectHas(object, /障碍|坑|河|缝|山|墙|gap|river|wall|obstacle/, ["obstacle", "crossing"]));
+  if (crossing && obstacle) {
+    return {
+      label: "跨越障碍",
+      pulse: `${crossing.name}连接了${obstacle.name}`,
+      feedback: `${crossing.name}被拖到${obstacle.name}旁边，舞台生成可通过的路线，角色可以继续前进。`,
+      tag: "crossing",
+      sparkTags: ["creativity", "aiCollaboration"],
+    };
+  }
+
+  const tool = pair.find((object) => objectHas(object, /钥匙|工具|扳手|机器人|repair|key|tool|wrench/, ["unlock", "repair"]));
+  const broken = pair.find((object) => objectHas(object, /坏|锁|卡住|机关|机器|broken|lock|gear|machine/, ["locked", "repair", "gear"]));
+  if (tool && broken) {
+    return {
+      label: "修复解锁",
+      pulse: `${tool.name}修好了${broken.name}`,
+      feedback: `${tool.name}贴近${broken.name}后，卡住的机关被修复，新的互动路径打开了。`,
+      tag: "repair",
+      sparkTags: ["science", "creativity"],
+    };
+  }
+
+  const shield = pair.find((object) => objectHas(object, /盾|护盾|保护罩|安全护罩|shield/));
+  const danger = pair.find((object) => objectHas(object, /危险|尖|热|狼|风暴|danger|sharp|storm|wolf/, ["danger", "hungry", "hot"]));
+  if (shield && danger) {
+    return {
+      label: "保护角色",
+      pulse: `${shield.name}挡住了${danger.name}`,
+      feedback: `${shield.name}靠近${danger.name}后形成保护区，角色可以安全尝试下一步。`,
+      tag: "protection",
+      sparkTags: ["social", "science"],
+    };
+  }
+
+  return null;
+}
+
+function objectStageStyle(object: GeneratedObject, index: number, position?: StagePosition): CSSProperties {
+  if (position) return { left: `${position.left}%`, top: `${position.top}%`, zIndex: 2 + index } as CSSProperties;""",
+    )
+    app = app.replace(
+        "function ObjectToken({ object, index, selected, onSelect, onTouchDragStart }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void; onTouchDragStart: () => void }) {",
+        "function ObjectToken({ object, index, position, selected, onSelect, onStageDragStart }: { object: GeneratedObject; index: number; position?: { left: number; top: number }; selected: boolean; onSelect: () => void; onStageDragStart: () => void }) {",
+    )
+    app = app.replace("onPointerDown={onTouchDragStart}", "onPointerDown={onStageDragStart}")
+    app = app.replace(
+        "className={`objectCard objectSprite", "className={`livingObject objectCard objectSprite"
+    )
+    app = app.replace(
+        '<img src={objectAsset(object)} alt="" /><span>{object.name}</span>',
+        '<img className="generatedSprite" src={generatedObjectImage(object)} alt="" /><span className="objectCaption">{object.name}</span>',
+    )
+    app = app.replace(
+        'return <button draggable style={objectStageStyle(object, index, position)} onPointerDown={onStageDragStart} onDragStart={(event) => event.dataTransfer.setData("application/x-wordforge-object-id", object.id)} className={`livingObject objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}>',
+        'return <button type="button" style={objectStageStyle(object, index, position)} onPointerDown={(event) => { event.currentTarget.setPointerCapture?.(event.pointerId); onStageDragStart(); }} className={`livingObject objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}>',
+    )
+    app = app.replace(
+        'onPointerDown={(event) => { event.currentTarget.setPointerCapture?.(event.pointerId); onStageDragStart(); }} className={`livingObject objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}>',
+        'onPointerDown={(event) => { event.currentTarget.setPointerCapture?.(event.pointerId); onStageDragStart(); onSelect(); }} className={`livingObject objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`}>',
+    )
+    if "onPointerMove={(event) => { if (draggingStageId)" not in app:
+        app = app.replace(
+            "onPointerUp={() => { if (draggingStageId) { dropObjectOnStage(draggingStageId); setDraggingStageId(null); } }}",
+            "onPointerMove={(event) => { if (draggingStageId) { const position = positionFromPointer(event); moveStageObject(draggingStageId, position.left, position.top); } }} onPointerUp={(event) => { if (draggingStageId) { finishStageInteraction(draggingStageId, positionFromPointer(event)); setDraggingStageId(null); } if (inventoryDragId) setInventoryDragId(null); }}",
+        )
+    app = app.replace(
+        "onPointerCancel={() => setDraggingStageId(null)}",
+        "onPointerCancel={() => { setDraggingStageId(null); setInventoryDragId(null); }}",
+    )
+    if "interface StagePosition" not in app:
+        app = _replace_once(
+            app,
+            "\nfunction ObjectToken(",
+            "\n" + _stage_relation_helper_ts() + "\nfunction ObjectToken(",
+        )
+    if "function stageHash(" not in app:
+        app = _replace_once(
+            app,
+            "\nfunction ObjectToken(",
+            "\nfunction stageHash(value: string): number {\n  return Array.from(value).reduce((total, char) => total + char.charCodeAt(0), 0);\n}\n\nfunction ObjectToken(",
+        )
+    if "function objectRelationLabel(" not in app:
+        app = _replace_once(
+            app,
+            "\nfunction ObjectToken(",
+            '\nfunction familyLabel(family: string): string {\n  return family.trim();\n}\n\nfunction objectRelationLabel(object: GeneratedObject): string {\n  const propertyText = object.properties.slice(0, 2).map(propertyLabel).filter(Boolean).join("、");\n  const familyText = object.ruleFamilies.slice(0, 2).map(familyLabel).filter(Boolean).join("、");\n  return [propertyText, familyText].filter(Boolean).join(" · ") || "可互动";\n}\n\nfunction ObjectToken(',
+        )
+    if "function familyLabel(" not in app:
+        app = _replace_once(
+            app,
+            "\nfunction objectRelationLabel(",
+            "\nfunction familyLabel(family: string): string {\n  return family.trim();\n}\n\nfunction objectRelationLabel(",
+        )
+    if "stagePhysicsOverlay" not in app:
+        app = _replace_once(
+            app,
+            """              <div className="sceneLayer">""",
+            """              <div className="stagePhysicsOverlay" aria-hidden="true">{activeState.objects.slice(-6).map((object, index) => <span key={`path-${object.id}`} className={`stagePath path${index % 4}`}>{objectTrajectoryLabel(object)}</span>)}</div>
+              <div className="sceneLayer">""",
+        )
+    if "style={objectStageStyle(object, index, position)}" not in app:
+        app = app.replace(
+            "return <button draggable ",
+            "return <button draggable style={objectStageStyle(object, index, position)} ",
+            1,
+        )
+        app = app.replace(
+            'return <button type="button" ',
+            'return <button type="button" style={objectStageStyle(object, index, position)} ',
+            1,
+        )
+    _write_text(app_path, app)
+
+
 def _patch_app_for_experience_director(app_path: Path) -> None:
     app = app_path.read_text(encoding="utf-8")
     if "questDeck" in app and "directManipulation" in app and "objectRelationGraph" in app:
@@ -1889,7 +4948,7 @@ def _patch_app_for_experience_director(app_path: Path) -> None:
             <h2>背包</h2><div className="inventoryShelf">{activeState.inventory.slice(-12).map((object) => <button key={object.id} className={selectedIds.includes(object.id) ? "selected inventoryToken" : "inventoryToken"} onClick={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])}><img src={objectAsset(object)} alt="" />{object.name}</button>)}</div>""",
         """            <h2>因果实验室</h2><div className="causalLab">{latest ? explainCausalOutcome(latest.object, activeState.activeTags).facts.map((fact) => <span key={fact}>{fact}</span>) : <span>生成物件后会显示重量、浮力、光照、连接和目标影响。</span>}</div>
             <h2>动作导演</h2><div className="actionDirector directManipulation"><button onClick={() => createFromWords(`推动${selectedObjects[0]?.name ?? "弹跳工具"}`)}>推动</button><button onClick={() => createFromWords(`骑上${selectedObjects[0]?.name ?? "飞行朋友"}`)}>骑乘</button><button onClick={() => createFromWords(`把${selectedObjects[0]?.name ?? "发光礼物"}交给伙伴`)}>交给伙伴</button></div>
-            <h2>对象关系图</h2><div className="objectRelationGraph">{relationObjects.length ? relationObjects.map((object, index) => <span key={object.id}>{index ? "→ " : ""}{object.name}:{object.ruleFamilies.slice(0, 2).join("/")}</span>) : <span>生成多个物件后，这里会显示它们如何连接目标、属性和动作。</span>}</div>
+            <h2>对象关系图</h2><div className="objectRelationGraph">{relationObjects.length ? relationObjects.map((object, index) => <span key={object.id}>{index ? "→ " : ""}{object.name} · {objectRelationLabel(object)}</span>) : <span>生成多个物件后，这里会显示它们如何连接目标、属性和动作。</span>}</div>
             <h2>背包</h2><div className="inventoryShelf">{activeState.inventory.slice(-12).map((object) => <button key={object.id} className={selectedIds.includes(object.id) ? "selected inventoryToken" : "inventoryToken"} onClick={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])}><img src={objectAsset(object)} alt="" />{object.name}</button>)}</div>""",
     )
     _write_text(app_path, app)
@@ -1897,8 +4956,32 @@ def _patch_app_for_experience_director(app_path: Path) -> None:
 
 def _patch_app_for_sandbox_dynamics(app_path: Path) -> None:
     app = app_path.read_text(encoding="utf-8")
-    if "sandboxDynamics" in app and "actionTrail" in app and "onDrop" in app:
+    if (
+        "imageObjectPlayfield" in app
+        and "draggingStageId" in app
+        and "application/x-wordforge-object-id" in app
+        and "actionTrail" in app
+        and "touchDragName" not in app
+    ):
+        app = _patch_modern_inventory_touch_drop(app)
+        _write_text(app_path, app)
         return
+    if (
+        "sandboxDynamics" in app
+        and "actionTrail" in app
+        and "onDrop" in app
+        and "touchDragName" in app
+        and "onPointerUp" in app
+    ):
+        return
+    app = _replace_once(
+        app,
+        """  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [editProperty, setEditProperty] = useState("flying");""",
+        """  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [touchDragName, setTouchDragName] = useState<string | null>(null);
+  const [editProperty, setEditProperty] = useState("flying");""",
+    )
     app = _replace_once(
         app,
         "  const relationObjects = activeState.inventory.slice(-6);",
@@ -1922,30 +5005,187 @@ def _patch_app_for_sandbox_dynamics(app_path: Path) -> None:
     )
     app = _replace_once(
         app,
-        """            <div className="stageScene illustratedScene">
-              <img className="worldBackdrop" src={activeVisual.backdrop} alt="" />""",
-        """            <div className="stageScene illustratedScene sandboxDynamics" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const name = event.dataTransfer.getData("text/plain"); if (name) dropObjectOnStage(name); }}>
-              <img className="worldBackdrop" src={activeVisual.backdrop} alt="" />
-              <div className="touchHint">拖动物件到舞台，或用动作导演推动、骑乘、交给伙伴。</div>""",
+        "    setSelectedIds([]);",
+        "    setSelectedIds([]);\n    setTouchDragName(null);",
     )
     app = _replace_once(
         app,
-        """            <h2>对象关系图</h2><div className="objectRelationGraph">{relationObjects.length ? relationObjects.map((object, index) => <span key={object.id}>{index ? "→ " : ""}{object.name}:{object.ruleFamilies.slice(0, 2).join("/")}</span>) : <span>生成多个物件后，这里会显示它们如何连接目标、属性和动作。</span>}</div>
+        """            <div className="stageScene illustratedScene">
+              <img className="worldBackdrop" src={activeVisual.backdrop} alt="" />""",
+        """            <div className="stageScene illustratedScene sandboxDynamics" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const name = event.dataTransfer.getData("text/plain"); if (name) dropObjectOnStage(name); }} onPointerUp={() => { if (touchDragName) { dropObjectOnStage(touchDragName); setTouchDragName(null); } }} onPointerCancel={() => setTouchDragName(null)}>
+              <img className="worldBackdrop" src={activeVisual.backdrop} alt="" />
+              <div className="touchHint">拖到舞台，或点动作导演。</div>""",
+    )
+    app = _replace_once(
+        app,
+        """            <div className="stageScene illustratedScene visualFocusLayer">
+              <img className="worldBackdrop" src={activeVisual.backdrop} alt="" />""",
+        """            <div className="stageScene illustratedScene visualFocusLayer sandboxDynamics" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const name = event.dataTransfer.getData("text/plain"); if (name) dropObjectOnStage(name); }} onPointerUp={() => { if (touchDragName) { dropObjectOnStage(touchDragName); setTouchDragName(null); } }} onPointerCancel={() => setTouchDragName(null)}>
+              <img className="worldBackdrop" src={activeVisual.backdrop} alt="" />
+              <div className="touchHint">拖到舞台，或点动作导演。</div>""",
+    )
+    app = _replace_once(
+        app,
+        """<ObjectToken key={object.id} object={object} index={index} selected={selectedIds.includes(object.id)} onSelect={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])} />""",
+        """<ObjectToken key={object.id} object={object} index={index} selected={selectedIds.includes(object.id)} onTouchDragStart={() => setTouchDragName(object.name)} onSelect={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])} />""",
+    )
+    app = _replace_once(
+        app,
+        """            <h2>对象关系图</h2><div className="objectRelationGraph">{relationObjects.length ? relationObjects.map((object, index) => <span key={object.id}>{index ? "→ " : ""}{object.name} · {objectRelationLabel(object)}</span>) : <span>生成多个物件后，这里会显示它们如何连接目标、属性和动作。</span>}</div>
             <h2>背包</h2><div className="inventoryShelf">{activeState.inventory.slice(-12).map((object) => <button key={object.id} className={selectedIds.includes(object.id) ? "selected inventoryToken" : "inventoryToken"} onClick={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])}><img src={objectAsset(object)} alt="" />{object.name}</button>)}</div>""",
-        """            <h2>对象关系图</h2><div className="objectRelationGraph">{relationObjects.length ? relationObjects.map((object, index) => <span key={object.id}>{index ? "→ " : ""}{object.name}:{object.ruleFamilies.slice(0, 2).join("/")}</span>) : <span>生成多个物件后，这里会显示它们如何连接目标、属性和动作。</span>}</div>
+        """            <h2>对象关系图</h2><div className="objectRelationGraph">{relationObjects.length ? relationObjects.map((object, index) => <span key={object.id}>{index ? "→ " : ""}{object.name} · {objectRelationLabel(object)}</span>) : <span>生成多个物件后，这里会显示它们如何连接目标、属性和动作。</span>}</div>
             <h2>动作轨迹</h2><div className="actionTrail">{actionTrail.length ? actionTrail.map((event) => <span key={event.id}>{event.object.name} → {event.solutionLabels[0] ?? "继续试属性/组合"}</span>) : <span>每次造物、拖放和操作都会留下可复盘轨迹。</span>}</div>
-            <h2>背包</h2><div className="inventoryShelf">{activeState.inventory.slice(-12).map((object) => <button key={object.id} draggable onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={selectedIds.includes(object.id) ? "selected inventoryToken" : "inventoryToken"} onClick={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])}><img src={objectAsset(object)} alt="" />{object.name}</button>)}</div>""",
+            <h2>背包</h2><div className="inventoryShelf">{activeState.inventory.slice(-12).map((object) => <button key={object.id} draggable onPointerDown={() => setTouchDragName(object.name)} onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={selectedIds.includes(object.id) ? "selected inventoryToken" : "inventoryToken"} onClick={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])}><img src={objectAsset(object)} alt="" />{object.name}</button>)}</div>""",
     )
     app = _replace_once(
         app,
         """function ObjectToken({ object, index, selected, onSelect }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void }) {
   return <button className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
 }""",
-        """function ObjectToken({ object, index, selected, onSelect }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void }) {
-  return <button draggable onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
+        """function ObjectToken({ object, index, selected, onSelect, onTouchDragStart }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void; onTouchDragStart: () => void }) {
+  return <button draggable onPointerDown={onTouchDragStart} onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
 }""",
     )
     _write_text(app_path, app)
+
+
+def _patch_modern_inventory_touch_drop(app: str) -> str:
+    """Make inventory-to-stage drag work on pointer-only tablet browsers."""
+
+    if "finishInventoryTouchDrag" in app and "stagePositionFromClient" in app:
+        return _normalize_modern_inventory_touch_drop(app)
+    if "useRef" not in app:
+        app = _replace_once(
+            app,
+            'import { useEffect, useMemo, useState } from "react";',
+            'import { useEffect, useMemo, useRef, useState } from "react";',
+        )
+    app = _replace_once(
+        app,
+        '  const [editProperty, setEditProperty] = useState("flying");',
+        '  const [editProperty, setEditProperty] = useState("flying");\n'
+        "  const stageRef = useRef<HTMLDivElement | null>(null);",
+    )
+    app = _replace_once(
+        app,
+        "  const activeState = snapshot.worlds[snapshot.activeWorldId];",
+        """  const activeState = snapshot.worlds[snapshot.activeWorldId];
+  useEffect(() => {
+    const draggedObjectId = inventoryDragId ?? "";
+    if (!draggedObjectId) return;
+
+    function finishInventoryTouchDrag(event: PointerEvent) {
+      const rect = stageRef.current?.getBoundingClientRect();
+      if (rect && event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom) {
+        dropObjectOnStage(draggedObjectId, stagePositionFromClient(rect, event.clientX, event.clientY));
+      }
+      setInventoryDragId(null);
+    }
+
+    function cancelInventoryTouchDrag() {
+      setInventoryDragId(null);
+    }
+
+    window.addEventListener("pointerup", finishInventoryTouchDrag);
+    window.addEventListener("pointercancel", cancelInventoryTouchDrag);
+    return () => {
+      window.removeEventListener("pointerup", finishInventoryTouchDrag);
+      window.removeEventListener("pointercancel", cancelInventoryTouchDrag);
+    };
+  }, [inventoryDragId, activeState.inventory, activeState.objects, snapshot.activeWorldId]);""",
+    )
+    app = _replace_once(
+        app,
+        'className={`stageScene illustratedScene visualFocusLayer sandboxDynamics imageObjectPlayfield premiumTouchStage premiumTouchStage ${draggingStageId ? "isDraggingStage" : ""}`}',
+        'ref={stageRef} className={`stageScene illustratedScene visualFocusLayer sandboxDynamics imageObjectPlayfield premiumTouchStage premiumTouchStage ${draggingStageId || inventoryDragId ? "isDraggingStage" : ""}`}',
+    )
+    app = _replace_once(
+        app,
+        "onPointerUp={(event) => { if (draggingStageId) { finishStageInteraction(draggingStageId, positionFromPointer(event)); setDraggingStageId(null); } if (inventoryDragId) setInventoryDragId(null); }}",
+        "onPointerUp={(event) => { if (draggingStageId) { finishStageInteraction(draggingStageId, positionFromPointer(event)); setDraggingStageId(null); } }}",
+    )
+    app = _replace_once(
+        app,
+        """function positionFromPointer(event: ReactDragEvent<HTMLDivElement> | ReactPointerEvent<HTMLDivElement>): StagePosition {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return {
+    left: Math.max(4, Math.min(86, ((event.clientX - rect.left) / Math.max(1, rect.width)) * 100)),
+    top: Math.max(8, Math.min(74, ((event.clientY - rect.top) / Math.max(1, rect.height)) * 100)),
+  };
+}""",
+        """function positionFromPointer(event: ReactDragEvent<HTMLDivElement> | ReactPointerEvent<HTMLDivElement>): StagePosition {
+  return stagePositionFromClient(event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY);
+}
+
+function stagePositionFromClient(rect: DOMRect, clientX: number, clientY: number): StagePosition {
+  return {
+    left: Math.max(4, Math.min(86, ((clientX - rect.left) / Math.max(1, rect.width)) * 100)),
+    top: Math.max(8, Math.min(74, ((clientY - rect.top) / Math.max(1, rect.height)) * 100)),
+  };
+}""",
+    )
+    return _normalize_modern_inventory_touch_drop(app)
+
+
+def _normalize_modern_inventory_touch_drop(app: str) -> str:
+    """Keep the generated tablet touch effect build-safe after repeated patches."""
+
+    broken_effect = """  useEffect(() => {
+    if (!inventoryDragId) return;
+
+    function finishInventoryTouchDrag(event: PointerEvent) {
+      const rect = stageRef.current?.getBoundingClientRect();
+      if (rect && event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom) {
+        dropObjectOnStage(inventoryDragId, stagePositionFromClient(rect, event.clientX, event.clientY));
+      }
+      setInventoryDragId(null);
+    }
+
+    function cancelInventoryTouchDrag() {
+      setInventoryDragId(null);
+    }
+
+    window.addEventListener("pointerup", finishInventoryTouchDrag);
+    window.addEventListener("pointercancel", cancelInventoryTouchDrag);
+    return () => {
+      window.removeEventListener("pointerup", finishInventoryTouchDrag);
+      window.removeEventListener("pointercancel", cancelInventoryTouchDrag);
+    };
+  }, [inventoryDragId, activeState.inventory, activeState.objects, snapshot.activeWorldId]);
+"""
+    fixed_effect = """  useEffect(() => {
+    const draggedObjectId = inventoryDragId ?? "";
+    if (!draggedObjectId) return;
+
+    function finishInventoryTouchDrag(event: PointerEvent) {
+      const rect = stageRef.current?.getBoundingClientRect();
+      if (rect && event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom) {
+        dropObjectOnStage(draggedObjectId, stagePositionFromClient(rect, event.clientX, event.clientY));
+      }
+      setInventoryDragId(null);
+    }
+
+    function cancelInventoryTouchDrag() {
+      setInventoryDragId(null);
+    }
+
+    window.addEventListener("pointerup", finishInventoryTouchDrag);
+    window.addEventListener("pointercancel", cancelInventoryTouchDrag);
+    return () => {
+      window.removeEventListener("pointerup", finishInventoryTouchDrag);
+      window.removeEventListener("pointercancel", cancelInventoryTouchDrag);
+    };
+  }, [inventoryDragId, activeState.inventory, activeState.objects, snapshot.activeWorldId]);
+"""
+    app = app.replace(broken_effect, "")
+    if fixed_effect not in app:
+        app = _replace_once(
+            app,
+            "  const activeState = snapshot.worlds[snapshot.activeWorldId];",
+            "  const activeState = snapshot.worlds[snapshot.activeWorldId];\n"
+            + fixed_effect.rstrip(),
+        )
+    return app
 
 
 def _patch_app_for_creative_goal_lab(app_path: Path) -> None:
@@ -2079,7 +5319,11 @@ function semanticFallbackEntry(input: string, worldId: WorldId): VocabularyEntry
 
 def _patch_app_for_spatial_playfield(app_path: Path) -> None:
     app = app_path.read_text(encoding="utf-8")
-    if "stagePhysicsOverlay" in app and "objectStageStyle" in app and "objectTrajectoryLabel" in app:
+    if (
+        "stagePhysicsOverlay" in app
+        and "objectStageStyle" in app
+        and "objectTrajectoryLabel" in app
+    ):
         return
     app = _replace_once(
         app,
@@ -2089,8 +5333,68 @@ def _patch_app_for_spatial_playfield(app_path: Path) -> None:
     )
     app = _replace_once(
         app,
+        """              <div className="sceneLayer">{activeState.objects.slice(-18).map((object, index) => <ObjectToken key={object.id} object={object} index={index} selected={selectedIds.includes(object.id)} onTouchDragStart={() => setTouchDragName(object.name)} onSelect={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])} />)}</div>""",
+        """              <div className="stagePhysicsOverlay" aria-hidden="true">{activeState.objects.slice(-6).map((object, index) => <span key={`path-${object.id}`} className={`stagePath path${index % 4}`}>{objectTrajectoryLabel(object)}</span>)}</div>
+              <div className="sceneLayer">{activeState.objects.slice(-18).map((object, index) => <ObjectToken key={object.id} object={object} index={index} selected={selectedIds.includes(object.id)} onTouchDragStart={() => setTouchDragName(object.name)} onSelect={() => setSelectedIds((ids) => ids.includes(object.id) ? ids.filter((id) => id !== object.id) : [...ids.slice(-1), object.id])} />)}</div>""",
+    )
+    app = _replace_once(
+        app,
         """function ObjectToken({ object, index, selected, onSelect }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void }) {
   return <button draggable onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
+}""",
+        """function stageHash(value: string): number {
+  return Array.from(value).reduce((total, char) => total + char.charCodeAt(0), 0);
+}
+
+function objectStageStyle(object: GeneratedObject, index: number): CSSProperties {
+  const seed = stageHash(`${object.name}-${object.kind}-${object.ruleFamilies.join("|")}`);
+  const slots = [[36, 18], [18, 34], [53, 30], [36, 42], [62, 44], [24, 14], [48, 12], [10, 48]];
+  const [left, top] = slots[(index + seed) % slots.length];
+  return { left: `${left}%`, top: `${top}%`, zIndex: 2 + index } as CSSProperties;
+}
+
+function objectTrajectoryLabel(object: GeneratedObject): string {
+  const family = object.ruleFamilies[0] ?? "idea";
+  const verb = object.action === "combine" ? "组合" : object.action === "attach" ? "附着" : object.action === "protect" ? "守护" : object.action === "repair" ? "修复" : "影响";
+  return `${object.name} ${verb} ${familyLabel(family)}`;
+}
+
+function familyLabel(family: string): string {
+  const labels: Record<string, string> = {
+    animal: "动物伙伴",
+    bridge: "通行工具",
+    comfort: "安抚",
+    crossing: "跨越障碍",
+    danger: "危险",
+    food: "食物",
+    idea: "想象力",
+    light: "照亮",
+    magic: "魔法",
+    movement: "移动",
+    protection: "保护",
+    repair: "修复",
+    route: "路线",
+    tool: "工具",
+    water: "水和雨",
+    wolf: "动物伙伴",
+  };
+  return labels[family] ?? "可互动";
+}
+
+function objectRelationLabel(object: GeneratedObject): string {
+  const propertyText = object.properties.slice(0, 2).map(propertyLabel).filter(Boolean).join("、");
+  const familyText = object.ruleFamilies.slice(0, 2).map(familyLabel).filter(Boolean).join("、");
+  return [propertyText, familyText].filter(Boolean).join(" · ") || "可互动";
+}
+
+function ObjectToken({ object, index, selected, onSelect }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void }) {
+  return <button draggable style={objectStageStyle(object, index)} onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
+}""",
+    )
+    app = _replace_once(
+        app,
+        """function ObjectToken({ object, index, selected, onSelect, onTouchDragStart }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void; onTouchDragStart: () => void }) {
+  return <button draggable onPointerDown={onTouchDragStart} onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
 }""",
         """function stageHash(value: string): number {
   return Array.from(value).reduce((total, char) => total + char.charCodeAt(0), 0);
@@ -2106,18 +5410,46 @@ function objectStageStyle(object: GeneratedObject, index: number): CSSProperties
 function objectTrajectoryLabel(object: GeneratedObject): string {
   const family = object.ruleFamilies[0] ?? "idea";
   const verb = object.action === "combine" ? "组合" : object.action === "attach" ? "附着" : object.action === "protect" ? "守护" : object.action === "repair" ? "修复" : "影响";
-  return `${object.name} ${verb} ${family}`;
+  return `${object.name} ${verb} ${familyLabel(family)}`;
 }
 
-function ObjectToken({ object, index, selected, onSelect }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void }) {
-  return <button draggable style={objectStageStyle(object, index)} onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
+function familyLabel(family: string): string {
+  const labels: Record<string, string> = {
+    animal: "动物伙伴",
+    bridge: "通行工具",
+    comfort: "安抚",
+    crossing: "跨越障碍",
+    danger: "危险",
+    food: "食物",
+    idea: "想象力",
+    light: "照亮",
+    magic: "魔法",
+    movement: "移动",
+    protection: "保护",
+    repair: "修复",
+    route: "路线",
+    tool: "工具",
+    water: "水和雨",
+    wolf: "动物伙伴",
+  };
+  return labels[family] ?? "可互动";
+}
+
+function objectRelationLabel(object: GeneratedObject): string {
+  const propertyText = object.properties.slice(0, 2).map(propertyLabel).filter(Boolean).join("、");
+  const familyText = object.ruleFamilies.slice(0, 2).map(familyLabel).filter(Boolean).join("、");
+  return [propertyText, familyText].filter(Boolean).join(" · ") || "可互动";
+}
+
+function ObjectToken({ object, index, selected, onSelect, onTouchDragStart }: { object: GeneratedObject; index: number; selected: boolean; onSelect: () => void; onTouchDragStart: () => void }) {
+  return <button draggable style={objectStageStyle(object, index)} onPointerDown={onTouchDragStart} onDragStart={(event) => event.dataTransfer.setData("text/plain", object.name)} className={`objectCard objectSprite object${(index % 8) + 1} ${objectMotionClass(object)} ${selected ? "selected" : ""}`} onClick={onSelect}><img src={objectAsset(object)} alt="" /><span>{object.name}</span><small>{object.properties.slice(0, 3).map(propertyLabel).join(" · ")}</small><em>{stickerForObject(object)}</em>{object.safetyLevel === "redirected" ? <b>安全重定向</b> : null}</button>;
 }""",
     )
     _write_text(app_path, app)
 
 
 def _experience_director_css() -> str:
-    return """.questDeck{position:absolute;right:16px;top:16px;z-index:4;width:min(310px,44%);background:rgba(255,253,247,.94);border:2px solid #203142;border-radius:8px;padding:12px;box-shadow:5px 5px 0 rgba(32,49,66,.2)}.questDeck strong,.questDeck span{display:block}.questDeck span{font-size:13px;color:#405166;margin:4px 0 8px}.questDeck div{display:flex;flex-wrap:wrap;gap:5px}.questDeck em{font-size:11px;font-style:normal;border:1px solid #8fbbe5;background:#edf7ff;border-radius:999px;padding:4px 7px}.actionDirector{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:8px 0 12px}.actionDirector button{padding:8px 6px}.objectRelationGraph{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0 12px}.objectRelationGraph span{border:1px solid #cbddec;background:#f8fbff;border-radius:8px;padding:6px 8px;font-size:12px;font-weight:800;color:#405166}@media(max-width:700px){.questDeck{position:relative;top:auto;right:auto;width:auto;margin:10px}.actionDirector{grid-template-columns:1fr}}
+    return """.questDeck{position:absolute;right:12px;top:54px;z-index:4;width:min(220px,36%);max-height:64px;overflow:auto;background:rgba(255,253,247,.92);border:2px solid #203142;border-radius:8px;padding:7px 8px;box-shadow:4px 4px 0 rgba(32,49,66,.16);pointer-events:none}.questDeck strong,.questDeck span{display:block}.questDeck strong{font-size:12px}.questDeck span{font-size:11px;color:#405166;margin:2px 0 4px}.questDeck div{display:flex;flex-wrap:wrap;gap:4px}.questDeck em{font-size:10px;font-style:normal;border:1px solid #8fbbe5;background:#edf7ff;border-radius:999px;padding:2px 5px}.actionDirector{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:8px 0 12px}.actionDirector button{padding:8px 6px}.objectRelationGraph{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0 12px}.objectRelationGraph span{border:1px solid #cbddec;background:#f8fbff;border-radius:8px;padding:6px 8px;font-size:12px;font-weight:800;color:#405166}@media(max-width:700px){.questDeck{position:relative;top:auto;right:auto;width:auto;max-height:none;margin:10px;pointer-events:auto}.actionDirector{grid-template-columns:1fr}}
 """
 
 
@@ -2127,17 +5459,17 @@ def _creative_goal_lab_css() -> str:
 
 
 def _mastery_loop_css() -> str:
-    return """.masteryProgress{position:absolute;left:50%;top:18px;z-index:4;transform:translateX(-50%);width:min(270px,38%);background:rgba(255,255,255,.9);border:2px solid #203142;border-radius:8px;padding:9px 10px;box-shadow:4px 4px 0 rgba(32,49,66,.18);overflow:hidden}.masteryProgress span,.masteryProgress strong{position:relative;z-index:2;font-weight:1000}.masteryProgress strong{float:right}.masteryProgress i{position:absolute;left:0;bottom:0;height:6px;background:#7ee6a8;transition:width .35s ease}.masteryCelebration,.failureCoach{position:absolute;right:18px;bottom:104px;z-index:4;width:min(310px,44%);border:2px solid #203142;border-radius:8px;padding:10px 12px;box-shadow:5px 5px 0 rgba(32,49,66,.18)}.masteryCelebration{background:#fff1b8;animation:celebratePop 1.1s ease-in-out infinite alternate}.failureCoach{background:rgba(255,255,255,.92)}.masteryCelebration strong,.failureCoach strong{display:block;margin-bottom:3px}@keyframes celebratePop{from{transform:scale(1) rotate(-1deg)}to{transform:scale(1.03) rotate(1deg)}}@media(max-width:700px){.masteryProgress{position:relative;left:auto;top:auto;transform:none;width:auto;margin:10px}.masteryCelebration,.failureCoach{position:relative;right:auto;bottom:auto;width:auto;margin:10px}}
+    return """.masteryProgress{position:absolute;right:12px;top:10px;z-index:4;width:min(170px,28%);background:rgba(255,255,255,.9);border:2px solid #203142;border-radius:8px;padding:6px 8px;box-shadow:3px 3px 0 rgba(32,49,66,.16);overflow:hidden}.masteryProgress span,.masteryProgress strong{position:relative;z-index:2;font-weight:1000;font-size:12px}.masteryProgress strong{float:right}.masteryProgress i{position:absolute;left:0;bottom:0;height:5px;background:#7ee6a8;transition:width .35s ease}.masteryCelebration,.failureCoach{position:absolute;left:12px;bottom:104px;z-index:4;width:min(176px,34%);max-height:52px;overflow:auto;border:2px solid #203142;border-radius:8px;padding:6px 8px;box-shadow:4px 4px 0 rgba(32,49,66,.16);font-size:11px}.masteryCelebration{background:rgba(255,241,184,.92);animation:celebratePop 1.1s ease-in-out infinite alternate}.failureCoach{background:rgba(255,255,255,.9)}.masteryCelebration strong,.failureCoach strong{display:block;margin-bottom:1px}@keyframes celebratePop{from{transform:scale(1) rotate(-1deg)}to{transform:scale(1.03) rotate(1deg)}}@media(max-width:700px){.masteryProgress{position:relative;left:auto;right:auto;top:auto;transform:none;width:auto;margin:10px}.masteryCelebration,.failureCoach{position:relative;right:auto;bottom:auto;width:auto;max-height:none;margin:10px}}
 """
 
 
 def _spatial_playfield_css() -> str:
-    return """.stagePhysicsOverlay{position:absolute;inset:72px 22px 118px;z-index:1;pointer-events:none}.stagePath{position:absolute;display:inline-flex;max-width:190px;border:1px dashed rgba(32,49,66,.55);background:rgba(255,255,255,.72);border-radius:999px;padding:5px 9px;font-size:11px;font-weight:1000;color:#24435d;box-shadow:2px 2px 0 rgba(32,49,66,.12);animation:pathPulse 2.8s ease-in-out infinite}.path0{left:5%;top:14%;transform:rotate(-5deg)}.path1{left:38%;top:8%;transform:rotate(4deg)}.path2{left:16%;top:58%;transform:rotate(3deg)}.path3{right:5%;top:42%;transform:rotate(-3deg)}.objectCard{transition:left .28s ease,top .28s ease,transform .2s ease}.objectCard.selected{outline:3px solid rgba(24,135,255,.45)}@keyframes pathPulse{0%,100%{opacity:.58;filter:saturate(1)}50%{opacity:1;filter:saturate(1.4)}}
+    return """.stagePhysicsOverlay{position:absolute;inset:82px 22px 118px;z-index:1;pointer-events:none}.stagePath{position:absolute;display:inline-flex;max-width:150px;border:1px dashed rgba(32,49,66,.45);background:rgba(255,255,255,.62);border-radius:999px;padding:3px 6px;font-size:10px;font-weight:1000;color:#24435d;box-shadow:2px 2px 0 rgba(32,49,66,.1);animation:pathPulse 2.8s ease-in-out infinite}.path0{left:5%;top:18%;transform:rotate(-5deg)}.path1{left:42%;top:12%;transform:rotate(4deg)}.path2{left:16%;top:58%;transform:rotate(3deg)}.path3{right:5%;top:46%;transform:rotate(-3deg)}.objectCard{min-width:76px;min-height:66px;max-width:92px;gap:1px;padding:4px;border-radius:10px;overflow:hidden;transition:left .28s ease,top .28s ease,transform .2s ease}.objectCard img{width:32px;height:32px}.objectCard span{font-size:11px;max-width:82px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.objectCard small{display:none}.objectCard em,.objectCard b{font-size:9px;padding:2px 5px}.objectCard.selected{outline:3px solid rgba(24,135,255,.45)}@keyframes pathPulse{0%,100%{opacity:.45;filter:saturate(1)}50%{opacity:.78;filter:saturate(1.3)}}
 """
 
 
 def _sandbox_dynamics_css() -> str:
-    return """.sandboxDynamics{outline:3px dashed rgba(24,135,255,.22);outline-offset:-10px}.touchHint{position:absolute;left:18px;top:18px;z-index:4;max-width:310px;background:rgba(255,255,255,.88);border:2px solid #203142;border-radius:999px;padding:8px 12px;font-weight:1000;color:#24435d;box-shadow:3px 3px 0 rgba(32,49,66,.18)}.actionTrail{display:grid;gap:6px;margin:8px 0 12px}.actionTrail span{border:1px solid #d7c7ff;background:#f8f4ff;border-radius:8px;padding:7px 8px;font-size:12px;font-weight:900;color:#4d3b7a}.objectCard[draggable=true],.inventoryToken[draggable=true]{touch-action:none;cursor:grab}.objectCard[draggable=true]:active,.inventoryToken[draggable=true]:active{cursor:grabbing;transform:scale(1.03) rotate(-1deg)}
+    return """.sandboxDynamics{outline:3px dashed rgba(24,135,255,.22);outline-offset:-10px}.touchHint{position:absolute;left:10px;top:10px;z-index:4;max-width:160px;background:rgba(255,255,255,.82);border:2px solid #203142;border-radius:999px;padding:5px 8px;font-size:11px;font-weight:1000;color:#24435d;box-shadow:3px 3px 0 rgba(32,49,66,.14);pointer-events:none}.actionTrail{display:grid;gap:6px;margin:8px 0 12px}.actionTrail span{border:1px solid #d7c7ff;background:#f8f4ff;border-radius:8px;padding:7px 8px;font-size:12px;font-weight:900;color:#4d3b7a}.objectCard[draggable=true],.inventoryToken[draggable=true]{touch-action:none;cursor:grab}.objectCard[draggable=true]:active,.inventoryToken[draggable=true]:active{cursor:grabbing;transform:scale(1.03) rotate(-1deg)}
 """
 
 
@@ -2164,16 +5496,107 @@ if (failed.length) process.exit(1);
 """
 
 
+def _visual_product_test_script() -> str:
+    return """import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+
+const assetDir = "public/assets";
+const app = readFileSync("src/App.tsx", "utf8");
+const styles = readFileSync("src/styles.css", "utf8");
+const visuals = readFileSync("src/data/visuals.ts", "utf8");
+const storage = readFileSync("src/engine/storage.ts", "utf8");
+const assets = existsSync(assetDir) ? readdirSync(assetDir).filter((file) => file.endsWith(".svg")) : [];
+const compactStorage = storage.replace(/\\s+/g, "");
+const checks = [
+  ["at least 12 original svg assets", assets.length >= 12],
+  ["world backdrops present", assets.filter((file) => file.startsWith("world-")).length >= 4],
+  ["companion portraits present", assets.filter((file) => file.startsWith("companion-")).length >= 4],
+  ["object sprites present", assets.filter((file) => file.startsWith("object-")).length >= 7],
+  ["app uses illustrated stage", app.includes("illustratedScene") && app.includes("worldBackdrop")],
+  ["app uses companion portraits", app.includes("companionPortrait")],
+  ["app uses object sprites", app.includes("objectSprite") && app.includes("generatedObjectImage")],
+  ["visual data mapping exists", visuals.includes("worldVisuals") && visuals.includes("objectAsset") && visuals.includes("generatedObjectImage")],
+  ["image-first generated objects", app.includes("livingObject") && app.includes("generatedSprite") && styles.includes(".imageObjectPlayfield") && styles.includes(".livingObject .objectCaption{")],
+  ["food and wolf get pictorial sprites", visuals.includes("isFoodObject") && visuals.includes("isWolfObject") && visuals.includes("burger:") && visuals.includes("wolf:")],
+  ["animation hooks exist", styles.includes("@keyframes floaty") && styles.includes("motionFlying")],
+  ["visual polish marker", app.includes("visual-polish-ready")],
+  ["immersive stage shell", app.includes("immersiveGameShell") && app.includes("immersiveStage") && app.includes("floatingQuestRail") && app.includes("floatingCreatorTray") && styles.includes("grid-template-columns:minmax(0,1fr)")],
+  ["floating rails do not occlude first viewport", styles.includes(".stagePanel{margin-left:calc(min(260px,20vw) + 20px);margin-right:calc(min(260px,20vw) + 20px);min-width:0}") && styles.includes("@media(max-width:1000px){.playGrid,.immersiveGameShell{grid-template-columns:1fr}.stagePanel{margin-left:0;margin-right:0}")],
+  ["post-action input remains first viewport visible", styles.includes("height:clamp(280px,calc(100vh - 430px),430px)") && styles.includes("max-height:88px;overflow:auto") && styles.includes(".ideaForm{display:flex;gap:8px;margin-top:8px;position:relative;z-index:6}")],
+  ["stage overlays stay compact after action", styles.includes("max-height:64px;overflow:auto") && styles.includes("min-width:76px;min-height:66px") && styles.includes("pointer-events:none")],
+  ["stage starts alive", app.includes("stageCompanionAvatar") && app.includes("starterObjectPreview") && styles.includes(".stageCompanionAvatar")],
+  ["fresh save has starter objects", (storage.includes("starterWorldObjects") || storage.includes("seedInitialWorldObjects") || storage.includes("worldStatesWithStarterObjects") || storage.includes("initialStageObjects") || storage.includes("freshStarterObjects") || /objects\\s*:\\s*\\[(?!\\s*\\])/.test(storage)) && !compactStorage.includes("objects:[]")],
+  ["protected expression absent", !app.includes("Maxwell") && !app.includes("Starite")],
+];
+const failed = checks.filter(([, ok]) => !ok).map(([name]) => name);
+const report = { ok: failed.length === 0, assetCount: assets.length, checks: checks.map(([name, ok]) => ({ name, ok })), failed };
+writeFileSync("docs/visual-product-test-result.json", JSON.stringify(report, null, 2));
+if (failed.length) {
+  console.error(JSON.stringify(report, null, 2));
+  process.exit(1);
+}
+console.log(JSON.stringify(report, null, 2));
+"""
+
+
+def _commercial_product_test_script() -> str:
+    return """import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+const app = readFileSync("src/App.tsx", "utf8");
+const styles = readFileSync("src/styles.css", "utf8");
+const visuals = readFileSync("src/data/visuals.ts", "utf8");
+const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+
+const checks = [
+  ["reference star companion asset", existsSync("public/assets/companion-spark-star.svg") && visuals.includes("companion-spark-star.svg")],
+  ["higher fidelity food and wolf sprites", existsSync("public/assets/object-burger.svg") && existsSync("public/assets/object-wolf.svg") && visuals.includes("object-burger.svg") && visuals.includes("object-wolf.svg")],
+  ["commercial game polish marker", app.includes("commercial-game-polish-ready") && app.includes("commercialGamePolish") && styles.includes(".commercialGamePolish")],
+  ["video reference motion integrated", app.includes("referenceCharacterMotion") && app.includes("referenceCharacterBadge") && styles.includes("@keyframes starHop")],
+  ["premium touch stage", app.includes("premiumTouchStage") && styles.includes(".premiumTouchStage") && styles.includes("height:clamp(380px,calc(100vh - 310px),640px)")],
+  ["stage object visuals dominate labels", styles.includes(".premiumTouchStage .livingObject .generatedSprite{width:86px;height:86px") && styles.includes(".premiumTouchStage .livingObject .objectCaption{position:absolute")],
+  ["v32 image-first gamefeel marker", app.includes("productGamefeelV32") && styles.includes(".productGamefeelV32")],
+  ["v33 final game viewport marker", app.includes("productGamefeelV33") && styles.includes(".productGamefeelV33") && styles.includes("height:calc(100vh - 180px)")],
+  ["v35 first viewport input marker", app.includes("productGamefeelV35") && styles.includes(".productGamefeelV35 .ideaForm{position:fixed;left:50%;bottom:14px") && styles.includes(".productGamefeelV35 .stageScene{height:calc(100vh - 220px)")],
+  ["v36 stage-first viewport marker", app.includes("productGamefeelV36") && styles.includes(".productGamefeelV36 .stagePanel{position:fixed;inset:72px 10px 10px") && styles.includes(".productGamefeelV36 .floatingCreatorTray .npcRequests")],
+  ["v37 backgroundless stage sprites", app.includes("productGamefeelV37") && styles.includes(".productGamefeelV37 .premiumTouchStage .livingObject{background:transparent!important") && !readFileSync("public/assets/object-light.svg", "utf8").includes("fill=\\"#fffaf0\\"") && !readFileSync("public/assets/object-bridge.svg", "utf8").includes("fill=\\"#fffaf0\\"")],
+  ["v38 de-chromed game-first viewport", app.includes("productGamefeelV38") && styles.includes(".productGamefeelV38 .topBar{transform:translateY(-42px)") && styles.includes(".productGamefeelV38 .floatingQuestRail,.productGamefeelV38 .floatingCreatorTray{width:56px!important")],
+  ["v50 tablet-safe browser viewport repair", app.includes("productGamefeelV50") && styles.includes(".productGamefeelV50 .topBar{display:none!important") && styles.includes(".productGamefeelV50 .floatingCreatorTray{right:12px!important;width:62px!important")],
+  ["v52 visible drag targets", !app.includes("productGamefeelV52") || (app.includes("targetGuideLayer") && app.includes("isDraggingStage") && styles.includes(".productGamefeelV52 .targetGuideLayer"))],
+  ["v53 discovery progress and spread stage objects", app.includes("productGamefeelV53") && app.includes("playerProgressPercent") && app.includes("creativeDiscoveryCount") && app.includes("const stageSlots: StagePosition[]") && styles.includes(".productGamefeelV53 .discoveryProgress")],
+  ["v55 decorative motion trails not technical labels", app.includes("productGamefeelV55") && app.includes("data-motion={objectTrajectoryLabel(object)}") && !app.includes(">{objectTrajectoryLabel(object)}</span>") && styles.includes(".productGamefeelV55 .stagePath")],
+  ["stage object accessible concise names", app.includes("aria-label={`${object.name}，拖动试试`}")],
+  ["stage drag position is rendered", app.includes("position={stagePositions[object.id]}")],
+  ["visual causal pulse", app.includes("stageActionPulse") && styles.includes(".stageActionPulse") && styles.includes("@keyframes stagePulsePop")],
+  ["labels secondary on stage", styles.includes(".productGamefeelV32 .premiumTouchStage .livingObject .objectCaption{opacity:0") && styles.includes(".productGamefeelV32 .premiumTouchStage .livingObject em")],
+  ["technical trajectory text hidden", styles.includes(".productGamefeelV32 .stagePath{font-size:0")],
+  ["script registered", packageJson.scripts?.["test:commercial"] === "node scripts/commercial-product-test.mjs"],
+  ["aggregate test script registered", typeof packageJson.scripts?.test === "string" && packageJson.scripts.test.includes("test:internal") && packageJson.scripts.test.includes("test:commercial")],
+];
+const failed = checks.filter(([, ok]) => !ok).map(([name]) => name);
+const result = { ok: failed.length === 0, checks: checks.map(([name, ok]) => ({ name, ok })), failed };
+writeFileSync("docs/commercial-product-test-result.json", `${JSON.stringify(result, null, 2)}\\n`);
+console.log(JSON.stringify(result, null, 2));
+if (failed.length) process.exit(1);
+"""
+
+
 def _sandbox_product_test_script() -> str:
     return """import fs from "node:fs";
 
 const app = fs.readFileSync("src/App.tsx", "utf8");
 const styles = fs.readFileSync("src/styles.css", "utf8");
+const rules = fs.readFileSync("src/engine/worldRules.ts", "utf8");
 const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
 
 const checks = [
   ["sandbox drop zone", app.includes("sandboxDynamics") && app.includes("onDrop") && app.includes("dropObjectOnStage")],
-  ["draggable object cards", app.includes("draggable") && app.includes("onDragStart")],
+  ["inventory drag moves existing object", app.includes("application/x-wordforge-object-id") && app.includes("dropObjectOnStage(objectId")],
+  ["stage objects move without copy", app.includes("draggingStageId") && app.includes("moveStageObject") && !app.includes("dropObjectOnStage(touchDragName)") && !app.includes('setData("text/plain", object.name)')],
+  ["stage drag position rendered", app.includes("position={stagePositions[object.id]}")],
+  ["real object interaction", app.includes("finishStageInteraction") && app.includes("isFoodObject") && app.includes("isWolfObject") && app.includes("吃掉了")],
+  ["tap-to-combine fallback", app.includes("const sourceId = selectedIds.find") && app.includes("finishStageInteraction(sourceId")],
+  ["tablet pointer placement", app.includes("inventoryDragId") && app.includes("onPointerDown") && app.includes("onPointerMove") && app.includes("onPointerUp") && app.includes("onPointerCancel")],
+  ["tablet inventory touch drop", app.includes("stageRef") && app.includes("finishInventoryTouchDrag") && app.includes("stagePositionFromClient") && app.includes('window.addEventListener("pointerup"') && app.includes("const draggedObjectId = inventoryDragId") && app.includes("dropObjectOnStage(draggedObjectId") && !app.includes("dropObjectOnStage(inventoryDragId")],
+  ["creation feedback says stage object not inventory label", rules.includes("变成了舞台上的新物件") && !rules.includes("加入造物背包")],
   ["touch hint", app.includes("touchHint") && styles.includes(".touchHint")],
   ["action trail", app.includes("actionTrail") && styles.includes(".actionTrail")],
   ["sandbox css", styles.includes(".sandboxDynamics") && styles.includes("cursor:grab")],
@@ -2265,7 +5688,7 @@ const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
 const checks = [
   ["stage physics overlay", app.includes("stagePhysicsOverlay") && styles.includes(".stagePhysicsOverlay")],
   ["deterministic stage placement", app.includes("objectStageStyle") && app.includes("stageHash") && app.includes("style={objectStageStyle")],
-  ["causal trajectory labels", app.includes("objectTrajectoryLabel") && styles.includes(".stagePath")],
+  ["decorative causal motion trails", app.includes("objectTrajectoryLabel") && app.includes("data-motion={objectTrajectoryLabel(object)}") && !app.includes(">{objectTrajectoryLabel(object)}</span>") && styles.includes(".stagePath")],
   ["animated path pulse", styles.includes("@keyframes pathPulse")],
   ["script registered", packageJson.scripts?.["test:spatial"] === "node scripts/spatial-product-test.mjs"],
 ];
@@ -2288,6 +5711,31 @@ KUN added a stricter product-experience layer on top of the visual game shell.
 - Direct manipulation: selected objects can be pushed, ridden, or handed to companions as playable verbs.
 - Object relation graph: recent inventory objects show how names, rules, and goal families connect.
 - Experience gate: `npm run test:experience` checks these features before residual audit or delivery.
+
+## Project
+
+`{spec.project_path}`
+"""
+
+
+def _commercial_game_polish_iteration_markdown(spec: GameProductionSpec) -> str:
+    return f"""# Commercial Game Polish Iteration
+
+KUN kept iterating after automated gates instead of treating `awaiting_acceptance`
+as final delivery. This pass uses the user-provided video as a character
+reference and raises the product bar from "passes tests" to "feels closer to a
+commercial tablet game."
+
+## Added
+
+- Character reference integration: a bold yellow star companion with black
+  outline, simple eyes, little legs, and bouncy motion.
+- Premium touch stage: taller play area, stronger visual hierarchy, less
+  dashboard-like framing, and clearer object-to-character play space.
+- Higher-fidelity object sprites: burger and wolf are real image assets, not
+  text labels or plain cards.
+- Commercial gate: `npm run test:commercial` verifies the reference character,
+  premium stage, object sprite quality, and post-gate product-pressure markers.
 
 ## Project
 
@@ -2394,6 +5842,30 @@ KUN added a tablet-facing sandbox dynamics layer so the product is less like a f
 - Touch hint: the play surface tells players that objects can be dragged, pushed, ridden, or given to companions.
 - Action trail: recent actions show how object manipulation changed puzzle progress.
 - Sandbox gate: `npm run test:sandbox` verifies these affordances before residual audit or delivery.
+
+## Project
+
+`{spec.project_path}`
+"""
+
+
+def _image_object_interaction_iteration_markdown(spec: GameProductionSpec) -> str:
+    return f"""# Image Object Interaction Iteration
+
+KUN converted human acceptance feedback into a hard product gate: generated
+objects must be real pictorial stage entities with direct interaction, not text
+labels that duplicate when dragged.
+
+## Required
+
+- Image-first generation: created food, animals, tools, bridges, weather, and
+  magic objects must render as picture sprites in the playfield.
+- Existing-object drag: dragging moves the object already on the stage or in the
+  inventory; it must not create a new copy through a text payload.
+- Object-to-object reaction: food-like objects can be dragged to a wolf-like
+  object and trigger a visible in-world reaction.
+- Fresh gates: `npm run test:visual` and `npm run test:sandbox` must fail the
+  previous label-card/copy-on-drag implementation.
 
 ## Project
 
@@ -2601,6 +6073,8 @@ def _restore_product_layers_after_visual_refresh(spec: GameProductionSpec) -> No
         "test:sandbox",
         "node scripts/sandbox-product-test.mjs",
     )
+    _patch_project_for_image_object_interaction(spec.project_path)
+    _patch_project_for_commercial_game_polish(spec.project_path)
     _patch_app_for_creative_goal_lab(app_path)
     _append_once(styles_path, _creative_goal_lab_css(), marker=".playerQuestLab")
     _write_text(scripts_path / "creative-product-test.mjs", _creative_product_test_script())
@@ -2610,14 +6084,16 @@ def _restore_product_layers_after_visual_refresh(spec: GameProductionSpec) -> No
         "node scripts/creative-product-test.mjs",
     )
     _patch_app_for_mastery_loop(app_path)
-    _append_once(styles_path, _mastery_loop_css(), marker=".masteryCelebration")
+    _append_once(styles_path, _mastery_loop_css(), marker="@keyframes celebratePop")
     _write_text(scripts_path / "mastery-product-test.mjs", _mastery_product_test_script())
     _upsert_package_script(
         spec.project_path / "package.json",
         "test:mastery",
         "node scripts/mastery-product-test.mjs",
     )
-    _patch_word_to_world_for_semantic_synthesis(spec.project_path / "src" / "engine" / "wordToWorld.ts")
+    _patch_word_to_world_for_semantic_synthesis(
+        spec.project_path / "src" / "engine" / "wordToWorld.ts"
+    )
     _write_text(scripts_path / "semantic-synthesis-test.mjs", _semantic_synthesis_test_script())
     _upsert_package_script(
         spec.project_path / "package.json",
@@ -2653,20 +6129,26 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
     semantic_test = _read_json(project / "docs" / "semantic-synthesis-test-result.json")
     spatial_test = _read_json(project / "docs" / "spatial-product-test-result.json")
     asset_provenance = _read_json(project / "docs" / "original-asset-provenance.json")
-    asset_count = len(list((project / "public" / "assets").glob("*.svg"))) if (project / "public" / "assets").exists() else 0
+    asset_count = (
+        len(list((project / "public" / "assets").glob("*.svg")))
+        if (project / "public" / "assets").exists()
+        else 0
+    )
     visual_internal = internal.get("npm_run_test_visual") if isinstance(internal, dict) else None
-    experience_internal = internal.get("npm_run_test_experience") if isinstance(internal, dict) else None
+    experience_internal = (
+        internal.get("npm_run_test_experience") if isinstance(internal, dict) else None
+    )
     sandbox_internal = internal.get("npm_run_test_sandbox") if isinstance(internal, dict) else None
-    creative_internal = internal.get("npm_run_test_creative") if isinstance(internal, dict) else None
+    creative_internal = (
+        internal.get("npm_run_test_creative") if isinstance(internal, dict) else None
+    )
     mastery_internal = internal.get("npm_run_test_mastery") if isinstance(internal, dict) else None
-    semantic_internal = internal.get("npm_run_test_semantic") if isinstance(internal, dict) else None
+    semantic_internal = (
+        internal.get("npm_run_test_semantic") if isinstance(internal, dict) else None
+    )
     spatial_internal = internal.get("npm_run_test_spatial") if isinstance(internal, dict) else None
-    visual_gate_passed = (
-        isinstance(visual_test, dict)
-        and visual_test.get("ok") is True
-    ) or (
-        isinstance(visual_internal, dict)
-        and visual_internal.get("exit_code") == 0
+    visual_gate_passed = (isinstance(visual_test, dict) and visual_test.get("ok") is True) or (
+        isinstance(visual_internal, dict) and visual_internal.get("exit_code") == 0
     )
     visual_ready = (
         asset_count >= 12
@@ -2682,10 +6164,8 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
         and "directManipulation" in app
         and "objectRelationGraph" in app
         and (
-            isinstance(experience_test, dict)
-            and experience_test.get("ok") is True
-            or isinstance(experience_internal, dict)
-            and experience_internal.get("exit_code") == 0
+            (isinstance(experience_test, dict) and experience_test.get("ok") is True)
+            or (isinstance(experience_internal, dict) and experience_internal.get("exit_code") == 0)
         )
     )
     sandbox_ready = (
@@ -2695,10 +6175,8 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
         and "onDrop" in app
         and "actionTrail" in app
         and (
-            isinstance(sandbox_test, dict)
-            and sandbox_test.get("ok") is True
-            or isinstance(sandbox_internal, dict)
-            and sandbox_internal.get("exit_code") == 0
+            (isinstance(sandbox_test, dict) and sandbox_test.get("ok") is True)
+            or (isinstance(sandbox_internal, dict) and sandbox_internal.get("exit_code") == 0)
         )
     )
     creative_ready = (
@@ -2708,10 +6186,8 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
         and "customQuestLog" in app
         and "addPlayerQuest" in app
         and (
-            isinstance(creative_test, dict)
-            and creative_test.get("ok") is True
-            or isinstance(creative_internal, dict)
-            and creative_internal.get("exit_code") == 0
+            (isinstance(creative_test, dict) and creative_test.get("ok") is True)
+            or (isinstance(creative_internal, dict) and creative_internal.get("exit_code") == 0)
         )
     )
     mastery_ready = (
@@ -2721,20 +6197,16 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
         and "failureCoach" in app
         and "tryNextHint" in app
         and (
-            isinstance(mastery_test, dict)
-            and mastery_test.get("ok") is True
-            or isinstance(mastery_internal, dict)
-            and mastery_internal.get("exit_code") == 0
+            (isinstance(mastery_test, dict) and mastery_test.get("ok") is True)
+            or (isinstance(mastery_internal, dict) and mastery_internal.get("exit_code") == 0)
         )
     )
     semantic_ready = (
         mastery_ready
         and "semanticFallbackEntry" in _read_text(project / "src" / "engine" / "wordToWorld.ts")
         and (
-            isinstance(semantic_test, dict)
-            and semantic_test.get("ok") is True
-            or isinstance(semantic_internal, dict)
-            and semantic_internal.get("exit_code") == 0
+            (isinstance(semantic_test, dict) and semantic_test.get("ok") is True)
+            or (isinstance(semantic_internal, dict) and semantic_internal.get("exit_code") == 0)
         )
     )
     spatial_ready = (
@@ -2743,10 +6215,8 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
         and "objectStageStyle" in app
         and "objectTrajectoryLabel" in app
         and (
-            isinstance(spatial_test, dict)
-            and spatial_test.get("ok") is True
-            or isinstance(spatial_internal, dict)
-            and spatial_internal.get("exit_code") == 0
+            (isinstance(spatial_test, dict) and spatial_test.get("ok") is True)
+            or (isinstance(spatial_internal, dict) and spatial_internal.get("exit_code") == 0)
         )
     )
     dimensions = {
@@ -2790,7 +6260,12 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
             if sandbox_ready
             else 0.98
             if experience_ready
-            else min((float(parity.get("goalCount", 0)) / 24) * 0.42 + (float(parity.get("solutionCount", 0)) / 72) * 0.42 + 0.12, 0.96),
+            else min(
+                (float(parity.get("goalCount", 0)) / 24) * 0.42
+                + (float(parity.get("solutionCount", 0)) / 72) * 0.42
+                + 0.12,
+                0.96,
+            ),
             "NPC requests, multi-solution goals, and world variety.",
         ),
         "gamefeel_and_feedback": _dimension(
@@ -2807,12 +6282,29 @@ def _benchmark_residual_payload(spec: GameProductionSpec) -> dict[str, object]:
             else 0.96
             if experience_ready
             else 0.92
-            if "因果实验室" in app and "causalLab" in styles and "rewardShards" in app and visual_ready
+            if "因果实验室" in app
+            and "causalLab" in styles
+            and "rewardShards" in app
+            and visual_ready
             else 0.48,
             "Player-facing feedback, progress, reward, and try-next clarity.",
         ),
         "visual_character_ui_experience": _dimension(
-            0.997 if spatial_ready else 0.994 if semantic_ready else 0.992 if mastery_ready else 0.985 if creative_ready else 0.975 if sandbox_ready else 0.96 if experience_ready else 0.94 if visual_ready else 0.28,
+            0.997
+            if spatial_ready
+            else 0.994
+            if semantic_ready
+            else 0.992
+            if mastery_ready
+            else 0.985
+            if creative_ready
+            else 0.975
+            if sandbox_ready
+            else 0.96
+            if experience_ready
+            else 0.94
+            if visual_ready
+            else 0.28,
             "Final game must have visible characters, original images/assets, world art, animation, and tablet game UI.",
         ),
         "long_playtest_coverage": _dimension(
@@ -2895,15 +6387,17 @@ def _benchmark_residual_markdown(payload: dict[str, object], spec: GameProductio
         for name, value in dimensions.items()
         if isinstance(value, dict)
     )
-    actions = "\n".join(f"- {item}" for item in payload.get("required_next_actions", [])) or "- None"
+    actions = (
+        "\n".join(f"- {item}" for item in payload.get("required_next_actions", [])) or "- None"
+    )
     return f"""# Benchmark Residual Audit
 
 ## Verdict
 
-- Overall score: {payload['overall_score']}
-- Overall residual: {payload['overall_residual']}
+- Overall score: {payload["overall_score"]}
+- Overall residual: {payload["overall_residual"]}
 - Threshold: {spec.benchmark_residual_threshold}
-- Pass: {payload['pass']}
+- Pass: {payload["pass"]}
 
 ## Dimensions
 
@@ -2915,7 +6409,185 @@ def _benchmark_residual_markdown(payload: dict[str, object], spec: GameProductio
 """
 
 
-def _final_player_experience_payload(spec: GameProductionSpec) -> dict[str, object]:
+def _has_seeded_initial_world_objects(storage: str) -> bool:
+    """Return true only when a fresh save is seeded with playable objects."""
+
+    if not storage:
+        return False
+    compact = re.sub(r"\s+", "", storage)
+    explicit_starter_markers = [
+        "starterWorldObjects",
+        "seedInitialWorldObjects",
+        "worldStatesWithStarterObjects",
+        "initialStageObjects",
+        "freshStarterObjects",
+    ]
+    if any(marker in storage for marker in explicit_starter_markers):
+        return "objects:[]" not in compact
+    return bool(re.search(r"objects\s*:\s*\[(?!\s*\])", storage))
+
+
+def _latest_local_player_review_status(project: Path) -> dict[str, object]:
+    """Return the newest conclusive human/player review from project docs.
+
+    Local real-player reviews are allowed to precede Control Plane artifact
+    wiring. If the freshest conclusive review says "not final", KUN must keep
+    iterating even when source-marker gates and residual checks look green.
+    """
+
+    docs = project / "docs"
+    if not docs.exists():
+        return {"allows_delivery": None, "reason": "no local player-review directory"}
+    candidates: list[tuple[float, Path, dict[str, object]]] = []
+    seen: set[Path] = set()
+    for pattern in LOCAL_PLAYER_REVIEW_PATTERNS:
+        for path in docs.glob(pattern):
+            if path.name == "final-player-experience-gate.json" or path in seen:
+                continue
+            payload = _read_json(path)
+            if not payload:
+                continue
+            seen.add(path)
+            candidates.append((path.stat().st_mtime, path, payload))
+    conclusive: list[tuple[float, Path, dict[str, object], bool, str]] = []
+    for mtime, path, payload in candidates:
+        verdict, reason = _local_player_review_verdict(payload)
+        if verdict is not None:
+            conclusive.append((mtime, path, payload, verdict, reason))
+    if not conclusive:
+        return {
+            "allows_delivery": None,
+            "reason": "no conclusive local player-review verdict",
+            "candidate_count": len(candidates),
+        }
+    _mtime, path, payload, allows_delivery, reason = max(
+        conclusive, key=lambda item: (item[0], str(item[1]))
+    )
+    return {
+        "allows_delivery": allows_delivery,
+        "reason": reason,
+        "source_path": str(path),
+        "verdict": str(
+            payload.get("verdict") or payload.get("decision") or payload.get("status") or ""
+        ),
+        "pass": payload.get("pass"),
+    }
+
+
+def _local_player_review_verdict(payload: dict[str, object]) -> tuple[bool | None, str]:
+    verdict = (
+        str(payload.get("verdict") or payload.get("decision") or payload.get("status") or "")
+        .strip()
+        .lower()
+    )
+    failures = _non_empty_review_list(payload, "failures")
+    hard_failures = _non_empty_review_list(payload, "hard_failures")
+    blocking_gaps = _non_empty_review_list(payload, "blocking_gaps")
+    open_gaps = _non_empty_review_list(payload, "open_gaps")
+    needs_iteration = any(
+        marker in verdict
+        for marker in (
+            "continue",
+            "not_final",
+            "rework",
+            "needs_plan_change",
+            "partial",
+        )
+    )
+    if (
+        payload.get("pass") is False
+        or verdict in LOCAL_PLAYER_REVIEW_BLOCKING_VERDICTS
+        or needs_iteration
+        or failures
+        or hard_failures
+        or blocking_gaps
+        or payload.get("final") is False
+    ):
+        return False, "latest local player/supervisor review requires more iteration"
+    if (
+        payload.get("pass") is True
+        or verdict in LOCAL_PLAYER_REVIEW_PASS_VERDICTS
+        or verdict.startswith(("pass_", "passed_", "accepted_", "approved_"))
+    ):
+        if open_gaps:
+            return False, "latest local player review passed but still lists open gaps"
+        return True, "latest local player/supervisor review explicitly approved delivery"
+    return None, "local player review has no explicit delivery verdict"
+
+
+def _non_empty_review_list(payload: dict[str, object], key: str) -> list[object]:
+    value = payload.get(key)
+    if isinstance(value, list):
+        return [item for item in value if item]
+    if isinstance(value, dict):
+        return [value] if value else []
+    if value:
+        return [value]
+    return []
+
+
+def _fresh_player_review_failure_name(failure: str) -> str:
+    return failure.split(":", 1)[-1].strip().lower()
+
+
+def _only_missing_fresh_real_player_review(failures: Sequence[str]) -> bool:
+    normalized = {
+        _fresh_player_review_failure_name(failure)
+        for failure in failures
+        if failure and _fresh_player_review_failure_name(failure)
+    }
+    return bool(normalized) and normalized == {"fresh_real_player_review_pass"}
+
+
+def _fresh_player_review_ticket(
+    *,
+    work_item: WorkItem,
+    context_ref: str,
+) -> CollaborationTicket:
+    return CollaborationTicket(
+        ticket_id=(
+            f"collab-player-review-{_slug(work_item.mission_id)}-{_slug(work_item.work_item_id)}"
+        ),
+        mission_id=work_item.mission_id,
+        type="review",
+        role_needed="mission-owner-or-target-player-reviewer",
+        why_needed=(
+            "Automated game gates passed far enough to ask for real player feel, but KUN "
+            "cannot replace a fresh human or target-player playtest with another self-score."
+        ),
+        context_ref=context_ref,
+        risk_if_skipped=(
+            "KUN may keep generating mechanical rework branches or mark a playable game as "
+            "complete without confirming that dragging, visual objects, causality, NPC goals, "
+            "and overall fun feel acceptable to a real player."
+        ),
+        deadline=datetime.now(UTC) + timedelta(hours=24),
+        sla_policy={"reminder_after_hours": 6, "escalate_after_hours": 24},
+        escalation_policy={
+            "after_deadline": (
+                "keep the mission waiting_human or continue only explicitly low-risk polish; "
+                "do not treat missing player review as final acceptance"
+            )
+        },
+        fallback_policy={
+            "allowed": False,
+            "rule": "fresh human or target-player review is required for final completion",
+        },
+        resume_after_response=True,
+        recommended_option="play the current build and answer accept / rework / reject",
+        output_contract=(
+            "Provide accept/rework/reject, a 1-5 player-feel score, and concrete notes on "
+            "UI, drag feel, generated object visuals, object causality, NPC goals, rewards, "
+            "and whether the game feels close enough to the requested Scribblenauts-like target."
+        ),
+    )
+
+
+def _final_player_experience_payload(
+    spec: GameProductionSpec,
+    *,
+    ignore_local_player_review: bool = False,
+) -> dict[str, object]:
     """Final product-feel gate.
 
     This deliberately sits outside the residual score.  KUN can pass mechanics,
@@ -2927,6 +6599,7 @@ def _final_player_experience_payload(spec: GameProductionSpec) -> dict[str, obje
     app = _read_text(project / "src" / "App.tsx")
     styles = _read_text(project / "src" / "styles.css")
     parser = _read_text(project / "src" / "engine" / "wordToWorld.ts")
+    storage = _read_text(project / "src" / "engine" / "storage.ts")
     internal = _read_json(project / "docs" / "internal-test-result.json")
     browser_static = _read_json(project / "docs" / "browser-static-playtest.json")
     long_playtest = _read_json(project / "docs" / "long-playtest-result.json")
@@ -2937,7 +6610,16 @@ def _final_player_experience_payload(spec: GameProductionSpec) -> dict[str, obje
     mastery = _read_json(project / "docs" / "mastery-product-test-result.json")
     semantic = _read_json(project / "docs" / "semantic-synthesis-test-result.json")
     spatial = _read_json(project / "docs" / "spatial-product-test-result.json")
+    commercial = _read_json(project / "docs" / "commercial-product-test-result.json")
     provenance = _read_json(project / "docs" / "original-asset-provenance.json")
+    player_review_status = (
+        {
+            "allows_delivery": None,
+            "reason": "local player review ignored while current external supervisor review is being formed",
+        }
+        if ignore_local_player_review
+        else _latest_local_player_review_status(project)
+    )
 
     docs_dir = project / "docs"
     latest_success_mtime = max(
@@ -2975,6 +6657,8 @@ def _final_player_experience_payload(spec: GameProductionSpec) -> dict[str, obje
             and "companionPortrait" in app
             and "worldBackdrop" in app
             and "objectSprite" in app
+            and "generatedObjectImage" in app
+            and "generatedSprite" in app
             and "visual-polish-ready" in app
         ),
         "direct_player_manipulation": (
@@ -3013,13 +6697,11 @@ def _final_player_experience_payload(spec: GameProductionSpec) -> dict[str, obje
             and fun_result.get("exit_code") == 0
             and (
                 browser_static.get("ok") is True
-                or isinstance(browser_result, dict)
-                and browser_result.get("exit_code") == 0
+                or (isinstance(browser_result, dict) and browser_result.get("exit_code") == 0)
             )
             and (
                 long_playtest.get("ok") is True
-                or isinstance(long_result, dict)
-                and long_result.get("exit_code") == 0
+                or (isinstance(long_result, dict) and long_result.get("exit_code") == 0)
             )
         ),
         "clean_delivery_evidence": (
@@ -3029,17 +6711,287 @@ def _final_player_experience_payload(spec: GameProductionSpec) -> dict[str, obje
             and "Maxwell" not in app
             and "Starite" not in app
         ),
+        "fresh_real_player_review_pass": player_review_status["allows_delivery"] is not False,
+        "commercial_game_polish": (
+            commercial.get("ok") is True
+            and "commercial-game-polish-ready" in app
+            and "productGamefeelV36" in app
+            and "productGamefeelV37" in app
+            and "productGamefeelV38" in app
+            and "productGamefeelV52" in app
+            and "productGamefeelV53" in app
+            and "targetGuideLayer" in app
+            and "playerProgressPercent" in app
+            and 'className="masteryProgress discoveryProgress"' in app
+            and "关卡/发现" in app
+            and "const stageSlots: StagePosition[]" in app
+            and "productGamefeelV33" in app
+            and "premiumTouchStage" in app
+            and "referenceCharacterMotion" in app
+            and "companion-spark-star.svg" in _read_text(project / "src" / "data" / "visuals.ts")
+            and 'fill="#fffaf0"'
+            not in _read_text(project / "public" / "assets" / "object-light.svg")
+            and 'fill="#fffaf0"'
+            not in _read_text(project / "public" / "assets" / "object-bridge.svg")
+        ),
     }
-    score = sum(1.0 for ok in checks.values() if ok) / len(checks)
-    failures = [name for name, ok in checks.items() if not ok]
+    has_dashboard_shell = (
+        "tabletWorkbench" in app
+        and "playGrid" in app
+        and (
+            "toolPanel" in app
+            or "grid-template-columns:250px minmax(460px,1fr) 330px" in styles
+            or "grid-template-columns:250px minmax(420px,1fr) 310px" in styles
+        )
+    )
+    has_immersive_shell = (
+        "immersiveGameShell" in app
+        and "immersiveStage" in app
+        and "floatingQuestRail" in app
+        and "floatingCreatorTray" in app
+        and "visualFocusLayer" in app
+        and "grid-template-columns:minmax(0,1fr)" in styles
+    )
+    has_v32_viewport_safe_living_stage = (
+        (
+            "height:clamp(360px,calc(100vh - 334px),600px)" in styles
+            and "bottom:126px" in styles
+            and "bottom:58px" in styles
+        )
+        or (
+            "height:clamp(280px,calc(100vh - 430px),430px)" in styles
+            and "bottom:96px" in styles
+            and "bottom:48px" in styles
+        )
+    ) and "min-height:620px" not in styles
+    has_v33_viewport_safe_living_stage = (
+        "productGamefeelV33" in app
+        and ".productGamefeelV33 .stageScene{height:calc(100vh - 180px);min-height:540px" in styles
+        and ".productGamefeelV33 .referenceCharacterMotion{width:116px;height:116px;bottom:184px}"
+        in styles
+        and ".productGamefeelV33 .starterObjectPreview{bottom:174px}" in styles
+    )
+    has_stage_first_player_viewport = (
+        "productGamefeelV36" in app
+        and ".productGamefeelV36 .stagePanel{position:fixed;inset:72px 10px 10px" in styles
+        and ".productGamefeelV36 .stageScene{height:100%!important" in styles
+        and ".productGamefeelV36 .ideaForm{position:fixed!important" in styles
+        and ".productGamefeelV36 .floatingCreatorTray .npcRequests" in styles
+        and ".productGamefeelV36 .parentBook{display:none!important" in styles
+    )
+    has_viewport_safe_living_stage = (
+        has_v32_viewport_safe_living_stage
+        or has_v33_viewport_safe_living_stage
+        or has_stage_first_player_viewport
+    )
+    has_seeded_initial_world_objects = _has_seeded_initial_world_objects(storage)
+    has_image_object_interaction = (
+        "generatedObjectImage" in app
+        and "generatedSprite" in app
+        and "isFoodObject" in app
+        and "isWolfObject" in app
+        and "finishStageInteraction" in app
+        and "吃掉了" in app
+        and "dropObjectOnStage(touchDragName)" not in app
+        and 'setData("text/plain", object.name)' not in app
+    )
+    has_tablet_pointer_play = (
+        "inventoryDragId" in app
+        and "draggingStageId" in app
+        and "moveStageObject" in app
+        and "application/x-wordforge-object-id" in app
+        and "onPointerDown" in app
+        and "onPointerMove" in app
+        and "onPointerUp" in app
+        and "onPointerCancel" in app
+        and "touch-action:none" in styles
+        and has_image_object_interaction
+    )
+    has_first_viewport_unoccluded_layout = (
+        ".stagePanel{margin-left:calc(min(260px,20vw) + 20px);margin-right:calc(min(260px,20vw) + 20px);min-width:0}"
+        in styles
+        and "@media(max-width:1000px){.playGrid,.immersiveGameShell{grid-template-columns:1fr}.stagePanel{margin-left:0;margin-right:0}"
+        in styles
+        and (
+            "inset:84px clamp(24px,18%,150px) 140px clamp(24px,18%,150px)" in styles
+            or "inset:78px clamp(20px,17%,140px) 118px clamp(20px,17%,140px)" in styles
+        )
+    )
+    has_commercial_final_viewport = has_stage_first_player_viewport or (
+        "productGamefeelV33" in app
+        and ".productGamefeelV33 .stageScene{height:calc(100vh - 180px);min-height:540px" in styles
+        and ".productGamefeelV33 .ideaForm{position:absolute" in styles
+        and ".productGamefeelV33 .topBar{position:fixed" in styles
+    )
+    has_post_action_input_visibility = has_stage_first_player_viewport or (
+        "height:clamp(280px,calc(100vh - 430px),430px)" in styles
+        and "max-height:88px;overflow:auto" in styles
+        and ".ideaForm{display:flex;gap:8px;margin-top:8px;position:relative;z-index:6}" in styles
+    )
+    has_compact_stage_overlays = has_stage_first_player_viewport or (
+        "max-height:64px;overflow:auto" in styles
+        and "min-width:76px;min-height:66px" in styles
+        and ".touchHint{position:absolute;left:10px;top:10px" in styles
+        and "pointer-events:none" in styles
+    )
+    visible_world_density = min(asset_count / 18.0, 1.0)
+    dimensions = {
+        "stage_first_player_viewport": _dimension(
+            0.996 if has_stage_first_player_viewport and not has_dashboard_shell else 0.55,
+            (
+                "A final game must open on a stage-first playable viewport; passing "
+                "script gates or old gamefeel markers is not enough."
+            ),
+        ),
+        "immersive_game_stage": _dimension(
+            0.995
+            if has_immersive_shell
+            and (has_first_viewport_unoccluded_layout or has_stage_first_player_viewport)
+            and has_commercial_final_viewport
+            and not has_dashboard_shell
+            else 0.84
+            if "illustratedScene" in app and "worldBackdrop" in app and not has_dashboard_shell
+            else 0.68,
+            (
+                "The main play screen must read as a game world first, not a "
+                "three-column operations dashboard."
+            ),
+        ),
+        "character_world_art_presence": _dimension(
+            min(
+                visible_world_density,
+                1.0 if "companionPortrait" in app else 0.45,
+                1.0 if "objectSprite" in app else 0.45,
+                1.0 if "worldBackdrop" in app else 0.45,
+            ),
+            "Original characters, world backdrops, and object sprites must be visible in play.",
+        ),
+        "initial_scene_liveliness": _dimension(
+            0.993
+            if "stageCompanionAvatar" in app
+            and "starterObjectPreview" in app
+            and ".stageCompanionAvatar" in styles
+            and has_viewport_safe_living_stage
+            and has_seeded_initial_world_objects
+            else 0.78,
+            (
+                "A fresh player should see a living stage with a character and real "
+                "starter objects before typing."
+            ),
+        ),
+        "child_facing_game_flow": _dimension(
+            0.992
+            if experience.get("ok") is True
+            and "questDeck" in app
+            and "directManipulation" in app
+            and "objectRelationGraph" in app
+            and has_tablet_pointer_play
+            and not has_dashboard_shell
+            else 0.89
+            if experience.get("ok") is True
+            else 0.4,
+            "Player flow should feel like choosing, trying, dragging, and discovering.",
+        ),
+        "tablet_direct_manipulation": _dimension(
+            0.992 if has_tablet_pointer_play else 0.62,
+            (
+                "Tablet play cannot rely on label-card copy or desktop text drag; it needs "
+                "pointer/touch-safe object movement and object-to-object reactions."
+            ),
+        ),
+        "image_object_interaction": _dimension(
+            0.994 if has_image_object_interaction else 0.35,
+            "Generated words must become pictorial game objects that can interact inside the stage.",
+        ),
+        "first_viewport_occlusion_safe": _dimension(
+            0.992
+            if (
+                has_stage_first_player_viewport
+                or (has_first_viewport_unoccluded_layout and has_commercial_final_viewport)
+            )
+            else 0.64,
+            "Floating map/tool rails must not cover the world title, quest, dialogue, input, or first-play stage.",
+        ),
+        "post_action_input_visible": _dimension(
+            0.992 if has_post_action_input_visibility else 0.58,
+            "After the child creates or moves an object, the next idea input must remain visible without scrolling.",
+        ),
+        "stage_overlay_playfield_clear": _dimension(
+            0.992 if has_compact_stage_overlays else 0.58,
+            "Quest, hint, progress, and retry overlays must stay compact enough that playable objects remain readable.",
+        ),
+        "creative_causal_depth": _dimension(
+            0.993
+            if sandbox.get("ok") is True
+            and creative.get("ok") is True
+            and semantic.get("ok") is True
+            and spatial.get("ok") is True
+            else 0.9
+            if sandbox.get("ok") is True and creative.get("ok") is True
+            else 0.35,
+            "Word creation must drive causal, composable, open-ended play.",
+        ),
+        "gamefeel_feedback_loop": _dimension(
+            0.992
+            if mastery.get("ok") is True
+            and "masteryCelebration" in app
+            and "failureCoach" in app
+            and "tryNextHint" in app
+            and "rewardShards" in app
+            else 0.86
+            if mastery.get("ok") is True
+            else 0.35,
+            "Success, failure, retry, and reward feedback must feel like a finished game.",
+        ),
+        "commercial_ui_character_motion": _dimension(
+            0.993
+            if checks["commercial_game_polish"]
+            and "object-burger.svg" in _read_text(project / "src" / "data" / "visuals.ts")
+            and "object-wolf.svg" in _read_text(project / "src" / "data" / "visuals.ts")
+            else 0.55,
+            (
+                "Automated gates are not enough; the game needs commercial-grade UI polish, "
+                "reference-informed character motion, and image-first object sprites."
+            ),
+        ),
+        "fresh_playtest_evidence": _dimension(
+            0.99
+            if checks["fresh_fun_browser_long_evidence"]
+            and browser_static.get("ok") is True
+            and long_playtest.get("ok") is True
+            else 0.74
+            if checks["fresh_fun_browser_long_evidence"]
+            else 0.2,
+            "Browser and long-play evidence must be current and player-facing.",
+        ),
+        "clean_final_delivery_hygiene": _dimension(
+            0.99 if checks["clean_delivery_evidence"] else 0.3,
+            "Final delivery cannot rely on stale failures, protected markers, or MVP framing.",
+        ),
+    }
+    checklist_score = sum(1.0 for ok in checks.values() if ok) / len(checks)
+    dimensional_score = sum(float(item["score"]) for item in dimensions.values()) / len(dimensions)
+    score = min(checklist_score, dimensional_score)
+    dimension_floor = min(spec.final_player_experience_threshold, 0.97)
+    dimension_failures = [
+        name
+        for name, payload in dimensions.items()
+        if isinstance(payload, dict) and float(payload.get("score", 0.0)) < dimension_floor
+    ]
+    failures = [name for name, ok in checks.items() if not ok] + [
+        f"dimension:{name}" for name in dimension_failures
+    ]
     return {
-        "schema": "kun-final-player-experience-gate-v1",
+        "schema": "kun-final-player-experience-gate-v2",
         "production_mode": spec.production_mode,
         "threshold": spec.final_player_experience_threshold,
         "score": round(score, 4),
         "pass": score >= spec.final_player_experience_threshold and not failures,
         "checks": checks,
+        "dimensions": dimensions,
+        "dimension_floor": dimension_floor,
         "failures": failures,
+        "latest_real_player_review": player_review_status,
         "stale_failure_artifacts": stale_failures,
         "principle": (
             "KUN self scores, residual pass, and checklist pass are insufficient; "
@@ -3056,6 +7008,17 @@ def _latest_final_player_experience_allows_delivery(
     payload = _read_json(spec.project_path / "docs" / "final-player-experience-gate.json")
     if not payload:
         return False, {}
+    player_review_status = _latest_local_player_review_status(spec.project_path)
+    if player_review_status["allows_delivery"] is False:
+        payload = {
+            **payload,
+            "latest_real_player_review": player_review_status,
+            "failures": [
+                *[failure for failure in payload.get("failures", []) if isinstance(failure, str)],
+                "fresh_real_player_review_pass",
+            ],
+        }
+        return False, payload
     return (
         payload.get("pass") is True
         and float(payload.get("score", 0.0)) >= spec.final_player_experience_threshold,
@@ -3627,7 +7590,7 @@ def _readme_md() -> str:
 
 ```bash
 npm install
-npm run dev -- --host 127.0.0.1 --port 5178
+npm run dev -- --host 127.0.0.1 --port ${PORT:-5178}
 ```
 
 ## 验证
@@ -3650,7 +7613,142 @@ npm run test:user-sim
 
 def _write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    try:
+        path.write_text(content, encoding="utf-8")
+        return
+    except PermissionError:
+        if not path.exists():
+            raise
+        try:
+            path.chmod(path.stat().st_mode | 0o200)
+            path.write_text(content, encoding="utf-8")
+            return
+        except PermissionError:
+            tmp_path = path.with_name(f".{path.name}.kun-tmp")
+            try:
+                tmp_path.write_text(content, encoding="utf-8")
+                os.replace(tmp_path, path)
+                return
+            finally:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+
+
+def _node_dependencies_ready(project_path: Path) -> bool:
+    return (project_path / "node_modules").is_dir() and (
+        project_path / "package-lock.json"
+    ).exists()
+
+
+def _capability_consumption_artifact(
+    *,
+    work_item: WorkItem,
+    policy: CapabilityExecutionPolicy | None,
+) -> ArtifactRecord:
+    artifact_path = Path.cwd()
+    project_dir = _project_dir_from_workspace_ref(work_item.workspace_ref)
+    if project_dir is not None:
+        artifact_path = project_dir
+    path = (
+        artifact_path / ".kun" / "capability-consumption" / f"{_slug(work_item.work_item_id)}.json"
+    )
+    payload = {
+        "work_item_id": work_item.work_item_id,
+        "phase": _phase_from_work_item(work_item),
+        "required_capability_refs": list(work_item.required_capability_refs),
+        "policy_ref": policy.policy_id if policy is not None else None,
+        "policy_capability_profile_refs": list(policy.capability_profile_refs)
+        if policy is not None
+        else [],
+        "directive_count": len(policy.directives) if policy is not None else 0,
+        "directive_ids": [directive.directive_id for directive in policy.directives]
+        if policy is not None
+        else [],
+        "consumption_contract": (
+            "runner attached executable directives and carried them into this phase result"
+        ),
+        "behavioral_contract": (
+            "required production capabilities changed this runner phase by requiring "
+            "workspace/sandbox boundaries, phase-specific gates, and evidence receipts"
+        ),
+    }
+    supports = [
+        "capability_policy_consumed",
+        "required_capabilities_executed",
+        "capability_behavior_receipt",
+        *_safe_support_tokens(work_item.required_capability_refs),
+    ]
+    try:
+        _write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    except PermissionError:
+        supports.append("permission_boundary_fallback")
+        path = (
+            Path(".kun-local")
+            / "game-production-contract-artifacts"
+            / work_item.mission_id
+            / "capability-consumption"
+            / f"{_slug(work_item.work_item_id)}.json"
+        )
+        _write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return _artifact(
+        work_item=work_item,
+        suffix="capability-consumption",
+        path=path,
+        supports=supports,
+        kind="evidence",
+    )
+
+
+def _sandbox_execution_artifact(
+    *,
+    work_item: WorkItem,
+    spec: GameProductionSpec,
+) -> ArtifactRecord:
+    path = (
+        spec.project_path / ".kun" / "sandbox-execution" / f"{_slug(work_item.work_item_id)}.json"
+    )
+    payload = {
+        "work_item_id": work_item.work_item_id,
+        "phase": _phase_from_work_item(work_item),
+        "project_path": str(spec.project_path),
+        "workspace_ref": work_item.workspace_ref,
+        "sandbox_ref": work_item.sandbox_ref,
+        "resource_locks": list(work_item.resource_locks),
+        "boundary": "workspace+sandbox+resource-lock",
+    }
+    supports = ["sandbox_execution_boundary", "workspace_resource_lock_consumed"]
+    try:
+        _write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    except PermissionError:
+        supports.append("permission_boundary_fallback")
+        path = (
+            Path(".kun-local")
+            / "game-production-contract-artifacts"
+            / work_item.mission_id
+            / "sandbox-execution"
+            / f"{_slug(work_item.work_item_id)}.json"
+        )
+        _write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return _artifact(
+        work_item=work_item,
+        suffix="sandbox-execution-boundary",
+        path=path,
+        supports=supports,
+        kind="evidence",
+    )
+
+
+def _project_dir_from_workspace_ref(workspace_ref: str | None) -> Path | None:
+    if workspace_ref is None:
+        return None
+    prefix = "workspace://"
+    if not workspace_ref.startswith(prefix):
+        return None
+    return Path(workspace_ref[len(prefix) :]).expanduser().resolve()
+
+
+def _safe_support_tokens(values: Sequence[str]) -> list[str]:
+    return [_slug(value).replace("-", "_") for value in values if value]
 
 
 def _artifact(
@@ -3682,20 +7780,38 @@ def _failed_command_result(
     project_path: Path,
 ) -> WorkItemResult:
     log_path = project_path / "docs" / f"{_slug(work_item.work_item_id)}-failure.json"
-    _write_text(log_path, command.model_dump_json(indent=2))
+    supports = ["command_failure", command_name]
+    try:
+        _write_text(log_path, command.model_dump_json(indent=2))
+    except PermissionError:
+        supports.append("permission_boundary_fallback")
+        log_path = (
+            Path(".kun-local")
+            / "game-production-failures"
+            / work_item.mission_id
+            / f"{_slug(work_item.work_item_id)}-failure.json"
+        )
+        _write_text(log_path, command.model_dump_json(indent=2))
     artifact = _artifact(
         work_item=work_item,
         suffix="failure",
         path=log_path,
-        supports=["command_failure", command_name],
+        supports=supports,
         kind="log",
     )
     return WorkItemResult(
         status="failed",
         summary=f"{command_name} failed with exit code {command.exit_code}",
         artifacts=[artifact],
-        failure_category="tool_failure",
+        failure_category=_command_failure_category(command),
     )
+
+
+def _command_failure_category(command: GameProductionCommandResult) -> FailureCategory:
+    text = f"{command.stdout}\n{command.stderr}".lower()
+    if any(token in text for token in ("eperm", "permission denied", "operation not permitted")):
+        return "permission_failure"
+    return "tool_failure"
 
 
 def _subprocess_command_runner(

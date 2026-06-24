@@ -15,15 +15,35 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import yaml
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from kun.context.assets import AssetKind, LayeredAsset
 from kun.context.storage import AssetStore, get_store
 from kun.core.logging import get_logger
 
 log = get_logger("kun.context.seeds")
+
+
+class ContextSeedRow(BaseModel):
+    """Validated shape for a single row in seeds/context_assets.yaml."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str
+    summary: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+
+    @field_validator("kind")
+    @classmethod
+    def _check_kind(cls, v: str) -> str:
+        allowed = set(get_args(AssetKind))
+        if v not in allowed:
+            raise ValueError(f"unknown asset kind {v!r}; allowed: {sorted(allowed)}")
+        return v
 
 
 _DEFAULT_SEED_PATH = Path(__file__).resolve().parents[2] / "seeds" / "context_assets.yaml"
@@ -45,18 +65,17 @@ def _load_yaml(path: Path) -> list[dict[str, Any]]:
 
 def _row_to_asset(row: dict[str, Any], tenant_id: str) -> LayeredAsset | None:
     try:
-        kind: AssetKind = row["kind"]
-        summary = str(row.get("summary") or "").strip()
-        return LayeredAsset.build(
-            asset_kind=kind,
-            tenant_id=tenant_id,
-            metadata=row.get("metadata") or {},
-            summary=summary,
-            tags=list(row.get("tags") or []),
-        )
-    except (KeyError, TypeError) as e:
+        seed = ContextSeedRow.model_validate(row)
+    except Exception as e:
         log.warning("context.seeds.row_invalid", error=str(e), row=row)
         return None
+    return LayeredAsset.build(
+        asset_kind=seed.kind,  # type: ignore[arg-type]  # validator already constrained to AssetKind
+        tenant_id=tenant_id,
+        metadata=seed.metadata,
+        summary=seed.summary.strip(),
+        tags=seed.tags,
+    )
 
 
 async def seed_default(

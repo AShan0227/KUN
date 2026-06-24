@@ -15,6 +15,18 @@ Implementation shape:
     consumed and dropped — the final agent text is returned in the
     ``tools/call`` response's ``structuredContent.content``
 
+**Pure-LLM mode (LT.CODEX-PURE-LLM, 2026-05-27)**: codex MCP-server runs
+gpt-5.x with its OWN read-only sandbox + approval=never config. In agent
+mode that means gpt-5.x sees its environment as "no write access" and
+refuses anything that needs file mutation — which broke dogfood v4 when
+KUN's long task asked for file creation. Fix: drive codex MCP in
+**pure-LLM mode** — tell gpt-5.x explicitly that the KUN host provides
+its own tools via XML protocol (see ``kun.engineering.agent_loop``'s
+``build_skill_directive``), and that codex's local sandbox is irrelevant.
+gpt-5.x then emits ``<skill name="X">`` XML which KUN's host parses
+(LT.TOOLS-GAP path in ``llm_invoker.py``) and dispatches via the host
+ToolExecutor.
+
 Subscription-paid, so ``cost_usd_actual == 0`` (ADR-008 duality). We fill
 ``cost_usd_equivalent`` with a rough $/M-token estimate since the MCP
 response doesn't carry a cost field.
@@ -71,12 +83,73 @@ _PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
 
 _PROTOCOL_VERSION = "2025-06-18"
 
+# Codex MCP can return a single JSON-RPC line with a large final answer.  The
+# asyncio subprocess default stream limit is 64 KiB, which is too small for
+# long planning/review tasks and raises "Separator is found, but chunk is longer
+# than limit" before the provider can parse the result.
+_DEFAULT_STREAM_LIMIT_BYTES = 16 * 1024 * 1024
+
+
+# LT.CODEX-PURE-LLM: the base-instructions passed to codex MCP. We use this
+# to override codex's default agent identity — gpt-5.x should treat itself as
+# a pure language oracle that emits XML when it wants to take action, NOT as
+# an agent with sandboxed file tools. The host (KUN) parses the XML and runs
+# the tools itself (see kun.integration.llm_invoker.parse_skill_calls path).
+#
+# LT.TOOLS-GAP-2 revision (dogfood v5 discovered): the original phrasing
+# "you have NO file write, NO shell, NO local tools" was too aggressive —
+# gpt-5.x conflated "no codex-direct tools" with "no tools at all", and
+# when KUN's host_skill list (containing file-io / shell-exec / etc) showed
+# up in the prompt, gpt-5.x didn't believe them and instead hallucinated
+# Claude-Code-style plugin names it couldn't find ("presentations",
+# "spreadsheets", "documents", "github"). The revision: make crystal clear
+# that KUN's host tools ARE the model's tools, and pin the exact wire
+# format that KUN's parser (parse_skill_calls in agent_loop.py) accepts.
+_PURE_LLM_BASE_INSTRUCTIONS = """\
+You are the language-model component of the KUN agent. KUN (the host) runs \
+on the user's machine, owns the file system, owns the shell, and provides \
+you with a set of HOST TOOLS via XML protocol. \
+
+You do NOT have direct codex tools (no codex file write, no codex shell, \
+no codex sandbox actions). codex's own sandbox/approval settings are \
+off-topic — never mention them. \
+
+INSTEAD, the user's prompt contains a "可用工具" / "Available tools" / \
+"<skill_directive>" section listing the KUN HOST TOOLS available to you. \
+Those tools — and only those tools — are how you take action. They may \
+include things like file-io, shell-exec, writing-markdown, web-search, etc. \
+TRUST THE LIST. Do NOT invent tool names that aren't in the list. \
+
+To call a host tool, emit XML in EXACTLY this shape on its own line:
+  <skill name="TOOL_NAME">{"param1": "value1", "param2": "value2"}</skill>
+
+Note: the body between the tags is a single JSON object — NOT nested XML \
+elements. Parameter names and types come from the tool's input_schema in \
+the available-tools section. Multiple <skill> blocks per response are \
+allowed (KUN dispatches them and returns results next turn). \
+
+When a request needs an action and a matching tool exists: emit the \
+<skill> XML, optionally with a brief sentence of intent. When the request \
+is pure reasoning, or no matching tool exists: respond with prose. \
+
+If you genuinely believe you need a tool that isn't in the available list, \
+SAY SO EXPLICITLY ("I need a tool that does X; the closest available is Y \
+but it doesn't cover Z because…") — do not silently refuse or list \
+made-up tool names.\
+"""
+
 
 class CodexMcpProvider(LLMProvider):
     """Subprocess MCP-client adapter for `codex mcp-server`."""
 
     name = "codex-mcp"
-    supports_tools = False  # codex drives its own tool loop; we just pass a prompt
+    # LT.CODEX-PURE-LLM: in pure-LLM mode we DO support tools — they're
+    # surfaced to gpt-5.x via the system-prompt XML protocol (skill_directive),
+    # and the host parses the model's <skill> XML response back into ToolCalls
+    # via kun.integration.llm_invoker. This is "tools via text protocol" — not
+    # the structured tool_use that Anthropic/OpenAI APIs have, but it's still
+    # a working tool-using path.
+    supports_tools = True
     supports_streaming = False
     supports_cache = True  # backend handles caching
 
@@ -94,6 +167,7 @@ class CodexMcpProvider(LLMProvider):
         reasoning_effort: str | None = None,
         timeout_sec: int = 180,
         run_cwd: str | None = None,
+        sandbox: str | None = None,
     ) -> None:
         self.tier = tier
         self.model_id = model_id or os.getenv("KUN_CODEX_MCP_MODEL") or _DEFAULT_MODEL
@@ -102,7 +176,12 @@ class CodexMcpProvider(LLMProvider):
         )
         self._cli = cli_path or shutil.which("codex") or "codex"
         self._timeout = timeout_sec
-        self._cwd = run_cwd or _DEFAULT_CWD
+        self._stream_limit = _env_int(
+            "KUN_CODEX_MCP_STREAM_LIMIT_BYTES",
+            _DEFAULT_STREAM_LIMIT_BYTES,
+        )
+        self._cwd = run_cwd or os.getenv("KUN_CODEX_MCP_CWD") or _DEFAULT_CWD
+        self._sandbox = sandbox or os.getenv("KUN_CODEX_MCP_SANDBOX", "read-only")
         os.makedirs(self._cwd, exist_ok=True)  # bare sandbox dir
 
         pin, pout = _PRICING_PER_MTOK.get(self.model_id, (10.0, 40.0))
@@ -141,17 +220,12 @@ class CodexMcpProvider(LLMProvider):
                     "prompt": prompt,
                     "model": self.model_id,
                     "approval-policy": "never",
-                    "sandbox": "read-only",
+                    "sandbox": self._sandbox,
                     "cwd": self._cwd,
-                    # Keep codex stateless: minimal agent system prompt, no
-                    # AGENTS.md pickup. Codex 0.125+ requires non-empty
-                    # instructions; we give a one-liner that stays out of
-                    # the way and lets the user prompt drive everything.
-                    "base-instructions": (
-                        "You are an LLM call adapter. Answer the user's prompt "
-                        "directly and concisely. Do not run tools or take side "
-                        "effects unless asked."
-                    ),
+                    # LT.CODEX-PURE-LLM: drive gpt-5.x as a pure language oracle
+                    # — the host (KUN) holds the tools and the file system, the
+                    # model emits XML when it wants action. See module docstring.
+                    "base-instructions": _PURE_LLM_BASE_INSTRUCTIONS,
                     "developer-instructions": "",
                     "config": {"model_reasoning_effort": self.reasoning_effort},
                 },
@@ -170,6 +244,7 @@ class CodexMcpProvider(LLMProvider):
             raise RuntimeError(f"codex mcp-server timed out after {self._timeout}s") from None
         except Exception:
             self._pending.pop(req_id, None)
+            await self._kill()
             raise
 
         latency_ms = (time.perf_counter() - started) * 1000
@@ -193,16 +268,17 @@ class CodexMcpProvider(LLMProvider):
             first = result["content"][0] or {}
             content_text = str(first.get("text", ""))
 
-        # Usage is not reported in the tools/call response; leave zeros —
-        # rate-limit headroom is tracked via the codex/event stream in
-        # future work. Cost equivalent still computes via our $/Mtok guess
-        # over zero tokens = 0; that's fine for the subscription path.
-        usage = UsageInfo()
+        # Codex MCP tools/call doesn't return token usage. Rather than report
+        # zeros (which hides spend visibility in NUO) estimate from byte length
+        # using ~4 chars/token. This is rough but at least non-zero so the
+        # budget tracker sees the work happened.
+        prompt_chars = sum(len(m.content or "") for m in request.messages)
+        est_input = max(1, prompt_chars // 4)
+        est_output = max(1, len(content_text) // 4)
+        usage = UsageInfo(input_tokens=est_input, output_tokens=est_output)
         cost_equiv = self.compute_cost(usage, equivalent=True)
 
-        llm_request_total.labels(
-            provider=self.name, model=self.model_id, role="invoke", tenant_id="unknown"
-        ).inc()
+        llm_request_total.labels(provider=self.name, model=self.model_id, role="invoke").inc()
         llm_latency_seconds.labels(provider=self.name, model=self.model_id).observe(
             latency_ms / 1000
         )
@@ -252,6 +328,8 @@ class CodexMcpProvider(LLMProvider):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env={**os.environ, "NO_COLOR": "1"},
+                cwd=self._cwd,
+                limit=self._stream_limit,
             )
             self._reader_task = asyncio.create_task(self._read_loop())
             self._stderr_task = asyncio.create_task(self._drain_stderr())
@@ -337,6 +415,12 @@ class CodexMcpProvider(LLMProvider):
             raise
         except Exception as e:
             log.warning("codex_mcp.read_loop_error", error=str(e))
+            self._initialized = False
+            error = RuntimeError(f"codex mcp-server read loop failed: {e}")
+            for fut in list(self._pending.values()):
+                if not fut.done():
+                    fut.set_exception(error)
+            self._pending.clear()
 
     async def _drain_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
@@ -361,6 +445,26 @@ class CodexMcpProvider(LLMProvider):
     @staticmethod
     def _build_prompt(request: LLMRequest) -> str:
         parts: list[str] = []
+        # LT.CODEX-PURE-LLM: surface request.tools as XML protocol description
+        # so gpt-5.x sees them even when the orchestrator didn't bake a
+        # skill_directive into a system message. Tools-text first so it
+        # frames everything that follows.
+        if request.tools:
+            tools_lines: list[str] = [
+                "# Available tools (KUN host dispatches; you emit <skill> XML)"
+            ]
+            for tool in request.tools:
+                schema = tool.schema_ or {}
+                tools_lines.append(
+                    f'  - <skill name="{tool.name}">: {tool.description}\n    schema: {schema}'
+                )
+            # Audit F123: the body MUST be a JSON object — KUN's host parser
+            # (agent_loop.parse_skill_calls, _CALL_RE) only matches
+            # <skill name="X">{json}</skill>. The old <param>value</param> example
+            # contradicted both the base instructions and the parser, so tool
+            # calls following it were silently dropped.
+            tools_lines.append('Emit like: <skill name="NAME">{"param": "value"}</skill>')
+            parts.append("\n".join(tools_lines))
         for m in request.messages:
             if m.role == "system":
                 parts.append(f"# System\n{m.content}")
@@ -371,3 +475,22 @@ class CodexMcpProvider(LLMProvider):
             elif m.role == "tool":
                 parts.append(f"# Tool result\n{m.content}")
         return "\n\n".join(parts) or "(empty)"
+
+
+__all__ = ["PURE_LLM_BASE_INSTRUCTIONS", "CodexMcpProvider"]
+
+
+# Public alias for testing / introspection. Tests reference this to verify
+# the prompt-engineering contract without reaching into a private constant.
+PURE_LLM_BASE_INSTRUCTIONS = _PURE_LLM_BASE_INSTRUCTIONS
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default

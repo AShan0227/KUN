@@ -1,17 +1,18 @@
 """idle-batch 调度器 (§6.4) — 用户闲置时批处理.
 
-统一承载所有离线学习 / 评估 / 进化:
-  - 任务回放 (task_replay)
-  - 多样本一致性测试 (consistency_test)
-  - 方法论蒸馏 (methodology_distill)
-  - 知识冲突解决 (knowledge_conflict)
-  - AB 决策汇总 (ab_decision_roll_up)
-  - 健康报告生成 (health_report)
-  - 路由规律涌现发现 (route_rule_mining)
+当前实现状态:
+  - health_report             : ✅ 真实 — 读 tasks/outbox/cost 计数器, 给 NUO 用
+  - task_replay               : ⚠️  STUB — 只数失败任务, 没回放
+  - consistency_test          : ⚠️  STUB — 只数低 reliability 卡片
+  - methodology_distill       : ✅ L2.9 真做 — 扫 dev_logs → 输出 novel candidates
+  - knowledge_conflict        : ⚠️  STUB — 只数冲突事件
+  - ab_decision_roll_up       : ⚠️  STUB — 只数 promotion/rollback
+  - route_rule_mining         : ⚠️  STUB — 只数 fallback 事件
+
+STUB step 上报 status="stub"; 真实 step 上报 status="ok". run_all 会把两者
+区分给 dashboard, 别误以为自演化在跑.
 
 每项都是一个 `IdleBatchStep`, 可独立开关 (ADR "用户可关").
-
-Walking skeleton: 注册 6 类 step 的占位实现, 实际逻辑由 follow-on commits 填.
 """
 
 from __future__ import annotations
@@ -39,9 +40,15 @@ class StepReport:
 
 
 class IdleBatchStep(ABC):
-    """A single step run during idle-batch."""
+    """A single step run during idle-batch.
+
+    `stub=True` means the step's run() only reads counters / probes — it does
+    not perform the action implied by its name. Stub steps report status="stub"
+    so dashboards and tests don't mistake them for completed work.
+    """
 
     step_id: str
+    stub: bool = False
 
     @abstractmethod
     async def run(self, tenant_id: str) -> dict[str, Any]: ...
@@ -88,7 +95,7 @@ async def run_all(
                         step_id=name,
                         started_at=started,
                         finished_at=datetime.now(UTC),
-                        status="ok",
+                        status="stub" if getattr(step, "stub", False) else "ok",
                         summary=summary,
                     )
                 )
@@ -111,9 +118,10 @@ async def run_all(
 
 
 class TaskReplayStep(IdleBatchStep):
-    """Replay recent historical tasks with the current router + skills, compare outputs."""
+    """Replay recent historical tasks — STUB: only counts failed tasks, doesn't replay."""
 
     step_id = "task_replay"
+    stub = True
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from sqlalchemy import func, select
@@ -145,9 +153,10 @@ class TaskReplayStep(IdleBatchStep):
 
 
 class ConsistencyTestStep(IdleBatchStep):
-    """Triple-perturbation (temperature / rewording / model) consistency check."""
+    """Triple-perturbation consistency check — STUB: only counts weak cards."""
 
     step_id = "consistency_test"
+    stub = True
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from sqlalchemy import func, select
@@ -179,48 +188,76 @@ class ConsistencyTestStep(IdleBatchStep):
 
 
 class MethodologyDistillStep(IdleBatchStep):
-    """情节记忆 → 语义方法论 蒸馏."""
+    """情节记忆 → 语义方法论 蒸馏 (ADR-025).
+
+    L2.9 实装: 扫 docs/dev_logs/*.md → 抽"关键决策" bullets → 与已有
+    seeds/methodologies/*.yaml 去重 → 输出 novel candidates.
+    """
 
     step_id = "methodology_distill"
+    stub = False
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
-        from sqlalchemy import func, select
+        from kun.engineering.methodology_distill import distill
+        from kun.integration.methodology_to_gate_bridge import (
+            admit_methodology_candidate_via_gate,
+        )
 
-        from kun.core.db import session_scope
-        from kun.core.orm import EventRow
+        report = distill()
 
-        async with session_scope(tenant_id=tenant_id) as s:
-            learning_events = (
-                await s.execute(
-                    select(func.count())
-                    .select_from(EventRow)
-                    .where(EventRow.tenant_id == tenant_id)
-                    .where(
-                        EventRow.event_type.in_(
-                            [
-                                "gate_evaluation",
-                                "acceptance",
-                                "promotion",
-                                "rollback",
-                                "proactive.trigger_promoted",
-                            ]
-                        )
-                    )
+        # V7 Phase X.I-0b — route each novel candidate through GateService.
+        # Before X.I-0b GateService was an ORPHAN (only A/B test framework
+        # called it); pushing methodology candidates through here flips
+        # both Gate AND the auditor chain into a production-active state
+        # via the existing daemon (idle_batch_worker is launched in
+        # kun/api/main.py).
+        admissions: list[dict[str, Any]] = []
+        for cand in report.novel_candidates[:10]:
+            try:
+                result = await admit_methodology_candidate_via_gate(
+                    candidate_title=cand.title,
+                    candidate_topic=cand.topic_slug,
+                    candidate_rationale=cand.rationale,
+                    source_file=cand.source_file,
+                    tenant_id=tenant_id,
                 )
-            ).scalar_one()
+                admissions.append(
+                    {
+                        "title": result.candidate_title,
+                        "gate_verdict": result.gate_verdict,
+                        "lifecycle_emitted": result.lifecycle_emitted,
+                        "auditor_emitted": result.auditor_emitted,
+                    }
+                )
+            except Exception as e:
+                admissions.append(
+                    {
+                        "title": cand.title,
+                        "gate_verdict": "error",
+                        "lifecycle_emitted": False,
+                        "auditor_emitted": False,
+                        "error": f"{type(e).__name__}: {e}",
+                    }
+                )
+
         return {
-            "learning_events": int(learning_events),
-            "distillation_candidates": int(learning_events),
-            "next_action": "distill_methodology_candidates"
-            if learning_events
+            "total_scanned": report.total_scanned,
+            "novel_candidates": len(report.novel_candidates),
+            "duplicates_skipped": report.duplicates_skipped,
+            "candidate_titles": [c.title for c in report.novel_candidates[:10]],
+            "sources_scanned": len(report.sources),
+            "admissions": admissions,
+            "next_action": "review_novel_candidates"
+            if report.novel_candidates
             else "no_distillation_action",
         }
 
 
 class KnowledgeConflictStep(IdleBatchStep):
-    """Resolve conflicting memories in the asset pool."""
+    """Resolve conflicting memories — STUB: only counts conflict events."""
 
     step_id = "knowledge_conflict"
+    stub = True
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from sqlalchemy import func, select
@@ -244,9 +281,10 @@ class KnowledgeConflictStep(IdleBatchStep):
 
 
 class ABDecisionRollupStep(IdleBatchStep):
-    """Collect AB-experiment results, promote/demote based on guardrails."""
+    """Collect AB-experiment results — STUB: only counts promotions/rollbacks."""
 
     step_id = "ab_decision_roll_up"
+    stub = True
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from sqlalchemy import func, select
@@ -323,9 +361,10 @@ class HealthReportStep(IdleBatchStep):
 
 
 class RouteRuleMiningStep(IdleBatchStep):
-    """Cluster + association-rule mining over routing logs to surface new route patterns."""
+    """Route-rule mining — STUB: only counts fallback events."""
 
     step_id = "route_rule_mining"
+    stub = True
 
     async def run(self, tenant_id: str) -> dict[str, Any]:
         from sqlalchemy import func, select

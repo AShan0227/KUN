@@ -151,6 +151,25 @@ KUN 的任务生命周期固定为：
 
 长任务恢复后，KUN 必须先重建任务方案、上下文、等待项、风险和下一步，再继续执行。
 
+### 5.1 双账本边界：用户任务与 KUN 自身迭代
+
+KUN 共享同一个 Control Plane，但必须把“执行用户任务”和“改进 KUN 自身”分成两条账本、两套门禁和两类产物。
+
+**用户任务账本**包括 mission、task plan、work item、artifact、delivery manifest、acceptance review 和用户交付包。用户任务可以产生学习信号，但这些信号只能作为候选证据进入治理链路，不能在任务执行路径里直接修改 KUN 默认能力、runner 行为、生产配置或 runtime profile。
+
+**KUN 自身迭代账本**包括 Qi/Nuo、自我修复、能力晋级、runtime profile、daemon/Control Plane 代码与配置变化。它只能进入 `self_improvement`、governance、capability candidate、promotion gate 和 rollback plan 路径。一次用户任务成功不能自动启用新能力，也不能把候选能力显示成生产默认能力。
+
+运行时必须执行这个边界：任何会让 `CapabilityProfile(runtime_enabled=true)` 进入 production 默认运行时的 promotion，都必须绑定已注册的 `self_improvement` mission 和 learning-stage gate。普通 `product_development`、`ops_tooling` 或外部用户任务的学习结果只能写入 learning signal、artifact 或 Qi/Nuo follow-up，不能直接修改 runner 默认行为、runtime profile 或生产配置。
+
+基础设施能力也必须按语义归类：
+
+- daemon refresh 是 Control Plane 基础设施能力，用来发现共享 store 里的任务队列变化；它不代表 KUN 自身能力自动进化。
+- scoped mission refresh 只验证已存在 mission 后续追加 work item 可被执行；不能写成自我迭代恢复。
+- stop request clear 是 daemon 进程生命周期控制；不是 mission cancel，也不是任务级暂停/恢复。
+- game production write boundary 是任务执行隔离门禁；不是能力晋级。
+
+命名、文档和测试必须避免混用语义。推荐使用 `daemon refreshes shared work queue`、`daemon stop request can be cleared`、`game production write phases require workspace boundary` 等基础设施/任务执行口径。只有真正测试 Qi/Nuo/capability governance 时，才允许使用 KUN self-improvement 或 self-iteration 命名。
+
 ## 6. 一级子系统
 
 KUN 由六个一级子系统构成。通信、上下文、权限、评估、预算、压缩、审计、恢复是全系统协议，不再拆成重复子系统。
@@ -195,6 +214,7 @@ Control Plane 是 KUN 的运行中枢，负责把方案变成可持续执行的�
 - 进程 supervisor。
 - runner 注册、lease、heartbeat、timeout、retry、cancel、resume。
 - 多任务 worker pool：同一个 daemon 内必须有 worker 槽位模型，多 daemon / 多机器必须能通过持久 resource lock 和 work item lease 协调，避免重复领取、重复写入或同时修改同一工作区。
+- 本机多进程 worker pool：Control Plane 必须能生成多个 daemon 服务实例，每个实例有独立 heartbeat/state，但共享同一任务队列和 SQLite/file resource lock；这是单机 7x24 并发的默认生产路径。跨机器 worker pool 必须走 Redis/数据库级 resource lock 适配层。
 - 断电、重启、崩溃、跨天续跑。
 - 权限、预算、外部动作审批和审计。
 - 产物、证据、日志、账本和门禁统一管理。
@@ -204,6 +224,7 @@ Control Plane 是 KUN 的运行中枢，负责把方案变成可持续执行的�
 - 运行时功能激活层：每个 work item 执行前必须显式绑定 production 能力、skill 触发、外部信息信号、沙箱边界、checkpoint、rollback 引用和启/傩反馈通道。
 - 受限预执行层：在主 runner 执行前，按 work item 的 workspace、skill 和外部信息信号运行安全预检查，产出 artifact；预执行失败必须进入启/傩治理，不得静默丢失，也不得直接记为 KUN 能力失败。
 - 启/傩默认激活层：daemon 默认注册 Qi runtime governance runner 和 Nuo runtime repair runner。凡由预执行、运行时门禁或傩诊断生成的 Qi/Nuo follow-up work item，必须能被后台服务自动执行、生成治理 artifact、写入 gate，并保持 replay 候选不得默认启用。
+- Mission Director 交付总监层：daemon 默认注册一个 KUN-native 交付总监 runner，作为任务级监督角色，持续审查目标对齐、信息缺口、任务拆解、worker 分配、证据、验收状态和“门禁通过是否被误当成最终完成”。Mission Director 可以单独配置模型、provider 和档位；它不替代启、傩或具体执行 runner，只对 mission 交付闭环拥有监督和阻断权。它的调度优先级必须高于普通业务执行、最终交付和自动返工，确保监督先于继续开发或关闭任务。
 - 信息缺口主动协同层：处于 planning/info_gap 且存在 `TaskPlan.info_gaps` 的任务，daemon 必须自动生成协同票据，说明缺什么、问谁、风险、超时策略和恢复规则；任务进入等待人类输入状态，不能绕过缺口直接执行。
 - 执行型 skill 默认沙箱边界：shell、Python 等可执行 skill 必须在显式配置的执行根目录内运行；相对目录只能解析到执行根目录下，绝对目录必须落在 allowlist 根内，越界请求必须失败并可审计。它是默认工作区隔离，不宣称替代容器或系统级 chroot。
 - 容器级隔离协议：高风险或生产并发任务必须能声明 `container_required` 或 `external_container` 沙箱模式；daemon 必须把容器运行时、workspace 根、可写路径、网络策略、checkpoint 和 rollback 引用写入执行状态。没有容器 runner 时不得假装已经容器化，必须在驾驶舱和门禁中显示隔离等级。
@@ -220,6 +241,7 @@ Control Plane 必须保证：
 - 所有失败有分类和下一步。
 - 所有交付有产物、证据和验收记录。
 - 多任务并行必须先经过依赖、resource lock、work item lease 和 worker slot 分配；锁冲突必须表现为等待和自动重试，不得被记为 KUN 能力失败。
+- execution/test/merge/repair/retest/rollback 等可能写入工作区的 work item 如果没有显式 workspace/worktree/project/repo 锁，必须自动退回 mission-workspace 锁，宁可降低并发，也不能让多个 worker 在未知边界下同时写同一任务。
 - 当 worker pool 大于 1 且任务依赖与资源锁互不冲突时，daemon 必须把多个 work item 分配到不同 worker 并真正同时执行；`max_work_items_per_tick` 不能只表示串行批量数量。共享 workspace、mission merge lane、显式 resource lock 或同一路径写入必须进入等待、隔离或合并治理。
 - 合并多 worker 产物时必须做冲突治理：缺依赖、重复写同一文件、同一路径 artifact 冲突或互斥修改必须阻断 merge，进入修复、重排或人工协同，而不是简单拼接 artifact。
 - 沙箱、快照、回滚不是文档字段，而是执行前自动生成、执行中可引用、失败时可运行的恢复路径。
@@ -230,6 +252,31 @@ Control Plane 必须保证：
 - 鲲在执行真实任务时必须主动标注“需要重点观察什么”，外部监督者、启和傩消费同一份 observation report；监督结果必须能反向触发能力治理、污染修复、合并降噪、功能删改或计划变更。
 - 生产能力去重不能只由 daemon 静默处理；折叠、回滚或保留默认能力后，必须给启生成治理工作项，记录保留依据、合并/淘汰理由、证据边界和“非 production 不得默认消费”的约束。
 - 功能激活审计：KUN 必须能把每个已开发功能转成定制化 Control Plane 触发任务，实际运行后输出触发条件、依赖协同关系、证据、未激活缺口和后续修复任务；静态代码检查不能替代功能激活审计。审计范围必须覆盖通用 Control Plane 能力和实际任务 runner，包括外部样本学习、自主 App 开发、研究先行开发、游戏生产、AB 回归和产品化 dogfood，不允许“模块存在但真实任务不会走到”的隐性闲置能力。
+
+功能激活必须按证据层级判断：
+
+1. **代码存在**：模块、类、API、字段或文档已经存在。
+2. **触发器存在**：真实任务状态能触发该功能，而不是只能人工调用。
+3. **runner 可执行**：触发后有明确 runner、工具或人机协同路径承接。
+4. **真实消费**：runner 实际消费 capability、skill、外部信息、沙箱、锁、回滚或监督指令，并产出 receipt / artifact。
+5. **闭环通过**：修复、复测、回滚、验收或能力晋级完成，状态从“已诊断”进入“已恢复/已沉淀/已关闭”。
+6. **真实 mission 端到端**：至少一个真实长任务证明该功能不是 fixture 或合成场景。
+
+KUN 的驾驶舱和审计报告必须把这六层分开展示。`fixture`、`synthetic`、`static_probe` 只能证明触发器或 runner 可用，不能等同于真实长任务协同通过。任何功能长期停在第 1-3 层，必须进入启/傩治理：保留、补触发、补 runner、合并、降级或删除。
+
+默认执行链路还必须遵守以下激活约束：
+
+- capability 不得只登记到 work item 或 artifact。每个真实 runner 要么消费 `CapabilityExecutionPolicy` 并产出 directive receipt，要么显式声明本 runner 不需要消费，并由门禁记录原因。
+- 外部信息信号不得只登记。任务合同、证据计划或 work item 声明 required external info 时，必须执行检索/读取/引用预检；网络、权限或工具不可用时必须阻断或开人机协同票据。
+- 启/傩 follow-up 不得只生成待办。创建 follow-up 前必须确认有 runner；没有 runner 时必须阻断并开 operator ticket，不能静默跳过。
+- 傩的“已诊断”和“已修复”必须分账本。污染、EOF、timeout、auth、wrapper、报告缺失、互评缺失等分类报告只能关闭诊断阶段；只有 clean retest、rerun、replay 或 rollback 证据通过，才能关闭恢复阶段。
+- 傩的 clean retest 必须能改变执行状态。若复测证明权限、写入、workspace、wrapper 或环境阻断已经解除，系统必须自动关闭对应阻断票据并恢复任务队列；只有复测仍失败时，才允许进入人机协同或继续等待外部修复。
+- 启的“候选能力”和“生产能力”必须分账本。真实任务可以写学习信号，但不能直接修改 KUN 默认 runtime；能力变化必须走 replay、holdout、shadow、canary、production 和 rollback。
+- Mission Director 的监督结论必须参与任务状态机。若它发现任务方案不完整、worker 分配缺失、产品体验证据不足、人工/目标用户验收缺失，或 runner 把测试/自评分/门禁通过误判为最终交付完成，必须生成 review artifact 和 GateEvaluation，并把任务推进到 needs_info、needs_human 或 needs_plan_change，而不是允许直接关闭任务。
+- 策略优化不能只等单一路径失败后改计划。高风险或高价值任务必须支持多策略候选、低成本试跑、结果比较和最优路径选择；启负责保留有效路径、合并重复路径、淘汰噪音路径。
+- 启的策略复盘必须成为可执行工作流，而不是只写结论。遇到用户否定、产品体验残差、门禁失败、反复返工或任务理解不足时，启必须创建 Qi-owned 的 strategy replay / shadow rerun / process audit 工作项，复跑同一任务切片，比较旧策略和新策略，再把更优路径交给 KUN 执行。该复盘只能进入 `self_improvement` 账本和 replay 候选证据，不能直接修改生产默认能力。
+- AB adapter、Frontier50 live executor、真实任务 runner 必须在驾驶舱中分开展示。adapter summary 不能被显示成 live AB 已执行。
+- 任务专用模板只能作为显式 production mode、模板包或插件启用；通用 KUN 任务不得携带历史项目角色、行业、文案、美术、UI 或工作方式。
 
 ### 6.3 知识与证据系统
 
@@ -257,6 +304,7 @@ Control Plane 必须保证：
 - 专家输入和外部 worker 调度。
 - 多 worker 分发与合并。
 - worker pool、持久 resource lock、work item lease、并发等待原因和资源冲突治理。
+- 多进程 daemon fleet：多个后台进程可以共享同一 Control Plane store 和 SQLite resource lock；跨机器 worker 可以共享 Redis resource lock。每个进程必须有独立状态文件，驾驶舱和审计能区分 holder daemon、worker、等待原因和锁过期时间。
 - 工具边界、权限边界和责任边界管理。
 - 冲突检测、依赖管理和产物合并。
 - merge conflict governance：多路代码、文档、素材或配置产物合并前必须检查重叠写入、缺失依赖、互斥 artifact 和需人工决策的冲突。
@@ -326,6 +374,7 @@ Observation -> Candidate -> Replay -> Holdout -> Shadow -> Canary -> Production 
 - 能力库必须去重、合并、标记来源、标记适用范围和淘汰重复候选。
 - 傩 benchmark、真实任务结果、用户验收和外部样本对比结果必须写入 capability card，供启、路由层和运行时策略消费。
 - 模型路由和 worker 分发必须读取生产能力与 capability card 数据；有真实能力分时用能力分选择候选，无数据时保持冷启动策略。
+- 启必须把“重复执行后发现更优策略”拆成三类产物：strategy replay report、process audit、capability candidate。strategy replay report 证明重新跑过；process audit 说明原链路哪里浅、哪里错、哪里该问人；capability candidate 只记录可复用改进，不进入默认运行时，除非通过完整晋级链路。
 - 速度和成本提升不能掩盖结果质量下降。
 
 ## 7. 全系统运行协议

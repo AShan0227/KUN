@@ -1,0 +1,46 @@
+topic: cache_aware_llm_wakeup_scheduler
+title: LLM 唤醒间隔应显式考虑 prompt cache window
+description: |
+  对同一长任务的多次 LLM 调用，调度器应尽量复用稳定 system prompt 与 goal anchor，
+  并选择 cache-friendly 的 wakeup 间隔。短间隔保持缓存温热，长间隔则避免落在
+  刚错过 cache 又没有摊销收益的最差区间。
+trigger:
+  conditions:
+    - 同一 task_id 会多次调用 LLM
+    - system prompt 和 anchor 在多轮中大体稳定
+    - 调度器可控制下一次 wakeup 时间
+action:
+  pattern:
+    - 为 task 计算 stable_prompt_prefix_hash
+    - LLMRouter 记录最近一次 invoke 时间与 provider cache TTL
+    - Scheduler 在可选时优先选择 cache 内短唤醒或足够长的批处理唤醒
+    - cache miss 时记录原因和成本
+    - idle_batch 对高频任务按 cache window 分组
+  anti_patterns:
+    - 固定 300 秒轮询但刚好错过 5 分钟 cache TTL
+    - 每轮重写 system prompt 导致 prefix cache 失效
+    - 把所有 idle batch 都设成同一个固定小时级间隔
+    - 不记录 cache hit/miss，无法评估优化效果
+rationale: |
+  Claude Code 的 ScheduleWakeup 纪律会考虑 Anthropic prompt cache TTL。KUN 的
+  LLMRouter 与 idle_batch 尚未把 cache window 当作一等调度输入。
+evidence:
+  - source: docs/claude-code-engineering-manual.md
+    notes: 任务节奏章节明确描述 cache window-aware wakeup。
+  - source: docs/dev_logs/LT-retrospective.md
+    notes: LT 阶段使用短 wakeup 保持 cache 暖，支撑多轮长任务推进。
+confidence: 0.78
+applicability:
+  scopes:
+    - llm_router
+    - scheduler
+    - cost_optimization
+  do_not_apply_when:
+    - provider 不支持 prompt caching
+    - 任务只调用一次 LLM
+    - system prompt 每轮都必须大幅变化
+related_methodologies:
+  - maybe_x_pattern_threshold_zero_cost
+  - conservative_sample_threshold
+distilled_from: claude-code-engineering-manual
+created_at: 2026-05-28

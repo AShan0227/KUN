@@ -1,0 +1,111 @@
+topic: rsi_explorer_pool_three_modes
+title: RSI 候选生成统一 Conservative / Aggressive / Performance 三 Explorer 模式
+description: |
+  RSI (Recursive Self-Improvement) 闭环里 Strategist 接受 anomaly →
+  生成候选实验. 不要让单一候选独占, 也不要让候选数量无限扩张. 用
+  固定的 3 模式 Explorer Pool:
+
+    Conservative — 最小风险, 高 sampling, 改路由/参数不改架构
+    Aggressive   — 大胆改动 (换 primary / 拆 task_type), 接受更高失败率
+    Performance  — Shadow 不影响生产, 优化指标维度 (重试 / damping / RAG)
+
+  每模式各自定 sampling_rate, rollout_mode, acceptance_threshold,
+  rollback_on. 同一 anomaly 提 3 路并行实验, Tester / Gate 后挑赢家.
+
+trigger:
+  conditions:
+    - 系统监测到异常 (LLM 路由失败 / context 超标 / skill 失配 / task 失败)
+    - 需要工程化提候选实验解决, 而非单一 fix
+    - 候选要并行跑给 Tester 评估, 避免局部最优
+  applicable_kinds:
+    - llm_fallback_spike
+    - context_oversized_spike
+    - skill_mismatch_spike
+    - task_failure_spike
+    - 任何 anomaly_kind → strategy_search_request 路径
+
+action:
+  pattern:
+    - rule: Conservative 候选
+      do: |
+        - 改路由/配置/参数, 不改架构
+        - sampling 中 (30%), rollout=canary
+        - acceptance 适度严 (恢复正常水位)
+        - rollback_on 含基础保护 (cost/失败率)
+        - target_level 通常 1 (activation 层)
+      example: tier upgrade (strong → top), retry budget 1 → 2
+    - rule: Aggressive 候选
+      do: |
+        - 大幅改动 (换 primary / 拆 task_type / 切换策略)
+        - sampling 更高 (50%) 让信号快显现
+        - rollback_on 触发器更紧 (失败率 < 70% 就回滚)
+        - target_level 可能 0 (设计层) 或 1
+      example: fallback provider 升 primary; task_type 拆 sub-types
+    - rule: Performance 候选
+      do: |
+        - shadow mode (sampling 100% 但不影响 prod)
+        - 优化非主路径指标 (重试 / RAG / damping)
+        - rollback_on 看 latency / 检索相关度等次维度
+        - acceptance 衡量指标变化, 不衡量 prod 体验
+      example: damping denominator 30 → 15; RAG 替代全 context
+  meta_rules:
+    - 每候选必带 rollback_on (≥1 触发器), 没回滚保护 ≠ RSI
+    - 必带 success_metric + acceptance_threshold 让 Tester 可量化
+    - explorer_mode 字段保留 (conservative/aggressive/performance/backward)
+    - 全 3 模式生成, 由调用方 (Gate/Tester) 后挑
+  anti_patterns:
+    - 只提单一候选 (无对照 — 不能判断"真好" vs "局部最优")
+    - 候选 > 3 (探索成本爆炸, 决策延迟)
+    - 候选无 rollback_on (出问题靠人发现 — RSI 不闭环)
+    - 候选 explorer_mode 缺失 (调用方无法分级管理)
+
+rationale: |
+  KUN L2.7 第一条 RSI (LLM 路由) + L3.1 第二条 (context 压缩) +
+  L3.2 第三条 (skill 选择) 都严格按 3 模式生成. 实测:
+
+    - 3 个候选给 Tester 跑实验 → 真出现 "Conservative 够好" 或
+      "Aggressive 解决根因" 或 "Performance 不动主路径就 OK" 不同
+      场景, 单一候选会漏其中一种
+    - rollout_mode 阶梯 (canary 30% / canary 50% / shadow 100%)
+      自然反映风险偏好
+    - rollback_on 三模式各有保护 metric, 没出现"失控候选"
+
+  3 是不偏不倚的 Explorer Pool 默认大小 — 也是 ADR-024 §Explorer
+  Pool 默认值. L4+ 可调.
+
+evidence:
+  - source: kun/agents/strategist/service.py:_candidates_for_llm_fallback_spike
+    date: 2026-05-27
+    phase: L2.7
+    notes: |
+      第一条 RSI 三模式: tier_upgrade / primary_swap /
+      retry_budget_increase. canary 30% / canary 50% / shadow 100%.
+  - source: kun/agents/strategist/service.py:_candidates_for_context_oversized_spike
+    date: 2026-05-27
+    phase: L3.1
+    notes: |
+      第二条: summary_compression / hard_truncation /
+      rag_retrieval. Aggressive 保 anchor_pinning=True (与
+      anchor_pinning_at_prompt_top methodology 协同).
+  - source: kun/agents/strategist/service.py:_candidates_for_skill_mismatch_spike
+    date: 2026-05-27
+    phase: L3.2
+    notes: |
+      第三条: skill_id_swap / task_type_split / capability_damping_tweak.
+      Aggressive target_level=0 (设计层) 因 task_type 拆分是产品决策.
+
+confidence: 0.9  # 3 RSI 实例独立验证, 一致结构
+applicability:
+  scopes: [rsi_loop, strategy_candidate_generation, exploration_pool]
+  do_not_apply_when:
+    - 异常是确定性 bug, 一个 fix 就够 (不需要探索)
+    - 候选无法量化指标 (acceptance_threshold 没意义)
+    - 探索预算极小 (1 候选都跑不起)
+
+related_methodologies:
+  - engineering_first_with_llm_fallback
+  - frozen_dataclass_agent_io_contract
+  - conservative_sample_threshold
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

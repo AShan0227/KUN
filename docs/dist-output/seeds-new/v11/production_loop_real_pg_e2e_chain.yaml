@@ -1,0 +1,60 @@
+topic: production-loop-validation
+title: "Production-loop 闭环证据 = 串多个真 PG e2e 测试, 每个写真行 + 读回验证"
+description: |
+  V7 §16 production-loop 的 "hard rule" 是: 不能进真实生产链路的功能 = 不算
+  完成. 但"接生产链路"的证据怎么留? 之前几次 we wrote integration tests
+  against fake `_CaptureSession`s, 全过. 然后跑 alembic upgrade + real PG +
+  发现 8 个 wiring 问题 (cross-loop, missing router mount, CHECK constraint
+  enum mismatch).
+
+  Dogfood-v11 capstone 摸清的模式: 写 1 个 "ultimate e2e" 测试, 在单个 test
+  里串 N 个子系统, 每个子系统通过它的**真 production writer / emitter** 写
+  入真 PG, 最后用真 reader 读回验证. 任何一个链节断 — wiring 错 / enum 漂
+  / 跨 loop race — 都会在 read-back assert 时炸出来.
+
+  关键不是"测试覆盖率高", 是"测试路径 == 生产路径". 链 N 个真 writer 的
+  e2e 测试, 等价于 N 个 "production wiring proof"; 跑过 = N 个不同的接入点
+  都已 wire 对.
+
+trigger:
+  - condition: "新引入 ≥ 2 个子系统协作, e.g. service A 通过 emitter 写表, service B 读表派生决策"
+  - condition: "之前所有测试都用 fake session — 没碰过真 PG"
+  - condition: "wiring 涉及 alembic 0XXX 表新增, 需证明 schema 真上线 + writer 真喂数据"
+  - condition: "V7 §16.6 audit 要求 'real_code_path' 字段, 但目前测试只调 service 不调 emitter"
+
+action:
+  - "为该 wave 写 1 个 'ultimate e2e' integration test, 单文件单 test 里:"
+  - "  1) 构造同一个 mission_id / capability_id / task_id 贯穿所有子系统"
+  - "  2) 每个子系统通过它的真 writer (make_X_emitter) 写表"
+  - "  3) 不同子系统用相同 tenant_id 让 RLS 看见同一组数据"
+  - "  4) 最后用真 cockpit reader 读回, assert row count + 关键字段"
+  - "  5) bypass_rls 探针验证 4 张 X.B 表都新增了 ≥1 行 (硬证据)"
+  - "把单测保留在 unit tier (fake session 还好用 — 跑得快), 把 ultimate e2e 放 integration tier"
+
+anti_pattern:
+  - "只写 unit test + fake session — 跑过不代表生产路径 work"
+  - "为单子系统写 e2e 但不串其他子系统 — 错过 cross-system wiring 问题"
+  - "用 admin_session 写测试数据 — bypass RLS, 不能验 tenant 隔离"
+  - "依赖 in-memory state 假装 'crash + resume' — 必须 `del service` + 新建 fresh reader"
+
+evidence:
+  - dogfood: "dogfood v11 capstone (commit pending) — 1 test 串 7 个子系统, 全部真 PG 写读"
+  - dogfood: "lifecycle walker e2e (commit b66fa9a) — 7 stage 真 PG 落 14 行, reader DESC 读回"
+  - dogfood: "checkpoint crash resume e2e (commit 2d8a6dc) — `del service_a`, fresh reader 拿 sequence=3"
+  - source: "kun/integration/{capability_lifecycle_db,mission_director_db,auditor_report_db,ensemble_invoker,checkpoint_db}.py — 真 writer 函数"
+  - source: "kun/api/cockpit_readers.py — 真 reader 函数 (cockpit 用同一个)"
+  - process_audit: "X.B wave 时只跑 unit + fake session, dogfood v10 跑真 PG 才发现 cross-loop bug + missing router mount + enum mismatch"
+
+confidence: high
+applicability:
+  - "V7 Phase X.B / X.C 任何 'database-backed subsystem' 收尾验证"
+  - "为新 alembic migration 写 acceptance test"
+  - "外部 attacker audit 要 'real_code_path' 字段时, 这个 test 文件就是证据"
+
+related_methodologies:
+  - "service_layer_invariant_plus_db_check_belt_and_suspenders"
+  - "human_in_loop_gate_via_collab_ticket"
+  - "production_path_wiring_audit_before_claim"
+
+distilled_from: dogfood-v11
+created_at: "2026-05-29"

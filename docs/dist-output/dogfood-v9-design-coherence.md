@@ -1,0 +1,9 @@
+# V7 §11.4 与 §15 设计一致性评估
+
+已确认 `docs/v7/KUN-V7.md` 存在，并读取 §11.4 与 §15。§11.4 将 `LLMRouter.ensemble_invoke(request, providers)` 定义为 multi-LLM 并行调用 primitive：输入包含 `LLMRequest`、至少 2 个且至少 2 个不同 family 的 `LLMProvider`，可选 `consensus_strategy`（`majority_vote` / `weighted` / `pick_best_by_metric`）与 `divergence_threshold`。输出 `EnsembleResponse` 包含每 provider 的 `responses`、可为空的 `consensus`、`divergence_score`、`divergence_signals` 与聚合 usage。跨 family 约束在 §11.2 明确为不同 vendor / training pipeline；同 vendor 不同 tier 不算。`divergence_score` 只定义了 0-1 语义（0=全一致，1=完全分歧）和告警阈值用途，尚未给出字段级加权或公式。
+
+§15 定义能力 lifecycle 为 9 阶段：Observation → Candidate → Replay → Holdout → Shadow → Canary → Production → Monitor → Rollback/Retire。其中严格验收 5 阶段是 Replay、Holdout、Shadow、Canary、Production；Replay/Holdout/Shadow 只能作为证据，Production 必须 canary 过且有 user explicit approval，之后 runtime_enabled=true。三类关键 evidence 在 §15.3 重申为 `strategy_replay_report`、`process_audit`、`capability_candidate / replay_profile`，缺任一项只能算“启已诊断”，不能算“启已沉淀”。
+
+两章总体互相支撑：ensemble 产生多模型候选、共识与分歧；lifecycle 决定这些候选何时可进入 production。关键 hook 关系是：Mission Director 在高风险决策点消费 `divergence_score`，若 >0.5 升级用户；§13.4 又把 multi-LLM divergence 纳入门禁；启 Explorer Pool 可用 ensemble 生成候选，但 consensus 不强制，候选分别进入 Candidate/Replay。CANARY 到 PRODUCTION 的 evidence 应由 shadow/canary 指标、回滚方案、三类证据与 user approval 共同构成，避免把 canary 成功误当自动上线。
+
+改进建议：1）补充 `divergence_score` 计算公式，如按 plan fields、risk、acceptance、tool calls 加权，并定义缺字段处理；2）在 §15 增加 `EnsembleResponse` 如何写入 capability card 的 schema；3）明确 Canary→Production gate 必须检查 divergence 阈值、三类 evidence、canary 指标和 ApprovalRecord 四项齐全；4）为 consensus 三策略规定适用场景，防止 `pick_best_by_metric` 绕过少数高风险异议。

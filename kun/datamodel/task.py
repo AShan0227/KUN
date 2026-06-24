@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -49,9 +49,17 @@ class TaskMeta(BaseModel):
     task_type: str = Field(description="Hierarchical category, e.g. 'coding.python.fastapi'")
     risk_level: RiskLevel = "low"
     complexity_score: float = Field(default=0.3, ge=0.0, le=1.0)
+    # L1.7 (ADR-020 / ADR-022): Director 输出的复杂度档位 + 优先级 profile
+    # complexity:        simple (< 0.3) / medium (0.3–0.6) / complex (≥ 0.6) — 决定
+    #                    TASK.md 结构化深度 + 是否进 long-task mode
+    # priority_profile:  speed_first (复杂任务) / cost_first (简单任务) — 决定
+    #                    路由是否启用 cost downgrade
+    complexity: Literal["simple", "medium", "complex"] = "simple"
+    priority_profile: Literal["speed_first", "cost_first"] = "cost_first"
     owner: Owner
     estimated_cost_usd: float = Field(default=0.05, ge=0.0)
     estimated_duration_sec: float = Field(default=30.0, ge=0.0)
+    estimated_steps: int = Field(default=1, ge=0)
     deadline_iso: datetime | None = None
     success_criteria_short: str = Field(max_length=200)
     version: int = Field(default=1, description="TASK.md structure version, not run count")
@@ -127,16 +135,41 @@ class TaskSpec(BaseModel):
     fallback_plan: str | None = None
     parent_task_id: str | None = None
     blocking_task_ids: list[str] = Field(default_factory=list)
+    # V7 Phase X.I-3 — production_entry_changes_required.
+    # Any task that intends to "接 runtime" (wire a new capability into
+    # the orchestrator / daemon / etc) must list the production-entry
+    # files it will modify. Mission Director compares this against the
+    # actual diff at tick time (X.I-3 verdict=drifting if mismatch).
+    # Default empty = task does not touch production entries.
+    production_entry_changes_required: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Paths (relative to repo root) of production entries this task "
+            "will modify. Validated by MD against PRODUCTION_ENTRIES.md. "
+            "If non-empty, X.I-3 enforces that the listed entries are also "
+            "actually changed in the diff."
+        ),
+    )
 
 
 class TaskRef(BaseModel):
-    """引用一个完整任务 (L1 + 可选 L2 / L3 引用)."""
+    """引用一个完整任务 (L1 + 可选 L2 / L3 引用).
+
+    long-task mode (ADR-022) 下 Director 会把 GoalAnchor 挂在 goal_anchor 字段;
+    extra="allow" 让 Director 可以挂额外运行时字段, 不破坏既有契约.
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     meta: TaskMeta
     spec: TaskSpec | None = None
     layer3_ref: str | None = Field(
         default=None,
         description="对象存储引用 (s3://...) 或内部 asset id (mm-xxx)",
+    )
+    goal_anchor: Any | None = Field(
+        default=None,
+        description="GoalAnchor (long-task mode), ADR-022; 类型见 kun.agents.director.anchor",
     )
 
     def l1_summary(self) -> str:

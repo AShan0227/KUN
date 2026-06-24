@@ -29,7 +29,10 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
         "auto_trigger_when": [],
     },
     "shell-exec": {
-        "description": "在沙箱里执行 shell 命令, 受 allowlist 约束",
+        "description": (
+            "在沙箱里执行 shell 命令, 受环境级命令策略约束 "
+            "(KUN_SHELL_EXEC_ALLOW/DENY, 默认 denylist; 非 per-skill allowlist)"
+        ),
         "auto_trigger_when": [],
     },
     "file-io": {
@@ -42,6 +45,22 @@ BUILTIN_MANIFESTS: dict[str, dict[str, Any]] = {
     },
     "pdf-read": {
         "description": "读 PDF 文件并抽取文本内容",
+        "auto_trigger_when": [],
+    },
+    "self-reflect": {
+        "description": (
+            "KUN 自检 / 自蒸馏专用 skill — 白名单 read (docs/seeds/kun/tests/scripts/alembic), "
+            "单写出目录 docs/dist-output/, 支持 offset+limit, 无 delete. "
+            "给 dogfood / RSI / methodology distillation 这类'让 KUN 读自己'的任务用."
+        ),
+        "auto_trigger_when": [],
+    },
+    "grep-verify": {
+        "description": (
+            "在仓库白名单目录里 grep 正则, 返结构化 {matches, verdict (confirmed/refuted)}. "
+            "Claude Code 的 'grep verify before assume' 工程纪律的一等 primitive. "
+            "用于 'X 是否真在 runtime 用了' / 'Y 引用过几次' 这类问题, 不要靠记忆和假设."
+        ),
         "auto_trigger_when": [],
     },
 }

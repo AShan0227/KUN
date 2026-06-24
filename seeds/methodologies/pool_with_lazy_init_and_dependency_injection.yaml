@@ -1,0 +1,130 @@
+topic: pool_with_lazy_init_and_dependency_injection
+title: Pool 设计三件套 — default config + lazy-init instance + dependency injection
+description: |
+  当需要把一个 service 横向扩展为多实例 (Pool) 时, 遵循三件套:
+
+    1. **Default Config**: dataclass + 默认 N 模式/维度/mode, env var 容错可覆盖
+    2. **Lazy-init instance**: 第一次访问该 mode/dim 时才创建; 缓存到 dict
+    3. **Dependency injection**: 共享或独立 LLM provider / emitter / writer
+       通过 Callable 或 service object 注入; 不写死全局 import
+
+  这让 Pool 写起来:
+    - 第一个 Pool 是设计
+    - 第二个 Pool 是 copy-paste
+    - 第三个 Pool 是肌肉记忆
+
+trigger:
+  conditions:
+    - Service 需要按维度/模式分流处理 (audit dim / Explorer mode / 监督角色)
+    - 多实例可能有不同 budget / config (max_concurrent / temperature)
+    - 测试需要零外部依赖 (DB / LLM 不真调)
+    - 生产可能换 backend (in-memory → Redis / shared → per-mode provider)
+
+action:
+  pattern:
+    - rule: PoolConfig 是 frozen / mutable dataclass
+      do: |
+        @dataclass
+        class FooPoolConfig:
+            entries: dict[str, FooPoolEntry] = field(
+                default_factory=lambda: dict(_DEFAULT_ENTRIES)
+            )
+      why: |
+        immutable 配置 + 默认值就近 (_DEFAULT_ENTRIES module-level 常量)
+        让 Pool 默认行为可读, 又允许 caller 完全覆盖.
+    - rule: lazy-init instance dict
+      do: |
+        def instance_for(self, key: str) -> Service:
+            if key not in self._instances:
+                entry = self._config.entries.get(key) or DefaultEntry(key)
+                self._instances[key] = Service(...entry...)
+            return self._instances[key]
+      why: |
+        启动时不预创建所有 instance — 第一次该 key 被请求才 init.
+        省内存 + 适合 key 配置可能变化的场景.
+    - rule: 未知 key 用默认 entry (容错优先)
+      do: |
+        if key not in self._config.entries:
+            log.warning("unknown key, using default")
+            entry = DefaultEntry(key)
+      why: |
+        配置出错或新加 key 时, Pool 不应拒绝服务 — degraded 但 functional.
+    - rule: Dependency injection via Callable
+      do: |
+        class FooPool:
+            def __init__(self, *, llm_provider: LLMProvider,
+                         provider_factory: Callable | None = None):
+                self._llm_provider = llm_provider  # 默认 shared
+                self._factory = provider_factory   # 可选独立
+
+            def _provider_for(self, key: str) -> LLMProvider:
+                if self._factory is not None:
+                    try:
+                        return self._factory(key)
+                    except Exception:
+                        log.warning("factory failed, fallback shared")
+                return self._llm_provider
+      why: |
+        默认 caller 只需传一个 shared provider, 需要细分时再传 factory.
+        降低 90% 用例的配置负担, factory 失败 fallback 不打挂.
+
+  anti_patterns:
+    - 启动时预创建所有 instance — 浪费内存 + 启动慢
+    - 未知 key 抛错 — 配置漂移时 Pool 整体挂掉
+    - 强制每 key 传 provider — 90% 用例只想要 shared
+    - factory 失败 raise — 单 key 配置错让 Pool 全挂
+
+rationale: |
+  KUN L4 阶段连续做了 3 个 Pool, 严格按此模式:
+
+    L4.1 ExplorerPool: forward modes ∈ {conservative, aggressive, performance}
+         + lazy-init 不需要 (frozen config 即可)
+         + filter via Pool config
+
+    L4.2 SupervisorPool: 3 audit dims (latency/cost/safety)
+         + lazy-init per dim 各自 SupervisorService
+         + 共享 emitter / notification_sender
+
+    L4.3 ExternalSupervisorPool: 3 modes (gate/debrief/self-aggrand)
+         + lazy-init per mode + 各自 budget (max_concurrent/temperature)
+         + provider_factory 可选每 mode 独立 LLM
+
+  写第二个 Pool 时 copy-paste 第一个的结构, 改 5-10 行. 写第三个时
+  几乎零思考成本. **统一的模式 = 维护和扩展的零成本**.
+
+evidence:
+  - source: kun/agents/strategist/explorer_pool.py
+    date: 2026-05-27
+    phase: L4.1
+    notes: |
+      ExplorerPoolConfig + load_explorer_pool_config + filter_candidates.
+      env var 容错 + 默认 3 模式.
+
+  - source: kun/agents/supervisor/pool.py
+    date: 2026-05-27
+    phase: L4.2
+    notes: |
+      SupervisorPool 严格按三件套: SupervisorPoolConfig + instance_for
+      lazy-init + 共享 emitter/notification_sender 注入.
+
+  - source: kun/external_supervisor/pool.py
+    date: 2026-05-27
+    phase: L4.3
+    notes: |
+      ExternalSupervisorPool 加 provider_factory 演示"细分注入"模式.
+      未知 mode 用 default entry 容错, factory 失败 fallback shared.
+
+confidence: 0.95  # 3 个 Pool 一致验证, 模式可清晰扩展
+applicability:
+  scopes: [pool_architecture, multi_instance_services, agent_design]
+  do_not_apply_when:
+    - 系统只有 1 个 instance, 没有横向扩展需求
+    - 所有 instance 状态全相同 (singleton 更简单)
+    - 配置是 hardcoded 常量, 永远不需要 caller 覆盖
+
+related_methodologies:
+  - frozen_dataclass_agent_io_contract
+  - engineering_first_with_llm_fallback
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

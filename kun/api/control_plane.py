@@ -49,6 +49,7 @@ from kun.control_plane import (
     build_recovery_bundle,
     build_task_cockpit_view,
     build_user_progress_summary,
+    daemon_service_process_is_alive,
     distill_external_behavior_signals,
     productionize_external_behavior_capabilities,
 )
@@ -168,6 +169,7 @@ class DaemonServiceStatusResponse(BaseModel):
     state: DaemonServiceState | None = None
     healthy: bool
     stale: bool = False
+    process_alive: bool | None = None
     text: str
 
 
@@ -238,12 +240,14 @@ def _daemon_status_response(
             state=state,
             healthy=False,
             stale=True,
+            process_alive=daemon_service_process_is_alive(state.process_id),
             text="后台监督心跳已过期；需要先恢复 daemon，再继续无人值守执行。",
         )
     if state.status == "unhealthy":
         return DaemonServiceStatusResponse(
             state=state,
             healthy=False,
+            process_alive=False,
             text="后台监督异常；需要按恢复路径重启或修复。",
         )
     if state.status == "stopped":
@@ -251,11 +255,21 @@ def _daemon_status_response(
         return DaemonServiceStatusResponse(
             state=state,
             healthy=healthy,
+            process_alive=None,
             text="后台监督已正常空闲停止。" if healthy else "后台监督已停止，需要确认是否重启。",
+        )
+    process_alive = daemon_service_process_is_alive(state.process_id)
+    if not process_alive:
+        return DaemonServiceStatusResponse(
+            state=state,
+            healthy=False,
+            process_alive=False,
+            text="后台监督心跳状态仍新鲜，但记录的进程已经不存在；需要重启 daemon。",
         )
     return DaemonServiceStatusResponse(
         state=state,
         healthy=True,
+        process_alive=True,
         text="后台监督服务心跳正常。",
     )
 
@@ -585,7 +599,10 @@ async def apply_capability_promotion(
     payload: ApplyCapabilityPromotionRequest,
 ) -> dict[str, Any]:
     runtime = get_v6_control_plane(request)
-    profile = runtime.apply_capability_promotion(payload.promotion, actor=payload.actor)
+    try:
+        profile = runtime.apply_capability_promotion(payload.promotion, actor=payload.actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "promotion_id": payload.promotion.promotion_id,
         "decision": payload.promotion.decision,

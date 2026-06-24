@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "鲲V1.1-dev"]
   pull_request:
-    branches: [main]
+    branches: [main, "鲲V1.1-dev"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -44,7 +44,10 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --extra dev
-      - run: uv run pytest tests/unit -q
+      # Audit F133/G10: coverage hard gate. Local baseline 83% (tests/unit, --cov=kun);
+      # threshold set conservatively at 80 (2pt+ buffer) so it fails only on real
+      # regression, not noise. Raise over time as coverage climbs.
+      - run: uv run pytest tests/unit -q --cov=kun --cov-report=term --cov-fail-under=80
 
   integration-tests:
     name: Integration tests
@@ -87,8 +90,11 @@ jobs:
           enable-cache: true
       - run: uv sync --extra dev
       - run: uv run alembic upgrade head
+      # Audit F052: fail if the ORM models (Base.metadata) have drifted from the
+      # migration chain — i.e. `alembic revision --autogenerate` would produce a
+      # non-empty diff. Catches schema drift that `upgrade head` alone misses.
+      - run: uv run alembic check
       - run: uv run pytest tests/integration -q
-        continue-on-error: true  # ADR-013 integration tier 稳定前允许 soft-fail
 
   frontend:
     name: Frontend checks
@@ -112,7 +118,9 @@ jobs:
   license-scan:
     name: Starter skill license scan
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # license-scan is strict — unlicensed third-party skill content must
+    # block merge. If it's failing for a known-bad reason, fix the skill,
+    # don't soft-fail the job.
     steps:
       - uses: actions/checkout@v4
       - name: REUSE compliance

@@ -1,0 +1,151 @@
+topic: status_enum_over_bool_observability
+title: Literal[多个 status] 替代 (success, error_str) 二元 — 可观测性 + caller 简化
+description: |
+  Service 入口返"成功/失败"时, 用 `Literal["a","b","c",...]` 多 status enum
+  代替 `(success: bool, error: str | None)` 二元.
+
+  好处:
+    1. 区分多种"非成功"类型 — `max_steps / budget_exceeded / stuck / failed`
+       是 4 种不同失败, 处理方式不同
+    2. caller 不用 try/except + isinstance 解构 — 直接 `match result.status`
+    3. log / metric / alerting 直接按 status 分桶, 比 string error msg 干净
+    4. type checker (mypy) 帮 caller 穷举所有 status, 避免漏处理
+    5. 测试时 `assert result.status == "final"` 比 `assert result.success and not result.error` 简单
+
+  典型场景: ExecutorLoop / Service.run / Pipeline.execute — 任何有"多种终态"
+  的入口都该用.
+
+trigger:
+  conditions:
+    - service 入口可能有 ≥ 3 种非成功终态
+    - caller 对不同终态处理不同 (e.g. budget 退出 → 加预算重跑; failed → 看 error)
+    - 监控 / metric 需要按"为何退出"分桶
+
+action:
+  pattern:
+    - rule: 用 Literal[...] 定义穷举 status
+      do: |
+        LoopStatus = Literal[
+            "final",                # 正常完成
+            "max_steps",            # 撞步数上限
+            "budget_exceeded",      # 撞预算上限
+            "wall_clock_exceeded",  # 撞时间上限
+            "stuck",                # 连续失败
+            "failed",               # 异常
+            "user_cancelled",       # 主动 cancel
+        ]
+      why: |
+        type checker 保证 caller 穷举所有 status. 加新 status = type error
+        提示所有 caller 也要处理.
+    - rule: Result frozen dataclass 含 status + rationale + 可选 error
+      do: |
+        @dataclass(frozen=True)
+        class LoopResult:
+            status: LoopStatus
+            rationale: str         # 人类可读, log 用
+            error: str | None      # 仅 status='failed' 时有
+            # 其他成功路径有用的字段
+            final_text: str
+            steps_taken: int
+            ...
+      why: |
+        rationale 给 log/monitor; error 仅 failed 用 (不混淆其他成功 status).
+    - rule: caller 用 match / if-elif 处理每个 status
+      do: |
+        result = await loop.run(...)
+        match result.status:
+            case "final":
+                store.save(result.final_text)
+            case "budget_exceeded":
+                metric.inc("budget_blocked")
+                # 用户加预算后可 resume
+            case "stuck":
+                alert.fire("task_stuck", task_id=task_id)
+            case "failed":
+                log.error("task_failed", error=result.error)
+            case _:
+                # mypy 帮 caller 提示这里要处理 max_steps/wall_clock/cancelled
+                ...
+      why: |
+        match-case 穷举 + type checker exhaustive — 漏处理 status 会被静态分析
+        发现.
+    - rule: metric / log 按 status 分桶
+      do: |
+        log.info(f"loop.completed", status=result.status, task_id=task_id)
+        metrics.counter("loop_outcomes", tags={"status": result.status}).inc()
+      why: |
+        Prometheus / Grafana 按 status 一个 label, 直接画 stacked area chart
+        看 final vs failed vs budget_exceeded 分布.
+    - rule: 测试每个 status 都有 case
+      do: |
+        async def test_returns_final_on_complete(): ...
+        async def test_returns_max_steps_when_capped(): ...
+        async def test_returns_budget_exceeded_when_over(): ...
+        async def test_returns_stuck_after_n_failures(): ...
+        async def test_returns_failed_on_llm_exception(): ...
+      why: |
+        每个 status 是 contract surface. 测试覆盖 = 每路径都验证过.
+
+  anti_patterns:
+    - '返 (success bool + error str|None) tuple — 失败原因混在 error 字符串里, caller 要 parse'
+    - 'exception class 区分各失败类型 — try/except 嵌套, 调用方累'
+    - 'int enum (0=success, 1=fail) — 不可读, type checker 不帮你'
+    - 'status 写成可变 string 大小写漂移 (Final / FAILED / failed) — 用 Literal 锁'
+
+rationale: |
+  KUN 实战 LT.E ExecutorLoop 有 7 个 LoopStatus. Caller (Orchestrator) 处理
+  方式:
+    - final → 落 task_result, success
+    - max_steps → 加预算重跑 OR 给用户 partial result
+    - budget_exceeded → 同上
+    - wall_clock_exceeded → 同上 + 警告"任务超时"
+    - stuck → 走 RCDH L0 (设计层根因)
+    - failed → 看 error, 写 evidence_ledger
+    - user_cancelled → 删 checkpoint, 标 cancelled
+
+  如果用 (success, error_str) 二元, 这 6 种非成功要 parse error_str — 易错
+  且不可监控. Literal 7 个 status 让 caller + Grafana + alert 都干净.
+
+evidence:
+  - source: kun/agents/executor/exec_loop.py:LoopStatus
+    date: 2026-05-27
+    phase: LT.E
+    notes: |
+      LoopStatus = Literal["final" | "max_steps" | "budget_exceeded" |
+      "wall_clock_exceeded" | "stuck" | "failed" | "user_cancelled"].
+      18 测覆盖各 status 路径. caller (Orchestrator/集成 e2e test) 用 match.
+
+  - source: kun/agents/executor/checkpoint.py:CheckpointStatus
+    date: 2026-05-27
+    phase: LT.C
+    notes: |
+      CheckpointStatus = Literal["active" | "final" | "failed_resume"].
+      DB CHECK constraint 也用这个 enum, schema + runtime 一致.
+
+  - source: kun/agents/director/long_task_router.py:RoutingBucket
+    date: 2026-05-27
+    phase: LT.A
+    notes: |
+      RoutingBucket = Literal["executor" | "off_topic_reply" |
+      "scope_expansion_review" | "pivot_pause" | "cancel" | "passthrough"]. 6 个分流桶.
+
+  - source: kun/agents/supervisor/plan_review_service.py:VerdictName
+    date: 2026-05-27
+    phase: LT.B
+    notes: |
+      VerdictName = Literal["aligned" | "drifting" | "off_track"]. 3-level 风险.
+      取严合并 (max severity wins) 用 enum 比 bool 自然.
+
+confidence: 0.95  # KUN LT 阶段 4 次重复用, 工业界常见
+applicability:
+  scopes: [api_design, observability, multi_outcome_services]
+  do_not_apply_when:
+    - 只有 2 个终态 (success / fail) 且 caller 不区分原因 — bool 够
+    - status 数量超 20 — 可能你的服务做太多事, 该拆
+
+related_methodologies:
+  - frozen_dataclass_agent_io_contract  # status + rationale 都放 frozen Result
+  - maybe_x_pattern_threshold_zero_cost  # maybe 返 None 也是一种"零成本 status"
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

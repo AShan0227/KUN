@@ -31,15 +31,58 @@ async def test_proactive_dispatch_no_trigger_returns_empty() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_proactive_dispatch_triggers_python_exec_on_code_block() -> None:
-    """A prompt with a fenced ```python block must auto-run python-exec."""
+async def test_python_code_block_is_not_auto_executed() -> None:
+    """Audit F003 (RCE): a fenced ```python block must NOT be auto-executed.
+
+    Code execution is never proactive — it would let any text reaching a prompt
+    run arbitrary code with no confirmation. python-exec must be absent from the
+    dispatched set entirely.
+    """
     prompt = "帮我看看这段:\n```python\nprint(2+2)\n```"
     result = await proactive_dispatch(prompt=prompt)
     skill_ids = [d.skill_id for d in result.dispatched]
-    assert "python-exec" in skill_ids
-    py_dispatch = next(d for d in result.dispatched if d.skill_id == "python-exec")
-    assert py_dispatch.result.ok
-    assert "4" in py_dispatch.result.output["stdout"]
+    assert "python-exec" not in skill_ids
+    # And it must not silently surface as a "missed opportunity" to be force-run.
+    assert "python-exec" not in [m["skill_id"] for m in result.missed_opportunities]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_never_proactive_skills_blocked_even_when_explicitly_triggered() -> None:
+    """The NEVER_PROACTIVE guard holds even if a (mis)configured trigger or
+    required-tools hint points directly at python-exec / shell-exec."""
+    import re
+
+    from kun.engineering.proactive_tools import NEVER_PROACTIVE, ToolTrigger
+
+    assert {"python-exec", "shell-exec"} <= NEVER_PROACTIVE
+
+    evil_triggers = [
+        ToolTrigger(
+            skill_id="python-exec",
+            description="malicious config re-adding python-exec",
+            pattern=re.compile(r"RUNME"),
+            extract_params=lambda m, p: {"code": "print(1)", "timeout_sec": 5},
+        ),
+        ToolTrigger(
+            skill_id="shell-exec",
+            description="malicious config adding shell-exec",
+            pattern=re.compile(r"RUNME"),
+            extract_params=lambda m, p: {"command": "echo hi"},
+        ),
+    ]
+    result = await proactive_dispatch(prompt="RUNME now", triggers=evil_triggers)
+    assert result.dispatched == []
+    # Blocked skills are not escalated as missed opportunities either.
+    assert result.missed_opportunities == []
+
+    # Also blocked when injected via the intent-layer required-tools hint.
+    result2 = await proactive_dispatch(
+        prompt="anything",
+        triggers=[],
+        required_tools_hint=["shell-exec", "python-exec"],
+    )
+    assert result2.dispatched == []
 
 
 @pytest.mark.unit
@@ -55,19 +98,31 @@ async def test_proactive_dispatch_max_cap() -> None:
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_proactive_dispatch_failed_skill_does_not_block_others() -> None:
-    """If one trigger's dispatch fails (e.g. file not found), others still run."""
-    # csv-query will fail (no such file); python-exec should still run
-    prompt = "看看 ./does_not_exist.csv\n\n```python\nprint('alive')\n```"
-    result = await proactive_dispatch(prompt=prompt)
-    # python-exec should be present and successful
-    py = next((d for d in result.dispatched if d.skill_id == "python-exec"), None)
-    assert py is not None
-    assert py.result.ok
-    # csv-query may or may not be in dispatched (depending on order); if it is,
-    # it must be marked as failed.
-    csv = next((d for d in result.dispatched if d.skill_id == "csv-query"), None)
-    if csv is not None:
-        assert csv.result.ok is False
+    """If one trigger's dispatch fails, others still run (offline-deterministic
+    via two registered stub skills — avoids relying on network/exec skills)."""
+    import re
+
+    from kun.engineering.proactive_tools import ToolTrigger
+    from kun.skills.dispatcher import register
+
+    async def _ok(_params: dict) -> SkillResult:
+        return SkillResult(skill_id="t-ok", ok=True, output={"v": 1})
+
+    async def _fail(_params: dict) -> SkillResult:
+        return SkillResult(skill_id="t-fail", ok=False, error="boom")
+
+    register("t-ok", _ok)
+    register("t-fail", _fail)
+
+    triggers = [
+        ToolTrigger("t-fail", "fails", re.compile(r"AAA"), lambda m, p: {}),
+        ToolTrigger("t-ok", "succeeds", re.compile(r"BBB"), lambda m, p: {}),
+    ]
+    result = await proactive_dispatch(prompt="AAA and BBB", triggers=triggers)
+    ids = {d.skill_id for d in result.dispatched}
+    assert {"t-fail", "t-ok"} <= ids
+    assert next(d for d in result.dispatched if d.skill_id == "t-fail").result.ok is False
+    assert next(d for d in result.dispatched if d.skill_id == "t-ok").result.ok is True
 
 
 @pytest.mark.unit
@@ -76,8 +131,10 @@ def test_default_triggers_cover_critical_skills() -> None:
     triggered_skill_ids = {t.skill_id for t in DEFAULT_TRIGGERS}
     assert "pdf-read" in triggered_skill_ids
     assert "csv-query" in triggered_skill_ids
-    assert "python-exec" in triggered_skill_ids
     assert "web-search" in triggered_skill_ids
+    # Audit F003: code-execution skills must NOT be default proactive triggers.
+    assert "python-exec" not in triggered_skill_ids
+    assert "shell-exec" not in triggered_skill_ids
 
 
 @pytest.mark.unit
@@ -120,10 +177,12 @@ def test_prefix_message_renders_failure_branch() -> None:
 
 @pytest.mark.unit
 def test_load_triggers_from_yaml_default_path_has_core_skills() -> None:
-    """默认 yaml 文件存在时, 必须把 4 个核心触发器都加载出来."""
+    """默认 yaml 文件存在时, 必须把核心 (只读/安全) 触发器加载出来."""
     triggers = load_triggers_from_yaml()
     skill_ids = {t.skill_id for t in triggers}
-    assert {"pdf-read", "csv-query", "python-exec", "web-search"} <= skill_ids
+    assert {"pdf-read", "csv-query", "web-search"} <= skill_ids
+    # Audit F003: python-exec trigger removed from shipped yaml.
+    assert "python-exec" not in skill_ids
 
 
 @pytest.mark.unit
@@ -134,8 +193,8 @@ def test_load_triggers_from_yaml_missing_file_returns_empty(tmp_path: Path) -> N
 
 
 @pytest.mark.unit
-def test_load_triggers_from_yaml_skips_invalid_entries(tmp_path: Path) -> None:
-    """单条坏规则不能拖垮整份 yaml — 好的还能加载."""
+def test_load_triggers_from_yaml_raises_on_invalid_entry(tmp_path: Path) -> None:
+    """坏规则 raise — 静默丢条目会让用户改了 yaml 以为生效其实没生效."""
     bad_yaml = tmp_path / "triggers.yaml"
     bad_yaml.write_text(
         """
@@ -154,17 +213,19 @@ triggers:
 """,
         encoding="utf-8",
     )
-    triggers = load_triggers_from_yaml(bad_yaml)
-    assert len(triggers) == 1
-    assert triggers[0].skill_id == "web-search"
+    with pytest.raises(ValueError, match="invalid entries"):
+        load_triggers_from_yaml(bad_yaml)
 
 
 @pytest.mark.unit
-def test_load_triggers_from_yaml_garbage_returns_empty(tmp_path: Path) -> None:
-    """彻底坏的 yaml 不能让进程崩 — 返回空, 由调用方走 DEFAULT_TRIGGERS."""
+def test_load_triggers_from_yaml_raises_on_garbage(tmp_path: Path) -> None:
+    """彻底坏的 yaml raise — 让操作员立即看到, 不静默 fallback."""
+    import yaml as _yaml
+
     junk = tmp_path / "junk.yaml"
     junk.write_text(":\n  - this is: : not yaml\n  - [", encoding="utf-8")
-    assert load_triggers_from_yaml(junk) == []
+    with pytest.raises(_yaml.YAMLError):
+        load_triggers_from_yaml(junk)
 
 
 # ============== Layer 3: SKILL.md auto_trigger_when ==============
@@ -302,8 +363,8 @@ async def test_layer4_records_missed_when_extract_returns_none() -> None:
     from kun.engineering.proactive_tools import ToolTrigger
 
     fake_trigger = ToolTrigger(
-        skill_id="python-exec",  # 已注册的真 skill
-        description="假装 python-exec",
+        skill_id="csv-query",  # 已注册的真 skill（安全，不在 NEVER_PROACTIVE）
+        description="假装 csv-query",
         pattern=re.compile(r"trigger_me"),
         extract_params=lambda m, p: None,  # 强制返回 None
     )
@@ -311,10 +372,10 @@ async def test_layer4_records_missed_when_extract_returns_none() -> None:
         prompt="trigger_me 现在",
         triggers=[fake_trigger],
     )
-    # python-exec 没成功 dispatch, 但 missed 抓到
+    # csv-query 没成功 dispatch, 但 missed 抓到
     miss_ids = [m["skill_id"] for m in result.missed_opportunities]
-    assert "python-exec" in miss_ids
-    miss = next(m for m in result.missed_opportunities if m["skill_id"] == "python-exec")
+    assert "csv-query" in miss_ids
+    miss = next(m for m in result.missed_opportunities if m["skill_id"] == "csv-query")
     assert miss["reason"] == "params_extraction_returned_none"
 
 

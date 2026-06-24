@@ -1,0 +1,63 @@
+topic: invariant-enforcement
+title: "协议级不变量 = service 层 raise + DB CHECK 双保险, 任一漂只兜上一层会丢"
+description: |
+  V7 §12.2 (production flip 必须 user_approval_ticket) / §12.3 (replay 必须三
+  证据) / §16.6 (P0 risk 必不许发布) 都是"协议级 hard rule". 实现时常见错
+  误是只在 service 层 raise — caller 绕过 service (e.g., 测试 fixture, dogfood
+  脚本, 旧 migration upgrade 漏改) 就静默漏掉.
+
+  Dogfood-v11 capstone 验证的模式: 协议级不变量必须**两处独立 enforce** —
+    上层: service 层 (CapabilityLifecycleService.validate_transition /
+           AuditorReport.__post_init__) raise 业务 Error;
+    下层: DB CHECK constraint (alembic 0015 lct_production_needs_user_approval
+           / 0016 ar_p0_blocks_release) raise IntegrityError.
+
+  任何一层 raise 都拦得住; 两层都拦 = 双保险. service 层让 caller 早收反
+  馈 + 业务消息友好; DB 层兜底任何绕过 service 的写入路径 (admin script /
+  外部 worker / 未来的新 service).
+
+  对应测试也是 2 套: test_v7_xb_pg_check_constraints.py (DB 层) +
+  test_v7_lifecycle_walker_e2e.py 的负向 parametrize (service 层).
+
+trigger:
+  - condition: "需新增 V7 协议级不变量 (任何 'X 必须 Y' 的强约束)"
+  - condition: "之前实装时只在 service 层 raise, 没加 DB CHECK"
+  - condition: "测试覆盖只测了 happy path + service raise, 没测 DB CHECK"
+
+action:
+  - "在 service 层加 validate_X 方法, 违反 → raise 业务 Error (含 V7 §XX 引用)"
+  - "在 frozen dataclass __post_init__ 也加同样校验 (前置 caller 早炸)"
+  - "在 alembic 新 migration 加 CheckConstraint(name='X_must_Y')"
+  - "更新 ORM Row class 的 __table_args__ 同步 CheckConstraint (alembic + ORM 双源真理)"
+  - "写 2 个测试: 1 个 service-layer raise (用 fake session), 1 个 DB-CHECK violation (真 PG)"
+  - "如果不变量涉及多列 (e.g. P0 + allow_release), 用 `NOT (col_a = X AND col_b = Y)` 形式表达"
+
+anti_pattern:
+  - "只在 dataclass __post_init__ 里校验 — caller 用 .copy / .replace 改字段就绕开"
+  - "只加 DB CHECK 没 service raise — caller 收到 IntegrityError 而不是有意义的业务 message"
+  - "service raise 但 DB 不 enforce — 绕过 service 的写入路径 (admin script) 静默漏"
+  - "测试只覆盖 service raise, DB CHECK 的 syntax 错没人测"
+
+evidence:
+  - source: "kun/governance/capability_lifecycle.py:validate_transition (V7 §12.2 / §12.3 service raise)"
+  - source: "kun/core/orm.py:LifecycleTransitionRow.__table_args__ (CheckConstraint lct_production_needs_user_approval)"
+  - source: "alembic/versions/0015_capability_lifecycle.py (DB CHECK)"
+  - source: "kun/integration/auditor_report_db.py:AuditorReport.__post_init__ (dataclass invariant)"
+  - source: "kun/core/orm.py:AuditorReportRow.__table_args__ (CheckConstraint ar_p0_blocks_release)"
+  - dogfood: "test_v7_xb_pg_check_constraints.py 13 个 CHECK 违反测试 (real PG)"
+  - dogfood: "test_v7_lifecycle_walker_e2e.py 5 个 skip-stage + production-without-approval (service)"
+  - dogfood: "test_v7_dogfood_v11_ultimate_e2e.py::test_dogfood_v11_p0_auditor_report_blocks_release_at_construction"
+
+confidence: high
+applicability:
+  - "V7 §12 任何 lifecycle gate"
+  - "V7 §10.3 任何 PlanChangeProposal severity-依赖约束"
+  - "V7 §16.6 任何 AuditorReport allow_release-依赖约束"
+  - "未来扩展: ensemble_calls 类似的双保险 (consensus_strategy enum 在 service + DB)"
+
+related_methodologies:
+  - "production_loop_real_pg_e2e_chain"
+  - "production_path_wiring_audit_before_claim"
+
+distilled_from: dogfood-v11
+created_at: "2026-05-29"

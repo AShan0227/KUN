@@ -1,0 +1,164 @@
+# L5 · 进度微日志（追加式）
+
+> 完整回顾在 `L5-retrospective.md`（L5 全 6 项完成时写）。
+> 本文件每完成一个子任务追加 3-5 句。
+
+---
+
+## L5.1 · Supervisor 异常聚类 (自创 RSI 第一步)
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/agents/supervisor/anomaly_cluster.py`：`AnomalyCluster` frozen dataclass + `cluster_anomalies()` + `cluster_to_search_request()`
+- 3 条聚类规则按优先级评估：
+  - **Rule 1 module_systemic**: 同 `target_module` + ≥2 不同 `anomaly_kind` → "module-level systemic issue"
+  - **Rule 2 cross_module_pattern**: 同 `anomaly_kind` + ≥2 不同 `target_module` 且前缀相同 → "cross-module pattern, 可能设计层问题"
+  - **Rule 3 tenant_degradation**: 同 tenant + ≥3 独立 anomaly (未被前 2 条 rule 抓) → "tenant-wide degradation"
+- Member 不重复使用：进入 Rule 1 的 request 不再进 Rule 2 / 3, 避免同 anomaly 被多次聚类
+- `combined_evidence` 保留 `_from_request_id` + `_from_anomaly_kind` 让审计可追溯
+- Cluster priority 自动 `high` (≥ 2 members 已超过单异常基线)
+- `cluster_to_search_request` 输出与单 anomaly request 兼容: `triggered_by="anomaly_cluster"` (与 anomaly_threshold 区分), `anomaly_kind=cluster_kind`, 额外字段 `cluster_member_request_ids` / `cluster_anomaly_kinds` / `cluster_target_modules`
+- `SupervisorService.observe` 在每次 emit 前调 `_maybe_cluster` —— 新 request 入 recent buffer (limit 20) 后跑聚类，若有 cluster → 额外 emit 1 个 cluster request；走自己的 dedup (`tenant:cluster:kind:module`) 1h 不重复
+- `__init__.py` export `AnomalyCluster` / `cluster_anomalies` / `cluster_to_search_request`
+
+**关键决策**：
+- **3 条规则按优先级 + Member 不重用**：先抓最强的 module_systemic (同 module 多 kind = 该 module 系统性问题)，再抓 cross_module_pattern (设计层问题)，最后兜底 tenant_degradation。member 进入前者的 cluster 后不再进后者 — 避免一个 anomaly 被多个 cluster 重复"算账"
+- **Cluster 自带 dedup_key**：`tenant:cluster:kind:module` 让同 cluster 1h 内不重复触发 — 否则每次 observe 都会发现同 cluster
+- **`triggered_by="anomaly_cluster"` 字段**：Strategist 收到时可知道这是系统性问题, 不应该走单 anomaly 的 Explorer Pool 而是走 LLM Strategist (L5+) 或 forward 设计层改动
+- **`severity=strong` + `escalation_path=[role, task, gate]`**：cluster 默认 strong (≥2 anomaly), 跳过 weak/mid 直接给 Gate. Cluster 本身就是 escalation signal
+- **`recent_emitted_requests` 滑动 buffer (limit 20)**：保留最近 20 个 request 跑聚类 — 太多让 cluster_anomalies O(n²) 慢; 太少抓不到跨时间聚类
+- **不在 observe 主路径同步 cluster_to_search_request**：cluster 是"次生事件", 不阻塞主 anomaly 信号回 caller; 它走自己的 emit 路径
+- **member_request_ids 用 set 不丢序但 sorted**: 用 set 集去重, sorted 让 dev_log 稳定可读
+
+**14 + 1 个新单测**覆盖：3 个 prefix helper / 4 条 rule (无 cluster 单 request / 无 cluster 不相关 / Rule 1 / Rule 2 / Rule 2 前缀差异不形成 / Rule 3 / 跨 tenant 隔离) / member 不重用 / combined_evidence 追溯 / cluster_to_search_request 形状 + dedup_key / SupervisorService 集成验证 (3 task.failed + 1 task.done duration_outlier → 同 module 多 kind → cluster emit)。1110/1110 unit tests pass，ruff clean。
+
+**为下一步**：L5.2 promotion_queue 超时规则 —— 候选 > N 天未晋级 → 重审或 expire。
+
+---
+
+## L5.2 · Promotion Queue 超时规则
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 改造 `kun/governance/promotion_queue.py`（之前 stub 化）：
+  - `evaluate_capability_timeout(capability, now, stale_threshold_days)` pure 函数：返回 `TimeoutCheckResult(expired, stale, days_in_state, days_until_deadline, recommended_action)`
+  - 4 档 recommended_action: `keep` (fresh) / `re_evaluate` (stale 但未过 deadline) / `mark_expired` (过 deadline) / `advance` (ready state 待 Gate enable)
+  - 支持 ISO 字符串 timestamp + 无 tzinfo 当 UTC（容错优先, 与 L3.3 capability_history 同源）
+  - `RuntimeCapability` model 增 `last_state_change_at` + `awaiting_human_review` 加入 `PromotionState` Literal
+- `PromotionTimeoutSweeper` 周期扫描器:
+  - `capability_reader: Callable[[], Awaitable[list[dict]]]` 注入读取器（DB / fake）
+  - `state_writer: Callable[[capability_id, payload], Awaitable[None]]` 写更新 (expired)
+  - `search_emitter: Callable[[payload], Awaitable[None]]` 写 reaudit search_request
+  - `sweep()` 单次扫描 → 报告 `{scanned, expired, stale, search_requests_emitted, results}`
+- `_build_reaudit_search_request(capability, result, now)` 输出与 Supervisor cluster 兼容的 strategy_search_request:
+  - `triggered_by="promotion_timeout"`
+  - `anomaly_kind="promotion_expired"` (deadline 过) or `"promotion_stale"` (停留过久)
+  - `priority="high"` (expired) or `"medium"` (stale)
+  - `severity="strong"` (expired) or `"mid"` (stale)
+  - `dedup_key=tenant:promotion_timeout:capability_id` per-capability 唯一
+- 三个 callback 失败语义清楚: reader 失败 → 返回 error 报告但不抛；state_writer / search_emitter 失败 → log warning 不打挂 sweep 主路径
+
+**关键决策**：
+- **`evaluate_capability_timeout` 是 pure 函数**：让单测零 mock; sweeper class 只负责 IO orchestration
+- **`stale` 和 `expired` 两档语义不同**：stale = "在该 state 停留过久" (e.g. in_canary 卡 7 天) → 推 reaudit search; expired = "超过 promotion_deadline 总期限" (e.g. 14 天没走完) → state 强制 expired + 推 reaudit search. 两者都触发 reaudit, 区别在是否动 state
+- **ready state stale 不算 reaudit**：ready 是"等 Gate enable"的合理 state, 单 Gate 慢不是 capability 自己的错; recommended_action="advance" 推 Gate 操作
+- **iso 字符串 timestamp 容错**：与 L3.3 `select_repair_direction` 同思路 — 数据从 DB 读出来可能是 string, 不强求 datetime 对象, 内部转换
+- **reader 失败返回 error 报告但不抛**：sweep 是 idle-batch 周期调用, 单次失败不应该让整个 batch 任务挂掉; log + return error 让上游 retry
+- **state_writer / search_emitter 失败 swallow**：单 capability 写失败不影响其他 capability 的扫描; 错误进 log, 下次 sweep 再处理
+- **`promotion_state="awaiting_human_review"` 加入 PromotionState Literal**：L3.5 Gate self-referential awaiting_human_review 写 row 时 state 值需要在 PromotionState 类型里，否则违反 Literal 类型约束
+
+**16 个新单测**覆盖：fresh 不 expired/stale / past deadline expired / stale after threshold / ready advance / ready+stale 仍 advance / ISO 字符串 / 无 tzinfo / days_in_state 计算 / sweeper empty list / 标 expired + emit / 仅 stale 推 reaudit 不动 state / 混合 capabilities / reader 异常 / state_writer 异常吞 / search_emitter 异常吞 / dataclass 字段。1126/1126 unit tests pass，ruff clean。
+
+**为下一步**：L5.3 监督线高优触发通道 —— Supervisor cluster (L5.1) + promotion_timeout (L5.2) 通过专门通道直接推 Strategist, 跳过普通 search_request 队列, 优先消费。
+
+---
+
+## L5.3 · Priority Channel (高优触发通道)
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/governance/priority_channel.py`：`PriorityTier` Literal + `PriorityClassification` frozen dataclass + 4 个 pure 函数
+- `classify_request_priority(request)` 静态规则:
+  - `triggered_by="anomaly_cluster"` → `urgent` (boosted) — L5.1 cluster 系统性问题
+  - `triggered_by="promotion_timeout"` + `anomaly_kind="promotion_expired"` → `urgent` (boosted) — L5.2 capability 卡死
+  - `triggered_by="promotion_timeout"` + `anomaly_kind="promotion_stale"` → `high` (boosted)
+  - `triggered_by="anomaly_threshold"` → 跟随 base priority (high/medium/low)
+- `prioritize_requests(requests)` pure 函数: 返回 `[(request, classification), ...]` 按 (tier, created_at) 排序; urgent 在前, 同 tier 内 FIFO
+- `split_by_tier(requests)` 4 桶分流; 空 list 也保留 4 个空桶 — 让 Strategist 可批量按桶取
+- `is_high_priority_channel(request)` 便捷 predicate (urgent/high → True)
+- `__init__.py` export 全部 6 个名字
+
+**关键决策**：
+- **纯 pure functions + classification dataclass**：不引入 async queue / 持久化层 — 入参 list of requests 出 sorted/bucketed 结果, 让 Strategist / DB consumer 任意接。**最小依赖, 最大灵活性**
+- **`urgent` 不分 cluster vs expired**：两者都 "影响 RSI 闭环" 一档 — cluster 是系统性多 anomaly 同时出现, expired 是 capability 完全卡死. 都需要 Strategist 第一个处理
+- **`promotion_stale` 在 `high` 而非 `urgent`**：stale 是"卡但未死", 可以继续 try; expired 才是"完全没希望了"
+- **同 tier 内 FIFO 而非 LIFO**：先来的 request 先处理 — 防 starvation. 同 tier 都是同等紧急, 不应该让"今天到达的"插队"昨天到达的"
+- **`boosted` 字段在 classification**：让 audit / log 能看出"这条 request 是因为 systemic 信号被提升的"vs "本来就是 high priority"，方便追溯
+- **`split_by_tier` 4 桶都返回 (即使空)**：consumer 可以做"先看 urgent 桶有没有, 再看 high 桶..." 而不需要先 check key 存在
+- **不在 `prioritize_requests` 输出里去重**：dedup 是 Supervisor 端的责任 (dedup_key); Priority Channel 只负责排序
+
+**18 个新单测**覆盖：classify 7 case (cluster urgent / promotion_expired urgent / promotion_stale high / 3 个 base priority 透传 / missing priority 默认 medium) / is_high_priority_channel 4 case / prioritize empty + urgent 优先 + FIFO + 全 4 tier 顺序 + 缺 created_at 容错 / split_by_tier 桶 + 空桶。1144/1144 unit tests pass，ruff clean。
+
+**为下一步**：L5.4 自创 RSI 请求生成 — cluster + RCDH diagnostic 综合产生 rich strategy_search_request, 给 Strategist 更丰富 evidence 帮它选 candidate。
+
+---
+
+## L5.4 · 自创 RSI 请求生成 (cluster + RCDH 综合)
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- 新建 `kun/agents/supervisor/self_created_request.py`：`enrich_with_diagnostic(request, diagnostic)` 与 `build_self_created_request(cluster_payload, diagnostic)` 两个 pure 函数
+- `_ACTION_TO_LEVEL_HINT` 映射 RCDH `recommended_action` → Strategist 应选 `target_level`:
+  - `redesign` → 0 (设计层) / `activate` → 1 (激活层) / `module_rsi` → 2 (模块层) / `code_fix` → 3 (代码层)
+- `_ACTION_TO_EXPLORER_HINT` 映射 → 推荐 Explorer mode:
+  - `redesign` → aggressive / `activate` → conservative / `module_rsi` → conservative / `code_fix` → performance
+- enrich 输出字段：`diagnostic_id` / `rcdh_root_cause_level` / `rcdh_recommended_action` / `rcdh_scope_modules` / `target_level_hint` / `explorer_mode_hint`
+- 只追加 `is_root_cause=True` 的 RCDH evidence，带 `_from_rcdh_level` 和 `_from_diagnostic_id` 追溯标签
+- `recommended_action` 缺时, fallback 用 `root_cause_level` 作 `target_level_hint`（不出 `explorer_mode_hint`，由 Strategist 决定）
+- 不 mutate 入参 — 原 request / diagnostic dict 不被修改
+
+**关键决策**：
+- **enrich 是 pure 函数**：不依赖 SupervisorService instance / DB / LLM. 调用方在拿到 cluster + diagnostic 后调一次, 输出新 dict 直接喂 Strategist
+- **`target_level_hint` 字段而非直接改 priority/severity**：Strategist 看到 hint 可以决定要不要 follow（e.g. 已有更精确的 candidate generator 可能忽略 hint）。**不强制结合下游决策**
+- **`explorer_mode_hint` 是 hint 不是 constraint**：与 L4.1 ExplorerPoolConfig 配合 — Strategist 可优先 hint mode, 但 Pool config 仍可决定哪些 mode 启用
+- **`_ACTION_TO_LEVEL_HINT` 字典就近 module-level**：让映射规则可单独 grep 改, 不藏在 function body
+- **只追加 is_root_cause=True 的 evidence**：noise filter — L0/L2/L3 各有 evidence 但只 root_cause 那一层的有意义。如果都追加, Strategist 接到 evidence 一长串大部分无关
+- **不 mutate input dict**：dict(payload) 浅拷贝 + 追加. 让 caller 可同时持有"原 cluster request"（log 用）和"enriched request"（Strategist 喂）
+
+**11 个新单测**覆盖：enrich 没 diagnostic 返 copy / 添 rcdh fields / 4 action 映射 target_level / 3 action 映射 explorer_mode / fallback to root_level / evidence 带 source tag / 非 root_cause level evidence 不追加 / 不 mutate input / build_self_created_request 包装行为 / 保留 cluster member ids。1155/1155 unit tests pass，ruff clean。
+
+**为下一步**：L5.5 End-to-end wiring — 让 SupervisorService.observe 接 RCDH 调用, 自动产 enrich 后的请求 + 用 Priority Channel 排序。
+
+---
+
+## L5.5 · End-to-end wiring (Supervisor + RCDH + Priority Channel)
+
+**完成**：2026-05-27 / commit pending
+
+**做了什么**：
+- `SupervisorService` 增 `diagnostic_runner: DiagnosticRunner | None = None` 参数（与 emitter / notification_sender 同样依赖注入模式）
+- `DiagnosticRunner` type: `Callable[[symptom, target_module, evidence], Awaitable[dict | None]]`
+- `_enrich_cluster_requests`：cluster 触发时对每个 cluster request 调 `diagnostic_runner(symptom, target_module, evidence)` → 通过 `enrich_with_diagnostic` 合并到 cluster request
+- 在 `observe()` 流程中 `_maybe_cluster` 输出后调 `_enrich_cluster_requests`（仅当 diagnostic_runner 注入时）
+- diagnostic_runner 异常 → log warning + fallback 到原 cluster request, 不阻塞 emit
+- 5 个新单测 e2e wiring + Priority Channel 集成：
+  - diagnostic_runner 被调 + RCDH 字段进 cluster request
+  - diagnostic_runner 抛异常 → fallback 无 enrich (graceful)
+  - 无 diagnostic_runner → 原 cluster request 不变 (backward-compat)
+  - cluster request 在 Priority Channel 中 classify 为 urgent
+  - prioritize_requests 排序: urgent 严格在 non-urgent 之前
+
+**关键决策**：
+- **diagnostic_runner 默认 None**：不强制 Supervisor 接 RCDH —— 测试环境 / 早期阶段可以纯 cluster 不 enrich
+- **fail-graceful in `_enrich_cluster_requests`**：diagnostic_runner 异常 → 用原 cluster request fallback。RCDH 本身可能 unreliable (新模块 / 数据少 / LLM 抖), 不应让它阻塞主路径
+- **每个 cluster request 独立 diagnose**：批 cluster_requests 中可能有不同 target_module/anomaly_kind, 不能一次 diagnose 应用所有. 逐条调
+- **symptom 由 anomaly_kind + target_module 拼装**：让 RCDH 的 keyword matching 有上下文; 避免空 symptom 走 RCDH 默认 narrow_scope
+- **不在 propose_candidates 也接 RCDH**：Strategist 接到的 request 已经 enriched, 不需要它再调 RCDH（避免重复诊断）
+
+**5 个新单测**覆盖：diagnostic_runner 调 + enrich / diagnostic_runner 异常 fallback / 无 runner backward-compat / cluster urgent classification / prioritize ordering。1160/1160 unit tests pass，ruff clean。
+
+**为下一步**：L5.6 L5 验收 + retrospective + 3 新 methodology seeds.

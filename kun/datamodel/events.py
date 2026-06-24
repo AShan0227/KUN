@@ -100,9 +100,14 @@ class Event(BaseModel):
         task_ref: str | None = None,
         causation_event_id: str | None = None,
     ) -> Event:
-        """Construct an event with the standard subject format."""
-        domain, _, _ = event_type.partition(".")
-        subject = f"kun.{tenant_id}.{domain}.{event_type}"
+        """Construct an event with the standard subject format.
+
+        Subject convention is ``kun.{tenant}.{domain}.{event}`` (module docstring).
+        ``event_type`` is already ``{domain}.{event}`` (e.g. ``task.started``), so the
+        subject is ``kun.{tenant}.{event_type}``. Audit F095: the old code prepended
+        ``{domain}.`` again, producing a duplicated segment (``...task.task.started``).
+        """
+        subject = f"kun.{tenant_id}.{event_type}"
         return cls(
             tenant_id=tenant_id,
             event_type=event_type,

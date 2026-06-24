@@ -1,0 +1,127 @@
+topic: promotion_lifecycle_sweeper_with_reaudit_signal
+title: capability 晋级周期扫描 — 4 档 action + reaudit search_request 闭环
+description: |
+  capability promotion 是状态机 (merged → in_replay → in_shadow →
+  in_canary → ready → enabled), 但状态机可能"卡住" — capability 长期
+  停在某 state 不进不退. 工程化 sweeper 周期扫所有 active capability,
+  对卡住的 capability 自动发 reaudit 信号让 Strategist 重审.
+
+  4 档 recommended_action:
+
+    1. **keep**: fresh capability, 还在合理时间窗内 → 不动
+    2. **re_evaluate**: stale (same state ≥ threshold days) →
+       推 reaudit search_request, **不动 state** (允许继续 try)
+    3. **mark_expired**: 超过 promotion_deadline 总期限 →
+       state="expired" + 推 reaudit search_request
+    4. **advance**: state="ready" 等 Gate enable →
+       推 reminder (advance, 不算超时)
+
+trigger:
+  conditions:
+    - 系统有"状态机推进"逻辑 (capability promotion, task lifecycle 等)
+    - 状态有合理超时窗口 (deadline / per-state stale threshold)
+    - 状态可能"卡住"需要外部信号介入重新评估
+
+action:
+  pattern:
+    - rule: pure 函数 evaluate_timeout
+      do: |
+        def evaluate_timeout(item, now, stale_threshold):
+            return TimeoutCheckResult(
+                expired=now >= item.deadline,
+                stale=days_in_state >= stale_threshold,
+                recommended_action=...
+            )
+      why: |
+        pure 函数让单测零 mock; sweeper class 只负责 IO orchestration.
+    - rule: dependency injection 三件套
+      do: |
+        class TimeoutSweeper:
+            def __init__(self, *,
+                         reader: Callable[[], list[Item]],
+                         state_writer: Callable[[id, payload], Awaitable],
+                         search_emitter: Callable[[payload], Awaitable]):
+                ...
+      why: |
+        reader 读 active items, state_writer 写状态变更, search_emitter
+        推 reaudit 信号. 各自可独立 fake / DB writer.
+    - rule: 双档 stale vs expired
+      do: |
+        # stale: 推 reaudit, 不动 state (允许继续 try)
+        # expired: 推 reaudit + state="expired" (state machine 终止)
+      why: |
+        卡但活 vs 完全卡死 处理不同. 单一 timeout 会混淆.
+    - rule: 失败 graceful, 不阻塞 sweep
+      do: |
+        try:
+            await reader()
+        except Exception:
+            return {"scanned": 0, "error": str(e)}
+        for item in items:
+            try:
+                await state_writer(...)
+            except Exception:
+                log.warning(...)
+                # 继续下一个 item, 不打挂整个 sweep
+      why: |
+        sweeper 是 idle-batch 周期调用, 单 item 失败不应让整个 batch 任务挂.
+    - rule: reaudit search_request 与 anomaly request 同结构
+      do: |
+        {
+            "triggered_by": "promotion_timeout",
+            "anomaly_kind": "promotion_expired" or "promotion_stale",
+            "priority": "high" if expired else "medium",
+            "severity": "strong" if expired else "mid",
+            "dedup_key": f"{tenant}:promotion_timeout:{capability_id}",
+            ...
+        }
+      why: |
+        Strategist 收到时与普通 anomaly request 同结构, 无需特判.
+        priority + severity 区分 expired vs stale.
+
+  anti_patterns:
+    - 单一 timeout (没 stale/expired 分档) — 信号语义混乱
+    - sweeper 不 emit reaudit search — 卡的 capability 没人重审
+    - reader 失败让 sweep 整体挂 — 单次扫错让后续永不跑
+    - state_writer 失败让单 capability 阻塞其他 — 单点失败放大
+
+rationale: |
+  KUN L5.2 实测:
+
+    fresh → keep (95% items)
+    stale (≥ 7 days in state) → re_evaluate (推 reaudit)
+    expired (> 14 days total) → mark_expired (state + reaudit)
+    ready → advance (Gate 推醒, 不算超时)
+
+  与 L5.3 Priority Channel 配合: promotion_expired → urgent tier,
+  让 Strategist 优先处理"完全卡死"的 capability.
+
+  这是 RSI 闭环的"自愈"机制 — 没人提的 capability 也能被监督线发现,
+  自动转 reaudit 任务. 与 anomaly 信号同 channel (strategy_search_request)
+  让上游消费者统一处理.
+
+evidence:
+  - source: kun/governance/promotion_queue.py
+    date: 2026-05-27
+    phase: L5.2
+    notes: |
+      evaluate_capability_timeout pure 函数 + PromotionTimeoutSweeper
+      class 三件套 dependency injection. 16 个 unit test 覆盖各 action.
+
+confidence: 0.85  # 1 个 sweeper 验证, 双档 stale/expired 测试齐全
+applicability:
+  scopes:
+    - lifecycle_state_machine_sweep
+    - dormant_feature_detection
+    - timeout_reaudit_pattern
+  do_not_apply_when:
+    - 状态机无 timeout 概念 (state 永远合法)
+    - sweep 频率 < 状态变化频率 (sweep 跟不上)
+    - 没有"重新评估"机制 (reaudit search_request 无人消费)
+
+related_methodologies:
+  - sliding_window_with_deque_purge
+  - frozen_dataclass_agent_io_contract
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

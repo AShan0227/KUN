@@ -286,10 +286,3 @@ async def _rollback_version(ctx: HandlerContext, params: dict[str, Any]) -> None
             .values(status="rolled_back", rollout_percent=0)
         )
     log.info("watchtower.action.rollback", experiment_id=experiment_id)
-
-
-@register_handler("cache_ttl_escalate")
-async def _cache_ttl_escalate(ctx: HandlerContext, params: dict[str, Any]) -> None:
-    """Switch prompt cache tier to extended 1-hour beta (ADR-016)."""
-    log.info("watchtower.action.cache_ttl_escalate", tier=params.get("tier", "stable"))
-    # Real impl would flip a config flag; for now we just emit.

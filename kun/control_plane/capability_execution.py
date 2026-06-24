@@ -88,6 +88,61 @@ def build_capability_execution_policy(
     )
 
 
+def ensure_policy_covers_required_capabilities(
+    policy: CapabilityExecutionPolicy,
+    required_capability_refs: Sequence[str],
+    *,
+    work_item_id: str,
+) -> CapabilityExecutionPolicy:
+    """Add work-item-scoped executable directives for required capability refs.
+
+    Default runtime capability profiles are governed globally, while a concrete
+    work item may carry task-specific required refs.  Those refs still need an
+    executable receipt before a runner can honestly claim capability activation.
+    """
+
+    missing_refs = [
+        ref
+        for ref in _dedupe(required_capability_refs)
+        if ref not in policy.capability_profile_refs
+    ]
+    uncovered_refs = [
+        ref
+        for ref in _dedupe(required_capability_refs)
+        if ref
+        not in {
+            capability_ref
+            for directive in policy.directives
+            for capability_ref in directive.capability_refs
+        }
+    ]
+    if not missing_refs and not uncovered_refs:
+        return policy
+
+    synthetic_directives = [
+        CapabilityExecutionDirective(
+            directive_id=f"directive-runner-required-{_slug(ref)}-{_slug(work_item_id)}",
+            category="runner",
+            capability_refs=[ref],
+            summary=(
+                "Apply this work-item required capability through the runtime prompt, "
+                "artifact record, and gate receipt."
+            ),
+            runtime_hooks=["prompt", "artifact_record", "gate_evaluation"],
+        )
+        for ref in uncovered_refs
+    ]
+    return policy.model_copy(
+        update={
+            "capability_profile_refs": _dedupe([*policy.capability_profile_refs, *missing_refs]),
+            "source_versions": _dedupe(
+                [*policy.source_versions, f"work_item_required:{work_item_id}"]
+            ),
+            "directives": _dedupe_directives([*policy.directives, *synthetic_directives]),
+        }
+    )
+
+
 def _directives_for_profile(profile: CapabilityProfile) -> list[CapabilityExecutionDirective]:
     text = _profile_text(profile)
     refs = [profile.capability_id]
@@ -274,4 +329,5 @@ __all__ = [
     "CapabilityExecutionDirective",
     "CapabilityExecutionPolicy",
     "build_capability_execution_policy",
+    "ensure_policy_covers_required_capabilities",
 ]

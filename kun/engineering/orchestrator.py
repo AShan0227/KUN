@@ -25,9 +25,11 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
-from kun.brain.intent import IntentInterpreter
-from kun.brain.planner import TaskPlanner
-from kun.brain.router import TaskRouter
+from kun.agents.director.intent import IntentInterpreter, _is_long_task
+from kun.agents.director.planner import TaskPlanner
+from kun.agents.director.role_router import TaskRouter
+from kun.agents.gate.capability_writeback import Outcome, TaskOutcome, record_outcome
+from kun.agents.tester.validation import ValidationPipeline, pick_tier
 from kun.context.packer import ContextPacker
 from kun.core.config import settings
 from kun.core.db import session_scope
@@ -44,13 +46,11 @@ from kun.datamodel.events import Event
 from kun.datamodel.notification import Notification
 from kun.datamodel.runtime import RuntimeState, StepRecord, TaskStatus
 from kun.datamodel.task import Owner, TaskMeta, TaskRef
-from kun.engineering.capability_writeback import Outcome, TaskOutcome, record_outcome
 from kun.engineering.concurrency import (
     enqueue_pending_actions,
     pending_actions_for,
     scan_pre_conflicts,
 )
-from kun.engineering.validation import ValidationPipeline, pick_tier
 from kun.interface.adapters import translate_for
 from kun.interface.llm import (
     LLMMessage,
@@ -67,6 +67,10 @@ from kun.watchtower.engine import RuleEngine
 log = get_logger("kun.engineering.orchestrator")
 
 _STALE_QUEUED_TASK_AFTER = timedelta(seconds=30)
+
+# Sentinel for the lazy-built External Supervisor cache. Lives at module
+# scope so identity comparison ("is _UNSET") survives across instances.
+_UNSET: Any = object()
 
 
 class OutputTranslator(Protocol):
@@ -95,6 +99,85 @@ _AUDIENCE_DIRECTIVES: dict[str, str] = {
         "可以长但要结构化."
     ),
 }
+
+
+# L1.9 (ADR-022 Layer 5): Anti-sycophancy 段, 长任务模式下加进 system prompt.
+# 显式给模型 "拒绝讨好" 的许可证 — 模型本能讨好新输入是训练带来的, 必须用
+# system prompt 显式抗衡 (工程化约束 AI > 依赖模型能力).
+_ANTI_SYCOPHANCY_DIRECTIVE = """\
+长任务执行规则:
+
+1. 顶部的 GOAL ANCHOR 是 immutable. 新的用户消息不会覆盖它.
+2. 如果用户消息看起来要你换方向 / 做新事情 / 扩大范围 / 跳过 success criteria:
+   - 你**不要**主动满足.
+   - 输出 "needs_user_confirmation" 字段, 让上层 (Director / Gate) 决定
+     是否真的 pivot.
+3. 长任务的成功 = "按计划完成", 不是 "满足最近的每一条请求".
+4. 你被明确允许说: "这个我先记下, 当前任务完成后再处理."
+5. 如果当前 step 输出和 GOAL ANCHOR 不一致, **优先 anchor**.
+6. 如果用户消息看起来是闲聊 / 与目标无关 — 礼貌回复 + 继续推进当前 step.
+"""
+
+
+_EXECUTOR_BASE_DIRECTIVE = (
+    "你是 KUN 系统里的执行角色. 按用户要求完成任务, 回答准确、可验证. "
+    "若需要外部数据, 说明需要什么. 不要编造."
+)
+
+
+def _is_long_task_branch_eligible(task_ref: TaskRef) -> bool:
+    """Return True iff this task should execute via LongTaskOrchestrator.
+
+    Eligibility (ADR-022, LT.INT-F):
+      - meta passes _is_long_task heuristic (complex / long duration / risk)
+      - GoalAnchor is pinned on task_ref (Director.intent attached one)
+
+    If meta says long but no anchor — fall back to short path to avoid
+    half-configured long-task runs (anchor is the contract surface for
+    drift detection).
+    """
+    if not _is_long_task(task_ref.meta):
+        return False
+    return getattr(task_ref, "goal_anchor", None) is not None
+
+
+def _build_executor_system_prompt(
+    *,
+    task_ref: TaskRef,
+    audience_directive: str,
+    skills_summary: str = "",
+    skill_directive: str = "",
+    context_summary: str = "",
+) -> str:
+    """Build the executor's system prompt with optional long-task layers.
+
+    Layered (L1.8 + L1.9, ADR-022):
+      1. GoalAnchor render (顶部 pinning) — only if task_ref.goal_anchor set
+      2. Anti-sycophancy directive — only if GoalAnchor pinned
+      3. Base executor directive
+      4. Audience directive (R-N3 voice tier)
+      5. Skills summary / skill directive / context summary (optional)
+
+    Long-task mode 的 1+2 在最顶部 — prompt truncation 优先切尾部, 这两层不会丢.
+    """
+    system_parts: list[str] = []
+    goal_anchor = getattr(task_ref, "goal_anchor", None)
+    if goal_anchor is not None:
+        # ADR-022 Layer 2 (顶部 pinning) + Layer 5 (anti-sycophancy)
+        system_parts.append(goal_anchor.render_for_system_prompt())
+        system_parts.append(_ANTI_SYCOPHANCY_DIRECTIVE)
+
+    system_parts.append(_EXECUTOR_BASE_DIRECTIVE)
+    system_parts.append(audience_directive)
+
+    if skills_summary:
+        system_parts.append(skills_summary)
+    if skill_directive:
+        system_parts.append(skill_directive)
+    if context_summary:
+        system_parts.append(context_summary)
+
+    return "\n\n".join(system_parts)
 
 
 # OTel tracer — best-effort, lazy-initialized; no-op if SDK isn't wired.
@@ -160,6 +243,7 @@ class Orchestrator:
         validation: ValidationPipeline | None = None,
         context_packer: ContextPacker | None = None,
         output_translator: OutputTranslator | None = None,
+        external_supervisor: Any | None = None,
     ) -> None:
         self.llm_router = llm_router or get_router()
         self.intent = IntentInterpreter(self.llm_router)
@@ -170,6 +254,49 @@ class Orchestrator:
         self.skill_selector = get_skill_selector()
         self.context_packer = context_packer or ContextPacker()
         self.output_translator = output_translator or translate_for
+        # LT.WIRE-1: optional external supervisor (process-separate local LLM).
+        # When None, LongTaskOrchestrator silently skips drift cross-check.
+        # When still None at _run_long_task_branch entry, the orchestrator
+        # lazily attempts to build one from settings via
+        # _maybe_build_external_supervisor (LT.WIRE-2).
+        self.external_supervisor = external_supervisor
+        # Sentinel cache for the lazy-built supervisor. Distinct from None so
+        # we can distinguish "not yet attempted" from "attempted and got None".
+        self._external_supervisor_cached: Any = _UNSET
+
+    async def _maybe_build_external_supervisor(self) -> Any | None:
+        """Lazy build ExternalSupervisorService when enabled in settings.
+
+        Cached in ``self._external_supervisor_cached`` so each call after the
+        first returns the same instance (or the same ``None`` decision). The
+        sentinel ``_UNSET`` distinguishes "not yet attempted" from "attempted
+        and decided not to build" — a one-time build attempt per Orchestrator
+        instance.
+
+        Returns:
+          The constructed ``ExternalSupervisorService`` if
+          ``settings.external_supervisor_enabled`` is True and ``build_service``
+          succeeded; ``None`` if disabled or if the build failed (a warning
+          is logged in that case).
+        """
+        if self._external_supervisor_cached is not _UNSET:
+            return self._external_supervisor_cached
+
+        cfg = settings()
+        if not cfg.external_supervisor_enabled:
+            self._external_supervisor_cached = None
+            return None
+        try:
+            from kun.external_supervisor.runner import build_service
+
+            svc = await build_service()
+            self._external_supervisor_cached = svc
+            log.info("long_task.external_supervisor.built")
+            return svc
+        except Exception as e:
+            log.warning("long_task.external_supervisor.build_failed", error=str(e))
+            self._external_supervisor_cached = None
+            return None
 
     # ----------------------------- public entry -----------------------------
 
@@ -177,7 +304,11 @@ class Orchestrator:
         """Non-streaming entry. Useful for tests / HTTP POST."""
         final: TaskResult | None = None
         async for ev in self.stream(user_message, output_kind=output_kind):
-            if ev.kind == "done":
+            # Only the canonical terminal carries a TaskResult under "result".
+            # The long-task path can surface a second "done" with a different
+            # shape ({...,"cancelled":...}); guarding on the key avoids a
+            # KeyError crash if one slips through (audit F027).
+            if ev.kind == "done" and "result" in ev.data:
                 final = TaskResult.model_validate(ev.data["result"])
         if final is None:
             raise RuntimeError("orchestrator exited without a done event")
@@ -283,10 +414,13 @@ class Orchestrator:
                             task_type=task_ref.meta.task_type,
                             risk_level=task_ref.meta.risk_level,
                             complexity_score=task_ref.meta.complexity_score,
+                            complexity=task_ref.meta.complexity,
+                            priority_profile=task_ref.meta.priority_profile,
                             user_id=owner.user_id,
                             project_id=owner.project_id,
                             estimated_cost_usd=task_ref.meta.estimated_cost_usd,
                             estimated_duration_sec=task_ref.meta.estimated_duration_sec,
+                            estimated_steps=task_ref.meta.estimated_steps,
                             deadline_iso=task_ref.meta.deadline_iso,
                             success_criteria_short=task_ref.meta.success_criteria_short,
                             version=task_ref.meta.version,
@@ -555,6 +689,25 @@ class Orchestrator:
             task_started_total.labels(
                 tenant_id=tenant.tenant_id, task_type=task_ref.meta.task_type
             ).inc()
+
+        # 6.5 LT.INT-F: Long-task branching (ADR-022).
+        # When the task is long-task mode AND has a pinned GoalAnchor, route
+        # through the LongTaskOrchestrator (ExecutorLoop + checkpoint + plan_review
+        # + compaction + recursive planner). Otherwise fall through to the
+        # existing short-task one-shot path below.
+        if _is_long_task_branch_eligible(task_ref):
+            async for ev in self._run_long_task_branch(
+                task_ref=task_ref,
+                user_message=user_message,
+                tenant=tenant,
+                runtime=runtime,
+                choice=choice,
+                t0=t0,
+                output_kind=output_kind,
+                force_fallback=force_fallback,
+            ):
+                yield ev
+            return
 
         # 7. Select candidate skills (L1 summary injected into step prompt)
         context_pack = await self.context_packer.pack(
@@ -951,6 +1104,35 @@ class Orchestrator:
                                     "reason": aggregated.reason,
                                 },
                             )
+                            # Push a side-channel alert so the user sees this in
+                            # NUO — answer still returned (status="done") but
+                            # marked as unverified. Best-effort: notification
+                            # failure must not break the task pipeline.
+                            try:
+                                from kun.engineering.notifications import (
+                                    push as push_notification,
+                                )
+
+                                await push_notification(
+                                    Notification(
+                                        tenant_id=tenant.tenant_id,
+                                        kind="alert",
+                                        severity="medium",
+                                        channel="side",
+                                        title="任务通过但未通过验证",
+                                        body=(
+                                            f"validation tier={tier} score={validation_score:.2f} "
+                                            f"reason={aggregated.reason}"
+                                        ),
+                                        task_ref=task_ref.meta.task_id,
+                                    )
+                                )
+                            except Exception as e:
+                                log.warning(
+                                    "validation.notification_failed",
+                                    error=str(e),
+                                    task_id=task_ref.meta.task_id,
+                                )
                         else:
                             yield OrchestratorEvent(
                                 kind="insight",
@@ -962,9 +1144,19 @@ class Orchestrator:
                                 },
                             )
                 except Exception as e:
-                    log.warning("validation.failed", error=str(e))
+                    # Validation infrastructure failure — don't silently treat
+                    # as pass. Flip the outcome to "partial" so capability
+                    # writeback sees something happened, and log at ERROR.
+                    log.error(
+                        "validation.infrastructure_failure",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        task_id=task_ref.meta.task_id,
+                        tier=tier,
+                    )
+                    validation_outcome = "partial"
 
-        # 7.5 Capability card writeback (ADR-018 §16.4 KnowledgePrecipitation)
+        # 7.5 Capability card writeback (ADR-024 RSI step 4 — 闭环"执行→能力卡→路由")
         outcome: Outcome = validation_outcome
         rubric_5 = validation_score * 5.0 if validation_score is not None else None
         try:
@@ -1031,6 +1223,329 @@ class Orchestrator:
             data={"result": result.model_dump(mode="json")},
         )
 
+    # ---------------------------- long-task branch (LT.INT-F) ----------------------------
+
+    async def _run_long_task_branch(
+        self,
+        *,
+        task_ref: TaskRef,
+        user_message: str,
+        tenant: Any,
+        runtime: RuntimeState,
+        choice: Any,
+        t0: float,
+        output_kind: str,
+        force_fallback: bool,
+    ) -> AsyncIterator[OrchestratorEvent]:
+        """Long-task execution branch — assembled lazily to avoid heavy imports.
+
+        Wires LT.A-F services via integration adapters, runs LongTaskOrchestrator,
+        bridges its events into the main OrchestratorEvent stream, then performs
+        the same post-execution tail as the short-task path (capability writeback +
+        TaskResult persistence + answer/done events).
+        """
+        # Lazy imports — keep short-task import surface clean
+        from kun.engineering.agent_loop import build_skill_directive
+        from kun.engineering.long_task_orchestrator import LongTaskOrchestrator
+        from kun.integration.checkpoint_db import (
+            make_checkpoint_reader,
+            make_checkpoint_status_marker,
+            make_checkpoint_writer,
+        )
+        from kun.integration.llm_invoker import make_llm_invoker
+        from kun.integration.llm_summarizer import make_llm_summarizer
+        from kun.integration.plan_review_db import make_plan_review_writer
+        from kun.integration.tool_executor import make_tool_executor
+        from kun.skills.dispatcher import is_registered as _skill_is_registered
+
+        # LT.TOOLS-GAP fix: build skill directive so LLM 知道有哪些工具可用.
+        # Short-task path 早就这么做; long-task path 之前漏接 → LLM 0 工具 schema
+        # 立刻给空 final answer (dogfood 跑出来的 bug).
+        skill_candidates = self.skill_selector.select(task_ref, top_k=5)
+        skill_summaries = [
+            (s.skill_id, s.manifest.description, dict(s.manifest.input_schema or {}))
+            for s in skill_candidates
+            if _skill_is_registered(s.skill_id)
+        ]
+        skill_directive = build_skill_directive(skill_summaries) if skill_summaries else ""
+
+        # Build LLM profile reflecting current task + budget posture
+        llm_profile = TaskProfile(
+            task_type=task_ref.meta.task_type,
+            risk_level=task_ref.meta.risk_level,
+            needs_reasoning=(task_ref.meta.complexity_score >= 0.5),
+            force_fallback=force_fallback,
+        )
+
+        # plan_review_writer_factory expects (tenant_id, task_id, anchor_id)
+        # — adapt make_plan_review_writer's signature.
+        def _make_pr_writer(*, tenant_id: str, task_id: str, anchor_id: str) -> Any:
+            return make_plan_review_writer(tenant_id, task_id, anchor_id)
+
+        # LT.WIRE-2: resolve external supervisor service — caller-injected wins,
+        # otherwise lazily build from settings.external_supervisor_enabled.
+        external_supervisor = self.external_supervisor
+        if external_supervisor is None:
+            external_supervisor = await self._maybe_build_external_supervisor()
+
+        # V7 Phase X.B.MF-2: opt-in multi-LLM ensemble via env-driven factory.
+        # When KUN_V7_ENSEMBLE_ENABLED=true and KUN_V7_ENSEMBLE_TIERS has ≥2
+        # distinct cross-family providers, use ensemble; otherwise fall back
+        # to single-LLM (preserves backward compat for default deployments).
+        # Audit grep: kun/integration/ensemble_invoker_factory.py:
+        #   build_ensemble_invoker_from_settings
+        from kun.integration.ensemble_invoker_factory import (
+            build_ensemble_invoker_from_settings,
+        )
+
+        ensemble_invoker = build_ensemble_invoker_from_settings(
+            router=self.llm_router,
+            purpose="execution",
+            profile=llm_profile,
+            tenant_id=tenant.tenant_id,
+        )
+        if ensemble_invoker is not None:
+            chosen_invoker = ensemble_invoker
+        else:
+            chosen_invoker = make_llm_invoker(
+                self.llm_router, purpose="execution", profile=llm_profile
+            )
+
+        # V7 Phase X.H.PROD-ENTRY-WIRE: the runtime feature bundle is the
+        # **single hub** that ensures every opt-in long-task feature
+        # (trifecta / methodology / critique cadence) is plumbed at this
+        # production entry. Before X.H this entry silently omitted these
+        # three features even though they existed as ctor params; the
+        # bundle makes omission impossible without a code review-visible
+        # deletion. See docs/dev_logs/X.H-self-audit-rootcause.md for the
+        # 5 root causes this addresses, and
+        # tests/integration/test_production_entry_runtime_bundle.py for
+        # the CI guard that asserts bundle keys ⊆ orchestrator ctor params.
+        from kun.engineering.long_task_runtime_bundle import (
+            LongTaskRuntimeBundle,
+        )
+
+        runtime_bundle = LongTaskRuntimeBundle.from_env_defaults(
+            llm_router=self.llm_router,
+            external_supervisor=external_supervisor,
+        )
+        lt_orch = LongTaskOrchestrator(
+            llm_invoker=chosen_invoker,
+            tool_executor=make_tool_executor(),
+            checkpoint_writer=make_checkpoint_writer(),
+            checkpoint_reader=make_checkpoint_reader(),
+            checkpoint_status_marker=make_checkpoint_status_marker(),
+            # LT.WIRE-1: persist plan_reviews + run External Supervisor on drift
+            plan_review_writer_factory=_make_pr_writer,
+            external_supervisor_service=external_supervisor,
+            # LT.WIRE-2: real LLM summarizer for compaction (replaces rule-based)
+            compactor_summarizer=make_llm_summarizer(self.llm_router, purpose="compression"),
+            # X.H.PROD-ENTRY-WIRE: every opt-in runtime feature flows through here
+            **runtime_bundle.as_orchestrator_kwargs(),
+        )
+
+        # Collect events from LongTaskOrchestrator (they have identical
+        # OrchestratorEvent shape — local vs global model, same kind+data).
+        collected: list[OrchestratorEvent] = []
+
+        async def _on_lt_event(lt_ev: Any) -> None:
+            # The branch emits its own canonical terminal answer/done (with the
+            # "result" shape) at the end. The LongTaskOrchestrator also emits its
+            # own answer/done ({...,"cancelled":...}, no "result"); replaying
+            # those duplicated the terminal events and crashed non-streaming
+            # run() on ev.data["result"]. Drop LT terminals here (audit F027).
+            if lt_ev.kind in ("answer", "done"):
+                return
+            collected.append(OrchestratorEvent(kind=lt_ev.kind, data=dict(lt_ev.data)))
+
+        # LT.TOOLS-GAP: inject skill_directive so LLM sees tool schemas.
+        extra_segments = [skill_directive] if skill_directive else []
+        # X.O Bug-1 fix — the production WS entry now extracts the actual
+        # changed file paths from the executor's tool-call history and
+        # feeds them into the X.I-3-FIX ProductionEntryDiffChecker. Before
+        # this, the checker received actual=[] and always emitted
+        # 'no_declaration' — exactly the failure mode the X.O self-audit
+        # caught.
+        #
+        # The data source is the LoopResult's final_messages. Since we
+        # need the messages BEFORE calling run_long_task (chicken-and-egg),
+        # we capture them via a post-run pre-pass and call run_long_task
+        # again? No — simpler: run_long_task now accepts a callback that
+        # the orchestrator calls with the executor's running message log.
+        # For minimal-touch impl in this commit we extract from the
+        # outcome's loop_result.final_messages after the run, then
+        # re-evaluate diff there. The fix lives inside run_long_task
+        # itself so the WS path doesn't have to know the details — but the
+        # entry STILL must pass actual_production_entry_changes so the
+        # plumbing is end-to-end. We do a 2-phase: first run, then post-
+        # run extract + emit a delayed event.
+        outcome = await lt_orch.run_long_task(
+            task_ref,
+            on_event=_on_lt_event,
+            extra_system_segments=extra_segments,
+            actual_production_entry_changes=None,  # X.O: post-run via outcome
+        )
+        # X.O: now extract from outcome and emit a post-run diff event so
+        # subscribers see the verdict with REAL actual paths, not None.
+        try:
+            from kun.engineering.extract_changed_paths import (
+                extract_changed_paths_from_messages,
+            )
+            from kun.governance.production_entry_diff_check import (
+                ProductionEntryDiffChecker,
+            )
+
+            actual_paths = extract_changed_paths_from_messages(
+                outcome.loop_result.final_messages or []
+            )
+            declared_paths = (
+                list(getattr(task_ref.spec, "production_entry_changes_required", []) or [])
+                if task_ref.spec is not None
+                else []
+            )
+            post_report = ProductionEntryDiffChecker.check_against_actual(
+                declared_paths, actual_paths
+            )
+            collected.append(
+                OrchestratorEvent(
+                    kind="long_task.production_entry_diff_postrun",
+                    data={
+                        "verdict": post_report.verdict,
+                        "declared": post_report.declared,
+                        "actual": post_report.actual,
+                        "matched": post_report.matched,
+                        "declared_but_unchanged": post_report.declared_but_unchanged,
+                        "changed_but_undeclared": post_report.changed_but_undeclared,
+                        "has_drift": post_report.has_drift,
+                    },
+                )
+            )
+        except Exception as e:
+            log.warning(
+                "orchestrator.post_run_diff_failed",
+                error=f"{type(e).__name__}: {e}",
+            )
+
+        # Replay collected events into the main stream
+        for ev in collected:
+            yield ev
+
+        # Map LoopResult.status → TaskStatus + capability outcome.
+        # TaskStatus literal: queued / running / paused / done / failed / cancelled.
+        # partial / max_steps / budget_exceeded → 'failed' (closest valid bucket);
+        # the underlying nuance is preserved in the answer text + last events.
+        status_map: dict[str, TaskStatus] = {
+            "final": "done",
+            "max_steps": "failed",
+            "budget_exceeded": "failed",
+            "wall_clock_exceeded": "failed",
+            "stuck": "failed",
+            "failed": "failed",
+            "user_cancelled": "cancelled",
+        }
+        loop_result = outcome.loop_result
+        task_status: TaskStatus = status_map.get(loop_result.status, "failed")
+        # Capability writeback wants 'pass' / 'partial' / 'fail'
+        outcome_label: Outcome = (
+            "pass"
+            if loop_result.status == "final"
+            else (
+                "partial"
+                if loop_result.status in ("max_steps", "budget_exceeded", "wall_clock_exceeded")
+                else "fail"
+            )
+        )
+
+        # Translate answer for output audience — compute raw_answer first so
+        # validation has something to grade.
+        raw_answer = (
+            loop_result.final_text
+            if loop_result.status == "final"
+            else (loop_result.error or loop_result.rationale or "长任务未完成")
+        )
+
+        # Validation parity with short-task path step 7.4. Emit "insight" event
+        # so monitoring + tests that key off validation verdicts see the same
+        # contract. Only validate on successful completion; non-final stays at
+        # outcome_label='partial'/'fail' set above.
+        if task_status == "done" and raw_answer.strip():
+            tier = pick_tier(task_ref.meta)
+            if tier != "tier0":
+                try:
+                    results = await self.validation.validate_task(
+                        task_ref.meta,
+                        raw_answer,
+                        goal=task_ref.meta.success_criteria_short,
+                    )
+                    aggregated = ValidationPipeline.aggregate(results)
+                    if aggregated is not None:
+                        verdict = "passed" if aggregated.pass_ else "did_not_fully_pass"
+                        if not aggregated.pass_:
+                            outcome_label = "partial"
+                        yield OrchestratorEvent(
+                            kind="insight",
+                            data={
+                                "stage": "validation",
+                                "tier": tier,
+                                "verdict": verdict,
+                                "score": aggregated.score.value,
+                                "reason": aggregated.reason,
+                            },
+                        )
+                except Exception as e:
+                    log.error(
+                        "long_task.validation.infrastructure_failure",
+                        error=str(e),
+                        task_id=task_ref.meta.task_id,
+                    )
+                    outcome_label = "partial"
+
+        # Capability writeback (parity with short-task path step 7.5)
+        try:
+            await record_outcome(
+                tenant.tenant_id,
+                TaskOutcome(
+                    entity_type="role_template",
+                    entity_id=choice.role_template_id,
+                    task_type=task_ref.meta.task_type,
+                    outcome=outcome_label,
+                    cost_usd=loop_result.total_cost_usd,
+                    duration_sec=loop_result.elapsed_seconds,
+                ),
+            )
+        except Exception as e:
+            log.warning("long_task.capability.writeback_failed", error=str(e))
+        translated = await self._translate_answer(
+            answer=raw_answer,
+            task_ref=task_ref,
+            tenant=tenant,
+            status=task_status,
+            output_kind=output_kind,
+        )
+
+        result = TaskResult(
+            task_id=task_ref.meta.task_id,
+            status=task_status,
+            answer=translated,
+            cost_usd_actual=loop_result.total_cost_usd,
+            cost_usd_equivalent=loop_result.total_cost_usd,
+            tokens_in=loop_result.total_tokens,
+            tokens_out=0,
+            duration_sec=loop_result.elapsed_seconds,
+        )
+
+        async with session_scope() as s:
+            await _persist_task_result(s, tenant_id=tenant.tenant_id, result=result)
+
+        yield OrchestratorEvent(
+            kind="answer",
+            data={"content": translated, "task_id": task_ref.meta.task_id},
+        )
+        yield OrchestratorEvent(
+            kind="done",
+            data={"result": result.model_dump(mode="json")},
+        )
+
     # ---------------------------- helpers ----------------------------
 
     async def _translate_answer(
@@ -1085,18 +1600,14 @@ class Orchestrator:
         # R-N3: pick a voice tier based on the caller's audience preference.
         audience = profile.audience if profile else "developer"
         audience_directive = _AUDIENCE_DIRECTIVES.get(audience, _AUDIENCE_DIRECTIVES["developer"])
-        system_parts = [
-            "你是 KUN 系统里的执行角色. 按用户要求完成任务, 回答准确、可验证. "
-            "若需要外部数据, 说明需要什么. 不要编造.",
-            audience_directive,
-        ]
-        if skills_summary:
-            system_parts.append(skills_summary)
-        if skill_directive:
-            system_parts.append(skill_directive)
-        if context_summary:
-            system_parts.append(context_summary)
-        system_prompt = "\n\n".join(system_parts)
+
+        system_prompt = _build_executor_system_prompt(
+            task_ref=task_ref,
+            audience_directive=audience_directive,
+            skills_summary=skills_summary,
+            skill_directive=skill_directive,
+            context_summary=context_summary,
+        )
         # User-turn body: standard execution prompt + any proactive tool
         # prefetch results (proactive_tools.py layer 1).
         user_content = _execution_user_prompt(
@@ -1510,13 +2021,29 @@ def _compute_surprise_score(meta: TaskMeta, runtime: RuntimeState) -> float:
     """ADR-015 formula:
     surprise = 0.35*cost_dev + 0.20*step_dev + 0.25*path_novelty + 0.20*quality_dev.
     Walking skeleton: path_novelty and quality_dev = 0 (we don't have baselines yet).
+
+    When meta has no estimate (estimated_cost_usd <= 0 or total_planned_steps <= 0)
+    the corresponding deviation contributes 0 — log a warning so we know the
+    score is partial, instead of silently masking missing estimates as "no
+    surprise". The score itself is bounded to [0, 1].
     """
     cost_dev = 0.0
+    step_dev = 0.0
+    missing: list[str] = []
     if meta.estimated_cost_usd > 0:
         cost_dev = max(0.0, runtime.accumulated_cost_usd_equivalent / meta.estimated_cost_usd - 1.0)
-    step_dev = 0.0
+    else:
+        missing.append("estimated_cost_usd")
     if runtime.total_planned_steps > 0:
         step_dev = max(0.0, runtime.current_step / runtime.total_planned_steps - 1.0)
+    else:
+        missing.append("total_planned_steps")
+    if missing:
+        log.warning(
+            "surprise_score.partial",
+            task_id=meta.task_id,
+            missing=missing,
+        )
     score = 0.35 * cost_dev + 0.20 * step_dev
     return min(1.0, score)
 

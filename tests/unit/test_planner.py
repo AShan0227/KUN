@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from kun.brain.planner import PlanStep, TaskPlanner
+from kun.agents.director.planner import PlanStep, TaskPlanner
 from kun.datamodel.task import Constraint, Owner, Risk, TaskMeta, TaskRef, TaskSpec
 from kun.interface.llm.base import LLMRequest, LLMResponse
 
@@ -56,10 +56,10 @@ async def test_planner_uses_task_spec_for_multi_step_plan() -> None:
     plan = await TaskPlanner().plan(task)
 
     assert [step.skill_hint for step in plan.steps] == [
-        "task.boundary_check",
+        None,  # boundary_check no longer hints a non-existent skill
         "coding-pytest",
         "coding-sqlalchemy",
-        "task.validation",
+        None,  # task.validation skill_hint removed (no such skill)
     ]
     assert "约束" in plan.steps[0].description
     assert "cached answer" in plan.steps[-1].description
@@ -129,9 +129,9 @@ async def test_planner_falls_back_when_llm_json_is_bad() -> None:
     plan = await TaskPlanner().plan(_complex_task(), router=router)
 
     assert [step.skill_hint for step in plan.steps] == [
-        "task.boundary_check",
+        None,
         "code-review",
-        "task.validation",
+        None,  # task.validation skill_hint removed (no such skill)
     ]
 
 
@@ -168,7 +168,7 @@ async def test_planner_falls_back_when_llm_returns_cycle() -> None:
 
     assert isinstance(plan.steps[0], PlanStep)
     assert [step.skill_hint for step in plan.steps] == [
-        "task.boundary_check",
+        None,
         "code-review",
-        "task.validation",
+        None,  # task.validation skill_hint removed (no such skill)
     ]

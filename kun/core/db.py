@@ -15,7 +15,11 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 from kun.core.config import settings
-from kun.core.tenancy import current_tenant
+from kun.core.logging import get_logger
+from kun.core.metrics import tenant_cross_access_attempt
+from kun.core.tenancy import current_tenant, current_tenant_or_none
+
+log = get_logger("kun.db")
 
 # Naming convention for constraints — keeps alembic migrations deterministic.
 NAMING_CONVENTION = {
@@ -87,6 +91,31 @@ def get_admin_sessionmaker() -> async_sessionmaker[AsyncSession]:
     return _admin_sessionmaker
 
 
+def _record_cross_tenant_attempt(*, tenant_id: str | None, bypass_rls: bool) -> None:
+    """Detect + record a cross-tenant access attempt (audit F005).
+
+    An explicit ``tenant_id`` overrides the RLS GUC, so opening a non-bypass
+    session for tenant B while the ambient request identity is tenant A operates
+    on B's data — exactly the cross-tenant access the metric must catch (RLS
+    cannot stop it; the GUC is set to B). bypass_rls sessions are the sanctioned
+    admin/system path and are exempt. Detection + CRITICAL log + metric only; it
+    does not block (enforcement is a separate hardening step).
+    """
+    if bypass_rls or not tenant_id:
+        return
+    explicit = tenant_id.strip()
+    if not explicit:
+        return
+    ambient = current_tenant_or_none()
+    if ambient is not None and ambient.tenant_id != explicit:
+        tenant_cross_access_attempt.labels(from_tenant=ambient.tenant_id, to_tenant=explicit).inc()
+        log.warning(
+            "security.cross_tenant_access_attempt",
+            from_tenant=ambient.tenant_id,
+            to_tenant=explicit,
+        )
+
+
 @asynccontextmanager
 async def session_scope(
     *,
@@ -100,10 +129,15 @@ async def session_scope(
     must opt into bypass_rls explicitly, which uses the admin DSN instead of a
     user-settable "bypass" flag.
     """
+    _record_cross_tenant_attempt(tenant_id=tenant_id, bypass_rls=bypass_rls)
     maker = get_admin_sessionmaker() if bypass_rls else get_sessionmaker()
     async with maker() as s:
         try:
-            await _set_rls_context(s, tenant_id=tenant_id)
+            # bypass_rls = admin/system session (outbox poller, NATS subscriber,
+            # GC) that is intentionally cross-tenant; it must NOT fall back to
+            # current_tenant() — in production that raises MissingTenantContext
+            # and crashed those workers every tick (audit F026).
+            await _set_rls_context(s, tenant_id=tenant_id, require_tenant=not bypass_rls)
             yield s
             await s.commit()
         except Exception:
@@ -115,8 +149,18 @@ async def _set_rls_context(
     session: AsyncSession,
     *,
     tenant_id: str | None = None,
+    require_tenant: bool = True,
 ) -> None:
-    effective_tenant_id = (tenant_id or "").strip() or current_tenant().tenant_id
+    explicit = (tenant_id or "").strip()
+    if explicit:
+        effective_tenant_id = explicit
+    elif require_tenant:
+        # App session: a tenant is mandatory (raises in production if absent).
+        effective_tenant_id = current_tenant().tenant_id
+    else:
+        # bypass_rls system session with no explicit tenant — don't scope to a
+        # tenant GUC at all (admin role; intentionally cross-tenant).
+        return
     await session.execute(
         text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
         {"tenant_id": effective_tenant_id},

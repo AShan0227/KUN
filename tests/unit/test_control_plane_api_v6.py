@@ -32,12 +32,23 @@ def _app() -> FastAPI:
     return app
 
 
-def _payload(*, approved: bool = True) -> dict[str, object]:
+def _payload(
+    *,
+    approved: bool = True,
+    task_type: Literal[
+        "product_development",
+        "research_evidence",
+        "ops_tooling",
+        "collaboration",
+        "external_action",
+        "self_improvement",
+    ] = "product_development",
+) -> dict[str, object]:
     mission = Mission(
         mission_id="msn-api-v6",
         owner="customer",
         objective="Deliver a traceable result",
-        task_type="product_development",
+        task_type=task_type,
         status="contracted",
     )
     plan = TaskPlan(
@@ -166,6 +177,20 @@ def _materialize_api_evidence(
     return artifact
 
 
+def _register_api_capability_mission(runtime) -> None:
+    mission = Mission(
+        mission_id="msn-api-capability",
+        owner="kun",
+        objective="Govern API capability promotion",
+        task_type="self_improvement",
+        status="learning_writeback",
+        current_plan_version="v6",
+    )
+    runtime.missions[mission.mission_id] = mission
+    if runtime.store is not None:
+        runtime.store.put_mission(mission)
+
+
 @pytest.mark.unit
 def test_control_plane_api_submits_and_reports_progress() -> None:
     client = TestClient(_app())
@@ -220,7 +245,7 @@ def test_control_plane_api_cockpit_surfaces_daemon_service_state() -> None:
         status="running",
         started_at=datetime(2026, 5, 19, 8, 0, tzinfo=UTC),
         updated_at=datetime.now(UTC),
-        process_id=1234,
+        process_id=os.getpid(),
         tick_count=2,
         active_mission_ids=["msn-api-v6"],
         last_heartbeat_at=datetime.now(UTC),
@@ -248,7 +273,7 @@ def test_control_plane_api_persists_and_loads_daemon_service_status(tmp_path) ->
         status="running",
         started_at=datetime(2026, 5, 19, 8, 0, tzinfo=UTC),
         updated_at=datetime.now(UTC),
-        process_id=1234,
+        process_id=os.getpid(),
         tick_count=3,
         active_mission_ids=["msn-api-v6"],
         last_heartbeat_at=datetime.now(UTC),
@@ -268,6 +293,29 @@ def test_control_plane_api_persists_and_loads_daemon_service_status(tmp_path) ->
     assert loaded.json()["state"]["daemon_id"] == "daemon-api"
     assert loaded.json()["state"]["tick_count"] == 3
     assert loaded.json()["healthy"] is True
+    assert loaded.json()["process_alive"] is True
+
+
+@pytest.mark.unit
+def test_control_plane_api_flags_missing_daemon_process() -> None:
+    app = _app()
+    app.state.v6_daemon_service_state = DaemonServiceState(
+        daemon_id="daemon-api",
+        status="running",
+        started_at=datetime(2026, 5, 19, 8, 0, tzinfo=UTC),
+        updated_at=datetime.now(UTC),
+        process_id=999_999_999,
+        last_heartbeat_at=datetime.now(UTC),
+    )
+    client = TestClient(app)
+
+    status = client.get("/api/control-plane/v6/daemon-service/status")
+
+    assert status.status_code == 200
+    assert status.json()["healthy"] is False
+    assert status.json()["stale"] is False
+    assert status.json()["process_alive"] is False
+    assert "进程已经不存在" in status.json()["text"]
 
 
 @pytest.mark.unit
@@ -427,7 +475,10 @@ def test_control_plane_api_distills_external_behavior_to_qi_candidates() -> None
 @pytest.mark.unit
 def test_control_plane_api_productionizes_external_behavior_into_default_runtime() -> None:
     client = TestClient(_app())
-    submit = client.post("/api/control-plane/v6/missions", json=_payload())
+    submit = client.post(
+        "/api/control-plane/v6/missions",
+        json=_payload(task_type="self_improvement"),
+    )
     assert submit.status_code == 200
     distilled = client.post(
         "/api/control-plane/v6/external-behavior/signals",
@@ -508,6 +559,7 @@ def test_control_plane_api_applies_capability_promotion_without_loading_replay_b
     assert replay_response.status_code == 200
     assert replay_response.json()["default_runtime_enabled"] is False
     assert client.get("/api/control-plane/v6/runtime-capabilities/default").json() == []
+    _register_api_capability_mission(cast(FastAPI, client.app).state.v6_control_plane)
 
     production_promotion = build_capability_promotion(
         candidate,

@@ -1,0 +1,63 @@
+topic: production-path-wiring-audit
+title: "声称'接到生产'前必须 grep 生产入口的真实例化, 不是仅 import"
+description: |
+  V7 §16 hard rule: "凡是不能进入真实生产链路的功能, 都不算完成". 这条
+  rule 之前用 "grep import" 检查, 但 X.E / X.G / DIST-D 都证明:
+  非测试代码 import 一个 class 可以只是 type hint, 不等于 production
+  entry 真实例化它. 三次重复同一个失败模式 (X.B.MF-1 audit method
+  granularity 错位) 之后, 这条 retrofit seed 把检查升级到 "生产入口实例化
+  / 调用" 层级.
+
+  正确的 audit 程序:
+    1. 找 docs/PRODUCTION_ENTRIES.md 看 KUN 当前生产入口名单
+    2. 对每个 entry, grep 真实例化语句 (e.g. `LongTaskOrchestrator(`
+       而不是 `from kun.engineering.long_task_orchestrator import`)
+    3. 确认新加的特性参数真在 instantiation kwargs 里
+    4. 如果 entry 使用 `**bundle.kwargs()` spread, 确认特性在 bundle 里
+    5. CI 测试 tests/integration/test_production_entry_runtime_bundle.py
+       自动做这件事 — 不要绕过
+
+trigger:
+  - condition: "commit message 想写'Closes V7.PHASE-X.X' / '接到生产'类 claim"
+  - condition: "PR 描述说'feature 已 wired'"
+  - condition: "在 dev log 写 retrospective '这个 feature 现在生产可用'"
+  - condition: "Reviewer 问 '真用户从 WS 发任务会触发这个 feature 么'"
+
+action:
+  - "grep -n 'NEW_FEATURE_NAME' kun/engineering/orchestrator.py (列入 docs/PRODUCTION_ENTRIES.md 的入口)"
+  - "如果 match 在 instantiation kwargs 里 → 算 wire 上"
+  - "如果 match 只在 import / type hint / 注释 → ⛔ 没 wire, 还是孤儿"
+  - "把 grep 输出粘进 commit message + retrospective subsection"
+  - "如果 entry 用 `**bundle.kwargs()`, 把 feature 加入 bundle 而不是直接修 entry"
+  - "确认 tests/integration/test_production_entry_runtime_bundle.py 通过"
+
+anti_pattern:
+  - "grep import 找到非测试代码 = 算 wire (X.E / X.G / DIST-D 都犯过此错)"
+  - "看 unit test 通过 = 算 production 真用 (test fixture 是 caller, 不是生产 entry)"
+  - "dogfood script 跑通 = 算 production 真用 (脚本是手动 demo, 不是 user-facing entry)"
+  - "把 'class 加了 ctor 参数' 当 '生产已 wire'"
+  - "不更新 docs/PRODUCTION_ENTRIES.md 就加新 entry (绕过 inventory)"
+
+evidence:
+  - dogfood: "X.E retrospective 写 'TrifectaCoordinator wired into LongTaskOrchestrator', 但 grep orchestrator.py 显示生产入口没传 trifecta_coordinator → 3 个 release 一直是孤儿"
+  - dogfood: "X.G retrospective 写 'RSI closed loop demonstrated', 但相同生产入口没传 methodology_selector → real user 任务读不到 promoted methodologies"
+  - dogfood: "X.H 自检发现, 撰写时间 2026-05-29, 5 root causes 中 R1 + R5 直接对应这种 audit granularity drift"
+  - source: "docs/dev_logs/X.H-self-audit-rootcause.md (R1, R5 chapters)"
+  - source: "tests/integration/test_production_entry_runtime_bundle.py (CI 守卫)"
+  - source: "docs/PRODUCTION_ENTRIES.md (生产入口 inventory)"
+
+confidence: high
+applicability:
+  - "任何 LongTaskOrchestrator 新 ctor 参数"
+  - "任何新 service / coordinator / selector 想接入长任务"
+  - "任何 V7 §16 'production-loop closure' 验收"
+  - "回顾过去 commit 是否真 wire (audit retrofit)"
+
+related_methodologies:
+  - "opt_in_feature_must_be_consumed_at_production_entry"
+  - "grep_verify_before_assume"
+  - "service_module_not_wired_to_runtime_audit"
+  - "production_loop_real_pg_e2e_chain"
+
+distilled_from: "X.H self-audit (long-promised since X.B.MF-1, finally shipped)"
+created_at: "2026-05-29"

@@ -25,6 +25,19 @@ EntityKind = Literal[
     "notification",  # nt-
     "rule",  # rl-
     "action",  # act-
+    # L5 治理层 (ADR-021 / ADR-022 / ADR-024)
+    "goal_anchor",  # ga-  · GoalAnchor (ADR-022)
+    "diagnostic",  # dx-  · DiagnosticRecord (ADR-021)
+    "plan_review",  # pr-  · PlanReview (ADR-022)
+    "evidence",  # ev_l-· EvidenceLedger entry (ADR-024)
+    "strategy_search",  # ss-  · StrategySearchRequest (ADR-024)
+    "experiment_run",  # er-  · runtime_experiments (ADR-024)
+    "capability_promo",  # cp-  · runtime_capabilities (ADR-024)
+    "task_checkpoint",  # tcp- · TaskCheckpoint (LT.C, ADR-022 持久化)
+    "bug_case",  # bc-  · BugRootCase (alembic 0013, RCDH 案例库)
+    "lifecycle_transition",  # lct- · CapabilityLifecycleTransition (V7 §15 Phase D)
+    "ensemble_call",  # enc- · EnsembleCall log (V7 §11.4 Phase X.B.ENS)
+    "discipline_report",  # dr-  · EngineeringDisciplineReport (V7.1 §4.3, X.S)
 ]
 
 _PREFIX: Final[dict[EntityKind, str]] = {
@@ -42,6 +55,19 @@ _PREFIX: Final[dict[EntityKind, str]] = {
     "notification": "nt",
     "rule": "rl",
     "action": "act",
+    # L5 治理层
+    "goal_anchor": "ga",
+    "diagnostic": "dx",
+    "plan_review": "pr",
+    "evidence": "ev_l",
+    "strategy_search": "ss",
+    "experiment_run": "er",
+    "capability_promo": "cp",
+    "task_checkpoint": "tcp",
+    "bug_case": "bc",
+    "lifecycle_transition": "lct",
+    "ensemble_call": "enc",
+    "discipline_report": "dr",
 }
 
 

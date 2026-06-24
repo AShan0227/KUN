@@ -284,21 +284,22 @@ async def scan_pre_conflicts(
 def derive_resource_intents(task_ref: TaskRef) -> list[ResourceIntent]:
     """Derive conservative resource intents from TASK.md L1/L2."""
     intents: dict[str, ResourceIntent] = {}
+    has_side_effect = _task_has_side_effect(task_ref)
 
     if task_ref.meta.owner.project_id:
         _put_intent(
             intents,
             ResourceIntent(
                 resource=f"project:{_normalize(task_ref.meta.owner.project_id)}",
-                mode="write" if _task_has_side_effect(task_ref) else "read",
+                mode="write" if has_side_effect else "read",
                 reason="task owner project",
             ),
         )
 
     if task_ref.spec is not None:
-        _add_spec_intents(intents, task_ref.spec)
+        _add_spec_intents(intents, task_ref.spec, has_side_effect=has_side_effect)
 
-    if _task_has_side_effect(task_ref):
+    if has_side_effect:
         root = task_ref.meta.task_type.split(".", 1)[0]
         _put_intent(
             intents,
@@ -394,7 +395,7 @@ def _derive_resource_intents_from_task_row(row: TaskRow) -> list[ResourceIntent]
             ),
         )
     if spec:
-        _add_spec_dict_intents(intents, spec)
+        _add_spec_dict_intents(intents, spec, has_side_effect=has_side_effect)
     if has_side_effect:
         root = row.task_type.split(".", 1)[0]
         _put_intent(
@@ -408,7 +409,12 @@ def _derive_resource_intents_from_task_row(row: TaskRow) -> list[ResourceIntent]
     return list(intents.values())
 
 
-def _add_spec_intents(intents: dict[str, ResourceIntent], spec: TaskSpec) -> None:
+def _add_spec_intents(
+    intents: dict[str, ResourceIntent],
+    spec: TaskSpec,
+    *,
+    has_side_effect: bool,
+) -> None:
     _add_tool_intents(intents, spec.required_tools)
     _add_external_resource_intents(intents, spec.external_resources)
     for constraint in spec.constraints:
@@ -417,13 +423,18 @@ def _add_spec_intents(intents: dict[str, ResourceIntent], spec: TaskSpec) -> Non
                 intents,
                 ResourceIntent(
                     resource=f"path:{_normalize(constraint.detail)}",
-                    mode="write",
+                    mode="write" if has_side_effect else "read",
                     reason="path_only constraint",
                 ),
             )
 
 
-def _add_spec_dict_intents(intents: dict[str, ResourceIntent], spec: dict[str, Any]) -> None:
+def _add_spec_dict_intents(
+    intents: dict[str, ResourceIntent],
+    spec: dict[str, Any],
+    *,
+    has_side_effect: bool,
+) -> None:
     _add_tool_intents(intents, [str(item) for item in spec.get("required_tools") or []])
     _add_external_resource_intents(
         intents,
@@ -437,7 +448,7 @@ def _add_spec_dict_intents(intents: dict[str, ResourceIntent], spec: dict[str, A
                 intents,
                 ResourceIntent(
                     resource=f"path:{_normalize(str(raw_constraint.get('detail', 'unknown')))}",
-                    mode="write",
+                    mode="write" if has_side_effect else "read",
                     reason="path_only constraint",
                 ),
             )
@@ -544,6 +555,36 @@ def _has_side_effect_text(text: str) -> bool:
     return bool(_matched_action_types(text))
 
 
+_NEGATION_PREFIXES_CN = ("不", "未", "勿", "禁止", "不得", "不要", "莫")
+_NEGATION_PREFIXES_EN = (
+    "don't ",
+    "do not ",
+    "never ",
+    "not ",
+    "no ",
+    "won't ",
+    "without ",
+)
+# 检查匹配关键词前 N 个字符内是否有否定词. 中文最近 1-2 字, 英文最近 ~10 字符
+_NEG_LOOKBEHIND_CN = 4
+_NEG_LOOKBEHIND_EN = 16
+
+
+def _is_negated_match(text: str, match_start: int) -> bool:
+    """Check if the keyword match at `match_start` is preceded by a negation.
+
+    Eliminates false-positives like "不得删除" / "未发送" / "don't deploy".
+    """
+    if match_start == 0:
+        return False
+    cn_window = text[max(0, match_start - _NEG_LOOKBEHIND_CN) : match_start]
+    for neg in _NEGATION_PREFIXES_CN:
+        if neg in cn_window:
+            return True
+    en_window = text[max(0, match_start - _NEG_LOOKBEHIND_EN) : match_start].lower()
+    return any(neg in en_window for neg in _NEGATION_PREFIXES_EN)
+
+
 def _matched_action_types(text: str) -> set[str]:
     normalized = text.lower()
     ascii_search_text = re.sub(r"[_\-.]+", " ", normalized)
@@ -551,10 +592,17 @@ def _matched_action_types(text: str) -> set[str]:
     for keyword, action_type in _SIDE_EFFECT_KEYWORDS.items():
         if keyword.isascii():
             pattern = rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])"
-            if re.search(pattern, ascii_search_text):
-                matched.add(action_type)
-        elif keyword in normalized:
-            matched.add(action_type)
+            for m in re.finditer(pattern, ascii_search_text):
+                if not _is_negated_match(ascii_search_text, m.start()):
+                    matched.add(action_type)
+                    break
+        else:
+            idx = normalized.find(keyword)
+            while idx != -1:
+                if not _is_negated_match(normalized, idx):
+                    matched.add(action_type)
+                    break
+                idx = normalized.find(keyword, idx + len(keyword))
     return matched
 
 

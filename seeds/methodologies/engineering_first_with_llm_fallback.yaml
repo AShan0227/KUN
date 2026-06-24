@@ -1,0 +1,106 @@
+topic: engineering_first_with_llm_fallback
+title: 工程化规则优先, LLM 兜底 — 热路径不烧 token
+description: |
+  自动系统里高频调用 (路由 / 分类 / 阈值检测 / 自嗨检测 / 异常归因) 用
+  engineering rules 当主路径, LLM 只在工程化规则信号不够时调用兜底.
+  这是 token 控制 + 决定性 + 测试覆盖 的协同设计.
+
+  反模式: 每个判断都问 LLM. 这会让:
+    1. token 成本爆炸 (每事件 1k input 起步)
+    2. 每条决定都有概率波动, 难单测
+    3. LLM 慢 (500ms-5s/call) 把热路径卡住
+
+trigger:
+  conditions:
+    - 一个判定/分类/路由/阈值检测每秒 ≥ 1 次
+    - 决定确定性要求高 (相同输入应稳定相同输出 ≥ 90% 时间)
+    - 单元测试需要覆盖每条决策路径
+  applicable_contexts:
+    - LLM Router tier 决定
+    - 异常阈值 spike 检测
+    - 输入 Input Classifier (噪音/澄清/换任务/扩展范围)
+    - 自嗨/假通过检测
+    - RCDH 4 级诊断层级
+    - Gate 准入决策
+
+action:
+  pattern:
+    - rule: 工程化规则覆盖明显模式
+      do: |
+        关键词/阈值/正则规则覆盖 80% 显然情况.
+        每条规则 1-3 行代码, 独立单测.
+    - rule: LLM 只在工程化信号不足时调
+      do: |
+        if engineering_signals == 0 and not force:
+            return engineering_result  # 不调 LLM
+        # 否则调 LLM 兜底
+    - rule: 工程化判定保留 evidence list
+      do: |
+        即使 LLM 兜底, 工程化 evidence 也保留下来.
+        让 LLM verdict 可与工程化 signal 交叉验证.
+    - rule: ≥ 2 工程化 signal 共现才视为强信号
+      do: |
+        单 signal 噪声大, 双信号才稳. avoid trigger-happy.
+  anti_patterns:
+    - 每个事件都 prompt LLM 让它做 "你觉得这个是 X 还是 Y" 分类
+    - 没有 engineering signal evidence, 只看 LLM verdict
+    - 一调用 LLM 就把工程化规则当 fallback 不再发挥主路径作用
+
+rationale: |
+  实测数据 (KUN L2):
+    - Input Classifier 完全不调 LLM, 处理 ~1k 输入零 token 成本.
+    - 自嗨检测 0 signal 跳 LLM → 预计省 60-80% External Supervisor token.
+    - Gate admit 4 条 R1-R4 全部 engineering, 决策路径完全可单测.
+    - RCDH 4 级诊断纯 engineering 实装, 23 个 test 覆盖各路径.
+
+  把 LLM 当稀缺资源使用而不是"万能黑盒". LLM 适合做模糊判断
+  (open-ended evidence interpretation), 不适合做高频规则匹配.
+
+evidence:
+  - source: kun/agents/director/input_classifier.py
+    date: 2026-05-27
+    phase: L2.2
+    notes: |
+      6 类分类完全 regex + 关键词命中, 无 LLM. 13 个 test 覆盖中英文 + 5 类信号.
+
+  - source: kun/agents/supervisor/service.py
+    date: 2026-05-27
+    phase: L2.1
+    notes: |
+      4 种异常类型阈值检测, 完全工程化. Strategist 在 L2.7 接进来时也走 engineering rule.
+
+  - source: kun/external_supervisor/modes.py:check_self_aggrandizement
+    date: 2026-05-27
+    phase: L2.5
+    notes: |
+      自嗨检测: 5 条工程化规则; 0 signal + 非强制 → 跳 LLM. ≥ 2 signal OR
+      LLM alarming 才判 is_self_aggrandizing=True.
+
+  - source: kun/governance/rcdh.py:run_diagnostic
+    date: 2026-05-27
+    phase: L2.6
+    notes: |
+      RCDH 4 级诊断完全工程化, keyword + 路径 + capability_state.
+      LLM 兜底放 L3+ 闭环再上.
+
+  - source: kun/agents/gate/service.py:admit
+    date: 2026-05-27
+    phase: L2.8
+    notes: |
+      Gate 4 条规则 R1-R4 都是 engineering, 任何 LLM 兜底都没引入.
+      rule_results dict 保留每条独立 pass/fail.
+
+confidence: 0.92  # 实测 5 个独立 service 都按此设计, 一致跑通
+applicability:
+  scopes: [agent_design, llm_integration, hot_path_decisions, automated_systems]
+  do_not_apply_when:
+    - 决策本身是 open-ended generative (生成 plan / 写文章)
+    - 决策频率极低 (≤ 1 次/日), token 成本可忽略
+    - engineering rules 无法描述的模糊领域 (审美 / 意图理解)
+
+related_methodologies:
+  - conservative_sample_threshold  # 同样工程化优先
+  - paired_commit  # 同样: 工程化纪律驱动
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

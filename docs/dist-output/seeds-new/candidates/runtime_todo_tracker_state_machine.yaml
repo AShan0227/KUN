@@ -1,0 +1,46 @@
+topic: runtime_todo_tracker_state_machine
+title: 运行时 Todo 状态机让长任务焦点可观测
+description: |
+  对复杂任务，不只在开始时生成静态 plan，而是在运行时维护 todo 状态机。
+  每个 todo 有 pending / in_progress / completed / blocked 状态，同一任务同一时刻
+  最多一个 in_progress。agent 每完成一个原子工作单元就更新状态，并可按新证据
+  增加、拆分或重排 todo。
+trigger:
+  conditions:
+    - 长任务预计超过 5 个步骤
+    - 任务需要跨多轮执行或可恢复
+    - 用户或 supervisor 需要知道当前焦点
+action:
+  pattern:
+    - 建立 RuntimeTodoTracker，字段包含 task_id、todo_id、title、status、parent_id、created_at、updated_at
+    - 进入执行前创建 3 到 10 个初始 todo
+    - 每次状态变化 emit todo.updated 事件
+    - 强制同一 task_id 下 in_progress 数量小于等于 1
+    - plan 变化时追加或重排 todo，但保留历史状态
+  anti_patterns:
+    - 只在 prompt 里写计划，不持久化运行时状态
+    - 多个 todo 同时标 in_progress，导致焦点漂移
+    - 完成任务后不回写 completed，用户看不到进度
+    - 把静态 PlanStep 当作运行时状态机
+rationale: |
+  Claude Code 的 TodoWrite 让复杂任务始终有一个显式焦点。KUN 已有 TaskPlanner
+  与 RecursivePlanner，但还缺运行中可观测、可恢复、可重排的 todo tracker。
+evidence:
+  - source: docs/claude-code-engineering-manual.md
+    notes: TodoWrite 被描述为长任务拆解与可恢复状态机的核心能力。
+  - source: docs/dev_logs/LT-retrospective.md
+    notes: LT 阶段证明长任务需要 checkpoint、plan review、executor loop 等运行时状态。
+confidence: 0.88
+applicability:
+  scopes:
+    - long_task
+    - orchestration
+    - anti_drift
+  do_not_apply_when:
+    - 一步即可完成的简单问答
+    - 无需恢复或进度可观测的短任务
+related_methodologies:
+  - status_enum_over_bool_observability
+  - anchor_pinning_at_prompt_top
+distilled_from: claude-code-engineering-manual
+created_at: 2026-05-28

@@ -13,11 +13,14 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     PrimaryKeyConstraint,
     String,
     Text,
@@ -86,6 +89,11 @@ class TaskRow(Base):
     # Layer 1 fields
     estimated_cost_usd: Mapped[float] = mapped_column(nullable=False, default=0.0)
     estimated_duration_sec: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    estimated_steps: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # L1.7 (ADR-020/ADR-022) Director outputs — audit F135/F096: these lived on
+    # TaskMeta but had no columns, so they were silently dropped on persist.
+    complexity: Mapped[str] = mapped_column(String(16), nullable=False, default="simple")
+    priority_profile: Mapped[str] = mapped_column(String(16), nullable=False, default="cost_first")
     deadline_iso: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     success_criteria_short: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -314,7 +322,10 @@ class CapabilityCardRow(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "entity_type IN ('role_template', 'model', 'skill', 'tool', 'human', 'external_agent')",
+            # Kept in sync with EntityType (kun/datamodel/capability.py) +
+            # migration 0019. Audit F054: 'company' was missing here. Union set.
+            "entity_type IN ('role_template', 'model', 'human', 'external_agent', "
+            "'company', 'skill', 'tool')",
             name="capability_entity_type_valid",
         ),
         CheckConstraint(
@@ -475,3 +486,788 @@ class IdempotencyRow(Base):
     ttl_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
 
     __table_args__ = (CheckConstraint("ttl_sec > 0", name="idempotency_ttl_positive"),)
+
+
+# ============== RSI DATA SPINE (ADR-024, alembic 0011) ==============
+
+
+class RuntimeCapabilityRow(Base):
+    """已合入但默认未启用的候选能力. Gate 写, Executor 读.
+
+    晋级状态机: merged → in_replay → in_shadow → in_canary → ready → enabled.
+    超时未晋级 → expired (idle-batch 扫到后重审).
+    """
+
+    __tablename__ = "runtime_capabilities"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    capability_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    target_module: Mapped[str] = mapped_column(String(256), nullable=False)
+    change_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    promotion_state: Mapped[str] = mapped_column(String(32), nullable=False, default="merged")
+    promotion_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    promotion_deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    rollback_on: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    sampling_rate: Mapped[float] = mapped_column(
+        Numeric(precision=5, scale=4), nullable=False, default=0
+    )
+    capability_metadata: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict
+    )
+
+    # Audit F053: mirror migration 0011 CHECK constraints (ORM↔migration parity).
+    __table_args__ = (
+        CheckConstraint(
+            "promotion_state IN ('merged','in_replay','in_shadow','in_canary','ready','enabled','rolled_back','expired')",
+            name="runtime_capabilities_state_valid",
+        ),
+        CheckConstraint(
+            "sampling_rate >= 0 AND sampling_rate <= 1",
+            name="runtime_capabilities_sampling_range",
+        ),
+    )
+
+
+class RuntimeExperimentRow(Base):
+    """Strategist 写入的候选实验. Executor 任务前读 → 应用 change_spec override.
+
+    实验跑完 → Tester 出 TestReport → Gate 决定是否进 promotion_queue.
+    """
+
+    __tablename__ = "runtime_experiments"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    experiment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    target_module: Mapped[str] = mapped_column(String(256), nullable=False)
+    target_level: Mapped[int] = mapped_column(Integer, nullable=False)  # RCDH 层 0-3
+    change_spec: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    rollout_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    sampling_rate: Mapped[float] = mapped_column(
+        Numeric(precision=5, scale=4), nullable=False, default=0
+    )
+    success_metric: Mapped[str] = mapped_column(String(128), nullable=False)
+    acceptance_threshold: Mapped[float] = mapped_column(Numeric, nullable=False)
+    rollback_on: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    ttl_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=86400)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    # Audit F053: mirror migration 0011 CHECK constraints.
+    __table_args__ = (
+        CheckConstraint(
+            "target_level >= 0 AND target_level <= 3",
+            name="runtime_experiments_level_range",
+        ),
+        CheckConstraint(
+            "rollout_mode IN ('shadow','canary','ab')",
+            name="runtime_experiments_rollout_valid",
+        ),
+        CheckConstraint(
+            "status IN ('pending','running','done','rolled_back')",
+            name="runtime_experiments_status_valid",
+        ),
+        CheckConstraint(
+            "sampling_rate >= 0 AND sampling_rate <= 1",
+            name="runtime_experiments_sampling_range",
+        ),
+    )
+
+
+class StrategySearchRequestRow(Base):
+    """监督线写, Strategist 读. 异常信号 → 触发策略搜索.
+
+    工程层做 1 小时 dedup_key 去重 (索引: tenant_id, dedup_key, created_at WHERE status='open').
+    """
+
+    __tablename__ = "strategy_search_requests"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    triggered_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_module: Mapped[str] = mapped_column(String(256), nullable=False)
+    evidence: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    priority: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    dedup_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    # Audit F053: mirror migration 0011 CHECK constraints.
+    __table_args__ = (
+        CheckConstraint(
+            "priority IN ('low','medium','high')",
+            name="strategy_search_priority_valid",
+        ),
+        CheckConstraint(
+            "status IN ('open','claimed','done','dropped')",
+            name="strategy_search_status_valid",
+        ),
+        CheckConstraint(
+            "triggered_by IN ('anomaly_threshold','external_supervisor','human','self')",
+            name="strategy_search_triggered_by_valid",
+        ),
+    )
+
+
+class DiagnosticRecordRow(Base):
+    """RCDH 4 级诊断结果 (ADR-021). Supervisor 走 RCDH 时写; Gate 验诊断报告时读.
+
+    scope_modules ≤ 5 (DB 层 check constraint 强制). 重复 ≥ 3 次同症状强制升 L0/L1.
+    """
+
+    __tablename__ = "diagnostic_records"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    diagnostic_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    triggered_by_event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    symptom_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    repeat_history_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    level_0_check: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    level_1_check: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    level_2_check: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    level_3_check: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    root_cause_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recommended_action: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    scope_modules: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    # Audit F053: mirror migration 0011 CHECK constraints (incl. PG-only
+    # jsonb_array_length — this table is JSONB/PG-only, never created in sqlite).
+    __table_args__ = (
+        CheckConstraint(
+            "root_cause_level IS NULL OR (root_cause_level >= 0 AND root_cause_level <= 3)",
+            name="diagnostic_root_cause_level_range",
+        ),
+        CheckConstraint(
+            "recommended_action IS NULL OR recommended_action IN ('redesign','activate','module_rsi','code_fix')",
+            name="diagnostic_recommended_action_valid",
+        ),
+        CheckConstraint(
+            "jsonb_array_length(scope_modules) <= 5",
+            name="diagnostic_scope_max_5",
+        ),
+        CheckConstraint(
+            "repeat_history_count >= 0",
+            name="diagnostic_repeat_history_nonneg",
+        ),
+    )
+
+
+class GoalAnchorRow(Base):
+    """长任务 GoalAnchor (ADR-022). Director 写, Executor 每次 LLM call 顶部 pin.
+
+    immutable=True 默认; 不允许新指令覆盖. goal_statement ≤ 200 字符 (强制).
+    """
+
+    __tablename__ = "goal_anchors"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    anchor_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    goal_statement: Mapped[str] = mapped_column(Text, nullable=False)
+    success_criteria: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    out_of_scope: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    invariants: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    immutable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    # Audit F053: mirror migration 0011 CHECK constraint.
+    __table_args__ = (
+        CheckConstraint(
+            "length(goal_statement) <= 200",
+            name="goal_anchor_statement_max_200",
+        ),
+    )
+
+
+class PlanReviewRow(Base):
+    """Anti-drift 长任务 Plan Review (ADR-022 Layer 4).
+
+    Supervisor 每 3 步 / 5 分钟注入 → Executor 自评 → External Supervisor 独立 verify.
+    """
+
+    __tablename__ = "plan_reviews"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    review_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    anchor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    triggered_at_step: Mapped[int] = mapped_column(Integer, nullable=False)
+    triggered_at_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    executor_self_report: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    supervisor_verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    drift_evidence: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    external_supervisor_verify: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    action_taken: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    # Audit F053: mirror migration 0011 CHECK constraints.
+    __table_args__ = (
+        CheckConstraint(
+            "supervisor_verdict IN ('ok','mild_drift','heavy_drift')",
+            name="plan_review_verdict_valid",
+        ),
+        CheckConstraint(
+            "action_taken IN ('continue','remind','pause','rsi_trigger')",
+            name="plan_review_action_valid",
+        ),
+    )
+
+
+class EvidenceLedgerRow(Base):
+    """全链路证据账本 (ADR-024). Append-only.
+
+    每条 entry 一种 kind: artifact / test_report / diagnostic / debrief / decision.
+    可选关联 diagnostic_id + external_supervisor_debrief_id + diagnostic_level_reached.
+    """
+
+    __tablename__ = "evidence_ledger"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    entry_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    diagnostic_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_supervisor_debrief_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    diagnostic_level_reached: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    # Audit F053: mirror migration 0011 CHECK constraints.
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('artifact','test_report','diagnostic','debrief','decision')",
+            name="evidence_ledger_kind_valid",
+        ),
+        CheckConstraint(
+            "diagnostic_level_reached IS NULL OR (diagnostic_level_reached >= 0 AND diagnostic_level_reached <= 3)",
+            name="evidence_ledger_level_range",
+        ),
+    )
+
+
+class BugRootCaseRow(Base):
+    """Bug 根因案例库 (alembic 0013) — RCDH fast-path lookup.
+
+    RCDH 4 级诊断从头分析每个 trace 慢. 这张表挂"案例库" — 同 trace_signature
+    见过就直接返 fix_pattern, 没命中再走完整诊断. 命中即 O(1) 走捷径.
+
+    Signature 生成: error_type + top 3 内部 frame (kun.* 优先 over site-packages)
+    + SHA256 prefix. 详见 kun.governance.bug_case_library.trace_signature.
+
+    工程语义:
+      - (tenant_id, trace_signature) UNIQUE — 同 tenant 同 signature 只一条
+      - hit_count + last_hit_at 在 lookup 命中后递增
+      - evidence_dx_id 关联 diagnostic_records (如有完整诊断证据)
+    """
+
+    __tablename__ = "bug_root_cause_cases"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    trace_signature: Mapped[str] = mapped_column(String(256), nullable=False)
+    error_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    root_cause_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    fix_pattern: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_dx_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    last_hit_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("hit_count >= 1", name="bug_case_hit_count_positive"),
+        CheckConstraint(
+            "length(trace_signature) > 0",
+            name="bug_case_signature_not_empty",
+        ),
+        CheckConstraint(
+            "length(error_type) > 0",
+            name="bug_case_error_type_not_empty",
+        ),
+        CheckConstraint(
+            "length(root_cause_kind) > 0",
+            name="bug_case_root_cause_kind_not_empty",
+        ),
+        CheckConstraint(
+            "length(fix_pattern) > 0",
+            name="bug_case_fix_pattern_not_empty",
+        ),
+        # Audit F157: migration 0013 creates this as a *unique index*
+        # (op.create_index(..., unique=True)), not a unique constraint. Declaring
+        # a UniqueConstraint here made the ORM diverge from the DB so `alembic check`
+        # would flag a drift. Match the migration with a unique Index.
+        Index("ix_bug_cases_signature", "tenant_id", "trace_signature", unique=True),
+        Index("ix_bug_cases_hit_count", "tenant_id", "hit_count"),
+    )
+
+
+class TaskCheckpointRow(Base):
+    """长任务执行 checkpoint (LT.C, ADR-022 持久化层).
+
+    每个 Executor step 后落一条, 进程挂掉时按 sequence 取 latest active row,
+    resume conversation_snapshot + working_state + artifact_refs.
+
+    status:
+      active        — 任务在跑, 可 resume
+      final         — 任务正常完成, 最终 snapshot
+      failed_resume — resume 时发现 snapshot 不一致 / 已 stale (e.g. anchor 已变)
+    """
+
+    __tablename__ = "task_checkpoints"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    checkpoint_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    step_idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    """每个 task 内部单调递增 — 跨 step 也唯一. resume 取最大值."""
+
+    # Snapshot data
+    conversation_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    """LLM messages list (role/content). 用 list[dict] 而非 frozen — JSONB 落库."""
+    working_state: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    """任意 caller 自定义的中间状态 (tool 已用过的、未完成 sub-task list 等)."""
+    artifact_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    """已产 artifact 的 MinIO key / file path."""
+
+    # Verification / resume help
+    goal_anchor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_self_report: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    cost_usd_so_far: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    tokens_used_so_far: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Status
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    # Audit F053: mirror migration 0012 CHECK constraints.
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active','final','failed_resume')",
+            name="task_checkpoint_status_valid",
+        ),
+        CheckConstraint("sequence >= 0", name="task_checkpoint_sequence_nonneg"),
+        CheckConstraint("step_idx >= 0", name="task_checkpoint_step_idx_nonneg"),
+        CheckConstraint("cost_usd_so_far >= 0", name="task_checkpoint_cost_nonneg"),
+        CheckConstraint("tokens_used_so_far >= 0", name="task_checkpoint_tokens_nonneg"),
+    )
+
+
+class MissionAlignmentReviewRow(Base):
+    """Mission Director MissionAlignmentReview 持久化 (V7 §9.7, alembic 0014).
+
+    Mission Director (交付总监) 一级子系统每 tick / milestone 输出一条
+    review. 用来跟 TaskPlanVersion 对齐, 给驾驶舱 + 启 (Qi) post-hoc retrospect
+    + 外部监督者 auditor hat 提供历史数据.
+
+    V7 §10.4 三级信号 mapping:
+      verdict='ok'           — alignment_score ≥ 0.7
+      verdict='drifting'     — 0.4 ≤ score < 0.7 (弱信号, log+watch)
+      verdict='off_anchor'   — 0.2 ≤ score < 0.4 (中信号, propose PlanChange)
+      verdict='needs_human'  — score < 0.2  (强信号, CollaborationTicket)
+
+    alignment_score = 0.4 * info_gap_coverage + 0.35 * decomposition_coverage
+                    + 0.25 * evidence_coverage (V7 §9.7 加权).
+
+    ADR-007 RLS: tenant_id 主键 + ENABLE/FORCE ROW LEVEL SECURITY + tenant_isolation
+    policy (同 0011/0012/0013 风格).
+    """
+
+    __tablename__ = "mission_alignment_reviews"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    review_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_plan_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    reviewed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    # ok / drifting / off_anchor / needs_human (CHECK constraint enforces enum)
+    alignment_score: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
+    """0.000 - 1.000, weighted average of 3 coverages."""
+    findings: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    """list[str] 观察明细 (info_gap 未补 / 拆解漏 / 证据缺 etc.)."""
+    info_gap_coverage: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
+    decomposition_coverage: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
+    evidence_coverage: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
+    plan_change_proposed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    plan_change_proposal_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('ok', 'drifting', 'off_anchor', 'needs_human')",
+            name="mar_verdict_valid",
+        ),
+        CheckConstraint(
+            "alignment_score >= 0 AND alignment_score <= 1",
+            name="mar_score_in_range",
+        ),
+        CheckConstraint(
+            "info_gap_coverage >= 0 AND info_gap_coverage <= 1",
+            name="mar_info_gap_in_range",
+        ),
+        CheckConstraint(
+            "decomposition_coverage >= 0 AND decomposition_coverage <= 1",
+            name="mar_decomp_in_range",
+        ),
+        CheckConstraint(
+            "evidence_coverage >= 0 AND evidence_coverage <= 1",
+            name="mar_evidence_in_range",
+        ),
+        Index("ix_mar_task_reviewed_at", "tenant_id", "task_id", "reviewed_at"),
+        Index("ix_mar_verdict", "tenant_id", "verdict", "reviewed_at"),
+    )
+
+
+class PlanChangeProposalRow(Base):
+    """Mission Director PlanChangeProposal 持久化 (V7 §10.3.2, alembic 0014).
+
+    方案线 (Mission Director / 启 Qi) 发现需要改方案时生成 proposal:
+      severity='low'    — KUN 自动改 + log
+      severity='medium' — KUN 自动改 + 推 NUO panel + 用户可一键回滚
+      severity='high'   — CollaborationTicket 等用户审 (V7 §10.3.3 决策权 3 档)
+
+    triggered_by 区分谁触发: 'mission_director' (任务级) / 'qi' (启方案级反思).
+
+    candidate_changes 是 list[dict], 至少 1 个候选 (≥ 1 才有改的可能).
+    rollback_condition 是字符串描述 — 满足该条件就回滚.
+    """
+
+    __tablename__ = "plan_change_proposals"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    triggered_by: Mapped[str] = mapped_column(String(32), nullable=False)
+    triggered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    change_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    # scope / criteria / resource / risk
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    # low / medium / high (CHECK constraint enforces enum)
+    affected_work_items: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    affected_deliverables: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    candidate_changes: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    """list[dict], ≥ 1 候选方案 (CHECK constraint: jsonb_array_length >= 1)."""
+    rollback_condition: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    user_approval_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # 用户审批结果 (None=待审, True=通过, False=拒绝)
+    user_decision: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    user_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "severity IN ('low', 'medium', 'high')",
+            name="pcp_severity_valid",
+        ),
+        CheckConstraint(
+            "change_type IN ('scope', 'criteria', 'resource', 'risk')",
+            name="pcp_change_type_valid",
+        ),
+        CheckConstraint(
+            "triggered_by IN ('mission_director', 'qi', 'nuo', 'external_supervisor')",
+            name="pcp_triggered_by_valid",
+        ),
+        CheckConstraint(
+            "jsonb_array_length(candidate_changes) >= 1",
+            name="pcp_candidate_changes_nonempty",
+        ),
+        # high severity → user_approval_required=True 不变量 (V7 §10.3.3)
+        CheckConstraint(
+            "NOT (severity = 'high' AND user_approval_required = false)",
+            name="pcp_high_severity_needs_approval",
+        ),
+        Index("ix_pcp_task_triggered_at", "tenant_id", "task_id", "triggered_at"),
+        Index("ix_pcp_severity_pending", "tenant_id", "severity", "user_decision"),
+    )
+
+
+class LifecycleTransitionRow(Base):
+    """V7 §15 capability lifecycle stage transitions (alembic 0015).
+
+    启 (Qi) capability 在 9 阶段 lifecycle 间流转, 每次切阶段落一条 row.
+    用来:
+      - 驾驶舱 (V7 §20) 显示 capability 现阶段 + 历史
+      - 外部监督者 auditor hat (V7 §16.6) 审 lifecycle gate 是否被绕过
+      - 启 post-hoc retrospect 找 rollback 原因
+
+    V7 §15 9 阶段 enum:
+      observation / candidate / replay / holdout / shadow / canary /
+      production / monitor / rollback / retire
+
+    V7 §12.2 严格验收 5 阶段:
+      replay / holdout / shadow / canary / production
+
+    强 enforce 不变量 (服务层 + DB 双保险):
+      - production 阶段必须 user_approval_ticket_id (CANARY → PRODUCTION)
+      - replay 进入必须 ≥ 3 类 evidence (CANDIDATE → REPLAY)
+      - 邻接转移 (服务层校验, DB 不重复)
+    """
+
+    __tablename__ = "lifecycle_transitions"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    transition_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    capability_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    from_stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    to_stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    decision_rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    user_approval_ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence_refs: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    """list[str], e.g. ['strategy_replay_report:rr-x', 'process_audit:pa-y', ...]."""
+    metrics_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    """{baseline_score, candidate_score, replay_traces, ...}."""
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "from_stage IN ('observation', 'candidate', 'replay', 'holdout', "
+            "'shadow', 'canary', 'production', 'monitor', 'rollback', 'retire')",
+            name="lct_from_stage_valid",
+        ),
+        CheckConstraint(
+            "to_stage IN ('observation', 'candidate', 'replay', 'holdout', "
+            "'shadow', 'canary', 'production', 'monitor', 'rollback', 'retire')",
+            name="lct_to_stage_valid",
+        ),
+        # production 阶段必须有 user approval ticket (V7 §12.2)
+        CheckConstraint(
+            "NOT (to_stage = 'production' AND user_approval_ticket_id IS NULL)",
+            name="lct_production_needs_user_approval",
+        ),
+        # to_stage='replay' 必须至少 1 条 evidence (CANDIDATE → REPLAY 严格)
+        # 服务层会校验三类齐, DB 只保底 "不空"
+        CheckConstraint(
+            "NOT (to_stage = 'replay' AND jsonb_array_length(evidence_refs) < 1)",
+            name="lct_replay_needs_evidence",
+        ),
+        Index(
+            "ix_lct_capability_decided_at",
+            "tenant_id",
+            "capability_id",
+            "decided_at",
+        ),
+        Index("ix_lct_to_stage", "tenant_id", "to_stage", "decided_at"),
+    )
+
+
+class AuditorReportRow(Base):
+    """External Supervisor auditor hat 周期审计报告 (V7 §16.6, alembic 0016).
+
+    V7 §16.6 强制 External Supervisor 周期 (每周 / dogfood 完成后 /
+    capability Canary→Production gate 前) 戴 auditor hat 跑 "生产闭环攻击
+    审计员" 7 角度审计, 产 AuditorReport.
+
+    9-field schema 完全对齐 AUDITOR_SYSTEM_PROMPT_TEMPLATE 里 JSON output
+    (kun/integration/external_supervisor_critique.py).
+
+    V7 §16.6 不变量 (DB CHECK 兜底):
+      - risk_level='P0' ⇒ allow_release=false (P0 风险必须不许发布)
+      - risk_level ∈ {'P0', 'P1', 'P2'}
+    """
+
+    __tablename__ = "auditor_reports"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    report_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    audited_capability: Mapped[str] = mapped_column(String(128), nullable=False)
+    audited_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    auditor_provider: Mapped[str] = mapped_column(String(128), nullable=False)
+    """e.g. 'anthropic/claude-opus' / 'openai/gpt-5.5' (cross-family
+    enforcement, V7 §11.4)."""
+    design_promise: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    real_code_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    bypass_methods: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    """list[str], 攻击者可绕过方式."""
+    min_repro_steps: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    risk_level: Mapped[str] = mapped_column(String(2), nullable=False)
+    # P0 / P1 / P2 (CHECK constraint)
+    must_fix: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    acceptance_tests: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    allow_release: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "risk_level IN ('P0', 'P1', 'P2')",
+            name="ar_risk_level_valid",
+        ),
+        # V7 §16.6 不变量: P0 风险必须不许发布 (DB 兜底)
+        CheckConstraint(
+            "NOT (risk_level = 'P0' AND allow_release = true)",
+            name="ar_p0_blocks_release",
+        ),
+        Index(
+            "ix_ar_capability_audited_at",
+            "tenant_id",
+            "audited_capability",
+            "audited_at",
+        ),
+        Index(
+            "ix_ar_risk_level_recent",
+            "tenant_id",
+            "risk_level",
+            "audited_at",
+        ),
+    )
+
+
+class EnsembleCallRow(Base):
+    """V7 §11.4 multi-LLM ensemble_invoke 调用日志 (alembic 0017).
+
+    每次 ensemble_invoke 落一条:
+      - 跨 family 强约束 (V7 §11.2) 在 service 层校验, DB 仅记录现状
+      - divergence_score / divergence_signals 给驾驶舱 + Mission Director 用
+      - 高 divergence (> threshold) 告警事件由 service 层 on_divergence 触发,
+        但 DB 行本身就是历史 (按 divergence_score 索引便于复盘)
+
+    用途:
+      - 驾驶舱 `/cockpit/ensemble/recent` endpoint 真返数据 (X.B.UI 后续)
+      - 启 (Qi) post-hoc retrospect — 找历史 high-divergence 案例 (V7 §12.4)
+      - 成本归因 — 哪些 provider / 哪个策略最贵
+    """
+
+    __tablename__ = "ensemble_calls"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    call_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    invoked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    purpose: Mapped[str] = mapped_column(String(64), nullable=False, default="execution")
+    # e.g. "execution" / "intent" / "summarize" / "critique" / ...
+    providers: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    """list[dict] — [{name, model_id, family}, ...] (V7 §11.1 cross-family 记录)."""
+    consensus_strategy: Mapped[str] = mapped_column(String(32), nullable=False)
+    # majority_vote / weighted / pick_best_by_metric
+    divergence_score: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False, default=0.0)
+    """0.000-1.000, 0=全一致, 1=完全分歧."""
+    divergence_signals: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    consensus_provider: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    """共识胜出 provider id, e.g. 'anthropic/claude-opus' (None 当 consensus 算不出)."""
+    total_cost_usd: Mapped[float] = mapped_column(Numeric(10, 6), nullable=False, default=0.0)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    """Providers 中失败的数量 (asyncio.gather return_exceptions=True 后)."""
+    n_providers_total: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    """Optional — hash of request messages 用于 dedup/replay 分析."""
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "consensus_strategy IN ('majority_vote', 'weighted', 'pick_best_by_metric')",
+            name="ec_strategy_valid",
+        ),
+        CheckConstraint(
+            "divergence_score >= 0 AND divergence_score <= 1",
+            name="ec_divergence_in_range",
+        ),
+        CheckConstraint(
+            "n_providers_total >= 2",
+            name="ec_min_2_providers",
+        ),
+        CheckConstraint(
+            "failure_count >= 0 AND failure_count <= n_providers_total",
+            name="ec_failure_count_bounds",
+        ),
+        Index("ix_ec_invoked_at", "tenant_id", "invoked_at"),
+        Index(
+            "ix_ec_high_divergence",
+            "tenant_id",
+            "divergence_score",
+            "invoked_at",
+        ),
+        Index("ix_ec_purpose_recent", "tenant_id", "purpose", "invoked_at"),
+    )
+
+
+class EngineeringDisciplineReportRow(Base):
+    """V7.1 §4.3 + X.S — Claude Code 工程纪律 enforcer 报告 (alembic 0018).
+
+    X.O 给 discipline 加 process-local cache, X.S 升 PG 防多进程丢数据.
+    LongTaskOrchestrator 完成时跑 EngineeringDisciplineEnforcer →
+    record_discipline_report 写这张 → cockpit /discipline/recent 读.
+
+    不变量 (DB CHECK):
+      - 0 ≤ overall_score ≤ 1
+      - 0 ≤ n_passed ≤ n_total
+      - n_total ≥ 0
+    """
+
+    __tablename__ = "engineering_discipline_reports"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    report_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    overall_score: Mapped[float] = mapped_column(Float, nullable=False)
+    n_total: Mapped[int] = mapped_column(Integer, nullable=False)
+    n_passed: Mapped[int] = mapped_column(Integer, nullable=False)
+    failed_disciplines: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "overall_score >= 0 AND overall_score <= 1",
+            name="edr_score_in_range",
+        ),
+        CheckConstraint("n_total >= 0", name="edr_n_total_nonneg"),
+        CheckConstraint(
+            "n_passed >= 0 AND n_passed <= n_total",
+            name="edr_n_passed_bounds",
+        ),
+        Index("ix_edr_captured_at", "tenant_id", "captured_at"),
+        Index("ix_edr_task", "tenant_id", "task_id", "captured_at"),
+    )

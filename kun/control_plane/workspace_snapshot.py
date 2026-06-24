@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import tempfile
+from collections.abc import Iterator
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -90,13 +91,11 @@ def create_workspace_snapshot(
     files: list[dict[str, Any]] = []
     omitted = 0
     total_bytes = 0
-    for path in sorted(workspace.rglob("*")):
-        if not path.is_file() or path.is_symlink():
-            continue
-        rel = path.relative_to(workspace)
-        if _skip_snapshot_path(rel):
+    for path, skipped_subtree in _iter_snapshot_candidates(workspace):
+        if skipped_subtree:
             omitted += 1
             continue
+        rel = path.relative_to(workspace)
         try:
             stat = path.stat()
         except OSError:
@@ -190,7 +189,7 @@ def restore_workspace_snapshot(snapshot_artifact: ArtifactRecord) -> WorkspaceRe
     removed = 0
     skipped = 0
     if complete_restore:
-        for current in sorted(workspace.rglob("*"), reverse=True):
+        for current in _iter_workspace_files(workspace):
             if not current.is_file() or current.is_symlink():
                 continue
             rel = current.relative_to(workspace)
@@ -217,7 +216,9 @@ def restore_workspace_snapshot(snapshot_artifact: ArtifactRecord) -> WorkspaceRe
         shutil.copy2(source, target)
         restored += 1
     if not complete_restore:
-        warnings.append("Snapshot hit capture limits; rollback restored copied files without deleting extras.")
+        warnings.append(
+            "Snapshot hit capture limits; rollback restored copied files without deleting extras."
+        )
     return WorkspaceRestoreResult(
         workspace=str(workspace),
         snapshot_artifact_id=snapshot_artifact.artifact_id,
@@ -242,6 +243,50 @@ def _skip_snapshot_path(path: Path) -> bool:
     return bool(set(path.parts) & _EXCLUDED_PARTS)
 
 
+def _iter_snapshot_candidates(root: Path) -> Iterator[tuple[Path, bool]]:
+    """Yield candidate files while pruning excluded directories before descent."""
+
+    for entry in _iter_workspace_entries(root):
+        if _skip_snapshot_path(entry.relative_to(root)):
+            yield entry, True
+            continue
+        if entry.is_symlink():
+            continue
+        if entry.is_file():
+            yield entry, False
+
+
+def _iter_workspace_files(root: Path) -> Iterator[Path]:
+    for entry in _iter_workspace_entries(root):
+        if _skip_snapshot_path(entry.relative_to(root)):
+            continue
+        if entry.is_symlink():
+            continue
+        if entry.is_file():
+            yield entry
+
+
+def _iter_workspace_entries(root: Path) -> Iterator[Path]:
+    """Walk a workspace deterministically without descending into excluded dirs."""
+
+    def walk(directory: Path) -> Iterator[Path]:
+        try:
+            entries = sorted(directory.iterdir(), key=lambda candidate: candidate.name)
+        except OSError:
+            return
+        for entry in entries:
+            if entry.name in _EXCLUDED_PARTS:
+                yield entry
+                continue
+            yield entry
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
+                yield from walk(entry)
+
+    yield from walk(root)
+
+
 def _safe_relpath(value: str) -> Path:
     rel = Path(value)
     if rel.is_absolute() or ".." in rel.parts:
@@ -250,7 +295,7 @@ def _safe_relpath(value: str) -> Path:
 
 
 def _remove_empty_dirs(root: Path) -> None:
-    for path in sorted(root.rglob("*"), reverse=True):
+    for path in reversed(list(_iter_workspace_entries(root))):
         if path.is_dir() and not _skip_snapshot_path(path.relative_to(root)):
             with suppress(OSError):
                 path.rmdir()

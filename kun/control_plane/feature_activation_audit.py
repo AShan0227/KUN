@@ -17,16 +17,21 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from kun.control_plane.app_development import (
     KUN_AUTONOMOUS_APP_RUNNER_OWNER,
     AppCommandResult,
     AutonomousAppDevelopmentRunner,
 )
+from kun.control_plane.capability_evolution import (
+    CapabilityCandidate,
+    CapabilityEvaluation,
+    build_capability_promotion,
+)
 from kun.control_plane.capability_execution import CapabilityExecutionPolicy
-from kun.control_plane.concurrency import FileResourceLockStore, WorkerPoolConfig
 from kun.control_plane.daemon import ControlPlaneDaemon
+from kun.control_plane.daemon_service import build_daemon_worker_pool_service_install_plans
 from kun.control_plane.external_sample_comparison import (
     KUN_EXTERNAL_SAMPLE_COMPARISON_RUNNER_OWNER,
     ExternalSampleComparisonRunner,
@@ -48,6 +53,7 @@ from kun.control_plane.game_production import (
     GameProductionRunner,
 )
 from kun.control_plane.kun_runtime_runner import KunRuntimeTaskRunner, KunTaskExecutionOutput
+from kun.control_plane.mission_director import MISSION_DIRECTOR_OWNER, MissionDirectorRunner
 from kun.control_plane.productization import (
     ProductizationDogfoodRunner,
     build_productization_dogfood_mission,
@@ -60,6 +66,7 @@ from kun.control_plane.runtime_followups import (
     NuoRuntimeRepairRunner,
     QiRuntimeGovernanceRunner,
 )
+from kun.control_plane.runtime_observation import build_runtime_observation_report
 from kun.control_plane.v6 import (
     ArtifactManifest,
     ArtifactRecord,
@@ -72,9 +79,14 @@ from kun.control_plane.v6 import (
     WorkingContext,
     WorkItem,
 )
+from kun.control_plane.work_item_governance import (
+    FileResourceLockStore,
+    RedisResourceLockStore,
+    SQLiteResourceLockStore,
+    WorkerPoolConfig,
+)
 from kun.watchtower.engine import RuleEngine
 from kun.watchtower.rules import GuardRule, RuleTrigger
-
 
 NOW = datetime(2026, 5, 21, 10, 0, tzinfo=UTC)
 
@@ -92,8 +104,14 @@ class FeatureActivationCase(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list)
     generated_work_item_ids: list[str] = Field(default_factory=list)
     trigger_status: str = "unknown"
+    trigger_available: bool = False
+    runner_available: bool = False
+    real_mission_e2e_passed: bool = False
     notes: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
+    evidence_scope: Literal["fixture", "real_mission", "synthetic_round", "static_probe"] = (
+        "fixture"
+    )
 
 
 class FeatureActivationAuditReport(BaseModel):
@@ -109,13 +127,25 @@ class FeatureActivationAuditReport(BaseModel):
     report_json_path: str
     report_markdown_path: str
 
+    @computed_field
     @property
     def activated_count(self) -> int:
         return sum(1 for case in self.cases if case.activated)
 
+    @computed_field
     @property
     def gap_count(self) -> int:
         return len(self.cases) - self.activated_count
+
+    @computed_field
+    @property
+    def real_mission_count(self) -> int:
+        return sum(1 for case in self.cases if case.evidence_scope == "real_mission")
+
+    @computed_field
+    @property
+    def fixture_or_synthetic_count(self) -> int:
+        return sum(1 for case in self.cases if case.evidence_scope != "real_mission")
 
 
 class StaticRunner:
@@ -172,6 +202,39 @@ class ConcurrentProbeRunner(StaticRunner):
                 self.current_running -= 1
 
 
+_AUDIT_MARKER = "feature-activation-audit.json"
+
+
+def _prepare_audit_output_dir(root: Path) -> None:
+    """Make ``root`` a fresh audit output dir, refusing to wipe unsafe targets.
+
+    Audit F018: the previous ``shutil.rmtree(root)`` deleted ANY existing
+    directory unconditionally, so a stray ``output_dir="/"`` (or ~, or any real
+    directory) was a data-destruction footgun. Guards:
+      - never wipe the filesystem root, $HOME, the cwd, or an ancestor of cwd;
+      - never wipe a very shallow path;
+      - only wipe a directory that is empty or is a prior audit dir (carries the
+        audit marker file). A non-empty non-audit directory is refused.
+    """
+    cwd = Path.cwd().resolve()
+    home = Path.home().resolve()
+    anchor = Path(root.anchor).resolve() if root.anchor else None
+    if root in (anchor, home, cwd) or root in cwd.parents:
+        raise ValueError(f"refusing to wipe unsafe audit output dir: {root}")
+    if len(root.parts) < 3:
+        raise ValueError(f"refusing to use shallow path as audit output dir: {root}")
+    if root.exists():
+        if not root.is_dir():
+            raise ValueError(f"audit output path exists and is not a directory: {root}")
+        if list(root.iterdir()) and not (root / _AUDIT_MARKER).exists():
+            raise ValueError(
+                f"refusing to wipe non-empty non-audit directory: {root} "
+                "(point output_dir at a fresh or prior-audit directory)"
+            )
+        shutil.rmtree(root)
+    root.mkdir(parents=True, exist_ok=True)
+
+
 def run_feature_activation_audit(
     *,
     output_dir: str | Path,
@@ -181,9 +244,7 @@ def run_feature_activation_audit(
     """Run all feature activation cases and persist JSON/Markdown evidence."""
 
     root = Path(output_dir).expanduser().resolve()
-    if root.exists():
-        shutil.rmtree(root)
-    root.mkdir(parents=True, exist_ok=True)
+    _prepare_audit_output_dir(root)
     cases: list[FeatureActivationCase] = []
     for case_fn in _CASE_FUNCTIONS:
         try:
@@ -200,6 +261,7 @@ def run_feature_activation_audit(
                     gaps=[f"{type(exc).__name__}: {exc}"],
                 )
             )
+    cases = [_with_activation_axes(case) for case in cases]
     json_path = root / "feature-activation-audit.json"
     md_path = root / "feature-activation-audit.md"
     report = FeatureActivationAuditReport(
@@ -213,6 +275,21 @@ def run_feature_activation_audit(
     json_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     md_path.write_text(_markdown_report(report), encoding="utf-8")
     return report
+
+
+def _with_activation_axes(case: FeatureActivationCase) -> FeatureActivationCase:
+    trigger_available = case.activated and case.trigger_status not in {"error", "missing"}
+    runner_available = case.activated and bool(case.evidence_refs or case.generated_work_item_ids)
+    real_mission_e2e_passed = (
+        case.evidence_scope == "real_mission" and case.activated and not case.gaps
+    )
+    return case.model_copy(
+        update={
+            "trigger_available": trigger_available,
+            "runner_available": runner_available,
+            "real_mission_e2e_passed": real_mission_e2e_passed,
+        }
+    )
 
 
 def _case_info_gap_collaboration(root: Path, now: datetime) -> FeatureActivationCase:
@@ -235,7 +312,9 @@ def _case_info_gap_collaboration(root: Path, now: datetime) -> FeatureActivation
     )
     control_plane.missions[mission.mission_id] = mission
     control_plane.task_plans[plan.plan_id] = plan
-    report = ControlPlaneDaemon(control_plane=control_plane, daemon_id="activation-info-gap").tick_once(
+    report = ControlPlaneDaemon(
+        control_plane=control_plane, daemon_id="activation-info-gap"
+    ).tick_once(
         mission_ids=[mission.mission_id],
         now=now,
         max_work_items=1,
@@ -254,7 +333,9 @@ def _case_info_gap_collaboration(root: Path, now: datetime) -> FeatureActivation
         evidence_refs=list(report.created_collaboration_ticket_ids),
         generated_work_item_ids=[],
         trigger_status=control_plane.missions[mission.mission_id].status,
-        notes=["KUN must ask before creating a task plan/execution when required information is missing."],
+        notes=[
+            "KUN must ask before creating a task plan/execution when required information is missing."
+        ],
     )
 
 
@@ -284,6 +365,7 @@ def _case_acceptance_collaboration_cleanup(root: Path, now: datetime) -> Feature
         artifact_refs=["artifact-delivery"],
         primary_artifact_ref="artifact-delivery",
         evidence_refs=["artifact-evidence"],
+        rollback_refs=["artifact-rollback"],
         created_by="kun",
         content_hash="hash-manifest",
         supports_delivery=True,
@@ -339,11 +421,157 @@ def _case_acceptance_collaboration_cleanup(root: Path, now: datetime) -> Feature
     )
 
 
+def _case_mission_director_delivery_supervision(root: Path, now: datetime) -> FeatureActivationCase:
+    control_plane = InMemoryControlPlane()
+    mission = Mission(
+        mission_id="msn-activation-mission-director",
+        owner="customer",
+        objective="Ship a final product only after real user experience evidence.",
+        task_type="product_development",
+        status="delivering",
+        current_plan_version="v1",
+        artifact_manifest_refs=["manifest-activation-director-delivery"],
+    )
+    plan = TaskPlan(
+        plan_id="plan-activation-mission-director",
+        mission_id=mission.mission_id,
+        version="v1",
+        objective=mission.objective,
+        acceptance_criteria=["human or target user accepts the final product"],
+        decomposition=["build", "test", "playtest", "accept"],
+        worker_plan=["kun builds", "mission-director supervises"],
+        test_plan=["internal", "player perception"],
+        approval_status="approved",
+    )
+    contract = ExecutionContract(
+        contract_id="contract-activation-mission-director",
+        mission_id=mission.mission_id,
+        task_plan_version=plan.version,
+        delivery_contract={
+            "final_player_experience_required": True,
+            "human_acceptance_required": True,
+        },
+    )
+    delivery_artifact = ArtifactRecord(
+        artifact_id="artifact-activation-director-delivery",
+        kind="answer",
+        path_or_uri="mem://activation/mission-director/delivery",
+        content_hash="hash-activation-director-delivery",
+        created_by="kun",
+        mission_id=mission.mission_id,
+        supports=["directly_playable_product"],
+    )
+    test_artifact = ArtifactRecord(
+        artifact_id="artifact-activation-director-internal-test",
+        kind="test_result",
+        path_or_uri="mem://activation/mission-director/internal-test",
+        content_hash="hash-activation-director-test",
+        created_by="kun",
+        mission_id=mission.mission_id,
+        supports=["internal_test_passed"],
+    )
+    manifest = ArtifactManifest(
+        manifest_id="manifest-activation-director-delivery",
+        mission_id=mission.mission_id,
+        kind="delivery",
+        artifact_refs=[delivery_artifact.artifact_id, test_artifact.artifact_id],
+        primary_artifact_ref=delivery_artifact.artifact_id,
+        evidence_refs=[test_artifact.artifact_id],
+        created_by="kun",
+        content_hash="hash-activation-director-manifest",
+        supports_delivery=True,
+    )
+    gate = GateEvaluation(
+        gate_evaluation_id="gate-activation-director-runner-pass",
+        mission_id=mission.mission_id,
+        task_plan_version=plan.version,
+        subject_ref="work-final-delivery",
+        stage="acceptance",
+        task_type="product_development",
+        rubric_version="activation-fixture",
+        metric_pack_version="activation-fixture",
+        north_star_verdict="pass",
+        result_quality=0.9,
+        speed=0.8,
+        cost=0.8,
+        risk=0.2,
+        evidence_quality=0.8,
+        collaboration_quality=0.8,
+        evidence_refs=[test_artifact.artifact_id],
+        artifact_refs=[delivery_artifact.artifact_id],
+        confidence=0.85,
+        next_action="ready_to_deliver",
+        next_state="delivering",
+        created_by="kun",
+    )
+    control_plane.missions[mission.mission_id] = mission
+    control_plane.task_plans[plan.plan_id] = plan
+    control_plane.contracts[contract.contract_id] = contract
+    control_plane.artifacts[delivery_artifact.artifact_id] = delivery_artifact
+    control_plane.artifacts[test_artifact.artifact_id] = test_artifact
+    control_plane.artifact_manifests[manifest.manifest_id] = manifest
+    control_plane.gate_evaluations[gate.gate_evaluation_id] = gate
+    daemon = ControlPlaneDaemon(
+        control_plane=control_plane,
+        runners_by_owner={
+            MISSION_DIRECTOR_OWNER: MissionDirectorRunner(control_plane=control_plane)
+        },
+        daemon_id="activation-mission-director",
+    )
+    report = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        now=now,
+        max_work_items=1,
+        write_progress=False,
+    )
+    director_artifacts = [
+        artifact.artifact_id
+        for artifact in control_plane.artifacts.values()
+        if "mission_director_review" in artifact.supports
+    ]
+    director_gates = [
+        gate.gate_evaluation_id
+        for gate in control_plane.gate_evaluations.values()
+        if gate.created_by == MISSION_DIRECTOR_OWNER
+    ]
+    ran_director = any(
+        work_item_id.startswith("work-mission-director-")
+        for work_item_id in report.ran_work_item_ids
+    )
+    activated = (
+        ran_director
+        and bool(director_artifacts)
+        and control_plane.missions[mission.mission_id].status in {"changing_plan", "waiting_human"}
+    )
+    return FeatureActivationCase(
+        feature_id="mission_director_delivery_supervision",
+        subsystem="mission_director",
+        trigger_condition=(
+            "A product mission is in delivery state with a passing runner gate but missing "
+            "real player/human acceptance evidence."
+        ),
+        dependencies=[
+            "MissionDirectorRunner",
+            "delivery manifest",
+            "acceptance gate",
+            "human/player perception evidence contract",
+        ],
+        activated=bool(activated),
+        evidence_refs=[*director_artifacts, *director_gates],
+        generated_work_item_ids=[*report.created_work_item_ids, *report.ran_work_item_ids],
+        trigger_status=control_plane.missions[mission.mission_id].status,
+        notes=[
+            "This proves Mission Director is activated by daemon scheduling and can outrank "
+            "ordinary delivery work in the fixture."
+        ],
+    )
+
+
 def _case_runtime_activation_preflight_snapshot(root: Path, now: datetime) -> FeatureActivationCase:
     workspace = root / "runtime-activation-workspace"
     workspace.mkdir(parents=True)
     (workspace / "app.py").write_text("print('hello')\n", encoding="utf-8")
-    control_plane, store, mission = _runtime(
+    control_plane, _store, mission = _runtime(
         root / "runtime-activation.json",
         mission_id="msn-activation-runtime",
         workspace=workspace,
@@ -354,7 +582,9 @@ def _case_runtime_activation_preflight_snapshot(root: Path, now: datetime) -> Fe
         daemon_id="activation-runtime",
     ).tick_once(mission_ids=[mission.mission_id], now=now, max_work_items=1)
     item = control_plane.work_items["work-msn-activation-runtime"]
-    supports = [support for artifact in control_plane.artifacts.values() for support in artifact.supports]
+    supports = [
+        support for artifact in control_plane.artifacts.values() for support in artifact.supports
+    ]
     activated = (
         "runtime_feature_activation" in supports
         and bool(report.preflight_artifact_refs)
@@ -366,7 +596,11 @@ def _case_runtime_activation_preflight_snapshot(root: Path, now: datetime) -> Fe
         feature_id="runtime_activation_preflight_checkpoint",
         subsystem="runtime_activation",
         trigger_condition="KUN execution/test work item has a workspace path and code/test wording.",
-        dependencies=["ExecutionContract.delivery_contract.workspace_path", "skill registry", "workspace snapshot"],
+        dependencies=[
+            "ExecutionContract.delivery_contract.workspace_path",
+            "skill registry",
+            "workspace snapshot",
+        ],
         activated=activated,
         evidence_refs=[
             *report.activation_artifact_refs,
@@ -375,13 +609,15 @@ def _case_runtime_activation_preflight_snapshot(root: Path, now: datetime) -> Fe
         ],
         generated_work_item_ids=list(report.ran_work_item_ids),
         trigger_status=item.status,
-        notes=["This checks capability binding, skill trigger scan, preflight, resource lock, checkpoint, rollback refs."],
+        notes=[
+            "This checks capability binding, skill trigger scan, preflight, resource lock, checkpoint, rollback refs."
+        ],
     )
 
 
 def _case_worker_pool_resource_lock(root: Path, now: datetime) -> FeatureActivationCase:
     lock_store = FileResourceLockStore(root / "worker-locks.json")
-    control_plane, _store, mission = _runtime(
+    control_plane, store, mission = _runtime(
         root / "worker-lock-runtime.json",
         mission_id="msn-activation-worker-lock",
         workspace=root / "worker-lock-workspace",
@@ -390,12 +626,28 @@ def _case_worker_pool_resource_lock(root: Path, now: datetime) -> FeatureActivat
         update={"resource_locks": ["workspace:activation-shared"]}
     )
     control_plane.work_items[item.work_item_id] = item
+    store.put_work_item(item)
+    holder_item = WorkItem(
+        work_item_id="work-msn-activation-worker-lock-holder",
+        mission_id=mission.mission_id,
+        task_plan_version="v1",
+        type="execution",
+        owner="kun",
+        status="running",
+        lease="external-holder",
+        heartbeat=now,
+        timeout=now + timedelta(minutes=10),
+        resource_locks=["workspace:activation-shared"],
+        expected_output="Hold the shared activation resource.",
+    )
+    control_plane.work_items[holder_item.work_item_id] = holder_item
+    store.put_work_item(holder_item)
     lock_store.acquire_many(
         resources=["workspace:activation-shared"],
         holder_id="external-holder",
         daemon_id="external-daemon",
         worker_id="external-worker",
-        work_item=item,
+        work_item=holder_item,
         now=now,
         ttl=timedelta(minutes=10),
     )
@@ -420,7 +672,9 @@ def _case_worker_pool_resource_lock(root: Path, now: datetime) -> FeatureActivat
     )
 
 
-def _case_parallel_worker_pool_isolated_execution(root: Path, now: datetime) -> FeatureActivationCase:
+def _case_parallel_worker_pool_isolated_execution(
+    root: Path, now: datetime
+) -> FeatureActivationCase:
     control_plane, _store, mission = _runtime(
         root / "parallel-worker-runtime.json",
         mission_id="msn-activation-parallel-workers",
@@ -503,7 +757,10 @@ def _case_parallel_worker_pool_isolated_execution(root: Path, now: datetime) -> 
             "resource lock conflict filter",
         ],
         activated=activated,
-        evidence_refs=[*report.ran_work_item_ids, *[slot.worker_id for slot in report.worker_slots]],
+        evidence_refs=[
+            *report.ran_work_item_ids,
+            *[slot.worker_id for slot in report.worker_slots],
+        ],
         generated_work_item_ids=list(report.ran_work_item_ids),
         trigger_status="activated" if activated else "gap",
         notes=[
@@ -511,6 +768,174 @@ def _case_parallel_worker_pool_isolated_execution(root: Path, now: datetime) -> 
             "Shared resources are still filtered by resource locks before worker assignment.",
         ],
         gaps=[] if activated else ["worker_pool_did_not_execute_independent_items_concurrently"],
+    )
+
+
+def _case_sqlite_multi_process_worker_pool_plan(root: Path, now: datetime) -> FeatureActivationCase:
+    lock_path = root / "sqlite-worker-locks.sqlite3"
+    store_a = SQLiteResourceLockStore(lock_path)
+    store_b = SQLiteResourceLockStore(lock_path)
+    item_a = WorkItem(
+        work_item_id="work-sqlite-lock-a",
+        mission_id="msn-activation-sqlite-lock",
+        task_plan_version="v1",
+        type="execution",
+        owner="kun",
+    )
+    item_b = item_a.model_copy(update={"work_item_id": "work-sqlite-lock-b"})
+    first = store_a.acquire_many(
+        resources=["workspace:sqlite-shared"],
+        holder_id="lease-sqlite-a",
+        daemon_id="daemon-sqlite-a",
+        worker_id="worker-a",
+        work_item=item_a,
+        now=now,
+        ttl=timedelta(minutes=5),
+    )
+    second = store_b.acquire_many(
+        resources=["workspace:sqlite-shared"],
+        holder_id="lease-sqlite-b",
+        daemon_id="daemon-sqlite-b",
+        worker_id="worker-b",
+        work_item=item_b,
+        now=now + timedelta(seconds=1),
+        ttl=timedelta(minutes=5),
+    )
+    pool_plan = build_daemon_worker_pool_service_install_plans(
+        platform="systemd",
+        working_directory=root,
+        service_name="kun-v6-worker-pool",
+        replica_count=2,
+        store_path=root / "control-plane.json",
+        resource_lock_path=lock_path,
+        resource_lock_backend="sqlite",
+    )
+    activated = (
+        first.acquired
+        and not second.acquired
+        and second.conflicts[0].holder_daemon_id == "daemon-sqlite-a"
+        and pool_plan.replica_count == 2
+        and len({plan.state_path for plan in pool_plan.plans}) == 2
+        and len({plan.resource_lock_path for plan in pool_plan.plans}) == 1
+    )
+    return FeatureActivationCase(
+        feature_id="sqlite_multi_process_worker_pool",
+        subsystem="concurrency",
+        trigger_condition="Multiple daemon processes share a SQLite resource-lock store.",
+        dependencies=[
+            "SQLiteResourceLockStore",
+            "build_daemon_worker_pool_service_install_plans",
+            "one state file per daemon replica",
+        ],
+        activated=activated,
+        evidence_refs=[lock_path.as_posix(), *[plan.service_name for plan in pool_plan.plans]],
+        generated_work_item_ids=[item_a.work_item_id, item_b.work_item_id],
+        trigger_status="waiting_lock" if second.conflicts else "unknown",
+        notes=[
+            "This activates local multi-process coordination without requiring Redis/Kubernetes."
+        ],
+    )
+
+
+class _AuditRedisPipeline:
+    def __init__(self, redis: _AuditRedis) -> None:
+        self.redis = redis
+        self.commands: list[tuple[str, str]] = []
+
+    def __enter__(self) -> _AuditRedisPipeline:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def watch(self, *_keys: str) -> None:
+        return None
+
+    def mget(self, keys: list[str]) -> list[str | None]:
+        return [self.redis.values.get(key) for key in keys]
+
+    def unwatch(self) -> None:
+        return None
+
+    def multi(self) -> None:
+        return None
+
+    def set(self, key: str, value: str, *, px: int) -> None:
+        self.commands.append((key, value))
+
+    def execute(self) -> list[bool]:
+        for key, value in self.commands:
+            self.redis.values[key] = value
+        return [True for _ in self.commands]
+
+
+class _AuditRedis:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    def pipeline(self) -> _AuditRedisPipeline:
+        return _AuditRedisPipeline(self)
+
+    def scan_iter(self, pattern: str):
+        prefix = pattern.removesuffix("*")
+        return (key for key in list(self.values) if key.startswith(prefix))
+
+    def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    def delete(self, key: str) -> None:
+        self.values.pop(key, None)
+
+
+def _case_redis_distributed_resource_lock_adapter(
+    root: Path, now: datetime
+) -> FeatureActivationCase:
+    redis = _AuditRedis()
+    store_a = RedisResourceLockStore(client=redis)
+    store_b = RedisResourceLockStore(client=redis)
+    item_a = WorkItem(
+        work_item_id="work-redis-lock-a",
+        mission_id="msn-activation-redis-lock",
+        task_plan_version="v1",
+        type="execution",
+        owner="kun",
+    )
+    item_b = item_a.model_copy(update={"work_item_id": "work-redis-lock-b"})
+    first = store_a.acquire_many(
+        resources=["workspace:redis-shared"],
+        holder_id="lease-redis-a",
+        daemon_id="daemon-redis-a",
+        worker_id="worker-a",
+        work_item=item_a,
+        now=now,
+        ttl=timedelta(minutes=5),
+    )
+    second = store_b.acquire_many(
+        resources=["workspace:redis-shared"],
+        holder_id="lease-redis-b",
+        daemon_id="daemon-redis-b",
+        worker_id="worker-b",
+        work_item=item_b,
+        now=now + timedelta(seconds=1),
+        ttl=timedelta(minutes=5),
+    )
+    activated = (
+        first.acquired
+        and not second.acquired
+        and second.conflicts[0].holder_daemon_id == "daemon-redis-a"
+    )
+    return FeatureActivationCase(
+        feature_id="redis_distributed_resource_lock_adapter",
+        subsystem="concurrency",
+        trigger_condition="Two worker processes/machines contend for one Redis resource lock.",
+        dependencies=["RedisResourceLockStore", "resource lock backend=redis"],
+        activated=activated,
+        evidence_refs=[second.conflicts[0].resource_ref] if second.conflicts else [],
+        generated_work_item_ids=[item_a.work_item_id, item_b.work_item_id],
+        trigger_status="waiting_lock" if second.conflicts else "unknown",
+        notes=[
+            "This proves the cross-machine lock adapter contract without requiring a live Redis server."
+        ],
     )
 
 
@@ -528,7 +953,9 @@ def _case_container_required_gate(root: Path, now: datetime) -> FeatureActivatio
         container_runtime="docker",
     ).tick_once(mission_ids=[mission.mission_id], now=now, max_work_items=1)
     item = control_plane.work_items["work-msn-activation-container"]
-    supports = [support for artifact in control_plane.artifacts.values() for support in artifact.supports]
+    supports = [
+        support for artifact in control_plane.artifacts.values() for support in artifact.supports
+    ]
     activated = item.status == "failed" and "container_sandbox_required" in supports
     return FeatureActivationCase(
         feature_id="container_required_blocks_unsupported_runner",
@@ -536,10 +963,19 @@ def _case_container_required_gate(root: Path, now: datetime) -> FeatureActivatio
         trigger_condition="Daemon sandbox_mode=container_required while selected runner lacks container support.",
         dependencies=["sandbox_spec_for_work_item", "runner.supports_container_sandbox"],
         activated=activated,
-        evidence_refs=[*report.run_refs, *[artifact.artifact_id for artifact in control_plane.artifacts.values() if "container_sandbox_required" in artifact.supports]],
+        evidence_refs=[
+            *report.run_refs,
+            *[
+                artifact.artifact_id
+                for artifact in control_plane.artifacts.values()
+                if "container_sandbox_required" in artifact.supports
+            ],
+        ],
         generated_work_item_ids=list(report.ran_work_item_ids),
         trigger_status=item.status,
-        notes=["This prevents workspace snapshot isolation from being misreported as container isolation."],
+        notes=[
+            "This prevents workspace snapshot isolation from being misreported as container isolation."
+        ],
     )
 
 
@@ -549,10 +985,18 @@ def _case_qi_nuo_observation_strategy_loop(root: Path, now: datetime) -> Feature
         mission_id="msn-activation-qi-nuo",
         workspace=root / "qi-nuo-workspace",
     )
+    mission = control_plane.missions[mission.mission_id].model_copy(
+        update={"task_type": "product_development"}
+    )
+    control_plane.missions[mission.mission_id] = mission
+    if control_plane.store is not None:
+        control_plane.store.put_mission(mission)
     failed = control_plane.work_items["work-msn-activation-qi-nuo"].model_copy(
         update={"status": "failed"}
     )
     control_plane.work_items[failed.work_item_id] = failed
+    if control_plane.store is not None:
+        control_plane.store.put_work_item(failed)
     control_plane.transition_mission(
         mission_id=mission.mission_id,
         target="running",
@@ -566,6 +1010,12 @@ def _case_qi_nuo_observation_strategy_loop(root: Path, now: datetime) -> Feature
         runners_by_owner=_default_owner_runners(control_plane),
         daemon_id="activation-qi-nuo",
         worker_pool=WorkerPoolConfig(worker_count=3),
+    )
+    observation_tick = daemon.tick_once(
+        mission_ids=[mission.mission_id],
+        max_work_items=0,
+        write_progress=True,
+        now=now,
     )
     loop = daemon.run_loop(
         mission_ids=[mission.mission_id],
@@ -585,12 +1035,131 @@ def _case_qi_nuo_observation_strategy_loop(root: Path, now: datetime) -> Feature
         feature_id="qi_nuo_observation_strategy_loop",
         subsystem="qi_nuo_self_iteration",
         trigger_condition="Failed work item and failed quality gate exist without recovery refs.",
-        dependencies=["RuntimeObservationReport", "QiRuntimeGovernanceRunner", "NuoRuntimeRepairRunner", "KunRuntimeTaskRunner"],
+        dependencies=[
+            "RuntimeObservationReport",
+            "QiRuntimeGovernanceRunner",
+            "NuoRuntimeRepairRunner",
+            "KunRuntimeTaskRunner",
+        ],
         activated=activated,
-        evidence_refs=[artifact.artifact_id for artifact in artifacts if artifact.supports and artifact.supports[0] in {"qi_runtime_governance_report", "nuo_runtime_repair_report"} or "strategy_optimization_plan" in artifact.supports],
-        generated_work_item_ids=[wid for tick in loop.tick_reports for wid in [*tick.created_work_item_ids, *tick.ran_work_item_ids]],
+        evidence_refs=[
+            artifact.artifact_id
+            for artifact in artifacts
+            if (
+                artifact.supports
+                and artifact.supports[0]
+                in {"qi_runtime_governance_report", "nuo_runtime_repair_report"}
+            )
+            or "strategy_optimization_plan" in artifact.supports
+        ],
+        generated_work_item_ids=[
+            *observation_tick.created_work_item_ids,
+            *observation_tick.observation_followup_ids,
+            *[
+                wid
+                for tick in loop.tick_reports
+                for wid in [*tick.created_work_item_ids, *tick.ran_work_item_ids]
+            ],
+        ],
         trigger_status=control_plane.missions[mission.mission_id].status,
-        notes=["This verifies that weak execution opens Nuo/Qi work and KUN follow-up strategy tasks automatically."],
+        notes=[
+            "This verifies that weak execution opens Nuo/Qi work and KUN follow-up strategy tasks automatically."
+        ],
+    )
+
+
+def _case_runtime_observation_hardening(root: Path, now: datetime) -> FeatureActivationCase:
+    control_plane, _store, mission = _runtime(
+        root / "runtime-observation-hardening.json",
+        mission_id="msn-activation-runtime-hardening",
+        workspace=root / "runtime-observation-hardening-workspace",
+    )
+    rework_plan_version = "runtime-observation-v1-acceptance-rework-22222222"
+    mission = mission.model_copy(
+        update={
+            "status": "awaiting_acceptance",
+            "current_plan_version": rework_plan_version,
+        }
+    )
+    control_plane.missions[mission.mission_id] = mission
+    work_item = control_plane.work_items["work-msn-activation-runtime-hardening"].model_copy(
+        update={
+            "status": "done",
+            "task_plan_version": rework_plan_version,
+            "required_capability_refs": ["cap-observation-required"],
+            "expected_output": "Capability must produce a behavior receipt.",
+        }
+    )
+    control_plane.work_items[work_item.work_item_id] = work_item
+    for index, plan_version in enumerate(
+        [
+            "runtime-observation-v1-acceptance-rework-11111111",
+            rework_plan_version,
+        ]
+    ):
+        gate = GateEvaluation(
+            gate_evaluation_id=f"gate-observation-pressure-{index}",
+            mission_id=mission.mission_id,
+            task_plan_version=plan_version,
+            subject_ref=f"ticket-observation-acceptance-{index}",
+            stage="delivery",
+            task_type=mission.task_type,
+            rubric_version="kun-runtime-observation-hardening-v1",
+            metric_pack_version="north-star-v6",
+            north_star_verdict="partial",
+            result_quality=0.72,
+            speed=0.8,
+            cost=0.8,
+            risk=0.42,
+            evidence_quality=0.7,
+            collaboration_quality=0.75,
+            hard_gate_failures=["human_acceptance_missing"],
+            next_action="needs_plan_change",
+            next_state="changing_plan",
+            governance_signal="open_acceptance_requires_continued_product_pressure",
+            created_by="feature-activation-audit",
+        )
+        control_plane.gate_evaluations[gate.gate_evaluation_id] = gate
+    report = build_runtime_observation_report(
+        control_plane=control_plane,
+        mission_id=mission.mission_id,
+        tick_report=object(),
+        capability_policy=CapabilityExecutionPolicy(policy_id="policy-empty", built_at=now),
+    )
+    codes = {item.code for item in report.items}
+    activated = {
+        "capability_consumption_unproven",
+        "mechanical_acceptance_rework_loop",
+    }.issubset(codes)
+    evidence_refs = [
+        ref
+        for item in report.items
+        if item.code in {"capability_consumption_unproven", "mechanical_acceptance_rework_loop"}
+        for ref in item.evidence_refs
+    ]
+    return FeatureActivationCase(
+        feature_id="runtime_observation_hardening",
+        subsystem="runtime_observation",
+        trigger_condition=(
+            "A mission has required-capability work without behavior receipt and repeated "
+            "acceptance rework pressure."
+        ),
+        dependencies=[
+            "capability_behavior_receipt observation",
+            "mechanical acceptance rework loop observation",
+            "Qi/Nuo/external-supervisor routing",
+        ],
+        activated=activated,
+        evidence_refs=evidence_refs,
+        trigger_status="observed" if activated else "gap",
+        notes=[
+            "This verifies KUN can surface metadata-only capability activation and mechanical "
+            "rework loops before external supervision discovers them manually."
+        ],
+        gaps=[]
+        if activated
+        else ["runtime observation did not flag capability receipt and rework-loop gaps"],
+        evidence_scope="static_probe",
     )
 
 
@@ -619,7 +1188,10 @@ def _case_capability_dedupe_qi_governance(root: Path, now: datetime) -> FeatureA
         control_plane.store.put_capability_profile(profile)
     report = ControlPlaneDaemon(
         control_plane=control_plane,
-        runners_by_owner={"kun": PolicyAwareRunner(), "qi": QiRuntimeGovernanceRunner(control_plane=control_plane)},
+        runners_by_owner={
+            "kun": PolicyAwareRunner(),
+            "qi": QiRuntimeGovernanceRunner(control_plane=control_plane),
+        },
         daemon_id="activation-capability-dedupe",
     ).tick_once(mission_ids=[mission.mission_id], now=now, max_work_items=1)
     second = ControlPlaneDaemon(
@@ -628,22 +1200,117 @@ def _case_capability_dedupe_qi_governance(root: Path, now: datetime) -> FeatureA
         daemon_id="activation-capability-dedupe-qi",
     ).tick_once(mission_ids=[mission.mission_id], now=now + timedelta(seconds=1), max_work_items=2)
     activated = bool(report.retired_capability_profile_ids) and any(
-        "qi_runtime_governance_report" in artifact.supports for artifact in control_plane.artifacts.values()
+        "qi_runtime_governance_report" in artifact.supports
+        for artifact in control_plane.artifacts.values()
     )
     return FeatureActivationCase(
         feature_id="capability_dedupe_routes_to_qi",
         subsystem="qi_capability_governance",
         trigger_condition="Two production runtime capabilities share a governance_key.",
-        dependencies=["CapabilityGovernanceReport", "daemon duplicate retirement", "Qi runtime governance runner"],
+        dependencies=[
+            "CapabilityGovernanceReport",
+            "daemon duplicate retirement",
+            "Qi runtime governance runner",
+        ],
         activated=activated,
         evidence_refs=[
             *report.retired_capability_profile_ids,
-            *[artifact.artifact_id for artifact in control_plane.artifacts.values() if "qi_runtime_governance_report" in artifact.supports],
+            *[
+                artifact.artifact_id
+                for artifact in control_plane.artifacts.values()
+                if "qi_runtime_governance_report" in artifact.supports
+            ],
         ],
         generated_work_item_ids=[*report.created_work_item_ids, *second.ran_work_item_ids],
         trigger_status="activated" if activated else "gap",
         notes=["Daemon may do the safety retirement, but Qi must record the governance decision."],
     )
+
+
+def _case_task_vs_self_improvement_boundary(root: Path, now: datetime) -> FeatureActivationCase:
+    control_plane, _store, mission = _domain_runtime(
+        root / "task-vs-self-improvement-runtime.json",
+        mission_id="msn-activation-task-boundary",
+        owner="kun",
+        workspace=root / "task-boundary-workspace",
+        work_ids=["work-task-boundary-user-delivery"],
+    )
+    candidate = CapabilityCandidate(
+        candidate_id="cand-user-task-runtime-pollution",
+        capability_name="User task must not enable KUN runtime defaults",
+        source="real_task_review",
+        source_ref=mission.mission_id,
+        hypothesis=(
+            "User mission learning can become a learning signal, but cannot directly "
+            "enable a production runtime capability."
+        ),
+        target_task_types=["product_development"],
+        evidence_refs=["artifact-user-task-learning-signal"],
+        known_limits=["Only Qi/Nuo self_improvement governance can promote production defaults."],
+        created_by="kun",
+    )
+    promotion = build_capability_promotion(
+        candidate,
+        [
+            _capability_boundary_evaluation(stage, mission_id=mission.mission_id)
+            for stage in ["replay", "holdout", "shadow", "canary", "production"]
+        ],
+        target_stage="production",
+        capability_id="cap-user-task-runtime-pollution",
+    )
+    blocked = False
+    try:
+        control_plane.apply_capability_promotion(promotion, actor="kun")
+    except ValueError as exc:
+        blocked = "only allowed from self_improvement" in str(exc)
+    activated = blocked and not control_plane.list_default_runtime_capabilities()
+    return FeatureActivationCase(
+        feature_id="task_vs_self_improvement_boundary",
+        subsystem="qi_capability_governance",
+        trigger_condition=(
+            "A product_development user mission attempts to enable a production CapabilityProfile."
+        ),
+        dependencies=[
+            "apply_capability_promotion boundary guard",
+            "CapabilityProfile runtime_enabled production profile",
+            "mission.task_type self_improvement requirement",
+        ],
+        activated=activated,
+        evidence_refs=[promotion.promotion_id, promotion.gate_evaluation.gate_evaluation_id],
+        generated_work_item_ids=[],
+        trigger_status="blocked" if activated else "gap",
+        notes=[
+            "User task learning remains evidence for Qi/Nuo governance; it cannot mutate KUN "
+            "production defaults directly."
+        ],
+        gaps=[] if activated else ["user task production capability promotion was not blocked"],
+        evidence_scope="static_probe",
+    )
+
+
+def _capability_boundary_evaluation(stage: str, *, mission_id: str) -> CapabilityEvaluation:
+    payload: dict[str, object] = {
+        "evaluation_id": f"eval-task-boundary-{stage}",
+        "candidate_id": "cand-user-task-runtime-pollution",
+        "stage": stage,
+        "mission_id": mission_id,
+        "task_plan_version": "v1",
+        "subject_ref": f"work-task-boundary-{stage}",
+        "passed": True,
+        "result_quality": 0.91,
+        "speed": 0.75,
+        "cost": 0.7,
+        "risk": 0.2,
+        "evidence_refs": [f"artifact-task-boundary-evidence-{stage}"],
+        "artifact_refs": [f"artifact-task-boundary-report-{stage}"],
+        "review_refs": [f"artifact-task-boundary-review-{stage}"],
+    }
+    if stage in {"holdout", "canary", "production"}:
+        payload["holdout_refs"] = ["artifact-task-boundary-holdout"]
+    if stage in {"canary", "production"}:
+        payload["regression_refs"] = ["artifact-task-boundary-regression"]
+        payload["rollback_plan"] = ["disable rejected user-task runtime profile"]
+    return CapabilityEvaluation.model_validate(payload)
 
 
 def _case_merge_conflict_governance(root: Path, now: datetime) -> FeatureActivationCase:
@@ -708,7 +1375,9 @@ def _case_merge_conflict_governance(root: Path, now: datetime) -> FeatureActivat
         evidence_refs=[gate.gate_evaluation_id] if gate else [],
         generated_work_item_ids=list(report.ran_work_item_ids),
         trigger_status=control_plane.work_items[merge.work_item_id].status,
-        notes=["Merge conflict must block delivery instead of hiding behind artifact concatenation."],
+        notes=[
+            "Merge conflict must block delivery instead of hiding behind artifact concatenation."
+        ],
     )
 
 
@@ -748,7 +1417,9 @@ def _case_workspace_rollback(root: Path, now: datetime) -> FeatureActivationCase
         control_plane=control_plane,
         daemon_id="activation-rollback-restore",
     ).tick_once(mission_ids=[mission.mission_id], now=now + timedelta(minutes=1), max_work_items=1)
-    activated = target.read_text(encoding="utf-8") == "v1" and not (workspace / "extra.txt").exists()
+    activated = (
+        target.read_text(encoding="utf-8") == "v1" and not (workspace / "extra.txt").exists()
+    )
     return FeatureActivationCase(
         feature_id="workspace_snapshot_and_rollback",
         subsystem="rollback",
@@ -757,7 +1428,11 @@ def _case_workspace_rollback(root: Path, now: datetime) -> FeatureActivationCase
         activated=activated,
         evidence_refs=[
             *snapshot_refs,
-            *[artifact.artifact_id for artifact in control_plane.artifacts.values() if "workspace_restore" in artifact.supports],
+            *[
+                artifact.artifact_id
+                for artifact in control_plane.artifacts.values()
+                if "workspace_restore" in artifact.supports
+            ],
         ],
         generated_work_item_ids=[*first.ran_work_item_ids, *second.ran_work_item_ids],
         trigger_status=control_plane.work_items[rollback.work_item_id].status,
@@ -853,19 +1528,27 @@ def _case_external_sample_comparison(root: Path, now: datetime) -> FeatureActiva
         },
         daemon_id="activation-external-sample",
     ).tick_once(mission_ids=[mission.mission_id], now=now, max_work_items=1)
-    activated = (
-        (output / "qi-governance-actions.json").exists()
-        and any("external_sample_governance_plan" in artifact.supports for artifact in control_plane.artifacts.values())
+    activated = (output / "qi-governance-actions.json").exists() and any(
+        "external_sample_governance_plan" in artifact.supports
+        for artifact in control_plane.artifacts.values()
     )
     return FeatureActivationCase(
         feature_id="external_sample_comparison_qi_governance",
         subsystem="external_sample_learning",
         trigger_condition="Research work item owned by external-sample runner with source/target repo paths.",
-        dependencies=["ExternalSampleComparisonRunner", "evidence_policy.external_sample_comparison", "Qi governance action output"],
+        dependencies=[
+            "ExternalSampleComparisonRunner",
+            "evidence_policy.external_sample_comparison",
+            "Qi governance action output",
+        ],
         activated=activated,
         evidence_refs=[
             *report.ran_work_item_ids,
-            *[artifact.artifact_id for artifact in control_plane.artifacts.values() if "external_sample_governance_plan" in artifact.supports],
+            *[
+                artifact.artifact_id
+                for artifact in control_plane.artifacts.values()
+                if "external_sample_governance_plan" in artifact.supports
+            ],
         ],
         generated_work_item_ids=list(report.ran_work_item_ids),
         trigger_status=control_plane.work_items[work_item.work_item_id].status,
@@ -905,12 +1588,18 @@ def _case_autonomous_app_development_runner(root: Path, now: datetime) -> Featur
         },
         daemon_id="activation-app-dev",
     ).tick_once(mission_ids=[mission.mission_id], now=now, max_work_items=10)
-    activated = (project / "src" / "App.tsx").exists() and (project / "docs" / "delivery-report.md").exists()
+    activated = (project / "src" / "App.tsx").exists() and (
+        project / "docs" / "delivery-report.md"
+    ).exists()
     return FeatureActivationCase(
         feature_id="autonomous_app_development_runner",
         subsystem="app_development",
         trigger_condition="A product-development work queue is owned by the autonomous app runner.",
-        dependencies=["AutonomousAppDevelopmentRunner", "delivery_contract.project_path", "npm command boundary"],
+        dependencies=[
+            "AutonomousAppDevelopmentRunner",
+            "delivery_contract.project_path",
+            "npm command boundary",
+        ],
         activated=activated,
         evidence_refs=[
             *report.ran_work_item_ids,
@@ -918,7 +1607,9 @@ def _case_autonomous_app_development_runner(root: Path, now: datetime) -> Featur
         ],
         generated_work_item_ids=list(report.ran_work_item_ids),
         trigger_status=control_plane.missions[mission.mission_id].status,
-        notes=["Uses fake npm commands; verifies runner activation and project materialization without resuming the game task."],
+        notes=[
+            "Uses fake npm commands; verifies runner activation and project materialization without resuming the game task."
+        ],
     )
 
 
@@ -983,15 +1674,18 @@ def _case_game_design_research_runner(root: Path, now: datetime) -> FeatureActiv
         },
         daemon_id="activation-game-design",
     ).tick_once(mission_ids=[mission.mission_id], now=now, max_work_items=12)
-    activated = (
-        (project / "docs" / "game-design-spec.md").exists()
-        and (final_project / "docs" / "delivery-report.md").exists()
-    )
+    activated = (project / "docs" / "game-design-spec.md").exists() and (
+        final_project / "docs" / "delivery-report.md"
+    ).exists()
     return FeatureActivationCase(
         feature_id="game_design_research_to_app_runner",
         subsystem="research_first_product_development",
         trigger_condition="Research gate work item owned by game-design runner passes and queues app runner.",
-        dependencies=["GameDesignResearchRunner", "research source corpus", "AutonomousAppDevelopmentRunner"],
+        dependencies=[
+            "GameDesignResearchRunner",
+            "research source corpus",
+            "AutonomousAppDevelopmentRunner",
+        ],
         activated=activated,
         evidence_refs=list(report.ran_work_item_ids),
         generated_work_item_ids=[*report.created_work_item_ids, *report.ran_work_item_ids],
@@ -1016,11 +1710,13 @@ def _case_game_production_runner(root: Path, now: datetime) -> FeatureActivation
     )
     commands: list[list[str]] = []
 
-    def fake_command(command: list[str], _cwd: Path, _timeout_sec: int) -> GameProductionCommandResult:
+    def fake_command(
+        command: list[str], _cwd: Path, _timeout_sec: int
+    ) -> GameProductionCommandResult:
         commands.append(command)
         return GameProductionCommandResult(exit_code=0, stdout="ok", stderr="")
 
-    report = ControlPlaneDaemon(
+    daemon = ControlPlaneDaemon(
         control_plane=control_plane,
         runners_by_owner={
             KUN_GAME_PRODUCTION_RUNNER_OWNER: GameProductionRunner(
@@ -1029,25 +1725,51 @@ def _case_game_production_runner(root: Path, now: datetime) -> FeatureActivation
             )
         },
         daemon_id="activation-game-production",
-    ).tick_once(mission_ids=[mission.mission_id], now=now, max_work_items=8)
-    activated = (project / "src" / "App.tsx").exists() and (project / "docs" / "final-playable-delivery.md").exists()
+    )
+    reports = [
+        daemon.tick_once(
+            mission_ids=[mission.mission_id],
+            now=now + timedelta(seconds=index),
+            max_work_items=8,
+        )
+        for index in range(len(control_plane.work_items))
+    ]
+    ran_work_item_ids = [
+        work_item_id for report in reports for work_item_id in report.ran_work_item_ids
+    ]
+    activated = (project / "src" / "App.tsx").exists() and (
+        project / "docs" / "final-playable-delivery.md"
+    ).exists()
     return FeatureActivationCase(
         feature_id="game_production_runner_internal_delivery",
         subsystem="game_production",
         trigger_condition="Game production work queue is owned by the game production runner.",
-        dependencies=["GameProductionRunner", "project_path", "internal/user simulation command hooks"],
+        dependencies=[
+            "GameProductionRunner",
+            "project_path",
+            "internal/user simulation command hooks",
+        ],
         activated=activated,
-        evidence_refs=list(report.ran_work_item_ids),
-        generated_work_item_ids=list(report.ran_work_item_ids),
+        evidence_refs=ran_work_item_ids,
+        generated_work_item_ids=ran_work_item_ids,
         trigger_status=control_plane.missions[mission.mission_id].status,
-        notes=["The user-facing game task remains paused; this only activates the runner path on a fixture."],
+        notes=[
+            "The user-facing game task remains paused; this only activates the runner path on a fixture."
+        ],
     )
 
 
 def _case_qi_ab_external_runner(root: Path, now: datetime) -> FeatureActivationCase:
     workdir = root / "frontier50"
     run_tag = "activation-ab"
-    round_dir = workdir / "fair_ab_outputs" / "real_comparator_ab_external_live" / "groups" / "group-01" / run_tag
+    round_dir = (
+        workdir
+        / "fair_ab_outputs"
+        / "real_comparator_ab_external_live"
+        / "groups"
+        / "group-01"
+        / run_tag
+    )
     round_dir.mkdir(parents=True)
     (round_dir / "report.json").write_text(
         json.dumps(
@@ -1061,10 +1783,16 @@ def _case_qi_ab_external_runner(root: Path, now: datetime) -> FeatureActivationC
         ),
         encoding="utf-8",
     )
-    (round_dir / "comparator_health.json").write_text(json.dumps({"comparator_unhealthy": False}), encoding="utf-8")
+    (round_dir / "comparator_health.json").write_text(
+        json.dumps({"comparator_unhealthy": False}), encoding="utf-8"
+    )
     (round_dir / "repair_tickets.json").write_text("[]", encoding="utf-8")
-    (round_dir / "runs.jsonl").write_text("\n".join(json.dumps({"run": idx}) for idx in range(20)) + "\n", encoding="utf-8")
-    (round_dir / "reviews.jsonl").write_text("\n".join(json.dumps({"review": idx}) for idx in range(45)) + "\n", encoding="utf-8")
+    (round_dir / "runs.jsonl").write_text(
+        "\n".join(json.dumps({"run": idx}) for idx in range(20)) + "\n", encoding="utf-8"
+    )
+    (round_dir / "reviews.jsonl").write_text(
+        "\n".join(json.dumps({"review": idx}) for idx in range(45)) + "\n", encoding="utf-8"
+    )
     control_plane, _store, mission = _runtime(
         root / "ab-runtime.json",
         mission_id="msn-activation-ab",
@@ -1080,7 +1808,9 @@ def _case_qi_ab_external_runner(root: Path, now: datetime) -> FeatureActivationC
     if control_plane.store is not None:
         control_plane.store.put_work_item(work_item)
 
-    def fake_executor(_command: Path, _env: dict[str, str], _cwd: Path, _timeout: int) -> ExternalCommandResult:
+    def fake_executor(
+        _command: Path, _env: dict[str, str], _cwd: Path, _timeout: int
+    ) -> ExternalCommandResult:
         return ExternalCommandResult(exit_code=0, stdout="ok", stderr="")
 
     runner = Frontier50ExternalRoundRunner(
@@ -1106,12 +1836,19 @@ def _case_qi_ab_external_runner(root: Path, now: datetime) -> FeatureActivationC
         feature_id="qi_ab_frontier50_external_runner",
         subsystem="qi_ab_regression",
         trigger_condition="Qi test work item mentions Frontier50/AB and a round directory exists.",
-        dependencies=["Frontier50ExternalRoundRunner", "report.json", "comparator_health.json", "runs/reviews jsonl"],
+        dependencies=[
+            "Frontier50ExternalRoundRunner",
+            "report.json",
+            "comparator_health.json",
+            "runs/reviews jsonl",
+        ],
         activated=activated,
         evidence_refs=[*report.ran_work_item_ids, *control_plane.artifact_manifests.keys()],
         generated_work_item_ids=list(report.ran_work_item_ids),
         trigger_status=control_plane.work_items[work_item.work_item_id].status,
-        notes=["Runs against a synthetic round fixture; real AB rounds remain paused unless explicitly requested."],
+        notes=[
+            "Runs against a synthetic round fixture; real AB rounds remain paused unless explicitly requested."
+        ],
     )
 
 
@@ -1128,7 +1865,10 @@ def _case_productization_dogfood_runner(root: Path, now: datetime) -> FeatureAct
         runners_by_owner={"control-plane": runner, "qi": runner, "nuo": runner},
         daemon_id="activation-productization",
     ).tick_once(mission_ids=[mission.mission_id], now=now, max_work_items=2)
-    activated = bool(report.ran_work_item_ids) and control_plane.work_items[report.ran_work_item_ids[0]].status == "done"
+    activated = (
+        bool(report.ran_work_item_ids)
+        and control_plane.work_items[report.ran_work_item_ids[0]].status == "done"
+    )
     return FeatureActivationCase(
         feature_id="productization_dogfood_runner",
         subsystem="control_plane_productization",
@@ -1138,19 +1878,26 @@ def _case_productization_dogfood_runner(root: Path, now: datetime) -> FeatureAct
         evidence_refs=list(report.ran_work_item_ids),
         generated_work_item_ids=list(report.ran_work_item_ids),
         trigger_status=control_plane.missions[mission.mission_id].status,
-        notes=["This activates the canonical productization queue without running unrelated game work."],
+        notes=[
+            "This activates the canonical productization queue without running unrelated game work."
+        ],
     )
 
 
 _CASE_FUNCTIONS: list[Callable[[Path, datetime], FeatureActivationCase]] = [
     _case_info_gap_collaboration,
     _case_acceptance_collaboration_cleanup,
+    _case_mission_director_delivery_supervision,
     _case_runtime_activation_preflight_snapshot,
     _case_worker_pool_resource_lock,
     _case_parallel_worker_pool_isolated_execution,
+    _case_sqlite_multi_process_worker_pool_plan,
+    _case_redis_distributed_resource_lock_adapter,
     _case_container_required_gate,
     _case_qi_nuo_observation_strategy_loop,
+    _case_runtime_observation_hardening,
     _case_capability_dedupe_qi_governance,
+    _case_task_vs_self_improvement_boundary,
     _case_merge_conflict_governance,
     _case_workspace_rollback,
     _case_watchtower_bridge,
@@ -1281,6 +2028,11 @@ def _domain_runtime(
         forbidden_actions=["resume_paused_user_game_task"],
         delivery_contract={
             "project_path": str(workspace),
+            **(
+                {"production_mode": "gameful_playtest"}
+                if owner == KUN_GAME_PRODUCTION_RUNNER_OWNER
+                else {}
+            ),
             **({"final_project_path": str(final_workspace)} if final_workspace else {}),
         },
     )
@@ -1408,9 +2160,11 @@ def _markdown_report(report: FeatureActivationAuditReport) -> str:
         f"- Generated: `{report.generated_at.isoformat()}`",
         f"- Activated: `{report.activated_count}/{len(report.cases)}`",
         f"- Gaps: `{report.gap_count}`",
+        f"- Real mission evidence: `{report.real_mission_count}`",
+        f"- Fixture or synthetic evidence: `{report.fixture_or_synthetic_count}`",
         "",
-        "| Feature | Subsystem | Activated | Trigger | Evidence | Gaps |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Feature | Subsystem | Scope | Trigger | Runner | Real E2E | Activated | Evidence | Gaps |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for case in report.cases:
         lines.append(
@@ -1419,8 +2173,11 @@ def _markdown_report(report: FeatureActivationAuditReport) -> str:
                 [
                     case.feature_id,
                     case.subsystem,
+                    case.evidence_scope,
+                    "yes" if case.trigger_available else "no",
+                    "yes" if case.runner_available else "no",
+                    "yes" if case.real_mission_e2e_passed else "no",
                     "yes" if case.activated else "no",
-                    case.trigger_condition.replace("|", "/"),
                     ", ".join(case.evidence_refs[:5]).replace("|", "/") or "-",
                     "; ".join(case.gaps).replace("|", "/") or "-",
                 ]

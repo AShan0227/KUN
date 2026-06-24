@@ -11,6 +11,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from kun.agents.gate.capability_writeback import TaskOutcome, record_outcome
 from kun.core.logging import get_logger
 from kun.core.tenancy import current_tenant
 from kun.engineering.agent_benchmark import (
@@ -20,7 +21,6 @@ from kun.engineering.agent_benchmark import (
     run_benchmark,
     sample_benchmark_tasks,
 )
-from kun.engineering.capability_writeback import TaskOutcome, record_outcome
 
 router = APIRouter()
 log = get_logger("kun.api.nuo.benchmark")

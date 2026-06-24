@@ -1,0 +1,104 @@
+topic: anomaly_clustering_with_member_uniqueness
+title: 异常聚类按优先级 + Member 不重用 — 防同 anomaly 算多次
+description: |
+  当系统监测到多个 anomaly, 聚类成"系统性问题"提升处理优先级时, 必须按
+  优先级评估 + Member 不重用:
+
+    1. **规则按优先级评估**: 先抓最强信号 (e.g. 同 module + 多 kind),
+       再抓次强 (同 kind + 多 module), 最后兜底 (同 tenant + N 个独立).
+
+    2. **Member 不重用**: 进入前一个 cluster 的 anomaly 不再进后一个 —
+       否则同 anomaly 被多个 cluster 算账, 后续重复处理.
+
+    3. **Cluster 自带 dedup_key**: 让同 cluster 在窗口内不重复触发,
+       避免每次新 anomaly 都重新计算同 cluster.
+
+trigger:
+  conditions:
+    - 系统监测到多个 anomaly 事件, 需要识别"系统性问题"
+    - 需要把多个 atomic anomaly 合并成单一"高优"任务
+    - 多个聚类规则可能同时命中, 需要去重
+
+action:
+  pattern:
+    - rule: 规则按优先级排序
+      do: |
+        # 先抓 strongest signal:
+        # 1. 同 target_module + 多 kind → module_systemic
+        # 2. 同 kind + 多 target (prefix 同) → cross_module_pattern
+        # 3. 同 tenant + ≥N 独立 → tenant_degradation (兜底)
+      why: |
+        priority 高的规则信号更具体 / actionable.
+        e.g. "同 module 多 kind" 比"同 tenant 多 anomaly" 更指向具体修复点.
+    - rule: Member 不重用 (seen_member_ids set)
+      do: |
+        seen_member_ids: set[str] = set()
+        for rule in rules_in_priority_order:
+            members_unseen = [m for m in members if m.id not in seen_member_ids]
+            if members_unseen 满足 rule 阈值:
+                cluster = make_cluster(members_unseen)
+                clusters.append(cluster)
+                seen_member_ids.update(cluster.member_ids)
+      why: |
+        防止同 anomaly 被多个 cluster 算账. 同 anomaly 算多次 →
+        Strategist 收到重复 candidate → 浪费 quota + 探索惩罚误判.
+    - rule: Cluster 自带 dedup_key
+      do: |
+        dedup_key = f"{tenant}:cluster:{kind}:{module}"
+        if dedup_key 在 ttl 内已触发: skip
+        else: emit + 记录 dedup state
+      why: |
+        Cluster 是聚合信号, 多次新 anomaly 加入不应让同 cluster 反复 emit.
+        Cluster 应有自己的 dedup 周期 (与单 anomaly dedup 区分).
+    - rule: Cluster priority/severity 自动升级
+      do: |
+        cluster.priority = "high"   # 已超单 anomaly 基线
+        cluster.severity = "strong" # 跳过 weak/mid 直 escalation
+      why: |
+        聚类已说明"多个 anomaly 同时出现" — 自动 severity 升级,
+        让上层 (Gate / Strategist) 优先处理.
+
+  anti_patterns:
+    - 平行评估所有 rules — 同 anomaly 进多 cluster, 后续重复处理
+    - Cluster 没 dedup_key — 每次新 anomaly 都让同 cluster re-emit
+    - Cluster priority 跟随 member 平均 — 失去"系统性"升级语义
+    - 用所有 rules 都覆盖到的"超 cluster" — 边界不清, 维护难
+
+rationale: |
+  KUN L5.1 实现的 3 条 cluster rule + member uniqueness:
+
+    Rule 1 module_systemic: 同 module + ≥2 kind → 该 module 系统性问题
+    Rule 2 cross_module_pattern: 同 kind + ≥2 module + prefix 同 → 设计层
+    Rule 3 tenant_degradation: 同 tenant + ≥3 独立 anomaly → 全局衰退
+
+  member uniqueness 让 Rule 1 抓到的 anomaly 不再被 Rule 2/3 算 — 一个
+  anomaly 只属于一个 cluster. 这是聚类的标准做法 (e.g. K-means 也是
+  每个点只属一个 cluster).
+
+  实测: 14 个 unit test 覆盖各 rule + 跨 tenant 隔离 + member 重用防御.
+
+evidence:
+  - source: kun/agents/supervisor/anomaly_cluster.py
+    date: 2026-05-27
+    phase: L5.1
+    notes: |
+      3 条 rule 实现 + seen_member_ids set + dedup_key 三件齐.
+      14 个 unit test 全绿.
+
+confidence: 0.88  # 1 个 supervisor 模块验证, 3 条 rule 各自测试
+applicability:
+  scopes:
+    - anomaly_detection_clustering
+    - event_aggregation
+    - issue_prioritization
+  do_not_apply_when:
+    - 只有 1 类 anomaly (不需要多规则聚类)
+    - anomaly 完全独立 (e.g. 用户操作 — 不是系统问题)
+    - 实时性要求 < 100ms (聚类有计算开销)
+
+related_methodologies:
+  - rsi_explorer_pool_three_modes
+  - sliding_window_with_deque_purge
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

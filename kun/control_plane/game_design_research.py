@@ -75,9 +75,7 @@ class GameResearchSpec(BaseModel):
     project_path: Path
     final_project_path: Path
     source_docx_path: Path | None = None
-    first_worlds: list[str] = Field(
-        default_factory=lambda: ["彩虹造物岛", "故事星球"]
-    )
+    first_worlds: list[str] = Field(default_factory=lambda: ["彩虹造物岛", "故事星球"])
     research_sources: list[ResearchSource] = Field(default_factory=list)
     minimum_sources: int = 12
     minimum_live_fetches: int = 6
@@ -566,15 +564,20 @@ def _spec_from_contract(contract: ExecutionContract) -> GameResearchSpec:
         raise ValueError("delivery_contract.project_path is required")
     final_project_path = delivery_contract.get("final_project_path")
     if not isinstance(final_project_path, str) or not final_project_path.strip():
-        final_project_path = str(Path(project_path).expanduser().resolve().with_name(
-            Path(project_path).name + "-research-gated"
-        ))
+        final_project_path = str(
+            Path(project_path)
+            .expanduser()
+            .resolve()
+            .with_name(Path(project_path).name + "-research-gated")
+        )
     source_docx_path = evidence_policy.get("source_docx_path") or delivery_contract.get(
         "source_docx_path"
     )
-    source_docx = Path(source_docx_path).expanduser().resolve() if isinstance(
-        source_docx_path, str
-    ) and source_docx_path.strip() else None
+    source_docx = (
+        Path(source_docx_path).expanduser().resolve()
+        if isinstance(source_docx_path, str) and source_docx_path.strip()
+        else None
+    )
     raw_worlds = delivery_contract.get("first_worlds")
     first_worlds = (
         [str(item) for item in raw_worlds if str(item).strip()]
@@ -631,6 +634,8 @@ def _supplement_research_sources(
 
 
 def _phase_from_work_item(work_item: WorkItem) -> str:
+    if work_item.phase:
+        return work_item.phase
     item_id = work_item.work_item_id
     if "research-source-corpus" in item_id:
         return "research-corpus"

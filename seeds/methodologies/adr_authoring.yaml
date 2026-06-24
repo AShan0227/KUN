@@ -1,0 +1,74 @@
+topic: adr_authoring
+title: ADR 撰写的结构化模式
+description: |
+  写架构决策记录（ADR）的结构化方法 — 给 6 个月后的自己（或 KUN 自己）看的。
+  结构化 + 示例让后人快速理解 + 不用再决定一遍。
+
+trigger:
+  conditions:
+    - 准备做架构决策且决策有非平凡影响
+    - 决策会影响 ≥ 2 个文件 / 模块
+    - 决策有可预见的争议（"现在为什么不那样做"）
+  signals_from:
+    - human directive: "写 ADR"
+    - mission_director: complexity ≥ medium + 涉及 architecture 标签
+
+action:
+  required_sections:
+    - 状态 (accepted / proposed / superseded-by:ADR-XXX)
+    - 背景 — 为什么现在做这个决策（含具体证据：审计 / 现状 / 矛盾）
+    - 决策 — 具体定什么（必须能执行，不允许"考虑使用" / "可能采用"等模糊措辞）
+    - 影响 — 哪些代码 / ADR / 流程要改（含 alembic / 文件路径 / 测试影响）
+    - 引用 — 链到相关 ADR
+
+  mechanism_adr_extras:
+    description: 机制类 ADR (RCDH / Anti-drift / RSI 等) 必须额外包含
+    must_include:
+      - pydantic schema 示例（数据模型）
+      - 流程图（如有多步骤）
+      - 工程化约束清单（哪些是强制 / 哪些是可选）
+
+  dependency_ordering:
+    description: 多份 ADR 一起写时的顺序规则
+    rule: |
+      1. 画引用图：A 引用 B → B 必须先写
+      2. 拓扑排序 → 从无入度节点开始
+      3. 实际经验：
+         foundation ADR（架构 / 术语 / 定位）先写
+         机制 ADR（如 RCDH / RSI）后写
+         实施 ADR（如 Auth / 部署）最后或并行
+
+anti_patterns:
+  - 状态 proposed 滞留超过 1 周（要么 accepted 要么 dropped）
+  - 决策段写"可能采用" / "建议使用"等模糊措辞
+  - 机制类 ADR 不带 schema 示例 → 编码阶段又得决定一轮
+  - ADR 之间循环引用
+  - 写新 ADR 时不检查与既有 ADR 的冲突
+
+rationale: |
+  ADR 是给后人看的，不是给自己当下用的。结构化让搜索 + 复用容易；
+  示例让"决策"真的可执行，不是又一份"待澄清"的设计稿。
+  Schema 嵌入 ADR 让数据建模阶段省一轮成本，alembic 迁移直接照实施。
+
+evidence:
+  - source: docs/dev_logs/phase-0-documentation.md
+    date: 2026-05-26
+    phase: Phase_0
+    outcome: success
+    notes: |
+      ADR-019 ~ ADR-024 全部按这个模式写，写完后 L1 alembic 0011 阶段
+      不需要再设计字段 — 直接拿 ADR-024 的 6 张表 schema 实施。
+
+confidence: 0.65  # cold start, 跨多 ADR 验证成功
+applicability:
+  scopes: [architecture_documentation, design_decisions]
+  do_not_apply_when:
+    - 决策极小（< 5 行代码影响）— 直接写代码注释更合适
+    - 决策仍在探索期，未确定 → 用 draft / discussion doc 而非 ADR
+
+related_methodologies:
+  - large_design_refactor
+  - incremental_doc_migration
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-26

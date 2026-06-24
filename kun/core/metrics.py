@@ -1,32 +1,30 @@
 """Prometheus metrics definitions (ADR-016).
 
 Naming: kun.<subsystem>.<metric>.
+
+Cardinality rules:
+  - `tenant_id` is permitted ONLY on cost / quality / security counters that
+    must be billed/audited per tenant. Request-rate / latency / cache counters
+    must NOT carry tenant_id (N tenants × M models × K roles explodes the
+    time-series count). Per-tenant ops dashboards should aggregate from logs
+    + traces, not from metrics.
 """
 
 from __future__ import annotations
 
 from prometheus_client import Counter, Gauge, Histogram
 
-# ============== Context subsystem ==============
-
-context_cache_hit_rate = Gauge(
-    "kun_context_cache_hit_rate",
-    "Prompt cache hit rate per tier (permanent/stable/semi_stable/volatile)",
-    ["tier", "tenant_id"],
-)
-
-context_cache_cost_savings_usd = Counter(
-    "kun_context_cache_cost_savings_usd",
-    "Cumulative USD saved by prompt caching",
-    ["tenant_id"],
-)
+# Context-cache metrics (context_cache_hit_rate / context_cache_cost_savings_usd)
+# were defined but never emitted — the prompt-cache runtime layer isn't wired, so
+# they only created empty /metrics series (false-green dashboards). Removed
+# (audit F055); re-add each WITH an emit point when that subsystem lands (F055a).
 
 # ============== LLM / Router ==============
 
 llm_request_total = Counter(
     "kun_llm_request_total",
     "LLM requests by provider/model/role",
-    ["provider", "model", "role", "tenant_id"],
+    ["provider", "model", "role"],
 )
 
 llm_latency_seconds = Histogram(
@@ -48,11 +46,10 @@ llm_fallback_total = Counter(
     ["from_provider", "to_provider", "reason"],
 )
 
-llm_cost_runaway_total = Counter(
-    "kun_llm_cost_runaway_total",
-    "Tasks where actual cost > 1.2x estimated",
-    ["tenant_id"],
-)
+# llm_cost_runaway_total removed (audit F055): defined but never emitted — the
+# "actual cost > 1.2x estimated" overrun detection was never wired (and the
+# budget kill switch is a different signal). Re-add with a real emit point when
+# cost-overrun detection is implemented (F055a).
 
 # ============== Watchtower ==============
 
@@ -68,13 +65,9 @@ watchtower_rule_latency_seconds = Histogram(
     ["rule_id"],
 )
 
-# ============== Quality / Evaluation ==============
-
-quality_rubric_score_p50 = Gauge(
-    "kun_quality_rubric_score_p50",
-    "Rubric score p50 rolling window",
-    ["task_type", "tenant_id"],
-)
+# quality_rubric_score_p50 removed (audit F055): a p50 rolling-window gauge with
+# no producer (nothing computes/sets it). Re-add with a real emit point when
+# rubric-score aggregation is wired (F055a).
 
 # ============== Tenancy / Security ==============
 

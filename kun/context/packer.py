@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
 
 from pydantic import BaseModel, Field
 
 from kun.context.assets import AssetKind, LayeredAsset
 from kun.context.storage import AssetStore, get_store
+from kun.context.text_terms import terms as _terms
 from kun.datamodel.task import TaskRef
 
 
@@ -136,10 +136,6 @@ def _metadata_summary(asset: LayeredAsset) -> str:
         return ""
     items = list(asset.l1_metadata.items())[:4]
     return "; ".join(f"{key}={value}" for key, value in items)
-
-
-def _terms(text: str) -> set[str]:
-    return {part.lower() for part in re.findall(r"[\w.-]+", text) if len(part) >= 2}
 
 
 __all__ = ["ContextPack", "ContextPacker", "PackedContextItem"]

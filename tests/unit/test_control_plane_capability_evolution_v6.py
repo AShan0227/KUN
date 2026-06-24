@@ -11,7 +11,7 @@ from kun.control_plane.capability_evolution import (
 from kun.control_plane.nuo import NuoObservation, diagnose_nuo_health
 from kun.control_plane.runtime import InMemoryControlPlane
 from kun.control_plane.store import InMemoryControlPlaneStore
-from kun.control_plane.v6 import CapabilityProfile
+from kun.control_plane.v6 import CapabilityProfile, Mission
 from pydantic import ValidationError
 
 pytestmark = pytest.mark.unit
@@ -60,6 +60,25 @@ def _evaluation(stage: str, **overrides: object) -> CapabilityEvaluation:
         ]
     payload.update(overrides)
     return CapabilityEvaluation.model_validate(payload)
+
+
+def _register_capability_mission(
+    runtime: InMemoryControlPlane,
+    *,
+    task_type: str = "self_improvement",
+    mission_id: str = "msn-capability-evolution",
+) -> None:
+    mission = Mission(
+        mission_id=mission_id,
+        owner="kun",
+        objective="Govern KUN runtime capability promotion",
+        task_type=task_type,
+        status="learning_writeback",
+        current_plan_version="v6",
+    )
+    runtime.missions[mission.mission_id] = mission
+    if runtime.store is not None:
+        runtime.store.put_mission(mission)
 
 
 @pytest.mark.parametrize(
@@ -135,6 +154,7 @@ def test_production_promotion_requires_full_stage_chain_and_outputs_profile() ->
 def test_runtime_default_capabilities_only_load_production_profiles() -> None:
     store = InMemoryControlPlaneStore()
     runtime = InMemoryControlPlane(store=store)
+    _register_capability_mission(runtime)
 
     replay_promotion = build_capability_promotion(
         _candidate(),
@@ -185,6 +205,7 @@ def test_runtime_default_capabilities_only_load_production_profiles() -> None:
 def test_runtime_rolls_back_failed_production_capability_from_default_path() -> None:
     store = InMemoryControlPlaneStore()
     runtime = InMemoryControlPlane(store=store)
+    _register_capability_mission(runtime)
     promotion = build_capability_promotion(
         _candidate(),
         [
@@ -234,6 +255,49 @@ def test_runtime_rolls_back_failed_production_capability_from_default_path() -> 
         recovered_runtime.gate_evaluations[rollback.gate_evaluation.gate_evaluation_id].next_action
         == "rollback_capability"
     )
+
+
+def test_production_promotion_requires_self_improvement_mission_boundary() -> None:
+    runtime = InMemoryControlPlane()
+    _register_capability_mission(runtime, task_type="product_development")
+    promotion = build_capability_promotion(
+        _candidate(),
+        [
+            _evaluation("replay"),
+            _evaluation("holdout"),
+            _evaluation("shadow"),
+            _evaluation("canary"),
+            _evaluation("production"),
+        ],
+        target_stage="production",
+        capability_id="cap-user-task-must-not-enable-runtime",
+    )
+
+    with pytest.raises(ValueError, match="only allowed from self_improvement"):
+        runtime.apply_capability_promotion(promotion, actor="kun")
+
+    assert runtime.list_default_runtime_capabilities() == []
+
+
+def test_production_promotion_requires_registered_governance_mission() -> None:
+    runtime = InMemoryControlPlane()
+    promotion = build_capability_promotion(
+        _candidate(),
+        [
+            _evaluation("replay"),
+            _evaluation("holdout"),
+            _evaluation("shadow"),
+            _evaluation("canary"),
+            _evaluation("production"),
+        ],
+        target_stage="production",
+        capability_id="cap-missing-mission-must-not-enable-runtime",
+    )
+
+    with pytest.raises(ValueError, match="registered self_improvement mission"):
+        runtime.apply_capability_promotion(promotion)
+
+    assert runtime.list_default_runtime_capabilities() == []
 
 
 def test_runtime_governs_duplicate_production_capabilities_before_default_use() -> None:

@@ -1,0 +1,89 @@
+topic: conservative_sample_threshold
+title: 用统计数据做自动决策必用保守阈值
+description: |
+  用 capability_card / 历史成功率 / 测试通过率等数据做自动决策 (升级 tier /
+  触发 RSI / 自动回滚) 时, 阈值必须保守: sample_size ≥ 10 才算"有信号",
+  ≥ 20 才算"高置信"; score 偏离中性 (0.5) 至少 0.2 才算"强信号".
+  Cold start (sample < 5 或 5-10) 不做调整, 保留默认.
+
+trigger:
+  conditions:
+    - 自动系统读统计数据做决策
+    - 数据来源是 capability_card / 任务历史 / 测试结果
+    - 决策影响范围 ≥ 单次 LLM call (e.g. 改 tier 影响后续所有同类任务)
+
+action:
+  threshold_rules:
+    cold_start:
+      sample_size: "< 5"
+      decision: 不调整, 保留默认
+      why: 噪声主导, 任何调整都是随机
+    weak_signal:
+      sample_size: "5-9"
+      decision: 不调整, 但 log "watching" 让后续观察
+      why: 数据不足以支持自动决策, 但值得监控
+    confirmed_signal:
+      sample_size: ">= 10"
+      decision_only_if: score 偏离 0.5 至少 0.2 (< 0.3 或 > 0.7)
+      why: 既有样本量又有显著偏离
+    high_confidence:
+      sample_size: ">= 20"
+      decision: 强决策 OK (升级 tier / 固化规则 / 自动回滚)
+      why: 大样本 + 偏离方向稳定
+  rationale_per_step: |
+    1. 拿历史数据时同时拿 sample_size (不要只看 score)
+    2. 检查阈值: cold start → 默认; 弱 → log only; 强 → action
+    3. log 决策原因 (which threshold + which side)
+    4. 给"反向调整"留窗口 — 如果调整后下个采样窗口数据变差, 自动回滚
+  anti_patterns:
+    - 凭 score 单一指标决策, 不看 sample_size
+    - 阈值定 sample >= 3 → 噪声决策
+    - 阈值定 score > 0.5 → 任何微小偏离都触发, 过度敏感
+    - 没有 cold start 路径 → 系统启动时疯狂调整
+
+rationale: |
+  少量样本的统计估计噪声极大. sample=3 的 score=0.2 可能就是 3 次随机,
+  不是真信号. 自动系统的"决策成本"通常远大于"等待成本":
+    - 误升级 tier → token 多花了, 体验可能变差 (复杂 tier 慢)
+    - 错过升级 → 多等一个采样窗口, 损失小
+
+  capability_router 内部 cold-start damping (sample/30 weight) 是同一原理:
+  weight = min(1.0, n/30), 让 small n 的 score 被拉回 0.5 neutral.
+
+evidence:
+  - source: kun/interface/llm/capability_router.py:_project_score
+    date: 2026-05-26
+    notes: |
+      _project_score 用 weight = min(1.0, n/30.0) damp small-n scores
+      toward 0.5. 跟 _apply_capability_adjustment 的 sample >= 10
+      阈值一致 — 两者协同保证不会少量数据误决策.
+
+  - source: kun/interface/llm/router.py:_apply_capability_adjustment (L1.6)
+    date: 2026-05-26
+    phase: L1.6
+    notes: |
+      升级 tier 触发条件 sample_size >= 10 AND score < 0.4.
+      高置信只记日志 sample_size >= 20 AND score > 0.85, 不动 tier.
+      2 个单测验证: cold start (sample=3) 不触发, 强信号 (sample=20) 触发.
+
+  - source: ADR-024 RSI 闭环 + 6 张数据脊柱表
+    date: 2026-05-26
+    notes: |
+      runtime_capabilities 晋级状态机的 promotion_deadline 默认 14 天,
+      让 capability 在合并 main 后有足够样本积累 (replay + shadow + canary)
+      才决定 enable=true. 同一保守阈值原则.
+
+confidence: 0.9
+applicability:
+  scopes: [data_driven_decisions, statistical_inference, auto_promotion]
+  do_not_apply_when:
+    - 决策可立即撤销 (e.g. 单次 UI 颜色调整, 用户不喜欢就改回)
+    - 数据本身是 ground truth (e.g. 用户明确说 thumbs up, 不是统计推断)
+    - 实验性 staging 环境允许激进调整
+
+related_methodologies:
+  - paired_commit  # 同样的"保守优先"思路: 1-2 文件 / 100-300 行
+  - incremental_doc_migration  # 同样: 不完全重写, 保留历史
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

@@ -22,7 +22,7 @@ def _event(tenant_id: str = "tenant-a") -> EventRow:
         event_id=f"event-{tenant_id}",
         tenant_id=tenant_id,
         event_type="task.tool_skipped",
-        subject=f"kun.{tenant_id}.task.task.tool_skipped",
+        subject=f"kun.{tenant_id}.task.tool_skipped",
         payload={
             "missed": [
                 {

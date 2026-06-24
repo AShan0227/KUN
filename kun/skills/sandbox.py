@@ -23,7 +23,9 @@ class SandboxPathError(ValueError):
 def execution_roots() -> list[Path]:
     """Return configured executable-skill roots, creating them as needed."""
 
-    raw = os.getenv("KUN_SKILL_EXEC_ROOTS") or os.getenv("KUN_SKILL_EXEC_ROOT") or _DEFAULT_EXEC_ROOT
+    raw = (
+        os.getenv("KUN_SKILL_EXEC_ROOTS") or os.getenv("KUN_SKILL_EXEC_ROOT") or _DEFAULT_EXEC_ROOT
+    )
     roots: list[Path] = []
     for part in raw.split(":"):
         if not part.strip():

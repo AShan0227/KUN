@@ -53,11 +53,17 @@ class SkillManifest(BaseModel):
     source: str | None = None
     maturity: str = "cold_start"
     input_schema: dict[str, Any] = Field(default_factory=dict)
-    allowed_commands: list[str] = Field(default_factory=list)
-    denied_patterns: list[str] = Field(default_factory=list)
-    denied_domains: list[str] = Field(default_factory=list)
+    # NOTE (audit F035a): per-manifest command policy is NOT implemented. The dead
+    # typed fields ``allowed_commands`` / ``denied_patterns`` / ``denied_domains``
+    # were removed — nothing in the codebase consumed them, so declaring them as a
+    # typed contract falsely advertised a per-skill allowlist that was never
+    # enforced. The real shell guard is env-based (KUN_SHELL_EXEC_ALLOW / DENY) in
+    # ``kun/skills/command_policy.py``. SKILL.md frontmatter using these keys still
+    # loads (model_config extra="allow"); they are inert metadata until/unless a
+    # per-manifest policy is wired (tracked as needs-design in
+    # docs/audit/proposals/security-posture.md).
     # 主动用工具 layer 3: 每个 skill 自带的"看到这种 prompt 就触发我"声明.
-    # 元素跟 rules/proactive/triggers.yaml 的 trigger 同形:
+    # 元素跟 kun/engineering/config/proactive_triggers.yaml 的 trigger 同形:
     #   - pattern: 正则
     #   - extract: {kind, param_name, min_len, max_len, extra_params}
     # 例子: [{pattern: '\\.csv\\b', extract: {kind: match_group_0, param_name: path}}]
@@ -159,22 +165,41 @@ def parse_skill(content: str, source_path: str) -> SkillRecord:
     )
 
 
+def _repo_anchored(root: Path, name: str) -> Path:
+    """Fall back to a repo-root-anchored dir when a cwd-relative one is missing.
+
+    Audit F152: the default ``"skills"`` is cwd-relative, so launching from a
+    non-repo-root directory silently loaded zero skills. When the given root does
+    not exist, try ``<repo-root>/<name>`` (two levels above this package).
+    """
+    if root.exists():
+        return root
+    anchored = Path(__file__).resolve().parents[2] / name
+    return anchored if anchored.exists() else root
+
+
 def load_skills_from_dir(root: str | Path = "skills") -> SkillRegistry:
     """Scan `root` recursively for SKILL.md files and register each."""
-    root = Path(root)
+    root = _repo_anchored(Path(root), "skills")
     registry = SkillRegistry()
     if not root.exists():
         log.info("skills.dir_missing", path=str(root))
         return registry
 
+    failed: list[dict[str, str]] = []
     for skill_file in sorted(root.rglob("SKILL.md")):
         try:
             content = skill_file.read_text(encoding="utf-8")
             record = parse_skill(content, str(skill_file))
             registry.register(record)
         except Exception as e:
+            failed.append({"path": str(skill_file), "error": str(e)})
             log.warning("skills.parse_failed", path=str(skill_file), error=str(e))
 
+    if failed:
+        # Loud summary so ops sees how many skills are missing, not just a
+        # stream of individual warnings that may scroll past.
+        log.error("skills.load_partial", failed_count=len(failed), failed=failed)
     log.info("skills.loaded", count=len(registry), path=str(root))
     return registry
 

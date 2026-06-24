@@ -6,12 +6,13 @@ KUN 的 LLM 主动性不够 — 工具描述塞进 prompt, 模型大概率直接
 web-search 已经查到的结果, 请基于它回答".
 
 四层机制:
-  层 1: 关键词触发器 (本文件 DEFAULT_TRIGGERS)         — fallback
-  层 2: yaml 规则可配置 (rules/proactive/triggers.yaml) — 守望加载, 可热改, 后续可学习
-  层 3: SKILL.md auto_trigger_when                    — 每 skill 自己声明
-  层 4: capability_card 失败回看                       — evaluator 升级"强制用工具"
+  层 1: 关键词触发器 (本文件 DEFAULT_TRIGGERS)                       — fallback
+  层 2: yaml 规则可配置 (kun/engineering/config/proactive_triggers.yaml) — orchestrator 加载, 可热改
+  层 3: SKILL.md auto_trigger_when                                — 每 skill 自己声明
+  层 4: capability_card 失败回看                                     — evaluator 升级"强制用工具"
 
-主流程: load_triggers_from_yaml() 优先加载 yaml; 没找到 / 解析失败时回退 DEFAULT_TRIGGERS.
+主流程: load_triggers_from_yaml() 优先加载 yaml; 文件不存在时回退 DEFAULT_TRIGGERS;
+yaml 存在但语法/内容错误时 raise — 静默 fallback 会让用户以为改动生效其实没生效.
 """
 
 from __future__ import annotations
@@ -28,6 +29,16 @@ from kun.skills.dispatcher import SkillResult, is_registered
 from kun.skills.dispatcher import dispatch as skill_dispatch
 
 log = get_logger("kun.proactive_tools")
+
+
+# Security guard (audit F003): skills that execute arbitrary code or run shell
+# commands must NEVER be auto-dispatched from raw prompt text. Proactive prefetch
+# fires with no human/LLM confirmation, so auto-running these turns any text that
+# reaches a prompt (incl. injected upstream content) into RCE + secret exfil.
+# Code/command execution must go through the explicit approval gate instead.
+# Enforced across ALL trigger layers, so a misconfigured proactive_triggers.yaml
+# or SKILL.md auto_trigger_when cannot re-enable the path.
+NEVER_PROACTIVE: frozenset[str] = frozenset({"python-exec", "shell-exec"})
 
 
 @dataclass
@@ -101,13 +112,6 @@ def _extract_pdf_path(match: re.Match[str], _prompt: str) -> dict[str, Any] | No
     return {"path": path}
 
 
-def _extract_python_code(match: re.Match[str], _prompt: str) -> dict[str, Any] | None:
-    code = match.group(1).strip()
-    if len(code) < 4 or len(code) > 4000:
-        return None
-    return {"code": code, "timeout_sec": 30}
-
-
 def _extract_search_query(_match: re.Match[str], prompt: str) -> dict[str, Any] | None:
     # 触发词后面到下一个标点为止当作 query, 实在不行用整个 prompt
     cleaned = re.sub(r"[。.!?！？;；\n].*", "", prompt).strip()
@@ -125,7 +129,7 @@ def _extract_csv_path(match: re.Match[str], _prompt: str) -> dict[str, Any] | No
 # ============== Yaml-driven triggers (layer 2) ==============
 
 
-_DEFAULT_YAML_PATH = Path(__file__).resolve().parents[2] / "rules" / "proactive" / "triggers.yaml"
+_DEFAULT_YAML_PATH = Path(__file__).resolve().parent / "config" / "proactive_triggers.yaml"
 
 
 def _make_extract_callable(extract_cfg: dict[str, Any]) -> Any:
@@ -188,10 +192,10 @@ def _make_extract_callable(extract_cfg: dict[str, Any]) -> Any:
 
 
 def load_triggers_from_yaml(path: Path | str | None = None) -> list[ToolTrigger]:
-    """Load triggers from yaml. Empty / missing / malformed → empty list.
+    """Load triggers from yaml.
 
-    Caller is expected to fall back to DEFAULT_TRIGGERS on empty result.
-    Catches everything intentionally — observability never breaks routing.
+    Missing file → empty list (caller falls back to DEFAULT_TRIGGERS).
+    Malformed YAML or invalid triggers → raise; the operator should know.
     """
     target = Path(path) if path else _DEFAULT_YAML_PATH
     if not target.exists():
@@ -201,11 +205,12 @@ def load_triggers_from_yaml(path: Path | str | None = None) -> list[ToolTrigger]
         with target.open(encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
     except (OSError, yaml.YAMLError) as e:
-        log.warning("proactive.yaml_load_failed", path=str(target), error=str(e))
-        return []
+        log.error("proactive.yaml_load_failed", path=str(target), error=str(e))
+        raise
 
     raw_entries = data.get("triggers") or []
     out: list[ToolTrigger] = []
+    dropped: list[dict[str, Any]] = []
     for entry in raw_entries:
         try:
             pattern = re.compile(entry["pattern"], re.IGNORECASE | re.MULTILINE)
@@ -220,8 +225,10 @@ def load_triggers_from_yaml(path: Path | str | None = None) -> list[ToolTrigger]
                 )
             )
         except (KeyError, re.error, TypeError) as e:
-            log.warning("proactive.trigger_invalid", entry=entry, error=str(e))
-            continue
+            dropped.append({"entry": entry, "error": str(e)})
+    if dropped:
+        log.error("proactive.trigger_invalid", count=len(dropped), dropped=dropped)
+        raise ValueError(f"proactive triggers: {len(dropped)} invalid entries in {target}")
     log.info("proactive.yaml_loaded", path=str(target), count=len(out))
     return out
 
@@ -242,13 +249,9 @@ DEFAULT_TRIGGERS: list[ToolTrigger] = [
         pattern=re.compile(r"\S*\.csv\b", re.IGNORECASE),
         extract_params=_extract_csv_path,
     ),
-    # ```python ... ``` block → python-exec
-    ToolTrigger(
-        skill_id="python-exec",
-        description="prompt 含 Python 代码块 → 自动执行",
-        pattern=re.compile(r"```python\s*\n([\s\S]*?)```", re.MULTILINE),
-        extract_params=_extract_python_code,
-    ),
+    # NOTE: a ```python``` block trigger used to live here and auto-ran
+    # python-exec. Removed (audit F003 RCE) — code execution is never proactive;
+    # it must go through the explicit approval gate. See NEVER_PROACTIVE.
     # "最新 / 现在 / 今天 / 当前 / 实时" 等时效性词 → web-search
     ToolTrigger(
         skill_id="web-search",
@@ -298,6 +301,14 @@ async def proactive_dispatch(
     for required_skill in required_tools_hint or []:
         if required_skill in seen:
             continue
+        if required_skill in NEVER_PROACTIVE:
+            log.warning(
+                "proactive.blocked_dangerous_skill",
+                skill_id=required_skill,
+                layer="required_hint",
+            )
+            seen.add(required_skill)
+            continue
         if not is_registered(required_skill):
             log.info("proactive.required_skill_unregistered", skill_id=required_skill)
             continue
@@ -309,6 +320,14 @@ async def proactive_dispatch(
     # Layer 1b: keyword trigger scan
     for trigger in triggers:
         if trigger.skill_id in seen:
+            continue
+        if trigger.skill_id in NEVER_PROACTIVE:
+            log.warning(
+                "proactive.blocked_dangerous_skill",
+                skill_id=trigger.skill_id,
+                layer="keyword",
+            )
+            seen.add(trigger.skill_id)
             continue
         match = trigger.pattern.search(prompt)
         if match is None:
@@ -379,6 +398,14 @@ async def proactive_dispatch(
 
         for skill_id, pattern_str, extract_cfg in hits:
             if skill_id in seen:
+                continue
+            if skill_id in NEVER_PROACTIVE:
+                log.warning(
+                    "proactive.blocked_dangerous_skill",
+                    skill_id=skill_id,
+                    layer="skill_manifest",
+                )
+                seen.add(skill_id)
                 continue
             if not is_registered(skill_id):
                 # SkillRegistry 里有, 但 dispatcher 没注册 executor —
@@ -455,6 +482,7 @@ async def proactive_dispatch(
 
 __all__ = [
     "DEFAULT_TRIGGERS",
+    "NEVER_PROACTIVE",
     "ProactiveDispatch",
     "ProactiveScanResult",
     "ToolTrigger",

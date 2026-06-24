@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import time
 from collections.abc import Callable
@@ -67,6 +68,16 @@ class StubProvider(LLMProvider):
 
     async def invoke(self, request: LLMRequest) -> LLMResponse:
         started = time.perf_counter()
+        # Audit F045: a stub must never serve real traffic with a fabricated
+        # "successful" response. Under KUN_ENV=production, fail loudly so the
+        # caller's failure handling runs instead of treating a no-op as success
+        # (the router only wires StubProvider when no real provider has creds).
+        if os.getenv("KUN_ENV", "").strip().lower() == "production":
+            raise RuntimeError(
+                f"StubProvider ({self.model_id}, tier={self.tier}) invoked under "
+                "KUN_ENV=production — no real LLM provider is configured. Refusing "
+                "to fabricate a successful response; configure real credentials."
+            )
         if self._fail_rate > 0 and self._rng.random() < self._fail_rate:
             raise RuntimeError(f"stub induced failure (rate={self._fail_rate})")
         await asyncio.sleep(self.latency_ms / 1000)

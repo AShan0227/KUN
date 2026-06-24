@@ -9,18 +9,14 @@ gate is trustworthy.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from kun.control_plane.concurrency import (
-    ResourceLockConflict,
-    SandboxIsolationSpec,
-    WorkerSlotSnapshot,
-)
-from kun.control_plane.daemon import DaemonServiceState
+from kun.control_plane.daemon import DaemonServiceState, daemon_service_process_is_alive
 from kun.control_plane.progress import (
     QualityGateStatus,
     UserProgressSummary,
@@ -39,6 +35,11 @@ from kun.control_plane.v6 import (
     TaskType,
     WorkItem,
     WorkItemStatus,
+)
+from kun.control_plane.work_item_governance import (
+    ResourceLockConflict,
+    SandboxIsolationSpec,
+    WorkerSlotSnapshot,
 )
 
 CockpitTone = Literal["working", "waiting", "blocked", "ready", "done"]
@@ -181,6 +182,7 @@ class TaskCockpitDaemonHealth(BaseModel):
     next_wakeup_at: datetime | None = None
     stopped_reason: str | None = None
     stale: bool = False
+    process_alive: bool | None = None
     latest_progress_artifact_ref: str | None = None
     progress_artifact_refs: list[str] = Field(default_factory=list)
 
@@ -191,6 +193,7 @@ class TaskCockpitConcurrency(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     worker_pool_size: int = 1
+    resource_lock_backend: str = "unknown"
     worker_slots: list[WorkerSlotSnapshot] = Field(default_factory=list)
     waiting_on_resource_lock_count: int = 0
     resource_lock_conflicts: list[ResourceLockConflict] = Field(default_factory=list)
@@ -306,6 +309,20 @@ def build_task_cockpit_view(
     )
 
 
+def _plan_version_sort_key(version: str) -> tuple[int, int, str]:
+    """Order plan versions numerically (audit F145).
+
+    Versions are ``v<N>`` strings; the old ``max(..., key=item.version)`` compared
+    them lexicographically, so ``v10`` ranked below ``v9``. Numeric ``v<N>`` versions
+    rank above any non-conforming label and tie-break by the integer; non-conforming
+    labels tie-break by raw string for determinism.
+    """
+    match = re.fullmatch(r"v(\d+)", version or "")
+    if match:
+        return (1, int(match.group(1)), "")
+    return (0, 0, version or "")
+
+
 def _current_plan(
     control_plane: InMemoryControlPlane,
     *,
@@ -317,7 +334,7 @@ def _current_plan(
         for plan in plans:
             if plan.version == version:
                 return plan
-    return max(plans, key=lambda item: item.version, default=None)
+    return max(plans, key=lambda item: _plan_version_sort_key(item.version), default=None)
 
 
 def _latest_gate(control_plane: InMemoryControlPlane, mission_id: str) -> GateEvaluation | None:
@@ -628,6 +645,7 @@ def _daemon_health(
                 next_wakeup_at=service_state.next_wakeup_at,
                 stopped_reason=service_state.stopped_reason,
                 stale=True,
+                process_alive=daemon_service_process_is_alive(service_state.process_id),
                 latest_progress_artifact_ref=latest_ref,
                 progress_artifact_refs=refs,
             )
@@ -640,6 +658,7 @@ def _daemon_health(
                 last_heartbeat_at=service_state.last_heartbeat_at,
                 next_wakeup_at=service_state.next_wakeup_at,
                 stopped_reason=service_state.stopped_reason,
+                process_alive=False,
                 latest_progress_artifact_ref=latest_ref,
                 progress_artifact_refs=refs,
             )
@@ -657,6 +676,20 @@ def _daemon_health(
                 last_heartbeat_at=service_state.last_heartbeat_at,
                 next_wakeup_at=service_state.next_wakeup_at,
                 stopped_reason=service_state.stopped_reason,
+                process_alive=None,
+                latest_progress_artifact_ref=latest_ref,
+                progress_artifact_refs=refs,
+            )
+        process_alive = daemon_service_process_is_alive(service_state.process_id)
+        if not process_alive:
+            return TaskCockpitDaemonHealth(
+                healthy=False,
+                text="后台监督心跳状态仍新鲜，但记录的进程已经不存在；需要重启 daemon。",
+                service_status=service_state.status,
+                last_heartbeat_at=service_state.last_heartbeat_at,
+                next_wakeup_at=service_state.next_wakeup_at,
+                stopped_reason=service_state.stopped_reason,
+                process_alive=False,
                 latest_progress_artifact_ref=latest_ref,
                 progress_artifact_refs=refs,
             )
@@ -667,6 +700,7 @@ def _daemon_health(
             last_heartbeat_at=service_state.last_heartbeat_at,
             next_wakeup_at=service_state.next_wakeup_at,
             stopped_reason=service_state.stopped_reason,
+            process_alive=True,
             latest_progress_artifact_ref=latest_ref,
             progress_artifact_refs=refs,
         )
@@ -693,6 +727,7 @@ def _concurrency(
         resource_waiting = sum(1 for item in work_items if item.lease or item.resource_locks)
         return TaskCockpitConcurrency(
             worker_pool_size=1,
+            resource_lock_backend="unknown",
             waiting_on_resource_lock_count=0,
             text=(
                 "还没有后台 worker pool 心跳；KUN 会在 daemon 写入状态后显示 worker 槽位、"
@@ -711,8 +746,13 @@ def _concurrency(
         text = "多 worker 槽位已启用；KUN 会按任务依赖和资源锁公平推进。"
     else:
         text = "当前是单 worker 槽位；任务仍有资源锁和沙箱记录，可平滑升级到多 worker。"
+    if service_state.resource_lock_backend == "sqlite":
+        text += " SQLite 持久锁已启用，可支撑本机多进程 daemon 协同。"
+    elif service_state.resource_lock_backend == "redis":
+        text += " Redis 分布式锁已启用，可支撑跨机器 worker 协同。"
     return TaskCockpitConcurrency(
         worker_pool_size=service_state.worker_pool_size,
+        resource_lock_backend=service_state.resource_lock_backend,
         worker_slots=slots,
         waiting_on_resource_lock_count=len(skipped),
         resource_lock_conflicts=conflicts,

@@ -1,0 +1,121 @@
+topic: maybe_x_pattern_threshold_zero_cost
+title: maybe_compact / maybe_render_prompt — 阈值下返 None 让 caller 零成本 no-op
+description: |
+  对于"99% 不需要触发, 1% 触发时贵"的服务 (compaction / plan_review /
+  health_check / circuit_breaker), 入口设计成 `async def maybe_X(...) ->
+  Result | None`:
+
+    - 阈值下: 直接返 None, **不调用下游 LLM/IO/expensive op**
+    - 阈值上: 真跑 + 返 Result
+
+  caller 看到 None 直接 no-op (`if r := await x.maybe_compact(...): ...`),
+  零成本.
+
+  关键区别于"`is_due() → bool` + `apply() → Result`"二步式: maybe 一步把
+  "检查 + 执行"原子化, caller 不会跑 race condition (检查通过但 apply 时状态变了).
+
+  名字 `maybe_X` 是 caller-readable: 一眼知道"可能跑也可能不跑". Rust 社区
+  常见 `try_X` 名, Python 用 `maybe_X` 更习惯, "可能返 None" 在类型签名也明确.
+
+trigger:
+  conditions:
+    - 服务有"是否该触发"的阈值条件 (token count / time elapsed / failure count)
+    - 触发时是 expensive op (LLM call / DB write / network)
+    - 99% 调用不触发, 1% 触发
+    - caller 不该关心阈值细节 — service 自己决定
+
+action:
+  pattern:
+    - rule: 入口 name 用 `maybe_X` 而非 `X` 或 `try_X`
+      do: |
+        async def maybe_compact(messages, *, anchor=None) -> CompactionResult | None:
+            tokens = estimate_tokens(messages)
+            if tokens < self._threshold:
+                return None  # zero-cost no-op
+            ...  # actually do the expensive work
+            return CompactionResult(...)
+      why: |
+        Python 习惯: maybe_X → 可能返 None. 阈值检查放方法内, caller 不操心.
+    - rule: 阈值检查 cheap (≤ O(N))
+      do: |
+        # 用 chars/4 估算 token 而非真 tokenizer (~50x slower)
+        # 用 time.perf_counter() 比对 last_called_at, 不查 DB
+      why: |
+        阈值检查本身不能贵, 否则 99% 无触发情况下 caller 还是付了成本.
+    - rule: 返 None 时不打 log (太吵)
+      do: |
+        if tokens < threshold:
+            return None  # silent
+        # 触发时再 log
+        log.info("compaction.applied", ratio=...)
+      why: |
+        99% 调用不触发 → 99% 调用打 log = log 噪音爆炸. 静默 None.
+    - rule: caller 用 walrus / if-let 处理
+      do: |
+        # python 3.8+
+        if result := await self._compactor.maybe_compact(messages, anchor=anchor):
+            messages = result.compacted_messages
+        # 不触发时跳过, 触发时用结果
+      why: |
+        惯用法清晰. 不要 `if result is not None and result.something` 这种啰嗦.
+    - rule: 测试覆盖"阈值下返 None"必备
+      do: |
+        async def test_returns_none_under_threshold():
+            r = await x.maybe_compact(small_messages)
+            assert r is None
+        # zero-cost 路径是契约, 必须有 test 锁住
+      why: |
+        某天阈值检查代码改了, 阈值下也跑全流程 — 单测立即 fail.
+
+  anti_patterns:
+    - 入口名叫 `compact()` 阈值下也跑全流程 — caller 不知道贵不贵
+    - 二步式 `is_due() + apply()` — race condition + 重复检查
+    - 阈值下也打 log "skipped" — 99% 调用日志噪音
+    - 返 `Result(applied=False)` 而非 None — 仍占内存 + caller 解 attribute
+
+rationale: |
+  KUN 实战 LT.D ConversationCompactor + LT.B PlanReviewService 都用此 pattern.
+
+  对 ExecutorLoop 而言 (LT.E): 每步循环开头调 maybe_compact + maybe_render_prompt.
+  99% 调用是 None, 直接 skip — 没有任何下游 LLM 调用. 1% 触发时才付成本.
+
+  数据: maybe_compact 100 次调用中 ~3-5 次实际触发 (token > 30k 才触发);
+  其余 95-97 次 zero-cost. caller 写法不变.
+
+evidence:
+  - source: kun/agents/executor/compaction.py:ConversationCompactor.maybe_compact
+    date: 2026-05-27
+    phase: LT.D
+    notes: |
+      token < threshold → return None (无 summarizer 调用 + 无 LLM call).
+      触发时才付成本. 18 单测包括 "returns_none_when_under_threshold".
+
+  - source: kun/agents/supervisor/plan_review_service.py:observe_step_and_maybe_render_prompt
+    date: 2026-05-27
+    phase: LT.B
+    notes: |
+      heartbeat 阈值未到 → return None. caller (ExecutorLoop) `if prompt :=
+      await ...: messages.append({"role": "system", "content": prompt})`
+      用 walrus 处理.
+
+  - source: kun/agents/executor/exec_loop.py:ExecutorLoop.run
+    date: 2026-05-27
+    phase: LT.E
+    notes: |
+      每 step 开头 try compaction + plan_review, 都用 maybe pattern. 测试:
+      "compactor 在 LLM call 前跑" verify trigger; "compaction 失败不破坏 loop"
+      verify failure handling.
+
+confidence: 0.9  # 工业界常见模式, KUN 已 3 处用
+applicability:
+  scopes: [api_design, expensive_op_gating, runtime_check]
+  do_not_apply_when:
+    - 服务 100% 触发, 没"跳过"逻辑 — 直接命名 X() 就够
+    - 阈值检查本身就贵 (e.g. 需 DB query) — caller 应自己缓存 last_check_at
+
+related_methodologies:
+  - frozen_dataclass_agent_io_contract  # Result 类型
+  - status_enum_over_bool_observability  # status 比 bool 更细
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

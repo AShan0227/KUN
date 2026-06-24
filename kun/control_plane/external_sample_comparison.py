@@ -257,7 +257,9 @@ def _compare_external_sample(
             path=inventory_path,
             supports=[
                 "external_sample_inventory",
-                "genesis_comparison" if spec.source_name.lower() == "genesis" else "sample_comparison",
+                "genesis_comparison"
+                if spec.source_name.lower() == "genesis"
+                else "sample_comparison",
             ],
             kind="source",
         ),
@@ -296,6 +298,7 @@ def _compare_external_sample(
         primary_artifact_ref=artifacts[2].artifact_id,
         evidence_refs=[artifacts[0].artifact_id],
         review_refs=[artifacts[1].artifact_id, artifacts[2].artifact_id],
+        rollback_refs=[artifact.artifact_id for artifact in artifacts],
         created_by=ExternalSampleComparisonRunner.runner_identity,
         content_hash=_hash_payload(
             {
@@ -507,7 +510,10 @@ def _tests_for_marker(marker_id: str) -> list[str]:
     if "sandbox" in marker_id or "runtime" in marker_id:
         return ["sandbox escape is rejected", "authorized workspace root still runs"]
     if "memory" in marker_id:
-        return ["candidate remains non-runtime until production", "memory retrieval improves holdout"]
+        return [
+            "candidate remains non-runtime until production",
+            "memory retrieval improves holdout",
+        ]
     if "concurrency" in marker_id:
         return ["adaptive limit does not reduce quality", "stale work recovery still fires"]
     if "smoke" in marker_id:
@@ -565,7 +571,9 @@ def _feature_gaps(
             reason = "The sample shows a potentially useful behavior not clearly present in KUN; route to Qi as a candidate, not production."
         if comparison is not None and comparison.complexity_impact == "high":
             decision = "discard"
-            reason = "Complexity impact is high; keep as evidence unless a real task proves the need."
+            reason = (
+                "Complexity impact is high; keep as evidence unless a real task proves the need."
+            )
         gaps.append(
             ExternalSampleFeatureGap(
                 signal_ref=signal_ref,
@@ -734,7 +742,9 @@ def _sample_feature_markers(*, source_paths: list[str], target_text: str) -> lis
         if decision == "discard":
             reason = "Keep as evidence only unless KUN becomes a multi-tenant SaaS control plane."
         elif decision == "candidate_for_qi":
-            reason = "Route to Qi for validation; do not add a subsystem until a real task proves value."
+            reason = (
+                "Route to Qi for validation; do not add a subsystem until a real task proves value."
+            )
         elif decision == "merge_into_existing":
             reason = "Merge into an existing KUN subsystem as tests, hooks, or capability profiles."
         else:
@@ -757,9 +767,16 @@ def _spec_from_contract(contract: ExecutionContract) -> ExternalSampleComparison
         raise ValueError("execution contract lacks external_sample_comparison settings")
     source_repo_path = Path(str(payload["source_repo_path"])).expanduser().resolve()
     target_repo_path = Path(str(payload["target_repo_path"])).expanduser().resolve()
-    output_dir = Path(
-        str(payload.get("output_dir") or target_repo_path / ".kun-local" / "external-sample-comparison")
-    ).expanduser().resolve()
+    output_dir = (
+        Path(
+            str(
+                payload.get("output_dir")
+                or target_repo_path / ".kun-local" / "external-sample-comparison"
+            )
+        )
+        .expanduser()
+        .resolve()
+    )
     if not source_repo_path.exists():
         raise ValueError(f"source_repo_path does not exist: {source_repo_path}")
     if not target_repo_path.exists():
@@ -941,7 +958,9 @@ def _md(value: str) -> str:
 
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def _hash_payload(payload: object) -> str:

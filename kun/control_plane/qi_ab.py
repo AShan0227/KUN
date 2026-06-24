@@ -23,6 +23,7 @@ QI_AB_RUBRIC_VERSION = "qi-ab-frontier50-v6"
 QI_AB_METRIC_PACK_VERSION = "qi-ab-round-gates-v1"
 
 QiABRoundVerdict = Literal["pass", "repair", "invalid"]
+QiABExecutionMode = Literal["adapter_summary", "external_executor"]
 
 
 class QiABRoundSummary(BaseModel):
@@ -48,6 +49,7 @@ class QiABRoundSummary(BaseModel):
     expected_answer_count: int = Field(default=QI_AB_EXPECTED_ANSWER_COUNT, ge=1)
     expected_review_count: int = Field(default=QI_AB_EXPECTED_REVIEW_COUNT, ge=1)
     notes: list[str] = Field(default_factory=list)
+    execution_mode: QiABExecutionMode = "adapter_summary"
 
     @model_validator(mode="after")
     def _ticket_gate_matches_kun_failure(self) -> QiABRoundSummary:
@@ -240,6 +242,7 @@ def _artifact_manifest(summary: QiABRoundSummary) -> ArtifactManifest:
         primary_artifact_ref=summary.report_ref,
         evidence_refs=[summary.health_ref] if summary.health_ref is not None else [],
         review_refs=list(summary.review_refs),
+        rollback_refs=artifact_refs,
         created_by="qi",
         content_hash=_content_hash(
             [
@@ -293,6 +296,7 @@ def _gate_evaluation(
             "round_valid": 1.0 if round_valid else 0.0,
             "agent_failure_counted": 1.0 if agent_failure_counted else 0.0,
             "next_round_allowed": 1.0 if verdict == "pass" else 0.0,
+            "adapter_summary_only": 1.0 if summary.execution_mode == "adapter_summary" else 0.0,
         },
         thresholds={
             "result_quality": 0.8,

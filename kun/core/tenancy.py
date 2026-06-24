@@ -50,6 +50,17 @@ def current_tenant() -> TenantContext:
     return TenantContext(tenant_id=tenant_id)
 
 
+def current_tenant_or_none() -> TenantContext | None:
+    """Return the *explicitly set* ambient tenant, or None.
+
+    Unlike current_tenant(), this never raises and never falls back to the
+    dev/staging default — it reflects only what an enclosing tenant_scope set.
+    Used for cross-tenant detection (audit F005): compare an explicit tenant_id
+    against the ambient request identity.
+    """
+    return _current.get()
+
+
 def default_tenant_id() -> str | None:
     """Return the configured dev/staging fallback tenant, never in production."""
     cfg = settings()

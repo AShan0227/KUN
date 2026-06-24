@@ -1,0 +1,55 @@
+topic: grep_verify_before_assume
+title: 改代码 / 断言 / 引用前先 grep verify, 别靠记忆
+description: |
+  Claude Code 工程纪律核心一条: 不靠记忆判断 "X 是否在 runtime 真用了" /
+  "Y 引用过几次" / "Z 在哪定义". 任何"我猜想 X 是 …" 之前, 先 grep 一遍,
+  让搜索结果当裁判. KUN 的 grep-verify skill 把这个纪律封装成了
+  一等 primitive — 不要降级用 shell-exec 跑 raw grep.
+trigger:
+  conditions:
+    - 准备 edit / rename / delete 一个 KUN 内部符号 (class / function / module)
+    - 写 commit message 声称 "X 真被 Y 调用" / "Z 已 wire 到 runtime"
+    - 评估"这个 service 是不是缺了 caller"
+    - LLM agent 即将基于"我记得 KUN 里有 Z" 这种说法做改动
+action:
+  pattern:
+    - 'emit <skill name="grep-verify">{"pattern": "...", "root": "kun", "claim": "I think X is …"}</skill>'
+    - '看 verdict 字段: "confirmed" → 假设成立, 继续; "refuted" → 立刻 stop, 重新评估'
+    - '多处 match 时核对 path / line_no, 确认是同一个符号不是同名'
+    - '找不到时考虑: 拼写错? 模块迁移过? 真的没有?'
+  anti_patterns:
+    - '"我记得 KUN 里有 ContextPacker, 直接引用" → 应先 grep_verify'
+    - '用 shell-exec 跑 grep, 没结构化输出, LLM 解析容易丢上下文'
+    - 'grep 只找一个文件, 假设全 codebase 一致'
+    - '假设单测覆盖 = runtime 真用 (service_module_not_wired_to_runtime_audit 是这条的姐妹方法论)'
+rationale: |
+  dogfood v8 蒸馏出来的 capability gap analysis 显示 KUN 缺 "改前 grep" 这个
+  runtime 一等动作; 之前只有审计方法论 (service_module_not_wired_to_runtime_audit),
+  但没工具支持. P4 (DOGFOOD-P4.TUNE) 加 grep-verify skill 是补这个 gap,
+  让 LLM agent 有结构化 verify 通道, 不再靠记忆 / 不再降级用 shell.
+evidence:
+  - source: docs/claude-code-engineering-manual.md
+    notes: Claude Code 多次提到 "grep verify before assume / 找 caller 再改"
+  - source: seeds/methodologies/service_module_not_wired_to_runtime_audit.yaml
+    notes: 姐妹方法论 — 这条是"动作", 那条是"审计角度"
+  - source: kun/skills/builtin/grep_verify.py
+    notes: grep-verify skill 实现 + 10 unit test
+  - source: docs/dist-output/multi-dim-test-report.md
+    notes: P3 测试中 D3 (grep verify before assume) 为 1/2 — P4 修后 → 2/2
+confidence: 0.85
+applicability:
+  scopes:
+    - executor_loop
+    - long_task_agent
+    - methodology_distill
+    - refactor_safety
+  do_not_apply_when:
+    - 改的是只在本 commit 新建的文件 (没历史可 grep)
+    - 任务是纯创建 (e.g. dogfood 写新文档, 不是改既有代码)
+    - 已经在前 N 步里 grep 过同一符号 (不必重复)
+related_methodologies:
+  - service_module_not_wired_to_runtime_audit
+  - module_relocation_grep_string_literals_too
+  - signature_string_vs_signature_set
+distilled_from: DOGFOOD-P4-tune
+created_at: 2026-05-28

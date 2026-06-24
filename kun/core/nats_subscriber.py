@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     from nats.aio.client import Client as NATS
     from nats.aio.subscription import Subscription
 
+    from kun.watchtower.engine import RuleEngine
+
 log = get_logger("kun.nats_subscriber")
 
 
@@ -70,14 +72,38 @@ async def dispatch_event_to_handlers(
             )
 
 
+_WATCHTOWER_ENGINE: RuleEngine | None = None
+
+
+def _watchtower_engine() -> RuleEngine:
+    """Cached RuleEngine loaded with the real rule set (audit F029).
+
+    The NATS/cross-process path used to build an empty ``RuleEngine()`` per
+    event, so no watchtower rule ever fired off-process — only the in-process
+    orchestrator path (which builds ``RuleEngine(load_rules("rules"))``) worked.
+    Load the rules once and reuse, matching the in-process engine. Loaded lazily
+    so importing this module never touches the filesystem; a load failure falls
+    back to an empty engine (logged) rather than crashing the subscriber.
+    """
+    global _WATCHTOWER_ENGINE
+    if _WATCHTOWER_ENGINE is None:
+        from kun.watchtower.engine import RuleEngine, load_rules
+
+        try:
+            _WATCHTOWER_ENGINE = RuleEngine(load_rules("rules"))
+        except Exception as e:
+            log.warning("subscriber.rule_load_failed", error=str(e))
+            _WATCHTOWER_ENGINE = RuleEngine()
+    return _WATCHTOWER_ENGINE
+
+
 async def watchtower_handler(row: EventRow) -> None:
-    """默认 handler: 把事件类型喂给 watchtower RuleEngine."""
-    from kun.watchtower.engine import RuleEngine
+    """默认 handler: 把事件类型喂给 watchtower RuleEngine（已加载真实规则集）."""
     from kun.watchtower.handlers import handle_tool_skipped
 
     if row.event_type == "task.tool_skipped":
         await handle_tool_skipped(row)
-    engine = RuleEngine()
+    engine = _watchtower_engine()
     namespace = {
         "event_type": row.event_type,
         "tenant_id": row.tenant_id,

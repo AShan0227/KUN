@@ -17,7 +17,7 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from kun.core.logging import get_logger
 from kun.core.metrics import llm_fallback_total
@@ -256,6 +256,11 @@ class LLMRouter:
         tracer = trace.get_tracer("kun.interface.llm.router")
         with tracer.start_as_current_span("kun.router.invoke") as span:
             decision = self.decide(purpose, request.profile, request=request)
+            # L1.6 · capability-aware tier adjustment (ADR-024 闭环关键一环)
+            # 任务跑完 → capability_writeback 写卡 → 下次同类任务到这里 →
+            # 拿历史 reliability → 强信号 (sample ≥ 10, 显著偏离 0.5) 时微调 tier.
+            # 这是 "执行 → 能力卡 → 路由" 真闭环的接通点.
+            decision = await self._apply_capability_adjustment(decision, request, purpose)
             span.set_attribute("kun.purpose", str(purpose))
             span.set_attribute("kun.primary_tier", str(decision.primary_tier))
             span.set_attribute("kun.fallback_tier", str(decision.fallback_tier))
@@ -351,6 +356,19 @@ class LLMRouter:
                 raise RuntimeError(
                     f"No provider for primary={decision.primary_tier} or fallback={decision.fallback_tier}"
                 )
+            # Under single-provider configs (e.g. KUN_CODEX_ONLY=1) primary and
+            # fallback may point at the same instance. Retrying the same instance
+            # that just failed is almost always wasteful — propagate the error
+            # so the caller can react (and so we don't double-charge quota).
+            if primary is not None and fallback is primary:
+                log.warning(
+                    "router.fallback_skipped_same_provider",
+                    provider=primary.name,
+                )
+                raise RuntimeError(
+                    f"primary provider {primary.name} failed and fallback resolves to "
+                    f"the same instance; no other LLM source configured"
+                )
             log.info(
                 "router.fallback_engaged",
                 purpose=purpose,
@@ -362,6 +380,99 @@ class LLMRouter:
             span.set_attribute("kun.final_provider", fallback.name)
             span.set_attribute("kun.cost_usd_equivalent", result.cost_usd_equivalent)
             return result
+
+    # ---------- L1.6 · capability-aware tier adjustment ----------
+
+    async def _apply_capability_adjustment(
+        self,
+        decision: RouteDecision,
+        request: LLMRequest,
+        purpose: TaskPurpose,
+    ) -> RouteDecision:
+        """读能力卡历史 → 强信号时微调 tier (ADR-024 闭环接通).
+
+        规则 (保守, 只动强信号):
+          - sample_size >= 10 + score < 0.4  → 升级一档 (cheap→strong, strong→top)
+          - sample_size >= 20 + score > 0.85 → 标 "high confidence" 不动 tier
+          - 否则不调整
+        critical risk 任务永不下调 (已 pin to top); fallback / coding tier 不调整.
+        capability_router 查询失败 / cold start → 不调整.
+        """
+        if os.getenv("KUN_CAPABILITY_ROUTER_ENABLED", "1") == "0":
+            return decision
+        # 只对 top/strong/cheap 链路做调整 — coding/fallback 是显式选项不动
+        if decision.primary_tier not in {"top", "strong", "cheap"}:
+            return decision
+        # critical 任务已被 decide() pin 到 top, 不动
+        if request.profile and request.profile.risk_level == "critical":
+            return decision
+
+        provider = self.providers.get(decision.primary_tier)
+        if provider is None:
+            return decision
+
+        task_type = _task_type_for_request(request, purpose)
+        tenant_id = _tenant_id_for_capability_routing()
+
+        try:
+            score = await get_capability_router().score_for(
+                tenant_id=tenant_id,
+                model_id=provider.model_id,
+                task_type=task_type,
+            )
+        except Exception as e:
+            log.debug("router.capability_adjust_skipped", error=str(e))
+            return decision
+
+        # Cold start: 无数据 → 不动
+        if score.is_cold_start or score.sample_size < 10:
+            return decision
+
+        # 强弱信号:
+        if score.sample_size >= 10 and score.score < 0.4:
+            new_tier = _upgrade_tier(decision.primary_tier)
+            if new_tier != decision.primary_tier and new_tier in self.providers:
+                log.info(
+                    "router.capability_upgrade",
+                    from_tier=decision.primary_tier,
+                    to_tier=new_tier,
+                    task_type=task_type,
+                    model_id=provider.model_id,
+                    score=score.score,
+                    sample_size=score.sample_size,
+                )
+                return RouteDecision(
+                    purpose=decision.purpose,
+                    primary_tier=new_tier,
+                    fallback_tier=decision.fallback_tier,
+                    rationale=(
+                        f"{decision.rationale} | capability_upgrade:"
+                        f"{decision.primary_tier}→{new_tier}"
+                        f"(score={score.score:.2f}, n={score.sample_size})"
+                    ),
+                )
+
+        if score.sample_size >= 20 and score.score > 0.85:
+            log.debug(
+                "router.capability_high_confidence",
+                tier=decision.primary_tier,
+                task_type=task_type,
+                model_id=provider.model_id,
+                score=score.score,
+                sample_size=score.sample_size,
+            )
+
+        return decision
+
+
+def _upgrade_tier(tier: ModelTier) -> ModelTier:
+    """cheap → strong → top → top (top 已封顶不再升)."""
+    chain: dict[ModelTier, ModelTier] = {
+        "cheap": "strong",
+        "strong": "top",
+        "top": "top",
+    }
+    return chain.get(tier, tier)
 
 
 async def _select_by_capability(
@@ -383,12 +494,10 @@ async def _select_by_capability(
         return CapabilityRouteChoice(provider=selected, branch=branch, scores=[])
     candidates = _ordered_provider_candidates(selected, base_primary, challenger)
     if len(candidates) <= 1:
-        scores = await _rank_capability_candidates(
-            candidates=candidates,
-            request=request,
-            purpose=purpose,
-        )
-        return CapabilityRouteChoice(provider=selected, branch=branch, scores=scores)
+        # Only one candidate (no A/B challenger, no shared instances) — ranking
+        # would return a single cold-start score that doesn't change the pick,
+        # so skip the DB round-trip entirely.
+        return CapabilityRouteChoice(provider=selected, branch=branch, scores=[])
     scores = await _rank_capability_candidates(
         candidates=candidates,
         request=request,
@@ -417,7 +526,12 @@ async def _rank_capability_candidates(
             task_type=_task_type_for_request(request, purpose),
         )
     except Exception as e:
-        log.debug("router.capability_choice_skipped", error=str(e))
+        log.warning(
+            "router.capability_choice_skipped",
+            error=str(e),
+            error_type=type(e).__name__,
+            candidates=[p.model_id for p in candidates],
+        )
         return []
 
 
@@ -455,7 +569,28 @@ def _tenant_id_for_capability_routing() -> str:
     return os.getenv("KUN_TENANT_ID", "default")
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
+def _should_retry_llm_error(exc: BaseException) -> bool:
+    """Router-level retry predicate (audit F046).
+
+    Any exception carrying an HTTP status was already handled by the provider
+    SDK's own retry policy — it retries 429/5xx with retry-after awareness and
+    surfaces deterministic 4xx. Re-retrying those here amplifies rate limits and
+    pointlessly repeats deterministic 400s. So only retry *uncategorized
+    transport* errors (no HTTP status) that the SDK didn't classify.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        resp = getattr(exc, "response", None)
+        status = getattr(resp, "status_code", None)
+    return not isinstance(status, int)
+
+
+@retry(
+    retry=retry_if_exception(_should_retry_llm_error),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.5, max=8),
+    reraise=True,
+)
 async def _invoke_with_retry(provider: LLMProvider, request: LLMRequest) -> LLMResponse:
     return await provider.invoke(request)
 
@@ -553,6 +688,7 @@ def get_router() -> LLMRouter:
 
     cli_disabled = os.getenv("KUN_DISABLE_CLI_OAUTH") == "1"
     codex_disabled = os.getenv("KUN_DISABLE_CODEX_CLI") == "1"
+    codex_only = os.getenv("KUN_CODEX_ONLY") == "1"
     has_claude_cli = ClaudeCodeProvider.available() and not cli_disabled
     # Prefer MCP (works with ChatGPT accounts via gpt-5.3-codex-spark);
     # fall back to exec CLI only when the user has an OpenAI API key account.
@@ -562,6 +698,23 @@ def get_router() -> LLMRouter:
     has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY"))
     has_openai = bool(os.getenv("OPENAI_API_KEY"))
     has_minimax = bool(os.getenv("MINIMAX_API_KEY"))
+
+    # ---- KUN_CODEX_ONLY: pin every tier to a single Codex MCP instance ----
+    if codex_only:
+        if not has_codex_mcp:
+            raise RuntimeError(
+                "KUN_CODEX_ONLY=1 but codex MCP unavailable "
+                "(codex CLI missing, not logged in, or KUN_DISABLE_CODEX_CLI=1)"
+            )
+        log.info(
+            "router.codex_only",
+            hint="single Codex MCP provider for all tiers (gpt-5.5)",
+        )
+        codex_provider = CodexMcpProvider(tier="coding")
+        for tier_name in ("top", "strong", "cheap", "coding", "fallback"):
+            providers[cast_tier(tier_name)] = codex_provider
+        _router = LLMRouter(providers)
+        return _router
 
     # ---- top / strong / cheap ----
     if has_claude_cli:
@@ -578,12 +731,9 @@ def get_router() -> LLMRouter:
             "router.minimax_substitute",
             hint="MiniMax used for top/strong/cheap (no Anthropic creds/CLI)",
         )
-        providers["top"] = MiniMaxProvider(model_id="MiniMax-M2.7")
-        providers["top"].tier = "top"
-        providers["strong"] = MiniMaxProvider(model_id="MiniMax-M2.7")
-        providers["strong"].tier = "strong"
-        providers["cheap"] = MiniMaxProvider(model_id="MiniMax-M2.7")
-        providers["cheap"].tier = "cheap"
+        providers["top"] = MiniMaxProvider(model_id="MiniMax-M2.7", tier="top")
+        providers["strong"] = MiniMaxProvider(model_id="MiniMax-M2.7", tier="strong")
+        providers["cheap"] = MiniMaxProvider(model_id="MiniMax-M2.7", tier="cheap")
     else:
         log.warning("router.no_creds", hint="falling back to stub for top/strong/cheap")
         providers["top"] = StubProvider(model_id="stub-opus-4.7", tier="top")
@@ -607,14 +757,13 @@ def get_router() -> LLMRouter:
         # Fallback within the OAuth family — claude-code CLI for coding too
         providers["coding"] = ClaudeCodeProvider(tier="coding")
     elif has_minimax:
-        providers["coding"] = MiniMaxProvider(model_id="MiniMax-M2.7")
-        providers["coding"].tier = "coding"
+        providers["coding"] = MiniMaxProvider(model_id="MiniMax-M2.7", tier="coding")
     else:
         providers["coding"] = StubProvider(model_id="stub-codex-5.3", tier="coding")
 
     # ---- fallback ----
     if has_minimax:
-        providers["fallback"] = MiniMaxProvider(model_id="MiniMax-M2.7")
+        providers["fallback"] = MiniMaxProvider(model_id="MiniMax-M2.7", tier="fallback")
     else:
         log.warning("router.no_minimax_creds", hint="falling back to stub for fallback")
         providers["fallback"] = StubProvider(model_id="stub-minimax-m2.7", tier="fallback")

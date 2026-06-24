@@ -248,6 +248,39 @@ def test_file_store_recovers_all_v6_records_after_rebuild(tmp_path: Path) -> Non
     ] == ["gate-msn-a"]
 
 
+def test_file_store_migrates_legacy_delivery_manifest_rollback_refs(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "legacy-control-plane.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifact_manifests": [
+                    {
+                        "manifest_id": "manifest-legacy-delivery",
+                        "mission_id": "msn-legacy",
+                        "kind": "delivery",
+                        "artifact_refs": ["artifact-delivery"],
+                        "primary_artifact_ref": "artifact-delivery",
+                        "evidence_refs": ["artifact-evidence"],
+                        "created_by": "kun",
+                        "content_hash": "legacy-hash",
+                        "supports_delivery": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    store = _store(path)
+    manifest = store.get_artifact_manifest("manifest-legacy-delivery")
+
+    assert manifest is not None
+    assert manifest.rollback_refs == ["artifact-delivery", "artifact-evidence"]
+
+
 def test_file_store_persists_primary_id_upsert_without_duplicate(tmp_path: Path) -> None:
     path = tmp_path / "control-plane.json"
     store = _store(path)
@@ -302,6 +335,41 @@ def test_file_store_writes_json_snapshot_atomically_to_target_path(tmp_path: Pat
     assert payload["schema_version"] == 1
     assert payload["missions"][0]["mission_id"] == "msn-json"
     assert list(path.parent.glob("*.tmp")) == []
+
+
+def test_file_store_transaction_persists_related_records_in_one_snapshot(tmp_path: Path) -> None:
+    path = tmp_path / "control-plane.json"
+    store = FileControlPlaneStore(path)
+
+    with store.transaction():
+        store.put_mission(_mission("msn-txn"))
+        store.put_work_item(_work_item("msn-txn"))
+        assert not path.exists()
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert [mission["mission_id"] for mission in payload["missions"]] == ["msn-txn"]
+    assert [item["work_item_id"] for item in payload["work_items"]] == ["work-msn-txn"]
+
+
+def test_file_store_routes_write_after_bucket_refresh(tmp_path: Path) -> None:
+    path = tmp_path / "control-plane.json"
+    store = FileControlPlaneStore(path)
+    store.put_mission(_mission("msn-refresh"))
+    store.put_work_item(_work_item("msn-refresh"))
+
+    stale_run_bucket = store._run_records
+    stale_item_bucket = store._work_items
+    store.reload()
+
+    run = _run_record("work-msn-refresh", "run-after-refresh")
+    item = _work_item("msn-refresh", work_item_id="work-after-refresh")
+
+    assert store._put_and_persist(stale_run_bucket, run) == run
+    assert store._put_and_persist(stale_item_bucket, item) == item
+
+    rebuilt = FileControlPlaneStore(path)
+    assert rebuilt.get_run_record("run-after-refresh") == run
+    assert rebuilt.get_work_item("work-after-refresh") == item
 
 
 def test_file_store_ignores_unknown_fields_from_older_snapshots(tmp_path: Path) -> None:

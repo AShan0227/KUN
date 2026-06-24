@@ -9,11 +9,18 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Literal
 
 from kun.control_plane.runtime import ControlPlaneRunner, InMemoryControlPlane, WorkItemResult
-from kun.control_plane.v6 import ArtifactRecord, CapabilityProfile, GateEvaluation, WorkItem
+from kun.control_plane.v6 import (
+    ArtifactRecord,
+    CapabilityProfile,
+    CollaborationTicket,
+    GateEvaluation,
+    WorkItem,
+)
 
 
 def _now() -> datetime:
@@ -29,6 +36,17 @@ def _hash_payload(payload: object) -> str:
 def _slug(value: str) -> str:
     safe = [ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value]
     return "".join(safe).strip("-")[:80] or "item"
+
+
+def _slug_with_hash(value: str, *, max_length: int = 80) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value).strip("-")
+    if not safe:
+        return "item"
+    if len(safe) <= max_length:
+        return safe
+    digest = _hash_payload({"value": value})[:12]
+    prefix_length = max(1, max_length - len(digest) - 1)
+    return f"{safe[:prefix_length]}-{digest}"
 
 
 def _artifact(
@@ -56,6 +74,11 @@ def _artifact(
     )
 
 
+def _with_supports(artifact: ArtifactRecord, *supports: str) -> ArtifactRecord:
+    merged = list(dict.fromkeys([*artifact.supports, *supports]))
+    return artifact.model_copy(update={"supports": merged})
+
+
 def _pass_gate(
     *,
     work_item: WorkItem,
@@ -64,6 +87,11 @@ def _pass_gate(
     signal: str,
     next_action: str = "continue",
     next_state: str = "running",
+    verdict: str = "pass",
+    result_quality: float = 0.86,
+    risk: float = 0.18,
+    hard_gate_failures: list[str] | None = None,
+    failure_category: str | None = None,
 ) -> GateEvaluation:
     return GateEvaluation(
         gate_evaluation_id=f"gate-{_slug(created_by)}-{_slug(work_item.work_item_id)}",
@@ -74,18 +102,20 @@ def _pass_gate(
         task_type="self_improvement",
         rubric_version="kun-v6-runtime-followup-v1",
         metric_pack_version="kun-v6-runtime-followup-v1",
-        north_star_verdict="pass",
-        result_quality=0.86,
+        north_star_verdict=verdict,
+        result_quality=result_quality,
         speed=0.72,
         cost=0.84,
-        risk=0.18,
+        risk=risk,
         evidence_quality=0.82,
         collaboration_quality=0.78,
         score_breakdown={"runtime_followup_executed": 1.0},
         thresholds={"result_quality": 0.8},
+        hard_gate_failures=hard_gate_failures or [],
         evidence_refs=[artifact.artifact_id],
         artifact_refs=[artifact.artifact_id],
         source_freshness="fresh",
+        failure_category=failure_category,
         responsibility_scope="kun_auto",
         confidence=0.82,
         next_action=next_action,
@@ -105,7 +135,13 @@ class NuoRuntimeRepairRunner:
         self.control_plane = control_plane
 
     def can_run(self, work_item: WorkItem) -> bool:
-        return work_item.owner == "nuo" and work_item.type in {"repair", "retest"}
+        if work_item.owner == "nuo" and work_item.type in {"repair", "retest"}:
+            return True
+        return (
+            work_item.owner == "control-plane"
+            and work_item.type in {"repair", "retest"}
+            and (work_item.idempotency_key or "").startswith("nuo-recovery:")
+        )
 
     def run(self, work_item: WorkItem) -> WorkItemResult:
         if not self.can_run(work_item):
@@ -113,6 +149,20 @@ class NuoRuntimeRepairRunner:
                 status="failed",
                 summary="Nuo runtime repair runner only handles Nuo repair/retest follow-up work.",
                 failure_category="tool_failure",
+            )
+        gate_next_action, gate_next_state = _nuo_followup_gate_transition(
+            control_plane=self.control_plane,
+            mission_id=work_item.mission_id,
+        )
+        clean_retest = _run_clean_retest_probe(work_item)
+        if clean_retest is not None:
+            passed, probe_payload = clean_retest
+            return _clean_retest_result(
+                work_item=work_item,
+                runner_identity=self.runner_identity,
+                control_plane=self.control_plane,
+                passed=passed,
+                probe_payload=probe_payload,
             )
         payload = {
             "schema": "kun-v6-nuo-runtime-repair-v1",
@@ -126,6 +176,7 @@ class NuoRuntimeRepairRunner:
                 "kept recovery evidence attached for replay and rerun",
                 "left original KUN capability judgment unpenalized until clean retest evidence exists",
             ],
+            "closure_status": "diagnosed_not_repaired",
             "rerun_policy": "eligible_after_environment_or_wrapper_repair",
             "default_agent_failure_counted": False,
         }
@@ -136,20 +187,46 @@ class NuoRuntimeRepairRunner:
             payload=payload,
         )
         return WorkItemResult(
-            status="done",
-            summary="Nuo classified the runtime/preflight condition and preserved a clean retest path.",
+            status="partial",
+            summary=(
+                "Nuo classified the runtime/preflight condition and preserved a clean retest "
+                "path; repair is not closed until rerun or retest evidence passes."
+            ),
             artifacts=[artifact],
             gate_evaluation=_pass_gate(
                 work_item=work_item,
                 created_by=self.runner_identity,
                 artifact=artifact,
                 signal="nuo_runtime_repair_executed",
+                next_action=gate_next_action,
+                next_state=gate_next_state,
+                verdict="partial",
+                result_quality=0.72,
+                risk=0.42,
+                hard_gate_failures=["nuo_repair_requires_clean_retest"],
+                failure_category="environment_failure",
             ),
         )
 
 
+def _nuo_followup_gate_transition(
+    *,
+    control_plane: InMemoryControlPlane,
+    mission_id: str,
+) -> tuple[str, str]:
+    mission = control_plane.missions.get(mission_id)
+    if mission is not None and mission.status == "changing_plan":
+        return ("needs_plan_change", "changing_plan")
+    return ("needs_repair", "repairing")
+
+
 class QiRuntimeGovernanceRunner:
-    """Execute Qi governance work generated by runtime learning signals."""
+    """Execute Qi governance work generated by runtime learning signals.
+
+    Qi is intentionally a self-improvement/governance path.  It may run replay
+    or shadow strategy analysis and create capability candidates, but it must
+    not mutate production defaults from an ordinary user-task follow-up.
+    """
 
     runner_type: Literal["agent"] = "agent"
     runner_identity = "qi-runtime-governance-runner"
@@ -168,17 +245,34 @@ class QiRuntimeGovernanceRunner:
                 failure_category="tool_failure",
             )
         decision = _qi_decision(work_item)
+        strategy_replay = decision in {"plan_change", "strategy_replay"}
         payload = {
             "schema": "kun-v6-qi-runtime-governance-v1",
             "mission_id": work_item.mission_id,
             "work_item_id": work_item.work_item_id,
             "decision": decision,
+            "qi_role": "strategy_replay_process_audit_and_capability_governance",
+            "governance_scope": "self_improvement_only",
+            "production_runtime_mutation_allowed": False,
             "source_refs": [work_item.work_item_id, *work_item.recovery_refs],
             "required_capability_refs": list(work_item.required_capability_refs),
             "runtime_default_policy": "replay_or_holdout_only_until_formal_promotion",
             "default_runtime_enabled": False,
-            "next_stage": "replay" if decision == "candidate" else "review_only",
+            "next_stage": "replay"
+            if decision in {"candidate", "strategy_replay"}
+            else "review_only",
             "alternate_path_required": decision == "plan_change",
+            "strategy_replay_required": strategy_replay,
+            "strategy_replay_contract": (
+                [
+                    "re-run the task slice as an isolated shadow/replay, not as production delivery",
+                    "compare the old path against a stricter alternative strategy",
+                    "record strategy diff, process flaws, evidence gaps, and acceptance deltas",
+                    "emit capability-candidate evidence only; do not enable runtime defaults",
+                ]
+                if strategy_replay
+                else []
+            ),
             "alternate_path_contract": (
                 [
                     "turn the observed product gap into stricter acceptance criteria",
@@ -205,21 +299,48 @@ class QiRuntimeGovernanceRunner:
         artifact = _artifact(
             work_item=work_item,
             created_by=self.runner_identity,
-            support="qi_runtime_governance_report",
+            support=(
+                "qi_strategy_replay_report"
+                if decision == "strategy_replay"
+                else "qi_runtime_governance_report"
+            ),
             payload=payload,
         )
+        artifact = _with_supports(
+            artifact,
+            "self_improvement_governance_only",
+            "qi_process_audit",
+            *(
+                [
+                    "qi_strategy_replay",
+                    "qi_shadow_rerun",
+                    "qi_better_strategy_search",
+                ]
+                if strategy_replay
+                else []
+            ),
+        )
         profile_ref = None
-        if decision == "candidate":
+        if decision in {"candidate", "strategy_replay"}:
             profile = CapabilityProfile(
                 capability_id=f"cap-qi-runtime-{_slug(work_item.work_item_id)}",
-                capability_name=f"Runtime learning from {work_item.work_item_id}",
-                governance_key=f"runtime-learning:{_slug(work_item.work_item_id)}",
+                capability_name=(
+                    f"Strategy replay learning from {work_item.work_item_id}"
+                    if decision == "strategy_replay"
+                    else f"Runtime learning from {work_item.work_item_id}"
+                ),
+                governance_key=(
+                    f"strategy-replay-learning:{_slug(work_item.work_item_id)}"
+                    if decision == "strategy_replay"
+                    else f"runtime-learning:{_slug(work_item.work_item_id)}"
+                ),
                 source_refs=[work_item.work_item_id, *work_item.recovery_refs],
                 source_versions=["runtime-followup-v1"],
                 evidence_refs=[artifact.artifact_id],
                 known_limits=[
                     "not production default until holdout/shadow/canary evidence exists",
                     "runtime follow-up artifacts are evidence, not automatic behavior changes",
+                    "ordinary user-task success cannot directly promote KUN default runtime behavior",
                 ],
                 promotion_stage="replay",
                 rollback_plan=[
@@ -236,20 +357,25 @@ class QiRuntimeGovernanceRunner:
             )
         followups: list[WorkItem] = []
         if decision == "plan_change":
+            strategy_replay_work = _strategy_replay_work_item(work_item)
+            followups.append(strategy_replay_work)
+            suffix = _slug_with_hash(work_item.work_item_id)
             followups.append(
                 WorkItem(
-                    work_item_id=f"work-kun-plan-change-{_slug(work_item.work_item_id)}",
+                    work_item_id=f"work-kun-plan-change-{suffix}",
                     mission_id=work_item.mission_id,
                     task_plan_version=work_item.task_plan_version,
                     type="research",
                     owner="kun",
                     priority=min(100, work_item.priority + 5),
-                    dependencies=[work_item.work_item_id],
+                    dependencies=[work_item.work_item_id, strategy_replay_work.work_item_id],
                     idempotency_key=f"qi-plan-change:{work_item.work_item_id}",
                     expected_output=(
                         "Create or revise a stricter continuation plan from the failed quality "
-                        "gate. Add stronger acceptance criteria, assign the next implementation "
-                        "or test work, and require clean retest evidence before delivery can close."
+                        "gate and Qi strategy replay. Add stronger acceptance criteria, assign "
+                        "the next implementation or test work, and require clean retest evidence "
+                        "before delivery can close. Do not mutate KUN runtime defaults from this "
+                        "user-task path."
                     ),
                     recovery_refs=[work_item.work_item_id, *work_item.recovery_refs],
                 )
@@ -263,6 +389,8 @@ class QiRuntimeGovernanceRunner:
             next_state="changing_plan" if decision == "plan_change" else "running",
         )
         summary = "Qi recorded the runtime learning signal as governed evidence."
+        if strategy_replay:
+            summary += " Strategy replay/process audit is required before production learning."
         if profile_ref:
             summary += f" Replay candidate: {profile_ref}."
         return WorkItemResult(
@@ -272,6 +400,30 @@ class QiRuntimeGovernanceRunner:
             gate_evaluation=gate,
             followup_work_items=followups,
         )
+
+
+def _strategy_replay_work_item(work_item: WorkItem) -> WorkItem:
+    suffix = _slug_with_hash(work_item.work_item_id)
+    return WorkItem(
+        work_item_id=f"work-qi-strategy-replay-{suffix}",
+        mission_id=work_item.mission_id,
+        task_plan_version=work_item.task_plan_version,
+        type="research",
+        owner="qi",
+        priority=min(100, work_item.priority + 4),
+        dependencies=[work_item.work_item_id],
+        idempotency_key=f"qi-strategy-replay:{work_item.work_item_id}",
+        expected_output=(
+            "Run an isolated Qi strategy replay and process audit for the same task slice. "
+            "Reconstruct the old strategy, propose a stricter alternative, compare expected "
+            "quality/risk/cost, identify missing user interaction or benchmark understanding, "
+            "and emit only replay-stage capability evidence. Do not deliver user-task output "
+            "and do not enable production runtime defaults."
+        ),
+        required_capability_refs=list(work_item.required_capability_refs),
+        external_source_refs=list(work_item.external_source_refs),
+        recovery_refs=[work_item.work_item_id, *work_item.recovery_refs],
+    )
 
 
 def _nuo_classification(work_item: WorkItem) -> str:
@@ -285,8 +437,530 @@ def _nuo_classification(work_item: WorkItem) -> str:
     return "runtime_condition_requires_clean_retest"
 
 
+def _run_clean_retest_probe(work_item: WorkItem) -> tuple[bool, dict[str, object]] | None:
+    intent_text = (
+        f"{work_item.work_item_id}\n{work_item.expected_output}\n"
+        f"{' '.join(work_item.recovery_refs)}\n"
+        f"{' '.join(work_item.checkpoint_refs)}\n"
+        f"{' '.join(work_item.external_source_refs)}"
+    ).lower()
+    if _is_mechanical_acceptance_loop_retest(intent_text):
+        return (
+            True,
+            {
+                "probe_kind": "mechanical_acceptance_rework_loop_clean_retest",
+                "status": "passed",
+                "auto_unblock_allowed": True,
+                "human_ticket_required": False,
+                "environment_probe_required": False,
+                "loop_resolution_policy": (
+                    "continue Qi strategy replay or plan-change work; do not convert this "
+                    "product/process loop into a workspace permission ticket"
+                ),
+            },
+        )
+    wants_clean_retest = (
+        work_item.type == "retest"
+        or "clean retest" in intent_text
+        or "permission clean retest" in intent_text
+        or "workspace clean retest" in intent_text
+        or "干净复测" in intent_text
+    )
+    permission_or_workspace = any(
+        token in intent_text
+        for token in (
+            "permission",
+            "not_writable",
+            "writable",
+            "write",
+            "workspace",
+            "sandbox",
+            "project path",
+            "项目",
+            "写入",
+            "权限",
+            "目录",
+        )
+    )
+    if not (wants_clean_retest and permission_or_workspace):
+        return None
+    workspace = _workspace_probe_path(work_item)
+    if workspace is None:
+        return (
+            False,
+            {
+                "probe_kind": "workspace_write_clean_retest",
+                "status": "failed",
+                "reason": "no_local_workspace_ref",
+                "workspace_ref": work_item.workspace_ref,
+                "resource_locks": list(work_item.resource_locks),
+            },
+        )
+    if not workspace.exists() or not workspace.is_dir():
+        return (
+            False,
+            {
+                "probe_kind": "workspace_write_clean_retest",
+                "status": "failed",
+                "reason": "workspace_missing_or_not_directory",
+                "workspace_path": str(workspace),
+            },
+        )
+    probe = (
+        workspace
+        / f".kun-nuo-clean-retest-{_slug(work_item.work_item_id)}-{_now().timestamp():.0f}.tmp"
+    )
+    try:
+        probe.write_text("kun nuo clean retest\n", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        for build_state in _workspace_build_state_probe_files(workspace):
+            original = build_state.read_bytes()
+            build_state.write_bytes(original)
+    except OSError as exc:
+        return (
+            False,
+            {
+                "probe_kind": "workspace_write_clean_retest",
+                "status": "failed",
+                "reason": exc.__class__.__name__,
+                "error": str(exc),
+                "workspace_path": str(workspace),
+            },
+        )
+    return (
+        True,
+        {
+            "probe_kind": "workspace_write_clean_retest",
+            "status": "passed",
+            "workspace_path": str(workspace),
+            "auto_unblock_allowed": True,
+            "human_ticket_required": False,
+        },
+    )
+
+
+def _workspace_build_state_probe_files(workspace: Path) -> list[Path]:
+    """Probe common incremental build files that a generic temp write can miss."""
+
+    candidates = [
+        workspace / "tsconfig.tsbuildinfo",
+        workspace / "tsconfig.node.tsbuildinfo",
+    ]
+    return [path for path in candidates if path.exists() and path.is_file()]
+
+
+def _is_mechanical_acceptance_loop_retest(text: str) -> bool:
+    return (
+        "mechanical_acceptance_rework_loop" in text
+        or "mechanical acceptance rework loop" in text
+        or ("acceptance-rework" in text and "loop" in text)
+    )
+
+
+def _workspace_probe_path(work_item: WorkItem) -> Path | None:
+    candidates: list[str] = []
+    if work_item.workspace_ref:
+        candidates.append(work_item.workspace_ref)
+    for lock in work_item.resource_locks:
+        if lock.startswith("workspace:"):
+            candidates.append(lock)
+    for candidate in candidates:
+        path = _local_workspace_path(candidate)
+        if path is not None:
+            return path
+    return None
+
+
+def _local_workspace_path(value: str) -> Path | None:
+    normalized = value.strip()
+    if normalized.startswith("workspace://"):
+        normalized = normalized.removeprefix("workspace://")
+        if not normalized.startswith("/"):
+            normalized = f"/{normalized}"
+    elif normalized.startswith("workspace:"):
+        normalized = normalized.removeprefix("workspace:")
+    if normalized.startswith("//"):
+        normalized = normalized[1:]
+    path = Path(normalized).expanduser()
+    if not path.is_absolute():
+        return None
+    return path
+
+
+def _clean_retest_result(
+    *,
+    work_item: WorkItem,
+    runner_identity: str,
+    control_plane: InMemoryControlPlane,
+    passed: bool,
+    probe_payload: dict[str, object],
+) -> WorkItemResult:
+    support = "nuo_clean_retest_passed" if passed else "nuo_clean_retest_failed"
+    payload = {
+        "schema": "kun-v6-nuo-clean-retest-v1",
+        "mission_id": work_item.mission_id,
+        "work_item_id": work_item.work_item_id,
+        "classification": _nuo_classification(work_item),
+        "closure_status": "clean_retest_passed" if passed else "clean_retest_failed",
+        "default_agent_failure_counted": False,
+        **probe_payload,
+    }
+    artifact = _artifact(
+        work_item=work_item,
+        created_by=runner_identity,
+        support=support,
+        payload=payload,
+    )
+    artifact = _with_supports(
+        artifact,
+        "nuo_runtime_repair_report",
+        "nuo_clean_retest",
+        *(
+            ["nuo_runtime_repair_closed", "permission_blocker_auto_resolved"]
+            if passed
+            else ["nuo_repair_still_blocked", "human_collaboration_still_required"]
+        ),
+    )
+    if (
+        passed
+        and probe_payload.get("probe_kind") == "mechanical_acceptance_rework_loop_clean_retest"
+    ):
+        artifact = _with_supports(
+            artifact,
+            "mechanical_acceptance_rework_loop_retest",
+            "continue_iteration_without_permission_ticket",
+        )
+        return WorkItemResult(
+            status="done",
+            summary=(
+                "Nuo clean retest confirmed this is a product/process acceptance loop, "
+                "not a workspace/write permission blocker; continue strategy replay or "
+                "plan-change work without opening an operator ticket."
+            ),
+            artifacts=[artifact],
+            gate_evaluation=_pass_gate(
+                work_item=work_item,
+                created_by=runner_identity,
+                artifact=artifact,
+                signal="nuo_loop_clean_retest_passed",
+                next_action="needs_plan_change",
+                next_state="changing_plan",
+                verdict="pass",
+                result_quality=0.86,
+                risk=0.2,
+            ),
+        )
+    if passed:
+        followups = _requeue_failed_subjects_after_clean_retest(
+            control_plane=control_plane,
+            clean_retest_item=work_item,
+            artifact=artifact,
+        )
+        return WorkItemResult(
+            status="done",
+            summary=(
+                "Nuo clean retest passed; the workspace/write blocker is cleared and "
+                "the mission can continue without waiting for a human ticket."
+            ),
+            artifacts=[artifact],
+            followup_work_items=followups,
+            gate_evaluation=_pass_gate(
+                work_item=work_item,
+                created_by=runner_identity,
+                artifact=artifact,
+                signal="nuo_clean_retest_passed",
+                next_action="continue",
+                next_state="running",
+                verdict="pass",
+                result_quality=0.9,
+                risk=0.12,
+            ),
+        )
+    ticket = _clean_retest_operator_ticket(
+        work_item=work_item,
+        artifact=artifact,
+        probe_payload=probe_payload,
+    )
+    return WorkItemResult(
+        status="waiting_human",
+        summary=(
+            "Nuo clean retest failed; the permission/workspace blocker is real and "
+            "requires an operator or human collaboration path."
+        ),
+        artifacts=[artifact],
+        collaboration_tickets=[ticket],
+        gate_evaluation=_pass_gate(
+            work_item=work_item,
+            created_by=runner_identity,
+            artifact=artifact,
+            signal="nuo_clean_retest_failed",
+            next_action="needs_human",
+            next_state="waiting_human",
+            verdict="partial",
+            result_quality=0.65,
+            risk=0.48,
+            hard_gate_failures=["nuo_clean_retest_failed"],
+            failure_category="permission_failure",
+        ),
+    )
+
+
+def _requeue_failed_subjects_after_clean_retest(
+    *,
+    control_plane: InMemoryControlPlane,
+    clean_retest_item: WorkItem,
+    artifact: ArtifactRecord,
+) -> list[WorkItem]:
+    """Re-run original failed work after Nuo proves the environment is clean."""
+
+    subject_ids: list[str] = []
+    for ref in clean_retest_item.recovery_refs:
+        referenced_item = control_plane.work_items.get(ref)
+        if referenced_item is None:
+            if ref in control_plane.work_items:
+                subject_ids.append(ref)
+            continue
+        key = referenced_item.idempotency_key or ""
+        if key.startswith("nuo-recovery:"):
+            parts = key.split(":")
+            if len(parts) >= 2:
+                subject_ids.append(parts[1])
+            continue
+        if referenced_item.status == "failed":
+            subject_ids.append(referenced_item.work_item_id)
+        if referenced_item.status == "blocked":
+            subject_ids.append(referenced_item.work_item_id)
+        for recovery_ref in referenced_item.recovery_refs:
+            recovery_item = control_plane.work_items.get(recovery_ref)
+            if recovery_item is not None and recovery_item.status in {"failed", "blocked"}:
+                subject_ids.append(recovery_item.work_item_id)
+
+    requeued: list[WorkItem] = []
+    for subject_id in dict.fromkeys(subject_ids):
+        subject = control_plane.work_items.get(subject_id)
+        if subject is None or subject.status not in {"failed", "blocked"}:
+            continue
+        if _subject_requires_product_iteration_instead_of_clean_retest_rerun(
+            control_plane=control_plane,
+            subject=subject,
+        ):
+            continue
+        requeued.append(
+            subject.model_copy(
+                update={
+                    "status": "queued",
+                    "lease": None,
+                    "heartbeat": None,
+                    "timeout": None,
+                    "recovery_refs": list(
+                        dict.fromkeys([*subject.recovery_refs, artifact.artifact_id])
+                    ),
+                }
+            )
+        )
+    return requeued
+
+
+def _subject_requires_product_iteration_instead_of_clean_retest_rerun(
+    *,
+    control_plane: InMemoryControlPlane,
+    subject: WorkItem,
+) -> bool:
+    """Avoid rerunning product gates when the blocker is product quality.
+
+    A workspace clean retest proves the environment can write files.  It does
+    not prove that a failed player-experience, supervisor, residual, or final
+    delivery gate should simply be re-run.  Those gates need a plan-change or
+    product iteration with fresh evidence before another review pass.
+    """
+
+    subject_text = " ".join(
+        [
+            subject.work_item_id,
+            subject.owner,
+            subject.type,
+            subject.phase or "",
+            subject.expected_output,
+        ]
+    ).lower()
+    product_gate_subject = subject.owner in {
+        "external-supervisor-gpt5.5",
+        "kun-game-production-runner",
+    } and (
+        "supervisor-gate" in subject_text
+        or "final-player" in subject_text
+        or "final_player" in subject_text
+        or "benchmark-residual" in subject_text
+        or "benchmark_residual" in subject_text
+        or "final-delivery" in subject_text
+        or "final_delivery" in subject_text
+        or "player experience" in subject_text
+        or "product feel" in subject_text
+    )
+    if not product_gate_subject:
+        return False
+    latest_run = _latest_run_for_work_item(control_plane, subject.work_item_id)
+    if latest_run is not None and latest_run.failure_category in {
+        "delivery_failure",
+        "model_quality_failure",
+        "evidence_failure",
+    }:
+        return True
+    for gate in control_plane.gate_evaluations.values():
+        if gate.mission_id != subject.mission_id or gate.subject_ref != subject.work_item_id:
+            continue
+        if _gate_requires_product_iteration(gate):
+            return True
+    return False
+
+
+def _latest_run_for_work_item(control_plane: InMemoryControlPlane, work_item_id: str):
+    runs = [run for run in control_plane.runs.values() if run.work_item_id == work_item_id]
+    if not runs:
+        return None
+    floor = datetime.min.replace(tzinfo=UTC)
+    return max(runs, key=lambda run: run.ended_at or run.started_at or floor)
+
+
+def _gate_requires_product_iteration(gate: GateEvaluation) -> bool:
+    if gate.next_action not in {"needs_plan_change", "needs_repair", "rejected"}:
+        return False
+    if _gate_only_requires_fresh_human_player_review(gate):
+        return False
+    text = " ".join(
+        [
+            gate.failure_category or "",
+            gate.root_cause,
+            gate.governance_signal,
+            *gate.hard_gate_failures,
+        ]
+    ).lower()
+    return any(
+        marker in text
+        for marker in (
+            "fresh_real_player_review_pass",
+            "final_player",
+            "player_feel",
+            "player experience",
+            "product feel",
+            "commercial_ui",
+            "visual_object",
+            "character_animation",
+            "causal_interaction",
+            "touch_drag",
+            "delivery_failure",
+            "not final",
+            "rework_required",
+        )
+    )
+
+
+_HUMAN_PLAYER_ACCEPTANCE_FAILURES = {
+    "fresh_real_player_review_pass",
+    "human_acceptance_missing",
+    "human_or_target_user_acceptance_missing",
+    "human_or_target_user_review_missing",
+    "human_player_review_missing",
+    "human_review_missing",
+    "player_acceptance_missing",
+    "target_player_acceptance_missing",
+    "target_user_acceptance_missing",
+}
+
+
+def _gate_failure_name(value: str) -> str:
+    return value.split(":", 1)[-1].strip().lower()
+
+
+def _is_human_player_acceptance_failure(value: str) -> bool:
+    name = _gate_failure_name(value)
+    return name in _HUMAN_PLAYER_ACCEPTANCE_FAILURES or name.endswith(
+        (
+            "_human_acceptance_missing",
+            "_target_user_acceptance_missing",
+            "_target_player_acceptance_missing",
+            "_player_acceptance_missing",
+        )
+    )
+
+
+def _gate_only_requires_fresh_human_player_review(gate: GateEvaluation) -> bool:
+    failures = [failure for failure in gate.hard_gate_failures if failure]
+    if failures:
+        return all(_is_human_player_acceptance_failure(failure) for failure in failures)
+    return gate.next_action == "needs_human" and gate.next_state in {
+        "awaiting_acceptance",
+        "waiting_human",
+    }
+
+
+def _clean_retest_operator_ticket(
+    *,
+    work_item: WorkItem,
+    artifact: ArtifactRecord,
+    probe_payload: dict[str, object],
+) -> CollaborationTicket:
+    workspace = str(probe_payload.get("workspace_path") or probe_payload.get("workspace_ref") or "")
+    reason = str(probe_payload.get("reason") or "workspace_write_clean_retest_failed")
+    ticket_hash = _hash_payload(
+        {
+            "mission_id": work_item.mission_id,
+            "work_item_id": work_item.work_item_id,
+            "workspace": workspace,
+            "reason": reason,
+        }
+    )[:12]
+    return CollaborationTicket(
+        ticket_id=f"ticket-nuo-clean-retest-{_slug(work_item.work_item_id)}-{ticket_hash}",
+        mission_id=work_item.mission_id,
+        type="operator_action",
+        role_needed="operator_with_workspace_write_access",
+        why_needed=(
+            "Nuo clean retest confirmed the workspace/write blocker is still active; "
+            "KUN cannot safely resume implementation until the operator restores or "
+            "approves a writable project path."
+        ),
+        context_ref=work_item.work_item_id,
+        risk_if_skipped=(
+            "The mission will keep cycling through failed repair work without fresh "
+            "product changes or clean retest evidence."
+        ),
+        deadline=_now() + timedelta(hours=24),
+        output_contract=(
+            "Restore write access or provide an authorized project workspace, then rerun "
+            f"{work_item.work_item_id} and attach clean retest evidence."
+        ),
+        fallback_policy={
+            "if_unavailable": "continue only governance/replay work; do not deliver final product",
+            "workspace_path": workspace,
+            "probe_failure_reason": reason,
+        },
+        escalation_policy={
+            "on_timeout": "keep mission repairing and do not report final acceptance"
+        },
+        resume_after_response=True,
+        auto_resolvable_by=[work_item.work_item_id],
+        resolution_refs=[artifact.artifact_id],
+        status="open",
+    )
+
+
 def _qi_decision(work_item: WorkItem) -> str:
     text = work_item.expected_output.lower()
+    if any(
+        token in text
+        for token in (
+            "strategy replay",
+            "shadow strategy",
+            "process audit",
+            "same task slice",
+            "重新跑",
+            "影子重跑",
+            "复盘",
+            "过程审查",
+        )
+    ):
+        return "strategy_replay"
     if any(token in text for token in ("merge", "dedupe", "duplicate", "合并", "去重", "重复")):
         return "merge"
     if any(

@@ -80,6 +80,12 @@ packages = ["kun"]
 line-length = 100
 target-version = "py312"
 src = ["kun", "tests"]
+extend-exclude = [
+  "$CODEX_HOME",
+  "artifacts",
+  "msn-rainflow-ad-video",
+  "tmp-rainflow-root",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "B", "C4", "UP", "ASYNC", "S", "SIM", "RUF"]
@@ -104,6 +110,9 @@ ignore = [
 "tests/**" = ["S", "B"]
 "alembic/versions/**" = ["S", "B", "UP"]
 "kun/cli.py" = ["B008"]
+# Dev-time analysis scripts use grep / git / partial-path tools and /tmp logs.
+# Argv is hard-coded, no user input — bandit S6xx and S108 noise here.
+"scripts/multi_dim_test.py" = ["S404", "S607", "S108"]
 
 [tool.ruff.format]
 quote-style = "double"

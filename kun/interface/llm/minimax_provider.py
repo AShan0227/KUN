@@ -49,7 +49,9 @@ class MiniMaxProvider(LLMProvider):
         model_id: str = "minimax-m2.7",
         base_url: str | None = None,
         api_key: str | None = None,
+        tier: ModelTier = "fallback",
     ) -> None:
+        self.tier = tier
         self.model_id = model_id
         self.base_url: str = (
             base_url
@@ -138,9 +140,7 @@ class MiniMaxProvider(LLMProvider):
             else ("length" if choice.get("finish_reason") == "length" else "stop")
         )
 
-        llm_request_total.labels(
-            provider=self.name, model=self.model_id, role="invoke", tenant_id="unknown"
-        ).inc()
+        llm_request_total.labels(provider=self.name, model=self.model_id, role="invoke").inc()
         llm_latency_seconds.labels(provider=self.name, model=self.model_id).observe(latency / 1000)
         llm_cost_usd.labels(provider=self.name, model=self.model_id, tenant_id="unknown").inc(
             cost_actual

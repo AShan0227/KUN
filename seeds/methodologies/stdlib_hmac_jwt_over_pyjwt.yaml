@@ -1,0 +1,118 @@
+topic: stdlib_hmac_jwt_over_pyjwt
+title: 单 secret 内部 issuer-verifier 场景用 stdlib 自实现 JWT, 拒 PyJWT 依赖
+description: |
+  当 JWT 使用场景满足以下条件时, 用 Python stdlib (hmac + hashlib + base64)
+  自实现 HS256 JWT, 不引 PyJWT 依赖:
+
+    1. **单 secret**: 同一进程 / 同一组织 issuer 和 verifier 用同一 secret
+    2. **HS256 即可**: 不需要 RS256 / ES256 / EdDSA (那些用于 multi-issuer)
+    3. **声明集简单**: 只需要 tenant_id / sub / iat / exp, 不需要 jti / nbf / iss / aud
+    4. **可控的 token lifetime**: 你完全控制 issuer + verifier 行为
+
+  这种场景下, stdlib 实现 ~150 行 (encode + decode + 验签 + exp 检查) 完全
+  覆盖, 优于引 PyJWT ~10MB 依赖.
+
+  注意: 当切换到 multi-issuer (公开 verifier / OIDC / federation) 时,
+  必须换 PyJWT 或 python-jose — RS256/ES256 自实现风险高.
+
+trigger:
+  conditions:
+    - JWT 全程在自己的代码里 (没有第三方 issuer / 没有公开 verifier)
+    - HS256 够用 (对称密钥)
+    - 不需要复杂的 claim validation (iss / aud / nbf / jti)
+    - 想减少 supply-chain surface
+
+action:
+  pattern:
+    - rule: 用 stdlib hmac + hashlib + base64 实现 HS256
+      do: |
+        import base64, hashlib, hmac, json, time
+
+        def _b64url_encode(data: bytes) -> bytes:
+            return base64.urlsafe_b64encode(data).rstrip(b"=")
+
+        def encode_jwt(*, tenant_id, sub, secret, ttl_seconds=3600):
+            header = {"alg": "HS256", "typ": "JWT"}
+            payload = {"tenant_id": tenant_id, "sub": sub,
+                       "iat": int(time.time()),
+                       "exp": int(time.time()) + ttl_seconds}
+            h = _b64url_encode(json.dumps(header, sort_keys=True).encode())
+            p = _b64url_encode(json.dumps(payload, sort_keys=True).encode())
+            sig = hmac.new(secret.encode(), h + b"." + p, hashlib.sha256).digest()
+            return (h + b"." + p + b"." + _b64url_encode(sig)).decode()
+      why: |
+        ~30 行覆盖 encode. decode 多 ~50 行 (验签 + exp + 错误映射). 总 <200 行.
+    - rule: 验签必须 hmac.compare_digest 防 timing attack
+      do: |
+        expected = hmac.new(secret.encode(), signing_input, hashlib.sha256).digest()
+        if not hmac.compare_digest(expected, actual):
+            raise JWTDecodeError("signature mismatch")
+      why: |
+        `==` 是非 constant-time, 可被 timing attack. stdlib hmac 提供
+        compare_digest 专门处理.
+    - rule: 拒 non-HS256 alg + 缺 reserved claim + 非 JSON object
+      do: |
+        if header.get("alg") != "HS256":
+            raise JWTDecodeError(f"unsupported alg: {header.get('alg')}")
+        for required in ("tenant_id", "sub", "iat", "exp"):
+            if required not in payload:
+                raise JWTDecodeError(f"missing required claim: {required}")
+      why: |
+        防 alg=none attack (强 HS256), 防 payload 缺字段裸奔.
+    - rule: 单测覆盖 round-trip + tamper + expiry + leeway + 非 HS256 + 缺 claim
+      do: |
+        def test_round_trip(): ...
+        def test_tampered_payload(): ...
+        def test_expired_token(): ...
+        def test_leeway(): ...
+        def test_non_hs256(): ...
+        def test_missing_claim(): ...
+      why: |
+        自实现安全代码必须测全 attack surface, 否则比依赖还危险.
+
+  anti_patterns:
+    - 用 `==` 比较签名 — timing attack
+    - 不验 alg, 接受 `alg: none` — 任意伪造 token
+    - 接受 non-JSON-object payload — 解析 chaos
+    - 不验 exp — token 永不过期
+    - 不测 tamper / expiry / non-HS256 — 安全代码必须测攻击面
+
+rationale: |
+  L6.AuthScaffold 实战: HS256 JWT 实现 ~150 行, 15 测覆盖完整 attack surface.
+
+  ROI 对比:
+    - stdlib: +150 行代码, 0 新依赖, 0 supply-chain risk
+    - PyJWT: +~10MB 依赖, +cryptography (~5MB transitive), supply-chain
+      surface 增加
+
+  切换条件 (未来):
+    - 用 RS256/ES256 (multi-issuer): 切 PyJWT, 本模块作为 wrapper 仍保留
+      JWTDecodeError 类型 (caller 不动)
+    - 需要 jti revocation list / aud / iss 校验: 切 PyJWT
+
+  KUN 当前是内部 control plane, 单 secret HS256 足够. 升级路径明确.
+
+evidence:
+  - source: kun/api/auth/jwt_token.py
+    date: 2026-05-27
+    phase: L6.AuthScaffold
+    notes: |
+      ~150 行实现 encode + decode + 验签 + exp + leeway + reserved-claim 防覆盖.
+      15 unit tests 全绿. 无 PyJWT 依赖.
+
+confidence: 0.85  # 单实战, 但密码学场景广泛适用
+applicability:
+  scopes: [internal_jwt, single_secret_auth, dependency_minimization]
+  do_not_apply_when:
+    - multi-issuer scenario (公开 verifier, OIDC federation)
+    - 需要 RS256 / ES256 / EdDSA
+    - 需要复杂的 claim validation (jti revocation, aud whitelist)
+    - 没有时间写 ~6 个攻击面 test (round-trip / tamper / expiry / leeway /
+      non-HS256 / missing-claim) — 那就用 PyJWT
+
+related_methodologies:
+  - feature_complete_flag_default_off  # AuthScaffold 这俩一起用
+  - engineering_first_with_llm_fallback  # 工程化纪律一致
+
+distilled_from: claude-opus-4-7
+created_at: 2026-05-27

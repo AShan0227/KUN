@@ -184,7 +184,9 @@ TERMINAL_STATUSES: frozenset[MissionStatus] = frozenset(
 _ALLOWED_TRANSITIONS: dict[MissionStatus, frozenset[MissionStatus]] = {
     "intake": frozenset({"info_gap", "planning", "cancelled"}),
     "planning": frozenset({"info_gap", "awaiting_approval", "cancelled", "paused"}),
-    "info_gap": frozenset({"planning", "awaiting_approval", "waiting_human", "cancelled"}),
+    "info_gap": frozenset(
+        {"planning", "awaiting_approval", "waiting_human", "changing_plan", "cancelled"}
+    ),
     "awaiting_approval": frozenset({"planning", "contracted", "cancelled", "paused"}),
     "contracted": frozenset({"queued", "changing_plan", "cancelled"}),
     "queued": frozenset({"running", "blocked", "cancelled", "paused"}),
@@ -353,6 +355,7 @@ class WorkItem(BaseModel):
     retry_budget: int = Field(default=0, ge=0)
     idempotency_key: str | None = None
     expected_output: str = ""
+    phase: str | None = None
     artifact_manifest_ref: str | None = None
     sandbox_ref: str | None = None
     workspace_ref: str | None = None
@@ -544,6 +547,8 @@ class CollaborationTicket(BaseModel):
     fallback_policy: dict[str, Any] = Field(default_factory=dict)
     resume_after_response: bool = True
     output_contract: str = Field(min_length=1)
+    auto_resolvable_by: list[str] = Field(default_factory=list)
+    resolution_refs: list[str] = Field(default_factory=list)
     status: CollaborationTicketStatus = "open"
 
     @model_validator(mode="after")

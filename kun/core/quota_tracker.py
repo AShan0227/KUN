@@ -22,8 +22,11 @@ Env overrides:
   - ``KUN_QUOTA_WARN_TOP`` / ``..._WARN_STRONG`` / ``..._WARN_CHEAP``:
      integer soft-warn threshold.
 
-Process-local state — restart resets the window. For multi-process deployment
-wire a Redis-backed impl later.
+SCALING LIMITATION — Process-local state:
+  - Restart resets the rolling window.
+  - In a multi-replica deployment EACH process counts independently, so users
+    can effectively bypass the cap by spreading load across replicas.
+  - Single-process only until a Redis-backed implementation lands.
 """
 
 from __future__ import annotations

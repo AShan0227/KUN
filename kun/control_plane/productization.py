@@ -1371,7 +1371,12 @@ class ProductizationDogfoodRunner:
             "subsystem": subsystem,
             "policy_id": policy.policy_id,
             "capability_profile_refs": policy.capability_profile_refs,
+            "directive_ids": [directive.directive_id for directive in policy.directives],
             "directive_categories": sorted({directive.category for directive in policy.directives}),
+            "behavioral_contract": (
+                "productization runner consumed the production runtime capability policy "
+                "for this subsystem and recorded the executable directive receipt"
+            ),
         }
         artifact = ArtifactRecord(
             artifact_id=f"artifact-{_slug(work_item.work_item_id)}-capability-policy",
@@ -1386,6 +1391,9 @@ class ProductizationDogfoodRunner:
             supports=[
                 "runtime_capability_binding",
                 "capability_execution_policy",
+                "capability_policy_consumed",
+                "required_capabilities_executed",
+                "capability_behavior_receipt",
                 subsystem,
                 *policy.capability_profile_refs,
             ],
@@ -1406,7 +1414,14 @@ def run_productization_dogfood_execution(
     """Run queued productization dogfood work items until blocked or deliverable."""
 
     active_runner = runner or ProductizationDogfoodRunner(control_plane=control_plane)
-    run_refs: list[str] = []
+    run_refs: list[str] = [
+        run.run_id
+        for run in control_plane.runs.values()
+        if (work_item := control_plane.work_items.get(run.work_item_id)) is not None
+        and work_item.mission_id == mission_id
+        and work_item.status == "done"
+        and run.exit_status == "succeeded"
+    ]
     ab_gate_ref: str | None = None
     for _ in range(max_steps):
         run = control_plane.run_next_ready(mission_id=mission_id, runner=active_runner)
@@ -1504,6 +1519,9 @@ def finalize_productization_dogfood_delivery(
         primary_artifact_ref=artifact.artifact_id,
         evidence_refs=evidence_refs or [artifact.artifact_id],
         review_refs=list(audit.recovery_bundle.open_ticket_ids),
+        rollback_refs=(
+            list(audit.recovery_bundle.artifact_manifest_refs) or [artifact.artifact_id]
+        ),
         created_by=actor,
         content_hash=_hash_payload(
             {
@@ -1516,7 +1534,11 @@ def finalize_productization_dogfood_delivery(
     )
     _upsert_artifact_manifest(control_plane, manifest)
     mission = mission.model_copy(
-        update={"artifact_manifest_refs": [*mission.artifact_manifest_refs, manifest.manifest_id]}
+        update={
+            "artifact_manifest_refs": list(
+                dict.fromkeys([*mission.artifact_manifest_refs, manifest.manifest_id])
+            )
+        }
     )
     control_plane.missions[mission_id] = mission
     if control_plane.store is not None:
@@ -2393,6 +2415,7 @@ def _successful_dogfood_work_item_result(
         artifact_refs=[artifact.artifact_id],
         primary_artifact_ref=artifact.artifact_id,
         evidence_refs=[artifact.artifact_id],
+        rollback_refs=[artifact.artifact_id],
         created_by=work_item.owner,
         content_hash=_hash_payload({"artifact": artifact.artifact_id, "subsystem": subsystem}),
     )

@@ -11,14 +11,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Iterable
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from kun.control_plane.capability_execution import CapabilityExecutionPolicy
 from kun.control_plane.v6 import ArtifactRecord, ExecutionContract, TaskPlan, WorkItem
+from kun.control_plane.work_item_governance import (
+    is_pure_governance_work_item,
+    is_workspace_resource_lock_ref,
+    normalize_resource_lock_ref,
+    work_item_requires_workspace_boundary,
+)
 from kun.control_plane.workspace_snapshot import create_workspace_snapshot
 
 if TYPE_CHECKING:
@@ -34,6 +42,28 @@ class WorkItemActivation(BaseModel):
     artifacts: list[ArtifactRecord] = Field(default_factory=list)
 
 
+def _resolve_current_plan(control_plane: InMemoryControlPlane, mission_id: str) -> TaskPlan | None:
+    """Resolve a mission's current TaskPlan (audit F083).
+
+    ``control_plane.task_plans`` is keyed by ``plan_id`` but ``mission.current_plan_version``
+    holds a ``version`` string, so the old ``task_plans.get(current_plan_version)`` lookup
+    almost always returned ``None`` — silently degrading skill/external-ref matching to the
+    work-item's own refs only. Match by (mission_id, version) instead.
+    """
+    mission = control_plane.missions[mission_id]
+    target_version = mission.current_plan_version
+    if not target_version:
+        return None
+    return next(
+        (
+            plan
+            for plan in control_plane.task_plans.values()
+            if plan.mission_id == mission_id and plan.version == target_version
+        ),
+        None,
+    )
+
+
 def activate_work_item_features(
     *,
     control_plane: InMemoryControlPlane,
@@ -45,41 +75,46 @@ def activate_work_item_features(
     """Attach default runtime capabilities and execution safeguards to a work item."""
 
     mission = control_plane.missions[work_item.mission_id]
-    task_plan = control_plane.task_plans.get(mission.current_plan_version or "")
+    task_plan = _resolve_current_plan(control_plane, work_item.mission_id)
     contract = control_plane.contracts.get(mission.execution_contract_ref or "")
     capability_refs = _merge_unique(
         work_item.required_capability_refs,
         capability_policy.capability_profile_refs,
     )
-    skill_refs = _merge_unique(work_item.skill_refs, _match_skill_refs(mission.objective, task_plan, work_item))
+    skill_refs = _merge_unique(
+        work_item.skill_refs, _match_skill_refs(mission.objective, task_plan, work_item)
+    )
     external_refs = _merge_unique(
         work_item.external_source_refs,
         _external_source_refs(task_plan=task_plan, work_item=work_item),
     )
 
     workspace_path = _workspace_path(contract)
+    needs_workspace_boundary = work_item_requires_workspace_boundary(work_item)
+    existing_resource_locks = _activation_resource_locks(work_item)
     resource_locks = _merge_unique(
-        work_item.resource_locks,
+        existing_resource_locks,
         _resource_locks(work_item=work_item, workspace_path=workspace_path),
     )
     checkpoint_artifact = _build_checkpoint_artifact(
         control_plane=control_plane,
         work_item=work_item,
-        workspace_path=workspace_path,
+        workspace_path=workspace_path if needs_workspace_boundary else None,
         actor=actor,
         observed_at=observed_at,
     )
-    workspace_ref = work_item.workspace_ref
+    workspace_ref = _normalize_workspace_ref(work_item.workspace_ref)
     sandbox_ref = work_item.sandbox_ref
     checkpoint_refs = list(work_item.checkpoint_refs)
     rollback_refs = list(work_item.rollback_refs)
     artifacts: list[ArtifactRecord] = []
+    if workspace_path and needs_workspace_boundary:
+        workspace_ref = workspace_ref or f"workspace://{workspace_path}"
+        sandbox_ref = sandbox_ref or f"sandbox://{work_item.mission_id}/{work_item.work_item_id}"
     if checkpoint_artifact is not None:
         artifacts.append(checkpoint_artifact)
         checkpoint_refs = _merge_unique(checkpoint_refs, [checkpoint_artifact.artifact_id])
         rollback_refs = _merge_unique(rollback_refs, [checkpoint_artifact.artifact_id])
-        workspace_ref = workspace_ref or f"workspace://{workspace_path}"
-        sandbox_ref = sandbox_ref or f"sandbox://{work_item.mission_id}/{work_item.work_item_id}"
 
     activation_artifact = _activation_artifact(
         work_item=work_item,
@@ -183,7 +218,9 @@ def _match_skill_refs(
             refs.append("writing-markdown")
         return _merge_unique(refs)
     except Exception:
-        return []
+        if os.getenv("KUN_CONTROL_PLANE_STRICT_SKILL_REGISTRY", "0") == "1":
+            raise
+        return ["skill-registry-unavailable"]
 
 
 def _external_source_refs(*, task_plan: TaskPlan | None, work_item: WorkItem) -> list[str]:
@@ -211,18 +248,23 @@ def _external_source_refs(*, task_plan: TaskPlan | None, work_item: WorkItem) ->
 
 def _resource_locks(*, work_item: WorkItem, workspace_path: str | None) -> list[str]:
     locks: list[str] = []
-    if workspace_path and work_item.type in {
-        "execution",
-        "test",
-        "merge",
-        "repair",
-        "retest",
-        "rollback",
-    }:
-        locks.append(f"workspace:{workspace_path}")
+    if workspace_path and work_item_requires_workspace_boundary(work_item):
+        locks.append(normalize_resource_lock_ref(f"workspace:{workspace_path}"))
     if work_item.type in {"merge", "rollback"}:
         locks.append(f"mission:{work_item.mission_id}")
     return locks
+
+
+def _activation_resource_locks(work_item: WorkItem) -> list[str]:
+    locks: list[str] = []
+    for value in work_item.resource_locks:
+        normalized = normalize_resource_lock_ref(value)
+        if not normalized:
+            continue
+        if is_pure_governance_work_item(work_item) and is_workspace_resource_lock_ref(normalized):
+            continue
+        locks.append(normalized)
+    return _merge_unique(locks)
 
 
 def _workspace_path(contract: ExecutionContract | None) -> str | None:
@@ -246,6 +288,14 @@ def _workspace_path(contract: ExecutionContract | None) -> str | None:
         if found:
             return found
     return None
+
+
+def _normalize_workspace_ref(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if value.startswith("workspace://"):
+        return value
+    return f"workspace://{Path(value).expanduser().resolve()}"
 
 
 def _find_first_path(value: Any, keys: Iterable[str]) -> str | None:

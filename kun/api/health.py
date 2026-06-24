@@ -96,12 +96,12 @@ async def ready() -> dict[str, Any]:
     except Exception as e:
         checks["minio"] = f"down: {e!r}"
 
-    # Codex CLI (subscription path)
+    # Codex CLI (subscription path) — "absent" is degraded; routing will fall
+    # through but the user explicitly chose CLI OAuth so a missing CLI is real.
     import shutil
 
     checks["codex_cli"] = "ok" if shutil.which("codex") else "absent"
-    # Claude Code CLI (subscription path)
     checks["claude_cli"] = "ok" if shutil.which("claude") else "absent"
 
-    overall = "ok" if all(v in {"ok", "absent"} for v in checks.values()) else "degraded"
+    overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
     return {"status": overall, "checks": checks}

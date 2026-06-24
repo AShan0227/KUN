@@ -1,0 +1,68 @@
+topic: large_design_refactor
+title: 大规模设计重构 — 文档先行模式
+description: |
+  当架构层需要同时改多个 ADR、跨多个抽象层、文档与代码冲突已经累积时，
+  采用"文档先于代码"的重构模式，避免改 code 改一半再回头改 doc。
+
+trigger:
+  conditions:
+    - 同时改 ≥ 3 个 ADR
+    - 架构变化跨 ≥ 2 个抽象层（如同时改 agent 角色 + 数据脊柱）
+    - 审计发现"愿景 vs 实现"分裂
+    - 多次实施被同样的概念冲突阻断
+  signals_from:
+    - audit_report (RCDH L0 命中)
+    - supervisor.cross_layer_conflict_detected
+    - human directive: "整理为最终方案"
+
+action:
+  steps:
+    - step: 1
+      do: 把所有架构决策固化为新 ADR (或修订旧 ADR)
+      why: 让"决定什么"先写下来，避免边改边变
+    - step: 2
+      do: ADR 按依赖顺序写（被引用的 → 引用别人的）
+      why: 避免悬空引用 / "待补充"占位 / 技术债
+    - step: 3
+      do: 主文档不完全重写，加 §0 修订摘要章节 + 关键章节顶部退役标记
+      why: 保留历史价值 + 比 fork v2 更可维护
+    - step: 4
+      do: 每对相关 ADR 配对 commit
+      why: review 一组就看全局，commit 数减半
+    - step: 5
+      do: 全部 ADR 落定后才开始动 code
+      why: 避免代码改了文档没跟，重新进入分裂状态
+  anti_patterns:
+    - 边改 code 边写 ADR
+    - 把所有改动塞一个 mega commit
+    - 完全重写 1000+ 行的旧文档
+
+rationale: |
+  架构重构最大风险是"概念漂移" — 改 code 时发现概念不清，回头改 doc；
+  改 doc 时又发现 code 不支持，回头改 code。来回三次就累积技术债。
+  文档先行让所有概念决策一次性沉淀下来，code 阶段成为"机械实施"。
+
+evidence:
+  - source: docs/dev_logs/phase-0-documentation.md
+    date: 2026-05-26
+    phase: Phase_0
+    outcome: success
+    notes: |
+      8 份文档 1.5 小时落定，5 个 commit。后续 L1 工程化阶段
+      不再有"等等这个概念是什么"的暂停。
+
+confidence: 0.6  # cold start, 单次成功
+applicability:
+  scopes: [architecture, multi-agent_systems, large_codebases]
+  do_not_apply_when:
+    - 改动只涉及单个模块内部
+    - 改动是 bug fix 而非设计变更
+    - 改动小于 100 行
+
+related_methodologies:
+  - adr_authoring
+  - incremental_doc_migration
+  - paired_commit
+
+distilled_from: claude-opus-4-7  # 工程能力源
+created_at: 2026-05-26

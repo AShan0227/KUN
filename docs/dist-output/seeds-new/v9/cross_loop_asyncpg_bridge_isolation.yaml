@@ -1,0 +1,43 @@
+topic: engineering-discipline
+title: "bridge 跨 event loop 用 asyncpg 必须 thread-local engine"
+description: |
+  Dogfood v10 暴露的真生产 bug: V7 mission_director_v7_bridge 在 thread 里
+  asyncio.run(_emit_async()), 新 event loop 复用了 kun.core.db 全局 sessionmaker
+  里的 asyncpg connections (在外层 loop 创建的) → "Future attached to a
+  different loop" RuntimeError. 解决方案: bridge thread 必须用 thread-local
+  engine + sessionmaker, dispose 后退出.
+
+trigger:
+  - condition: "代码里有 threading.Thread + asyncio.run() + DB write"
+  - condition: "DB driver 是 asyncpg (或 aiomysql 等异步)"
+  - condition: "外层进程也有 asyncpg 连接 (即 sessionmaker 已在外层 loop 初始化)"
+
+action:
+  - "thread 内的 emit 函数 接受 use_thread_local_engine 参数"
+  - "True → create_async_engine(pg_dsn, pool_size=1, max_overflow=0) → use → engine.dispose()"
+  - "False (默认) → 走 kun.core.db.session_scope (caller 控制 loop)"
+  - "**不要**在 thread 里 reset kun.core.db 全局 — 会污染 outer process"
+
+anti_pattern:
+  - "在 fire-and-forget thread 里复用全局 sessionmaker"
+  - "thread 内 reset 全局 db globals 想"修复" — 真在污染 outer caller"
+  - "全局 sessionmaker 在多 event loop 间共享 → race condition"
+
+evidence:
+  - dogfood: "dogfood v10 第一跑 step2 → mission_alignment_reviews +0 (silent fail)"
+  - dogfood: "dogfood v10 第二跑 (reset 全局) → step3 ensemble emit broken"
+  - dogfood: "dogfood v10 第三跑 (thread-local engine) → 4/4 X.B 表 +1 全过"
+  - source: "kun/integration/mission_director_v7_bridge.py:_emit_v7_review_async"
+
+confidence: high
+applicability:
+  - "所有 fire-and-forget DB write 从 sync caller / 不同 loop"
+  - "V6 daemon → V7 service bridge 模式"
+  - "类似 emit_v7_review / emit_v7_lifecycle / emit_v7_auditor 三类 bridge"
+
+related_methodologies:
+  - "production_path_wiring_audit_before_claim"
+  - "real_pg_check_constraint_test_required"
+
+distilled_from: dogfood-v10
+created_at: "2026-05-28"
