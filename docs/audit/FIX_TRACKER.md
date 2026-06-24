@@ -1,10 +1,9 @@
 # 鲲 审查问题修复 · 进度看板
 
-来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md)
+来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md) / [LOOP2_PLAN.md](LOOP2_PLAN.md)
 
-**总计 173 项** — ✅done 77 ｜ ⏸deferred 1 ｜ ⛔blocked 0 ｜ 📐needs-design 95 ｜ ⬜pending 0
+**总计 173 项** — ✅done 78 ｜ ⏸deferred 1 ｜ 📐needs-design 94 ｜ 🔍needs-review 0 ｜ ⬜pending 0
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8
-**剩余 pending+fix：0**（high 0 / medium 0 / low 0）；剩余 pending(全部)：0
 
 | id | sev | class | 状态 | 标题 | 文件 |
 |---|---|---|---|---|---|
@@ -138,7 +137,7 @@
 | F116 | medium | fix | 📐 | e2e_rsi_demo.py 是半剧本：链路中段与验证证据写死；fixture_only 强制标注未实装 | `scripts/e2e_rsi_demo.py:195` |
 | F117 | medium | fix | 📐 | RCDH 诊断引擎与 heavy-drift 后续动作未接线：rsi_trigger 只是落库字符串 | `kun/governance/rcdh.py:303` |
 | F118 | medium | fix | ✅ | 锁定的运行时依赖含 7 个已知 CVE(starlette/urllib3/idna/mako) | `uv.lock:1` |
-| F119 | medium | fix | 📐 | .env.example 与代码实际读取的环境变量严重脱节(约 50 个未文档化) | `.env.example:1` |
+| F119 | medium | fix | ✅ | .env.example 与代码实际读取的环境变量严重脱节(约 50 个未文档化) | `.env.example:1` |
 | F120 | medium | fix | 📐 | Dockerfile: --frozen 失败时静默回退到非锁定安装 + 镜像缺 seeds/ 目录 | `Dockerfile:19` |
 | F121 | medium | fix | ✅ | 定价表过时: Opus 4.7 高估 3 倍、Haiku 4.5 低估 4 倍, cache 写入未计费 | `kun/interface/llm/anthropic_provider.py:42-58` |
 | F122 | medium | fix | ✅ | temperature 修复用硬编码子串黑名单, opus-4-8/后续模型不覆盖且静默丢参 | `kun/interface/llm/anthropic_provider.py:151-154` |

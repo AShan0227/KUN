@@ -1549,9 +1549,9 @@
       "detail": "grep 全部 KUN_ 环境变量字面量 + kun/core/config.py 的 pydantic-settings 字段，与 .env.example 对比：代码读取但完全无文档的变量约 50 个，包括 (a) 整个 V7 特性开关族 ~23 个(KUN_V7_TRIFECTA_*、KUN_V7_ENSEMBLE_*、KUN_V7_METHODOLOGY_*、KUN_V7_AUDITOR_* 等)——这些是 RSI 闭环的核心开关，新部署者无从知道默认开还是关；(b) KUN_AUTH_ENABLED/KUN_AUTH_JWT_SECRET/KUN_AUTH_TOKEN_TTL_SECONDS(config.py:106-108)——而且 .env.example:134-142 的 auth 注释还停留在'没有任何真实 auth'的旧状态，与 kun/api/auth/(jwt_token.py/middleware.py/rls.py 已存在)和 ADR-019 的实现矛盾，属于会误导安全决策的过期文档；(c) KUN_EXTERNAL_SUPERVISOR_* 6 个(ADR-023)；(d) KUN_BUDGET_WARN_FRACTION、KUN_TASK_MAX_DURATION_SEC、KUN_RESULT_OFFLOAD_THRESHOLD_BYTES、KUN_V6_DAEMON_STATE、KUN_LOCAL_STATE_ROOT、KUN_REPO_ROOT、各 RUNNER_OWNER、KUN_FRONTIER50_LIVE_* 等运维相关变量。对一个目标是'自运营'的系统，配置面文档漂移会直接放大排障成本，建议写个 CI 检查脚本 diff 两边。",
       "evidence": "代码中存在但 .env.example 缺失(节选): KUN_AUTH_ENABLED, KUN_AUTH_JWT_SECRET, KUN_V7_TRIFECTA_ENABLED, KUN_V7_ENSEMBLE_TIERS, KUN_V7_METHODOLOGY_DIR, KUN_EXTERNAL_SUPERVISOR_ENABLED, KUN_LOCAL_STATE_ROOT, KUN_V6_DAEMON_STATE; 同时 .env.example:135 仍写 \"No real auth is enforced yet\" 而 config.py:106 已有 auth_enabled/auth_jwt_secret + kun/api/auth/ 模块",
       "source": "infra-deps",
-      "status": "needs-design",
-      "commit": "df2704d",
-      "notes": ".env.example 脱节约 50 变量(V7 开关族 ~23 + auth 三件)；并入 docs/audit/proposals/ci-and-supplychain.md。"
+      "status": "done",
+      "commit": "daa8d2b",
+      "notes": "[Loop-2 #2] .env.example 补全：从 config 字段 + 全仓 grep KUN_ 汇总(含 V7 开关族/auth/external-supervisor/budget/quota/codex/skill-exec)，逐项注释+安全默认，auth 段标\"生产必开\"；新增覆盖测试(每个 Settings 字段有键 + auth 生产标注 + 行格式合法)。"
     },
     {
       "id": "F120",
