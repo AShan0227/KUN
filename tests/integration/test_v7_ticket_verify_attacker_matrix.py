@@ -54,7 +54,7 @@ from kun.integration.collab_ticket_verifier import (
     InMemoryQueueTicketVerifier,
 )
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 def _make_ticket(

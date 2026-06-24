@@ -22,6 +22,8 @@ from kun.governance.production_path_traceability import (
     check_symbol_reachable,
 )
 
+pytestmark = pytest.mark.integration
+
 # ============================================================
 # X.I core: production-path-traceability primitive
 # ============================================================

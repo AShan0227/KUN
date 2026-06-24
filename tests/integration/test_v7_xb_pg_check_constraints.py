@@ -44,7 +44,7 @@ from kun.core.orm import (
 )
 from sqlalchemy.exc import IntegrityError
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 # Audit F068: substrings (lowercased) that indicate PG/Docker is simply not

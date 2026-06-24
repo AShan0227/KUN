@@ -39,6 +39,8 @@ from kun.control_plane import (
 )
 from kun.core.orm import MissionAlignmentReviewRow
 
+pytestmark = pytest.mark.integration
+
 # ============================================================
 # V6 fixture — minimal "product_development" mission ready for review
 # ============================================================

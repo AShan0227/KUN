@@ -87,3 +87,4 @@
 2026-06-24 [Loop-2 #1] F035a 诚实子集 ✅ — 删 SkillManifest 3 死字段 + 订正 shell-exec 描述(非 per-skill allowlist) + 回归测试；隔离半/wire-vs-strip 仍 needs-design
 2026-06-24 [Loop-2 #2] F119 ✅ — .env.example 补全 ~50 个未文档化变量(V7 开关族/auth/external-supervisor/budget/quota/codex/skill-exec)+auth 生产标注+覆盖测试
 2026-06-24 [Loop-2 #3] F098 去重子集 ✅ — _terms 抽到 kun/context/text_terms.py 单一源(importance+packer 共用)+回归测试；ImportanceScorer 接线 vs 删除仍 needs-design(按孤儿处置=接线非删)
+2026-06-24 [Loop-2 #4] F111 ✅ — 20 个 integration 文件补 integration/e2e marker(含 7 个 asyncio-only 改 list)+静态守卫测试;-m 'not integration and not e2e' 现真正隔离离线单测子集

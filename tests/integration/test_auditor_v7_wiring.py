@@ -22,6 +22,8 @@ import pytest
 from kun.agents.gate.service import GateService
 from kun.core.orm import AuditorReportRow, LifecycleTransitionRow
 
+pytestmark = pytest.mark.integration
+
 
 def _passing_inputs() -> dict[str, Any]:
     return {

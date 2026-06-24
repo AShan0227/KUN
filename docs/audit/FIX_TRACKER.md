@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md) / [LOOP2_PLAN.md](LOOP2_PLAN.md)
 
-**总计 173 项** — ✅done 78 ｜ ⏸deferred 1 ｜ 📐needs-design 94 ｜ 🔍needs-review 0 ｜ ⬜pending 0
+**总计 173 项** — ✅done 79 ｜ ⏸deferred 1 ｜ 📐needs-design 93 ｜ 🔍needs-review 0 ｜ ⬜pending 0
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -129,7 +129,7 @@
 | F108 | medium | fix | 📐 | 主工作区 WS 无重连机制, 消息数组无上限增长; 后端重启后 UI 永久停在 '未连接' | `frontend/src/app/page.tsx:51-66` |
 | F109 | medium | fix | 📐 | shell-exec/python-exec 沙箱仅为 cwd 目录边界且可被调用方 cwd 放大，无进程隔离 | `kun/skills/sandbox.py:43-63` |
 | F110 | medium | fix | 📐 | curl|bash 一键部署无完整性校验并安装常驻 daemon | `scripts/one_click_deploy.sh:5` |
-| F111 | medium | fix | 📐 | integration marker 覆盖率 6/26，marker 隔离机制形同虚设 | `tests/integration/` |
+| F111 | medium | fix | ✅ | integration marker 覆盖率 6/26，marker 隔离机制形同虚设 | `tests/integration/` |
 | F112 | medium | fix | 📐 | 六组循环依赖靠延迟 import/TYPE_CHECKING 压制，engineering↔skills 为模块级硬 | `/Users/petrarain/鲲/kun/skills/calibration.py:39` |
 | F113 | medium | fix | 📐 | daemon.py 6,927 行：12 个类 5 类职责堆在单文件，属真实复杂度但缺模块边界 | `/Users/petrarain/鲲/kun/control_plane/daemon.py:1` |
 | F114 | medium | fix | 📐 | evaluation/ 446 行 L6 评测框架生产调用方为零，仅测试文件引用 | `/Users/petrarain/鲲/kun/evaluation/__init__.py:1` |

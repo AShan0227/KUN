@@ -23,6 +23,8 @@ from kun.integration.plan_review_db import (
     write_plan_review_outcome,
 )
 
+pytestmark = pytest.mark.integration
+
 
 class _CaptureSession:
     """Records add()'d rows and exposes them for assertion."""

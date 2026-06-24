@@ -62,7 +62,7 @@ def _ollama_ok() -> None:
         pytest.skip(f"Ollama+Qwen unavailable: {reason}")
 
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 
 # ============================================================

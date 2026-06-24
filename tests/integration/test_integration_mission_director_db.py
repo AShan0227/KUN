@@ -37,6 +37,8 @@ from kun.integration.mission_director_db import (
     write_plan_change_proposal,
 )
 
+pytestmark = pytest.mark.integration
+
 # ============================================================
 # Fake session helper (same pattern as plan_review_db tests)
 # ============================================================

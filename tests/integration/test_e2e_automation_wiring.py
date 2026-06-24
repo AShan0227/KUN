@@ -30,6 +30,8 @@ from kun.interface.automation.shopify import (
     ShopifyBrowserAdapter,
 )
 
+pytestmark = pytest.mark.e2e
+
 # ---- Phase 1 fakes ----
 
 

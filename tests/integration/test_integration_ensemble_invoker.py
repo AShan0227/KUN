@@ -42,6 +42,8 @@ from kun.interface.llm.ensemble import (
 )
 from kun.interface.llm.stub_provider import StubProvider
 
+pytestmark = pytest.mark.integration
+
 # ============================================================
 # Fake session helper (same pattern as previous Phase X.B test files)
 # ============================================================

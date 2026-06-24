@@ -51,7 +51,7 @@ from kun.integration.capability_lifecycle_db import (
     make_lifecycle_transition_emitter,
 )
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 
 @pytest.fixture(autouse=True)

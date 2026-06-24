@@ -29,6 +29,8 @@ from kun.integration.auditor_report_db import (
     write_auditor_report,
 )
 
+pytestmark = pytest.mark.integration
+
 # ============================================================
 # Fake session helper
 # ============================================================

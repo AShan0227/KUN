@@ -1445,9 +1445,9 @@
       "detail": "pyproject.toml 定义了 integration/e2e marker 并开了 --strict-markers，但 tests/integration/ 下 26 个文件中 20 个没有打 pytest.mark.integration(包括 test_v7_xb_pg_check_constraints.py、test_v7_checkpoint_crash_resume_e2e.py 等真依赖 PG 的文件)。实测 `pytest -m \"not integration and not e2e\"` 仍选中 2152/2172 个测试——意味着想用 marker 在无 Docker 环境跑'纯单测子集'是做不到的，上面 13 个失败测试照样被选中。当前事实上的隔离手段只剩目录路径(tests/unit vs tests/integration)，建议要么在 tests/integration/conftest.py 里用 collection hook 统一打 marker，要么补齐 pytestmark。",
       "evidence": "grep -L 'mark.integration' tests/integration/test_*.py → 20 个文件; pytest -m 'not integration and not e2e' --collect-only → 2152/2172 selected",
       "source": "test-health",
-      "status": "needs-design",
-      "commit": "df2704d",
-      "notes": "integration marker 20/26 缺失致 -m 隔离失效(CI 目录分层 OK)；并入 docs/audit/proposals/ci-and-supplychain.md。"
+      "status": "done",
+      "commit": "043da71",
+      "notes": "[Loop-2 #4] 给 20 个 integration 文件补 integration/e2e marker(13 个无 pytestmark→加；7 个原 pytestmark=asyncio→改 list 加 integration/e2e)+ tests/unit 静态守卫测试(每个 integration 文件必带 marker)。验证：pytest -m \"not integration and not e2e\" 不再选中 integration 目录任何用例,strict-markers 通过。"
     },
     {
       "id": "F112",

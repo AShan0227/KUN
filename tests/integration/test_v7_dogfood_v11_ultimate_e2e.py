@@ -72,7 +72,7 @@ from kun.integration.ensemble_invoker import (
 )
 from kun.integration.mission_director_db import write_mission_review
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 
 @pytest.fixture(autouse=True)

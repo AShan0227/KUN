@@ -46,6 +46,8 @@ import pytest
 from kun.engineering.long_task_orchestrator import LongTaskOrchestrator
 from kun.engineering.long_task_runtime_bundle import LongTaskRuntimeBundle
 
+pytestmark = pytest.mark.integration
+
 PRODUCTION_ENTRY_PATH = (
     Path(__file__).resolve().parent.parent.parent
     / "kun"

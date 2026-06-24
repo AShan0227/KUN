@@ -32,6 +32,8 @@ from kun.integration.capability_lifecycle_db import (
     write_lifecycle_transition,
 )
 
+pytestmark = pytest.mark.integration
+
 # ============================================================
 # Fake session helper
 # ============================================================

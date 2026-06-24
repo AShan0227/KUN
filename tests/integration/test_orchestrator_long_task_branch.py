@@ -10,9 +10,12 @@ helper + the integration plumbing at the unit boundary.
 
 from __future__ import annotations
 
+import pytest
 from kun.agents.director.anchor import GoalAnchor
 from kun.datamodel.task import Owner, TaskMeta, TaskRef, TaskSpec
 from kun.engineering.orchestrator import _is_long_task_branch_eligible
+
+pytestmark = pytest.mark.integration
 
 
 def _meta(

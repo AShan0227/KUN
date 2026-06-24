@@ -29,7 +29,7 @@ from kun.integration.checkpoint_db import (
     make_checkpoint_writer,
 )
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 
 @pytest.fixture(autouse=True)

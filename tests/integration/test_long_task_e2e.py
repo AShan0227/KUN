@@ -42,6 +42,8 @@ from kun.agents.executor.exec_loop import (
 from kun.agents.supervisor.plan_review_heartbeat import PlanReviewHeartbeat
 from kun.agents.supervisor.plan_review_service import PlanReviewService
 
+pytestmark = pytest.mark.e2e
+
 # ============================================================
 # Fakes for the e2e scenario
 # ============================================================

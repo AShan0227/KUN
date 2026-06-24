@@ -24,6 +24,8 @@ import pytest
 from kun.agents.gate.service import GateService
 from kun.core.orm import LifecycleTransitionRow
 
+pytestmark = pytest.mark.integration
+
 # ============================================================
 # Fixtures: passing inputs to GateService.admit
 # ============================================================
