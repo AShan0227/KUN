@@ -394,7 +394,7 @@
       "source": "gov-sec-watch",
       "status": "needs-design",
       "commit": "eed70fd",
-      "notes": "ADR-023 独立进程+fail-close 未落地；外部监督落地合并方案见 docs/audit/proposals/external-supervisor.md（选项A 同进程 fail-close 守卫 / 选项B 真独立进程 + 裁决强制力接线点）。关联 F047。"
+      "notes": "ADR-023 独立进程+fail-close 未落地；外部监督落地合并方案见 docs/audit/proposals/external-supervisor.md（选项A 同进程 fail-close 守卫 / 选项B 真独立进程 + 裁决强制力接线点）。关联 F047。 [Loop-2 TIER-2 #4] enforce 落地草案见 docs/audit/proposals/drafts/external-supervisor-enforce-plan.md(fail-close 启动守卫/critique hook/advisory→enforce 灰度/F151 抗注入硬化:输入隔离+解析 fail-closed+动作白名单/独立进程 runner),待人审。维持 needs-design/needs-review。"
     },
     {
       "id": "F031",
@@ -407,7 +407,7 @@
       "source": "gov-sec-watch",
       "status": "needs-design",
       "commit": "eed70fd",
-      "notes": "Mode A/B/自嗨/Pool 死代码；外部监督落地合并方案见 docs/audit/proposals/external-supervisor.md（选项A 同进程 fail-close 守卫 / 选项B 真独立进程 + 裁决强制力接线点）。关联 F047。"
+      "notes": "Mode A/B/自嗨/Pool 死代码；外部监督落地合并方案见 docs/audit/proposals/external-supervisor.md（选项A 同进程 fail-close 守卫 / 选项B 真独立进程 + 裁决强制力接线点）。关联 F047。 [Loop-2 TIER-2 #4] enforce 落地草案见 docs/audit/proposals/drafts/external-supervisor-enforce-plan.md(fail-close 启动守卫/critique hook/advisory→enforce 灰度/F151 抗注入硬化:输入隔离+解析 fail-closed+动作白名单/独立进程 runner),待人审。维持 needs-design/needs-review。"
     },
     {
       "id": "F032",
@@ -420,7 +420,7 @@
       "source": "gov-sec-watch",
       "status": "needs-design",
       "commit": "eed70fd",
-      "notes": "监督裁决 advisory-only 无强制力；外部监督落地合并方案见 docs/audit/proposals/external-supervisor.md（选项A 同进程 fail-close 守卫 / 选项B 真独立进程 + 裁决强制力接线点）。关联 F047。"
+      "notes": "监督裁决 advisory-only 无强制力；外部监督落地合并方案见 docs/audit/proposals/external-supervisor.md（选项A 同进程 fail-close 守卫 / 选项B 真独立进程 + 裁决强制力接线点）。关联 F047。 [Loop-2 TIER-2 #4] enforce 落地草案见 docs/audit/proposals/drafts/external-supervisor-enforce-plan.md(fail-close 启动守卫/critique hook/advisory→enforce 灰度/F151 抗注入硬化:输入隔离+解析 fail-closed+动作白名单/独立进程 runner),待人审。维持 needs-design/needs-review。"
     },
     {
       "id": "F033",
@@ -1499,7 +1499,7 @@
       "source": "rsi-claims",
       "status": "needs-design",
       "commit": "09e8fbb",
-      "notes": "External Supervisor 独立进程占位 stub、Mode A/B 零调用；引擎/组件就绪但生产零接线，并入 docs/audit/proposals/external-supervisor.md（接通对应环时一并落地，落地前不宣称可用）。"
+      "notes": "External Supervisor 独立进程占位 stub、Mode A/B 零调用；引擎/组件就绪但生产零接线，并入 docs/audit/proposals/external-supervisor.md（接通对应环时一并落地，落地前不宣称可用）。 [Loop-2 TIER-2 #4] enforce 落地草案见 docs/audit/proposals/drafts/external-supervisor-enforce-plan.md(fail-close 启动守卫/critique hook/advisory→enforce 灰度/F151 抗注入硬化:输入隔离+解析 fail-closed+动作白名单/独立进程 runner),待人审。维持 needs-design/needs-review。"
     },
     {
       "id": "F116",
@@ -1967,7 +1967,7 @@
       "source": "gov-sec-watch",
       "status": "needs-design",
       "commit": "a4e75a9",
-      "notes": "External Supervisor 可被提示注入+解析 fail-open+自由文本覆盖动作；并入 docs/audit/proposals/security-posture.md。"
+      "notes": "External Supervisor 可被提示注入+解析 fail-open+自由文本覆盖动作；并入 docs/audit/proposals/security-posture.md。 [Loop-2 TIER-2 #4] enforce 落地草案见 docs/audit/proposals/drafts/external-supervisor-enforce-plan.md(fail-close 启动守卫/critique hook/advisory→enforce 灰度/F151 抗注入硬化:输入隔离+解析 fail-closed+动作白名单/独立进程 runner),待人审。维持 needs-design/needs-review。"
     },
     {
       "id": "F152",
