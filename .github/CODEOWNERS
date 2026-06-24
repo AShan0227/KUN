@@ -1,0 +1,23 @@
+# Code owners for the KUN repository.
+#
+# Audit F134: establishes review ownership so a branch-protection rule of the form
+# "require review from Code Owners" has something concrete to enforce. This repo is
+# single-maintainer today, so every path maps to the repo owner; expand to teams
+# (e.g. @org/backend) as the team grows. Owners MUST have write access on GitHub,
+# otherwise GitHub silently ignores the entry.
+
+# Default owner for everything not matched below.
+*                 @AShan0227
+
+# Critical runtime + data schema — review carefully.
+/kun/core/        @AShan0227
+/alembic/         @AShan0227
+
+# CI / build / supply chain.
+/.github/         @AShan0227
+/pyproject.toml   @AShan0227
+/uv.lock          @AShan0227
+/Dockerfile       @AShan0227
+
+# Audit trail, proposals, and the fix-loop bookkeeping.
+/docs/audit/      @AShan0227

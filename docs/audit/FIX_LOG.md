@@ -90,3 +90,4 @@
 2026-06-24 [Loop-2 #4] F111 ✅ — 20 个 integration 文件补 integration/e2e marker(含 7 个 asyncio-only 改 list)+静态守卫测试;-m 'not integration and not e2e' 现真正隔离离线单测子集
 2026-06-24 [Loop-2 #5] F053 ✅ — 8 个 ORM Row 镜像 0011/0012 共 23 条 CHECK 到 __table_args__ + 解析式漂移守卫测试;命名约定前缀差异诚实注记(rename 迁移留后续)
 2026-06-24 [Loop-2 #6] F133+G10 ✅ — ci.yml unit job 加覆盖率硬门禁 --cov-fail-under=80(本机实测 83%,本机等价命令 RC=0 验证)
+2026-06-24 [Loop-2 #7] F134 ✅ — 加 .github/CODEOWNERS;CI 触发分支已含 鲲V1.1-dev(过时点);branch-protection/required-checks 记入 ci-and-supplychain 需人 GitHub 设置

@@ -1744,9 +1744,9 @@
       "detail": ".github/ 目录下仅有 workflows/ci.yml 一个文件(find .github -type f 只此一项),没有 CODEOWNERS,也没有任何 branch-protection-as-code。GitHub 的 required status checks / 禁止直接 push / 必需 review 都是仓库设置项,无法从代码核实,但结合'CI 只认 main'+'实际开发分支无 CI'的事实,即便 main 上配了 required checks 也保护不到真正在动的 鲲V1.1-dev。此外一个细节:origin/main 上 license-scan job 本来也是 continue-on-error: true,本分支才把它改成硬门禁(ci.yml:112-117 注释,git diff 显示这是 origin/main..HEAD 间 ci.yml 唯一改动)——说明门禁策略本身也是在这条'无人验证'的分支上演进,改动从未经 CI 自验。CTO 决策:门禁的有效性最终取决于 GitHub 仓库设置;需要人工核对 main(及未来主干)是否真的配了 required checks + 禁止 force-push,并补 CODEOWNERS 以约束高风险目录(alembic/、kun/core/)的评审。",
       "evidence": "find /Users/petrarain/鲲/.github -type f 仅返回 ci.yml;无 CODEOWNERS;git diff origin/main HEAD -- ci.yml 唯一改动为 license-scan 去掉 continue-on-error(L112-117)",
       "source": "extra:ci_gate_posture_and_branch_lineage",
-      "status": "needs-design",
-      "commit": "df2704d",
-      "notes": "无 branch protection/CODEOWNERS,开发分支无 CI；并入 docs/audit/proposals/ci-and-supplychain.md。"
+      "status": "done",
+      "commit": "a15e7a3",
+      "notes": "[Loop-2 #7] 加 .github/CODEOWNERS(单维护者 @AShan0227 + kun/core、alembic、.github、docs/audit 关键路径 owner)；CI 触发分支早已含 鲲V1.1-dev(G01 加,原 finding 此点已过时)。残留 branch protection + required status checks(lint/unit+cov/typecheck/integration)+ require Code Owners review 是 GitHub 仓库设置项、代码不可核实→记入 ci-and-supplychain.md 需人操作。可离线 land 部分已落地。"
     },
     {
       "id": "F135",
