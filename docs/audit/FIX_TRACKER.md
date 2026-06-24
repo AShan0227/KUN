@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md) / [LOOP2_PLAN.md](LOOP2_PLAN.md)
 
-**总计 173 项** — ✅done 79 ｜ ⏸deferred 1 ｜ 📐needs-design 93 ｜ 🔍needs-review 0 ｜ ⬜pending 0
+**总计 173 项** — ✅done 80 ｜ ⏸deferred 1 ｜ 📐needs-design 92 ｜ 🔍needs-review 0 ｜ ⬜pending 0
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -69,7 +69,7 @@
 | F050 | high | fix | ✅ | [文档漂移] promotion_queue 超时 sweeper 无任何生产调度——'超时自动 expired + | `kun/governance/promotion_queue.py:173` |
 | F051 | high | fix | ✅ | integration-tests 软失败:集成层回归不阻断合并,核心流程退化无法被 CI 拦截 | `.github/workflows/ci.yml:91` |
 | F052 | high | fix | ✅ | 无 alembic check / autogenerate-diff 步骤:ORM 模型与迁移漂移不被拦截 | `.github/workflows/ci.yml:89` |
-| F053 | high | architecture | 📐 | 0011/0012 八张 RSI 表的 DB CHECK 约束在 ORM 完全缺失（系统性漂移） | `kun/core/orm.py:486` |
+| F053 | high | architecture | ✅ | 0011/0012 八张 RSI 表的 DB CHECK 约束在 ORM 完全缺失（系统性漂移） | `kun/core/orm.py:486` |
 | F054 | high | fix | ✅ | EntityType 枚举与 capability_cards.entity_type CHECK 双向不一致 | `kun/datamodel/capability.py:22` |
 | F055 | high | fix | ✅ | 5 个 Prometheus 指标定义后全仓零引用——纯摆设，抓取时 series 根本不存在 | `kun/core/metrics.py:19` |
 | F056 | high | fix | 📐 | 全部 dogfood/e2e/smoke 脚本在 CI 之外，无人持续校验，却是 RSI/L5-L6 叙事的主要证据 | `.github/workflows/ci.yml:1-120` |

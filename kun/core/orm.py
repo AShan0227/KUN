@@ -518,6 +518,18 @@ class RuntimeCapabilityRow(Base):
         "metadata", JSONB, nullable=False, default=dict
     )
 
+    # Audit F053: mirror migration 0011 CHECK constraints (ORM↔migration parity).
+    __table_args__ = (
+        CheckConstraint(
+            "promotion_state IN ('merged','in_replay','in_shadow','in_canary','ready','enabled','rolled_back','expired')",
+            name="runtime_capabilities_state_valid",
+        ),
+        CheckConstraint(
+            "sampling_rate >= 0 AND sampling_rate <= 1",
+            name="runtime_capabilities_sampling_range",
+        ),
+    )
+
 
 class RuntimeExperimentRow(Base):
     """Strategist 写入的候选实验. Executor 任务前读 → 应用 change_spec override.
@@ -545,6 +557,26 @@ class RuntimeExperimentRow(Base):
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
 
+    # Audit F053: mirror migration 0011 CHECK constraints.
+    __table_args__ = (
+        CheckConstraint(
+            "target_level >= 0 AND target_level <= 3",
+            name="runtime_experiments_level_range",
+        ),
+        CheckConstraint(
+            "rollout_mode IN ('shadow','canary','ab')",
+            name="runtime_experiments_rollout_valid",
+        ),
+        CheckConstraint(
+            "status IN ('pending','running','done','rolled_back')",
+            name="runtime_experiments_status_valid",
+        ),
+        CheckConstraint(
+            "sampling_rate >= 0 AND sampling_rate <= 1",
+            name="runtime_experiments_sampling_range",
+        ),
+    )
+
 
 class StrategySearchRequestRow(Base):
     """监督线写, Strategist 读. 异常信号 → 触发策略搜索.
@@ -564,6 +596,22 @@ class StrategySearchRequestRow(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    # Audit F053: mirror migration 0011 CHECK constraints.
+    __table_args__ = (
+        CheckConstraint(
+            "priority IN ('low','medium','high')",
+            name="strategy_search_priority_valid",
+        ),
+        CheckConstraint(
+            "status IN ('open','claimed','done','dropped')",
+            name="strategy_search_status_valid",
+        ),
+        CheckConstraint(
+            "triggered_by IN ('anomaly_threshold','external_supervisor','human','self')",
+            name="strategy_search_triggered_by_valid",
+        ),
     )
 
 
@@ -591,6 +639,27 @@ class DiagnosticRecordRow(Base):
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
 
+    # Audit F053: mirror migration 0011 CHECK constraints (incl. PG-only
+    # jsonb_array_length — this table is JSONB/PG-only, never created in sqlite).
+    __table_args__ = (
+        CheckConstraint(
+            "root_cause_level IS NULL OR (root_cause_level >= 0 AND root_cause_level <= 3)",
+            name="diagnostic_root_cause_level_range",
+        ),
+        CheckConstraint(
+            "recommended_action IS NULL OR recommended_action IN ('redesign','activate','module_rsi','code_fix')",
+            name="diagnostic_recommended_action_valid",
+        ),
+        CheckConstraint(
+            "jsonb_array_length(scope_modules) <= 5",
+            name="diagnostic_scope_max_5",
+        ),
+        CheckConstraint(
+            "repeat_history_count >= 0",
+            name="diagnostic_repeat_history_nonneg",
+        ),
+    )
+
 
 class GoalAnchorRow(Base):
     """长任务 GoalAnchor (ADR-022). Director 写, Executor 每次 LLM call 顶部 pin.
@@ -610,6 +679,14 @@ class GoalAnchorRow(Base):
     immutable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    # Audit F053: mirror migration 0011 CHECK constraint.
+    __table_args__ = (
+        CheckConstraint(
+            "length(goal_statement) <= 200",
+            name="goal_anchor_statement_max_200",
+        ),
     )
 
 
@@ -640,6 +717,18 @@ class PlanReviewRow(Base):
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
 
+    # Audit F053: mirror migration 0011 CHECK constraints.
+    __table_args__ = (
+        CheckConstraint(
+            "supervisor_verdict IN ('ok','mild_drift','heavy_drift')",
+            name="plan_review_verdict_valid",
+        ),
+        CheckConstraint(
+            "action_taken IN ('continue','remind','pause','rsi_trigger')",
+            name="plan_review_action_valid",
+        ),
+    )
+
 
 class EvidenceLedgerRow(Base):
     """全链路证据账本 (ADR-024). Append-only.
@@ -660,6 +749,18 @@ class EvidenceLedgerRow(Base):
     diagnostic_level_reached: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    # Audit F053: mirror migration 0011 CHECK constraints.
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('artifact','test_report','diagnostic','debrief','decision')",
+            name="evidence_ledger_kind_valid",
+        ),
+        CheckConstraint(
+            "diagnostic_level_reached IS NULL OR (diagnostic_level_reached >= 0 AND diagnostic_level_reached <= 3)",
+            name="evidence_ledger_level_range",
+        ),
     )
 
 
@@ -764,6 +865,18 @@ class TaskCheckpointRow(Base):
     rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    # Audit F053: mirror migration 0012 CHECK constraints.
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active','final','failed_resume')",
+            name="task_checkpoint_status_valid",
+        ),
+        CheckConstraint("sequence >= 0", name="task_checkpoint_sequence_nonneg"),
+        CheckConstraint("step_idx >= 0", name="task_checkpoint_step_idx_nonneg"),
+        CheckConstraint("cost_usd_so_far >= 0", name="task_checkpoint_cost_nonneg"),
+        CheckConstraint("tokens_used_so_far >= 0", name="task_checkpoint_tokens_nonneg"),
     )
 
 

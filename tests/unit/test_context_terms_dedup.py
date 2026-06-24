@@ -8,7 +8,6 @@ dedup so the copy-paste cannot silently return, and lock the tokenizer behavior.
 from __future__ import annotations
 
 import pytest
-
 from kun.context import importance, packer
 from kun.context.text_terms import terms
 

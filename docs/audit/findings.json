@@ -691,9 +691,9 @@
       "detail": "迁移 0011_rsi_data_spine.py 与 0012_task_checkpoints.py 为 8 张表写了大量 CHECK 约束，但对应 ORM 模型（orm.py 486-761）全部没有 `__table_args__`，一条 CHECK 都没声明：\n- runtime_capabilities（ORM 486-511）缺 `runtime_capabilities_state_valid`、`runtime_capabilities_sampling_range`（0011:95-103）\n- runtime_experiments（ORM 514-538）缺 level_range/rollout_valid/status_valid/sampling_range（0011:148-163）\n- strategy_search_requests（ORM 541-559）缺 priority/status/triggered_by 三个 valid（0011:199-210）\n- diagnostic_records（ORM 562-584）缺 root_cause_level_range/recommended_action_valid/scope_max_5/repeat_history_nonneg（0011:246-262）\n- goal_anchors（ORM 587-605）缺 `goal_anchor_statement_max_200`（0011:299-302）\n- plan_reviews（ORM 608-633）缺 verdict_valid/action_valid（0011:345-352）\n- evidence_ledger（ORM 636-655）缺 kind_valid/level_range（0011:383-391）\n- task_checkpoints（ORM 715-761）缺 status_valid/sequence_nonneg/step_idx_nonneg/cost_nonneg/tokens_nonneg 共 5 个（0012:78-97）\n对比 0013-0018 的表两边都声明了 CHECK，说明这是 0011/0012 时期遗漏。影响：(1) `alembic check`（CI 从不跑，见 env.py:26 本意靠 autogenerate 对齐）一旦接 DB 必报 diff；(2) ORM 层无这些不变量定义，后续若有人用 metadata.create_all 起测试库（绕过迁移）将丢掉全部约束；(3) 双轨维护，再加列/改 enum 极易漏一边。",
       "evidence": "orm.py 486-511 class RuntimeCapabilityRow 无 __table_args__；而 0011:95 sa.CheckConstraint(\"promotion_state IN (...)\", name=\"runtime_capabilities_state_valid\") + 0011:100 sampling_range。task_checkpoints 同理：orm.py 757 status 列默认 'active' 但 ORM 无 CHECK，0012:78 sa.CheckConstraint(\"status IN ('active','final','failed_resume')\")",
       "source": "extra:db_schema_orm_migration_drift",
-      "status": "needs-design",
-      "commit": "af6c68b",
-      "notes": "8 张 RSI 表 CHECK 在 ORM 缺失(可机械修但需逐表+全套件门禁)；架构债合并方案见 docs/audit/proposals/architecture-debt.md（先裁决 ADR→F053 独立 PR→域化拆分 epic）。"
+      "status": "done",
+      "commit": "09e8560",
+      "notes": "[Loop-2 #5] 把迁移 0011/0012 的 23 条 CHECK 逐表镜像进 8 个 ORM Row 的 __table_args__(predicate 与迁移完全一致,含 PG-only jsonb_array_length——这些表 JSONB/PG-only 不在 sqlite 单测建表故安全)+漂移守卫测试(解析迁移源 vs ORM metadata,按表比对 name→sqltext,strict-markers 风格)。注:0011/0012 的约束名未遵循 ck_<table>_ 命名约定(0003/0008 遵循了),ORM 约定会加 ck_ 前缀——predicate+逻辑名(去前缀)已对齐并验证;DB 实际约束名的完全统一需一支 rename 迁移(PG-only,离线不可验)留作小后续。"
     },
     {
       "id": "F054",
