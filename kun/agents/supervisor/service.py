@@ -157,6 +157,14 @@ class SupervisorService:
         Returns: 本次 observe 触发的 strategy_search_request payload 列表 (空表示无触发).
         """
         tenant_id = str(payload.get("tenant_id") or "default")
+        # F147: hold self._lock ONLY for shared-state reads/mutations — state_for,
+        # state.record, the _check_* threshold logic, and _maybe_cluster (these
+        # mutate self._states, incl. the dedup bookkeeping in _build_request /
+        # _maybe_cluster). The await I/O afterwards (RCDH enrich, emitter, notify)
+        # touches no shared state, so it runs OUTSIDE the lock — otherwise one slow
+        # DB/notification call serializes the whole supervise lane across tenants.
+        # Dedup is recorded synchronously under the lock, so concurrent observes
+        # still cannot double-emit the same dedup_key.
         async with self._lock:
             state = self.state_for(tenant_id)
             state.record(event_type, payload)
@@ -193,54 +201,57 @@ class SupervisorService:
                     triggered.append(req)
 
             # L5.1: 聚类检查 — 如果窗口内已积累 ≥ 2 个 request, 跑 cluster
-            # cluster 触发 → 额外 emit 1 个 "cluster search_request" 给 Strategist
+            # cluster 触发 → 额外 emit 1 个 "cluster search_request" 给 Strategist.
+            # _maybe_cluster mutates state dedup, so it stays inside the lock.
             cluster_requests = self._maybe_cluster(state, triggered)
-            # L5.5: 若注入 diagnostic_runner, enrich cluster requests with RCDH
-            if cluster_requests and self._diagnostic_runner is not None:
-                cluster_requests = await self._enrich_cluster_requests(
-                    cluster_requests
-                )
-            triggered.extend(cluster_requests)
+            needs_enrich = bool(cluster_requests and self._diagnostic_runner is not None)
+        # ---- lock released; remaining work is pure I/O on local data ----
 
-            # 异步写 (emitter 兜底)
-            for req in triggered:
-                if self._emitter is not None:
-                    try:
-                        await self._emitter(req)
-                    except Exception as e:
-                        log.warning(
-                            "supervisor.search_request_emit_failed",
-                            error=str(e),
-                            request=req,
-                        )
-                else:
-                    log.info("supervisor.search_request_pending_emitter", request=req)
+        # L5.5: 若注入 diagnostic_runner, enrich cluster requests with RCDH.
+        # No shared-state access → safe outside the lock.
+        if needs_enrich:
+            cluster_requests = await self._enrich_cluster_requests(cluster_requests)
+        triggered.extend(cluster_requests)
 
-                # L3.6: escalation_path 含 human (L4) → 推 NUO alert
-                if "human" in (req.get("escalation_path") or []):
-                    await self._safe_notify(
-                        {
-                            "tenant_id": req.get("tenant_id", "default"),
-                            "kind": "alert",
-                            "severity": "warn",
-                            "channel": "side",
-                            "title": f"Supervisor escalation: {req.get('anomaly_kind')}",
-                            "body": (
-                                f"target_module={req.get('target_module')} "
-                                f"severity={req.get('severity')} "
-                                f"repeat={req.get('repeat_count')}"
-                            ),
-                            "payload": {
-                                "request_id": req.get("request_id"),
-                                "anomaly_kind": req.get("anomaly_kind"),
-                                "target_module": req.get("target_module"),
-                                "escalation_path": req.get("escalation_path"),
-                                "evidence": req.get("evidence"),
-                            },
-                        }
+        # 异步写 (emitter 兜底) + NUO alert — I/O, outside the lock.
+        for req in triggered:
+            if self._emitter is not None:
+                try:
+                    await self._emitter(req)
+                except Exception as e:
+                    log.warning(
+                        "supervisor.search_request_emit_failed",
+                        error=str(e),
+                        request=req,
                     )
+            else:
+                log.info("supervisor.search_request_pending_emitter", request=req)
 
-            return triggered
+            # L3.6: escalation_path 含 human (L4) → 推 NUO alert
+            if "human" in (req.get("escalation_path") or []):
+                await self._safe_notify(
+                    {
+                        "tenant_id": req.get("tenant_id", "default"),
+                        "kind": "alert",
+                        "severity": "warn",
+                        "channel": "side",
+                        "title": f"Supervisor escalation: {req.get('anomaly_kind')}",
+                        "body": (
+                            f"target_module={req.get('target_module')} "
+                            f"severity={req.get('severity')} "
+                            f"repeat={req.get('repeat_count')}"
+                        ),
+                        "payload": {
+                            "request_id": req.get("request_id"),
+                            "anomaly_kind": req.get("anomaly_kind"),
+                            "target_module": req.get("target_module"),
+                            "escalation_path": req.get("escalation_path"),
+                            "evidence": req.get("evidence"),
+                        },
+                    }
+                )
+
+        return triggered
 
     def _check_fallback_spike(
         self,

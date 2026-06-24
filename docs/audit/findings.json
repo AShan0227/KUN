@@ -1913,9 +1913,9 @@
       "detail": "observe() 用一把实例级 asyncio.Lock 包住从事件记录、阈值检查、RCDH diagnostic_runner、emitter 落库到 notification 推送的全部 await。所有 tenant 的所有事件共享这把锁：一次慢 DB 写或慢 RCDH 诊断会阻塞整条监督线的事件消费，事件高峰期形成队头阻塞。对照组 SupervisorPool 特意把 gather 放锁外('避免持锁等 LLM 调用')，说明作者意识到该问题但单实例路径未改。建议：锁只保护内存状态变更，emit/notify/diagnostic 移到锁外执行。",
       "evidence": "async with self._lock: state.record(...); ...; cluster_requests = await self._enrich_cluster_requests(...); for req in triggered: await self._emitter(req); await self._safe_notify({...})  — 全部在 with 块内",
       "source": "agents-brain",
-      "status": "needs-design",
-      "commit": "d6bc7f7",
-      "notes": "SupervisorService.observe 持全局锁跨 await(DB/通知)致串行化；并入 docs/audit/proposals/concurrency-multi-replica.md。"
+      "status": "done",
+      "commit": "a322d7c",
+      "notes": "[Loop-2 #9] observe 锁粒度收窄：self._lock 现仅护共享态读改(state_for/record/_check_*/_maybe_cluster，dedup 在锁内同步记录)；三个 await I/O(_enrich_cluster_requests/_emitter/_safe_notify，均不碰 self._states，已核实)移出锁。并发正确性保持(dedup 锁内记录→并发 observe 不会重复 emit 同 dedup_key)。加并发单测:断言 emit 时锁已释放 + 两 tenant observe 的 I/O 真重叠(旧\"await 在锁内\"代码会失败)。全 unit 绿。"
     },
     {
       "id": "F148",

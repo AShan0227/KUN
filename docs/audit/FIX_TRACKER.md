@@ -2,7 +2,7 @@
 
 来源：`wf_b8ef4518-5bd` ｜ 分支：`鲲V1.1-dev` ｜ 协议：[FIX_LOOP_PROTOCOL.md](FIX_LOOP_PROTOCOL.md) / [LOOP2_PLAN.md](LOOP2_PLAN.md)
 
-**总计 173 项** — ✅done 83 ｜ ⏸deferred 1 ｜ 📐needs-design 89 ｜ 🔍needs-review 0 ｜ ⬜pending 0
+**总计 173 项** — ✅done 84 ｜ ⏸deferred 1 ｜ 📐needs-design 88 ｜ 🔍needs-review 0 ｜ ⬜pending 0
 严重度：critical 6 / high 57 / medium 83 / low 19 / meta 8
 
 | id | sev | class | 状态 | 标题 | 文件 |
@@ -166,7 +166,7 @@
 | F144 | low | fix | ✅ | frontier50_external：默认 workdir 硬编码他人机器绝对路径，can_run 用 "ab"  | `kun/control_plane/frontier50_external.py:34` |
 | F145 | low | fix | ✅ | cockpit._current_plan 用字典序比较计划版本，v10 < v9，多次改版后驾驶舱显示错误计划 | `kun/control_plane/cockpit.py:322` |
 | F146 | low | fix | ✅ | Strategist 配额与探索惩罚硬编码 tenant_id='default'，多租户限流/惩罚失效 | `/Users/petrarain/鲲/kun/agents/strategist/service` |
-| F147 | low | fix | 📐 | SupervisorService.observe 全程持单把全局锁跨 await DB/通知调用，监督线吞吐被串行 | `/Users/petrarain/鲲/kun/agents/supervisor/service` |
+| F147 | low | fix | ✅ | SupervisorService.observe 全程持单把全局锁跨 await DB/通知调用，监督线吞吐被串行 | `/Users/petrarain/鲲/kun/agents/supervisor/service` |
 | F148 | low | fix | 📐 | Cockpit 端点用 query 参数 tenant_id（默认 "default"）绕过租户中间件，discip | `kun/api/cockpit.py:282-296,328-339;` |
 | F149 | low | fix | ✅ | 平台 browser adapter 的读操作仅导航即返回 status=ok，假成功污染 AdapterRoute | `kun/interface/automation/shopify/browser.py:161-` |
 | F150 | low | fix | ✅ | EntityType 枚举与 capability_cards DB CHECK 约束双向不一致(company v | `kun/datamodel/capability.py:22-28` |
