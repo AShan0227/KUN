@@ -57,7 +57,7 @@ class MissionDirectorModelConfig(BaseModel):
     )
     mode: Literal["deterministic", "llm_assisted"] = Field(
         default_factory=lambda: (
-            os.getenv("KUN_MISSION_DIRECTOR_MODE", "deterministic")  # type: ignore[arg-type]
+            os.getenv("KUN_MISSION_DIRECTOR_MODE", "deterministic")
             if os.getenv("KUN_MISSION_DIRECTOR_MODE", "deterministic")
             in {"deterministic", "llm_assisted"}
             else "deterministic"

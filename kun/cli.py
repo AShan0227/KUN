@@ -1714,7 +1714,7 @@ def control_plane_daemon_run(
         control_plane=control_plane,
         model_config=MissionDirectorModelConfig(
             model_id=mission_director_model_id,
-            model_tier=mission_director_model_tier,  # type: ignore[arg-type]
+            model_tier=mission_director_model_tier,
             provider=mission_director_provider,
         ),
     )
@@ -1789,10 +1789,10 @@ def control_plane_daemon_run(
         poll_interval_sec=poll_interval_sec,
         max_work_items_per_tick=max_work_items_per_tick,
         worker_pool_size=worker_pool_size,
-        resource_lock_backend=resource_lock_backend,  # type: ignore[arg-type]
+        resource_lock_backend=resource_lock_backend,
         resource_lock_redis_url=resource_lock_redis_url,
         resource_lock_ttl_sec=resource_lock_ttl_sec,
-        sandbox_mode=sandbox_mode,  # type: ignore[arg-type]
+        sandbox_mode=sandbox_mode,
         container_runtime=container_runtime,
         max_ticks=max_ticks,
         stop_when_idle=stop_when_idle,

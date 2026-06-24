@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 ExplorerMode = Literal[
     "conservative",
@@ -53,7 +53,7 @@ class ExplorerPoolConfig:
         """该 mode 是否在 Pool 中启用 (仅作用于 forward 候选)."""
         return mode in self.enabled_forward_modes
 
-    def filter_candidates(self, candidates: list) -> list:
+    def filter_candidates(self, candidates: list[Any]) -> list[Any]:
         """从 forward 候选列表过滤出启用的 mode.
 
         backward 候选 (explorer_mode='backward') 不过滤 — 它走自己路径.

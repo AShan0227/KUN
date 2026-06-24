@@ -401,7 +401,7 @@ async def run_diagnostic(
             record.level_3_check,
         )[level]
         if check.is_root_cause:
-            record.root_cause_level = level  # type: ignore[assignment]
+            record.root_cause_level = level
             record.recommended_action = _ACTION_BY_LEVEL[level]  # type: ignore[assignment]
             break
 

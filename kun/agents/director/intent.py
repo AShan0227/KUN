@@ -163,7 +163,7 @@ class IntentInterpreter:
         if goal_anchor is not None:
             # 暂时挂在 TaskRef 上 (TaskRef 用 extra="allow" or via setattr).
             # L1.8 阶段把 anchor 写入 goal_anchors 表 + Executor 真读 + pin.
-            task_ref.goal_anchor = goal_anchor  # type: ignore[attr-defined]
+            task_ref.goal_anchor = goal_anchor
         return task_ref
 
     @staticmethod

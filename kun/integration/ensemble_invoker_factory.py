@@ -93,7 +93,7 @@ def _select_providers(
     selected: list[LLMProvider] = []
     seen_ids: set[int] = set()
     for tier_name in tier_names:
-        provider = router.providers.get(tier_name)  # type: ignore[arg-type]
+        provider = router.providers.get(tier_name)
         if provider is None:
             log.warning(
                 "ensemble_invoker_factory.unknown_tier",

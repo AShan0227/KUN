@@ -45,7 +45,7 @@ class PenaltyState:
     """Per-tenant in-memory penalty state."""
 
     tenant_id: str
-    failure_records: dict[str, deque] = field(
+    failure_records: dict[str, deque[Any]] = field(
         default_factory=lambda: defaultdict(deque)
     )
     """signature → deque[_FailureRecord]"""

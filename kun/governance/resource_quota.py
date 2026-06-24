@@ -51,8 +51,8 @@ class QuotaState:
     """Per-tenant in-memory quota state."""
 
     tenant_id: str
-    token_records: deque = field(default_factory=lambda: deque())
-    experiment_records: deque = field(default_factory=lambda: deque())
+    token_records: deque[Any] = field(default_factory=lambda: deque())
+    experiment_records: deque[Any] = field(default_factory=lambda: deque())
 
     def purge_expired(self, now: datetime, window_seconds: int) -> None:
         cutoff = now - timedelta(seconds=window_seconds)

@@ -346,7 +346,7 @@ class CapabilityLifecycleService:
             try:
                 maybe_aw = self._emitter(record)
                 if hasattr(maybe_aw, "__await__"):
-                    await maybe_aw  # type: ignore[misc]
+                    await maybe_aw
             except Exception as e:
                 log.warning(
                     "lifecycle.emit_failed",

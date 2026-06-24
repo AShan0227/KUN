@@ -561,9 +561,9 @@ class LongTaskOrchestrator:
                     outcome = PlanReviewOutcome(
                         triggered=True,
                         trigger=trigger,
-                        internal_verdict=internal_verdict,  # type: ignore[arg-type]
+                        internal_verdict=internal_verdict,
                         external_verdict=None,
-                        final_verdict=internal_verdict,  # type: ignore[arg-type]
+                        final_verdict=internal_verdict,
                         drift_evidence=drift_evidence,
                         action=action,
                         rationale=(

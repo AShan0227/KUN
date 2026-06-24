@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kun.agents.strategist.service import StrategyExperiment
@@ -163,7 +163,7 @@ def rank_candidates(
       3. sampling_rate 较低优先 (风险更小先尝试)
       4. acceptance_threshold 反向 — 严格目标先 (希望减半失败率 vs 仅减 10%)
     """
-    def sort_key(c: StrategyExperiment) -> tuple:
+    def sort_key(c: StrategyExperiment) -> tuple[Any, ...]:
         return (
             _EXPLORER_RANK.get(c.explorer_mode, 99),
             0 if not c.requires_human_review else 1,

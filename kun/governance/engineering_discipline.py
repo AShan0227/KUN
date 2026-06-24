@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 from kun.core.logging import get_logger
 
@@ -81,7 +82,7 @@ class DisciplineReport:
 # Each check takes a context dict and returns DisciplineCheck.
 
 
-def _check_commit_discipline(context: dict) -> DisciplineCheck:
+def _check_commit_discipline(context: dict[str, Any]) -> DisciplineCheck:
     """commit ≤ 1000 行 (V7 §4.3)."""
     lines_added = context.get("commit_lines_added", 0)
     lines_deleted = context.get("commit_lines_deleted", 0)
@@ -97,7 +98,7 @@ def _check_commit_discipline(context: dict) -> DisciplineCheck:
     )
 
 
-def _check_single_commit_files(context: dict) -> DisciplineCheck:
+def _check_single_commit_files(context: dict[str, Any]) -> DisciplineCheck:
     """单 commit ≤ 5 文件 (V7 §4.3 扩展项)."""
     files_changed = context.get("commit_files_changed", 0)
     passed = files_changed <= 5
@@ -108,7 +109,7 @@ def _check_single_commit_files(context: dict) -> DisciplineCheck:
     )
 
 
-def _check_coauthor_trail(context: dict) -> DisciplineCheck:
+def _check_coauthor_trail(context: dict[str, Any]) -> DisciplineCheck:
     """commit message 必带 Co-Authored-By."""
     commit_msg = context.get("commit_message", "")
     passed = "Co-Authored-By:" in commit_msg
@@ -119,7 +120,7 @@ def _check_coauthor_trail(context: dict) -> DisciplineCheck:
     )
 
 
-def _check_grep_verify(context: dict) -> DisciplineCheck:
+def _check_grep_verify(context: dict[str, Any]) -> DisciplineCheck:
     """grep verify before assume — LLM 输出 / 改代码前是否用过 grep-verify skill."""
     skill_calls = context.get("skill_calls_in_response", [])
     code_changes = context.get("has_code_changes", False)
@@ -146,7 +147,7 @@ def _check_grep_verify(context: dict) -> DisciplineCheck:
     )
 
 
-def _check_bash_restraint(context: dict) -> DisciplineCheck:
+def _check_bash_restraint(context: dict[str, Any]) -> DisciplineCheck:
     """Bash 克制: shell-exec 调用应 < 专用 skill 调用."""
     skill_calls = context.get("skill_calls_in_response", [])
     shell_count = sum(
@@ -176,7 +177,7 @@ def _check_bash_restraint(context: dict) -> DisciplineCheck:
     )
 
 
-def _check_read_with_offset_limit(context: dict) -> DisciplineCheck:
+def _check_read_with_offset_limit(context: dict[str, Any]) -> DisciplineCheck:
     """Read with offset+limit: 大文件 read 必须带 limit/offset."""
     skill_calls = context.get("skill_calls_in_response", [])
     large_reads_without_limit = []
@@ -203,7 +204,7 @@ def _check_read_with_offset_limit(context: dict) -> DisciplineCheck:
     )
 
 
-def _check_test_driven(context: dict) -> DisciplineCheck:
+def _check_test_driven(context: dict[str, Any]) -> DisciplineCheck:
     """测试驱动: bug fix 应有 failing test 在 fix 之前."""
     is_bug_fix = context.get("is_bug_fix", False)
     has_failing_test_first = context.get("has_failing_test_first", False)
@@ -224,7 +225,7 @@ def _check_test_driven(context: dict) -> DisciplineCheck:
     )
 
 
-def _check_decision_pause(context: dict) -> DisciplineCheck:
+def _check_decision_pause(context: dict[str, Any]) -> DisciplineCheck:
     """决策点停下问: 高风险动作前应 raise CollaborationTicket."""
     high_risk_action = context.get("high_risk_action_attempted", False)
     raised_ticket = context.get("raised_collaboration_ticket", False)
@@ -245,7 +246,7 @@ def _check_decision_pause(context: dict) -> DisciplineCheck:
     )
 
 
-def _check_dev_log(context: dict) -> DisciplineCheck:
+def _check_dev_log(context: dict[str, Any]) -> DisciplineCheck:
     """dev_log 沉淀 (ADR-025): commit 后必更新 dev_log."""
     has_code_commit = context.get("has_code_commit", False)
     dev_log_updated = context.get("dev_log_updated_in_session", False)
@@ -315,7 +316,7 @@ class EngineeringDisciplineEnforcer:
         else:
             self._disciplines = list(disciplines_to_check)
 
-    def check(self, context: dict) -> DisciplineReport:
+    def check(self, context: dict[str, Any]) -> DisciplineReport:
         """Run all configured discipline checks on the given context.
 
         Returns DisciplineReport with overall_score = passed / total.

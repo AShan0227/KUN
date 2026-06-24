@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from kun.core.logging import get_logger
 
@@ -155,7 +155,7 @@ def _has_any(text: str, keywords: tuple[str, ...]) -> str | None:
 
 def _anchor_out_of_scope_hit(
     action_intent: str,
-    task_anchor: dict | None,
+    task_anchor: dict[str, Any] | None,
 ) -> str | None:
     """检查 action_intent 是否触碰 anchor.out_of_scope.
 
@@ -235,7 +235,7 @@ def classify_decision_point(
     *,
     action_intent: str,
     task_meta_risk: str = "low",
-    task_anchor: dict | None = None,
+    task_anchor: dict[str, Any] | None = None,
 ) -> DecisionPointResult:
     """硬规则决策点 classifier (不调 LLM).
 

@@ -2148,7 +2148,7 @@ def _game_production_strategy_followups(
         followups.append(
             WorkItem(
                 work_item_id=item_id,
-                type=item_type,  # type: ignore[arg-type]
+                type=item_type,
                 owner=owner,
                 dependencies=[previous_id],
                 phase=phase,

@@ -440,7 +440,7 @@ def _build_initial_work_items(
                 work_item_id=f"work-{mission_id}-{suffix}",
                 mission_id=mission_id,
                 task_plan_version=plan_version,
-                type=item_type,  # type: ignore[arg-type]
+                type=item_type,
                 owner=owner,
                 priority=priority,
                 dependencies=dependencies,
