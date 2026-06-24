@@ -1278,7 +1278,7 @@
       "source": "core-data",
       "status": "needs-design",
       "commit": "PENDING",
-      "notes": "ImportanceScorer 零生产调用方 + packer 重复词法打分(逐字重复 _terms)；ADR-018 §16.1 ScoreDescriptor 未在 context 落地。并入 docs/audit/proposals/architecture-debt.md §1b(复用 ImportanceScorer 或删死码)。"
+      "notes": "ImportanceScorer 零生产调用方 + packer 重复词法打分(逐字重复 _terms)；ADR-018 §16.1 ScoreDescriptor 未在 context 落地。并入 docs/audit/proposals/architecture-debt.md §1b(复用 ImportanceScorer 或删死码)。 [Loop-2 #3]：去重子集已 land — 把 byte-identical _terms 抽到 kun/context/text_terms.py，importance/packer 共用单一源(去重复词法打分)+回归测试。ImportanceScorer 的\"接入 context retention/decay 管线 vs 删除\"仍 needs-design(它是有测试/ScoreDescriptor 兼容的 intended-future 组件，按孤儿统一处置=接线非删)。"
     },
     {
       "id": "F099",

@@ -7,13 +7,13 @@
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
 from kun.context.assets import LayeredAsset
+from kun.context.text_terms import terms as _terms
 from kun.core.scoring import ScoreDescriptor
 
 EmbedText = Callable[[str], Sequence[float]]
@@ -205,10 +205,6 @@ def _lexical_similarity(query: str, asset_text: str) -> float:
         return 0.0
     overlap = len(query_terms & asset_terms)
     return _clamp01(overlap / math.sqrt(len(query_terms) * len(asset_terms)))
-
-
-def _terms(text: str) -> set[str]:
-    return {part.lower() for part in re.findall(r"[\w.-]+", text) if len(part) >= 2}
 
 
 def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
