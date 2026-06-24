@@ -2201,7 +2201,7 @@
       "source": "G01-split",
       "status": "needs-design",
       "commit": "8ba6b8d +batch1:7df9834",
-      "notes": "mypy 实测 145 错/42 文件(audit 计 152)，无法在 loop 内安全清完。方案 docs/audit/proposals/typecheck-debt.md：5 批清理(零风险机械→补注解→热点 cli/game_production→语义类当 bug 排→收口)，清零后把 ci.yml typecheck 设硬门禁(关联 G10/F133 覆盖率/F134 branch protection)。标 needs-design。 [Loop-2 #8] 批1 已 land：删 12 个 unused-ignore + 补 17 个 type-arg 泛型参数,mypy 145→116(净 -29,无新错误类型、其余类别数不变),ruff+全 unit 绿。批2-5(no-untyped-def/no-any-return/热点 cli+game_production/arg-type+attr-defined 语义类)仍 needs-design,见 typecheck-debt.md。G09 整体保持 needs-design(116 未清零,硬门禁待清零后翻)。"
+      "notes": "mypy 实测 145 错/42 文件(audit 计 152)，无法在 loop 内安全清完。方案 docs/audit/proposals/typecheck-debt.md：5 批清理(零风险机械→补注解→热点 cli/game_production→语义类当 bug 排→收口)，清零后把 ci.yml typecheck 设硬门禁(关联 G10/F133 覆盖率/F134 branch protection)。标 needs-design。 [Loop-2 #8] 批1 已 land：删 12 个 unused-ignore + 补 17 个 type-arg 泛型参数,mypy 145→116(净 -29,无新错误类型、其余类别数不变),ruff+全 unit 绿。批2-5(no-untyped-def/no-any-return/热点 cli+game_production/arg-type+attr-defined 语义类)仍 needs-design,见 typecheck-debt.md。G09 整体保持 needs-design(116 未清零,硬门禁待清零后翻)。 [Loop-2 TIER-2 #6] 批2-5 执行计划见 docs/audit/proposals/drafts/typecheck-batches-2-5-plan.md(实测当前 116 错分布;批2 机械注解→批3 cli+game_production 热点→批4 语义类配测真修禁 ignore→批5 清零+翻 mypy 硬门禁),待人审。G09 维持 needs-design。"
     },
     {
       "id": "G10",

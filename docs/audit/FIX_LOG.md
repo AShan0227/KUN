@@ -100,3 +100,4 @@
 2026-06-24 [Loop-2 TIER-2 #3] RSI 主链接线分步落地草案 📝 needs-review — drafts/RSI-mainline-wiring-plan.md(前置 ADR-027/028;逐环 wired 验收断言;§2b 旁路组件接入点;F090 去相关靠多模型/多视角(claude-api:temperature 现模型已移除);影子→canary;诚信红线;M1-M5 里程碑)
 2026-06-24 [Loop-2 TIER-2 #4] 外部监督 enforce 草案 📝 needs-review — drafts/external-supervisor-enforce-plan.md(F030/F031/F032/F115/F151;含抗注入硬化与 advisory→enforce 灰度)
 2026-06-24 [Loop-2 TIER-2 #5] 真沙箱隔离草案 📝 needs-review — drafts/sandbox-isolation-plan.md(F109/F035a 隔离半;子进程降权→nsjail/容器分阶段+能力白名单+逃逸 PoC 验收)
+2026-06-24 [Loop-2 TIER-2 #6/末] typecheck 批2-5 执行计划 📝 needs-review — drafts/typecheck-batches-2-5-plan.md(116→0 分批+批5 翻 mypy 硬门禁);TIER-2 草案 6/6 完成
