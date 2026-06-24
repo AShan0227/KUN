@@ -472,7 +472,7 @@
       "source": "architecture",
       "status": "needs-design",
       "commit": "af6c68b",
-      "notes": "ADR-020 钦定架构与实际背离/control_plane 占50%/agents↔cp 零import；架构债合并方案见 docs/audit/proposals/architecture-debt.md（先裁决 ADR→F053 独立 PR→域化拆分 epic）。"
+      "notes": "ADR-020 钦定架构与实际背离/control_plane 占50%/agents↔cp 零import；架构债合并方案见 docs/audit/proposals/architecture-debt.md（先裁决 ADR→F053 独立 PR→域化拆分 epic）。 [Loop-2 TIER-2 #2] 去留裁决草案见 docs/audit/proposals/drafts/ADR-028-control-plane-disposition.md(列 A 拆散/B 承认/C 混合三选项+权衡+推荐 C:control_plane 降为编排层、产品 runner 域化 kun/domains/、daemon 拆分、终结双运行时、补 V6/V7 追溯 ADR;分步+import-linter 验证),待人拍板。维持 needs-design/needs-review。"
     },
     {
       "id": "F037",
@@ -498,7 +498,7 @@
       "source": "architecture",
       "status": "needs-design",
       "commit": "af6c68b",
-      "notes": "治理链断裂 V6/V7 无 ADR；架构债合并方案见 docs/audit/proposals/architecture-debt.md（先裁决 ADR→F053 独立 PR→域化拆分 epic）。"
+      "notes": "治理链断裂 V6/V7 无 ADR；架构债合并方案见 docs/audit/proposals/architecture-debt.md（先裁决 ADR→F053 独立 PR→域化拆分 epic）。 [Loop-2 TIER-2 #2] 去留裁决草案见 docs/audit/proposals/drafts/ADR-028-control-plane-disposition.md(列 A 拆散/B 承认/C 混合三选项+权衡+推荐 C:control_plane 降为编排层、产品 runner 域化 kun/domains/、daemon 拆分、终结双运行时、补 V6/V7 追溯 ADR;分步+import-linter 验证),待人拍板。维持 needs-design/needs-review。"
     },
     {
       "id": "F039",

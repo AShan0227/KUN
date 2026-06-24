@@ -96,3 +96,4 @@
 2026-06-24 [Loop-2 #10] F153 ✅ — next.config.mjs 加 /cockpit rewrite(node --check 通过)+.env.example CORS 多端口注释(不改后端默认);残留需人目检 dev 栈
 2026-06-24 [Loop-2 #11] F067 ✅(TIER-1 收官) — globals.css 定义全部 25 个 kun-* 类(tailwindcss 编译 RC=0 验证)+静态守卫测试;残留纯审美目检
 2026-06-24 [Loop-2 TIER-2 #1] ADR-027 持久层重设计草案 📝 needs-review — drafts/ADR-027-persistence-redesign.md(F019 决议:DB+CAS+append-only ledger+迁移路径+分步验证)
+2026-06-24 [Loop-2 TIER-2 #2] ADR-028 control_plane 去留裁决草案 📝 needs-review — drafts/ADR-028(A/B/C 选项+推荐 C 混合域化+分步 import-linter 验证;F038/F036)
