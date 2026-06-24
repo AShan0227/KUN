@@ -1421,7 +1421,7 @@
       "source": "security",
       "status": "needs-design",
       "commit": "a4e75a9",
-      "notes": "shell/python-exec 沙箱仅 cwd 边界、无进程隔离(docstring 自承非容器)；并入 docs/audit/proposals/security-posture.md。"
+      "notes": "shell/python-exec 沙箱仅 cwd 边界、无进程隔离(docstring 自承非容器)；并入 docs/audit/proposals/security-posture.md。 [Loop-2 TIER-2 #5] 真隔离落地草案见 docs/audit/proposals/drafts/sandbox-isolation-plan.md(隔离层选项 a 子进程降权/b seccomp/c nsjail/d 容器+权衡;dev limits/prod jail fail-closed 分阶段;能力声明白名单;逃逸 PoC 验收),待人审。维持 needs-design/needs-review。"
     },
     {
       "id": "F110",
@@ -2240,7 +2240,7 @@
       "source": "F035-split",
       "status": "needs-design",
       "commit": "PENDING",
-      "notes": "拆两半：隔离半(python-exec 进程/容器隔离)与 F109 同根，并入 docs/audit/proposals/security-posture.md；死字段半(loader.py:56-58 三死字段 + builtin/__init__.py:32 误导\"受 allowlist 约束\"描述)是独立具体 fix(安全诚实)，亦记于 docs/audit/proposals/security-posture.md 末行，可较早单做。 [Loop-2 1867690→]：诚实子集已 land — 删 SkillManifest 3 个零消费者死字段(allowed_commands/denied_patterns/denied_domains)+订正 shell-exec 描述(env KUN_SHELL_EXEC_ALLOW/DENY 非 per-skill allowlist)+回归测试。隔离半仍 F109；wire-vs-strip manifest allowlist 仍 needs-design(security-posture)。"
+      "notes": "拆两半：隔离半(python-exec 进程/容器隔离)与 F109 同根，并入 docs/audit/proposals/security-posture.md；死字段半(loader.py:56-58 三死字段 + builtin/__init__.py:32 误导\"受 allowlist 约束\"描述)是独立具体 fix(安全诚实)，亦记于 docs/audit/proposals/security-posture.md 末行，可较早单做。 [Loop-2 1867690→]：诚实子集已 land — 删 SkillManifest 3 个零消费者死字段(allowed_commands/denied_patterns/denied_domains)+订正 shell-exec 描述(env KUN_SHELL_EXEC_ALLOW/DENY 非 per-skill allowlist)+回归测试。隔离半仍 F109；wire-vs-strip manifest allowlist 仍 needs-design(security-posture)。 [Loop-2 TIER-2 #5] 真隔离落地草案见 docs/audit/proposals/drafts/sandbox-isolation-plan.md(隔离层选项 a 子进程降权/b seccomp/c nsjail/d 容器+权衡;dev limits/prod jail fail-closed 分阶段;能力声明白名单;逃逸 PoC 验收),待人审。维持 needs-design/needs-review。"
     },
     {
       "id": "F055a",
