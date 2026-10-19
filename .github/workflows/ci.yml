@@ -63,6 +63,7 @@ jobs:
       - run: uv run kun ops delivery-status --json
       - run: uv run kun ops preflight --skip-alembic --no-fail-on-blocker --json
       - run: uv run kun ops readiness --skip-alembic --no-fail-on-blocker --json
+      - run: uv run kun ops release-check --version v4.0.0 --skip-alembic --no-fail-on-blocker --json
 
   legal-guard:
     name: Legal/IP guard

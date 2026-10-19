@@ -668,6 +668,59 @@ def ops_readiness(
         raise typer.Exit(code=2)
 
 
+@ops_app.command("release-check")
+def ops_release_check(
+    version: str = typer.Option(..., "--version", help="目标 release tag，例如 v4.0.0"),
+    json_output: bool = typer.Option(False, "--json", help="输出机器可读 JSON"),
+    skip_alembic: bool = typer.Option(False, "--skip-alembic", help="跳过 alembic heads 命令检查"),
+    skip_legal_guard: bool = typer.Option(
+        False, "--skip-legal-guard", help="跳过 legal guard 脚本"
+    ),
+    allow_dirty: bool = typer.Option(
+        False, "--allow-dirty", help="只用于本地预演，正式 tag 不要开启"
+    ),
+    fail_on_blocker: bool = typer.Option(
+        True,
+        "--fail-on-blocker/--no-fail-on-blocker",
+        help="发现 release blocker 时返回非零退出码",
+    ),
+) -> None:
+    """正式 release/tag 前检查：tag、rollback/hotfix、preflight、legal、迁移和备份恢复。"""
+
+    from kun.ops.release_readiness import run_release_readiness
+
+    report = run_release_readiness(
+        version=version,
+        run_alembic_heads=not skip_alembic,
+        run_legal_guard=not skip_legal_guard,
+        allow_dirty=allow_dirty,
+    )
+    if json_output:
+        console.print_json(data=report.model_dump(mode="json"))
+    else:
+        table = Table(title=f"KUN release readiness {version} — {report.status}")
+        table.add_column("severity")
+        table.add_column("check")
+        table.add_column("detail")
+        table.add_column("action")
+        color = {"ok": "green", "warn": "yellow", "blocker": "red"}
+        for check in report.checks:
+            table.add_row(
+                f"[{color[check.severity]}]{check.severity}[/]",
+                check.title,
+                check.detail,
+                check.suggested_action or "-",
+            )
+        console.print(table)
+        console.print(
+            "[dim]delivery summary: "
+            + json.dumps(report.delivery_summary, ensure_ascii=False)
+            + f"; preflight={report.preflight_status}[/]"
+        )
+    if fail_on_blocker and report.status == "block":
+        raise typer.Exit(code=2)
+
+
 @ops_app.command("credit-report")
 def ops_credit_report(
     tenant: str = typer.Option("u-sylvan", "--tenant", help="租户 ID"),

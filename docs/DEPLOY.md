@@ -197,6 +197,7 @@ git switch -c feat/your-change
 make test       # 单测
 make lint       # ruff
 make format     # 自动修复
+uv run kun ops release-check --version v4.0.0 --skip-alembic
 
 # 4. 提交
 git add -A

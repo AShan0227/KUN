@@ -38,6 +38,7 @@ uv run kun ops secret-audit
 uv run kun ops secret-audit --json
 uv run kun ops readiness --skip-alembic
 uv run kun ops readiness --include-dogfood --skip-alembic
+uv run kun ops release-check --version v4.0.0
 ```
 
 它检查的是“能不能安全上线”，不是产品宣传：
@@ -54,6 +55,8 @@ uv run kun ops readiness --include-dogfood --skip-alembic
 有 blocker 时命令返回非零退出码，CI/release 应该直接拦住。
 
 `readiness` 是给正式测试前用的一条总命令：它把 preflight、secret-audit、delivery-status 汇总到一份报告；加 `--include-dogfood` 时再跑低风险 dogfood。
+
+`release-check` 是正式打 tag 前的硬门禁：它会检查 tag 命名、tag 是否已存在、dirty worktree、Alembic 单 head、preflight、delivery-status validation、legal guard、V4 release checklist、backup/restore 前置脚本。流程细节见 `docs/ops/release-checklist-v4.md`。
 
 ### 能力边界自检
 
